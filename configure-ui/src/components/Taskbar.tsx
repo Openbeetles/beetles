@@ -14,14 +14,19 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import * as systemApi from "../api/endpoints/system";
 import { BeetleIcon } from "./BeetleIcon";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { Os3dIcon } from "./Os3dIcon";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { NAV_ITEMS } from "../config/navItems";
+import { OS_ICON_SHELL } from "../config/osIcons";
 import { TASKBAR_HEIGHT } from "../config/layout";
 import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi, type DeviceHintReason } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
+import { setRestartPending } from "../store/deviceStatusStore";
 import { SHELL_TASKBAR_CHROME_SX } from "../theme/shellChromeSurface";
 
 /** 顶栏已有「连接设备」宽幅磁贴，网格内不再重复 `/device` */
@@ -86,13 +91,13 @@ function collectStartMenuFocusables(root: HTMLElement | null): HTMLElement[] {
   });
 }
 
-/** Windows 风格任务栏：甲壳虫徽标为「开始」、中部固定快捷方式、右侧托盘（连接状态）。 */
+/** Windows 风格任务栏：Beetle OS 徽标为「开始」、中部固定快捷方式、右侧托盘（连接状态）。 */
 export function Taskbar() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const navBlocker = useContext(NavBlockerContext);
-  const { baseUrl } = useDevice();
+  const { baseUrl, pairingCode } = useDevice();
   const {
     deviceConnected,
     connectionChecking,
@@ -103,6 +108,8 @@ export function Taskbar() {
   const lastNavBlockToastRef = useRef<{ key: string; at: number } | null>(null);
   const [startAnchor, setStartAnchor] = useState<HTMLElement | null>(null);
   const [startHovered, setStartHovered] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const startMenuPanelRef = useRef<HTMLDivElement | null>(null);
   const pathname = location.pathname;
   const canNavigate = (path: string) =>
@@ -110,6 +117,26 @@ export function Taskbar() {
   const startOpen = Boolean(startAnchor);
 
   const closeStart = () => setStartAnchor(null);
+
+  const doRestart = async () => {
+    if (!baseUrl?.trim() || !pairingCode?.trim()) return;
+    setRestarting(true);
+    const res = await systemApi.postRestart(baseUrl, pairingCode);
+    setRestarting(false);
+    setRestartConfirmOpen(false);
+    closeStart();
+    if (res.ok) {
+      setRestartPending();
+      showToast(t("device.restartSent"), { variant: "success" });
+    } else {
+      showToast(res.error ?? t("device.restartFail"), { variant: "error" });
+    }
+  };
+
+  const handleRestartClick = () => {
+    if (!baseUrl?.trim() || !pairingCode?.trim() || restarting) return;
+    setRestartConfirmOpen(true);
+  };
 
   const handleStartClick = (e: MouseEvent<HTMLElement>) => {
     setStartAnchor(startOpen ? null : e.currentTarget);
@@ -306,39 +333,78 @@ export function Taskbar() {
                 "inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent)",
             }}
           >
-            <Stack direction="row" alignItems="center" spacing={1.25}>
-              <BeetleIcon
-                aria-hidden
-                animationActive={startOpen || startHovered}
-                sx={{
-                  width: "var(--icon-container-md)",
-                  height: "var(--icon-container-md)",
-                  borderRadius: 0,
-                }}
-              />
-              <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              spacing={1}
+              sx={{ gap: 1 }}
+            >
+              <Stack
+                direction="row"
+                alignItems="center"
+                spacing={1.25}
+                sx={{ minWidth: 0, flex: 1 }}
+              >
+                <BeetleIcon
+                  aria-hidden
+                  animationActive={startOpen || startHovered}
+                  sx={{
+                    width: "var(--icon-container-md)",
+                    height: "var(--icon-container-md)",
+                    borderRadius: 0,
+                  }}
+                />
                 <Typography
                   variant="subtitle2"
                   sx={{
+                    minWidth: 0,
                     fontFamily: "var(--font-sans)",
                     fontWeight: 700,
                     letterSpacing: "-0.02em",
                     textTransform: "uppercase",
-                    fontSize: "var(--font-size-body-sm)",
+                    fontSize: "var(--font-size-h4)",
+                    lineHeight: 1.2,
                   }}
                 >
                   {t("app.name")}
                 </Typography>
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: "var(--muted)",
-                    fontSize: "var(--font-size-caption)",
-                  }}
-                >
-                  {t("app.tagline")}
-                </Typography>
               </Stack>
+              {deviceConnected && (
+                <Tooltip title={t("device.restart")} placement="left">
+                  <span>
+                    <IconButton
+                      size="small"
+                      disabled={restarting}
+                      onClick={handleRestartClick}
+                      aria-label={t("device.restart")}
+                      sx={{
+                        flexShrink: 0,
+                        p: 0.5,
+                        borderRadius: "var(--radius-control)",
+                        color: "var(--semantic-danger)",
+                        "&:hover:not(:disabled)": {
+                          backgroundColor:
+                            "color-mix(in srgb, var(--semantic-danger) 12%, transparent)",
+                        },
+                        "&:disabled": { opacity: 0.55 },
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 36,
+                          height: 36,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Os3dIcon src={OS_ICON_SHELL.power} />
+                      </Box>
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
             </Stack>
           </Box>
 
@@ -412,7 +478,7 @@ export function Taskbar() {
                   backgroundColor: deviceConnected
                     ? "var(--semantic-success)"
                     : connectionChecking
-                      ? "var(--muted)"
+                      ? "var(--text-tertiary)"
                       : "var(--semantic-danger)",
                   boxShadow:
                     "inset 0 1px 0 color-mix(in srgb, var(--foreground) 25%, transparent)",
@@ -439,7 +505,7 @@ export function Taskbar() {
                     color: deviceConnected
                       ? "color-mix(in srgb, var(--semantic-success) 92%, var(--foreground))"
                       : connectionChecking
-                        ? "var(--muted)"
+                        ? "var(--text-tertiary)"
                         : "color-mix(in srgb, var(--semantic-danger) 90%, var(--foreground))",
                     lineHeight: 1.25,
                   }}
@@ -621,6 +687,30 @@ export function Taskbar() {
           </Box>
         </Box>
       </Popover>
+
+      <ConfirmDialog
+        open={restartConfirmOpen}
+        onClose={() => setRestartConfirmOpen(false)}
+        title={t("device.restartConfirmTitle")}
+        description={t("device.restartConfirmDesc")}
+        icon={
+          <Box
+            sx={{
+              width: 44,
+              height: 44,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Os3dIcon src={OS_ICON_SHELL.power} />
+          </Box>
+        }
+        confirmLabel={t("device.restart")}
+        onConfirm={doRestart}
+        confirmDisabled={restarting}
+        confirmColor="primary"
+      />
 
       <Stack
         direction="row"
@@ -804,7 +894,7 @@ export function Taskbar() {
                 backgroundColor: deviceConnected
                   ? "var(--semantic-success)"
                   : connectionChecking
-                    ? "var(--muted)"
+                    ? "var(--text-tertiary)"
                     : "var(--semantic-danger)",
               }}
             />
@@ -815,7 +905,7 @@ export function Taskbar() {
                 display: { xs: "none", sm: "block" },
                 fontFamily: "var(--font-mono)",
                 fontSize: "var(--font-size-caption)",
-                color: "var(--muted)",
+                color: "var(--text-tertiary)",
               }}
             >
               {deviceConnected && baseUrl

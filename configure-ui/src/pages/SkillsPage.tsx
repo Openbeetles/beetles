@@ -18,7 +18,6 @@ import Typography from "@mui/material/Typography";
 import AddLink from "@mui/icons-material/AddLink";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
 import EditOutlined from "@mui/icons-material/EditOutlined";
-import ExtensionOutlined from "@mui/icons-material/ExtensionOutlined";
 import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
@@ -26,15 +25,21 @@ import {
   InlineAlert,
   SectionLoadingSkeleton,
 } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
+import { OS_ICON_NAV } from "../config/osIcons";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
 import { useAppPreferences } from "../hooks/useAppPreferences";
 import { useToast } from "../hooks/useToast";
 import {
   DIALOG_FOOTER_GUTTER_WIDE_SX,
   MAIN_CONTENT_INNER_SX,
-  PAGE_COLUMN_FILL_SX,
+  PAGE_STACK_OUTER_SX,
+  TEXT_BODY_TERTIARY_SX,
+  TEXT_COLOR,
+  TEXT_SUBSECTION_TITLE_SX,
 } from "../theme/panelStyles";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { createAsyncState } from "../types/asyncState";
 import {
   endpointSupportedByInventory,
@@ -262,12 +267,12 @@ export function SkillsPage() {
   const listToShow = [...orderedSkills, ...missingFromOrder];
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={listState.error || null} onRetry={loadList} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<ExtensionOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_NAV["/skills"]} />}
         label={t("skills.sectionList")}
         description={t("skills.sectionListDesc")}
         accessory={
@@ -281,7 +286,7 @@ export function SkillsPage() {
             }}
             sx={{
               borderRadius: "var(--radius-control)",
-              fontSize: "var(--font-size-body-sm)",
+              ...TEXT_SUBSECTION_TITLE_SX,
             }}
           >
             {t("skills.importFromUrl")}
@@ -298,10 +303,7 @@ export function SkillsPage() {
                 slotProps={{
                   primary: {
                     variant: "body2",
-                    sx: {
-                      color: "var(--muted)",
-                      fontSize: "var(--font-size-caption)",
-                    },
+                    sx: TEXT_BODY_TERTIARY_SX,
                   },
                 }}
               />
@@ -311,7 +313,11 @@ export function SkillsPage() {
           <List
             dense
             disablePadding
-            sx={{ display: "flex", flexDirection: "column", gap: 1 }}
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              gap: LAYOUT_TOKENS.spacingInlineTight,
+            }}
           >
             {listToShow.map((skill) => (
               <ListItem
@@ -319,14 +325,14 @@ export function SkillsPage() {
                 sx={{
                   ...SETTINGS_SECTION_LIST_ROW_SX,
                   display: "flex",
-                  gap: 1,
+                  gap: LAYOUT_TOKENS.spacingInlineTight,
                 }}
                 secondaryAction={
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                     <IconButton
                       size="small"
                       onClick={() => openEdit(skill.name)}
-                      sx={{ color: "var(--muted)" }}
+                      sx={{ color: TEXT_COLOR.tertiary }}
                       aria-label={t("common.edit")}
                     >
                       <EditOutlined fontSize="small" />
@@ -334,7 +340,7 @@ export function SkillsPage() {
                     <IconButton
                       size="small"
                       onClick={() => requestDelete(skill.name)}
-                      sx={{ color: "var(--muted)" }}
+                      sx={{ color: TEXT_COLOR.tertiary }}
                       aria-label={t("common.remove")}
                     >
                       <DeleteOutlined fontSize="small" />
@@ -359,7 +365,7 @@ export function SkillsPage() {
                   slotProps={{
                     primary: {
                       sx: {
-                        fontSize: "var(--font-size-body-sm)",
+                        ...TEXT_SUBSECTION_TITLE_SX,
                         fontFamily: "var(--font-mono)",
                       },
                     },
@@ -463,7 +469,7 @@ export function SkillsPage() {
                   sm: "var(--font-size-h1)",
                 },
                 fontWeight: 800,
-                color: "var(--foreground)",
+                color: "var(--text-primary)",
                 lineHeight: "var(--line-height-tight)",
                 letterSpacing: "var(--letter-spacing-tight)",
                 wordBreak: "break-all",
@@ -481,7 +487,7 @@ export function SkillsPage() {
                   sm: "var(--font-size-h1)",
                 },
                 fontWeight: 800,
-                color: "var(--foreground)",
+                color: "var(--text-primary)",
                 textAlign: "center",
                 letterSpacing: "var(--letter-spacing-tight)",
               }}
@@ -558,7 +564,7 @@ export function SkillsPage() {
             ...DIALOG_FOOTER_GUTTER_WIDE_SX,
             flexShrink: 0,
             py: 2,
-            gap: 1.5,
+            gap: LAYOUT_TOKENS.spacingTitleToContent,
             flexWrap: "wrap",
             justifyContent: "space-between",
             alignItems: "center",
@@ -576,7 +582,7 @@ export function SkillsPage() {
               color:
                 editContent.length > MAX_CONTENT
                   ? "var(--semantic-danger)"
-                  : "var(--muted)",
+                  : "var(--text-tertiary)",
               fontWeight: editContent.length > MAX_CONTENT ? 600 : 500,
               fontVariantNumeric: "tabular-nums",
               letterSpacing: "var(--letter-spacing-label)",
@@ -590,7 +596,7 @@ export function SkillsPage() {
           <Box
             sx={{
               display: "flex",
-              gap: 1,
+              gap: LAYOUT_TOKENS.spacingInlineTight,
               flexWrap: "wrap",
               ml: { xs: 0, sm: "auto" },
             }}
@@ -603,7 +609,7 @@ export function SkillsPage() {
                 borderRadius: "var(--radius-control)",
                 textTransform: "none",
                 fontWeight: 600,
-                color: "var(--muted)",
+                color: "var(--text-tertiary)",
                 "&:hover": {
                   bgcolor:
                     "color-mix(in srgb, var(--foreground) 6%, transparent)",
@@ -651,9 +657,7 @@ export function SkillsPage() {
           },
         }}
       >
-        <DialogTitle
-          sx={{ fontSize: "var(--font-size-body-sm)", fontWeight: 700 }}
-        >
+        <DialogTitle sx={{ ...TEXT_SUBSECTION_TITLE_SX, fontWeight: 700 }}>
           {t("skills.importFromUrl")}
         </DialogTitle>
         <DialogContent>

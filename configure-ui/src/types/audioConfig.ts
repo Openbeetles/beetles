@@ -253,7 +253,7 @@ function defaultRealtimeConfig(provider: AudioRealtimeProvider = DEFAULT_REALTIM
     api_key: '',
     model: defaults.model,
     voice: defaults.voice,
-    instructions: '你是甲壳虫的语音助手。请直接口语化回应，简洁自然，默认使用中文。',
+    instructions: '你是 Beetle OS 的语音助手。请直接口语化回应，简洁自然，默认使用中文。',
   }
 }
 

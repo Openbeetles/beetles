@@ -15,8 +15,9 @@ import type { SelectChangeEvent } from "@mui/material/Select";
 import AddRounded from "@mui/icons-material/AddRounded";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
 import SaveRounded from "@mui/icons-material/SaveRounded";
-import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { Os3dIcon } from "../components/Os3dIcon";
+import { OS_ICON_NAV } from "../config/osIcons";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
@@ -25,7 +26,13 @@ import {
   SaveFeedback,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import {
+  PAGE_COLUMN_FILL_SX,
+  PAGE_STACK_OUTER_SX,
+  TEXT_BODY_TERTIARY_SX,
+  TEXT_COLOR,
+} from "../theme/panelStyles";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
@@ -273,7 +280,7 @@ export function AIConfigPage() {
         <SettingsSection
           pinHeader
           sx={{ flex: 1, minHeight: 0 }}
-          icon={<SmartToyOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+          icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} />}
           label={t("config.sectionLlm")}
         >
           <FormLoadingSkeleton />
@@ -285,7 +292,7 @@ export function AIConfigPage() {
   const saveDisabled = !config || saveFeedback.status === "saving";
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={error} onRetry={loadConfig} />
       <ConfirmDialog
         open={removeSourceIndex != null}
@@ -300,7 +307,7 @@ export function AIConfigPage() {
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<SmartToyOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} />}
         label={t("config.sectionLlm")}
         description={t("config.sectionLlmDesc")}
         accessory={
@@ -329,7 +336,7 @@ export function AIConfigPage() {
         }
       >
         {!config && !loading && (
-          <Typography variant="body2" sx={{ pb: 2, color: "var(--muted)" }}>
+          <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, pb: 2 }}>
             {t("config.hintSaveNeedDevice")}
           </Typography>
         )}
@@ -350,7 +357,10 @@ export function AIConfigPage() {
             label={t("config.llmStream")}
             sx={{ mb: 1 }}
           />
-          <Typography variant="caption" sx={{ ml: 7, mt: -1, mb: 2, color: "var(--muted)" }}>
+          <Typography
+            variant="caption"
+            sx={{ ml: 7, mt: -1, mb: 2, ...TEXT_BODY_TERTIARY_SX }}
+          >
             {t("config.llmStreamHelp")}
           </Typography>
           {sources.map((row, i) => (
@@ -382,7 +392,7 @@ export function AIConfigPage() {
                     alignItems: "center",
                     justifyContent: "center",
                     p: 0.5,
-                    color: "var(--muted)",
+                    color: TEXT_COLOR.tertiary,
                     cursor: sources.length <= 1 ? "default" : "pointer",
                     opacity: sources.length <= 1 ? 0.5 : 1,
                     borderRadius: "var(--radius-control)",
@@ -472,7 +482,13 @@ export function AIConfigPage() {
             title={t("config.llmRouterWorkerTitle")}
             defaultOpen={true}
           >
-            <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Box
+              sx={{
+                display: "flex",
+                gap: LAYOUT_TOKENS.spacingSectionStack,
+                flexWrap: "wrap",
+              }}
+            >
               <TextField
                 select
                 label={t("config.llmRouterIndex")}

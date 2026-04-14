@@ -5,9 +5,10 @@ import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
-import HandymanOutlined from "@mui/icons-material/HandymanOutlined";
 import { InlineAlert, SectionLoadingSkeleton } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
+import { OS_ICON_NAV } from "../config/osIcons";
 import { ToolGlyph } from "./toolIcons";
 import type { ToolInfo } from "../api/endpoints/tools";
 import { useDeviceApi } from "../hooks/useDeviceApi";
@@ -20,7 +21,11 @@ import {
   SETTINGS_SECTION_LIST_EMPTY_SX,
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import {
+  PAGE_STACK_OUTER_SX,
+  TEXT_BODY_TERTIARY_SX,
+} from "../theme/panelStyles";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 
 export function ToolsPage() {
   const { t } = useTranslation();
@@ -61,12 +66,12 @@ export function ToolsPage() {
   }, [ready, load]);
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={state.error || null} onRetry={load} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<HandymanOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_NAV["/tools"]} />}
         label={t("tools.sectionMain")}
         description={t("tools.sectionMainDesc")}
       >
@@ -80,10 +85,7 @@ export function ToolsPage() {
                 slotProps={{
                   primary: {
                     variant: "body2",
-                    sx: {
-                      color: "var(--muted)",
-                      fontSize: "var(--font-size-caption)",
-                    },
+                    sx: TEXT_BODY_TERTIARY_SX,
                   },
                 }}
               />
@@ -95,7 +97,7 @@ export function ToolsPage() {
             disablePadding
             sx={{
               display: "grid",
-              gap: 1,
+              gap: LAYOUT_TOKENS.spacingInlineTight,
               gridTemplateColumns: {
                 xs: "minmax(0, 1fr)",
                 sm: "repeat(2, minmax(0, 1fr))",
@@ -113,14 +115,9 @@ export function ToolsPage() {
                   sx={{
                     minWidth: 40,
                     alignSelf: "center",
-                    color:
-                      "color-mix(in srgb, var(--primary) 55%, var(--muted))",
                   }}
                 >
-                  <ToolGlyph
-                    name={tool.name}
-                    sx={{ fontSize: "var(--icon-size-sm)" }}
-                  />
+                  <ToolGlyph name={tool.name} />
                 </ListItemIcon>
                 <ListItemText
                   primary={t(tool.i18n_key, { defaultValue: tool.name })}
@@ -130,14 +127,14 @@ export function ToolsPage() {
                       sx: {
                         fontSize: "var(--font-size-body-sm)",
                         fontWeight: 600,
-                        color: "var(--foreground)",
+                        color: "var(--text-primary)",
                       },
                     },
                     secondary: {
                       sx: {
                         fontFamily: "var(--font-mono)",
                         fontSize: "var(--font-size-caption)",
-                        color: "var(--muted)",
+                        color: "var(--text-tertiary)",
                         mt: 0.25,
                         wordBreak: "break-word",
                       },

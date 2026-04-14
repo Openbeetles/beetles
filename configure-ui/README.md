@@ -34,7 +34,7 @@ All write operations require the correct pairing code; the UI sends it for you.
 You must have both of the following:
 
 1. **A device with Beetle firmware flashed.**  
-   The config page only talks to a device running the Beetle (甲壳虫) firmware. If you have not flashed the firmware yet, build and flash it first (see the **parent repo’s README or docs** for build and flash instructions). This UI does not replace the need for a flashed device.
+   The config page only talks to a device running **Beetle OS** firmware. If you have not flashed the firmware yet, build and flash it first (see the **parent repo’s README or docs** for build and flash instructions). This UI does not replace the need for a flashed device.
 
 2. **The device powered on and reachable.**
    - **First use / not yet on your WiFi:** The device will open a **WiFi hotspot** with SSID **Beetle** (no password). Your phone or PC must **connect to this hotspot**; then open **http://192.168.4.1** (usually this address, in some cases may be a different address like 172.16.42.1).

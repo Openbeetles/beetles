@@ -6,7 +6,6 @@ import Slider from "@mui/material/Slider";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import MenuItem from "@mui/material/MenuItem";
-import SettingsEthernetOutlined from "@mui/icons-material/SettingsEthernetOutlined";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import WifiFind from "@mui/icons-material/WifiFind";
 import {
@@ -15,8 +14,15 @@ import {
   InlineAlert,
   SaveFeedback,
 } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import { OS_ICON_NAV } from "../config/osIcons";
+import {
+  PAGE_COLUMN_FILL_SX,
+  PAGE_STACK_OUTER_SX,
+  TEXT_BODY_TERTIARY_SX,
+} from "../theme/panelStyles";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useDeviceApi } from "../hooks/useDeviceApi";
@@ -120,11 +126,7 @@ export function SystemConfigPage() {
         <SettingsSection
           pinHeader
           sx={{ flex: 1, minHeight: 0 }}
-          icon={
-            <SettingsEthernetOutlined
-              sx={{ fontSize: "var(--icon-size-md)" }}
-            />
-          }
+          icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} />}
           label={t("config.sectionSystem")}
         >
           <FormLoadingSkeleton />
@@ -146,14 +148,12 @@ export function SystemConfigPage() {
       : "";
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={error} onRetry={loadConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={
-          <SettingsEthernetOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
-        }
+        icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} />}
         label={t("config.sectionSystem")}
         description={t("config.sectionSystemDesc")}
         accessory={
@@ -182,13 +182,20 @@ export function SystemConfigPage() {
         }
       >
         {!form ? (
-          <Typography variant="body2" sx={{ py: 2, color: "var(--muted)" }}>
+          <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, py: 2 }}>
             {t("config.hintSaveNeedDevice")}
           </Typography>
         ) : (
           <>
         <FormSectionSub title={t("config.wifi")}>
-          <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <Box
+            sx={{
+              display: "flex",
+              gap: LAYOUT_TOKENS.spacingInlineTight,
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+            }}
+          >
             <Button
               variant="outlined"
               size="small"
@@ -306,7 +313,7 @@ export function SystemConfigPage() {
         </FormSectionSub>
 
         <FormSectionSub title={t("config.session")}>
-          <Typography variant="body2" sx={{ mb: 1, color: "var(--muted)" }}>
+          <Typography variant="body2" sx={{ mb: 1, ...TEXT_BODY_TERTIARY_SX }}>
             {t("config.sessionMaxMessages")}: {form.session_max_messages}
           </Typography>
           <Slider
@@ -320,13 +327,7 @@ export function SystemConfigPage() {
                 Array.isArray(value) ? value[0] : value,
               )
             }
-            sx={{
-              maxWidth: 320,
-              mt: 0.5,
-              "& .MuiSlider-thumb": { borderRadius: "var(--radius-control)" },
-              "& .MuiSlider-track": { borderRadius: 1 },
-              "& .MuiSlider-rail": { borderRadius: 1 },
-            }}
+            sx={{ maxWidth: 320, mt: 0.5 }}
           />
           {(sessionError || t("config.sessionMaxMessagesHelp")) && (
             <Typography
@@ -334,7 +335,9 @@ export function SystemConfigPage() {
               sx={{
                 display: "block",
                 mt: 0.5,
-                color: sessionError ? "var(--semantic-danger)" : "var(--muted)",
+                color: sessionError
+                  ? "var(--semantic-danger)"
+                  : "var(--text-tertiary)",
               }}
             >
               {sessionError || t("config.sessionMaxMessagesHelp")}

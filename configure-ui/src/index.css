@@ -1,3 +1,8 @@
+/*
+ * 字号 / 行高 / 垂直节奏：`src/config/themeTokens.ts` → `LAYOUT_TOKENS`（单源）。
+ * 文字色阶：`createAppTheme` 注入 `--text-primary` / `--secondary` / `--tertiary`（映射 foreground 系）。
+ * 页面级纵向 gap：`panelStyles.PAGE_STACK_OUTER_SX`（= `spacingPageStack`）。
+ */
 /* 系统 UI：无衬线栈与壳层一致；`--font-brand` 仅用于少数营销/设备 Hero 标题 */
 :root {
   /* 与 MUI typography.fontSize 对齐，保证 rem 与壳层 token 一致 */
@@ -62,7 +67,7 @@ code, pre, .selectable-text {
   user-select: auto;
 }
 
-/* BeetleIcon（与 beetle_site CyberBeetleMark 一致的翅/核心动效，前缀避免冲突） */
+/* BeetleIcon / Beetle OS 徽标（与 beetle_site CyberBeetleMark 一致的翅/核心动效，前缀避免冲突） */
 @keyframes beetle-wing-flap-left {
   0% {
     transform: rotate(0deg) skewY(0deg);
@@ -89,5 +94,33 @@ code, pre, .selectable-text {
   100% {
     filter: drop-shadow(0 0 12px var(--primary));
     opacity: 1;
+  }
+}
+
+/* 主工作区：路由切换时轻量入场（opacity + translate，合成层友好） */
+@keyframes shell-page-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.shell-page-enter {
+  animation: shell-page-enter 220ms cubic-bezier(0.2, 0.82, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-page-enter {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  :root {
+    scroll-behavior: auto;
   }
 }

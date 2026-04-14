@@ -1,35 +1,11 @@
 import type { ReactElement } from "react";
-import Box from "@mui/material/Box";
-
-const OS_ICONS: Record<string, string> = {
-  "/device": "/icons/home_3d.png",
-  "/ai-config": "/icons/bot_3d.png",
-  "/channels-config": "/icons/chat_3d.png",
-  "/soul-user": "/icons/theme_3d.png",
-  "/skills": "/icons/puzzle_3d.png",
-  "/tools": "/icons/tools_3d.png",
-  "/device-config": "/icons/devices_3d.png",
-  "/system-logs": "/icons/history_3d.png",
-  "/system-config": "/icons/settings_3d.png",
-};
+import { Os3dIcon } from "../components/Os3dIcon";
+import { OS_ICON_NAV } from "./osIcons";
 
 export const OsIcon = ({ path }: { path: string }) => {
-  return (
-    <Box
-      component="img"
-      src={OS_ICONS[path]}
-      alt=""
-      draggable="false"
-      sx={{
-        width: "100%",
-        height: "100%",
-        objectFit: "contain",
-        // 给真实拟物图片增加一点柔和的投影，让它更有立体感并仿佛浮在底座上
-        filter: "drop-shadow(0 4px 6px rgba(0, 0, 0, 0.15)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1))",
-        transition: "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)",
-      }}
-    />
-  );
+  const src = OS_ICON_NAV[path];
+  if (!src) return null;
+  return <Os3dIcon src={src} />;
 };
 
 /** 主导航项（任务栏 / 开始菜单共用） / Primary nav (taskbar + Start menu) */

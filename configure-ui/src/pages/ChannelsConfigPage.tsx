@@ -5,7 +5,6 @@ import Button from "@mui/material/Button";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
-import NotificationsOutlined from "@mui/icons-material/NotificationsOutlined";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormLoadingSkeleton,
@@ -14,8 +13,14 @@ import {
   SaveFeedback,
   SettingsRow,
 } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import { OS_ICON_NAV } from "../config/osIcons";
+import {
+  PAGE_COLUMN_FILL_SX,
+  PAGE_STACK_OUTER_SX,
+  TEXT_BODY_TERTIARY_SX,
+} from "../theme/panelStyles";
 import Typography from "@mui/material/Typography";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
@@ -98,9 +103,7 @@ export function ChannelsConfigPage() {
         <SettingsSection
           pinHeader
           sx={{ flex: 1, minHeight: 0 }}
-          icon={
-            <NotificationsOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
-          }
+          icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} />}
           label={t("config.sectionChannels")}
         >
           <FormLoadingSkeleton />
@@ -112,14 +115,12 @@ export function ChannelsConfigPage() {
   const saveDisabled = saveFeedback.status === "saving" || !form;
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={error} onRetry={loadConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={
-          <NotificationsOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
-        }
+        icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} />}
         label={t("config.sectionChannels")}
         description={t("config.sectionChannelsDesc")}
         accessory={
@@ -148,7 +149,7 @@ export function ChannelsConfigPage() {
         }
       >
         {!form ? (
-          <Typography variant="body2" sx={{ py: 2, color: "var(--muted)" }}>
+          <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, py: 2 }}>
             {t("config.hintSaveNeedDevice")}
           </Typography>
         ) : (

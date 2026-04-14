@@ -1,21 +1,17 @@
 export const enUS = {
   translation: {
     app: {
-      name: 'beetle',
-      tagline: 'Config',
+      name: 'Beetle OS',
     },
     shell: {
-      breadcrumbRoot: 'Beetle',
-      statusConnected: 'Connected',
-      statusDisconnected: 'Disconnected',
-      statusChecking: 'Checking…',
+      breadcrumbRoot: 'Beetle OS',
     },
     nav: {
       brandHome: 'Back to home',
       /** Beetle mark opens the shell Start menu */
       startMenu: 'Start menu',
       /** Bottom taskbar (desktop metaphor) */
-      taskbar: 'Beetle shell taskbar',
+      taskbar: 'Beetle OS shell taskbar',
       device: 'Device',
       deviceConfig: 'Device config',
       aiConfig: 'AI config',
@@ -112,6 +108,10 @@ export const enUS = {
       systemStatusStrategyBudgetSystemPrompt: 'System prompt budget',
       systemStatusStrategyBudgetResponseBody: 'Response cap',
       systemStatusStrategyBudgetReconnect: 'Reconnect wait',
+      systemStatusStrategyBudgetAbbrMessages: 'Context',
+      systemStatusStrategyBudgetAbbrSystemPrompt: 'Sys prompt',
+      systemStatusStrategyBudgetAbbrResponseBody: 'Response',
+      systemStatusStrategyBudgetAbbrReconnect: 'Backoff',
       systemStatusHeapInternal: 'Internal heap free',
       systemStatusHeapSpiram: 'PSRAM free',
       systemStatusHeapLargest: 'Largest internal block',
@@ -478,6 +478,9 @@ export const enUS = {
       errorLoadFailed: 'Failed to load config. Check device URL and network, then retry.',
       errorNetwork: 'Network error. Check connection and retry.',
       deviceDisconnectedCache: 'Device disconnected. Showing cached data (read-only).',
+      deviceDisconnectedCacheTitle: 'Device disconnected',
+      deviceDisconnectedCacheSubtitle:
+        'Showing cached configuration (read-only). Retry, edit the connection, or clear local cache.',
       clearCache: 'Clear cache',
       editDeviceConnection: 'Edit device connection',
       sectionSystem: 'System',
@@ -727,7 +730,7 @@ export const enUS = {
       deleteOk: 'Skill deleted',
       importOk: 'Skill imported',
       unsupportedEndpoint:
-        'The Beetle runtime currently running on this device does not expose the skills API. Check the device version or upgrade the firmware.',
+        'Beetle OS on this device does not expose the skills API. Check the device version or upgrade the firmware.',
       discardEditTitle: 'Discard changes?',
       discardEditDesc: 'You have unsaved changes. Close without saving?',
       discardImportTitle: 'Discard import?',
@@ -740,7 +743,7 @@ export const enUS = {
       sectionMainDesc: 'Tools available to the agent on this device.',
       emptyList: 'No tool entries.',
       unsupportedEndpoint:
-        'The Beetle runtime currently running on this device does not expose the tools API. Check the device version or upgrade the firmware.',
+        'Beetle OS on this device does not expose the tools API. Check the device version or upgrade the firmware.',
       get_time: 'Get time',
       task: 'Tasks',
       calendar: 'Calendar',

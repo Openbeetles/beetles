@@ -1,5 +1,6 @@
 /**
- * SettingsSection 内多行列表：浅底无边框（Tools / Skills 等共用）。
+ * SettingsSection 内静态多行列表：浅底无边框（Tools / Skills 等共用）。
+ * 可点击侧栏/子导航行由 `appTheme` 的 `MuiListItemButton` 统一（如 ConfigSubNavLayout）。
  */
 export const SETTINGS_SECTION_LIST_ROW_SX = {
   py: 1.5,

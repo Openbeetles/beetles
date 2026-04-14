@@ -166,6 +166,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--radius-card': `${LAYOUT_TOKENS.radiusCard}px`,
             '--radius-chip': `${LAYOUT_TOKENS.radiusChip}px`,
             '--foreground-soft': tokens.foregroundSoft,
+            /**
+             * 文字色阶（与 `foreground` / `foreground-soft` / `muted` 对齐，命名便于组件统一引用）。
+             * Text hierarchy aliases for consistent Typography `color`.
+             */
+            '--text-primary': tokens.foreground,
+            '--text-secondary': tokens.foregroundSoft,
+            '--text-tertiary': tokens.muted,
             '--border-subtle': tokens.borderSubtle,
             '--ease-emphasized': LAYOUT_TOKENS.easeEmphasized,
             '--ease-out-smooth': LAYOUT_TOKENS.easeOutSmooth,
@@ -216,18 +223,12 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--shadow-card-hover': tokens.shadowCardHover,
             /** 顶栏：不外投阴影，层次靠边框 + 磨砂哑光底（无背景渐变） */
             '--shadow-shell-titlebar': 'none',
-            /** 侧栏：向右投一点深度，与主「桌面」区分 */
-            '--shadow-shell-rail':
-              mode === 'light'
-                ? '4px 0 28px color-mix(in srgb, var(--foreground) 5%, transparent)'
-                : '6px 0 36px rgba(0,0,0,0.42)',
+            /** 侧栏：扁平，与主区靠右边框分隔（见 Layout） */
+            '--shadow-shell-rail': 'none',
             /** 主内容区顶缘：不外投/内凹阴影，与顶栏仅靠边框分隔 */
             '--shell-main-inset-top': 'none',
-            /** 浮动面板（设置抽屉等）外轮廓 */
-            '--shadow-shell-floating':
-              mode === 'light'
-                ? '-12px 0 40px color-mix(in srgb, var(--foreground) 6%, transparent)'
-                : '-16px 0 48px rgba(0,0,0,0.5)',
+            /** 浮动面板（设置抽屉等）：无投影，靠左边框与主区分隔 */
+            '--shadow-shell-floating': 'none',
             /** 任务栏：不外投阴影，与顶栏一致 */
             '--shadow-shell-taskbar': 'none',
             /** 开始菜单弹出层：扁平，不外投阴影（与壳层一致） */
@@ -383,8 +384,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R_CARD,
-            border: 'none',
-            boxShadow: 'var(--shadow-card)',
+            border: '1px solid var(--form-outline-rest)',
+            boxShadow: 'none',
             backgroundColor: 'var(--card)',
           },
         },
@@ -478,6 +479,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
               color: 'var(--primary)',
             },
             '&:active': { transform: 'scale(0.96)' },
+            '&:focus-visible': {
+              outline: 'var(--focus-ring-width) solid var(--primary)',
+              outlineOffset: 'var(--focus-ring-offset)',
+            },
+            '@media (prefers-reduced-motion: reduce)': {
+              '&:active': { transform: 'none' },
+            },
           },
         },
       },
@@ -485,6 +493,157 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderColor: 'color-mix(in srgb, var(--border) 20%, transparent)',
+          },
+        },
+      },
+      /** 与 macOS / Windows 设置页接近：无 ripple、轨道柔和、选中用主色 */
+      MuiSwitch: {
+        defaultProps: { disableRipple: true },
+        styleOverrides: {
+          switchBase: {
+            color: 'var(--card)',
+            '& .MuiSwitch-thumb': {
+              boxShadow:
+                '0 1px 2px color-mix(in srgb, var(--foreground) 28%, transparent)',
+            },
+            '&.Mui-checked': {
+              color: 'var(--primary)',
+              '& + .MuiSwitch-track': {
+                backgroundColor: 'color-mix(in srgb, var(--primary) 44%, transparent)',
+                opacity: 1,
+              },
+            },
+          },
+          track: {
+            opacity: 1,
+            borderRadius: 999,
+            backgroundColor: 'color-mix(in srgb, var(--foreground) 11%, transparent)',
+          },
+        },
+      },
+      MuiCheckbox: {
+        defaultProps: { disableRipple: true, color: 'primary' },
+        styleOverrides: {
+          root: {
+            color: 'var(--muted)',
+            '&.Mui-checked, &.MuiCheckbox-indeterminate': {
+              color: 'var(--primary)',
+            },
+          },
+        },
+      },
+      MuiRadio: {
+        defaultProps: { disableRipple: true, color: 'primary' },
+        styleOverrides: {
+          root: {
+            color: 'var(--muted)',
+            '&.Mui-checked': { color: 'var(--primary)' },
+          },
+        },
+      },
+      /** Select / 右键菜单等：与卡片同一套描边，无 Material 浮影 */
+      MuiMenu: {
+        styleOverrides: {
+          paper: {
+            marginTop: 1,
+            borderRadius: R_CARD,
+            border: '1px solid var(--form-outline-rest)',
+            boxShadow: 'none',
+            backgroundColor: 'var(--card)',
+            backgroundImage: 'none',
+            paddingTop: 8,
+            paddingBottom: 8,
+          },
+        },
+      },
+      MuiPopover: {
+        styleOverrides: {
+          paper: {
+            borderRadius: R_CARD,
+            border: '1px solid var(--form-outline-rest)',
+            boxShadow: 'none',
+            backgroundColor: 'var(--card)',
+            backgroundImage: 'none',
+          },
+        },
+      },
+      MuiDialog: {
+        styleOverrides: {
+          paper: {
+            borderRadius: R_CARD,
+            border: '1px solid var(--form-outline-rest)',
+            boxShadow: 'none',
+            backgroundColor: 'var(--card)',
+            backgroundImage: 'none',
+          },
+        },
+      },
+      /**
+       * 配置侧栏、设置式子导航等与系统设置列表一致：无 ripple、选中用主色浅底。
+       * Settings-style nav rows (ConfigSubNavLayout); keep layout-only sx in the caller.
+       */
+      MuiListItemButton: {
+        defaultProps: { disableRipple: true },
+        styleOverrides: {
+          root: {
+            borderRadius: R,
+            color: 'var(--foreground)',
+            transition:
+              'background-color var(--transition-duration) ease, color var(--transition-duration) ease',
+            '&:hover': {
+              backgroundColor: 'color-mix(in srgb, var(--foreground) 4%, transparent)',
+            },
+            '&:focus-visible': {
+              outline: 'var(--focus-ring-width) solid var(--primary)',
+              outlineOffset: 2,
+            },
+            '&.Mui-selected': {
+              backgroundColor: 'color-mix(in srgb, var(--primary) 10%, transparent)',
+              color: 'var(--primary)',
+              '&:hover': {
+                backgroundColor: 'color-mix(in srgb, var(--primary) 14%, transparent)',
+              },
+            },
+          },
+        },
+      },
+      /** Toast（Snackbar）语义色仍由 ToastProvider 注入，结构与字体由主题统一 */
+      MuiSnackbarContent: {
+        styleOverrides: {
+          root: {
+            borderRadius: R,
+            fontWeight: 600,
+            fontSize: 'var(--font-size-body-sm)',
+            boxShadow: 'none',
+            border: '1px solid',
+            borderColor: 'transparent',
+          },
+        },
+      },
+      MuiSlider: {
+        styleOverrides: {
+          root: {
+            color: 'var(--primary)',
+            height: 4,
+          },
+          rail: {
+            opacity: 1,
+            borderRadius: 1,
+            backgroundColor: 'color-mix(in srgb, var(--foreground) 9%, transparent)',
+          },
+          track: {
+            border: 'none',
+            borderRadius: 1,
+          },
+          thumb: {
+            width: 18,
+            height: 18,
+            borderRadius: R,
+            backgroundColor: 'var(--card)',
+            border: '2px solid var(--primary)',
+            '&:hover, &.Mui-focusVisible': {
+              boxShadow: '0 0 0 6px color-mix(in srgb, var(--primary) 22%, transparent)',
+            },
           },
         },
       },

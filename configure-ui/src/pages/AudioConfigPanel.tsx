@@ -15,7 +15,6 @@ import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import SaveRounded from '@mui/icons-material/SaveRounded'
-import HearingRounded from '@mui/icons-material/HearingRounded'
 import type { SelectChangeEvent } from '@mui/material/Select'
 import {
   FormFieldStack,
@@ -25,8 +24,10 @@ import {
   InlineAlert,
   SaveFeedback,
 } from '../components/form'
+import { Os3dIcon } from '../components/Os3dIcon'
 import { SettingsSection } from '../components/SettingsSection'
-import { PAGE_COLUMN_FILL_SX } from '../theme/panelStyles'
+import { OS_ICON_DEVICE_CONFIG } from '../config/osIcons'
+import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from '../theme/panelStyles'
 import { useConfig } from '../hooks/useConfig'
 import { useDeviceApi } from '../hooks/useDeviceApi'
 import { useRevealedPasswordFields } from '../hooks/useRevealedPassword'
@@ -397,7 +398,7 @@ export function AudioConfigPanel() {
         <SettingsSection
           pinHeader
           sx={{ flex: 1, minHeight: 0 }}
-          icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
+          icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.audio} />}
           label={t('audioConfig.sectionMain')}
         >
           <FormLoadingSkeleton />
@@ -452,12 +453,12 @@ export function AudioConfigPanel() {
   }
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={audioError} onRetry={loadAudioConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
+        icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.audio} />}
         label={t('audioConfig.sectionMain')}
         description={t('audioConfig.sectionMainDesc')}
         accessory={
@@ -501,7 +502,7 @@ export function AudioConfigPanel() {
               label={t('audioConfig.enabled')}
             />
             {!audioOn ? (
-              <Typography variant="body2" sx={{ mt: 1, color: "var(--muted)" }}>
+              <Typography variant="body2" sx={{ mt: 1, color: "var(--text-tertiary)" }}>
                 {t('audioConfig.hintEnableAudioFirst')}
               </Typography>
             ) : null}
@@ -975,7 +976,7 @@ export function AudioConfigPanel() {
                       ) : null}
                     </Box>
                     {speakerUsesUsbDevice && selectedUsbAudioDevice && usbSpeakerSupportsInput(selectedUsbAudioDevice) ? (
-                      <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+                      <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                         {t('audioConfig.speakerUsbComboHint')}
                       </Typography>
                     ) : null}
@@ -988,7 +989,7 @@ export function AudioConfigPanel() {
                 {activeAudioTab === 1 && (
                   <>
                     <FormSectionSub title={t('audioConfig.sectionSpeechRouting')}>
-                      <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+                      <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                         {speechRoutingDescription}
                       </Typography>
                     </FormSectionSub>
@@ -997,7 +998,7 @@ export function AudioConfigPanel() {
                       <FormSectionSubCollapsible title={t('audioConfig.sectionSpeechService')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                           {realtimeWakeEnabled ? (
-                            <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+                            <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                               {t('audioConfig.speechFallbackReservedHelp')}
                             </Typography>
                           ) : null}
@@ -1270,11 +1271,11 @@ export function AudioConfigPanel() {
                       <FormSectionSubCollapsible title={t('audioConfig.sectionRealtime')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                           {realtimeReady ? (
-                            <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+                            <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                               {t('audioConfig.realtimeConfiguredHelp')}
                             </Typography>
                           ) : null}
-                          <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+                          <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                             {`${t('audioConfig.realtimeSampleRateHint')} ${realtimeSampleRate} Hz`}
                           </Typography>
                           <Box sx={fieldGridSx}>
@@ -1468,7 +1469,7 @@ export function AudioConfigPanel() {
                               label={t('audioConfig.ambientDetectEmotions')}
                             />
                             <Box sx={{ gridColumn: '1 / -1' }}>
-                              <Typography variant="caption" display="block" sx={{ color: "var(--muted)" }}>
+                              <Typography variant="caption" display="block" sx={{ color: "var(--text-tertiary)" }}>
                                 {t('audioConfig.soundEventsPick')}
                               </Typography>
                               <FormGroup row sx={{ flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>

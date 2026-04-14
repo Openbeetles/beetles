@@ -63,7 +63,7 @@ export class ErrorBoundaryClass extends Component<
           </Typography>
           <Typography
             variant="body2"
-            sx={{ color: 'var(--muted)', textAlign: 'center', maxWidth: 360 }}
+            sx={{ color: 'var(--text-tertiary)', textAlign: 'center', maxWidth: 360 }}
           >
             {t('common.errorBoundaryDesc')}
           </Typography>

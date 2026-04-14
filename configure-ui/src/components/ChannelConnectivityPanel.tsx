@@ -69,7 +69,7 @@ function StatPill({
         component="span"
         sx={{
           fontSize: "var(--font-size-overline)",
-          color: "var(--muted)",
+          color: "var(--text-tertiary)",
           fontWeight: 400,
           letterSpacing: "var(--letter-spacing-label)",
           lineHeight: 1,
@@ -111,7 +111,7 @@ function ChannelStatusPill({
     ? ok
       ? "var(--semantic-success)"
       : "var(--semantic-danger)"
-    : "var(--muted)";
+    : "var(--text-tertiary)";
 
   return (
     <Box
@@ -192,7 +192,7 @@ function ChannelRow({
           variant="body2"
           component="span"
           sx={{
-            color: "var(--muted)",
+            color: "var(--text-tertiary)",
             opacity: 0.92,
             pt: { xs: 0, sm: "0.0625rem" },
             fontSize: "var(--font-size-caption)",
@@ -328,7 +328,7 @@ function LoadFailedState({
         <Typography
           sx={{
             fontSize: "var(--font-size-caption)",
-            color: "var(--muted)",
+            color: "var(--text-tertiary)",
             lineHeight: "var(--line-height-relaxed)",
             mb: 1.5,
           }}
@@ -520,7 +520,7 @@ export function ChannelConnectivityPanel({
             <Typography
               variant="caption"
               sx={{
-                color: "var(--muted)",
+                color: "var(--text-tertiary)",
                 display: "block",
                 lineHeight: "var(--line-height-relaxed)",
               }}

@@ -2,21 +2,24 @@ import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import type { ReactNode } from "react";
+import {
+  TEXT_BODY_TERTIARY_SX,
+  TEXT_FIELD_LABEL_SX,
+} from "../../theme/panelStyles";
 
 export interface SettingsRowProps {
-  /** 行左侧主标签 */
+  /** 主标签（控件上方） */
   label: ReactNode;
-  /** 可选说明（小号、muted） */
+  /** 可选说明（小号、muted，标签下方） */
   description?: ReactNode;
-  /** 右侧控件（输入、Switch 等） */
+  /** 控件（输入、Switch 等，全宽） */
   children: ReactNode;
   /** 为 true 时不画底部分割线（例如最后一行） */
   divider?: boolean;
 }
 
 /**
- * 系统设置式「左标签 + 右控件」行（窄屏纵向堆叠）。
- * Settings-style row: label stack left, control right; stacks on xs.
+ * 表单行：标签与说明在上、控件在下全宽（与 MUI TextField `label` 页内一致，避免宽屏左右分栏拉空）。
  */
 export function SettingsRow({
   label,
@@ -26,49 +29,28 @@ export function SettingsRow({
 }: SettingsRowProps) {
   return (
     <Stack
-      direction={{ xs: "column", sm: "row" }}
-      spacing={{ xs: 1, sm: 2 }}
-      alignItems={{ xs: "stretch", sm: "flex-start" }}
+      direction="column"
+      spacing={1}
+      alignItems="stretch"
       sx={{
         py: 2,
         borderBottom: divider ? "var(--divider-row)" : "none",
-        gap: { sm: 3 },
       }}
     >
-      <Box
-        sx={{
-          flex: { sm: "0 0 38%" },
-          minWidth: 0,
-          pt: { sm: 0.75 },
-        }}
-      >
-        <Typography
-          component="div"
-          sx={{
-            fontSize: "var(--font-size-body)",
-            fontWeight: 600,
-            color: "var(--foreground)",
-            lineHeight: "var(--line-height-snug)",
-          }}
-        >
+      <Box sx={{ minWidth: 0 }}>
+        <Typography component="div" sx={TEXT_FIELD_LABEL_SX}>
           {label}
         </Typography>
         {description ? (
           <Typography
             component="div"
-            sx={{
-              mt: 0.5,
-              fontSize: "var(--font-size-caption)",
-              color: "var(--muted)",
-              lineHeight: "var(--line-height-normal)",
-              maxWidth: "48ch",
-            }}
+            sx={{ mt: 0.5, ...TEXT_BODY_TERTIARY_SX }}
           >
             {description}
           </Typography>
         ) : null}
       </Box>
-      <Box sx={{ flex: 1, minWidth: 0 }}>{children}</Box>
+      <Box sx={{ minWidth: 0, width: "100%" }}>{children}</Box>
     </Stack>
   );
 }

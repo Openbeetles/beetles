@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
 import Typography from "@mui/material/Typography";
 import { useTranslation } from "react-i18next";
 import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
@@ -33,7 +35,19 @@ export interface ConfirmDialogProps {
   confirmColor?: "primary" | "error" | "warning";
 }
 
-const ICON_COLOR: Record<
+const ICON_TINT: Record<
+  NonNullable<ConfirmDialogProps["confirmColor"]>,
+  string
+> = {
+  primary:
+    "color-mix(in srgb, var(--primary) 14%, transparent)",
+  error:
+    "color-mix(in srgb, var(--semantic-danger) 16%, transparent)",
+  warning:
+    "color-mix(in srgb, var(--semantic-warning) 16%, transparent)",
+};
+
+const ICON_INK: Record<
   NonNullable<ConfirmDialogProps["confirmColor"]>,
   string
 > = {
@@ -42,8 +56,11 @@ const ICON_COLOR: Record<
   warning: "var(--semantic-warning)",
 };
 
+const TITLE_ID = "confirm-dialog-title";
+const DESC_ID = "confirm-dialog-description";
+
 /**
- * 通用操作确认弹窗：窄幅、左对齐、图标+标题一行，描述+按钮。
+ * 通用操作确认弹窗：与壳层卡片一致的描边/轻投影，内容区与操作区分栏。
  */
 export function ConfirmDialog({
   open,
@@ -87,6 +104,8 @@ export function ConfirmDialog({
     }
   };
 
+  const contentPadding = PANEL_SECTION_PADDING;
+
   return (
     <Dialog
       open={open}
@@ -94,17 +113,29 @@ export function ConfirmDialog({
       disableEscapeKeyDown={requireExplicitAction}
       maxWidth={wide ? "sm" : "xs"}
       fullWidth={wide}
+      aria-labelledby={TITLE_ID}
+      aria-describedby={DESC_ID}
       slotProps={{
-        backdrop: { sx: { backgroundColor: "var(--backdrop-overlay)" } },
+        backdrop: {
+          sx: {
+            backgroundColor: "var(--backdrop-overlay)",
+            backdropFilter: "blur(2px)",
+          },
+        },
         paper: {
           sx: {
             width: "100%",
             maxWidth: wide ? undefined : "var(--dialog-narrow-max-width)",
             borderRadius: "var(--radius-card)",
-            border: "none",
-            boxShadow: "none",
+            border: "1px solid var(--form-outline-rest)",
+            boxShadow:
+              "0 8px 32px color-mix(in srgb, var(--foreground) 10%, transparent)",
             backgroundColor: "var(--card)",
+            overflow: "hidden",
           },
+        },
+        transition: {
+          timeout: { enter: 200, exit: 160 },
         },
       }}
       sx={{
@@ -114,52 +145,74 @@ export function ConfirmDialog({
         },
       }}
     >
-      <Box sx={{ p: PANEL_SECTION_PADDING }}>
+      <DialogContent
+        sx={{
+          p: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         <Box
-          sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, mb: 2 }}
+          sx={{
+            px: contentPadding,
+            pt: contentPadding,
+            pb: icon ? 2 : contentPadding,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 2,
+          }}
         >
           {icon && (
             <Box
               sx={{
-                width: "var(--icon-container-lg)",
-                height: "var(--icon-container-lg)",
+                width: 48,
+                height: 48,
                 borderRadius: "var(--radius-chip)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
-                color: ICON_COLOR[confirmColor],
-                backgroundColor:
-                  "color-mix(in srgb, var(--foreground) 6%, transparent)",
+                color: ICON_INK[confirmColor],
+                backgroundColor: ICON_TINT[confirmColor],
+                "& > span": {
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  maxWidth: "100%",
+                  maxHeight: "100%",
+                },
+                "& > span > svg": {
+                  fontSize: "var(--icon-size-lg) !important",
+                },
               }}
             >
-              <Box
-                component="span"
-                sx={{
-                  display: "flex",
-                  "& > svg": { fontSize: "var(--icon-size-md)" },
-                }}
-              >
+              <Box component="span" sx={{ lineHeight: 0 }}>
                 {icon}
               </Box>
             </Box>
           )}
-          <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Box sx={{ minWidth: 0, flex: 1, pt: icon ? 0.125 : 0 }}>
             <Typography
+              id={TITLE_ID}
+              component="h2"
               sx={{
-                fontSize: "var(--font-size-body)",
-                fontWeight: 600,
-                color: "var(--foreground)",
+                fontFamily: "var(--font-sans)",
+                fontSize: "var(--font-size-body-lg)",
+                fontWeight: 700,
+                letterSpacing: "var(--letter-spacing-tight)",
                 lineHeight: "var(--line-height-snug)",
+                color: "var(--foreground)",
               }}
             >
               {title}
             </Typography>
             <Typography
+              id={DESC_ID}
+              component="p"
               sx={{
                 mt: 1.25,
                 fontSize: "var(--font-size-body-sm)",
-                color: "var(--muted)",
+                color: "var(--text-tertiary)",
                 lineHeight: wide
                   ? "var(--line-height-loose)"
                   : "var(--line-height-relaxed)",
@@ -170,39 +223,57 @@ export function ConfirmDialog({
             </Typography>
           </Box>
         </Box>
-        <Box sx={{ display: "flex", justifyContent: "center", gap: 1 }}>
-          <Button
-            variant="text"
-            size="small"
-            onClick={handleCancelClick}
-            disabled={confirmDisabled}
-            sx={{
-              borderRadius: "var(--radius-control)",
-              textTransform: "none",
-              fontWeight: 600,
-              color: "var(--muted)",
-            }}
-          >
-            {cancelLabel ?? t("common.cancel", { defaultValue: "Cancel" })}
-          </Button>
-          <Button
-            variant="contained"
-            size="small"
-            color={confirmColor}
-            onClick={handleConfirm}
-            disabled={confirmDisabled}
-            sx={{
-              borderRadius: "var(--radius-control)",
-              textTransform: "none",
-              fontWeight: 600,
-              boxShadow: "none",
-              "&:hover": { boxShadow: "none" },
-            }}
-          >
-            {confirmLabel ?? t("common.confirm")}
-          </Button>
-        </Box>
-      </Box>
+      </DialogContent>
+      <DialogActions
+        sx={{
+          px: contentPadding,
+          py: 1.75,
+          gap: 1,
+          justifyContent: "flex-end",
+          flexWrap: "wrap",
+          borderTop: "1px solid var(--border-subtle)",
+          backgroundColor:
+            "color-mix(in srgb, var(--foreground) 2.5%, transparent)",
+        }}
+      >
+        <Button
+          variant="outlined"
+          color="inherit"
+          size="medium"
+          onClick={handleCancelClick}
+          disabled={confirmDisabled}
+          sx={{
+            borderRadius: "var(--radius-control)",
+            textTransform: "none",
+            fontWeight: 600,
+            borderColor: "var(--border-subtle)",
+            color: "var(--foreground-soft)",
+            "&:hover": {
+              borderColor: "var(--border)",
+              backgroundColor:
+                "color-mix(in srgb, var(--foreground) 5%, transparent)",
+            },
+          }}
+        >
+          {cancelLabel ?? t("common.cancel", { defaultValue: "Cancel" })}
+        </Button>
+        <Button
+          variant="contained"
+          size="medium"
+          color={confirmColor}
+          onClick={handleConfirm}
+          disabled={confirmDisabled}
+          sx={{
+            borderRadius: "var(--radius-control)",
+            textTransform: "none",
+            fontWeight: 600,
+            boxShadow: "none",
+            "&:hover": { boxShadow: "none" },
+          }}
+        >
+          {confirmLabel ?? t("common.confirm")}
+        </Button>
+      </DialogActions>
     </Dialog>
   );
 }

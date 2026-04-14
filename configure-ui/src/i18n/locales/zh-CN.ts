@@ -1,21 +1,17 @@
 export const zhCN = {
   translation: {
     app: {
-      name: '甲壳虫',
-      tagline: '配置',
+      name: 'Beetle OS',
     },
     shell: {
-      breadcrumbRoot: '甲壳虫',
-      statusConnected: '已连接',
-      statusDisconnected: '未连接',
-      statusChecking: '检测中…',
+      breadcrumbRoot: 'Beetle OS',
     },
     nav: {
       brandHome: '返回首页',
-      /** 甲壳虫徽标按钮：桌面 Shell「开始」菜单 */
+      /** Beetle OS 徽标按钮：桌面 Shell「开始」菜单 */
       startMenu: '开始菜单',
       /** 底部任务栏（桌面隐喻） */
-      taskbar: '甲壳虫桌面任务栏',
+      taskbar: 'Beetle OS 桌面任务栏',
       device: '连接设备',
       deviceConfig: '设备配置',
       aiConfig: 'AI 配置',
@@ -112,6 +108,10 @@ export const zhCN = {
       systemStatusStrategyBudgetSystemPrompt: '系统提示预算',
       systemStatusStrategyBudgetResponseBody: '响应体上限',
       systemStatusStrategyBudgetReconnect: '重连等待',
+      systemStatusStrategyBudgetAbbrMessages: '上下文',
+      systemStatusStrategyBudgetAbbrSystemPrompt: '系统提示',
+      systemStatusStrategyBudgetAbbrResponseBody: '响应体',
+      systemStatusStrategyBudgetAbbrReconnect: '重连',
       systemStatusHeapInternal: '内部 RAM 空闲',
       systemStatusHeapSpiram: 'PSRAM 空闲',
       systemStatusHeapLargest: '内部 RAM 最大连续块',
@@ -478,6 +478,9 @@ export const zhCN = {
       errorLoadFailed: '加载配置失败，请检查设备地址与网络后重试。',
       errorNetwork: '网络异常，请检查连接后重试。',
       deviceDisconnectedCache: '设备已断开，当前为缓存数据，仅供查看。',
+      deviceDisconnectedCacheTitle: '设备已断开',
+      deviceDisconnectedCacheSubtitle:
+        '当前为缓存数据，仅可查看。可重试连接、编辑设备信息，或清空本地缓存。',
       clearCache: '清空缓存',
       editDeviceConnection: '编辑设备连接',
       sectionSystem: '系统',
@@ -723,7 +726,7 @@ export const zhCN = {
       deleteConfirmDesc: '确定要删除技能「{{name}}」吗？删除后不可恢复。',
       deleteOk: '技能已删除',
       importOk: '技能导入成功',
-      unsupportedEndpoint: '当前设备运行中的 Beetle 未暴露技能管理接口，请确认设备版本或升级固件。',
+      unsupportedEndpoint: '当前设备上的 Beetle OS 未暴露技能管理接口，请确认设备版本或升级固件。',
       discardEditTitle: '放弃修改？',
       discardEditDesc: '当前有未保存的修改，关闭将丢失。确定放弃？',
       discardImportTitle: '放弃导入？',
@@ -734,7 +737,7 @@ export const zhCN = {
       sectionMain: '已注册工具',
       sectionMainDesc: '当前设备上可供 Agent 使用的工具。',
       emptyList: '暂无工具数据。',
-      unsupportedEndpoint: '当前设备运行中的 Beetle 未暴露工具列表接口，请确认设备版本或升级固件。',
+      unsupportedEndpoint: '当前设备上的 Beetle OS 未暴露工具列表接口，请确认设备版本或升级固件。',
       get_time: '获取时间',
       task: '任务',
       calendar: '日历',

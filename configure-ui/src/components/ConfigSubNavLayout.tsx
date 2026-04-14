@@ -5,8 +5,10 @@ import Box from "@mui/material/Box";
 import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemButton from "@mui/material/ListItemButton";
+import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
+import { Os3dIcon } from "./Os3dIcon";
 import {
   CONFIG_PANEL_SX,
   PANEL_SECTION_PADDING,
@@ -15,6 +17,8 @@ import {
 export type ConfigSubNavItem = {
   segment: string;
   label: string;
+  /** 可选：子分区 3D 图标路径（`/icons/…`） */
+  iconSrc?: string;
 };
 
 type ConfigSubNavLayoutProps = {
@@ -94,6 +98,8 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
             flex: { md: 1 },
             minHeight: 0,
             scrollbarWidth: "thin",
+            WebkitOverflowScrolling: "touch",
+            scrollPaddingInline: { xs: 1, md: 0 },
           }}
         >
           {items.map((item) => (
@@ -101,24 +107,51 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
               <ListItemButton
                 selected={tab === item.segment}
                 aria-current={tab === item.segment ? "page" : undefined}
-                disableRipple
                 onClick={() => goTo(item.segment)}
                 sx={{
-                  borderRadius: "var(--radius-control)",
                   py: { xs: 1, md: 1.125 },
                   px: { xs: 1.5, md: 1.25 },
                   width: { xs: "auto", md: "100%" },
                   whiteSpace: { xs: "nowrap", md: "normal" },
+                  borderRadius: "var(--radius-control)",
+                  transition:
+                    "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth)",
                   "&.Mui-selected": {
-                    bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
-                    color: "var(--primary)",
-                    "&:hover": {
-                      bgcolor:
-                        "color-mix(in srgb, var(--primary) 14%, transparent)",
-                    },
+                    boxShadow:
+                      "inset 3px 0 0 0 var(--primary)",
+                    backgroundColor:
+                      "color-mix(in srgb, var(--primary) 9%, transparent)",
+                  },
+                  "&.Mui-selected:hover": {
+                    backgroundColor:
+                      "color-mix(in srgb, var(--primary) 12%, transparent)",
+                  },
+                  "@media (prefers-reduced-motion: reduce)": {
+                    transition: "none",
                   },
                 }}
               >
+                {item.iconSrc ? (
+                  <ListItemIcon
+                    sx={{
+                      minWidth: { xs: 36, md: 40 },
+                      color: "inherit",
+                      opacity: tab === item.segment ? 1 : 0.88,
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        width: { xs: 26, md: 28 },
+                        height: { xs: 26, md: 28 },
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <Os3dIcon src={item.iconSrc} />
+                    </Box>
+                  </ListItemIcon>
+                ) : null}
                 <ListItemText
                   primary={item.label}
                   primaryTypographyProps={{

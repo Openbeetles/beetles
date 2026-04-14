@@ -1,17 +1,18 @@
-# Pocket Crayfish 配置页 · 设计约束
+# Beetle OS 配置页 · 设计约束
 
 本文档面向**参与配置页 UI 开发与样式修改的开发者**，约定视觉与布局的单源（Token 化）及必须遵守的约束，避免硬编码色值、重阴影、重边框。产品与设计说明见本目录上级 README。
 
 ## 项目定位
 
-- **产品**：随身小龙虾（Pocket Crayfish）固件的配置前端，用于连接设备后配置 WiFi、LLM、通道（飞书/钉钉/企微/QQ/Telegram）、系统与技能等。
-- **风格**：现代、扁平化、精致，偏工具型与可信赖感。壳层采用 **桌面 OS 隐喻**：顶栏为标题栏、**底部任务栏** 承载主导航；甲壳虫 SVG 作为 **「开始」徽标** 打开开始菜单（完整列表与连接摘要），任务栏中部为固定快捷方式（图标），右侧为连接状态托盘区。详见下文「Shell 布局」。
+- **产品**：**Beetle OS**（固件侧项目名可仍为 beetle / 甲壳虫，配置页对用户的系统语义统一为 **Beetle OS**）配置前端，用于连接设备后配置 WiFi、LLM、通道（飞书/钉钉/企微/QQ/Telegram）、系统与技能等。
+- **风格**：现代、扁平化、精致，偏工具型与可信赖感。壳层采用 **桌面 OS 隐喻**：顶栏为标题栏、**底部任务栏** 承载主导航；Beetle OS 徽标（SVG）作为 **「开始」徽标** 打开开始菜单（完整列表与连接摘要），任务栏中部为固定快捷方式（图标），右侧为连接状态托盘区。详见下文「Shell 布局」。
 
 ## Token 化（单源）
 
 **禁止在组件、theme 的 styleOverrides 内硬编码色值、圆角、动效时长、焦点环尺寸等。** 单源来自：
 
 - **颜色 / 语义**：`src/config/themeTokens.ts` 的 `ThemeTokens`（per mode × brand），通过 `createAppTheme` 注入到 `:root` 的 `--background`、`--foreground`、`--primary`、`--border`、`--muted`、`--card`、`--surface`、`--primary-soft`、`--primary-fg`、`--accent`、`--border-subtle`、`--overlay`、`--backdrop-overlay`、`--glass-blur`、`--shell-chrome-blur`（壳层磨砂 blur，来自 `LAYOUT_TOKENS.shellChromeBackdropBlurPx`）、`--shadow-shell-start-flyout`（开始菜单：`none`）、`--transition-duration`、`--foreground-soft` 等。顶栏/任务栏 **`--shadow-shell-titlebar` / `--shadow-shell-taskbar` 为 `none`**，不靠外投阴影分层。
+- **文字色阶（文案/辅助信息必读）**：`:root` 同时提供 **`--text-primary`、`--text-secondary`、`--text-tertiary`**，与 `foreground` / `foreground-soft` / `muted` 对齐。页面与组件中的**正文层级、说明、helper、次要标签**应优先使用 **`var(--text-*)`** 或 `src/theme/panelStyles.ts` 中的 **`TEXT_*_SX` 预设**（如 `TEXT_BODY_TERTIARY_SX`、`TEXT_SECTION_TITLE_SX`），避免在业务代码里散落 `fontSize`/`color`。**不要用 `var(--muted)` 充当「第三级文案」的长期口径**（该变量仍服务于 palette / 旧引用；新代码以 `--text-tertiary` 为准）。
 - **布局 / 动效**：`themeTokens.ts` 的 `LAYOUT_TOKENS`（`radiusControl`、`radiusCard`、`radiusChip`、`easeEmphasized`、`easeOutSmooth`、`durationImageHoverMs`、按钮高度、padding 等），并注入 `:root` 的 `--radius-control`、`--radius-card`、`--radius-chip`、`--ease-emphasized`、`--ease-out-smooth`、`--focus-ring-width`、`--focus-ring-offset`。
 - **宽度**：`src/config/layout.ts` 的 `CONTENT_MAX_WIDTH`、`SETTINGS_DRAWER_WIDTH`、`TASKBAR_HEIGHT` 等，与 theme breakpoints 一致。
 
@@ -31,10 +32,18 @@
 - 颜色只用 `var(--primary)`、`var(--border)`、`var(--card)` 等；圆角用 `var(--radius-control)` / `var(--radius-card)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)` 等
 - 导航与主体宽度用 `Container maxWidth="lg"`（即 `CONTENT_MAX_WIDTH`）
 
+## 排版与表单（与「系统设置」一致）
+
+- **页级纵向节奏**：配置页根容器优先使用 `PAGE_STACK_OUTER_SX` / `PAGE_SCROLL_STACK_SX`（`src/theme/panelStyles.ts`），**gap** 引用 **`LAYOUT_TOKENS.spacingPageStack`** 等同源常量，避免页面根上手写零散 `gap`。
+- **区块内间距**：小节之间、表单项之间使用 **`LAYOUT_TOKENS`** 中的 **`spacingSectionStack`、`spacingFormFields`** 等，与 `SettingsSection` / `SettingsRow` 节奏一致。
+- **Settings 行**：`SettingsRow` **始终纵向**（标签在上、控件在下）；**说明/helper 不要用窄 `maxWidth`/`ch` 人为过早换行**，保持与正文同宽或自然换行。
+- **表单布局**：**禁止**为「留白」而做左右分栏拉空一栏；需要分组时用 `SettingsSection`、`FormSectionSub`、`FormFieldStack` 等现有结构，而不是空列。
+- **卡片**：配置区、仪表盘等 **不使用卡片投影**（`boxShadow: none`）；层次靠 **细描边**（`var(--form-outline-rest)`）与背景差（`var(--card)` / well）区分，与 `CONFIG_PANEL_SX`、`DASHBOARD_CARD_SURFACE_SX` 一致。
+
 ## Shell 布局（桌面隐喻）
 
-- **顶栏 `TopBar`**：**窗口标题栏**隐喻——`SHELL_TITLEBAR_CHROME_SX` 为 **半透明哑光底 + `blur(var(--shell-chrome-blur))`**，**无背景渐变**；与主内容以 `border-subtle` 底边分隔。左侧甲壳虫 **窗口图标**（点击回首页）、中间标题与说明（窄屏隐藏说明行）、右侧 **标题栏按钮区**（带过渡）。
-- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **扁平哑光 + 磨砂 blur**，**无渐变**；**顶边 `border-subtle`**，无外投阴影。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：顶部品牌条；其下 **宽幅连接磁贴**（语义色扁平底）；再下 **响应式磁贴网格**（`xs` 单列、`sm`+ 12 列 mosaic），各路由为 **Metro 式竖向磁贴**（图标上、标题下，主色/强调色/中性三色轮换底 + 选中主色强调），纸面 **无边框、无外投阴影、无圆角**（磁贴与连接条同为直角），半透明 + `blur(var(--shell-chrome-blur))`。**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
+- **顶栏 `TopBar`**：**窗口标题栏**隐喻——`SHELL_TITLEBAR_CHROME_SX` 为 **半透明哑光底 + `blur(var(--shell-chrome-blur))`**，**无背景渐变**；与主内容以 `border-subtle` 底边分隔。左侧 **Beetle OS 窗口图标**（点击回首页）、中间标题与说明（窄屏隐藏说明行）、右侧 **标题栏按钮区**（带过渡）。
+- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **扁平哑光 + 磨砂 blur**，**无渐变**；**顶边 `border-subtle`**，无外投阴影。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：**品牌条**内左侧为 **Beetle OS** 徽标 + 应用名/标语，**右侧**为 **重启**（仅已连接时显示：**仅 3D 图标**、无正文，`OS_ICON_SHELL.power` / Fluent *Electric plug*，`Tooltip` 与 `aria-label` 承载文案，确认对话框在 `Taskbar`）；其下 **宽幅连接磁贴**（语义色扁平底）；再下 **响应式磁贴网格**（`xs` 单列、`sm`+ 12 列 mosaic），各路由为 **Metro 式竖向磁贴**（图标上、标题下，主色/强调色/中性三色轮换底 + 选中主色强调），纸面 **无边框、无外投阴影、无圆角**（磁贴与连接条同为直角），半透明 + `blur(var(--shell-chrome-blur))`。**顶栏不再放重启按钮**（避免与「开始」语义重复）。**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
 - **导航数据单源**：`src/config/navItems.tsx` 的 `NAV_ITEMS`，任务栏快捷方式与开始菜单共用，避免分叉。
 
 ## 组件与布局
@@ -42,6 +51,26 @@
 - **顶栏**：与主体同宽逻辑一致，样式遵循壳层 token（无重阴影、无粗边框）
 - **卡片 / 列表**：优先用主题提供的 Card、Paper 等组件样式，不额外加重阴影或边框
 - **按钮 / 输入框**：使用主题已定制的 MUI 组件，保持扁平、无强立体感
+
+### 列表：静态行 vs 可点击导航
+
+- **静态多行列表**（仅展示、非导航）：`src/theme/listItemStyles.ts` 的 **`SETTINGS_SECTION_LIST_ROW_SX` / `SETTINGS_SECTION_LIST_EMPTY_SX`**（如 Tools / Skills 区块内列表），浅底、圆角与输入 well 一致。
+- **可点击侧栏 / 子导航行**：使用 **`ListItemButton`**，**选中 / hover / 无 ripple** 由 **`appTheme` 的 `MuiListItemButton`** 统一，调用方（如 `ConfigSubNavLayout`）**只写布局类 `sx`**（`py` / `px` / `width` / `whiteSpace` 等），**禁止**在页面重复粘贴 `&.Mui-selected` 色块与圆角。
+
+### Toast（Snackbar）
+
+- **单一路径**：全局反馈使用 **`ToastProvider` + `useToast`**（基于 MUI **`Snackbar`**）。
+- **职责划分**：**结构样式**（圆角、字重、字号、无边框阴影、`1px solid` 边框骨架）在 **`MuiSnackbarContent`** 的 `styleOverrides`；**成功 / 警告 / 错误** 的底/边/字色仅在 **`ToastProvider`** 中按 variant 注入，避免在业务里复制一整段 Snackbar 样式。
+
+### Slider
+
+- **轨道 / 滑块 / 圆角** 等在 **`MuiSlider`** 的 `styleOverrides` 中统一；业务页面 **禁止** 再写一套 `& .MuiSlider-thumb/track/rail` 重复主题。
+- **页面内仅保留布局型 `sx`**（例如 **`maxWidth`、`mt`** 等与表单排版相关的约束）。
+
+### 拟物 3D 图标（导航与仪表盘）
+
+- **路径单源**：`src/config/osIcons.ts`（`OS_ICON_NAV`、`OS_ICON_DASHBOARD`、`OS_ICON_SHELL`）；展示统一用 **`Os3dIcon`**（与任务栏 `OsIcon` 同滤镜，父级给足尺寸）。
+- **新增或替换资源**：优先使用 **MIT** 的 [Microsoft Fluent Emoji](https://github.com/microsoft/fluentui-emoji) 3D PNG（`assets/<名称>/3D/`），或其它与现有光影一致的资源；**版权与对应关系**写入 **`public/icons/README.md`**。Ubuntu Yaru / GNOME Adwaita 多为扁平 SVG，与当前 3D 风格不一致，不宜直接混用。
 
 ## 反馈分层与语义色
 
@@ -64,11 +93,15 @@
 
 以下为 `.cursor/rules/design-constraints.mdc` 的完整内容来源，AI 与开发写样式时以此为准：
 
-- **Token 化**：禁止在组件和 theme 的 styleOverrides 中硬编码色值、圆角、动效时长、焦点环等。颜色只用 `var(--primary)`、`var(--border)`、`var(--card)`、`var(--muted)`、`var(--foreground)` 等；圆角用 `var(--radius-control)`、`var(--radius-card)`、`var(--radius-chip)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)`；焦点环用 `var(--focus-ring-width)`、`var(--focus-ring-offset)`。单源为 `src/config/themeTokens.ts`（ThemeTokens + LAYOUT_TOKENS）和 `appTheme` 注入的 `:root` 变量。
+- **Token 化**：禁止在组件和 theme 的 styleOverrides 中硬编码色值、圆角、动效时长、焦点环等。颜色用 `var(--primary)`、`var(--border)`、`var(--card)`、`var(--foreground)` 等；**文案层级优先 `var(--text-primary)` / `var(--text-secondary)` / `var(--text-tertiary)` 或 `TEXT_*_SX`**。圆角用 `var(--radius-control)`、`var(--radius-card)`、`var(--radius-chip)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)`；焦点环用 `var(--focus-ring-width)`、`var(--focus-ring-offset)`。单源为 `src/config/themeTokens.ts`（ThemeTokens + LAYOUT_TOKENS）、`appTheme` 注入的 `:root` 变量，以及 **`panelStyles` / `listItemStyles` 中的版面与列表预设**。
 - **风格**：现代、扁平化、精致；禁止重阴影、粗/重边框。
 - **阴影**：仅允许极轻级别；禁止大面积、高模糊、深色强阴影。
-- **边框**：分割用 `var(--border)` 或 `var(--border-subtle)` 的细线，不写死色值。
-- **布局**：内容宽度用 `CONTENT_MAX_WIDTH` / `maxWidth="lg"`，不写死 1200 等数字。
+- **边框**：分割用 `var(--border)` 或 `var(--border-subtle)` 的细线，不写死色值；表单/面板描边优先 `var(--form-outline-rest)`。
+- **布局**：内容宽度用 `CONTENT_MAX_WIDTH` / `maxWidth="lg"`，不写死 1200 等数字；页级/滚动区用 **`PAGE_STACK_OUTER_SX` / `PAGE_SCROLL_STACK_SX`**，纵向间距用 **`LAYOUT_TOKENS`**。
+- **表单与说明**：`SettingsRow` 纵向；**禁止**左右分栏拉空；helper **不要**用窄 `maxWidth` 过早断行。
+- **列表与导航**：静态列表行用 **`listItemStyles`**；侧栏/子导航 **`ListItemButton`** 交互样式只在 **`MuiListItemButton`**，页面不写重复 selected/hover。
+- **Toast**：只用 **`useToast`**；外观分层遵守上文「Toast（Snackbar）」；业务代码不复制 Snackbar 全套样式。
+- **Slider**：样式只在主题 **`MuiSlider`**；页面只保留布局型 `sx`。
 - **组件**：优先用主题已定制的 MUI 组件，不额外加重阴影或边框。
 - **新增 token**：在 themeTokens 中定义，并在 appTheme 的 `:root` 中注入对应 CSS 变量。
 

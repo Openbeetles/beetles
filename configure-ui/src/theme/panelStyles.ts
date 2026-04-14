@@ -1,3 +1,5 @@
+import { LAYOUT_TOKENS } from "../config/themeTokens";
+
 /**
  * 主内容区内层与顶栏/横幅水平 gutter 对齐（MUI spacing：xs=16px, sm=24px）。
  * Aligns main scroll content with title bar and device banner.
@@ -27,6 +29,14 @@ export const PAGE_COLUMN_FILL_SX = {
 } as const
 
 /**
+ * 配置页根容器：占满主列 + 页级纵向节奏（Alert / Section 间距与 `LAYOUT_TOKENS.spacingPageStack` 一致）。
+ */
+export const PAGE_STACK_OUTER_SX = {
+  ...PAGE_COLUMN_FILL_SX,
+  gap: LAYOUT_TOKENS.spacingPageStack,
+} as const
+
+/**
  * 整页内容区纵向滚动（仪表盘、列表页等无「卡片内 pinHeader」时使用）。
  */
 /**
@@ -48,6 +58,14 @@ export const PAGE_SCROLL_CANVAS_SX = {
 } as const
 
 /**
+ * 整页可滚动内容区 + 与页根相同的纵向 gap（列表/仪表盘等）。
+ */
+export const PAGE_SCROLL_STACK_SX = {
+  ...PAGE_SCROLL_CANVAS_SX,
+  gap: LAYOUT_TOKENS.spacingPageStack,
+} as const
+
+/**
  * 沉浸式等大编辑对话框底栏：sm 略宽于主 gutter，避免双按钮+提示贴边。
  * Wide dialog footer horizontal padding (immersive editor, etc.).
  */
@@ -56,18 +74,14 @@ export const DIALOG_FOOTER_GUTTER_WIDE_SX = {
 } as const
 
 /**
- * 固件 / 设备配置类面板：无边框，仅靠底色与轻阴影与主表面区分。
+ * 固件 / 设备配置类面板：与主表面靠细描边 + 白/卡面色区分（无投影）。
  * SettingsSection、个性配置等共用。
  */
 export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
-  border: "none",
-  /** 极轻顶边 + 内顶高光 */
-  boxShadow: [
-    "var(--shadow-subtle)",
-    "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
-  ].join(", "),
+  border: "1px solid var(--form-outline-rest)",
+  boxShadow: "none",
 } as const
 
 /**
@@ -76,11 +90,8 @@ export const CONFIG_PANEL_SX = {
 export const DASHBOARD_CARD_SURFACE_SX = {
   bgcolor: "var(--card)",
   borderRadius: "var(--radius-card)",
-  border: "none",
-  boxShadow: [
-    "var(--shadow-subtle)",
-    "inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)",
-  ].join(", "),
+  border: "1px solid var(--form-outline-rest)",
+  boxShadow: "none",
   overflow: "hidden",
 } as const
 
@@ -116,6 +127,8 @@ export const DASHBOARD_CARD_HEADER_ROW_SX = {
   px: 2.5,
   py: 2,
   bgcolor: "color-mix(in srgb, var(--foreground) 2.5%, transparent)",
+  /** 顶栏与正文区层次分离（与 DeviceBanner `divider-row` 同阶） */
+  borderBottom: "var(--divider-row)",
 } as const
 
 /** 次级标签：降噪（相对全大写 caption），用于表盘下钻、LED 条等 */
@@ -124,5 +137,57 @@ export const UI_LABEL_SECONDARY_SX = {
   fontWeight: 500,
   letterSpacing: "0.02em",
   textTransform: "none" as const,
-  color: "var(--foreground-soft)",
+  color: "var(--text-secondary)",
+} as const
+
+// ---------- 文字层级预设（配合 `--text-*`，减少页面内硬编码字号/颜色）----------
+
+/** 区块主标题（与 SettingsSection 标题同阶） */
+export const TEXT_SECTION_TITLE_SX = {
+  fontSize: "var(--font-size-h4)",
+  fontWeight: 700,
+  letterSpacing: "-0.02em",
+  lineHeight: "var(--line-height-snug)",
+  color: "var(--text-primary)",
+} as const
+
+/** 小节标题 / 列表行主文 */
+export const TEXT_SUBSECTION_TITLE_SX = {
+  fontSize: "var(--font-size-body-sm)",
+  fontWeight: 600,
+  lineHeight: "var(--line-height-snug)",
+  color: "var(--text-primary)",
+} as const
+
+/** 仪表盘卡片顶栏标题（略小于正文小，偏系统设置列表） */
+export const TEXT_DASHBOARD_CARD_TITLE_SX = {
+  fontSize: "var(--font-size-overline)",
+  fontWeight: 600,
+  letterSpacing: "var(--letter-spacing-label)",
+  lineHeight: 1.35,
+  color: "var(--text-primary)",
+  textTransform: "none" as const,
+} as const
+
+/** SettingsRow 等表单行主标签（非 Section 级标题） */
+export const TEXT_FIELD_LABEL_SX = {
+  fontSize: "var(--font-size-body)",
+  fontWeight: 600,
+  lineHeight: "var(--line-height-snug)",
+  color: "var(--text-primary)",
+} as const
+
+/** 说明、helper、卡片顶栏描述 */
+export const TEXT_BODY_TERTIARY_SX = {
+  fontSize: "var(--font-size-caption)",
+  fontWeight: 400,
+  lineHeight: "var(--line-height-normal)",
+  color: "var(--text-tertiary)",
+} as const
+
+/** 仅色阶（与其它 sx 合并用） */
+export const TEXT_COLOR = {
+  primary: "var(--text-primary)",
+  secondary: "var(--text-secondary)",
+  tertiary: "var(--text-tertiary)",
 } as const

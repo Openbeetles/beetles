@@ -5,10 +5,15 @@ import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemText from "@mui/material/ListItemText";
 import Typography from "@mui/material/Typography";
-import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
 import { InlineAlert, SectionLoadingSkeleton } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import { OS_ICON_NAV } from "../config/osIcons";
+import {
+  PAGE_STACK_OUTER_SX,
+  TEXT_BODY_TERTIARY_SX,
+} from "../theme/panelStyles";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import type {
   DiagnoseItem,
@@ -107,32 +112,38 @@ export function SystemLogsPage() {
   };
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={logsState.error || null} onRetry={loadLogs} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<DescriptionOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_NAV["/system-logs"]} />}
         label={t("systemLogs.sectionLogs")}
       >
         {!ready ? (
-          <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+          <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
             {t("device.connectFirst")}
           </Typography>
         ) : logsState.loading ? (
           <SectionLoadingSkeleton />
         ) : (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Box
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              gap: LAYOUT_TOKENS.spacingSectionStack,
+            }}
+          >
             {logsState.data.health && (
               <Box>
                 <Typography
                   variant="caption"
-                  sx={{ fontWeight: 700, color: "var(--muted)" }}
+                  sx={{ ...TEXT_BODY_TERTIARY_SX, fontWeight: 700 }}
                 >
                   GET /api/health
                 </Typography>
                 <Box sx={{ mt: 0.75 }}>
-                  <Typography variant="caption" sx={{ color: "var(--muted)" }}>
+                  <Typography variant="caption" sx={TEXT_BODY_TERTIARY_SX}>
                     health
                   </Typography>
                   <KvList
@@ -143,7 +154,7 @@ export function SystemLogsPage() {
                   />
                 </Box>
                 <Box sx={{ mt: 0.75 }}>
-                  <Typography variant="caption" sx={{ color: "var(--muted)" }}>
+                  <Typography variant="caption" sx={TEXT_BODY_TERTIARY_SX}>
                     metrics
                   </Typography>
                   <KvList items={kvEntries(logsState.data.metrics)} />
@@ -154,7 +165,7 @@ export function SystemLogsPage() {
               <Box>
                 <Typography
                   variant="caption"
-                  sx={{ fontWeight: 700, color: "var(--muted)" }}
+                  sx={{ ...TEXT_BODY_TERTIARY_SX, fontWeight: 700 }}
                 >
                   GET /api/diagnose
                 </Typography>
@@ -182,7 +193,7 @@ export function SystemLogsPage() {
                             variant: "body2",
                             sx: {
                               fontFamily: "var(--font-mono)",
-                              fontSize: "0.8125rem",
+                              fontSize: "var(--font-size-overline)",
                             },
                           },
                         }}
@@ -193,7 +204,7 @@ export function SystemLogsPage() {
               </Box>
             )}
             {!logsState.data.health && logsState.data.diagnose.length === 0 && !logsState.loading && ready && (
-              <Typography variant="body2" sx={{ color: "var(--muted)" }}>
+              <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
                 {t("systemLogs.emptyLogs")}
               </Typography>
             )}

@@ -7,13 +7,13 @@ import {
   type ReactNode,
 } from "react";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DisconnectedCacheOverlay } from "./DisconnectedCacheOverlay";
 import { DeviceBanner } from "./DeviceBanner";
+import { ShellPageTransition } from "./ShellPageTransition";
 import { Taskbar } from "./Taskbar";
 import { TopBar } from "./TopBar";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
@@ -214,9 +214,10 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     px: 2,
     py: 1.5,
     borderRadius: "var(--radius-card)",
-    border: "none",
+    border: "1px solid var(--form-outline-rest)",
     backgroundColor: "var(--card)",
-    boxShadow: "none",
+    boxShadow:
+      "0 8px 32px color-mix(in srgb, var(--foreground) 10%, transparent)",
   };
 
   return (
@@ -248,7 +249,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               sx={{
                 ...statusOverlayCardSx,
                 justifyContent: "center",
-                borderLeft: "var(--accent-line-width) solid var(--muted)",
+                borderLeft: "var(--accent-line-width) solid var(--form-outline-rest)",
               }}
             >
               <Typography
@@ -268,86 +269,26 @@ export function Layout({ onOpenSettings }: LayoutProps) {
           </>
         )}
         {showDisconnectedCacheBanner && (
-          <>
-            <Box aria-hidden sx={statusOverlayBackdropSx} />
-            <Box
-              role="status"
-              sx={{
-                ...statusOverlayCardSx,
-                flexDirection: "column",
-                alignItems: "stretch",
-                gap: 1.5,
-                borderLeft:
-                  "var(--accent-line-width) solid var(--semantic-warning)",
-              }}
-            >
-              <Typography
-                variant="body2"
-                sx={{
-                  color: "var(--semantic-warning)",
-                  fontWeight: 600,
-                  fontSize: "var(--font-size-body-sm)",
-                }}
-              >
-                {t("config.deviceDisconnectedCache")}
-              </Typography>
-              <Stack
-                direction="row"
-                flexWrap="wrap"
-                gap={1}
-                justifyContent="flex-end"
-              >
-                <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={() => {
-                    setSuppressDisconnectedCacheOverlay(true);
-                    navigate("/device");
-                  }}
-                  sx={{
-                    borderRadius: "var(--radius-control)",
-                    borderColor: "var(--primary)",
-                    color: "var(--primary)",
-                  }}
-                >
-                  {t("config.editDeviceConnection")}
-                </Button>
-                <Button
-                  size="small"
-                  variant="contained"
-                  onClick={() => {
-                    void handleRefreshCachedConfig();
-                  }}
-                  disabled={refreshingCache}
-                  sx={{
-                    borderRadius: "var(--radius-control)",
-                    backgroundColor: "var(--primary)",
-                    color: "var(--primary-fg)",
-                    "&:hover:not(:disabled)": {
-                      backgroundColor:
-                        "color-mix(in srgb, var(--primary) 86%, black)",
-                    },
-                  }}
-                >
-                  {refreshingCache
-                    ? `${t("common.loading")}…`
-                    : `${t("common.retry")} (${refreshCountdown}s)`}
-                </Button>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={clearCachedConfig}
-                  sx={{
-                    borderRadius: "var(--radius-control)",
-                    borderColor: "var(--semantic-warning)",
-                    color: "var(--semantic-warning)",
-                  }}
-                >
-                  {t("config.clearCache")}
-                </Button>
-              </Stack>
-            </Box>
-          </>
+          <DisconnectedCacheOverlay
+            title={t("config.deviceDisconnectedCacheTitle")}
+            subtitle={t("config.deviceDisconnectedCacheSubtitle")}
+            editConnectionLabel={t("config.editDeviceConnection")}
+            retryLabel={
+              refreshingCache
+                ? `${t("common.loading")}…`
+                : `${t("common.retry")} (${refreshCountdown}s)`
+            }
+            clearCacheLabel={t("config.clearCache")}
+            onEditConnection={() => {
+              setSuppressDisconnectedCacheOverlay(true);
+              navigate("/device");
+            }}
+            onRetry={() => {
+              void handleRefreshCachedConfig();
+            }}
+            onClearCache={clearCachedConfig}
+            retryDisabled={refreshingCache}
+          />
         )}
         <Box
           sx={{
@@ -379,7 +320,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             })}
           />
           <MainSurface>
-            <Outlet />
+            <ShellPageTransition />
           </MainSurface>
           <Box
             aria-hidden

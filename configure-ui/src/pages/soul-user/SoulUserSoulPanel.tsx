@@ -2,14 +2,15 @@ import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import SaveRounded from "@mui/icons-material/SaveRounded";
-import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
 import {
   InlineAlert,
   SaveFeedback,
   SectionLoadingSkeleton,
 } from "../../components/form";
+import { Os3dIcon } from "../../components/Os3dIcon";
 import { SettingsSection } from "../../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../../theme/panelStyles";
+import { OS_ICON_NAV } from "../../config/osIcons";
+import { PAGE_STACK_OUTER_SX } from "../../theme/panelStyles";
 import { useSoulUserConfig } from "../../hooks/useSoulUserConfig";
 import { SoulFormBody } from "./formBodies";
 
@@ -34,12 +35,12 @@ export function SoulUserSoulPanel() {
     !ready || soulSaveStatus === "saving" || soulState.loading;
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={soulAlert} onRetry={retryLoadSoul} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<PsychologyOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_NAV["/soul-user"]} />}
         label={t("soulUser.sectionSoul")}
         description={t("soulUser.soulDesc")}
         accessory={

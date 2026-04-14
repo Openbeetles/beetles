@@ -64,14 +64,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         }}
         sx={{
           '& .MuiSnackbarContent-root': {
-            borderRadius: 'var(--radius-control)',
             backgroundColor: style.bg,
-            border: '1px solid',
             borderColor: style.border,
             color: style.color,
-            fontWeight: 600,
-            fontSize: 'var(--font-size-body-sm)',
-            boxShadow: 'var(--shadow-card)',
           },
         }}
       />

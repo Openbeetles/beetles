@@ -1,10 +1,14 @@
 import Stack from '@mui/material/Stack'
 import type { ReactNode } from 'react'
+import { LAYOUT_TOKENS } from '../../config/themeTokens'
 
-/** 表单项纵向排列，统一间距（略大于默认以保留 OS 式呼吸感）。 */
+/** 表单项纵向排列，间距见 `LAYOUT_TOKENS.spacingFormFields`（与全站表单节奏一致）。 */
 export function FormFieldStack({ children }: { children: ReactNode }) {
   return (
-    <Stack spacing={2.5} sx={{ '& .MuiTextField-root': { minWidth: 0 } }}>
+    <Stack
+      spacing={LAYOUT_TOKENS.spacingFormFields}
+      sx={{ '& .MuiTextField-root': { minWidth: 0 } }}
+    >
       {children}
     </Stack>
   )

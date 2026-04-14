@@ -48,7 +48,7 @@ const reducedMotionSx = {
 } as const;
 
 /**
- * 甲壳虫品牌标（与 beetle_site `CyberBeetleMark` 同源图形），随 `var(--primary)` / 表面色变化。
+ * Beetle OS 品牌徽标（与 beetle_site `CyberBeetleMark` 同源图形），随 `var(--primary)` / 表面色变化。
  * Cyber-beetle mark (same artwork as beetle_site); tints follow theme CSS variables.
  */
 export function BeetleIcon({

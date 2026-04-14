@@ -13,6 +13,8 @@ import {
   FormFieldStack,
   FormSectionSubCollapsible,
 } from "../../components/form";
+import { TEXT_BODY_TERTIARY_SX } from "../../theme/panelStyles";
+import { LAYOUT_TOKENS } from "../../config/themeTokens";
 import {
   SOUL_SKILL_KEYS,
   SOUL_TRAIT_KEYS,
@@ -46,8 +48,7 @@ export function ChipSelectRow({
         component="p"
         sx={{
           mb: 1,
-          color: "var(--muted)",
-          fontSize: "var(--font-size-caption)",
+          ...TEXT_BODY_TERTIARY_SX,
           fontWeight: 600,
         }}
       >
@@ -85,7 +86,7 @@ export function SoulFormBody({
   t: (k: string) => string;
 }) {
   return (
-    <Stack spacing={2}>
+    <Stack spacing={LAYOUT_TOKENS.spacingSectionStack}>
       <FormSectionSubCollapsible
         title={t("soulUser.soulGroupBasics")}
         defaultOpen
@@ -99,13 +100,7 @@ export function SoulFormBody({
             inputProps={{ maxLength: 128 }}
           />
           <FormControl>
-            <FormLabel
-              sx={{
-                fontSize: "var(--font-size-caption)",
-                color: "var(--muted)",
-                mb: 0.5,
-              }}
-            >
+            <FormLabel sx={{ ...TEXT_BODY_TERTIARY_SX, mb: 0.5 }}>
               {t("soulUser.soulFieldTone")}
             </FormLabel>
             <RadioGroup
@@ -208,7 +203,7 @@ export function UserFormBody({
   t: (k: string) => string;
 }) {
   return (
-    <Stack spacing={2}>
+    <Stack spacing={LAYOUT_TOKENS.spacingSectionStack}>
       <FormSectionSubCollapsible
         title={t("soulUser.userGroupBasics")}
         defaultOpen
@@ -224,13 +219,7 @@ export function UserFormBody({
             inputProps={{ maxLength: 128 }}
           />
           <FormControl>
-            <FormLabel
-              sx={{
-                fontSize: "var(--font-size-caption)",
-                color: "var(--muted)",
-                mb: 0.5,
-              }}
-            >
+            <FormLabel sx={{ ...TEXT_BODY_TERTIARY_SX, mb: 0.5 }}>
               {t("soulUser.userFieldLang")}
             </FormLabel>
             <RadioGroup
@@ -262,13 +251,7 @@ export function UserFormBody({
             </RadioGroup>
           </FormControl>
           <FormControl>
-            <FormLabel
-              sx={{
-                fontSize: "var(--font-size-caption)",
-                color: "var(--muted)",
-                mb: 0.5,
-              }}
-            >
+            <FormLabel sx={{ ...TEXT_BODY_TERTIARY_SX, mb: 0.5 }}>
               {t("soulUser.userFieldReplyLength")}
             </FormLabel>
             <RadioGroup

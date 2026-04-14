@@ -18,7 +18,7 @@ export function PlaceholderPage() {
     >
       <Typography
         sx={{
-          color: "var(--muted)",
+          color: "var(--text-tertiary)",
           fontSize: "var(--font-size-body)",
           lineHeight: "var(--line-height-relaxed)",
         }}

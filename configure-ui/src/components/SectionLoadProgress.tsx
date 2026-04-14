@@ -27,7 +27,7 @@ export function SectionLoadProgress({ loading, idleHint }: SectionLoadProgressPr
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
       <LinearProgress aria-busy sx={LINEAR_SX} />
       {idleHint?.trim() ? (
-        <Typography variant="body2" sx={{ color: "var(--muted)", fontSize: "var(--font-size-caption)" }}>
+        <Typography variant="body2" sx={{ color: "var(--text-tertiary)", fontSize: "var(--font-size-caption)" }}>
           {idleHint}
         </Typography>
       ) : null}

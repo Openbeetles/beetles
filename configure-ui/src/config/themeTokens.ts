@@ -1,5 +1,5 @@
 export type ThemeMode = 'light' | 'dark'
-/** 默认品牌 `logo`：与侧栏矢量甲壳虫标 + favicon 主色体系对齐 */
+/** 默认品牌 `logo`：与 Beetle OS 矢量徽标 + favicon 主色体系对齐 */
 export type ThemeBrand = 'blue' | 'teal' | 'logo' | 'firmware'
 
 /**
@@ -149,6 +149,18 @@ export const LAYOUT_TOKENS = {
   lineHeightRelaxed: 1.68,
   /** 行高：更松（长说明、法律/风险提示类段落） */
   lineHeightLoose: 1.8,
+
+  // ---------- 垂直节奏（MUI `theme.spacing` 倍数，默认 8px/单位）----------
+  /** 页根：InlineAlert 与 Section、Section 与 Section */
+  spacingPageStack: 2,
+  /** 大卡片并排或同列多块之间的 gap（与 `spacingPageStack` 同阶时可复用） */
+  spacingSectionStack: 2,
+  /** 表单项纵向：`FormFieldStack`、折叠块内多字段 */
+  spacingFormFields: 2.5,
+  /** 紧密：行内图标+文字、chip 旁说明 */
+  spacingInlineTight: 1,
+  /** 标题行与下方首段内容（略紧于 section gap） */
+  spacingTitleToContent: 1.5,
 } as const
 
 /** 主题 Token：所有 UI 颜色必须由此映射，禁止在组件内硬编码色值。 */
@@ -177,9 +189,9 @@ export interface ThemeTokens {
   transitionDurationEmphasized: string
   foregroundSoft: string
   borderSubtle: string
-  /** 极轻阴影（仅用于悬浮等克制的层次） */
+  /** 历史字段：扁平系统设置风下恒为 `none`，层次靠描边与底色区分 */
   shadowSubtle: string
-  /** 卡片 hover 时极轻阴影（略强于 shadowSubtle，仍克制） */
+  /** 历史字段：扁平风下恒为 `none` */
   shadowCardHover: string
   /** NEW/新品等标识用红色系 */
   badgeNew: string
@@ -234,9 +246,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f4f6f9',
-      shadowSubtle:
-        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
-      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#ef4444',
     },
     teal: {
@@ -259,9 +270,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f4f6f9',
-      shadowSubtle:
-        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
-      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#ef4444',
     },
     logo: {
@@ -284,9 +294,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f5f3fb',
-      shadowSubtle:
-        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
-      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#ef4444',
     },
     firmware: {
@@ -309,9 +318,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f4f6f9',
-      shadowSubtle:
-        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
-      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#ef4444',
     },
   },
@@ -336,8 +344,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
-      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#f87171',
     },
     teal: {
@@ -360,8 +368,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
-      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#f87171',
     },
     logo: {
@@ -384,8 +392,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#221830',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
-      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#f87171',
     },
     firmware: {
@@ -408,8 +416,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
-      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
+      shadowSubtle: 'none',
+      shadowCardHover: 'none',
       badgeNew: '#f87171',
     },
   },

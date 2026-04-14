@@ -7,7 +7,6 @@ import IconButton from "@mui/material/IconButton";
 import TextField from "@mui/material/TextField";
 import AddRounded from "@mui/icons-material/AddRounded";
 import DeleteOutlineRounded from "@mui/icons-material/DeleteOutlineRounded";
-import MemoryOutlined from "@mui/icons-material/MemoryOutlined";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormFieldStack,
@@ -16,8 +15,10 @@ import {
   InlineAlert,
   SaveFeedback,
 } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
+import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
@@ -380,7 +381,7 @@ export function HardwareGpioPanel() {
         <SettingsSection
           pinHeader
           sx={{ flex: 1, minHeight: 0 }}
-          icon={<MemoryOutlined />}
+          icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.hardware} />}
           label={t("hardwareConfig.sectionMain")}
         >
           <FormLoadingSkeleton />
@@ -400,12 +401,12 @@ export function HardwareGpioPanel() {
   } as const;
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={hardwareError} onRetry={loadHardwareConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<MemoryOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.hardware} />}
         label={t("hardwareConfig.sectionMain")}
         description={t("hardwareConfig.sectionMainDesc")}
         accessory={
@@ -695,7 +696,7 @@ export function HardwareGpioPanel() {
             <Box
               sx={{
                 typography: "body2",
-                color: "var(--muted)",
+                color: "var(--text-tertiary)",
                 mb: 2,
               }}
             >

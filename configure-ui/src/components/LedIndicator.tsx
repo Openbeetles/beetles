@@ -19,7 +19,9 @@ export function LedIndicator({
           height: 8,
           borderRadius: "50%",
           flexShrink: 0,
-          bgcolor: active ? color : "var(--muted)",
+          bgcolor: active
+            ? color
+            : "color-mix(in srgb, var(--text-tertiary) 45%, var(--card))",
           boxShadow: active ? `0 0 10px color-mix(in srgb, ${color} 55%, transparent)` : "none",
         }}
       />
@@ -27,7 +29,7 @@ export function LedIndicator({
         variant="caption"
         sx={{
           fontFamily: "var(--font-mono)",
-          color: "var(--muted)",
+          color: "var(--text-tertiary)",
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",

@@ -10,11 +10,6 @@ import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
-import DarkModeOutlinedIcon from "@mui/icons-material/DarkModeOutlined";
-import LanguageIcon from "@mui/icons-material/Language";
-import PaletteOutlinedIcon from "@mui/icons-material/PaletteOutlined";
-import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
-import WbSunnyOutlinedIcon from "@mui/icons-material/WbSunnyOutlined";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import { useTranslation } from "react-i18next";
 import { useAppPreferences } from "../hooks/useAppPreferences";
@@ -23,13 +18,50 @@ import {
   type AppLanguage,
 } from "../contexts/appPreferencesContext";
 import { THEME_BRAND_KEYS } from "../config/themeTokens";
+import { OS_ICON_PREFERENCES, OS_ICON_SHELL } from "../config/osIcons";
 import { SETTINGS_DRAWER_WIDTH } from "../config/layout";
 import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
+import { Os3dIcon } from "./Os3dIcon";
 import { SettingsSection } from "./SettingsSection";
 
 interface SettingsDrawerProps {
   open: boolean;
   onClose: () => void;
+}
+
+/** 设置区块标题旁 3D 图标（与 `SettingsSection` 的 lg 槽对齐） */
+function PrefSectionIcon({ src }: { src: string }) {
+  return (
+    <Box
+      sx={{
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Os3dIcon src={src} sx={{ width: "100%", height: "100%" }} />
+    </Box>
+  );
+}
+
+/** 明暗切换条内小图标 */
+function ModeToggleIcon({ src }: { src: string }) {
+  return (
+    <Box
+      sx={{
+        width: 22,
+        height: 22,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Os3dIcon src={src} sx={{ width: "100%", height: "100%" }} />
+    </Box>
+  );
 }
 
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
@@ -71,13 +103,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           maxWidth: "100%",
           boxSizing: "border-box",
           border: "none",
-          borderLeft: "none",
+          borderLeft: "1px solid var(--form-outline-rest)",
           borderTopLeftRadius: "var(--radius-card)",
           borderBottomLeftRadius: "var(--radius-card)",
-          boxShadow: "var(--shadow-shell-floating)",
+          boxShadow: "none",
           backgroundColor: "var(--card)",
-          transition:
-            "border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease",
+          transition: "border-color var(--transition-duration) ease",
         },
       }}
     >
@@ -105,12 +136,21 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 alignItems: "center",
                 justifyContent: "center",
                 bgcolor: "var(--surface)",
-                color: "var(--muted)",
                 transition:
                   "background-color var(--transition-duration) ease, color var(--transition-duration) ease",
               }}
             >
-              <SettingsRoundedIcon sx={{ fontSize: "var(--icon-size-md)" }} />
+              <Box
+                sx={{
+                  width: "var(--icon-size-md)",
+                  height: "var(--icon-size-md)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Os3dIcon src={OS_ICON_SHELL.preferences} />
+              </Box>
             </Box>
             <Typography
               variant="h6"
@@ -129,7 +169,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             aria-label={t("settings.close")}
             sx={{
               borderRadius: "var(--radius-chip)",
-              color: "var(--muted)",
+              color: "var(--text-tertiary)",
               transition: "color var(--transition-duration) ease",
               "&:hover": { color: "var(--foreground)" },
             }}
@@ -143,7 +183,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           spacing={1.5}
         >
           <SettingsSection
-            icon={<LanguageIcon sx={{ fontSize: "var(--icon-size-sm)" }} />}
+            icon={<PrefSectionIcon src={OS_ICON_PREFERENCES.language} />}
             label={t("settings.language")}
           >
             <FormControl fullWidth>
@@ -170,15 +210,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           </SettingsSection>
 
           <SettingsSection
-            icon={
-              themeMode === "light" ? (
-                <WbSunnyOutlinedIcon sx={{ fontSize: "var(--icon-size-sm)" }} />
-              ) : (
-                <DarkModeOutlinedIcon
-                  sx={{ fontSize: "var(--icon-size-sm)" }}
-                />
-              )
-            }
+            icon={<PrefSectionIcon src={OS_ICON_PREFERENCES.themeMode} />}
             label={t("settings.themeMode")}
           >
             <ToggleButtonGroup
@@ -188,31 +220,29 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               fullWidth
             >
               <ToggleButton value="light">
-                <WbSunnyOutlinedIcon
-                  sx={{ fontSize: "var(--font-size-caption)", mr: 0.75 }}
-                />
-                {t("settings.light")}
+                <ModeToggleIcon src={OS_ICON_PREFERENCES.modeLight} />
+                <Box component="span" sx={{ ml: 0.75 }}>
+                  {t("settings.light")}
+                </Box>
               </ToggleButton>
               <ToggleButton value="dark">
-                <DarkModeOutlinedIcon
-                  sx={{ fontSize: "var(--font-size-caption)", mr: 0.75 }}
-                />
-                {t("settings.dark")}
+                <ModeToggleIcon src={OS_ICON_PREFERENCES.modeDark} />
+                <Box component="span" sx={{ ml: 0.75 }}>
+                  {t("settings.dark")}
+                </Box>
               </ToggleButton>
             </ToggleButtonGroup>
           </SettingsSection>
 
           <SettingsSection
-            icon={
-              <PaletteOutlinedIcon sx={{ fontSize: "var(--icon-size-sm)" }} />
-            }
+            icon={<PrefSectionIcon src={OS_ICON_PREFERENCES.accent} />}
             label={t("settings.themeBrand")}
             accessory={
               <Typography
                 variant="caption"
                 sx={{
                   fontSize: "var(--font-size-caption)",
-                  color: "var(--muted)",
+                  color: "var(--text-tertiary)",
                   fontWeight: 600,
                   lineHeight: "var(--line-height-normal)",
                 }}
@@ -315,7 +345,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           >
             <Typography
               sx={{
-                color: "var(--muted)",
+                color: "var(--text-tertiary)",
                 fontWeight: 700,
                 fontSize: "var(--font-size-label)",
                 letterSpacing: "-0.02em",
@@ -329,7 +359,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             variant="caption"
             sx={{
               fontSize: "var(--font-size-caption)",
-              color: "var(--muted)",
+              color: "var(--text-tertiary)",
               fontWeight: 500,
               lineHeight: "var(--line-height-normal)",
             }}

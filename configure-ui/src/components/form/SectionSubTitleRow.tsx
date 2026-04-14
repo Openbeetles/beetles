@@ -1,5 +1,6 @@
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
+import { TEXT_SUBSECTION_TITLE_SX } from "../../theme/panelStyles";
 
 interface SectionSubTitleRowProps {
   title: string;
@@ -46,11 +47,9 @@ export function SectionSubTitleRow({
       <Typography
         variant="subtitle2"
         sx={{
-          fontWeight: 600,
+          ...TEXT_SUBSECTION_TITLE_SX,
           letterSpacing: "0.01em",
-          color: "var(--foreground)",
           textTransform: "none",
-          fontSize: "var(--font-size-body-sm)",
         }}
       >
         {title}

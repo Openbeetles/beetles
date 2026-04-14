@@ -3,7 +3,12 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import type { SxProps, Theme } from "@mui/material/styles";
 import type { PropsWithChildren, ReactNode } from "react";
-import { CONFIG_PANEL_SX, PANEL_SECTION_PADDING } from "../theme/panelStyles";
+import {
+  CONFIG_PANEL_SX,
+  PANEL_SECTION_PADDING,
+  TEXT_BODY_TERTIARY_SX,
+  TEXT_SECTION_TITLE_SX,
+} from "../theme/panelStyles";
 
 interface SettingsSectionProps {
   icon: ReactNode;
@@ -51,31 +56,20 @@ export function SettingsSection({
         <Stack direction="row" alignItems="center" spacing={1.5}>
           <Box
             sx={{
-              width: "var(--icon-container-sm)",
-              height: "var(--icon-container-sm)",
-              borderRadius: "var(--radius-control)",
+              width: "var(--icon-size-lg)",
+              height: "var(--icon-size-lg)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
-              color: "color-mix(in srgb, var(--primary) 55%, var(--muted))",
-              bgcolor: "color-mix(in srgb, var(--primary) 5%, transparent)",
-              transition:
-                "background-color var(--transition-duration) ease, color var(--transition-duration) ease",
+              borderRadius: "var(--radius-chip)",
+              backgroundColor:
+                "color-mix(in srgb, var(--foreground) 4%, transparent)",
             }}
           >
             {icon}
           </Box>
-          <Typography
-            component="span"
-            sx={{
-              fontSize: "var(--font-size-h4)",
-              fontWeight: 700,
-              letterSpacing: "-0.02em",
-              lineHeight: "var(--line-height-snug)",
-              color: "var(--foreground)",
-            }}
-          >
+          <Typography component="span" sx={TEXT_SECTION_TITLE_SX}>
             {label}
           </Typography>
         </Stack>
@@ -85,16 +79,7 @@ export function SettingsSection({
         <Box sx={{ mb: belowRowMb }}>{belowTitleRow}</Box>
       ) : null}
       {description && (
-        <Typography
-          variant="body2"
-          sx={{
-            color: "var(--muted)",
-            mb: 2,
-            fontSize: "var(--font-size-caption)",
-            lineHeight: "var(--line-height-normal)",
-            maxWidth: "52ch",
-          }}
-        >
+        <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, mb: 2 }}>
           {description}
         </Typography>
       )}

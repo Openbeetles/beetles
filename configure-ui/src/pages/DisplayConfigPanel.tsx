@@ -8,7 +8,6 @@ import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import SaveRounded from "@mui/icons-material/SaveRounded";
-import MonitorOutlined from "@mui/icons-material/MonitorOutlined";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
@@ -16,8 +15,10 @@ import {
   InlineAlert,
   SaveFeedback,
 } from "../components/form";
+import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
+import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
@@ -203,7 +204,7 @@ export function DisplayConfigPanel() {
         <SettingsSection
           pinHeader
           sx={{ flex: 1, minHeight: 0 }}
-          icon={<MonitorOutlined />}
+          icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.display} />}
           label={t("displayConfig.sectionMain")}
         >
           <FormLoadingSkeleton />
@@ -247,12 +248,12 @@ export function DisplayConfigPanel() {
   } as const;
 
   return (
-    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
+    <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={displayError} onRetry={loadDisplayConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
-        icon={<MonitorOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
+        icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.display} />}
         label={t("displayConfig.sectionMain")}
         description={sectionDesc}
         accessory={
@@ -419,7 +420,7 @@ export function DisplayConfigPanel() {
                       />
                       <Typography
                         variant="body2"
-                        sx={{ color: "var(--muted)", pr: 1 }}
+                        sx={{ color: "var(--text-tertiary)", pr: 1 }}
                       >
                         {t("displayConfig.linuxSpiSwapBytesHelp")}
                       </Typography>

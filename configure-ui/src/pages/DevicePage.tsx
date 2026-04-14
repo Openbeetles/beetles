@@ -5,10 +5,9 @@ import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { SxProps, Theme } from "@mui/material/styles";
-import ChatRounded from "@mui/icons-material/ChatRounded";
-import DeveloperBoardOutlined from "@mui/icons-material/DeveloperBoardOutlined";
-import LinkRounded from "@mui/icons-material/LinkRounded";
 import RefreshRounded from "@mui/icons-material/RefreshRounded";
+import { Os3dIcon } from "../components/Os3dIcon";
+import { OS_ICON_DASHBOARD } from "../config/osIcons";
 import { InlineAlert, SettingsRow } from "../components/form";
 import { ChannelConnectivityPanel } from "../components/ChannelConnectivityPanel";
 import { BeetleIcon } from "../components/BeetleIcon";
@@ -34,6 +33,7 @@ import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { runDeferredLoading } from "../util/deferredLoading";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import {
   audioProfileLabelKey,
   buildDeviceOperationalStatusKey,
@@ -47,7 +47,8 @@ import {
   DASHBOARD_HOME_GRID_GAP,
   DASHBOARD_INSET_WELL_BG,
   PAGE_SCROLL_CANVAS_SX,
-  UI_LABEL_SECONDARY_SX,
+  TEXT_BODY_TERTIARY_SX,
+  TEXT_DASHBOARD_CARD_TITLE_SX,
 } from "../theme/panelStyles";
 
 const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
@@ -81,38 +82,29 @@ export function DashboardCard({
     >
       <Box sx={DASHBOARD_CARD_HEADER_ROW_SX}>
         <Box
-          sx={{ display: "flex", alignItems: "center", gap: 1.5, minWidth: 0 }}
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: LAYOUT_TOKENS.spacingTitleToContent,
+            minWidth: 0,
+          }}
         >
           {icon && (
             <Box
               sx={{
                 width: "var(--icon-size-lg)",
                 height: "var(--icon-size-lg)",
-                borderRadius: "var(--radius-control)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: "var(--primary)",
-                bgcolor: "color-mix(in srgb, var(--primary) 8%, transparent)",
-                boxShadow:
-                  "inset 0 0 0 1px color-mix(in srgb, var(--primary) 15%, transparent)",
                 flexShrink: 0,
+                /** 3D 拟物图标自带 drop-shadow，不再套浅底与 inset 边框 */
               }}
             >
               {icon}
             </Box>
           )}
-          <Typography
-            variant="subtitle2"
-            sx={{
-              fontWeight: 600,
-              letterSpacing: "var(--letter-spacing-label)",
-              color: "var(--foreground)",
-              textTransform: "none",
-              fontSize: "0.8125rem",
-              lineHeight: 1.35,
-            }}
-          >
+          <Typography variant="subtitle2" sx={TEXT_DASHBOARD_CARD_TITLE_SX}>
             {title}
           </Typography>
         </Box>
@@ -130,15 +122,16 @@ export function StatRow({ label, value }: { label: string; value: string }) {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
-        gap: 1.5,
+        gap: LAYOUT_TOKENS.spacingTitleToContent,
         py: 1.1,
       }}
     >
       <Typography
         variant="body2"
         sx={{
-          ...UI_LABEL_SECONDARY_SX,
-          fontSize: "0.8rem",
+          fontSize: "var(--font-size-caption)",
+          fontWeight: 500,
+          color: "var(--text-secondary)",
           flex: "1 1 auto",
           minWidth: 0,
         }}
@@ -151,7 +144,7 @@ export function StatRow({ label, value }: { label: string; value: string }) {
           fontFamily: "var(--font-mono)",
           fontWeight: 500,
           fontSize: "var(--font-size-data-value)",
-          color: "var(--foreground)",
+          color: "var(--text-primary)",
           textAlign: "right",
           flexShrink: 0,
         }}
@@ -462,7 +455,7 @@ export function DevicePage() {
           justifyContent: "space-between",
           alignItems: "flex-start",
           flexWrap: "wrap",
-          gap: 2,
+          gap: LAYOUT_TOKENS.spacingSectionStack,
         }}
       >
         <Box sx={{ display: "flex", gap: 3, alignItems: "center" }}>
@@ -489,7 +482,7 @@ export function DevicePage() {
               sx={{
                 fontFamily: "var(--font-brand)",
                 fontWeight: 800,
-                color: "var(--foreground)",
+                color: "var(--text-primary)",
                 letterSpacing: "-0.02em",
                 lineHeight: 1.1,
                 mb: 1.5,
@@ -498,18 +491,28 @@ export function DevicePage() {
                 textOverflow: "ellipsis",
               }}
             >
-              {(systemInfo?.product_name || "beetle").toUpperCase()}
-              <Box
-                component="span"
-                sx={{ color: "var(--primary)", ml: 1.5, fontWeight: 700 }}
-              >
-                OS
-              </Box>
+              {systemInfo?.product_name?.trim()
+                ? systemInfo.product_name.toUpperCase()
+                : (() => {
+                    const full = t("app.name");
+                    const head = full.replace(/\s*OS\s*$/i, "").trim();
+                    return (
+                      <>
+                        {head.toUpperCase()}
+                        <Box
+                          component="span"
+                          sx={{ color: "var(--primary)", ml: 1.5, fontWeight: 700 }}
+                        >
+                          {" OS"}
+                        </Box>
+                      </>
+                    );
+                  })()}
             </Typography>
             <Box
               sx={{
                 display: "flex",
-                gap: 1.5,
+                gap: LAYOUT_TOKENS.spacingTitleToContent,
                 alignItems: "center",
                 flexWrap: "wrap",
               }}
@@ -518,7 +521,7 @@ export function DevicePage() {
                 sx={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 0.75,
+                  gap: LAYOUT_TOKENS.spacingInlineTight,
                   px: 1.25,
                   py: 0.5,
                   borderRadius: "var(--radius-full)",
@@ -552,7 +555,7 @@ export function DevicePage() {
                   variant="caption"
                   sx={{
                     fontFamily: "var(--font-mono)",
-                    color: "var(--foreground-soft)",
+                    color: "var(--text-secondary)",
                     bgcolor: DASHBOARD_INSET_WELL_BG,
                     px: 1.25,
                     py: 0.5,
@@ -569,7 +572,7 @@ export function DevicePage() {
                   variant="caption"
                   sx={{
                     fontFamily: "var(--font-mono)",
-                    color: "var(--foreground-soft)",
+                    color: "var(--text-secondary)",
                     bgcolor: DASHBOARD_INSET_WELL_BG,
                     px: 1.25,
                     py: 0.5,
@@ -614,7 +617,7 @@ export function DevicePage() {
             zIndex: 1,
             display: "flex",
             flexWrap: "wrap",
-            gap: 1.25,
+            gap: LAYOUT_TOKENS.spacingTitleToContent,
             mt: { xs: 3, md: 3.5 },
           }}
         >
@@ -633,7 +636,7 @@ export function DevicePage() {
               value: yesNo(healthData.display?.available, t),
               color: healthData.display?.available
                 ? "var(--semantic-success)"
-                : "var(--muted)",
+                : "var(--text-tertiary)",
               active: healthData.display?.available,
             },
             {
@@ -649,7 +652,7 @@ export function DevicePage() {
                 healthData.audio?.duplex_profile &&
                 healthData.audio.duplex_profile !== "unavailable"
                   ? "var(--semantic-success)"
-                  : "var(--muted)",
+                  : "var(--text-tertiary)",
               active:
                 healthData.audio?.duplex_profile &&
                 healthData.audio.duplex_profile !== "unavailable",
@@ -657,7 +660,7 @@ export function DevicePage() {
             ...audioCapabilityRows.map((r) => ({
               label: r.label,
               value: r.value,
-              color: r.active ? "var(--semantic-success)" : "var(--muted)",
+              color: r.active ? "var(--semantic-success)" : "var(--text-tertiary)",
               active: r.active,
             })),
           ].map((led, idx) => (
@@ -666,7 +669,7 @@ export function DevicePage() {
               sx={{
                 display: "flex",
                 alignItems: "center",
-                gap: 1.15,
+                gap: LAYOUT_TOKENS.spacingInlineTight,
                 px: 1.5,
                 py: 1.1,
                 borderRadius: "var(--radius-chip)",
@@ -689,9 +692,9 @@ export function DevicePage() {
                 <Typography
                   variant="caption"
                   sx={{
+                    ...TEXT_BODY_TERTIARY_SX,
                     display: "block",
-                    fontSize: "0.65rem",
-                    color: "var(--muted)",
+                    fontSize: "var(--font-size-label)",
                     textTransform: "uppercase",
                     letterSpacing: "0.06em",
                     lineHeight: 1,
@@ -709,7 +712,7 @@ export function DevicePage() {
                     fontFamily: "var(--font-mono)",
                     fontSize: "var(--font-size-data-value)",
                     fontWeight: 600,
-                    color: "var(--foreground)",
+                    color: "var(--text-primary)",
                     lineHeight: 1.15,
                     whiteSpace: "nowrap",
                     overflow: "hidden",
@@ -729,9 +732,7 @@ export function DevicePage() {
   const renderConnectionCard = () => (
     <DashboardCard
       title={t("device.sectionConnection")}
-      icon={
-        <LinkRounded sx={{ fontSize: "var(--icon-size-lg)" }} aria-hidden />
-      }
+      icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} />}
       sx={{ height: "100%" }}
     >
       <Box
@@ -754,7 +755,10 @@ export function DevicePage() {
             aria-label={t("device.baseUrlLabel")}
             slotProps={{
               htmlInput: {
-                style: { fontFamily: "var(--font-mono)", fontSize: "0.875rem" },
+                style: {
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "var(--font-size-caption)",
+                },
               },
             }}
           />
@@ -774,7 +778,7 @@ export function DevicePage() {
                 maxLength: 6,
                 style: {
                   fontFamily: "var(--font-mono)",
-                  fontSize: "0.875rem",
+                  fontSize: "var(--font-size-caption)",
                   letterSpacing: "0.2em",
                 },
                 ...pairingCodeReveal.inputProps,
@@ -782,7 +786,14 @@ export function DevicePage() {
             }}
           />
         </SettingsRow>
-        <Box sx={{ display: "flex", gap: 1.5, mt: 2.5, pt: 1 }}>
+        <Box
+          sx={{
+            display: "flex",
+            gap: LAYOUT_TOKENS.spacingTitleToContent,
+            mt: 2.5,
+            pt: 1,
+          }}
+        >
           <Button
             variant="contained"
             onClick={handleSave}
@@ -866,10 +877,18 @@ export function DevicePage() {
             mb: 1.5,
           }}
         >
-          beetle{" "}
-          <Box component="span" sx={{ color: "var(--primary)" }}>
-            OS
-          </Box>
+          {(() => {
+            const full = t("app.name");
+            const head = full.replace(/\s*OS\s*$/i, "").trim();
+            return (
+              <>
+                {head}{" "}
+                <Box component="span" sx={{ color: "var(--primary)" }}>
+                  OS
+                </Box>
+              </>
+            );
+          })()}
         </Typography>
       </Box>
 
@@ -878,10 +897,10 @@ export function DevicePage() {
           position: "relative",
           zIndex: 1,
           display: "flex",
-          flexDirection: "column",
-          gap: 2.5,
-        }}
-      >
+        flexDirection: "column",
+        gap: LAYOUT_TOKENS.spacingFormFields,
+      }}
+    >
         <TextField
           label={t("device.baseUrlLabel")}
           placeholder={t("device.baseUrlPlaceholder")}
@@ -909,7 +928,13 @@ export function DevicePage() {
             },
           }}
         />
-        <Box sx={{ display: "flex", gap: 1.5, mt: 1 }}>
+        <Box
+          sx={{
+            display: "flex",
+            gap: LAYOUT_TOKENS.spacingTitleToContent,
+            mt: 1,
+          }}
+        >
           <Button
             variant="contained"
             onClick={handleSave}
@@ -1006,7 +1031,7 @@ export function DevicePage() {
                   gridRow: { xs: "span 1", lg: "span 1" },
                   display: "flex",
                   flexDirection: "column",
-                  gap: 2,
+                  gap: LAYOUT_TOKENS.spacingSectionStack,
                   justifyContent: "center",
                 }}
               >
@@ -1034,10 +1059,17 @@ export function DevicePage() {
                 >
                   <DashboardCard
                     title={t("device.sectionDeviceInfo")}
-                    icon={<DeveloperBoardOutlined />}
+                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceInfo} />}
                   >
                     <Box
-                      sx={{ display: "flex", flexDirection: "column", gap: 0 }}
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 0,
+                        "& > *:not(:last-of-type)": {
+                          borderBottom: "var(--divider-row)",
+                        },
+                      }}
                     >
                       {deviceSummaryFields.map((field) => (
                         <StatRow
@@ -1061,7 +1093,7 @@ export function DevicePage() {
                 >
                   <DashboardCard
                     title={t("device.sectionChannelConnectivity")}
-                    icon={<ChatRounded />}
+                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.channels} />}
                   >
                     <ChannelConnectivityPanel
                       channels={channelList}

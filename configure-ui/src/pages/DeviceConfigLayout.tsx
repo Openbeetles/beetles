@@ -6,6 +6,7 @@ import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import { ConfigSubNavLayout } from "../components/ConfigSubNavLayout";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
+import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
 
 /**
  * 设备配置壳层：左侧分区导航 + 右侧子路由（`/device-config/:tab`）。
@@ -35,9 +36,21 @@ export function DeviceConfigLayout() {
   }, [pathname]);
 
   const subNavItems = [
-    { segment: "display", label: t("deviceConfig.tabDisplay") },
-    { segment: "audio", label: t("deviceConfig.tabAudio") },
-    { segment: "hardware", label: t("deviceConfig.tabGpioDevices") },
+    {
+      segment: "display",
+      label: t("deviceConfig.tabDisplay"),
+      iconSrc: OS_ICON_DEVICE_CONFIG.display,
+    },
+    {
+      segment: "audio",
+      label: t("deviceConfig.tabAudio"),
+      iconSrc: OS_ICON_DEVICE_CONFIG.audio,
+    },
+    {
+      segment: "hardware",
+      label: t("deviceConfig.tabGpioDevices"),
+      iconSrc: OS_ICON_DEVICE_CONFIG.hardware,
+    },
   ];
 
   return (

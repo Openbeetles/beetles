@@ -3,25 +3,16 @@ import Box from "@mui/material/Box";
 import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
-import RestartAltRounded from "@mui/icons-material/RestartAltRounded";
-import SettingsRounded from "@mui/icons-material/SettingsRounded";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
-import * as systemApi from "../api/endpoints/system";
-import { setRestartPending } from "../store/deviceStatusStore";
-import { useDevice } from "../hooks/useDevice";
-import { useDeviceApi } from "../hooks/useDeviceApi";
-import { useToast } from "../hooks/useToast";
-import { ConfirmDialog } from "./ConfirmDialog";
 import { BeetleIcon } from "./BeetleIcon";
 import { PageHeader } from "./PageHeader";
-import {
-  ShellBreadcrumb,
-  ShellConnectionStatus,
-} from "./ShellChromeTrail";
+import { ShellBreadcrumb } from "./ShellChromeTrail";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
+import { OS_ICON_SHELL } from "../config/osIcons";
+import { Os3dIcon } from "./Os3dIcon";
 
 const PATH_TO_META: Record<string, { titleKey: string }> = {
   "/device": { titleKey: "device.pageTitle" },
@@ -67,35 +58,11 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
   const navigate = useNavigate();
   const navBlocker = useContext(NavBlockerContext);
   const location = useLocation();
-  const { baseUrl, pairingCode } = useDevice();
-  const { deviceConnected } = useDeviceApi();
-  const { showToast } = useToast();
-  const [restarting, setRestarting] = useState(false);
-  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [brandIconHovered, setBrandIconHovered] = useState(false);
 
   const pathname = location.pathname;
   const meta = metaForPathname(pathname);
   const title = meta ? t(meta.titleKey) : pathname;
-
-  const doRestart = async () => {
-    if (!baseUrl?.trim() || !pairingCode?.trim()) return;
-    setRestarting(true);
-    const res = await systemApi.postRestart(baseUrl, pairingCode);
-    setRestarting(false);
-    setRestartConfirmOpen(false);
-    if (res.ok) {
-      setRestartPending();
-      showToast(t("device.restartSent"), { variant: "success" });
-    } else {
-      showToast(res.error ?? t("device.restartFail"), { variant: "error" });
-    }
-  };
-
-  const handleRestartClick = () => {
-    if (!baseUrl?.trim() || !pairingCode?.trim() || restarting) return;
-    setRestartConfirmOpen(true);
-  };
 
   const handleWindowIconClick = () => {
     if (navBlocker?.attemptNavigate) {
@@ -154,7 +121,8 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
             aria-label={t("nav.brandHome")}
             sx={{
               flexShrink: 0,
-              p: 0.5,
+              /** 与 `PageHeader` 标题字阶、右侧 caption 按钮视觉重量对齐 */
+              p: 0.625,
               borderRadius: "var(--radius-control)",
               border: "1px solid var(--border-subtle)",
               backgroundColor:
@@ -173,6 +141,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
               },
               "@media (prefers-reduced-motion: reduce)": {
                 "&:hover": { transform: "none" },
+                transition: "none",
               },
             }}
           >
@@ -180,8 +149,8 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
               aria-hidden
               animationActive={brandIconHovered}
               sx={{
-                width: 24,
-                height: 24,
+                width: "var(--icon-size-lg)",
+                height: "var(--icon-size-lg)",
                 borderRadius: "calc(var(--radius-control) - 2px)",
               }}
             />
@@ -192,7 +161,6 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
           <ShellBreadcrumb />
         </Stack>
       </Stack>
-      <ShellConnectionStatus />
       <Stack
         direction="row"
         alignItems="stretch"
@@ -201,26 +169,6 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
           borderLeft: "1px solid var(--border-subtle)",
         }}
       >
-        {deviceConnected && (
-          <IconButton
-            size="small"
-            onClick={handleRestartClick}
-            disabled={restarting}
-            sx={{
-              ...captionBtnSx,
-              color: "var(--semantic-danger)",
-              "&:hover:not(:disabled)": {
-                backgroundColor:
-                  "color-mix(in srgb, var(--semantic-danger) 14%, transparent)",
-                color: "var(--semantic-danger)",
-              },
-            }}
-            aria-label={t("device.restart")}
-            title={t("device.restart")}
-          >
-            <RestartAltRounded sx={{ fontSize: "var(--icon-size-sm)" }} />
-          </IconButton>
-        )}
         {onOpenSettings && (
           <IconButton
             size="small"
@@ -228,21 +176,20 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
             sx={captionBtnSx}
             aria-label={t("settings.open")}
           >
-            <SettingsRounded sx={{ fontSize: "var(--icon-size-md)" }} />
+            <Box
+              sx={{
+                width: "var(--icon-size-md)",
+                height: "var(--icon-size-md)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Os3dIcon src={OS_ICON_SHELL.preferences} />
+            </Box>
           </IconButton>
         )}
       </Stack>
-      <ConfirmDialog
-        open={restartConfirmOpen}
-        onClose={() => setRestartConfirmOpen(false)}
-        title={t("device.restartConfirmTitle")}
-        description={t("device.restartConfirmDesc")}
-        icon={<RestartAltRounded sx={{ fontSize: "var(--icon-size-md)" }} />}
-        confirmLabel={t("device.restart")}
-        onConfirm={doRestart}
-        confirmDisabled={restarting}
-        confirmColor="primary"
-      />
     </Box>
   );
 }
