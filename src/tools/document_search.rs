@@ -1,11 +1,11 @@
 //! document_search 工具：在状态根内递归检索文档名与正文，返回命中的路径与摘要片段。
 //! document_search tool: recursively search document names and readable content under storage.
 
-use crate::error::{Error, Result};
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_searchable_document_text,
     detect_document_kind,
 };
+use crate::error::{Error, Result};
 use crate::tools::state_file_guard::sanitize_state_file_read;
 use crate::tools::{parse_tool_args, Tool, ToolContext};
 use crate::util::normalize_state_rel_path;

@@ -1,8 +1,8 @@
 //! document_read 工具：统一读取公网 URL 或状态根文档路径，返回适合 LLM 阅读的文本。
 //! document_read tool: read a public URL or state-root document path and return LLM-friendly text.
 
-use crate::error::{Error, Result};
 use crate::documents::{decode_readable_document, DecodedReadableDocument};
+use crate::error::{Error, Result};
 use crate::orchestrator::ToolDecision;
 use crate::tools::state_file_guard::sanitize_state_file_read;
 use crate::tools::web_fetch::{parse_max_chars, WebFetchTool};

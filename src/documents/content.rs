@@ -27,8 +27,7 @@ pub fn decode_readable_document(
             raw_bytes: raw.len(),
             warning: if normalized.is_empty() {
                 Some(
-                    "PDF contains no extractable text (may be image-only or encrypted)"
-                        .to_string(),
+                    "PDF contains no extractable text (may be image-only or encrypted)".to_string(),
                 )
             } else {
                 None
@@ -153,7 +152,12 @@ fn source_head(text: &str, radius: usize) -> String {
     }
 }
 
-fn char_window(text: &str, match_start: usize, match_end: usize, radius: usize) -> (&str, bool, bool) {
+fn char_window(
+    text: &str,
+    match_start: usize,
+    match_end: usize,
+    radius: usize,
+) -> (&str, bool, bool) {
     let start_char = text[..match_start].chars().count();
     let end_char = text[..match_end.min(text.len())].chars().count();
     let snippet_start_char = start_char.saturating_sub(radius);
@@ -301,9 +305,25 @@ fn maybe_push_tag_break(out: &mut String, tag: &str) {
         .to_ascii_lowercase();
     if matches!(
         lower.as_str(),
-        "p" | "br" | "div" | "section" | "article" | "header" | "footer" | "li"
-            | "ul" | "ol" | "table" | "tr" | "td" | "th" | "h1" | "h2" | "h3"
-            | "h4" | "h5" | "h6"
+        "p" | "br"
+            | "div"
+            | "section"
+            | "article"
+            | "header"
+            | "footer"
+            | "li"
+            | "ul"
+            | "ol"
+            | "table"
+            | "tr"
+            | "td"
+            | "th"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
     ) && !out.ends_with('\n')
     {
         out.push('\n');
@@ -393,11 +413,9 @@ mod tests {
 
     #[test]
     fn searchable_document_formats_json() {
-        let decoded = decode_searchable_document_text(
-            "docs/test.json",
-            br#"{"name":"beetle","ok":true}"#,
-        )
-        .expect("searchable json");
+        let decoded =
+            decode_searchable_document_text("docs/test.json", br#"{"name":"beetle","ok":true}"#)
+                .expect("searchable json");
         assert!(decoded.contains("\"name\": \"beetle\""));
     }
 

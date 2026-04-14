@@ -17,10 +17,9 @@ use crate::platform::{
         SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
         SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
         SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
-        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore,
-        SpiffsSkillStorage, SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore,
-        SpiffsTaskLearningStore, SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore,
-        SpiffsWorldSenseStore,
+        SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
+        SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
+        SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
     },
     NvsConfigStore,
 };

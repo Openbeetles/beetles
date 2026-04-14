@@ -125,7 +125,10 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
 
     fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
         let mut keys = Vec::new();
-        for account in self.office.accounts_for_capability(OfficeCapability::Calendar) {
+        for account in self
+            .office
+            .accounts_for_capability(OfficeCapability::Calendar)
+        {
             if account.provider_kind != provider {
                 continue;
             }
@@ -138,15 +141,18 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
     }
 
     fn set(&self, credential: &CalendarProviderCredential) -> Result<()> {
-        let account = self.office.account(&credential.account_key).ok_or_else(|| {
-            Error::config(
-                "calendar_provider",
-                format!(
-                    "calendar credential account '{}' is not registered",
-                    credential.account_key
-                ),
-            )
-        })?;
+        let account = self
+            .office
+            .account(&credential.account_key)
+            .ok_or_else(|| {
+                Error::config(
+                    "calendar_provider",
+                    format!(
+                        "calendar credential account '{}' is not registered",
+                        credential.account_key
+                    ),
+                )
+            })?;
         if !account
             .enabled_capabilities
             .contains(&OfficeCapability::Calendar)
@@ -210,7 +216,10 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
 
     fn list_statuses(&self) -> Result<Vec<CalendarProviderCredentialStatus>> {
         let mut statuses = Vec::new();
-        for account in self.office.accounts_for_capability(OfficeCapability::Calendar) {
+        for account in self
+            .office
+            .accounts_for_capability(OfficeCapability::Calendar)
+        {
             let Some(credential) = self.office.credential(&account.account_key)? else {
                 continue;
             };
@@ -291,18 +300,12 @@ mod tests {
                 updated_at: 42,
                 metadata: [
                     ("calendar_id".to_string(), "team".to_string()),
-                    (
-                        "calendar_username".to_string(),
-                        "caldav-user".to_string(),
-                    ),
+                    ("calendar_username".to_string(), "caldav-user".to_string()),
                     (
                         "calendar_base_url".to_string(),
                         "https://dav.example.com/remote.php/dav/calendars".to_string(),
                     ),
-                    (
-                        "calendar_root_path".to_string(),
-                        "/work".to_string(),
-                    ),
+                    ("calendar_root_path".to_string(), "/work".to_string()),
                 ]
                 .into_iter()
                 .collect(),

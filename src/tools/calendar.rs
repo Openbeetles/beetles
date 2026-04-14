@@ -2,9 +2,9 @@
 
 use super::http_bridge::ToolContextHttpClient;
 use crate::calendar::{
-    normalize_calendar_event, CalendarEvent, CalendarEventStatus,
-    CalendarProviderCredentialStatus, CalendarProviderCredentialStore, CalendarProviderRegistry,
-    CalendarQuery, CalendarService, CalendarStore, CALENDAR_PROVIDER_LOCAL,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarProviderCredentialStatus,
+    CalendarProviderCredentialStore, CalendarProviderRegistry, CalendarQuery, CalendarService,
+    CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 
 use crate::error::{Error, Result};
@@ -887,9 +887,7 @@ mod tests {
             })
             .unwrap();
         let mut providers = CalendarProviderRegistry::new();
-        providers.register(Arc::new(
-            crate::calendar::providers::caldav::CalDavProvider,
-        ));
+        providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
         let tool = CalendarTool::with_providers(
             Arc::new(StubCalendarStore::default()),
             credential_store,

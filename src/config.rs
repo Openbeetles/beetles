@@ -3300,7 +3300,10 @@ mod tests {
         assert_eq!(parsed.items.len(), 1);
         assert_eq!(parsed.items[0].account_key, "calendar-work");
         assert_eq!(
-            parsed.items[0].metadata.get("calendar_id").map(String::as_str),
+            parsed.items[0]
+                .metadata
+                .get("calendar_id")
+                .map(String::as_str),
             Some("primary")
         );
     }

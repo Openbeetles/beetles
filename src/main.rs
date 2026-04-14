@@ -989,13 +989,6 @@ fn state_change_display_refresh_mode(
     }
 }
 
-fn enforce_heap_checkpoint(stage: &'static str) {
-    if let Err(error) = beetle::platform::debug_heap_checkpoint(stage) {
-        log::error!("[{}] {}", TAG, error);
-        panic!("[{}] {}", TAG, error);
-    }
-}
-
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 struct DisplayLoopCacheUpdate<'a> {
     presence_subtitle: &'a Option<String>,
@@ -1166,13 +1159,13 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         beetle::platform::task_wdt::feed_current_task();
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         beetle::platform::task_wdt::feed_current_task();
-        enforce_heap_checkpoint("heap_display_loop_before_presence");
+        beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_display_loop_before_presence");
         let snapshot = beetle::orchestrator::snapshot();
         let presence = beetle::runtime::inspect_platform_presence(
             platform.as_ref(),
             beetle::util::current_unix_secs(),
         );
-        enforce_heap_checkpoint("heap_display_loop_after_presence");
+        beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_display_loop_after_presence");
         let pressure = match snapshot.pressure {
             beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
             beetle::orchestrator::PressureLevel::Cautious => DisplayPressureLevel::Cautious,
@@ -1273,7 +1266,10 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             if let Err(e) = platform.display_command(cmd) {
                 log::warn!("[{}] display refresh failed: {}", TAG, e);
             }
-            enforce_heap_checkpoint("heap_display_loop_after_state_command");
+            beetle::bootstrap::observe_heap_checkpoint(
+                TAG,
+                "heap_display_loop_after_state_command",
+            );
             loop_state.last_state = Some(state);
             update_display_loop_cache(
                 &mut loop_state,
@@ -2018,7 +2014,7 @@ fn prepare_runtime_assembly(
     log_runtime_store_lengths(&stores);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("boot_memory_reads");
-    enforce_heap_checkpoint("heap_after_boot_memory_reads");
+    beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_after_boot_memory_reads");
 
     let bus = RuntimeBus::new(DEFAULT_CAPACITY);
     log::info!(
@@ -2052,7 +2048,7 @@ fn prepare_runtime_assembly(
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("audio_init_phase_done");
-    enforce_heap_checkpoint("heap_after_audio_init");
+    beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_after_audio_init");
 
     let voice_event_channel =
         build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());

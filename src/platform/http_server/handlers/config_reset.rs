@@ -14,10 +14,14 @@ pub fn post(ctx: &HandlerContext) -> Result<ApiResponse, std::io::Error> {
     let _ = ctx.platform.remove_config_file("config/llm.json");
     let _ = ctx.platform.remove_config_file("config/channels.json");
     let _ = ctx.platform.remove_config_file("config/accounts.json");
-    let _ = ctx.platform.remove_config_file("config/office_credentials.json");
+    let _ = ctx
+        .platform
+        .remove_config_file("config/office_credentials.json");
     let _ = ctx.platform.remove_config_file("config/hardware.json");
     let _ = ctx.platform.remove_config_file("config/audio.json");
     let _ = ctx.platform.remove_config_file("config/display.json");
-    let _ = ctx.platform.remove_config_file("runtime/office_runtime_status.json");
+    let _ = ctx
+        .platform
+        .remove_config_file("runtime/office_runtime_status.json");
     Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
 }

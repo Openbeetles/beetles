@@ -1,6 +1,6 @@
 use crate::documents::{
-    DocumentsEntry, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
-    DocumentsSearchQuery, DocumentsProviderCredential,
+    DocumentsEntry, DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult,
+    DocumentsSearchHit, DocumentsSearchQuery,
 };
 use crate::error::Result;
 use std::collections::HashMap;

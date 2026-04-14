@@ -157,11 +157,10 @@ impl OfficeProbeAdapter for CalDavOfficeProbeAdapter {
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
-        let adapted =
-            crate::calendar::credentials::calendar_credential_from_office(
-                account.clone(),
-                credential.clone(),
-            );
+        let adapted = crate::calendar::credentials::calendar_credential_from_office(
+            account.clone(),
+            credential.clone(),
+        );
         if validate_caldav_credential(&adapted).is_err() {
             return Ok(OfficeProbeResult {
                 account_key: account.account_key.clone(),
@@ -274,12 +273,7 @@ fn parse_calendar_query_response(
                 stack.pop();
             }
             Ok(Event::Eof) => break,
-            Err(error) => {
-                return Err(Error::config(
-                    "caldav_report_parse",
-                    error.to_string(),
-                ))
-            }
+            Err(error) => return Err(Error::config("caldav_report_parse", error.to_string())),
             _ => {}
         }
         buf.clear();
@@ -360,17 +354,18 @@ fn parse_ical_event(
         }
     }
 
-    let start_at_unix_secs = start_at_unix_secs.ok_or_else(|| {
-        Error::config("caldav_ical_parse", "VEVENT is missing DTSTART")
-    })?;
+    let start_at_unix_secs = start_at_unix_secs
+        .ok_or_else(|| Error::config("caldav_ical_parse", "VEVENT is missing DTSTART"))?;
     let end_at_unix_secs = end_at_unix_secs
         .or_else(|| duration_secs.map(|seconds| start_at_unix_secs.saturating_add(seconds)))
         .unwrap_or_else(|| start_at_unix_secs.saturating_add(3600));
-    let remote_id = href_remote_id(href).or_else(|| {
-        (!uid.trim().is_empty()).then(|| uid.trim().to_string())
-    });
+    let remote_id =
+        href_remote_id(href).or_else(|| (!uid.trim().is_empty()).then(|| uid.trim().to_string()));
     let remote_id = remote_id.ok_or_else(|| {
-        Error::config("caldav_ical_parse", "VEVENT is missing addressable resource id")
+        Error::config(
+            "caldav_ical_parse",
+            "VEVENT is missing addressable resource id",
+        )
     })?;
     normalize_calendar_event(CalendarEvent {
         id: remote_id.clone(),
@@ -702,10 +697,7 @@ fn path_segments(path: &str) -> Vec<&str> {
         .collect()
 }
 
-fn build_event_resource_url(
-    credential: &CalendarProviderCredential,
-    id: &str,
-) -> Result<String> {
+fn build_event_resource_url(credential: &CalendarProviderCredential, id: &str) -> Result<String> {
     let resource = normalize_event_resource_name(id, id)?;
     Ok(format!(
         "{}{}",
@@ -883,7 +875,10 @@ END:VCALENDAR</c:calendar-data>
                 },
             )
             .expect("probe result");
-        assert_eq!(result.disposition, OfficeProbeDisposition::MissingCredential);
+        assert_eq!(
+            result.disposition,
+            OfficeProbeDisposition::MissingCredential
+        );
         assert_eq!(result.reason, "calendar_transport_config_missing");
     }
 }

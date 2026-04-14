@@ -199,9 +199,11 @@ impl CalendarService {
             return Ok(account_key.to_string());
         }
         if let Some(office_service) = self.office_service.as_ref() {
-            if let Some(account_key) =
-                resolve_office_default_account_key(office_service, self.credential_store.as_ref(), provider)?
-            {
+            if let Some(account_key) = resolve_office_default_account_key(
+                office_service,
+                self.credential_store.as_ref(),
+                provider,
+            )? {
                 return Ok(account_key);
             }
         }

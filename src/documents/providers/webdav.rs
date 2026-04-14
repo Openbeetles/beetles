@@ -1,13 +1,12 @@
 #![cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 
+use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
     decode_searchable_document_text, DocumentsEntry, DocumentsOperation, DocumentsProvider,
     DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
     DocumentsSearchQuery,
 };
-
-use crate::documents::credentials::documents_credential_from_office;
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
 use base64::Engine;

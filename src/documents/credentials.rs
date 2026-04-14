@@ -92,7 +92,10 @@ impl DocumentsProviderCredentialStore for OfficeBackedDocumentsProviderCredentia
 
     fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
         let mut keys = Vec::new();
-        for account in self.office.accounts_for_capability(OfficeCapability::Documents) {
+        for account in self
+            .office
+            .accounts_for_capability(OfficeCapability::Documents)
+        {
             if account.provider_kind != provider {
                 continue;
             }
@@ -106,7 +109,10 @@ impl DocumentsProviderCredentialStore for OfficeBackedDocumentsProviderCredentia
 
     fn list_statuses(&self) -> Result<Vec<DocumentsProviderCredentialStatus>> {
         let mut statuses = Vec::new();
-        for account in self.office.accounts_for_capability(OfficeCapability::Documents) {
+        for account in self
+            .office
+            .accounts_for_capability(OfficeCapability::Documents)
+        {
             let Some(credential) = self.office.credential(&account.account_key)? else {
                 continue;
             };
@@ -217,7 +223,10 @@ mod tests {
     struct StubRuntimeStatusStore;
 
     impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
-        fn get(&self, _account_key: &str) -> Result<Option<crate::office::OfficeAccountRuntimeStatus>> {
+        fn get(
+            &self,
+            _account_key: &str,
+        ) -> Result<Option<crate::office::OfficeAccountRuntimeStatus>> {
             Ok(None)
         }
         fn list(&self) -> Result<Vec<crate::office::OfficeAccountRuntimeStatus>> {

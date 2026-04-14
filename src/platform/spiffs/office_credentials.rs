@@ -93,7 +93,10 @@ impl OfficeCredentialStore for SpiffsOfficeCredentialStore {
             if !map.contains_key(&account_key) && map.len() >= MAX_OFFICE_CREDENTIALS {
                 return Err(Error::config(
                     "office_credentials_set",
-                    format!("office credential limit {} exceeded", MAX_OFFICE_CREDENTIALS),
+                    format!(
+                        "office credential limit {} exceeded",
+                        MAX_OFFICE_CREDENTIALS
+                    ),
                 ));
             }
             let mut next = credential.clone();
@@ -123,7 +126,10 @@ fn segment_to_map(
             return Err("account_key must not be empty".to_string());
         }
         if map.contains_key(&account_key) {
-            return Err(format!("duplicate office credential account_key '{}'", account_key));
+            return Err(format!(
+                "duplicate office credential account_key '{}'",
+                account_key
+            ));
         }
         let mut next = credential;
         next.account_key = account_key.clone();

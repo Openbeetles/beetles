@@ -37,13 +37,12 @@ impl Tool for OfficeStatusTool {
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_office_status")?;
-        let capability = obj
-            .get("capability")
-            .map(parse_capability)
-            .transpose()?;
+        let capability = obj.get("capability").map(parse_capability).transpose()?;
         let mut summary = self.office.summary()?;
         if let Some(capability) = capability {
-            summary.defaults.retain(|item| item.capability == capability);
+            summary
+                .defaults
+                .retain(|item| item.capability == capability);
             summary.accounts.retain(|account| {
                 account.enabled_capabilities.contains(&capability)
                     || account.selected_for_capabilities.contains(&capability)

@@ -36,7 +36,13 @@ fn beetle_systemd_unit_managed() -> Result<bool> {
 
 fn query_systemctl_show_value(property: &str) -> Result<Option<String>> {
     let output = Command::new("systemctl")
-        .args(["show", "--property", property, "--value", BEETLE_SYSTEMD_UNIT])
+        .args([
+            "show",
+            "--property",
+            property,
+            "--value",
+            BEETLE_SYSTEMD_UNIT,
+        ])
         .output()
         .map_err(|error| Error::io("linux_systemd_show", error))?;
     if !output.status.success() {

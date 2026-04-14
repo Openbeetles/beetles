@@ -1,7 +1,7 @@
 use crate::documents::{
-    DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
+    DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
     DocumentsProviderCredentialStatus, DocumentsProviderCredentialStore, DocumentsProviderRegistry,
-    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery, DocumentsEntry,
+    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
 };
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccountRuntimeStatus, OfficeCapability, OfficeService};
@@ -42,7 +42,8 @@ impl DocumentsService {
             return Ok(provider.to_string());
         }
         if let Some(office_service) = self.office_service.as_ref() {
-            if let Some(account_key) = office_service.default_account_key(OfficeCapability::Documents)
+            if let Some(account_key) =
+                office_service.default_account_key(OfficeCapability::Documents)
             {
                 let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
                     Error::config(
@@ -189,7 +190,9 @@ impl DocumentsService {
                 return Ok(account_key);
             }
         }
-        let mut keys = self.credential_store.find_account_keys_by_provider(provider)?;
+        let mut keys = self
+            .credential_store
+            .find_account_keys_by_provider(provider)?;
         keys.sort();
         match keys.len() {
             0 => Err(Error::config(
@@ -235,7 +238,10 @@ fn resolve_office_default_account_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documents::{OfficeBackedDocumentsProviderCredentialStore, OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_USERNAME};
+    use crate::documents::{
+        OfficeBackedDocumentsProviderCredentialStore, OFFICE_METADATA_DOCUMENTS_BASE_URL,
+        OFFICE_METADATA_DOCUMENTS_USERNAME,
+    };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
@@ -251,17 +257,34 @@ mod tests {
 
     impl OfficeCredentialStore for StubCredentialStore {
         fn get(&self, account_key: &str) -> Result<Option<OfficeCredential>> {
-            Ok(self.items.lock().unwrap_or_else(|e| e.into_inner()).get(account_key).cloned())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(account_key)
+                .cloned())
         }
         fn list(&self) -> Result<Vec<OfficeCredential>> {
-            Ok(self.items.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
         }
         fn set(&self, credential: &OfficeCredential) -> Result<()> {
-            self.items.lock().unwrap_or_else(|e| e.into_inner()).insert(credential.account_key.clone(), credential.clone());
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(credential.account_key.clone(), credential.clone());
             Ok(())
         }
         fn clear(&self, account_key: &str) -> Result<()> {
-            self.items.lock().unwrap_or_else(|e| e.into_inner()).remove(account_key);
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -270,21 +293,43 @@ mod tests {
     struct StubRuntimeStatusStore;
 
     impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
-        fn get(&self, _account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> { Ok(None) }
-        fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> { Ok(Vec::new()) }
-        fn set(&self, _status: &OfficeAccountRuntimeStatus) -> Result<()> { Ok(()) }
-        fn clear(&self, _account_key: &str) -> Result<()> { Ok(()) }
+        fn get(&self, _account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
+            Ok(None)
+        }
+        fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
+            Ok(Vec::new())
+        }
+        fn set(&self, _status: &OfficeAccountRuntimeStatus) -> Result<()> {
+            Ok(())
+        }
+        fn clear(&self, _account_key: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct StubProvider;
 
     impl DocumentsProvider for StubProvider {
-        fn provider_name(&self) -> &'static str { "webdav" }
-        fn display_name(&self) -> &'static str { "WebDAV" }
-        fn supports(&self, _op: DocumentsOperation) -> bool { true }
-        fn list_entries(&self, credential: &DocumentsProviderCredential, query: DocumentsQuery) -> Result<Vec<DocumentsEntry>> {
+        fn provider_name(&self) -> &'static str {
+            "webdav"
+        }
+        fn display_name(&self) -> &'static str {
+            "WebDAV"
+        }
+        fn supports(&self, _op: DocumentsOperation) -> bool {
+            true
+        }
+        fn list_entries(
+            &self,
+            credential: &DocumentsProviderCredential,
+            query: DocumentsQuery,
+        ) -> Result<Vec<DocumentsEntry>> {
             Ok(vec![DocumentsEntry {
-                path: if query.path.is_empty() { "report.txt".to_string() } else { format!("{}/report.txt", query.path.trim_matches('/')) },
+                path: if query.path.is_empty() {
+                    "report.txt".to_string()
+                } else {
+                    format!("{}/report.txt", query.path.trim_matches('/'))
+                },
                 name: credential.account_label.clone(),
                 kind: "text".to_string(),
                 is_dir: false,
@@ -292,7 +337,12 @@ mod tests {
                 size_bytes: Some(12),
             }])
         }
-        fn read_document(&self, credential: &DocumentsProviderCredential, path: &str, _max_chars: usize) -> Result<DocumentsReadResult> {
+        fn read_document(
+            &self,
+            credential: &DocumentsProviderCredential,
+            path: &str,
+            _max_chars: usize,
+        ) -> Result<DocumentsReadResult> {
             Ok(DocumentsReadResult {
                 entry: DocumentsEntry {
                     path: path.to_string(),
@@ -308,10 +358,18 @@ mod tests {
                 warning: None,
             })
         }
-        fn search_documents(&self, credential: &DocumentsProviderCredential, query: DocumentsSearchQuery) -> Result<Vec<DocumentsSearchHit>> {
+        fn search_documents(
+            &self,
+            credential: &DocumentsProviderCredential,
+            query: DocumentsSearchQuery,
+        ) -> Result<Vec<DocumentsSearchHit>> {
             Ok(vec![DocumentsSearchHit {
                 entry: DocumentsEntry {
-                    path: if query.path.is_empty() { "report.txt".to_string() } else { format!("{}/report.txt", query.path.trim_matches('/')) },
+                    path: if query.path.is_empty() {
+                        "report.txt".to_string()
+                    } else {
+                        format!("{}/report.txt", query.path.trim_matches('/'))
+                    },
                     name: credential.account_label.clone(),
                     kind: "text".to_string(),
                     is_dir: false,
@@ -345,8 +403,14 @@ mod tests {
                 expires_at_unix_secs: 0,
                 updated_at: 1,
                 metadata: [
-                    (OFFICE_METADATA_DOCUMENTS_USERNAME.to_string(), "work@example.com".to_string()),
-                    (OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(), "https://dav.example.com/root".to_string()),
+                    (
+                        OFFICE_METADATA_DOCUMENTS_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                        "https://dav.example.com/root".to_string(),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -363,8 +427,9 @@ mod tests {
             credential_store.clone(),
             Arc::new(StubRuntimeStatusStore),
         );
-        let docs_credentials: Arc<dyn DocumentsProviderCredentialStore + Send + Sync> =
-            Arc::new(OfficeBackedDocumentsProviderCredentialStore::new(office.clone()));
+        let docs_credentials: Arc<dyn DocumentsProviderCredentialStore + Send + Sync> = Arc::new(
+            OfficeBackedDocumentsProviderCredentialStore::new(office.clone()),
+        );
         let mut providers = DocumentsProviderRegistry::new();
         providers.register(Arc::new(StubProvider));
         DocumentsService::with_office_service(docs_credentials, providers, Some(office))

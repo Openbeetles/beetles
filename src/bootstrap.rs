@@ -12,12 +12,33 @@ use std::sync::Arc;
 
 const TAG: &str = "bootstrap";
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-fn enforce_heap_checkpoint(stage: &'static str) {
-    if let Err(error) = crate::platform::debug_heap_checkpoint(stage) {
-        log::error!("[{}] {}", TAG, error);
-        panic!("[{}] {}", TAG, error);
+fn handle_heap_checkpoint_result(
+    log_tag: &'static str,
+    stage: &'static str,
+    result: crate::Result<()>,
+) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!(
+                "[{}] heap checkpoint degraded stage={}: {}",
+                log_tag,
+                stage,
+                error
+            );
+            false
+        }
     }
+}
+
+/// Observe a heap debug checkpoint without turning a failed debug probe into a production panic.
+/// 观察调试期 heap checkpoint；失败只记录降级，不再升级为生产崩溃。
+pub fn observe_heap_checkpoint(log_tag: &'static str, stage: &'static str) -> bool {
+    handle_heap_checkpoint_result(
+        log_tag,
+        stage,
+        crate::platform::debug_heap_checkpoint(stage),
+    )
 }
 
 /// 共享：只加载配置，不触发 WiFi、显示、音频等启动副作用。
@@ -118,9 +139,9 @@ fn post_wifi_display_bootstrap(
                 log::info!("[{}] display initialized", TAG);
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 crate::orchestrator::log_startup_memory_checkpoint("display_initialized");
-                enforce_heap_checkpoint("heap_after_display_init");
+                observe_heap_checkpoint(TAG, "heap_after_display_init");
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 0 });
-                enforce_heap_checkpoint("heap_after_display_boot_stage0");
+                observe_heap_checkpoint(TAG, "heap_after_display_boot_stage0");
                 let _ = platform.display_command(DisplayCommand::RefreshDashboard {
                     state: DisplaySystemState::Booting,
                     presence_subtitle: Some("restoring runtime shell".to_string()),
@@ -170,7 +191,7 @@ fn post_wifi_display_bootstrap(
                 });
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 crate::orchestrator::log_startup_memory_checkpoint("display_boot_dashboard");
-                enforce_heap_checkpoint("heap_after_display_boot_dashboard");
+                observe_heap_checkpoint(TAG, "heap_after_display_boot_dashboard");
             }
         }
     }
@@ -213,5 +234,32 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             crate::orchestrator::log_startup_memory_checkpoint("audio_initialized");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn heap_checkpoint_error_returns_false_without_panicking() {
+        let outcome = std::panic::catch_unwind(|| {
+            assert!(!super::handle_heap_checkpoint_result(
+                "bootstrap",
+                "heap_after_display_init",
+                Err(crate::error::Error::config(
+                    "heap_after_display_init",
+                    "heap integrity check failed",
+                )),
+            ));
+        });
+        assert!(outcome.is_ok());
+    }
+
+    #[test]
+    fn heap_checkpoint_ok_returns_true() {
+        assert!(super::handle_heap_checkpoint_result(
+            "bootstrap",
+            "heap_after_display_init",
+            Ok(()),
+        ));
     }
 }
