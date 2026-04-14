@@ -1,6 +1,11 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions_p4_16mb.csv"
 
+# Current Beetle P4 hardware is rev1.x, so the image contract must stay on the
+# pre-v3 silicon path instead of inheriting ESP-IDF's rev3.1 default minimum.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
 # Official hosted wiring for the on-board ESP32-C6 on the P4 function-style board.
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
