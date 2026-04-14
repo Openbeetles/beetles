@@ -4,14 +4,17 @@ use crate::mail::{
     MailProviderCredentialStatus, MailProviderCredentialStore, MailProviderRegistry, MailQuery,
     MailSendRequest,
 };
-use crate::office::{OfficeAccountRuntimeStatus, OfficeCapability, OfficeService};
+use crate::office::{
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeService,
+    SnapshotOfficeAuthoritySource,
+};
 use crate::util::current_unix_secs;
 use std::sync::Arc;
 
 pub struct MailService {
     credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
     providers: MailProviderRegistry,
-    office_service: Option<OfficeService>,
+    office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
 }
 
 impl MailService {
@@ -19,7 +22,7 @@ impl MailService {
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
     ) -> Self {
-        Self::with_office_service(credential_store, providers, None)
+        Self::with_office_authority(credential_store, providers, None)
     }
 
     pub fn with_office_service(
@@ -27,10 +30,25 @@ impl MailService {
         providers: MailProviderRegistry,
         office_service: Option<OfficeService>,
     ) -> Self {
+        Self::with_office_authority(
+            credential_store,
+            providers,
+            office_service.map(|office| {
+                Arc::new(SnapshotOfficeAuthoritySource::new(office))
+                    as Arc<dyn OfficeAuthoritySource + Send + Sync>
+            }),
+        )
+    }
+
+    pub fn with_office_authority(
+        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
+        providers: MailProviderRegistry,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    ) -> Self {
         Self {
             credential_store,
             providers,
-            office_service,
+            office_authority,
         }
     }
 
@@ -42,7 +60,7 @@ impl MailService {
         if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
             return Ok(provider.to_string());
         }
-        if let Some(office_service) = self.office_service.as_ref() {
+        if let Some(office_service) = self.load_office_service()? {
             if let Some(account_key) = office_service.default_account_key(OfficeCapability::Mail) {
                 let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
                     Error::config(
@@ -80,14 +98,14 @@ impl MailService {
         self.credential_store.list_statuses()
     }
 
-    pub fn office_default_account_key(&self) -> Option<String> {
-        self.office_service
-            .as_ref()
-            .and_then(|service| service.default_account_key(OfficeCapability::Mail))
+    pub fn office_default_account_key(&self) -> Result<Option<String>> {
+        Ok(self
+            .load_office_service()?
+            .and_then(|service| service.default_account_key(OfficeCapability::Mail)))
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        let Some(service) = self.office_service.as_ref() else {
+        let Some(service) = self.load_office_service()? else {
             return Ok(Vec::new());
         };
         let mail_accounts = service
@@ -106,7 +124,7 @@ impl MailService {
         &self,
         account_key: &str,
     ) -> Result<Option<OfficeAccountRuntimeStatus>> {
-        let Some(service) = self.office_service.as_ref() else {
+        let Some(service) = self.load_office_service()? else {
             return Ok(None);
         };
         service.runtime_status(account_key)
@@ -304,7 +322,14 @@ impl MailService {
         activity_kind: &'static str,
         error: Option<&Error>,
     ) {
-        let Some(office_service) = self.office_service.as_ref() else {
+        let Some(office_service) = self.load_office_service().unwrap_or_else(|load_error| {
+            log::warn!(
+                "[mail_runtime] failed to load office authority for {}: {}",
+                account_key,
+                load_error
+            );
+            None
+        }) else {
             return;
         };
         let now = current_unix_secs();
@@ -347,9 +372,9 @@ impl MailService {
         if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
             return Ok(account_key.to_string());
         }
-        if let Some(office_service) = self.office_service.as_ref() {
+        if let Some(office_service) = self.load_office_service()? {
             if let Some(account_key) = resolve_office_default_account_key(
-                office_service,
+                &office_service,
                 self.credential_store.as_ref(),
                 provider,
             )? {
@@ -374,6 +399,13 @@ impl MailService {
                 ),
             )),
         }
+    }
+
+    fn load_office_service(&self) -> Result<Option<OfficeService>> {
+        self.office_authority
+            .as_ref()
+            .map(|authority| authority.load())
+            .transpose()
     }
 }
 

@@ -8,7 +8,9 @@ use crate::calendar::{
 };
 
 use crate::error::{Error, Result};
-use crate::office::{OfficeAccountRuntimeStatus, OfficeService};
+use crate::office::{
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService, SnapshotOfficeAuthoritySource,
+};
 use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
@@ -106,11 +108,25 @@ impl CalendarTool {
         providers: CalendarProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
+        Self::with_office_authority(
+            local_store,
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+        )
+    }
+
+    pub fn with_office_authority(
+        local_store: Arc<dyn CalendarStore + Send + Sync>,
+        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
+        providers: CalendarProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    ) -> Self {
         Self::with_runtime(
             local_store,
             credential_store,
             providers,
-            Some(office_service),
+            Some(office_authority),
         )
     }
 
@@ -118,14 +134,14 @@ impl CalendarTool {
         local_store: Arc<dyn CalendarStore + Send + Sync>,
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
         providers: CalendarProviderRegistry,
-        office_service: Option<OfficeService>,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
     ) -> Self {
         Self {
-            service: CalendarService::with_office_service(
+            service: CalendarService::with_office_authority(
                 local_store,
                 credential_store,
                 providers,
-                office_service,
+                office_authority,
             ),
         }
     }
@@ -164,7 +180,7 @@ impl Tool for CalendarTool {
                         op: "provider_status",
                         local_provider: CALENDAR_PROVIDER_LOCAL,
                         registered_remote_providers,
-                        default_calendar_account_key: self.service.office_default_account_key(),
+                        default_calendar_account_key: self.service.office_default_account_key()?,
                         configured_providers,
                         office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },

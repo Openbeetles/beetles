@@ -825,7 +825,7 @@ fn register_core_tools(
 #[inline(never)]
 fn register_office_tools(
     registry: &mut ToolRegistry,
-    config: &AppConfig,
+    _config: &AppConfig,
     platform: &Arc<dyn crate::Platform>,
 ) {
     let contacts_directory_store: Arc<
@@ -843,26 +843,30 @@ fn register_office_tools(
         Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
     ]);
-    let office_service = crate::office::OfficeService::new(
-        config.office_accounts.registry.clone(),
-        config.office_accounts.binding.clone(),
-        config.office_accounts.policy.clone(),
+    let office_authority = Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
+        Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
         platform.office_credential_store(),
         platform.office_runtime_status_store(),
-    );
+    ));
     let calendar_credential_store: Arc<
         dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync,
     > = Arc::new(
-        crate::calendar::OfficeBackedCalendarProviderCredentialStore::new(office_service.clone()),
+        crate::calendar::OfficeBackedCalendarProviderCredentialStore::with_authority(
+            office_authority.clone(),
+        ),
     );
     let mail_credential_store: Arc<dyn crate::mail::MailProviderCredentialStore + Send + Sync> =
-        Arc::new(crate::mail::OfficeBackedMailProviderCredentialStore::new(
-            office_service.clone(),
-        ));
+        Arc::new(
+            crate::mail::OfficeBackedMailProviderCredentialStore::with_authority(
+                office_authority.clone(),
+            ),
+        );
     let documents_credential_store: Arc<
         dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync,
     > = Arc::new(
-        crate::documents::OfficeBackedDocumentsProviderCredentialStore::new(office_service.clone()),
+        crate::documents::OfficeBackedDocumentsProviderCredentialStore::with_authority(
+            office_authority.clone(),
+        ),
     );
     let mut mail_providers = crate::mail::MailProviderRegistry::new();
     mail_providers.register(Arc::new(
@@ -875,30 +879,34 @@ fn register_office_tools(
     let mut calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
 
-    registry.register(Box::new(super::CalendarTool::with_office_service(
+    registry.register(Box::new(super::CalendarTool::with_office_authority(
         platform.calendar_store(),
         Arc::clone(&calendar_credential_store),
         calendar_providers,
-        office_service.clone(),
+        office_authority.clone(),
     )));
-    registry.register(Box::new(super::MailTool::with_office_service_and_contacts(
-        Arc::clone(&mail_credential_store),
-        mail_providers,
-        office_service.clone(),
-        Arc::clone(&contacts_directory_store),
-    )));
+    registry.register(Box::new(
+        super::MailTool::with_office_authority_and_contacts(
+            Arc::clone(&mail_credential_store),
+            mail_providers,
+            office_authority.clone(),
+            Arc::clone(&contacts_directory_store),
+        ),
+    ));
     registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::clone(
         &contacts_directory_store,
     ))));
-    registry.register(Box::new(super::DocumentsTool::with_office_service(
+    registry.register(Box::new(super::DocumentsTool::with_office_authority(
         Arc::clone(&documents_credential_store),
         documents_providers,
-        office_service.clone(),
+        office_authority.clone(),
     )));
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));
-    registry.register(Box::new(super::OfficeStatusTool::new(office_service)));
+    registry.register(Box::new(super::OfficeStatusTool::with_authority(
+        office_authority,
+    )));
 }
 
 #[cold]

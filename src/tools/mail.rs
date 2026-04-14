@@ -8,7 +8,9 @@ use crate::mail::{
     MailMessage, MailMessageSummary, MailProviderCredentialStatus, MailProviderCredentialStore,
     MailProviderRegistry, MailQuery, MailSendRequest, MailService,
 };
-use crate::office::{OfficeAccountRuntimeStatus, OfficeService};
+use crate::office::{
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService, SnapshotOfficeAuthoritySource,
+};
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
     ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
@@ -103,7 +105,19 @@ impl MailTool {
         providers: MailProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, Some(office_service), None)
+        Self::with_office_authority(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+        )
+    }
+
+    pub fn with_office_authority(
+        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
+        providers: MailProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    ) -> Self {
+        Self::with_runtime(credential_store, providers, Some(office_authority), None)
     }
 
     pub fn with_office_service_and_contacts(
@@ -112,10 +126,24 @@ impl MailTool {
         office_service: OfficeService,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
+        Self::with_office_authority_and_contacts(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            contacts_store,
+        )
+    }
+
+    pub fn with_office_authority_and_contacts(
+        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
+        providers: MailProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+        contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
+    ) -> Self {
         Self::with_runtime(
             credential_store,
             providers,
-            Some(office_service),
+            Some(office_authority),
             Some(ContactsDirectoryService::new(contacts_store)),
         )
     }
@@ -123,11 +151,15 @@ impl MailTool {
     fn with_runtime(
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
-        office_service: Option<OfficeService>,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
         contacts_directory: Option<ContactsDirectoryService>,
     ) -> Self {
         Self {
-            service: MailService::with_office_service(credential_store, providers, office_service),
+            service: MailService::with_office_authority(
+                credential_store,
+                providers,
+                office_authority,
+            ),
             contacts_directory,
         }
     }
@@ -167,7 +199,7 @@ impl Tool for MailTool {
                     &MailProviderStatusResponse {
                         op: "provider_status",
                         registered_remote_providers,
-                        default_mail_account_key: self.service.office_default_account_key(),
+                        default_mail_account_key: self.service.office_default_account_key()?,
                         account_statuses: build_mail_account_statuses(
                             &self.service,
                             &configured_providers,
@@ -666,12 +698,13 @@ fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{save_office_accounts_segment, ConfigFileStore};
     use crate::contacts_directory::{ContactsDirectoryStore, StateFsContactsDirectoryStore};
     use crate::mail::{MailOperation, MailProvider, MailProviderCredential};
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy,
+        OfficeSelectionPolicy, ReloadingOfficeAuthoritySource,
     };
     use crate::platform::StateFs;
     use std::collections::HashMap;
@@ -828,6 +861,38 @@ mod tests {
 
         fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
             Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryConfigFileStore {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl ConfigFileStore for MemoryConfigFileStore {
+        fn read_config_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(rel_path)
+                .cloned())
+        }
+
+        fn write_config_file(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove_config_file(&self, rel_path: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(rel_path);
+            Ok(())
         }
     }
 
@@ -1049,6 +1114,45 @@ mod tests {
         )
     }
 
+    fn save_mail_accounts(
+        config_file_store: &dyn ConfigFileStore,
+        default_account_key: &str,
+    ) -> Result<()> {
+        save_office_accounts_segment(
+            config_file_store,
+            &format!(
+                r#"{{
+                    "registry": {{
+                        "accounts": {{
+                            "mail-work": {{
+                                "account_key": "mail-work",
+                                "provider_kind": "imap_smtp",
+                                "external_account_id": "work@example.com",
+                                "account_label": "Work",
+                                "identity_class": "work",
+                                "enabled_capabilities": ["mail"]
+                            }},
+                            "mail-personal": {{
+                                "account_key": "mail-personal",
+                                "provider_kind": "imap_smtp",
+                                "external_account_id": "personal@example.com",
+                                "account_label": "Personal",
+                                "identity_class": "personal",
+                                "enabled_capabilities": ["mail"]
+                            }}
+                        }}
+                    }},
+                    "binding": {{
+                        "capability_defaults": {{
+                            "mail": "{default_account_key}"
+                        }}
+                    }},
+                    "policy": {{}}
+                }}"#
+            ),
+        )
+    }
+
     #[test]
     fn mail_tool_provider_status_reports_defaults_and_runtime() {
         let (tool, _provider, _runtime_store) = build_tool();
@@ -1202,5 +1306,81 @@ mod tests {
             payload["office_runtime_status"]["last_activity_kind"],
             "mail_draft"
         );
+    }
+
+    #[test]
+    fn mail_tool_reloads_office_default_after_accounts_commit() {
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, label, account_id) in [
+            ("mail-work", "Work", "work@example.com"),
+            ("mail-personal", "Personal", "personal@example.com"),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    MailProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: "imap_smtp".to_string(),
+                        account_id: account_id.to_string(),
+                        account_label: label.to_string(),
+                        username: account_id.to_string(),
+                        secret: "secret".to_string(),
+                        imap_host: "imap.example.com".to_string(),
+                        imap_port: 993,
+                        imap_mailbox: "INBOX".to_string(),
+                        draft_mailbox: "Drafts".to_string(),
+                        imap_tls: true,
+                        smtp_host: "smtp.example.com".to_string(),
+                        smtp_port: 465,
+                        smtp_tls: true,
+                        from_address: account_id.to_string(),
+                        from_name: label.to_string(),
+                    },
+                );
+        }
+
+        let config_file_store = Arc::new(MemoryConfigFileStore::default());
+        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        let office_source = Arc::new(ReloadingOfficeAuthoritySource::new(
+            config_file_store.clone(),
+            Arc::new(StubOfficeCredentialStore),
+            Arc::new(StubRuntimeStatusStore::default()),
+        ));
+        let provider = Arc::new(StubProvider::default());
+        let mut providers = MailProviderRegistry::new();
+        providers.register(provider);
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let tool = MailTool::with_office_authority_and_contacts(
+            credential_store,
+            providers,
+            office_source,
+            contacts_store,
+        );
+
+        let mut ctx = DummyCtx;
+        let first = tool
+            .execute(r#"{"op":"list"}"#, &mut ctx)
+            .expect("first list");
+        let first: Value = serde_json::from_str(&first).expect("valid first list");
+        assert_eq!(first["items"][0]["account_key"], "mail-work");
+
+        save_mail_accounts(config_file_store.as_ref(), "mail-personal").expect("update accounts");
+
+        let second = tool
+            .execute(r#"{"op":"list"}"#, &mut ctx)
+            .expect("second list");
+        let second: Value = serde_json::from_str(&second).expect("valid second list");
+        assert_eq!(second["items"][0]["account_key"], "mail-personal");
+
+        let status = tool
+            .execute(r#"{"op":"provider_status"}"#, &mut ctx)
+            .expect("provider status");
+        let status: Value = serde_json::from_str(&status).expect("valid status");
+        assert_eq!(status["default_mail_account_key"], "mail-personal");
     }
 }

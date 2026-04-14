@@ -1,7 +1,11 @@
 use crate::error::{Error, Result};
 use crate::mail::{DEFAULT_DRAFT_MAILBOX, DEFAULT_MAILBOX};
-use crate::office::{OfficeCapability, OfficeCredential, OfficeService};
+use crate::office::{
+    OfficeAuthoritySource, OfficeCapability, OfficeCredential, OfficeService,
+    SnapshotOfficeAuthoritySource,
+};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub const OFFICE_METADATA_MAIL_USERNAME: &str = "mail_username";
 pub const OFFICE_METADATA_MAIL_IMAP_HOST: &str = "mail_imap_host";
@@ -90,18 +94,27 @@ impl MailProviderCredential {
 
 #[derive(Clone)]
 pub struct OfficeBackedMailProviderCredentialStore {
-    office: OfficeService,
+    authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
 }
 
 impl OfficeBackedMailProviderCredentialStore {
     pub fn new(office: OfficeService) -> Self {
-        Self { office }
+        Self::with_authority(Arc::new(SnapshotOfficeAuthoritySource::new(office)))
+    }
+
+    pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
+        Self { authority }
+    }
+
+    fn load_office(&self) -> Result<OfficeService> {
+        self.authority.load()
     }
 }
 
 impl MailProviderCredentialStore for OfficeBackedMailProviderCredentialStore {
     fn get(&self, account_key: &str) -> Result<Option<MailProviderCredential>> {
-        let Some(account) = self.office.account(account_key) else {
+        let office = self.load_office()?;
+        let Some(account) = office.account(account_key) else {
             return Ok(None);
         };
         if !account
@@ -110,19 +123,20 @@ impl MailProviderCredentialStore for OfficeBackedMailProviderCredentialStore {
         {
             return Ok(None);
         }
-        let Some(credential) = self.office.credential(account_key)? else {
+        let Some(credential) = office.credential(account_key)? else {
             return Ok(None);
         };
         Ok(Some(mail_credential_from_office(account, credential)?))
     }
 
     fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
+        let office = self.load_office()?;
         let mut keys = Vec::new();
-        for account in self.office.accounts_for_capability(OfficeCapability::Mail) {
+        for account in office.accounts_for_capability(OfficeCapability::Mail) {
             if account.provider_kind != provider {
                 continue;
             }
-            if self.office.credential(&account.account_key)?.is_some() {
+            if office.credential(&account.account_key)?.is_some() {
                 keys.push(account.account_key);
             }
         }
@@ -131,9 +145,10 @@ impl MailProviderCredentialStore for OfficeBackedMailProviderCredentialStore {
     }
 
     fn list_statuses(&self) -> Result<Vec<MailProviderCredentialStatus>> {
+        let office = self.load_office()?;
         let mut statuses = Vec::new();
-        for account in self.office.accounts_for_capability(OfficeCapability::Mail) {
-            let Some(credential) = self.office.credential(&account.account_key)? else {
+        for account in office.accounts_for_capability(OfficeCapability::Mail) {
+            let Some(credential) = office.credential(&account.account_key)? else {
                 continue;
             };
             statuses.push(mail_credential_from_office(account, credential)?.status());

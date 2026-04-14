@@ -1,6 +1,8 @@
 //! Office capability domain: accounts, bindings, policies, and resolver.
 
 mod account;
+#[cfg(feature = "capability_office")]
+mod authority_source;
 mod binding;
 #[cfg(feature = "capability_office")]
 mod config_management;
@@ -14,6 +16,10 @@ mod status;
 
 pub use account::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
+};
+#[cfg(feature = "capability_office")]
+pub use authority_source::{
+    OfficeAuthoritySource, ReloadingOfficeAuthoritySource, SnapshotOfficeAuthoritySource,
 };
 pub use binding::OfficeCapabilityBinding;
 #[cfg(feature = "capability_office")]

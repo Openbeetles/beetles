@@ -3,14 +3,17 @@ use crate::calendar::{
     CalendarProviderRegistry, CalendarQuery, CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 use crate::error::{Error, Result};
-use crate::office::{OfficeAccountRuntimeStatus, OfficeCapability, OfficeService};
+use crate::office::{
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeService,
+    SnapshotOfficeAuthoritySource,
+};
 use std::sync::Arc;
 
 pub struct CalendarService {
     local_store: Arc<dyn CalendarStore + Send + Sync>,
     credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
     providers: CalendarProviderRegistry,
-    office_service: Option<OfficeService>,
+    office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
 }
 
 impl CalendarService {
@@ -19,7 +22,7 @@ impl CalendarService {
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
         providers: CalendarProviderRegistry,
     ) -> Self {
-        Self::with_office_service(local_store, credential_store, providers, None)
+        Self::with_office_authority(local_store, credential_store, providers, None)
     }
 
     pub fn with_office_service(
@@ -28,11 +31,28 @@ impl CalendarService {
         providers: CalendarProviderRegistry,
         office_service: Option<OfficeService>,
     ) -> Self {
+        Self::with_office_authority(
+            local_store,
+            credential_store,
+            providers,
+            office_service.map(|office| {
+                Arc::new(SnapshotOfficeAuthoritySource::new(office))
+                    as Arc<dyn OfficeAuthoritySource + Send + Sync>
+            }),
+        )
+    }
+
+    pub fn with_office_authority(
+        local_store: Arc<dyn CalendarStore + Send + Sync>,
+        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
+        providers: CalendarProviderRegistry,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    ) -> Self {
         Self {
             local_store,
             credential_store,
             providers,
-            office_service,
+            office_authority,
         }
     }
 
@@ -46,14 +66,14 @@ impl CalendarService {
         self.credential_store.list_statuses()
     }
 
-    pub fn office_default_account_key(&self) -> Option<String> {
-        self.office_service
-            .as_ref()
-            .and_then(|service| service.default_account_key(OfficeCapability::Calendar))
+    pub fn office_default_account_key(&self) -> Result<Option<String>> {
+        Ok(self
+            .load_office_service()?
+            .and_then(|service| service.default_account_key(OfficeCapability::Calendar)))
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        let Some(service) = self.office_service.as_ref() else {
+        let Some(service) = self.load_office_service()? else {
             return Ok(Vec::new());
         };
         let calendar_accounts = service
@@ -198,9 +218,9 @@ impl CalendarService {
         if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
             return Ok(account_key.to_string());
         }
-        if let Some(office_service) = self.office_service.as_ref() {
+        if let Some(office_service) = self.load_office_service()? {
             if let Some(account_key) = resolve_office_default_account_key(
-                office_service,
+                &office_service,
                 self.credential_store.as_ref(),
                 provider,
             )? {
@@ -225,6 +245,13 @@ impl CalendarService {
                 ),
             )),
         }
+    }
+
+    fn load_office_service(&self) -> Result<Option<OfficeService>> {
+        self.office_authority
+            .as_ref()
+            .map(|authority| authority.load())
+            .transpose()
     }
 }
 
@@ -629,7 +656,10 @@ mod tests {
             .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(
-            service.office_default_account_key().as_deref(),
+            service
+                .office_default_account_key()
+                .expect("default account key")
+                .as_deref(),
             Some("work")
         );
     }

@@ -7,6 +7,7 @@ use crate::documents::{
 };
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccountRuntimeStatus, OfficeService};
+use crate::office::{OfficeAuthoritySource, SnapshotOfficeAuthoritySource};
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
     ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
@@ -76,19 +77,31 @@ impl DocumentsTool {
         providers: DocumentsProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, Some(office_service))
+        Self::with_office_authority(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+        )
+    }
+
+    pub fn with_office_authority(
+        credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
+        providers: DocumentsProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    ) -> Self {
+        Self::with_runtime(credential_store, providers, Some(office_authority))
     }
 
     fn with_runtime(
         credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
         providers: DocumentsProviderRegistry,
-        office_service: Option<OfficeService>,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
     ) -> Self {
         Self {
-            service: DocumentsService::with_office_service(
+            service: DocumentsService::with_office_authority(
                 credential_store,
                 providers,
-                office_service,
+                office_authority,
             ),
         }
     }
@@ -126,7 +139,7 @@ impl Tool for DocumentsTool {
                     &DocumentsProviderStatusResponse {
                         op: "provider_status",
                         registered_remote_providers,
-                        default_documents_account_key: self.service.office_default_account_key(),
+                        default_documents_account_key: self.service.office_default_account_key()?,
                         configured_providers: self.service.list_provider_statuses()?,
                         office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },
