@@ -6,6 +6,10 @@ export const enUS = {
     },
     nav: {
       brandHome: 'Back to home',
+      /** Beetle mark opens the shell Start menu */
+      startMenu: 'Start menu',
+      /** Bottom taskbar (desktop metaphor) */
+      taskbar: 'Beetle shell taskbar',
       device: 'Device',
       deviceConfig: 'Device config',
       aiConfig: 'AI config',

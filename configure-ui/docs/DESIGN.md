@@ -5,15 +5,15 @@
 ## 项目定位
 
 - **产品**：随身小龙虾（Pocket Crayfish）固件的配置前端，用于连接设备后配置 WiFi、LLM、通道（飞书/钉钉/企微/QQ/Telegram）、系统与技能等。
-- **风格**：现代、扁平化、精致，偏工具型与可信赖感。
+- **风格**：现代、扁平化、精致，偏工具型与可信赖感。壳层采用 **桌面 OS 隐喻**：顶栏为标题栏、**底部任务栏** 承载主导航；甲壳虫 SVG 作为 **「开始」徽标** 打开开始菜单（完整列表与连接摘要），任务栏中部为固定快捷方式（图标），右侧为连接状态托盘区。详见下文「Shell 布局」。
 
 ## Token 化（单源）
 
 **禁止在组件、theme 的 styleOverrides 内硬编码色值、圆角、动效时长、焦点环尺寸等。** 单源来自：
 
-- **颜色 / 语义**：`src/config/themeTokens.ts` 的 `ThemeTokens`（per mode × brand），通过 `createAppTheme` 注入到 `:root` 的 `--background`、`--foreground`、`--primary`、`--border`、`--muted`、`--card`、`--surface`、`--primary-soft`、`--primary-fg`、`--accent`、`--border-subtle`、`--overlay`、`--backdrop-overlay`、`--glass-blur`、`--transition-duration`、`--foreground-soft` 等。
+- **颜色 / 语义**：`src/config/themeTokens.ts` 的 `ThemeTokens`（per mode × brand），通过 `createAppTheme` 注入到 `:root` 的 `--background`、`--foreground`、`--primary`、`--border`、`--muted`、`--card`、`--surface`、`--primary-soft`、`--primary-fg`、`--accent`、`--border-subtle`、`--overlay`、`--backdrop-overlay`、`--glass-blur`、`--shell-chrome-blur`（壳层磨砂 blur，来自 `LAYOUT_TOKENS.shellChromeBackdropBlurPx`）、`--shadow-shell-start-flyout`（开始菜单：`none`）、`--transition-duration`、`--foreground-soft` 等。顶栏/任务栏 **`--shadow-shell-titlebar` / `--shadow-shell-taskbar` 为 `none`**，不靠外投阴影分层。
 - **布局 / 动效**：`themeTokens.ts` 的 `LAYOUT_TOKENS`（`radiusControl`、`radiusCard`、`radiusChip`、`easeEmphasized`、`easeOutSmooth`、`durationImageHoverMs`、按钮高度、padding 等），并注入 `:root` 的 `--radius-control`、`--radius-card`、`--radius-chip`、`--ease-emphasized`、`--ease-out-smooth`、`--focus-ring-width`、`--focus-ring-offset`。
-- **宽度**：`src/config/layout.ts` 的 `CONTENT_MAX_WIDTH`、`SETTINGS_DRAWER_WIDTH`、`SIDEBAR_WIDTH_EXPANDED` 等，与 theme breakpoints 一致。
+- **宽度**：`src/config/layout.ts` 的 `CONTENT_MAX_WIDTH`、`SETTINGS_DRAWER_WIDTH`、`TASKBAR_HEIGHT` 等，与 theme breakpoints 一致。
 
 组件与 theme 中一律使用 `var(--xxx)` 或从 token/常量引用，不写死 `#hex`、`12px`、`200ms` 等（除 token 定义文件本身）。
 
@@ -31,9 +31,15 @@
 - 颜色只用 `var(--primary)`、`var(--border)`、`var(--card)` 等；圆角用 `var(--radius-control)` / `var(--radius-card)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)` 等
 - 导航与主体宽度用 `Container maxWidth="lg"`（即 `CONTENT_MAX_WIDTH`）
 
+## Shell 布局（桌面隐喻）
+
+- **顶栏 `TopBar`**：**窗口标题栏**隐喻——`SHELL_TITLEBAR_CHROME_SX` 为 **半透明哑光底 + `blur(var(--shell-chrome-blur))`**，**无背景渐变**；与主内容以 `border-subtle` 底边分隔。左侧甲壳虫 **窗口图标**（点击回首页）、中间标题与说明（窄屏隐藏说明行）、右侧 **标题栏按钮区**（带过渡）。
+- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **扁平哑光 + 磨砂 blur**，**无渐变**；**顶边 `border-subtle`**，无外投阴影。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：顶部品牌条；其下 **宽幅连接磁贴**（语义色扁平底）；再下 **响应式磁贴网格**（`xs` 单列、`sm`+ 12 列 mosaic），各路由为 **Metro 式竖向磁贴**（图标上、标题下，主色/强调色/中性三色轮换底 + 选中主色强调），纸面 **无边框、无外投阴影、无圆角**（磁贴与连接条同为直角），半透明 + `blur(var(--shell-chrome-blur))`。**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
+- **导航数据单源**：`src/config/navItems.tsx` 的 `NAV_ITEMS`，任务栏快捷方式与开始菜单共用，避免分叉。
+
 ## 组件与布局
 
-- **导航栏**：与主体同宽（`CONTENT_MAX_WIDTH`），样式遵循主题中的 `MuiAppBar`（无重阴影、无粗边框）
+- **顶栏**：与主体同宽逻辑一致，样式遵循壳层 token（无重阴影、无粗边框）
 - **卡片 / 列表**：优先用主题提供的 Card、Paper 等组件样式，不额外加重阴影或边框
 - **按钮 / 输入框**：使用主题已定制的 MUI 组件，保持扁平、无强立体感
 

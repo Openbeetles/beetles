@@ -5,10 +5,10 @@ import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { SxProps, Theme } from "@mui/material/styles";
-import DeveloperBoardOutlined from "@mui/icons-material/DeveloperBoardOutlined";
 import ChatRounded from "@mui/icons-material/ChatRounded";
-import RefreshRounded from "@mui/icons-material/RefreshRounded";
+import DeveloperBoardOutlined from "@mui/icons-material/DeveloperBoardOutlined";
 import LinkRounded from "@mui/icons-material/LinkRounded";
+import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import { InlineAlert } from "../components/form";
 import { ChannelConnectivityPanel } from "../components/ChannelConnectivityPanel";
 import { PcbDecorOverlay } from "../components/PcbDecorOverlay";
@@ -573,7 +573,11 @@ export function DevicePage() {
   );
 
   const renderConnectionCard = () => (
-    <DashboardCard title={t("device.sectionConnection")} icon={<LinkRounded />} sx={{ height: "100%" }}>
+    <DashboardCard
+      title={t("device.sectionConnection")}
+      icon={<LinkRounded sx={{ fontSize: "var(--icon-size-lg)" }} aria-hidden />}
+      sx={{ height: "100%" }}
+    >
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5, height: "100%", justifyContent: "center" }}>
         <TextField
           label={t("device.baseUrlLabel")}
@@ -622,8 +626,31 @@ export function DevicePage() {
     <Box sx={{ width: "100%", maxWidth: 480, mx: "auto", mt: { xs: 4, md: 8 }, ...DASHBOARD_CARD_SURFACE_SX, p: { xs: 3, md: 5 }, position: "relative", display: "flex", flexDirection: "column", gap: 4 }}>
       <PcbDecorOverlay tone="embed" />
       <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
-        <Box sx={{ width: 88, height: 88, mx: "auto", mb: 3, borderRadius: 5, bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--primary)", boxShadow: "0 12px 24px color-mix(in srgb, var(--primary) 10%, transparent)" }}>
-          <BeetleIcon sx={{ fontSize: 48 }} />
+        <Box
+          sx={{
+            width: "88px",
+            height: "88px",
+            mx: "auto",
+            mb: 3,
+            borderRadius: 5,
+            bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            lineHeight: 0,
+            color: "var(--primary)",
+            boxShadow: "0 12px 24px color-mix(in srgb, var(--primary) 10%, transparent)",
+          }}
+        >
+          {/* BeetleIcon 尺寸由 width/height 控制，勿用 fontSize；与容器约 82% 留白，避免过小 */}
+          <BeetleIcon
+            sx={{
+              width: "72px",
+              height: "72px",
+              flexShrink: 0,
+              display: "block",
+            }}
+          />
         </Box>
         <Typography variant="h4" sx={{ fontFamily: "var(--font-display)", fontWeight: 800, letterSpacing: "-0.02em", mb: 1.5 }}>
           beetle <Box component="span" sx={{ color: "var(--primary)" }}>OS</Box>

@@ -15,7 +15,8 @@ export function PageHeader({ title, description, variant = 'page' }: PageHeaderP
   return (
     <Box
       sx={{
-        ...(inBar ? { py: 1.5, flex: 1, minWidth: 0 } : { mb: 4, pb: 3 }),
+        /** 顶栏：紧凑标题栏行高，与 `TopBar` 窗口隐喻一致 */
+        ...(inBar ? { py: 1, flex: 1, minWidth: 0 } : { mb: 4, pb: 3 }),
         position: 'relative',
         ...(!inBar && {
           borderBottom: 'none',
@@ -27,7 +28,7 @@ export function PageHeader({ title, description, variant = 'page' }: PageHeaderP
             width: 'var(--page-header-accent-width)',
             height: 'var(--accent-line-height)',
             borderRadius: 'var(--radius-chip)',
-            background: 'linear-gradient(90deg, color-mix(in srgb, var(--primary) 35%, transparent), transparent)',
+            backgroundColor: 'color-mix(in srgb, var(--primary) 40%, transparent)',
             opacity: 0.7,
           },
         }),
@@ -36,11 +37,11 @@ export function PageHeader({ title, description, variant = 'page' }: PageHeaderP
       <Typography
         component="h1"
         sx={{
-          /** 顶栏：系统菜单栏式标题；独立页：保留品牌 Display 字重 */
+          /** 顶栏：标题栏字重（Segoe 式半粗）；独立页：品牌 Display */
           fontFamily: inBar ? 'var(--font-sans)' : 'var(--font-display)',
-          fontSize: inBar ? 'var(--font-size-body)' : { xs: 'var(--font-size-h4)', md: 'var(--font-size-h3)' },
+          fontSize: inBar ? 'var(--font-size-body-sm)' : { xs: 'var(--font-size-h4)', md: 'var(--font-size-h3)' },
           fontWeight: inBar ? 600 : 700,
-          letterSpacing: inBar ? '-0.01em' : 'var(--letter-spacing-tight)',
+          letterSpacing: inBar ? '-0.02em' : 'var(--letter-spacing-tight)',
           lineHeight: 'var(--line-height-tight)',
           color: 'var(--foreground)',
           margin: 0,
@@ -53,14 +54,19 @@ export function PageHeader({ title, description, variant = 'page' }: PageHeaderP
         <Typography
           component="p"
           sx={{
-            mt: inBar ? 0.5 : 1,
+            mt: inBar ? 0.25 : 1,
             fontSize: inBar ? 'var(--font-size-caption)' : 'var(--font-size-body-sm)',
             fontWeight: 400,
             lineHeight: 'var(--line-height-normal)',
-            color: inBar ? 'var(--foreground)' : 'var(--muted)',
-            opacity: inBar ? 0.55 : 1,
+            color: 'var(--muted)',
             maxWidth: inBar ? '42rem' : '52ch',
-            ...(inBar && { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }),
+            ...(inBar && {
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              /** 窄屏只保留标题，说明在任务栏/页面内消化 */
+              display: { xs: 'none', sm: 'block' },
+            }),
           }}
         >
           {description}

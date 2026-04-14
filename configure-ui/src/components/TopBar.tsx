@@ -1,21 +1,23 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import Box from "@mui/material/Box";
 import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
-import MenuRounded from "@mui/icons-material/MenuRounded";
+import Tooltip from "@mui/material/Tooltip";
 import RestartAltRounded from "@mui/icons-material/RestartAltRounded";
 import SettingsRounded from "@mui/icons-material/SettingsRounded";
 import { useTranslation } from "react-i18next";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import * as systemApi from "../api/endpoints/system";
 import { setRestartPending } from "../store/deviceStatusStore";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { BeetleIcon } from "./BeetleIcon";
 import { PageHeader } from "./PageHeader";
+import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
-import { SHELL_CHROME_SURFACE_SX } from "../theme/shellChromeSurface";
+import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
 
 const PATH_TO_META: Record<string, { titleKey: string; descKey: string }> = {
   "/device": { titleKey: "device.pageTitle", descKey: "device.pageDesc" },
@@ -58,12 +60,14 @@ function metaForPathname(pathname: string) {
 }
 
 interface TopBarProps {
-  onMenuClick?: () => void;
   onOpenSettings?: () => void;
 }
 
-export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
+/** 顶栏：与底部任务栏配套的「窗口标题栏」——左侧窗口图标、右侧标题栏按钮区。 */
+export function TopBar({ onOpenSettings }: TopBarProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const navBlocker = useContext(NavBlockerContext);
   const location = useLocation();
   const { baseUrl, pairingCode } = useDevice();
   const { deviceConnected } = useDeviceApi();
@@ -95,6 +99,30 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
     setRestartConfirmOpen(true);
   };
 
+  const handleWindowIconClick = () => {
+    if (navBlocker?.attemptNavigate) {
+      navBlocker.attemptNavigate("/");
+    } else {
+      navigate("/");
+    }
+  };
+
+  const captionBtnSx = {
+    flexShrink: 0,
+    width: 46,
+    height: TOP_BAR_MIN_HEIGHT,
+    maxHeight: TOP_BAR_MIN_HEIGHT,
+    borderRadius: 0,
+    border: "none",
+    color: "var(--foreground-soft)",
+    transition:
+      "background-color var(--transition-duration) var(--ease-out-smooth), color var(--transition-duration) var(--ease-out-smooth)",
+    "&:hover:not(:disabled)": {
+      backgroundColor: "color-mix(in srgb, var(--foreground) 8%, transparent)",
+      color: "var(--foreground)",
+    },
+  } as const;
+
   return (
     <Box
       component="header"
@@ -102,58 +130,71 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
         flexShrink: 0,
         minHeight: TOP_BAR_MIN_HEIGHT,
         display: "flex",
-        alignItems: "center",
+        alignItems: "stretch",
         justifyContent: "space-between",
-        px: 2,
+        pl: 1.5,
+        pr: 0,
         position: "relative",
-        ...SHELL_CHROME_SURFACE_SX,
-        boxShadow: "var(--shadow-shell-titlebar)",
-        "&::before": {
-          content: '""',
-          position: "absolute",
-          left: 0,
-          right: 0,
-          top: 0,
-          height: "1px",
-          background:
-            "linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--foreground) 14%, transparent) 50%, transparent 100%)",
-          opacity: 0.85,
-          pointerEvents: "none",
-        },
-        gap: 2,
+        ...SHELL_TITLEBAR_CHROME_SX,
+        /** 与主内容区分；不外投阴影，符合扁平壳层约定 */
+        borderBottom: "1px solid var(--border-subtle)",
+        gap: 0,
       }}
     >
       <Stack
         direction="row"
         alignItems="center"
-        spacing={1}
-        sx={{ minWidth: 0, flex: 1 }}
+        spacing={1.25}
+        sx={{ minWidth: 0, flex: 1, py: 0.5, pr: 1 }}
       >
-        {onMenuClick && (
+        <Tooltip title={t("nav.brandHome")}>
           <IconButton
             size="small"
-            onClick={onMenuClick}
+            onClick={handleWindowIconClick}
+            aria-label={t("nav.brandHome")}
             sx={{
-              color: "var(--foreground)",
               flexShrink: 0,
+              p: 0.5,
               borderRadius: "var(--radius-control)",
+              border: "1px solid var(--border-subtle)",
+              backgroundColor:
+                "color-mix(in srgb, var(--surface) 65%, var(--card))",
+              boxShadow:
+                "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)",
+              transition:
+                "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized)",
               "&:hover": {
                 backgroundColor:
-                  "color-mix(in srgb, var(--foreground) 6%, transparent)",
+                  "color-mix(in srgb, var(--foreground) 7%, transparent)",
+                transform: "translateY(-0.5px)",
+              },
+              "&:active": {
+                transform: "translateY(0)",
+              },
+              "@media (prefers-reduced-motion: reduce)": {
+                "&:hover": { transform: "none" },
               },
             }}
-            aria-label={t("common.openMenu")}
           >
-            <MenuRounded />
+            <BeetleIcon
+              aria-hidden
+              sx={{
+                width: 22,
+                height: 22,
+                borderRadius: "calc(var(--radius-control) - 2px)",
+              }}
+            />
           </IconButton>
-        )}
+        </Tooltip>
         <PageHeader title={title} description={description} variant="bar" />
       </Stack>
       <Stack
         direction="row"
-        alignItems="center"
-        spacing={1}
-        sx={{ flexShrink: 0 }}
+        alignItems="stretch"
+        sx={{
+          flexShrink: 0,
+          borderLeft: "1px solid var(--border-subtle)",
+        }}
       >
         {deviceConnected && (
           <IconButton
@@ -161,11 +202,11 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
             onClick={handleRestartClick}
             disabled={restarting}
             sx={{
+              ...captionBtnSx,
               color: "var(--semantic-danger)",
-              borderRadius: "var(--radius-control)",
-              backgroundColor: "color-mix(in srgb, var(--semantic-danger) 6%, transparent)",
               "&:hover:not(:disabled)": {
-                backgroundColor: "color-mix(in srgb, var(--semantic-danger) 12%, transparent)",
+                backgroundColor:
+                  "color-mix(in srgb, var(--semantic-danger) 14%, transparent)",
                 color: "var(--semantic-danger)",
               },
             }}
@@ -179,18 +220,10 @@ export function TopBar({ onMenuClick, onOpenSettings }: TopBarProps) {
           <IconButton
             size="small"
             onClick={onOpenSettings}
-            sx={{
-              color: "var(--muted)",
-              borderRadius: "var(--radius-control)",
-              "&:hover": {
-                backgroundColor:
-                  "color-mix(in srgb, var(--foreground) 6%, transparent)",
-                color: "var(--foreground)",
-              },
-            }}
+            sx={captionBtnSx}
             aria-label={t("settings.open")}
           >
-            <SettingsRounded />
+            <SettingsRounded sx={{ fontSize: "var(--icon-size-md)" }} />
           </IconButton>
         )}
       </Stack>

@@ -90,6 +90,10 @@ export const LAYOUT_TOKENS = {
    * 与导航栏 `glassBlur` 解耦：遮罩需更强分离度。
    */
   overlayBackdropBlurPx: 12,
+  /**
+   * 顶栏/任务栏等壳层磨砂的 blur（px），略轻于全屏遮罩，保留更多底图纹理。
+   */
+  shellChromeBackdropBlurPx: 10,
   /** 顶栏下状态卡片最大宽度（px），与 `calc(100vw - gutter)` 配合 */
   statusOverlayCardMaxPx: 520,
   /** 状态卡片相对视口水平安全边距（px） */

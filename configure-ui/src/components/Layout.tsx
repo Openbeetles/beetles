@@ -8,25 +8,17 @@ import {
 } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Drawer from "@mui/material/Drawer";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { useTheme } from "@mui/material/styles";
-import useMediaQuery from "@mui/material/useMediaQuery";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import {
-  SIDEBAR_DRAWER_BREAKPOINT,
-  SIDEBAR_DRAWER_WIDTH,
-} from "../config/layout";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeviceBanner } from "./DeviceBanner";
-import { Sidebar } from "./Sidebar";
+import { Taskbar } from "./Taskbar";
 import { TopBar } from "./TopBar";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { PcbDecorOverlay } from "./PcbDecorOverlay";
 import { MAIN_SURFACE_PCB_SX } from "../theme/pcbSurface";
-import { SHELL_CHROME_SURFACE_SX } from "../theme/shellChromeSurface";
 import { UnsavedContext } from "../contexts/UnsavedContext";
 import { useConfig } from "../hooks/useConfig";
 import { useToast } from "../hooks/useToast";
@@ -79,7 +71,6 @@ function MainSurface({ children }: { children: ReactNode }) {
 
 export function Layout({ onOpenSettings }: LayoutProps) {
   const AUTO_REFRESH_SECONDS = 5;
-  const theme = useTheme();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
@@ -101,11 +92,6 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     config != null &&
     !showRestartBanner &&
     !suppressDisconnectedCacheOverlay;
-  const sidebarAsDrawer = useMediaQuery(
-    theme.breakpoints.down(SIDEBAR_DRAWER_BREAKPOINT),
-  );
-  const [drawerOpen, setDrawerOpen] = useState(false);
-
   useEffect(() => {
     if (!deviceConnected) return;
     queueMicrotask(() => setSuppressDisconnectedCacheOverlay(false));
@@ -232,7 +218,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
           display: "flex",
           height: "100vh",
           overflow: "hidden",
-          /** 透明以便 ThemeAndBaseline 的 fixed 渐变 / 甲壳虫层透出；壳层自身用 SHELL_CHROME_SURFACE_SX */
+          /** 透明以便 ThemeAndBaseline 的 fixed 渐变 / 甲壳虫层透出；顶栏/任务栏用 shellChromeSurface 变体 */
           backgroundColor: "transparent",
         }}
       >
@@ -354,69 +340,22 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             </Box>
           </>
         )}
-        {sidebarAsDrawer ? (
-          <>
-            <Drawer
-              anchor="left"
-              open={drawerOpen}
-              onClose={() => setDrawerOpen(false)}
-              slotProps={{
-                backdrop: {
-                  sx: { backgroundColor: "var(--backdrop-overlay)" },
-                },
-              }}
-              sx={{
-                "& .MuiDrawer-paper": {
-                  width: SIDEBAR_DRAWER_WIDTH,
-                  maxWidth: "85vw",
-                  boxSizing: "border-box",
-                  boxShadow: "none",
-                  ...SHELL_CHROME_SURFACE_SX,
-                },
-              }}
-            >
-              <Sidebar drawer />
-            </Drawer>
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                flex: 1,
-                minWidth: 0,
-              }}
-            >
-              <TopBar
-                onMenuClick={() => setDrawerOpen(true)}
-                onOpenSettings={() => {
-                  setDrawerOpen(false);
-                  onOpenSettings?.();
-                }}
-              />
-              <DeviceBanner />
-              <MainSurface>
-                <Outlet />
-              </MainSurface>
-            </Box>
-          </>
-        ) : (
-          <>
-            <Sidebar />
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                flex: 1,
-                minWidth: 0,
-              }}
-            >
-              <TopBar onOpenSettings={onOpenSettings} />
-              <DeviceBanner />
-              <MainSurface>
-                <Outlet />
-              </MainSurface>
-            </Box>
-          </>
-        )}
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+          }}
+        >
+          <TopBar onOpenSettings={onOpenSettings} />
+          <DeviceBanner />
+          <MainSurface>
+            <Outlet />
+          </MainSurface>
+          <Taskbar />
+        </Box>
       </Box>
     </NavBlockerContext.Provider>
   );

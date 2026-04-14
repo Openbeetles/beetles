@@ -6,15 +6,15 @@
 export const BEETLE_AMBIENT_BACKDROP_SX = {
   "@keyframes beetleAmbientBreath": {
     "0%": {
-      opacity: 0.72,
+      opacity: 0.76,
       transform: "scale(1) translate(0, 0)",
     },
     "50%": {
-      opacity: 0.92,
-      transform: "scale(1.025) translate(-0.4%, -0.25%)",
+      opacity: 0.94,
+      transform: "scale(1.028) translate(-0.45%, -0.28%)",
     },
     "100%": {
-      opacity: 0.72,
+      opacity: 0.76,
       transform: "scale(1) translate(0, 0)",
     },
   },
@@ -36,7 +36,7 @@ export const BEETLE_AMBIENT_BACKDROP_SX = {
   ].join(", "),
   backgroundSize: "100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%",
   backgroundRepeat: "no-repeat",
-  animation: "beetleAmbientBreath 64s ease-in-out infinite",
+  animation: "beetleAmbientBreath 56s ease-in-out infinite",
   "@media (prefers-reduced-motion: reduce)": {
     animation: "none",
     opacity: 0.8,

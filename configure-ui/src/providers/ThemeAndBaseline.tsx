@@ -27,7 +27,7 @@ const gradientBackground = {
   backgroundSize: "100% 100%, 100% 100%, 100% 100%",
   backgroundPosition: "0 0, 0 0, 0 0",
   backgroundRepeat: "no-repeat",
-  animation: "pcbAmbientDrift 48s ease-in-out infinite",
+  animation: "pcbAmbientDrift 40s ease-in-out infinite",
   "@media (prefers-reduced-motion: reduce)": {
     animation: "none",
   },

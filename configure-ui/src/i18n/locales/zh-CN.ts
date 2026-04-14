@@ -6,6 +6,10 @@ export const zhCN = {
     },
     nav: {
       brandHome: '返回首页',
+      /** 甲壳虫徽标按钮：桌面 Shell「开始」菜单 */
+      startMenu: '开始菜单',
+      /** 底部任务栏（桌面隐喻） */
+      taskbar: '甲壳虫桌面任务栏',
       device: '连接设备',
       deviceConfig: '设备配置',
       aiConfig: 'AI 配置',
