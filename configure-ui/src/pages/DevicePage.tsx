@@ -656,9 +656,6 @@ export function DevicePage() {
         <Typography variant="h4" sx={{ fontFamily: "var(--font-brand)", fontWeight: 800, letterSpacing: "-0.02em", mb: 1.5 }}>
           beetle <Box component="span" sx={{ color: "var(--primary)" }}>OS</Box>
         </Typography>
-        <Typography variant="body2" sx={{ color: "var(--text-secondary)", lineHeight: 1.6, maxWidth: "80%", mx: "auto" }}>
-          {t("device.setupIntro")}
-        </Typography>
       </Box>
 
       <Box sx={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", gap: 2.5 }}>

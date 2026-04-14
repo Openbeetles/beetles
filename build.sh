@@ -3,6 +3,8 @@
 set -e
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_ROOT"
+# shellcheck source=/dev/null
+source "$SCRIPT_ROOT/scripts/build_flash_strategy.sh"
 
 # Colors (build + Linux SSH deploy)
 RED='\033[0;31m'
@@ -2629,12 +2631,13 @@ warn_serial_port_busy() {
 
 print_flash_open_port_hints() {
   echo "" >&2
-  echo -e "${RED}Flash / serial open failed.${NC}" >&2
-  echo "  Common fixes:" >&2
-  echo "    1) Hold BOOT, tap RESET, run ./build.sh again (deploy Yes or --flash) within a few seconds (ROM download mode)." >&2
-  echo "    2) Quit anything using the port: Serial Monitor, screen/minicom, another IDE, \`idf.py monitor\`." >&2
-  echo "    3) macOS: try direct USB (no hub); unplug/replug; or \`ESPFLASH_PORT=/dev/cu.… ./build.sh --flash\`." >&2
-  echo "    4) If you use conda base, try: \`conda deactivate\` then flash (rare toolchain PATH issues)." >&2
+  echo -e "${RED}Device connection failed.${NC}" >&2
+  echo "  Beetle already retried the built-in connection methods for this board." >&2
+  echo "  Next steps:" >&2
+  echo "    1) Unplug and replug the board, then run ./build.sh again." >&2
+  echo "    2) Close any serial monitor or IDE that might still hold the device." >&2
+  echo "    3) If the board has a BOOT button, hold BOOT, tap RESET, then retry immediately." >&2
+  echo "    4) On macOS, try a direct cable/port instead of a hub." >&2
   warn_serial_port_busy "${CHOSEN_PORT:-}"
 }
 # Ensure espflash installed (same as build.ps1 Ensure-Espflash)
@@ -2685,12 +2688,21 @@ get_flash_port() {
     echo "${PORTS[0]}"
     return
   fi
+  local preferred_port=""
+  preferred_port="$(beetle_preferred_flash_port_for_chip "$FLASH_CHIP" "${PORTS[@]}" || true)"
+  if [[ -n "$preferred_port" ]]; then
+    echo "  Detected ${#PORTS[@]} serial ports; auto-selected ${preferred_port} for ${FLASH_CHIP}." >&2
+    echo "$preferred_port"
+    return
+  fi
   echo "  Detected ${#PORTS[@]} serial ports. Select port to flash (ESP board):" >&2
   for i in "${!PORTS[@]}"; do echo "  $((i+1)). ${PORTS[i]}" >&2; done
-  # macOS: one board often appears as both cu.usbmodem* and cu.wchusbserial* (same USB serial in the name).
-  # Opening the WCH alias sometimes fails with "Failed to open serial port" while usbmodem works (or vice versa).
   if [[ "$(uname -s)" != "Linux" ]]; then
-    echo -e "${YELLOW}  Tip: Prefer a cu.usbmodem* entry for ESP32-S3 native USB; if you see wchusbserial with the same ID as usbmodem, avoid the duplicate — pick the other.${NC}" >&2
+    if [[ "$FLASH_CHIP" == "esp32p4" ]]; then
+      echo -e "${YELLOW}  Tip: For ESP32-P4, prefer the USB-UART serial port when both a native USB alias and a UART bridge are visible.${NC}" >&2
+    else
+      echo -e "${YELLOW}  Tip: Prefer a cu.usbmodem* entry for ESP32-S3 native USB; if you see wchusbserial with the same ID as usbmodem, avoid the duplicate — pick the other.${NC}" >&2
+    fi
   fi
   while true; do
     read -r -p "Enter number (1-${#PORTS[@]}): " sel
@@ -2750,10 +2762,34 @@ file_md5_hex() {
 
 device_region_md5_hex() {
   local address="$1" size="$2" output
-  if ! output="$(espflash checksum-md5 --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$address" "$size" 2>&1)"; then
+  if ! output="$(run_espflash_with_connection_profiles checksum-md5 --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$address" "$size" 2>&1)"; then
     return 1
   fi
   printf '%s\n' "$output" | grep -Eio '[0-9a-f]{32}' | tail -n1 | tr '[:upper:]' '[:lower:]'
+}
+
+run_espflash_with_connection_profiles() {
+  local subcommand="$1"
+  shift
+
+  local profile last_status=1 status=1
+  local attempt=0
+  local profile_args=()
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    attempt=$((attempt + 1))
+    read -r -a profile_args <<< "$profile"
+    if [[ $attempt -gt 1 ]]; then
+      echo "  Retrying device connection..." >&2
+    fi
+    if espflash "$subcommand" "${profile_args[@]}" "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    last_status=$status
+  done < <(beetle_espflash_connection_profiles "$FLASH_CHIP" "$subcommand")
+  return "$last_status"
 }
 
 flash_model_partition_if_present() {
@@ -2792,7 +2828,7 @@ flash_model_partition_if_present() {
       echo "  Model MD5(local):  unavailable; model will be reflashed"
     fi
   fi
-  if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$model_offset" "$model_bin"; then
+  if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$model_offset" "$model_bin"; then
     echo "" >&2
     echo -e "${RED}Wake-word model flash failed.${NC}" >&2
     return 1
@@ -2806,7 +2842,26 @@ open_monitor_if_requested() {
   echo ""
   echo "========== Opening serial monitor =========="
   echo ""
-  espflash monitor --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --elf "$BIN"
+  if ! espflash reset --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --before no-reset --after hard-reset; then
+    print_flash_open_port_hints
+    return 1
+  fi
+  sleep 1
+  local monitor_baud="${MONITOR_BAUD:-115200}"
+  if python3 - <<'PY' >/dev/null 2>&1
+import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec("serial.tools.miniterm") else 1)
+PY
+  then
+    python3 -m serial.tools.miniterm "$CHOSEN_PORT" "$monitor_baud"
+    return $?
+  fi
+  if command -v screen >/dev/null 2>&1; then
+    screen "$CHOSEN_PORT" "$monitor_baud"
+    return $?
+  fi
+  echo "  Monitor tool not available. Install pyserial or screen, or rerun with --no-monitor." >&2
+  return 1
 }
 
 # ESP: full flash workflow (shared by --flash and interactive "deploy yes").
@@ -2857,12 +2912,11 @@ run_esp_flash_workflow() {
   echo "  Serial port occupancy (lsof):" >&2
   warn_serial_port_busy "$CHOSEN_PORT"
   echo ""
-  if espflash board-info --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 2>/dev/null; then
+  if run_espflash_with_connection_profiles board-info --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 2>/dev/null; then
     echo -e "${GREEN}✓ board-info OK${NC}"
   else
-    echo -e "${YELLOW}⚠ Could not read board-info from $CHOSEN_PORT (connection or chip mismatch).${NC}"
-    echo "  If flash then fails to open the port, use download mode: hold BOOT, tap RESET, flash within a few seconds."
-    echo "  Also close any Serial Monitor / screen / idf.py monitor using this port."
+    echo -e "${YELLOW}⚠ Device check did not complete before flashing.${NC}"
+    echo "  Beetle will continue and use its built-in connection retries for this board."
   fi
   echo ""
 
@@ -2872,12 +2926,21 @@ run_esp_flash_workflow() {
     echo "========== Erasing entire flash =========="
     echo ""
     echo "  Port: $CHOSEN_PORT  |  Chip: $FLASH_CHIP"
-    if ! espflash erase-flash --port "$CHOSEN_PORT" --chip "$FLASH_CHIP"; then
+    local full_erase_transport=""
+    full_erase_transport="$(beetle_full_erase_transport_for_chip "$FLASH_CHIP")"
+    if [[ "$full_erase_transport" == "esptool" ]]; then
+      if ! python3 -m esptool --chip "$FLASH_CHIP" --port "$CHOSEN_PORT" --before default-reset --after no-reset erase-flash; then
+        echo "" >&2
+        echo -e "${RED}Erase failed.${NC}" >&2
+        echo "  Beetle could not complete the full erase on this device." >&2
+        echo "  Try reconnecting the board and running ./build.sh again." >&2
+        return 1
+      fi
+    elif ! run_espflash_with_connection_profiles erase-flash --port "$CHOSEN_PORT" --chip "$FLASH_CHIP"; then
       echo "" >&2
-      echo -e "${RED}Erase failed.${NC} Common causes:" >&2
-      echo "  - Port in use or disconnected: unplug and replug; set ESPFLASH_PORT=/dev/cu.xxx if multiple ports" >&2
-      echo "  - Board not in download mode: hold BOOT, tap RESET, run this command again within a few seconds" >&2
-      echo "  - Wrong chip: build target is $BUILD_TARGET (chip $FLASH_CHIP); use the matching board" >&2
+      echo -e "${RED}Erase failed.${NC}" >&2
+      echo "  Beetle could not reconnect to the device after trying its built-in connection methods." >&2
+      echo "  Try reconnecting the board and running ./build.sh again." >&2
       return 1
     fi
     echo -e "${GREEN}✓ Erase completed. Waiting 2s before flash.${NC}"
@@ -2915,28 +2978,28 @@ run_esp_flash_workflow() {
       echo "  otadata   : ${OTADATA_BIN:-<empty>}" >&2
       return 1
     fi
-    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x0 "$BOOTLOADER_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x8000 "$PARTITION_FOR_FLASH"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_FOR_FLASH"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x19000 "$OTADATA_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --elf "$BIN" 0x20000 "$APP_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
   else
-    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --after no-reset 0x19000 "$OTADATA_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! espflash write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --elf "$BIN" 0x20000 "$APP_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"; then
       print_flash_open_port_hints
       return 1
     fi

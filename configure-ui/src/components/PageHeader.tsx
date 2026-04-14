@@ -13,7 +13,7 @@ export function PageHeader({ title }: PageHeaderProps) {
   return (
     <Box
       sx={{
-        py: 1,
+        py: 1.25,
         flex: 1,
         minWidth: 0,
         position: 'relative',
@@ -23,10 +23,10 @@ export function PageHeader({ title }: PageHeaderProps) {
         component="h1"
         sx={{
           fontFamily: 'var(--font-sans)',
-          fontSize: 'var(--font-size-body-sm)',
+          fontSize: 'var(--font-size-body-lg)',
           fontWeight: 600,
           letterSpacing: '-0.02em',
-          lineHeight: 'var(--line-height-tight)',
+          lineHeight: 'var(--line-height-snug)',
           color: 'var(--foreground)',
           margin: 0,
           overflow: 'hidden',

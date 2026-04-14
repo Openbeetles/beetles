@@ -1,3 +1,4 @@
+import MenuItem from "@mui/material/MenuItem";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -156,14 +157,13 @@ export function ChannelsConfigPage() {
           helperText={t("config.enabledChannelHelp")}
           slotProps={{
             inputLabel: { shrink: true },
-            select: { native: true },
           }}
           sx={{ mb: 2 }}
         >
           {ENABLED_CHANNEL_OPTIONS.map((opt) => (
-            <option key={opt.value || "none"} value={opt.value}>
+            <MenuItem key={opt.value || "none"} value={opt.value}>
               {t(opt.labelKey)}
-            </option>
+            </MenuItem>
           ))}
         </TextField>
         <FormSectionSubCollapsible
@@ -203,13 +203,12 @@ export function ChannelsConfigPage() {
             fullWidth
             slotProps={{
               inputLabel: { shrink: true },
-              select: { native: true },
             }}
           >
             {TG_ACTIVATION_OPTIONS.map((opt) => (
-              <option key={opt} value={opt}>
+              <MenuItem key={opt} value={opt}>
                 {t(`config.tgGroupActivation_${opt}`)}
-              </option>
+              </MenuItem>
             ))}
           </TextField>
         </FormSectionSubCollapsible>

@@ -39,7 +39,7 @@ export function PcbDecorOverlay({ tone = "default" }: { tone?: PcbDecorTone }) {
           position: "absolute",
           inset: 0,
           color:
-            "color-mix(in srgb, var(--foreground) 10%, transparent)",
+            "color-mix(in srgb, var(--foreground) 14%, transparent)",
           opacity: 0.94,
         }}
       >

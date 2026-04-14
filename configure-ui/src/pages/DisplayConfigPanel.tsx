@@ -1,3 +1,4 @@
+import MenuItem from "@mui/material/MenuItem";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
@@ -307,16 +308,15 @@ export function DisplayConfigPanel() {
                       bus: linuxBusForDriver(driver),
                     }));
                   }}
-                  slotProps={{ select: { native: true } }}
                 >
-                  <option value="st7789">ST7789</option>
-                  <option value="ili9341">ILI9341</option>
-                  <option value="st7735">
+                  <MenuItem value="st7789">ST7789</MenuItem>
+                  <MenuItem value="ili9341">ILI9341</MenuItem>
+                  <MenuItem value="st7735">
                     ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)
-                  </option>
-                  <option value="framebuffer">
+                  </MenuItem>
+                  <MenuItem value="framebuffer">
                     {t("displayConfig.driverFramebuffer")}
-                  </option>
+                  </MenuItem>
                 </TextField>
               ) : (
                 <TextField
@@ -332,13 +332,12 @@ export function DisplayConfigPanel() {
                       e.target.value as DisplayConfig["driver"],
                     )
                   }
-                  slotProps={{ select: { native: true } }}
                 >
-                  <option value="st7789">ST7789</option>
-                  <option value="ili9341">ILI9341</option>
-                  <option value="st7735">
+                  <MenuItem value="st7789">ST7789</MenuItem>
+                  <MenuItem value="ili9341">ILI9341</MenuItem>
+                  <MenuItem value="st7735">
                     ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)
-                  </option>
+                  </MenuItem>
                 </TextField>
               )}
               {showLinuxFramebuffer ? (
@@ -364,12 +363,11 @@ export function DisplayConfigPanel() {
                       Number(e.target.value) as DisplayConfig["rotation"],
                     )
                   }
-                  slotProps={{ select: { native: true } }}
                 >
-                  <option value={0}>0</option>
-                  <option value={90}>90</option>
-                  <option value={180}>180</option>
-                  <option value={270}>270</option>
+                  <MenuItem value={0}>0</MenuItem>
+                  <MenuItem value={90}>90</MenuItem>
+                  <MenuItem value={180}>180</MenuItem>
+                  <MenuItem value={270}>270</MenuItem>
                 </TextField>
               )}
               {!showLinuxFramebuffer ? (
@@ -387,10 +385,9 @@ export function DisplayConfigPanel() {
                         e.target.value as DisplayConfig["color_order"],
                       )
                     }
-                    slotProps={{ select: { native: true } }}
                   >
-                    <option value="rgb">RGB</option>
-                    <option value="bgr">BGR</option>
+                    <MenuItem value="rgb">RGB</MenuItem>
+                    <MenuItem value="bgr">BGR</MenuItem>
                   </TextField>
                   <FormControlLabel
                     control={
@@ -530,10 +527,9 @@ export function DisplayConfigPanel() {
                     }));
                     setDirty(true);
                   }}
-                  slotProps={{ select: { native: true } }}
                 >
-                  <option value={1}>{t("displayConfig.spiHostSpi2")}</option>
-                  <option value={2}>{t("displayConfig.spiHostSpi3")}</option>
+                  <MenuItem value={1}>{t("displayConfig.spiHostSpi2")}</MenuItem>
+                  <MenuItem value={2}>{t("displayConfig.spiHostSpi3")}</MenuItem>
                 </TextField>
                 {(["sclk", "mosi", "cs", "dc", "rst", "bl"] as const).map(
                   (k) => (

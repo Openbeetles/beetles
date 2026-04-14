@@ -22,8 +22,6 @@ export const zhCN = {
     },
     device: {
       pageTitle: '连接设备',
-      setupIntro:
-        '填写设备地址与配对码后，本站在同网下可跨域调用设备 API。配对、WiFi、系统页由固件内置提供。',
       sectionConnection: '设备地址与配对码',
       sectionConnectionDesc: '设备地址可在设备显示屏或包装上查看；配对码需在设备配对页设置。',
       baseUrlLabel: '设备地址',

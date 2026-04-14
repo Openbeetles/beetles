@@ -7,24 +7,24 @@ export const MAIN_SURFACE_PCB_SX = {
   backgroundColor: "var(--surface)",
   backgroundImage: [
     // 大格对齐线（极淡，模拟板框/拼板参考）
-    "repeating-linear-gradient(90deg, transparent 0, transparent 95px, color-mix(in srgb, var(--foreground) 2.2%, transparent) 95px, color-mix(in srgb, var(--foreground) 2.2%, transparent) 96px, transparent 96px)",
-    "repeating-linear-gradient(0deg, transparent 0, transparent 95px, color-mix(in srgb, var(--foreground) 2.2%, transparent) 95px, color-mix(in srgb, var(--foreground) 2.2%, transparent) 96px, transparent 96px)",
+    "repeating-linear-gradient(90deg, transparent 0, transparent 95px, color-mix(in srgb, var(--foreground) 3%, transparent) 95px, color-mix(in srgb, var(--foreground) 3%, transparent) 96px, transparent 96px)",
+    "repeating-linear-gradient(0deg, transparent 0, transparent 95px, color-mix(in srgb, var(--foreground) 3%, transparent) 95px, color-mix(in srgb, var(--foreground) 3%, transparent) 96px, transparent 96px)",
     // 丝印竖线（中心略提亮，金属边缘感）
-    "repeating-linear-gradient(90deg, color-mix(in srgb, var(--foreground) 5%, transparent) 0, color-mix(in srgb, white 12%, var(--foreground) 9%, transparent) 0.7px, color-mix(in srgb, var(--foreground) 6%, transparent) 1.4px, transparent 2px, transparent 32px)",
+    "repeating-linear-gradient(90deg, color-mix(in srgb, var(--foreground) 6%, transparent) 0, color-mix(in srgb, white 15%, var(--foreground) 11%, transparent) 0.7px, color-mix(in srgb, var(--foreground) 7%, transparent) 1.4px, transparent 2px, transparent 32px)",
     // 丝印横线
-    "repeating-linear-gradient(0deg, color-mix(in srgb, var(--foreground) 5%, transparent) 0, color-mix(in srgb, white 12%, var(--foreground) 9%, transparent) 0.7px, color-mix(in srgb, var(--foreground) 6%, transparent) 1.4px, transparent 2px, transparent 32px)",
+    "repeating-linear-gradient(0deg, color-mix(in srgb, var(--foreground) 6%, transparent) 0, color-mix(in srgb, white 15%, var(--foreground) 11%, transparent) 0.7px, color-mix(in srgb, var(--foreground) 7%, transparent) 1.4px, transparent 2px, transparent 32px)",
     // 主焊盘（双环感：外圈 + 芯）
-    "radial-gradient(circle, transparent 0.55px, color-mix(in srgb, var(--foreground) 11%, transparent) 0.95px, color-mix(in srgb, var(--foreground) 16%, transparent) 1.45px, transparent 2.15px)",
+    "radial-gradient(circle, transparent 0.55px, color-mix(in srgb, var(--foreground) 14%, transparent) 0.95px, color-mix(in srgb, var(--foreground) 20%, transparent) 1.45px, transparent 2.15px)",
     // 细过孔 16px
-    "radial-gradient(circle, color-mix(in srgb, var(--foreground) 7%, transparent) 0.85px, transparent 1.25px)",
+    "radial-gradient(circle, color-mix(in srgb, var(--foreground) 9%, transparent) 0.85px, transparent 1.25px)",
     // 大格主色点缀（略柔边）
-    "radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--primary) 12%, transparent) 1.6px, color-mix(in srgb, var(--primary) 5%, transparent) 2.6px, transparent 5.5px)",
+    "radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--primary) 15%, transparent) 1.6px, color-mix(in srgb, var(--primary) 8%, transparent) 2.6px, transparent 5.5px)",
     // 对角走线（更疏，像松耦合总线）
-    "repeating-linear-gradient(127deg, color-mix(in srgb, var(--foreground) 2.6%, transparent) 0 1px, transparent 1px 56px)",
+    "repeating-linear-gradient(127deg, color-mix(in srgb, var(--foreground) 3.5%, transparent) 0 1px, transparent 1px 56px)",
     // 角部对位点（每 96px 单元一角，慢移）
-    "radial-gradient(circle at 2px 2px, color-mix(in srgb, var(--primary) 9%, transparent) 1px, transparent 2.2px)",
+    "radial-gradient(circle at 2px 2px, color-mix(in srgb, var(--primary) 12%, transparent) 1px, transparent 2.2px)",
     // 金属高光刷痕（慢移）
-    "linear-gradient(118deg, transparent 0%, color-mix(in srgb, var(--foreground) 1.8%, transparent) 38%, color-mix(in srgb, white 20%, var(--foreground) 8%) 49.5%, color-mix(in srgb, var(--foreground) 2.2%, transparent) 61%, transparent 100%)",
+    "linear-gradient(118deg, transparent 0%, color-mix(in srgb, var(--foreground) 2.5%, transparent) 38%, color-mix(in srgb, white 25%, var(--foreground) 12%) 49.5%, color-mix(in srgb, var(--foreground) 3%, transparent) 61%, transparent 100%)",
   ].join(", "),
   backgroundSize:
     "96px 96px, 96px 96px, 32px 32px, 32px 32px, 32px 32px, 16px 16px, 128px 128px, 56px 56px, 96px 96px, 220% 220%",

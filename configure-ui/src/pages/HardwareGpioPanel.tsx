@@ -1,3 +1,4 @@
+import MenuItem from "@mui/material/MenuItem";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
@@ -519,12 +520,11 @@ export function HardwareGpioPanel() {
                       options: nextOpts,
                     });
                   }}
-                  slotProps={{ select: { native: true } }}
                 >
                   {HARDWARE_DEVICE_TYPES.map((ty) => (
-                    <option key={ty} value={ty}>
+                    <MenuItem key={ty} value={ty}>
                       {ty}
-                    </option>
+                    </MenuItem>
                   ))}
                 </TextField>
                 <TextField
@@ -593,12 +593,12 @@ export function HardwareGpioPanel() {
                         o.model = e.target.value;
                         updateDevice(i, { ...dev, options: o });
                       }}
-                      slotProps={{ select: { native: true } }}
+                      slotProps={{ inputLabel: { shrink: true } }}
                     >
                       {(["dht11", "dht22", "dht21"] as const).map((m) => (
-                        <option key={m} value={m}>
+                        <MenuItem key={m} value={m}>
                           {m}
-                        </option>
+                        </MenuItem>
                       ))}
                     </TextField>
                     <TextField
@@ -617,10 +617,10 @@ export function HardwareGpioPanel() {
                         o.watch_field = e.target.value;
                         updateDevice(i, { ...dev, options: o });
                       }}
-                      slotProps={{ select: { native: true } }}
+                      slotProps={{ inputLabel: { shrink: true } }}
                     >
-                      <option value="temperature">temperature</option>
-                      <option value="humidity">humidity</option>
+                      <MenuItem value="temperature">temperature</MenuItem>
+                      <MenuItem value="humidity">humidity</MenuItem>
                     </TextField>
                     <TextField
                       select
@@ -638,11 +638,11 @@ export function HardwareGpioPanel() {
                         o.pull = e.target.value;
                         updateDevice(i, { ...dev, options: o });
                       }}
-                      slotProps={{ select: { native: true } }}
+                      slotProps={{ inputLabel: { shrink: true } }}
                     >
-                      <option value="up">up</option>
-                      <option value="down">down</option>
-                      <option value="none">none</option>
+                      <MenuItem value="up">up</MenuItem>
+                      <MenuItem value="down">down</MenuItem>
+                      <MenuItem value="none">none</MenuItem>
                     </TextField>
                   </>
                 )}
@@ -799,12 +799,12 @@ export function HardwareGpioPanel() {
                         options: opts,
                       });
                     }}
-                    slotProps={{ select: { native: true } }}
+                    slotProps={{ inputLabel: { shrink: true } }}
                   >
                     {I2C_SENSOR_MODELS.map((m) => (
-                      <option key={m} value={m}>
+                      <MenuItem key={m} value={m}>
                         {m}
-                      </option>
+                      </MenuItem>
                     ))}
                   </TextField>
                   <TextField
@@ -820,10 +820,10 @@ export function HardwareGpioPanel() {
                         watch_field: e.target.value,
                       })
                     }
-                    slotProps={{ select: { native: true } }}
+                    slotProps={{ inputLabel: { shrink: true } }}
                   >
-                    <option value="temperature">temperature</option>
-                    <option value="humidity">humidity</option>
+                    <MenuItem value="temperature">temperature</MenuItem>
+                    <MenuItem value="humidity">humidity</MenuItem>
                   </TextField>
                   {sens.model === "raw" && (
                     <>

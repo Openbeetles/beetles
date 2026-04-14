@@ -242,27 +242,22 @@ export function Taskbar() {
         open={startOpen}
         anchorEl={startAnchor}
         onClose={closeStart}
-        anchorOrigin={{ vertical: "top", horizontal: "left" }}
-        transformOrigin={{ vertical: "bottom", horizontal: "left" }}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+        transformOrigin={{ vertical: "bottom", horizontal: "center" }}
         /** 默认 16 会在贴边时把纸面往里推；与视口左缘对齐时需关闭 */
-        marginThreshold={0}
+        marginThreshold={8}
         slotProps={{
           paper: {
             elevation: 0,
             sx: {
-              /**
-               * 任务栏容器有 px（与按钮左缘锚点错开）；负 margin 让纸面左缘与视口左缘对齐（类 Windows 开始菜单）。
-               * Negate taskbar horizontal padding so flyout left aligns with viewport, not padded rail.
-               */
-              ml: { xs: -1.5, sm: -2 },
-              width: "min(480px, 100vw)",
+              width: "min(480px, 100vw - 32px)",
               maxHeight: "min(72vh, 560px)",
               display: "flex",
               flexDirection: "column",
               overflow: "hidden",
-              borderRadius: 0,
-              border: "none",
-              boxShadow: "none",
+              borderRadius: "16px", // 与新的悬浮开始菜单样式匹配
+              border: "1px solid color-mix(in srgb, var(--border) 15%, transparent)",
+              boxShadow: "0 16px 40px -10px color-mix(in srgb, var(--foreground) 20%, transparent), 0 0 0 1px color-mix(in srgb, var(--border) 10%, transparent)",
               backgroundColor: "color-mix(in srgb, var(--card) 88%, transparent)",
               backgroundImage: [
                 "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 5%, transparent) 0%, transparent 36%)",
@@ -540,18 +535,18 @@ export function Taskbar() {
                       sm:
                         colSpan >= 6 ? 96 : colSpan >= 4 ? 88 : 84,
                     },
-                    borderRadius: 0,
+                    borderRadius: "6px",
                     border: "1px solid",
                     borderColor:
                       active && allowNav
                         ? "color-mix(in srgb, var(--primary) 42%, transparent)"
-                        : "var(--border-subtle)",
-                    p: 1.25,
+                        : "color-mix(in srgb, var(--border) 25%, transparent)",
+                    p: 1.5,
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "flex-start",
                     justifyContent: "space-between",
-                    gap: 0.75,
+                    gap: 1,
                     textDecoration: "none",
                     color: "inherit",
                     backgroundColor:
@@ -566,7 +561,7 @@ export function Taskbar() {
                             active && allowNav
                               ? "color-mix(in srgb, var(--primary) 16%, var(--card))"
                               : "color-mix(in srgb, var(--foreground) 6%, var(--card))",
-                          transform: "translateY(-1px)",
+                          transform: "translateY(-2px)",
                         }
                       : {},
                     "&:active": allowNav
@@ -582,12 +577,16 @@ export function Taskbar() {
                       color:
                         active && allowNav
                           ? "var(--primary)"
-                          : "var(--foreground-soft)",
+                          : "var(--foreground)", // 取消 mute 柔化，图标自身有色彩
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      "& svg": {
-                        fontSize: "var(--icon-size-lg)",
+                      width: 48,
+                      height: 48,
+                      "& svg, & img": {
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "contain",
                       },
                     }}
                   >
@@ -679,33 +678,35 @@ export function Taskbar() {
               aria-current={active ? "page" : undefined}
               sx={{
                 flexShrink: 0,
-                width: 40,
-                height: 40,
-                borderRadius: "var(--radius-control)",
-                color: active ? "var(--primary)" : "var(--foreground-soft)",
+                width: 48,  // 放大到 48x48，更符合 macOS Dock 图标的默认尺寸感
+                height: 48,
+                borderRadius: "12px", // iOS 风格超大圆角
+                color: active ? "var(--primary)" : "var(--foreground)", // 图标默认全彩，不用 muted 降低存在感
                 position: "relative",
-                border:
-                  active && allowNav
-                    ? "1px solid color-mix(in srgb, var(--primary) 35%, transparent)"
-                    : "1px solid transparent",
+                border: "1px solid transparent",
                 backgroundColor:
                   active && allowNav
-                    ? "color-mix(in srgb, var(--primary) 12%, transparent)"
+                    ? "color-mix(in srgb, var(--primary) 15%, transparent)"
                     : "transparent",
                 transition:
-                  "background-color var(--transition-duration) var(--ease-out-smooth), border-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), box-shadow var(--transition-duration) var(--ease-out-smooth)",
+                  "background-color 0.2s ease, border-color 0.2s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease",
                 boxShadow:
                   active && allowNav
-                    ? "inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)"
+                    ? "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent), 0 4px 8px color-mix(in srgb, var(--primary) 20%, transparent)" // 选中时带立体投影
                     : "none",
                 "&:hover": {
                   backgroundColor: allowNav
-                    ? "color-mix(in srgb, var(--foreground) 8%, transparent)"
+                    ? "color-mix(in srgb, var(--foreground) 6%, transparent)"
                     : "transparent",
-                  transform: allowNav ? "translateY(-2px)" : "none",
+                  transform: allowNav ? "scale(1.15) translateY(-4px)" : "none", // 类似 macOS Hover 放大的动效
+                  zIndex: 10,
                 },
                 "&:active": {
-                  transform: "translateY(0)",
+                  transform: "scale(0.95)",
+                },
+                "& svg, & img": {
+                   width: "36px",
+                   height: "36px",
                 },
                 "@media (prefers-reduced-motion: reduce)": {
                   "&:hover": { transform: "none" },
@@ -718,13 +719,14 @@ export function Taskbar() {
                   aria-hidden
                   sx={{
                     position: "absolute",
-                    bottom: 4,
+                    bottom: -6, // 小圆点在图标外下方
                     left: "50%",
                     transform: "translateX(-50%)",
-                    width: 14,
-                    height: 2,
-                    borderRadius: 1,
+                    width: 4,
+                    height: 4,
+                    borderRadius: "50%",
                     backgroundColor: "var(--primary)",
+                    boxShadow: "0 0 4px var(--primary)",
                   }}
                 />
               ) : null}

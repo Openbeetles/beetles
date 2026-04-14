@@ -5,6 +5,7 @@ import Button from "@mui/material/Button";
 import Slider from "@mui/material/Slider";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import MenuItem from "@mui/material/MenuItem";
 import SettingsEthernetOutlined from "@mui/icons-material/SettingsEthernetOutlined";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import WifiFind from "@mui/icons-material/WifiFind";
@@ -235,15 +236,14 @@ export function SystemConfigPage() {
                 fullWidth
                 slotProps={{
                   inputLabel: { shrink: true },
-                  select: { native: true },
                 }}
               >
                 {wifiScanList.map((ap) => (
-                  <option key={ap.ssid} value={ap.ssid}>
+                  <MenuItem key={ap.ssid} value={ap.ssid}>
                     {ap.ssid} ({ap.rssi} dBm)
-                  </option>
+                  </MenuItem>
                 ))}
-                <option value={WIFI_MANUAL}>{t("config.wifiSsidManual")}</option>
+                <MenuItem value={WIFI_MANUAL}>{t("config.wifiSsidManual")}</MenuItem>
               </TextField>
               {(form.wifi_ssid === "" ||
                 !wifiScanList.some((ap) => ap.ssid === form.wifi_ssid)) && (

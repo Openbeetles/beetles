@@ -44,8 +44,8 @@ function MainSurface({ children }: { children: ReactNode }) {
         flex: 1,
         minHeight: 0,
         overflow: "auto",
-        pt: 3,
-        pb: 5,
+        pt: 5,
+        pb: 6,
         /** 水平不设 padding：丝印底与顶栏同宽；内层与 TopBar/DeviceBanner 的 px:2 对齐 */
         px: 0,
         width: "100%",
@@ -58,7 +58,7 @@ function MainSurface({ children }: { children: ReactNode }) {
         sx={{
           position: "relative",
           zIndex: 1,
-          px: 2,
+          px: { xs: 2, sm: 3 },
           maxWidth: "100%",
           boxSizing: "border-box",
         }}
@@ -349,8 +349,10 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             minHeight: 0,
           }}
         >
-          <TopBar onOpenSettings={onOpenSettings} />
-          <DeviceBanner />
+          <Box sx={{ position: 'relative', zIndex: 10, boxShadow: '0 4px 20px color-mix(in srgb, var(--foreground) 5%, transparent)' }}>
+            <TopBar onOpenSettings={onOpenSettings} />
+            <DeviceBanner />
+          </Box>
           <MainSurface>
             <Outlet />
           </MainSurface>

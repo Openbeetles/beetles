@@ -103,7 +103,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
 
   const captionBtnSx = {
     flexShrink: 0,
-    width: 46,
+    width: 52,
     height: TOP_BAR_MIN_HEIGHT,
     maxHeight: TOP_BAR_MIN_HEIGHT,
     borderRadius: 0,
@@ -176,8 +176,8 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
               aria-hidden
               animationActive={brandIconHovered}
               sx={{
-                width: 22,
-                height: 22,
+                width: 24,
+                height: 24,
                 borderRadius: "calc(var(--radius-control) - 2px)",
               }}
             />

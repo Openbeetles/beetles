@@ -62,7 +62,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
     },
     typography: {
       fontFamily: 'var(--font-sans)',
-      fontSize: 15,
+      /** 与 `--font-size-body` 对齐（16px），rem 组件尺寸一致 */
+      fontSize: 16,
       h1: {
         fontSize: LAYOUT_TOKENS.fontSizeH1,
         fontWeight: 700,
@@ -266,9 +267,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             color: 'var(--foreground)',
             WebkitFontSmoothing: 'antialiased',
             MozOsxFontSmoothing: 'grayscale',
+            textRendering: 'geometricPrecision',
+            cursor: 'default',
           },
           '*:focus-visible': {
-            outline: `${LAYOUT_TOKENS.focusRingWidth}px solid color-mix(in srgb, var(--primary) 55%, transparent)`,
+            outline: `none`,
             outlineOffset: LAYOUT_TOKENS.focusRingOffset,
           },
         },
@@ -335,7 +338,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
           sizeSmall: {
             minHeight: LAYOUT_TOKENS.buttonMinHeightSmall,
-            fontSize: '0.8125rem',
+            fontSize: 'var(--font-size-caption)',
           },
         },
       },
@@ -365,10 +368,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
-            boxShadow: 'none',
+            border: '1px solid color-mix(in srgb, var(--border) 22%, transparent)',
+            boxShadow: 'var(--shadow-card)',
             backgroundColor: 'var(--card)',
-            transition: 'border-color var(--transition-duration) ease',
+            transition:
+              'border-color var(--transition-duration) ease, box-shadow var(--transition-duration-emphasized) var(--ease-emphasized)',
           },
         },
       },
@@ -388,6 +392,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             textTransform: 'none',
             fontWeight: 600,
+            fontSize: 'var(--font-size-body)',
+            minHeight: 48,
             color: 'var(--muted)',
             '&.Mui-selected': {
               color: 'var(--primary)',
@@ -408,7 +414,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             borderRadius: R,
             backgroundColor: 'var(--input-idle-well)',
-            transition: 'background-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)',
+            transition: 'background-color var(--transition-duration) ease',
             '& .MuiOutlinedInput-notchedOutline': {
               borderColor: 'var(--outlined-border-rest)',
               transition: 'border-color var(--transition-duration-emphasized) var(--ease-emphasized), border-width var(--transition-duration) ease',
@@ -435,7 +441,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             borderRadius: R_CHIP,
             fontWeight: 600,
-            fontSize: '0.8125rem',
+            fontSize: 'var(--font-size-caption)',
             transition: 'background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, color var(--transition-duration) ease',
           },
           outlined: {
@@ -475,7 +481,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           tooltip: {
             backgroundColor: 'var(--foreground)',
             color: 'var(--background)',
-            fontSize: '0.75rem',
+            fontSize: 'var(--font-size-caption)',
             fontWeight: 500,
             borderRadius: R_CHIP,
             padding: LAYOUT_TOKENS.tooltipPadding,
@@ -491,7 +497,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             borderRadius: 'var(--radius-control) !important',
             textTransform: 'none',
             fontWeight: 600,
-            fontSize: '0.875rem',
+            fontSize: 'var(--font-size-body-sm)',
             paddingTop: LAYOUT_TOKENS.toggleButtonPaddingY,
             paddingBottom: LAYOUT_TOKENS.toggleButtonPaddingY,
             transition:

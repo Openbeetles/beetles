@@ -1,5 +1,7 @@
 /* 系统 UI：无衬线栈与壳层一致；`--font-brand` 仅用于少数营销/设备 Hero 标题 */
 :root {
+  /* 与 MUI typography.fontSize 对齐，保证 rem 与壳层 token 一致 */
+  font-size: 16px;
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     'IBM Plex Sans', 'Noto Sans', sans-serif;
@@ -38,6 +40,26 @@
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+/* 禁止系统级的网页选中和点击高亮，增强原生感 */
+html, body {
+  overscroll-behavior-y: none; /* 禁用系统下拉刷新/回弹 */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 允许文本输入类元素被选中 */
+input, textarea, [contenteditable="true"] {
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+
+/* 允许日志、代码块和需要被选中的文本被选中 */
+code, pre, .selectable-text {
+  -webkit-user-select: auto;
+  user-select: auto;
 }
 
 /* BeetleIcon（与 beetle_site CyberBeetleMark 一致的翅/核心动效，前缀避免冲突） */

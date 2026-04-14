@@ -22,8 +22,6 @@ export const enUS = {
     },
     device: {
       pageTitle: 'Connect device',
-      setupIntro:
-        'Enter device URL and pairing code; this site will call the device API over the same network. Pairing, WiFi, and system pages are built into the firmware.',
       sectionConnection: 'Device URL & pairing code',
       sectionConnectionDesc: 'Find the device URL on the device screen or packaging; set the pairing code on the device pairing page.',
       baseUrlLabel: 'Device URL',

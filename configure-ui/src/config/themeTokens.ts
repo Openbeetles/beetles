@@ -8,11 +8,11 @@ export type ThemeBrand = 'blue' | 'teal' | 'logo' | 'firmware'
  */
 export const LAYOUT_TOKENS = {
   /** 控件圆角（按钮、输入框、Toggle 等） */
-  radiusControl: 4,
+  radiusControl: 8,
   /** 卡片/抽屉/弹层圆角 */
-  radiusCard: 6,
+  radiusCard: 12,
   /** 小控件圆角（Chip、IconButton、Tooltip） */
-  radiusChip: 4,
+  radiusChip: 6,
   /** 强调动效曲线 */
   easeEmphasized: 'cubic-bezier(0.22, 1, 0.36, 1)',
   /** 平滑缓动曲线 */
@@ -20,28 +20,28 @@ export const LAYOUT_TOKENS = {
   /** 卡片内图片 hover 动画时长（ms） */
   durationImageHoverMs: 380,
   /** 按钮默认最小高度 */
-  buttonMinHeight: 38,
-  buttonMinHeightLarge: 46,
-  buttonMinHeightSmall: 30,
+  buttonMinHeight: 42,
+  buttonMinHeightLarge: 50,
+  buttonMinHeightSmall: 32,
   /** 大按钮水平内边距 */
-  buttonPaddingXLarge: 24,
+  buttonPaddingXLarge: 28,
   /** CardContent 内边距 */
-  cardContentPadding: 18,
+  cardContentPadding: 24,
   /** ToggleButtonGroup 间距 */
-  toggleGroupGap: 4,
+  toggleGroupGap: 6,
   /** ToggleButton 上下内边距 */
-  toggleButtonPaddingY: 8,
+  toggleButtonPaddingY: 10,
   /** Tooltip 内边距 */
-  tooltipPadding: '8px 12px',
+  tooltipPadding: '10px 14px',
   /** 焦点环宽度 */
   focusRingWidth: 2,
   focusRingOffset: 2,
   /** Hero 主标题字号 */
-  heroTitleFontSize: '2.25rem',
+  heroTitleFontSize: '2.5rem',
   /** Hero 副标题字号 */
-  heroSubtitleFontSize: '1.0625rem',
+  heroSubtitleFontSize: '1.125rem',
   /** Hero 区域垂直间距（theme spacing 倍数） */
-  heroSpacingY: 6,
+  heroSpacingY: 8,
   /** Hero 装饰线宽/高（px） */
   heroAccentWidth: 56,
   heroAccentHeight: 4,
@@ -50,9 +50,9 @@ export const LAYOUT_TOKENS = {
   /** 搜索框等 pill 形态圆角（px），足够大即呈全圆角 */
   radiusSearchPill: 9999,
   /** 强调线宽度（左侧/顶部主色条，区块 accent） */
-  accentLineWidth: 2,
+  accentLineWidth: 3,
   /** 卡片顶部强调线宽度（较克制） */
-  cardAccentLineWidth: 2,
+  cardAccentLineWidth: 3,
   /** 图标尺寸：小（列表内、输入框内） */
   iconSizeSm: 20,
   /** 图标尺寸：中（导航、区块内） */
@@ -69,8 +69,8 @@ export const LAYOUT_TOKENS = {
   iconContainerXl: 46,
   /** 装饰圆点直径（px，Section 标题下小点） */
   dotDecorationPx: 4,
-  /** 装饰线高度（px，Section 标题下渐变线） */
-  accentLineHeight: 2,
+  /** 装饰线高度（px，Section 标题下渐变线、Tabs 指示条） */
+  accentLineHeight: 3,
   /** 装饰线宽度（px，Section 标题下短线） */
   accentLineShortWidth: 24,
   /** 装饰线宽度（px，Section 标题下长线） */
@@ -111,44 +111,44 @@ export const LAYOUT_TOKENS = {
   /** 字间距：标签/上标 */
   letterSpacingLabel: '0.04em',
 
-  // ---------- 字号与行高（单源，保证层次与呼吸感） ----------
+  // ---------- 字号与行高（单源：偏「桌面 OS」体量，层次拉开、留白充足） ----------
   /** 字号：Display（Hero 主标题） */
-  fontSizeDisplay: '2.25rem',
+  fontSizeDisplay: '2.5rem',
   /** 字号：H1 */
-  fontSizeH1: '1.75rem',
+  fontSizeH1: '2rem',
   /** 字号：H2 / 区块主标题 */
-  fontSizeH2: '1.5rem',
+  fontSizeH2: '1.625rem',
   /** 字号：H3 */
-  fontSizeH3: '1.25rem',
+  fontSizeH3: '1.375rem',
   /** 字号：H4 / 卡片主标题 */
-  fontSizeH4: '1.125rem',
+  fontSizeH4: '1.25rem',
   /** 字号：正文大（副标题、引导） */
-  fontSizeBodyLg: '1.0625rem',
-  /** 字号：正文 */
-  fontSizeBody: '0.9375rem',
+  fontSizeBodyLg: '1.125rem',
+  /** 字号：正文（基准 16px，避免「网页感」偏小正文） */
+  fontSizeBody: '1rem',
   /** 字号：正文小 */
-  fontSizeBodySm: '0.875rem',
+  fontSizeBodySm: '0.9375rem',
   /** 字号：说明 / 辅助 */
-  fontSizeCaption: '0.8125rem',
+  fontSizeCaption: '0.875rem',
   /** 字号：上标 / 标签小字 */
-  fontSizeOverline: '0.75rem',
+  fontSizeOverline: '0.8125rem',
   /** 字号：徽章 / 极小标签 */
-  fontSizeLabel: '0.6875rem',
+  fontSizeLabel: '0.75rem',
   /** 等宽字体栈：数值、地址、标识符 */
   fontMono:
     '"JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace',
   /** 等宽数据值字号 */
-  fontSizeDataValue: '0.8125rem',
+  fontSizeDataValue: '0.875rem',
   /** 行高：紧（大标题） */
-  lineHeightTight: 1.2,
+  lineHeightTight: 1.18,
   /** 行高：略紧（小标题、卡片标题） */
-  lineHeightSnug: 1.35,
+  lineHeightSnug: 1.38,
   /** 行高：正文 */
-  lineHeightNormal: 1.5,
+  lineHeightNormal: 1.55,
   /** 行高：略松（长正文、副标题） */
-  lineHeightRelaxed: 1.6,
+  lineHeightRelaxed: 1.68,
   /** 行高：更松（长说明、法律/风险提示类段落） */
-  lineHeightLoose: 1.75,
+  lineHeightLoose: 1.8,
 } as const
 
 /** 主题 Token：所有 UI 颜色必须由此映射，禁止在组件内硬编码色值。 */
@@ -231,8 +231,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f4f6f9',
-      shadowSubtle: '0 1px 0 rgba(15,23,42,0.035)',
-      shadowCardHover: '0 4px 20px rgba(15,23,42,0.045)',
+      shadowSubtle:
+        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
+      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
       badgeNew: '#ef4444',
     },
     teal: {
@@ -255,8 +256,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f4f6f9',
-      shadowSubtle: '0 1px 0 rgba(15,23,42,0.035)',
-      shadowCardHover: '0 4px 20px rgba(15,23,42,0.045)',
+      shadowSubtle:
+        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
+      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
       badgeNew: '#ef4444',
     },
     logo: {
@@ -279,8 +281,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f5f3fb',
-      shadowSubtle: '0 1px 0 rgba(15,23,42,0.035)',
-      shadowCardHover: '0 4px 20px rgba(15,23,42,0.045)',
+      shadowSubtle:
+        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
+      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
       badgeNew: '#ef4444',
     },
     firmware: {
@@ -303,8 +306,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f4f6f9',
-      shadowSubtle: '0 1px 0 rgba(15,23,42,0.035)',
-      shadowCardHover: '0 4px 20px rgba(15,23,42,0.045)',
+      shadowSubtle:
+        '0 1px 0 rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.065)',
+      shadowCardHover: '0 10px 36px rgba(15,23,42,0.09)',
       badgeNew: '#ef4444',
     },
   },
@@ -329,8 +333,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.35)',
-      shadowCardHover: '0 4px 18px rgba(0,0,0,0.22)',
+      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
+      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
       badgeNew: '#f87171',
     },
     teal: {
@@ -353,8 +357,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.35)',
-      shadowCardHover: '0 4px 18px rgba(0,0,0,0.22)',
+      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
+      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
       badgeNew: '#f87171',
     },
     logo: {
@@ -377,8 +381,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#221830',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.35)',
-      shadowCardHover: '0 4px 18px rgba(0,0,0,0.22)',
+      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
+      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
       badgeNew: '#f87171',
     },
     firmware: {
@@ -401,8 +405,8 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: '0 1px 0 rgba(0,0,0,0.35)',
-      shadowCardHover: '0 4px 18px rgba(0,0,0,0.22)',
+      shadowSubtle: '0 1px 0 rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.38)',
+      shadowCardHover: '0 12px 36px rgba(0,0,0,0.42)',
       badgeNew: '#f87171',
     },
   },

@@ -487,16 +487,15 @@ export function AIConfigPage() {
                 size="small"
                 sx={{ minWidth: 280, flex: 1 }}
                 slotProps={{
-                  inputLabel: { shrink: true },
-                  select: { native: true },
+                  inputLabel: { shrink: true }
                 }}
                 helperText={t("config.llmRouterIndexHelp")}
               >
-                <option value="">{t("config.llmIndexNone")}</option>
+                <MenuItem value="">{t("config.llmIndexNone")}</MenuItem>
                 {sources.map((s, idx) => (
-                  <option key={idx} value={idx}>
+                  <MenuItem key={idx} value={idx}>
                     {formatLlmSourceSelectLabel(idx, s, t)}
-                  </option>
+                  </MenuItem>
                 ))}
               </TextField>
               <TextField
@@ -515,16 +514,15 @@ export function AIConfigPage() {
                 size="small"
                 sx={{ minWidth: 280, flex: 1 }}
                 slotProps={{
-                  inputLabel: { shrink: true },
-                  select: { native: true },
+                  inputLabel: { shrink: true }
                 }}
                 helperText={t("config.llmWorkerIndexHelp")}
               >
-                <option value="">{t("config.llmIndexNone")}</option>
+                <MenuItem value="">{t("config.llmIndexNone")}</MenuItem>
                 {sources.map((s, idx) => (
-                  <option key={idx} value={idx}>
+                  <MenuItem key={idx} value={idx}>
                     {formatLlmSourceSelectLabel(idx, s, t)}
-                  </option>
+                  </MenuItem>
                 ))}
               </TextField>
             </Box>
