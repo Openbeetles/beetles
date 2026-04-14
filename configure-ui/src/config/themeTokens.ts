@@ -104,13 +104,13 @@ export const LAYOUT_TOKENS = {
    */
   shellChromeBackdropBlurPx: 10,
   /** 顶栏下状态卡片最大宽度（px），与 `calc(100vw - gutter)` 配合 */
-  statusOverlayCardMaxPx: 520,
+  statusOverlayCardMaxPx: 440,
   /** 状态卡片相对视口水平安全边距（px） */
   statusOverlayCardInsetPx: 24,
   /** 页面主标题下渐变装饰条长度（px） */
   pageHeaderAccentBarWidthPx: 48,
   /** 窄幅确认弹窗内容最大宽度（px），与 MUI maxWidth xs 搭配 */
-  dialogNarrowMaxWidthPx: 360,
+  dialogNarrowMaxWidthPx: 320,
   /** hover 上浮位移（px），用于卡片等；控制台面板固定为 0 */
   hoverLiftY: 0,
   /** hover 右移位移（px），用于“更多”链接、箭头等 */

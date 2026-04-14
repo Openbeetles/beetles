@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState, type SyntheticEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useState,
+  type SyntheticEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import CircularProgress from "@mui/material/CircularProgress";
@@ -18,7 +25,6 @@ import Typography from "@mui/material/Typography";
 import AddLink from "@mui/icons-material/AddLink";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
 import EditOutlined from "@mui/icons-material/EditOutlined";
-import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
   FormFieldStack,
@@ -29,7 +35,7 @@ import {
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { OS_ICON_NAV } from "../config/osIcons";
+import { OS_ICON_DIALOG, OS_ICON_NAV } from "../config/osIcons";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
 import { useAppPreferences } from "../hooks/useAppPreferences";
 import { useToast } from "../hooks/useToast";
@@ -50,10 +56,13 @@ import {
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
 import { CONTENT_MAX_WIDTH } from "../config/layout";
-import { SkillRichEditor } from "./skillRichEditor";
 import "./skillsMdEditor.css";
 
 const MAX_CONTENT = 32 * 1024;
+const SkillRichEditor = lazy(async () => {
+  const mod = await import("./skillRichEditor");
+  return { default: mod.SkillRichEditor };
+});
 
 export function SkillsPage() {
   const { t } = useTranslation();
@@ -391,6 +400,7 @@ export function SkillsPage() {
         onClose={() => setDiscardEditOpen(false)}
         title={t("skills.discardEditTitle")}
         description={t("skills.discardEditDesc")}
+        icon={<Os3dIcon src={OS_ICON_DIALOG.unsavedChanges} />}
         confirmColor="error"
         confirmLabel={t("common.confirm")}
         onConfirm={confirmDiscardEdit}
@@ -400,7 +410,7 @@ export function SkillsPage() {
         onClose={() => setImportDiscardOpen(false)}
         title={t("skills.discardImportTitle")}
         description={t("skills.discardImportDesc")}
-        icon={<WarningAmberRounded />}
+        icon={<Os3dIcon src={OS_ICON_DIALOG.unsavedChanges} />}
         confirmColor="error"
         confirmLabel={t("common.confirm")}
         onConfirm={closeImportDialogFully}
@@ -543,12 +553,31 @@ export function SkillsPage() {
                   />
                 </Box>
               ) : (
-                <SkillRichEditor
-                  key={editName ?? "skill-edit"}
-                  markdown={editContent}
-                  onChange={handleEditContentChange}
-                  themeMode={themeMode}
-                />
+                <Suspense
+                  fallback={
+                    <Box
+                      sx={{
+                        minHeight: { xs: 200, sm: 240 },
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        py: 2,
+                      }}
+                    >
+                      <CircularProgress
+                        size={32}
+                        sx={{ color: "var(--primary)" }}
+                      />
+                    </Box>
+                  }
+                >
+                  <SkillRichEditor
+                    key={editName ?? "skill-edit"}
+                    markdown={editContent}
+                    onChange={handleEditContentChange}
+                    themeMode={themeMode}
+                  />
+                </Suspense>
               )}
             </Box>
           </Box>

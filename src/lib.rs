@@ -149,8 +149,11 @@ pub use reasoning::{
     programmable_reasoning_operator_snapshot, programmable_reasoning_runtime_contract,
     programmable_reasoning_system_info_summary, promote_skill_crystal_candidates,
     run_reasoning_runner_stdio, should_run_idle_memory_forge,
-    skill_crystal_candidate_to_runtime_skill_write, validate_memory_attack_result,
-    validate_memory_query_result, validate_skill_crystal_result, validate_tool_request_result,
+    skill_crystal_candidate_to_runtime_skill_write, validate_engineering_distillation_result,
+    validate_memory_attack_result, validate_memory_query_result, validate_protocol_frame_result,
+    validate_register_table_result, validate_skill_crystal_result, validate_state_machine_result,
+    validate_tool_request_result, EngineeringDistillationAssetCandidate,
+    EngineeringDistillationAssetKind, EngineeringDistillationResult,
     ExperienceCrystalOperatorSummary, IdleMemoryForgeAdjudicationState,
     IdleMemoryForgeAdmissionSnapshot, IdleMemoryForgeAttackBatch, IdleMemoryForgeJobContract,
     IdleMemoryForgeJobKind, IdleMemoryForgeJobReport, IdleMemoryForgeJobStatus,
@@ -162,14 +165,29 @@ pub use reasoning::{
     MemoryQueryLongTermRecord, MemoryQueryResult, MemoryQuerySelection, MemoryQuerySnapshot,
     MemoryQuerySnapshotCounts, ProgrammableReasoningCapabilityContract,
     ProgrammableReasoningCapabilityKind, ProgrammableReasoningExecutionBackend,
-    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningProposal,
-    ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
-    ProgrammableReasoningRuntimeContract, ProgrammableReasoningStage,
-    ProgrammableReasoningSystemInfoSummary, SkillCrystalCandidate, SkillCrystalResult,
+    ProgrammableReasoningMaintenanceDigest, ProgrammableReasoningOperatorSnapshot,
+    ProgrammableReasoningProposal, ProgrammableReasoningProposalKind,
+    ProgrammableReasoningProposalScope, ProgrammableReasoningRuntimeContract,
+    ProgrammableReasoningStage, ProgrammableReasoningSystemInfoSummary,
+    ProgrammableReasoningTimeline, ProgrammableReasoningTimelineEvent,
+    ProgrammableReasoningToolUsageSummary, ProgrammableReasoningUsageAnalytics,
+    ProtocolFieldEncoding, ProtocolFrameByteRange, ProtocolFrameDirection, ProtocolFrameEntry,
+    ProtocolFrameField, ProtocolFrameResult, RegisterFieldAccess, RegisterTableBitRange,
+    RegisterTableEntry, RegisterTableField, RegisterTableResult, SkillCrystalCandidate,
+    SkillCrystalResult, StateMachineFinding, StateMachineFindingKind, StateMachineModel,
+    StateMachineResult, StateMachineState, StateMachineTransition, StateNodeRole,
     ToolRequestProposal, ToolRequestResult,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaDatasheetDistillTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaMemoryQueryTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaProtocolFrameHelperTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaRegisterTableHelperTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::LuaStateMachineCheckerTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaToolBridgeTool;
 pub use tools::{

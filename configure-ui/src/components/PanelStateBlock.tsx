@@ -25,6 +25,9 @@ const TONE_BORDER: Record<PanelStateTone, string> = {
   danger: "var(--semantic-danger)",
 };
 
+/** `row`：左图右文（面板空态）；`stack`：图标置顶居中 + 文案居中（与 `ConfirmDialog` 一致）。 */
+export type PanelStateHeroLayout = "row" | "stack";
+
 export interface PanelStateHeroRowProps {
   tone: PanelStateTone;
   /** 通常为 `Os3dIcon`，与导航/仪表盘同权重 */
@@ -33,6 +36,7 @@ export interface PanelStateHeroRowProps {
   description?: string;
   /** 默认插画井字略大；紧凑用于条带提示 */
   size?: "default" | "compact";
+  layout?: PanelStateHeroLayout;
 }
 
 /**
@@ -45,6 +49,7 @@ export function PanelStateHeroRow({
   title,
   description,
   size = "default",
+  layout = "row",
 }: PanelStateHeroRowProps) {
   const well =
     size === "compact"
@@ -55,49 +60,76 @@ export function PanelStateHeroRow({
       ? LAYOUT_TOKENS.panelStateIconInnerCompactPx
       : LAYOUT_TOKENS.panelStateIconInnerPx;
 
-  return (
-    <Stack direction="row" alignItems="flex-start" spacing={2}>
-      <Box
+  const iconWell = (
+    <Box
+      sx={{
+        width: well,
+        height: well,
+        borderRadius: "var(--radius-chip)",
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: TONE_WELL[tone],
+      }}
+    >
+      <Box sx={{ width: inner, height: inner }}>{icon}</Box>
+    </Box>
+  );
+
+  const titleDescGap = layout === "stack" ? 1.75 : 0.75;
+
+  const textBlock = (
+    <Box
+      sx={{
+        minWidth: 0,
+        ...(layout === "row"
+          ? { flex: 1, pt: 0.25 }
+          : { width: "100%", textAlign: "center" }),
+      }}
+    >
+      <Typography
+        component="h2"
         sx={{
-          width: well,
-          height: well,
-          borderRadius: "var(--radius-chip)",
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          backgroundColor: TONE_WELL[tone],
+          fontFamily: "var(--font-sans)",
+          fontSize: "var(--font-size-body-lg)",
+          fontWeight: 700,
+          letterSpacing: "var(--letter-spacing-tight)",
+          lineHeight: layout === "stack" ? 1.45 : "var(--line-height-snug)",
+          color: "var(--foreground)",
+          mb: description?.trim() ? titleDescGap : 0,
         }}
       >
-        <Box sx={{ width: inner, height: inner }}>{icon}</Box>
-      </Box>
-      <Box sx={{ minWidth: 0, flex: 1, pt: 0.25 }}>
+        {title}
+      </Typography>
+      {description?.trim() ? (
         <Typography
-          component="h2"
           sx={{
-            fontFamily: "var(--font-sans)",
-            fontSize: "var(--font-size-body-lg)",
-            fontWeight: 700,
-            letterSpacing: "var(--letter-spacing-tight)",
-            lineHeight: "var(--line-height-snug)",
-            color: "var(--foreground)",
-            mb: description?.trim() ? 0.75 : 0,
+            fontSize: "var(--font-size-body-sm)",
+            lineHeight: "var(--line-height-relaxed)",
+            color: "var(--text-tertiary)",
+            whiteSpace: "pre-line",
           }}
         >
-          {title}
+          {description}
         </Typography>
-        {description?.trim() ? (
-          <Typography
-            sx={{
-              fontSize: "var(--font-size-body-sm)",
-              lineHeight: "var(--line-height-relaxed)",
-              color: "var(--text-tertiary)",
-            }}
-          >
-            {description}
-          </Typography>
-        ) : null}
-      </Box>
+      ) : null}
+    </Box>
+  );
+
+  if (layout === "stack") {
+    return (
+      <Stack direction="column" alignItems="center" spacing={2.5}>
+        {iconWell}
+        {textBlock}
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack direction="row" alignItems="flex-start" spacing={2}>
+      {iconWell}
+      {textBlock}
     </Stack>
   );
 }

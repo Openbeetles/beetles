@@ -172,7 +172,7 @@ export function Taskbar() {
     const list = collectStartMenuFocusables(root);
     if (list.length === 0) return;
     const active = document.activeElement as HTMLElement | null;
-    let i = list.indexOf(active as HTMLElement);
+    const i = list.indexOf(active as HTMLElement);
     if (i < 0) {
       if (e.key === "ArrowDown" || e.key === "ArrowRight") {
         list[0]?.focus();
@@ -547,7 +547,7 @@ export function Taskbar() {
                 gap: 1,
               }}
             >
-              {START_MENU_NAV_ITEMS.map(({ path, labelKey, icon }, index) => {
+              {START_MENU_NAV_ITEMS.map(({ path, labelKey, iconSrc }, index) => {
                 const colSpan = startMenuTileColSpan(path);
                 const active =
                   path === "/device-config"
@@ -664,7 +664,7 @@ export function Taskbar() {
                         },
                       }}
                     >
-                      {icon}
+                        <Os3dIcon src={iconSrc} />
                     </Box>
                     <Typography
                       variant="caption"
@@ -731,7 +731,7 @@ export function Taskbar() {
           "&::-webkit-scrollbar": { height: 6 },
         }}
       >
-        {NAV_ITEMS.map(({ path, labelKey, icon }) => {
+        {NAV_ITEMS.map(({ path, labelKey, iconSrc }) => {
           const active =
             path === "/device-config"
               ? pathname === "/device-config" ||
@@ -812,7 +812,7 @@ export function Taskbar() {
                 },
               }}
             >
-              {icon}
+              <Os3dIcon src={iconSrc} />
               {active && allowNav ? (
                 <Box
                   aria-hidden

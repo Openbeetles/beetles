@@ -67,12 +67,37 @@ mod tests {
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("experience_crystal")
+            Some("engineering_synthesis")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),
             Some(cfg!(target_os = "linux"))
         );
+        assert!(parsed["programmable_reasoning"]
+            .get("usage_analytics")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["usage_analytics"]
+            .get("recent_total_attempts")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["usage_analytics"]
+            .get("recent_succeeded")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["usage_analytics"]
+            .get("tool_counts")
+            .is_some());
+        assert!(parsed["programmable_reasoning"].get("timeline").is_some());
+        assert!(parsed["programmable_reasoning"]["timeline"]
+            .get("recent_events")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]
+            .get("maintenance_digest")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["maintenance_digest"]
+            .get("status")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["maintenance_digest"]
+            .get("headline")
+            .is_some());
         assert!(parsed["memory_operator_surface"].get("inspect").is_some());
         assert!(parsed["memory_operator_surface"].get("trace").is_some());
         assert!(parsed["memory_operator_surface"].get("diff").is_some());

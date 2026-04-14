@@ -8,6 +8,7 @@ import { ConfigProvider } from './contexts/ConfigProvider'
 import { DeviceProvider } from './contexts/DeviceProvider'
 import { ToastProvider } from './contexts/ToastProvider'
 import { UnsavedProvider } from './contexts/UnsavedProvider'
+import { useBlockNumberInputWheel } from './hooks/useBlockNumberInputWheel'
 import { useScrollToTop } from './hooks/useScrollToTop'
 
 const SettingsDrawer = lazy(async () => {
@@ -106,6 +107,7 @@ function RouteFallback() {
 
 function App() {
   useScrollToTop()
+  useBlockNumberInputWheel()
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (

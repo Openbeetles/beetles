@@ -1052,6 +1052,14 @@ fn register_host_only_tools(
     #[cfg(target_os = "linux")]
     registry.register(Box::new(super::LuaQueryTool::default()));
     #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaDatasheetDistillTool::default()));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaProtocolFrameHelperTool::default()));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaRegisterTableHelperTool::default()));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::LuaStateMachineCheckerTool::default()));
+    #[cfg(target_os = "linux")]
     registry.register(Box::new(super::LuaMemoryQueryTool::new(
         Arc::new(crate::reasoning::CurrentExecutableLuaSandboxExecutor),
         Arc::clone(long_term_memory_store),
@@ -1138,6 +1146,7 @@ pub fn build_default_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore};
     use crate::tools::{ToolExposure, ToolMetadata};
     use std::sync::Mutex;
 
@@ -1152,6 +1161,8 @@ mod tests {
     struct CapabilityBoundTool;
     struct ConditionalNetworkTool;
     struct StubToolContext;
+    #[derive(Default)]
+    struct StubPrivateGardenStore;
 
     impl Tool for VisibleTool {
         fn name(&self) -> &'static str {
@@ -1313,6 +1324,46 @@ mod tests {
                 obj.get("op").and_then(|value| value.as_str()),
                 Some("remote")
             ))
+        }
+    }
+
+    impl PrivateGardenStore for StubPrivateGardenStore {
+        fn list(&self, _chat_id: &str, _limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn read(&self, _chat_id: &str, _doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            Ok(None)
+        }
+
+        fn write(
+            &self,
+            _chat_id: &str,
+            doc_path: &str,
+            content: &str,
+            now_secs: u64,
+        ) -> Result<PrivateGardenDocRecord> {
+            Ok(PrivateGardenDocRecord {
+                path: doc_path.to_string(),
+                updated_at: now_secs,
+                revision: 1,
+                bytes: content.len(),
+                preview: content.to_string(),
+            })
+        }
+
+        fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            _from_path: &str,
+            _to_path: &str,
+            _now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
+            Ok(None)
         }
     }
 
@@ -1563,6 +1614,34 @@ mod tests {
         assert!(ctx.tool_registry.get("diagnose_voice_path").is_some());
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_registry_registers_lua_datasheet_distill_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("lua_datasheet_distill").is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_registry_registers_lua_register_table_helper_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("lua_register_table_helper").is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_registry_registers_lua_protocol_frame_helper_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("lua_protocol_frame_helper").is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_registry_registers_lua_state_machine_checker_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(ctx.tool_registry.get("lua_state_machine_checker").is_some());
+    }
+
     #[cfg(feature = "capability_office")]
     #[test]
     fn default_registry_registers_documents_tool() {
@@ -1645,6 +1724,32 @@ mod tests {
             .map(|entry| entry.name)
             .collect::<Vec<_>>();
         assert_eq!(system_names, vec!["visible".to_string()]);
+    }
+
+    #[test]
+    fn private_garden_tool_is_hidden_from_user_ingress_but_visible_to_system() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::PrivateGardenTool::new(Arc::new(
+            StubPrivateGardenStore,
+        ))));
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
+        let internal = ToolPolicyContext::new(crate::bus::IngressKind::User, "cron");
+
+        assert!(!registry.is_llm_tool_visible("private_garden", &user));
+        assert!(registry.is_llm_tool_visible("private_garden", &system));
+        assert!(registry.is_llm_tool_visible("private_garden", &internal));
+
+        let entry = registry
+            .tool_catalog()
+            .expect("tool catalog")
+            .into_iter()
+            .find(|entry| entry.name == "private_garden")
+            .expect("private_garden catalog entry");
+        assert!(!entry.llm_visible_user);
+        assert!(entry.llm_visible_system);
+        assert!(entry.llm_visible_internal_system);
     }
 
     #[test]

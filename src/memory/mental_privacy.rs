@@ -16,14 +16,14 @@ use super::{
         coerce_json_text, get_object_bool, get_object_string_list, get_object_text,
         parse_llm_json_payload, LlmJsonPayload,
     },
-    normalize_private_garden_doc_path, relationship_scope_id, render_inner_life_block,
-    render_outer_voice_block, render_private_doc_workspace_block, render_private_garden_block,
-    render_recent_persona_evidence_block, render_relationship_constitution_block,
-    render_self_continuity_block, render_self_model_block, InnerLife, InnerLifeStore, OuterVoice,
-    OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc,
-    PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore, RecentPersonaEvidence,
-    RelationshipConstitution, RelationshipConstitutionStore, SelfContinuity, SelfContinuityStore,
-    SelfModel, SelfModelStore, SessionMessage,
+    normalize_private_garden_doc_path, private_garden_scope_id, relationship_scope_id,
+    render_inner_life_block, render_outer_voice_block, render_private_doc_workspace_block,
+    render_private_garden_block, render_recent_persona_evidence_block,
+    render_relationship_constitution_block, render_self_continuity_block, render_self_model_block,
+    InnerLife, InnerLifeStore, OuterVoice, OuterVoiceStore, PrivateDocStore, PrivateDocWorkspace,
+    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenDocRole, PrivateGardenStore,
+    RecentPersonaEvidence, RelationshipConstitution, RelationshipConstitutionStore, SelfContinuity,
+    SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage,
 };
 
 const MENTAL_PRIVACY_MAX_LOG_ENTRIES: usize = 32;
@@ -983,6 +983,7 @@ fn select_relevant_garden_docs(
     draft_reply: &str,
     records: &[PrivateGardenDocRecord],
 ) -> Vec<PrivateGardenDoc> {
+    let _ = chat_id;
     let mut scored = records
         .iter()
         .map(|record| {
@@ -1000,7 +1001,7 @@ fn select_relevant_garden_docs(
     });
     let mut docs = Vec::new();
     for (_, record) in scored.into_iter().take(MENTAL_PRIVACY_GARDEN_RENDER_LIMIT) {
-        if let Ok(Some(doc)) = store.read(chat_id, &record.path) {
+        if let Ok(Some(doc)) = store.read(private_garden_scope_id(), &record.path) {
             docs.push(doc);
         }
     }
@@ -1443,7 +1444,7 @@ pub fn run_mental_privacy_review(
     let private_workspace = ctx.private_doc_store.get(subject_id)?;
     let private_garden_records = ctx
         .private_garden_store
-        .list(input.chat_id, mental_privacy_garden_doc_limit())?;
+        .list(private_garden_scope_id(), mental_privacy_garden_doc_limit())?;
     let known_targets = collect_private_targets(
         self_model.as_ref(),
         self_continuity.as_ref(),
@@ -1566,7 +1567,7 @@ pub fn run_mental_privacy_disclosure_adjudication(
     let private_workspace = ctx.private_doc_store.get(subject_id)?;
     let private_garden_records = ctx
         .private_garden_store
-        .list(input.chat_id, mental_privacy_garden_doc_limit())?;
+        .list(private_garden_scope_id(), mental_privacy_garden_doc_limit())?;
     let mental_privacy_state = ctx.mental_privacy_store.get(&relationship_id)?;
     let known_targets = collect_private_targets(
         self_model.as_ref(),

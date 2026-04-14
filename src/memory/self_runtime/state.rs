@@ -48,7 +48,10 @@ pub(super) fn load_self_runtime_state(
         .flatten();
     let private_garden_docs = if authority_plan.allow_direct_private_garden {
         ctx.private_garden_store
-            .list(chat_id, self_runtime_private_garden_doc_limit(profile))
+            .list(
+                private_garden_scope_id(),
+                self_runtime_private_garden_doc_limit(profile),
+            )
             .unwrap_or_default()
     } else {
         Vec::new()

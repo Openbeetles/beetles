@@ -693,22 +693,22 @@ impl PresencePulseContract {
     fn scheduled_text(self, stage_idx: u8) -> Option<String> {
         match (self.loc, self.profile, stage_idx) {
             (UiLocale::Zh, PresencePulseProfile::Rich, 0) => {
-                Some("〔甲壳虫〕已接到，继续处理中 🪲".to_string())
+                Some("已接到，继续处理中 🪲".to_string())
             }
             (UiLocale::Zh, PresencePulseProfile::Rich, 1) => {
-                Some("〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ".to_string())
+                Some("这轮还在整理，结果马上接上 (｀･ω･´)ゞ".to_string())
             }
             (UiLocale::Zh, PresencePulseProfile::Compact, 0) => {
-                Some("〔甲壳虫〕继续处理中，马上接上 🪲".to_string())
+                Some("继续处理中，马上接上 🪲".to_string())
             }
             (UiLocale::En, PresencePulseProfile::Rich, 0) => {
-                Some("[Beetle] Turn received, still working 🪲".to_string())
+                Some("Turn received, still working 🪲".to_string())
             }
             (UiLocale::En, PresencePulseProfile::Rich, 1) => {
-                Some("[Beetle] Still organizing this turn, reply coming up (｀･ω･´)ゞ".to_string())
+                Some("Still organizing this turn, reply coming up (｀･ω･´)ゞ".to_string())
             }
             (UiLocale::En, PresencePulseProfile::Compact, 0) => {
-                Some("[Beetle] Still working, reply coming up 🪲".to_string())
+                Some("Still working, reply coming up 🪲".to_string())
             }
             _ => None,
         }
@@ -717,23 +717,18 @@ impl PresencePulseContract {
     fn tool_progress(self, name: &str, index: usize, total: usize) -> String {
         match self.loc {
             UiLocale::Zh if total > 1 => {
-                format!(
-                    "〔甲壳虫〕正在执行 {}（{}/{}），继续推进 🪲",
-                    name,
-                    index + 1,
-                    total
-                )
+                format!("正在执行 {}（{}/{}），继续推进 🪲", name, index + 1, total)
             }
-            UiLocale::Zh => format!("〔甲壳虫〕正在执行 {}，继续推进 🪲", name),
+            UiLocale::Zh => format!("正在执行 {}，继续推进 🪲", name),
             UiLocale::En if total > 1 => {
                 format!(
-                    "[Beetle] Running {} ({}/{}), still moving 🪲",
+                    "Running {} ({}/{}), still moving 🪲",
                     name,
                     index + 1,
                     total
                 )
             }
-            UiLocale::En => format!("[Beetle] Running {}, still moving 🪲", name),
+            UiLocale::En => format!("Running {}, still moving 🪲", name),
         }
     }
 }
@@ -1418,11 +1413,8 @@ mod tests {
 
         let first = outbound_rx.try_recv().expect("first pulse");
         let second = outbound_rx.try_recv().expect("second pulse");
-        assert_eq!(first.content, "〔甲壳虫〕已接到，继续处理中 🪲");
-        assert_eq!(
-            second.content,
-            "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ"
-        );
+        assert_eq!(first.content, "已接到，继续处理中 🪲");
+        assert_eq!(second.content, "这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
         assert!(first.is_group);
         assert!(second.is_group);
         assert_eq!(delivery.report().presence_pulses_sent, 2);
@@ -1447,10 +1439,7 @@ mod tests {
         delivery.emit_tool_progress("board_info", 0, 1);
 
         let outbound = outbound_rx.try_recv().expect("tool pulse");
-        assert_eq!(
-            outbound.content,
-            "〔甲壳虫〕正在执行 board_info，继续推进 🪲"
-        );
+        assert_eq!(outbound.content, "正在执行 board_info，继续推进 🪲");
     }
 
     #[test]
@@ -1475,7 +1464,7 @@ mod tests {
         service_delayed_tasks_in_normal_mode();
 
         let first = outbound_rx.try_recv().expect("compact pulse");
-        assert_eq!(first.content, "〔甲壳虫〕继续处理中，马上接上 🪲");
+        assert_eq!(first.content, "继续处理中，马上接上 🪲");
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().presence_pulses_sent, 1);
     }
@@ -1504,11 +1493,8 @@ mod tests {
 
         let first = outbound_rx.try_recv().expect("tool progress");
         let second = outbound_rx.try_recv().expect("followup pulse");
-        assert_eq!(first.content, "〔甲壳虫〕正在执行 board_info，继续推进 🪲");
-        assert_eq!(
-            second.content,
-            "〔甲壳虫〕这轮还在整理，结果马上接上 (｀･ω･´)ゞ"
-        );
+        assert_eq!(first.content, "正在执行 board_info，继续推进 🪲");
+        assert_eq!(second.content, "这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().presence_pulses_sent, 1);
     }

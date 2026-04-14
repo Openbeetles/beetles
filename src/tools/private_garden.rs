@@ -1,9 +1,9 @@
-//! private_garden 工具：当前 chat 作用域内的自由内部工作区。
+//! private_garden 工具：板级主体拥有的自由内部工作区。
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    build_private_garden_usage, summarize_private_garden_directories, PrivateGardenStore,
-    PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
+    build_private_garden_usage, private_garden_scope_id, summarize_private_garden_directories,
+    PrivateGardenStore, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
 };
 use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::current_unix_secs;
@@ -71,18 +71,19 @@ impl Tool for PrivateGardenTool {
     }
 
     fn description(&self) -> &str {
-        "Manage your current chat's free private workspace. Use it for self-owned internal notes, drafts, and temporary organization that do not belong in shared factual memory or the governed private kernel. Prefer updating existing docs in place instead of accumulating per-turn history."
+        "Manage your board-owned free private garden. Use it for self-owned internal notes, drafts, and temporary organization that do not belong in shared factual memory or the governed private kernel. The garden belongs to the board-level self, not to the current user or a single chat. Prefer updating existing docs in place instead of accumulating per-turn history."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["list","tree","read","write","move","delete"],"description":"Operation to perform inside the current chat's private garden. Use list/tree/read before write or move when you need to inspect or reorganize existing material."},"path":{"type":"string","description":"Relative document path, e.g. journal/afterglow.md."},"from_path":{"type":"string","description":"Existing relative document path to move from."},"to_path":{"type":"string","description":"Target relative document path to move to."},"content":{"type":"string","description":"Complete document content for write. Writes replace the current document body, so prefer compact rewrites over appending historical notes."},"limit":{"type":"integer","description":"Max docs to list; for list default 4 max 8, for tree default 16 max 16."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["list","tree","read","write","move","delete"],"description":"Operation to perform inside the board-owned private garden. Use list/tree/read before write or move when you need to inspect or reorganize existing material."},"path":{"type":"string","description":"Relative document path, e.g. journal/afterglow.md."},"from_path":{"type":"string","description":"Existing relative document path to move from."},"to_path":{"type":"string","description":"Target relative document path to move to."},"content":{"type":"string","description":"Complete document content for write. Writes replace the current document body, so prefer compact rewrites over appending historical notes."},"limit":{"type":"integer","description":"Max docs to list; for list default 4 max 8, for tree default 16 max 16."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_private_garden")?;
-        let chat_id = ctx.current_chat_id().ok_or_else(|| {
+        let _chat_id = ctx.current_chat_id().ok_or_else(|| {
             Error::config("tool_private_garden", "current chat_id is unavailable")
         })?;
+        let scope_id = private_garden_scope_id();
         let op = obj
             .get("op")
             .and_then(Value::as_str)
@@ -96,7 +97,7 @@ impl Tool for PrivateGardenTool {
                     .unwrap_or(4)
                     .clamp(1, PRIVATE_GARDEN_MAX_LIST_LIMIT as u64)
                     as usize;
-                let docs = self.store.list(chat_id, limit)?;
+                let docs = self.store.list(scope_id, limit)?;
                 serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDocsResponse {
@@ -113,7 +114,7 @@ impl Tool for PrivateGardenTool {
                     .unwrap_or(PRIVATE_GARDEN_MAX_TREE_LIMIT as u64)
                     .clamp(1, PRIVATE_GARDEN_MAX_TREE_LIMIT as u64)
                     as usize;
-                let all_docs = self.store.list(chat_id, usize::MAX)?;
+                let all_docs = self.store.list(scope_id, usize::MAX)?;
                 let docs = all_docs.iter().take(limit).cloned().collect::<Vec<_>>();
                 serialize_tool_output(
                     "tool_private_garden",
@@ -131,7 +132,7 @@ impl Tool for PrivateGardenTool {
                     .get("path")
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
-                let doc = self.store.read(chat_id, path)?;
+                let doc = self.store.read(scope_id, path)?;
                 serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDocResponse {
@@ -158,7 +159,7 @@ impl Tool for PrivateGardenTool {
                 }
                 let record = self
                     .store
-                    .write(chat_id, path, content, current_unix_secs())?;
+                    .write(scope_id, path, content, current_unix_secs())?;
                 serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDocResponse {
@@ -179,7 +180,7 @@ impl Tool for PrivateGardenTool {
                     .ok_or_else(|| Error::config("tool_private_garden", "missing to_path"))?;
                 let moved =
                     self.store
-                        .move_doc(chat_id, from_path, to_path, current_unix_secs())?;
+                        .move_doc(scope_id, from_path, to_path, current_unix_secs())?;
                 serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenMoveResponse {
@@ -196,7 +197,7 @@ impl Tool for PrivateGardenTool {
                     .get("path")
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
-                let deleted = self.store.delete(chat_id, path)?;
+                let deleted = self.store.delete(scope_id, path)?;
                 serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDeleteResponse {
@@ -215,7 +216,10 @@ impl Tool for PrivateGardenTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::stateful().with_system_ingress(true)
+        ToolMetadata::stateful()
+            .with_user_ingress(false)
+            .with_system_ingress(true)
+            .with_system_channel(true)
     }
 }
 
@@ -223,17 +227,22 @@ impl Tool for PrivateGardenTool {
 mod tests {
     use super::*;
     use crate::i18n::Locale;
-    use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord};
+    use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, BOARD_SUBJECT_SCOPE_ID};
     use crate::platform::ResponseBody;
     use std::sync::Mutex;
 
     #[derive(Default)]
     struct StubPrivateGardenStore {
         docs: Mutex<Vec<PrivateGardenDoc>>,
+        scope_calls: Mutex<Vec<String>>,
     }
 
     impl PrivateGardenStore for StubPrivateGardenStore {
-        fn list(&self, _chat_id: &str, limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+        fn list(&self, chat_id: &str, limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
             Ok(self
                 .docs
                 .lock()
@@ -251,7 +260,11 @@ mod tests {
                 .collect())
         }
 
-        fn read(&self, _chat_id: &str, doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+        fn read(&self, chat_id: &str, doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
             Ok(self
                 .docs
                 .lock()
@@ -263,11 +276,15 @@ mod tests {
 
         fn write(
             &self,
-            _chat_id: &str,
+            chat_id: &str,
             doc_path: &str,
             content: &str,
             now_secs: u64,
         ) -> Result<PrivateGardenDocRecord> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
             let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
             let revision = docs
                 .iter()
@@ -291,7 +308,11 @@ mod tests {
             })
         }
 
-        fn delete(&self, _chat_id: &str, doc_path: &str) -> Result<bool> {
+        fn delete(&self, chat_id: &str, doc_path: &str) -> Result<bool> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
             let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
             let before = docs.len();
             docs.retain(|doc| doc.path != doc_path);
@@ -300,11 +321,15 @@ mod tests {
 
         fn move_doc(
             &self,
-            _chat_id: &str,
+            chat_id: &str,
             from_path: &str,
             to_path: &str,
             now_secs: u64,
         ) -> Result<Option<PrivateGardenDocRecord>> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
             let mut docs = self.docs.lock().unwrap_or_else(|e| e.into_inner());
             let Some(doc) = docs.iter().find(|doc| doc.path == from_path).cloned() else {
                 return Ok(None);
@@ -439,5 +464,35 @@ mod tests {
         assert!(tree.contains("\"directories\""));
         assert!(tree.contains("journal"));
         assert!(tree.contains("scratch"));
+    }
+
+    #[test]
+    fn private_garden_tool_uses_board_subject_scope_instead_of_current_chat_id() {
+        let store = Arc::new(StubPrivateGardenStore::default());
+        let tool =
+            PrivateGardenTool::new(Arc::clone(&store) as Arc<dyn PrivateGardenStore + Send + Sync>);
+        let mut ctx = StubToolContext {
+            chat_id: Some("chat-1".to_string()),
+        };
+
+        tool.execute(
+            r#"{"op":"write","path":"journal/afterglow.md","content":"这是我的内部私域"}"#,
+            &mut ctx,
+        )
+        .unwrap();
+        tool.execute(r#"{"op":"read","path":"journal/afterglow.md"}"#, &mut ctx)
+            .unwrap();
+        tool.execute(r#"{"op":"list","limit":1}"#, &mut ctx)
+            .unwrap();
+
+        let scopes = store
+            .scope_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert!(
+            scopes.iter().all(|scope| scope == BOARD_SUBJECT_SCOPE_ID),
+            "private_garden tool must persist under board subject scope, got {scopes:?}"
+        );
     }
 }

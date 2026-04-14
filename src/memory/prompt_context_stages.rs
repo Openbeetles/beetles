@@ -7,8 +7,8 @@ use super::{
     build_self_state, build_world_snapshot, collect_private_targets, decide_prompt_recall_route,
     derive_relationship_constitution, inspect_continuity_capsule_recall,
     load_recent_persona_evidence, memory_capability_profile, memory_policy,
-    parse_explicit_long_term_slot_query, recall_long_term_memory_block, relationship_scope_id,
-    render_autonomy_strategy_block, render_continuity_capsule_block,
+    parse_explicit_long_term_slot_query, private_garden_scope_id, recall_long_term_memory_block,
+    relationship_scope_id, render_autonomy_strategy_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
     render_mental_privacy_boundary_block, render_outer_voice_block,
     render_persistent_self_authored_core_block, render_private_doc_workspace_block,
@@ -359,7 +359,7 @@ pub(crate) fn load_constitutional_stage(
         params
             .private_garden_store
             .list(
-                params.chat_id,
+                private_garden_scope_id(),
                 prompt_private_garden_doc_limit(seed.profile),
             )
             .unwrap_or_default()

@@ -17,6 +17,7 @@ use crate::tools::{ToolExecutionGovernanceState, ToolRegistry};
 use crate::util::current_unix_secs;
 use crate::Platform;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 pub struct OperatorStatusInput<'a> {
     pub config: &'a crate::config::AppConfig,
@@ -122,11 +123,16 @@ pub fn build_operator_status(
     let operator_surface =
         crate::platform::operator_surface::current_operator_surface_budget(memory_system_kind);
     let compact_view = operator_surface.compact_view;
+    let tool_governance_state = input.tool_registry.inspect_execution_governance()?;
     let tool_governance = if compact_view {
         None
     } else {
-        input.tool_registry.inspect_execution_governance()?
+        tool_governance_state.clone()
     };
+    let programmable_reasoning_usage =
+        build_programmable_reasoning_usage_analytics(tool_governance_state.as_ref());
+    let programmable_reasoning_timeline =
+        build_programmable_reasoning_timeline(tool_governance_state.as_ref());
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
     let runtime_capabilities = orchestrator::runtime_capability_snapshot();
     let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&crate::metrics::snapshot());
@@ -164,6 +170,13 @@ pub fn build_operator_status(
         build_voice_path_diagnosis_from_runtime(input.platform, input.config);
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
+    let mut programmable_reasoning = crate::programmable_reasoning_operator_snapshot();
+    programmable_reasoning.usage_analytics = programmable_reasoning_usage;
+    programmable_reasoning.timeline = programmable_reasoning_timeline;
+    programmable_reasoning.maintenance_digest = build_programmable_reasoning_maintenance_digest(
+        &programmable_reasoning.usage_analytics,
+        &programmable_reasoning.timeline,
+    );
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let supervisor = presence.supervisor.clone();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -185,7 +198,7 @@ pub fn build_operator_status(
         voice_path_diagnosis,
         memory_operator_surface,
         workflow: runtime::workflow_audit_snapshot(8),
-        programmable_reasoning: crate::programmable_reasoning_operator_snapshot(),
+        programmable_reasoning,
         threads: runtime::thread_registry::snapshot(),
         os_closure,
         initiative,
@@ -274,7 +287,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.key_memory_count,
     ));
     out.push_str(&format!(
-        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n",
+        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n  programmable_reasoning_recent_events: {}\n  programmable_reasoning_digest_status: {}\n",
         match snapshot.programmable_reasoning.stage {
             crate::ProgrammableReasoningStage::ConstitutionOnly => "constitution_only",
             crate::ProgrammableReasoningStage::TaskScriptingBaseline => "task_scripting_baseline",
@@ -287,6 +300,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
                 "capability_bridge_expansion"
             }
             crate::ProgrammableReasoningStage::ExperienceCrystal => "experience_crystal",
+            crate::ProgrammableReasoningStage::EngineeringSynthesis => "engineering_synthesis",
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,
         match snapshot.programmable_reasoning.runtime_contract.execution_backend {
@@ -294,6 +308,8 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningExecutionBackend::LuaSandbox => "lua_sandbox",
         },
         snapshot.programmable_reasoning.operator_summary,
+        snapshot.programmable_reasoning.timeline.recent_events.len(),
+        snapshot.programmable_reasoning.maintenance_digest.status,
     ));
     out.push_str(&format!(
         "  workflow_recent_records: {}\n  workflow_executed: {}\n  workflow_deferred: {}\n  workflow_suppressed: {}\n  workflow_no_trigger: {}\n  workflow_failed: {}\n",
@@ -395,11 +411,271 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
     out
 }
 
+fn build_programmable_reasoning_usage_analytics(
+    governance: Option<&ToolExecutionGovernanceState>,
+) -> crate::ProgrammableReasoningUsageAnalytics {
+    #[derive(Default)]
+    struct ToolUsageAccumulator {
+        total_attempts: usize,
+        succeeded: usize,
+        failed: usize,
+        denied: usize,
+        resource_denied: usize,
+        last_seen_at: Option<u64>,
+    }
+
+    let Some(governance) = governance else {
+        return crate::ProgrammableReasoningUsageAnalytics::default();
+    };
+
+    let mut usage = crate::ProgrammableReasoningUsageAnalytics::default();
+    let mut tool_counts: BTreeMap<String, ToolUsageAccumulator> = BTreeMap::new();
+    for record in &governance.recent_records {
+        if !is_programmable_reasoning_tool(record.tool_name.as_str()) {
+            continue;
+        }
+        let Some(status_bucket) = classify_programmable_reasoning_record(record.status) else {
+            continue;
+        };
+        usage.recent_total_attempts += 1;
+        usage.last_seen_at = Some(usage.last_seen_at.map_or(record.recorded_at, |current| {
+            current.max(record.recorded_at)
+        }));
+        if usage.last_seen_at == Some(record.recorded_at) {
+            usage.last_tool_name = Some(record.tool_name.clone());
+        }
+        let entry = tool_counts.entry(record.tool_name.clone()).or_default();
+        entry.total_attempts += 1;
+        entry.last_seen_at = Some(entry.last_seen_at.map_or(record.recorded_at, |current| {
+            current.max(record.recorded_at)
+        }));
+        match status_bucket {
+            ProgrammableReasoningRecordBucket::Succeeded => {
+                usage.recent_succeeded += 1;
+                entry.succeeded += 1;
+            }
+            ProgrammableReasoningRecordBucket::Failed => {
+                usage.recent_failed += 1;
+                entry.failed += 1;
+            }
+            ProgrammableReasoningRecordBucket::Denied => {
+                usage.recent_denied += 1;
+                entry.denied += 1;
+            }
+            ProgrammableReasoningRecordBucket::ResourceDenied => {
+                usage.recent_resource_denied += 1;
+                entry.resource_denied += 1;
+            }
+        }
+    }
+
+    let mut counts = tool_counts
+        .into_iter()
+        .map(
+            |(tool_name, entry)| crate::ProgrammableReasoningToolUsageSummary {
+                tool_name,
+                total_attempts: entry.total_attempts,
+                succeeded: entry.succeeded,
+                failed: entry.failed,
+                denied: entry.denied,
+                resource_denied: entry.resource_denied,
+                last_seen_at: entry.last_seen_at,
+            },
+        )
+        .collect::<Vec<_>>();
+    counts.sort_by(|left, right| {
+        right
+            .total_attempts
+            .cmp(&left.total_attempts)
+            .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+            .then_with(|| left.tool_name.cmp(&right.tool_name))
+    });
+    usage.tool_counts = counts;
+    usage
+}
+
+fn build_programmable_reasoning_timeline(
+    governance: Option<&ToolExecutionGovernanceState>,
+) -> crate::ProgrammableReasoningTimeline {
+    const PROGRAMMABLE_REASONING_TIMELINE_LIMIT: usize = 8;
+
+    let Some(governance) = governance else {
+        return crate::ProgrammableReasoningTimeline::default();
+    };
+
+    let recent_events = governance
+        .recent_records
+        .iter()
+        .rev()
+        .filter(|record| is_programmable_reasoning_tool(record.tool_name.as_str()))
+        .filter_map(programmable_reasoning_timeline_event_from_record)
+        .take(PROGRAMMABLE_REASONING_TIMELINE_LIMIT)
+        .collect::<Vec<_>>();
+
+    crate::ProgrammableReasoningTimeline { recent_events }
+}
+
+fn build_programmable_reasoning_maintenance_digest(
+    usage: &crate::ProgrammableReasoningUsageAnalytics,
+    timeline: &crate::ProgrammableReasoningTimeline,
+) -> crate::ProgrammableReasoningMaintenanceDigest {
+    let attention_event_count = usage
+        .recent_failed
+        .saturating_add(usage.recent_denied)
+        .saturating_add(usage.recent_resource_denied);
+    let last_event = timeline.recent_events.first();
+    let attention_tools = timeline
+        .recent_events
+        .iter()
+        .filter(|event| event.status != "succeeded")
+        .map(|event| event.tool_name.clone())
+        .fold(Vec::<String>::new(), |mut acc, tool_name| {
+            if !acc.iter().any(|item| item == &tool_name) {
+                acc.push(tool_name);
+            }
+            acc
+        });
+    let status = if usage.recent_total_attempts == 0 {
+        "idle"
+    } else if attention_event_count > 0 {
+        "attention"
+    } else {
+        "healthy"
+    };
+    let headline = match status {
+        "idle" => "no recent programmable reasoning activity".to_string(),
+        "attention" => format!(
+            "{} recent attempts, {} need attention",
+            usage.recent_total_attempts, attention_event_count
+        ),
+        _ => format!(
+            "{} recent attempts, all completed successfully",
+            usage.recent_total_attempts
+        ),
+    };
+    crate::ProgrammableReasoningMaintenanceDigest {
+        status: status.to_string(),
+        headline,
+        attention_event_count,
+        last_event_tool_name: last_event.map(|event| event.tool_name.clone()),
+        last_event_status: last_event.map(|event| event.status.clone()),
+        attention_tools,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgrammableReasoningRecordBucket {
+    Succeeded,
+    Failed,
+    Denied,
+    ResourceDenied,
+}
+
+fn classify_programmable_reasoning_record(
+    status: crate::tools::ToolExecutionRecordStatus,
+) -> Option<ProgrammableReasoningRecordBucket> {
+    match status {
+        crate::tools::ToolExecutionRecordStatus::Succeeded => {
+            Some(ProgrammableReasoningRecordBucket::Succeeded)
+        }
+        crate::tools::ToolExecutionRecordStatus::Failed => {
+            Some(ProgrammableReasoningRecordBucket::Failed)
+        }
+        crate::tools::ToolExecutionRecordStatus::Denied => {
+            Some(ProgrammableReasoningRecordBucket::Denied)
+        }
+        crate::tools::ToolExecutionRecordStatus::ResourceDenied => {
+            Some(ProgrammableReasoningRecordBucket::ResourceDenied)
+        }
+        crate::tools::ToolExecutionRecordStatus::Allowed => None,
+    }
+}
+
+fn programmable_reasoning_timeline_event_from_record(
+    record: &crate::tools::ToolExecutionRecord,
+) -> Option<crate::ProgrammableReasoningTimelineEvent> {
+    let detail = if record.summary.trim().is_empty() {
+        record.reason.trim()
+    } else {
+        record.summary.trim()
+    };
+    let status = match record.status {
+        crate::tools::ToolExecutionRecordStatus::Succeeded => "succeeded",
+        crate::tools::ToolExecutionRecordStatus::Failed => "failed",
+        crate::tools::ToolExecutionRecordStatus::Denied => "denied",
+        crate::tools::ToolExecutionRecordStatus::ResourceDenied => "resource_denied",
+        crate::tools::ToolExecutionRecordStatus::Allowed => return None,
+    };
+    Some(crate::ProgrammableReasoningTimelineEvent {
+        recorded_at: record.recorded_at,
+        tool_name: record.tool_name.clone(),
+        status: status.to_string(),
+        detail: detail.to_string(),
+    })
+}
+
+fn is_programmable_reasoning_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "lua_query"
+            | "lua_memory_query"
+            | "lua_tool_bridge"
+            | "lua_datasheet_distill"
+            | "lua_register_table_helper"
+            | "lua_protocol_frame_helper"
+            | "lua_state_machine_checker"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::IngressKind;
     use crate::config::AppConfig;
+    use crate::tools::{
+        ToolApprovalMode, ToolEffectClass, ToolExecutionGovernance, ToolExecutionOutcome,
+        ToolExecutionPermit, ToolExecutionRequest, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
+        ToolRollbackKind,
+    };
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MemoryStateFs {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl crate::platform::StateFs for MemoryStateFs {
+        fn read(&self, rel_path: &str) -> crate::Result<Option<Vec<u8>>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(rel_path)
+                .cloned())
+        }
+
+        fn write(&self, rel_path: &str, data: &[u8]) -> crate::Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, rel_path: &str) -> crate::Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(rel_path);
+            Ok(())
+        }
+
+        fn list_dir(&self, _rel_path: &str) -> crate::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn build_operator_status_includes_device_capability_planes() {
@@ -459,5 +735,267 @@ mod tests {
 
         assert!(budget.compact_view);
         assert!(budget.window_required_for_deep_routes);
+    }
+
+    #[test]
+    fn build_operator_status_summarizes_programmable_reasoning_usage() {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let tool_registry =
+            crate::tools::ToolRegistry::new().with_execution_governance(Arc::clone(&governance));
+
+        governance
+            .record_success(
+                &reasoning_permit("lua_register_table_helper"),
+                &ToolExecutionOutcome::text("register table parsed"),
+            )
+            .expect("record success");
+        governance
+            .record_failure(
+                &reasoning_permit("lua_state_machine_checker"),
+                &crate::Error::config("lua_state_machine_checker_test", "transition missing"),
+            )
+            .expect("record failure");
+        governance
+            .record_resource_denial(&reasoning_permit("lua_query"), "runtime capability blocked")
+            .expect("record resource denial");
+        governance
+            .assess(ToolExecutionRequest {
+                tool_name: "lua_protocol_frame_helper".to_string(),
+                ingress: IngressKind::User,
+                channel: "telegram".to_string(),
+                metadata: ToolMetadata::task(),
+                shape: reasoning_shape("lua_protocol_frame_helper")
+                    .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                    .with_approval_granted(false),
+                requires_network: false,
+            })
+            .expect("record denial");
+        governance
+            .record_success(
+                &non_reasoning_permit("message"),
+                &ToolExecutionOutcome::text("sent message"),
+            )
+            .expect("record unrelated success");
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        })
+        .expect("operator status");
+
+        let usage = snapshot.programmable_reasoning.usage_analytics;
+        assert_eq!(usage.recent_total_attempts, 4);
+        assert_eq!(usage.recent_succeeded, 1);
+        assert_eq!(usage.recent_failed, 1);
+        assert_eq!(usage.recent_denied, 1);
+        assert_eq!(usage.recent_resource_denied, 1);
+        assert_eq!(
+            usage.last_tool_name.as_deref(),
+            Some("lua_protocol_frame_helper")
+        );
+        assert!(usage
+            .tool_counts
+            .iter()
+            .any(|entry| entry.tool_name == "lua_register_table_helper" && entry.succeeded == 1));
+        assert!(usage
+            .tool_counts
+            .iter()
+            .any(|entry| entry.tool_name == "lua_state_machine_checker" && entry.failed == 1));
+        assert!(usage
+            .tool_counts
+            .iter()
+            .any(|entry| entry.tool_name == "lua_query" && entry.resource_denied == 1));
+        assert!(!usage
+            .tool_counts
+            .iter()
+            .any(|entry| entry.tool_name == "message"));
+    }
+
+    #[test]
+    fn build_operator_status_exposes_programmable_reasoning_timeline() {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let tool_registry =
+            crate::tools::ToolRegistry::new().with_execution_governance(Arc::clone(&governance));
+
+        governance
+            .record_success(
+                &reasoning_permit("lua_register_table_helper"),
+                &ToolExecutionOutcome::text("register table parsed"),
+            )
+            .expect("record success");
+        governance
+            .record_failure(
+                &reasoning_permit("lua_state_machine_checker"),
+                &crate::Error::config("lua_state_machine_checker_test", "transition missing"),
+            )
+            .expect("record failure");
+        governance
+            .record_resource_denial(&reasoning_permit("lua_query"), "runtime capability blocked")
+            .expect("record resource denial");
+        governance
+            .assess(ToolExecutionRequest {
+                tool_name: "lua_protocol_frame_helper".to_string(),
+                ingress: IngressKind::User,
+                channel: "telegram".to_string(),
+                metadata: ToolMetadata::task(),
+                shape: reasoning_shape("lua_protocol_frame_helper")
+                    .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                    .with_approval_granted(false),
+                requires_network: false,
+            })
+            .expect("record denial");
+        governance
+            .record_success(
+                &non_reasoning_permit("message"),
+                &ToolExecutionOutcome::text("sent message"),
+            )
+            .expect("record unrelated success");
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        })
+        .expect("operator status");
+
+        let timeline = snapshot.programmable_reasoning.timeline;
+        assert_eq!(timeline.recent_events.len(), 4);
+        assert_eq!(
+            timeline.recent_events[0].tool_name,
+            "lua_protocol_frame_helper"
+        );
+        assert_eq!(timeline.recent_events[0].status, "denied");
+        assert_eq!(timeline.recent_events[0].detail, "explicit_intent_required");
+        assert_eq!(timeline.recent_events[1].tool_name, "lua_query");
+        assert_eq!(timeline.recent_events[1].status, "resource_denied");
+        assert_eq!(
+            timeline.recent_events[1].detail,
+            "runtime capability blocked"
+        );
+        assert_eq!(
+            timeline.recent_events[2].tool_name,
+            "lua_state_machine_checker"
+        );
+        assert_eq!(timeline.recent_events[2].status, "failed");
+        assert_eq!(
+            timeline.recent_events[2].detail,
+            "config: transition missing (stage: lua_state_machine_checker_test)"
+        );
+        assert_eq!(
+            timeline.recent_events[3].tool_name,
+            "lua_register_table_helper"
+        );
+        assert_eq!(timeline.recent_events[3].status, "succeeded");
+        assert_eq!(timeline.recent_events[3].detail, "register table parsed");
+        assert!(!timeline
+            .recent_events
+            .iter()
+            .any(|event| event.tool_name == "message"));
+    }
+
+    #[test]
+    fn build_operator_status_exposes_programmable_reasoning_maintenance_digest() {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let tool_registry =
+            crate::tools::ToolRegistry::new().with_execution_governance(Arc::clone(&governance));
+
+        governance
+            .record_success(
+                &reasoning_permit("lua_register_table_helper"),
+                &ToolExecutionOutcome::text("register table parsed"),
+            )
+            .expect("record success");
+        governance
+            .record_failure(
+                &reasoning_permit("lua_state_machine_checker"),
+                &crate::Error::config("lua_state_machine_checker_test", "transition missing"),
+            )
+            .expect("record failure");
+        governance
+            .record_resource_denial(&reasoning_permit("lua_query"), "runtime capability blocked")
+            .expect("record resource denial");
+        governance
+            .assess(ToolExecutionRequest {
+                tool_name: "lua_protocol_frame_helper".to_string(),
+                ingress: IngressKind::User,
+                channel: "telegram".to_string(),
+                metadata: ToolMetadata::task(),
+                shape: reasoning_shape("lua_protocol_frame_helper")
+                    .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                    .with_approval_granted(false),
+                requires_network: false,
+            })
+            .expect("record denial");
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        })
+        .expect("operator status");
+
+        let digest = snapshot.programmable_reasoning.maintenance_digest;
+        assert_eq!(digest.status, "attention");
+        assert_eq!(
+            digest.last_event_tool_name.as_deref(),
+            Some("lua_protocol_frame_helper")
+        );
+        assert_eq!(digest.last_event_status.as_deref(), Some("denied"));
+        assert_eq!(digest.attention_event_count, 3);
+        assert_eq!(
+            digest.attention_tools,
+            vec![
+                "lua_protocol_frame_helper".to_string(),
+                "lua_query".to_string(),
+                "lua_state_machine_checker".to_string()
+            ]
+        );
+        assert!(digest
+            .headline
+            .contains("4 recent attempts, 3 need attention"));
+    }
+
+    fn reasoning_shape(tool_name: &str) -> ToolExecutionShape {
+        ToolMetadata::task()
+            .default_execution_shape(tool_name)
+            .with_effect_class(ToolEffectClass::ReadOnly)
+            .with_risk_level(ToolRiskLevel::Low)
+            .with_approval_mode(ToolApprovalMode::Automatic)
+            .with_rollback_kind(ToolRollbackKind::None)
+    }
+
+    fn reasoning_permit(tool_name: &str) -> ToolExecutionPermit {
+        ToolExecutionPermit {
+            tool_name: tool_name.to_string(),
+            ingress: IngressKind::User,
+            channel: "telegram".to_string(),
+            metadata: ToolMetadata::task(),
+            shape: reasoning_shape(tool_name),
+            requires_network: false,
+        }
+    }
+
+    fn non_reasoning_permit(tool_name: &str) -> ToolExecutionPermit {
+        ToolExecutionPermit {
+            tool_name: tool_name.to_string(),
+            ingress: IngressKind::User,
+            channel: "telegram".to_string(),
+            metadata: ToolMetadata::task(),
+            shape: ToolMetadata::task().default_execution_shape(tool_name),
+            requires_network: false,
+        }
     }
 }

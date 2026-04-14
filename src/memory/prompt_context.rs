@@ -340,7 +340,7 @@ mod tests {
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
 
@@ -1763,6 +1763,78 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct ScopedPrivateGardenStore {
+        docs_by_scope: Mutex<BTreeMap<String, Vec<PrivateGardenDoc>>>,
+        scope_calls: Mutex<Vec<String>>,
+    }
+
+    impl PrivateGardenStore for ScopedPrivateGardenStore {
+        fn list(&self, chat_id: &str, limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
+            Ok(self
+                .docs_by_scope
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .rev()
+                .take(limit)
+                .map(|doc| PrivateGardenDocRecord {
+                    path: doc.path,
+                    updated_at: doc.updated_at,
+                    revision: doc.revision,
+                    bytes: doc.content.len(),
+                    preview: crate::memory::private_garden::build_private_garden_preview(
+                        &doc.content,
+                    ),
+                })
+                .collect())
+        }
+
+        fn read(&self, chat_id: &str, doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            self.scope_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(chat_id.to_string());
+            Ok(self
+                .docs_by_scope
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .and_then(|docs| docs.iter().find(|doc| doc.path == doc_path).cloned()))
+        }
+
+        fn write(
+            &self,
+            _chat_id: &str,
+            _doc_path: &str,
+            _content: &str,
+            _now_secs: u64,
+        ) -> Result<PrivateGardenDocRecord> {
+            unreachable!()
+        }
+
+        fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            unreachable!()
+        }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            _from_path: &str,
+            _to_path: &str,
+            _now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
     struct StubRemindAtStore;
 
     impl crate::memory::RemindAtStore for StubRemindAtStore {
@@ -2555,6 +2627,120 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_none());
+    }
+
+    #[test]
+    fn prompt_memory_uses_board_owned_private_garden_scope_and_renders_contract_summary() {
+        let session_store = StubSessionStore::default();
+        let archive_memory_store = StubMemoryStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let memory_store = StubLongTermMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let self_model_store = StubSelfModelStore {
+            model: Mutex::new(Some(SelfModel {
+                continuity_anchor: "persistent board self".to_string(),
+                self_narrative: "我是独立的板级主体".to_string(),
+                updated_at: 1,
+                ..SelfModel::default()
+            })),
+        };
+        let self_authored_core_store = StubSelfAuthoredCoreStore::default();
+        let relationship_constitution_store = StubRelationshipConstitutionStore::default();
+        let relationship_portfolio_store = StubRelationshipPortfolioStore::default();
+        let relationship_topology_store = StubRelationshipTopologyStore::default();
+        let world_sense_store = StubWorldSenseStore::default();
+        let autonomy_strategy_store = StubAutonomyStrategyStore::default();
+        let outer_voice_store = StubOuterVoiceStore::default();
+        let inner_life_store = StubInnerLifeStore::default();
+        let self_continuity_store = StubSelfContinuityStore::default();
+        let private_doc_store = StubPrivateDocStore::default();
+        let private_garden_store = ScopedPrivateGardenStore {
+            docs_by_scope: Mutex::new(BTreeMap::from([(
+                crate::memory::BOARD_SUBJECT_SCOPE_ID.to_string(),
+                vec![PrivateGardenDoc {
+                    path: "journal/afterglow.md".to_string(),
+                    content: "这块花园属于板级主体，不属于当前用户".to_string(),
+                    updated_at: 2,
+                    revision: 1,
+                }],
+            )])),
+            scope_calls: Mutex::new(Vec::new()),
+        };
+        let mental_privacy_store = StubMentalPrivacyStore::default();
+        let remind_store = StubRemindAtStore;
+        let task_store = StubTaskStore;
+        let task_run_store = StubTaskRunStore;
+        let task_artifact_store = StubTaskArtifactStore;
+        let skill_storage = StubSkillStorage::default();
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "说说你的私有花园",
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            system_max_len: 1024,
+            now_secs: 100,
+            participation_plan: PromptParticipationPlan::full(),
+            recent_messages_limit: 8,
+            load_long_term_memory: false,
+            include_private_garden_projection: true,
+            session_store: &session_store,
+            memory_store: &archive_memory_store,
+            session_summary_store: &summary_store,
+            long_term_memory_store: &memory_store,
+            execution_state_store: &execution_state_store,
+            task_run_store: &task_run_store,
+            task_artifact_store: &task_artifact_store,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &self_model_store,
+            self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &relationship_constitution_store,
+            relationship_portfolio_store: &relationship_portfolio_store,
+            relationship_topology_store: &relationship_topology_store,
+            world_sense_store: &world_sense_store,
+            autonomy_strategy_store: &autonomy_strategy_store,
+            outer_voice_store: &outer_voice_store,
+            inner_life_store: &inner_life_store,
+            self_continuity_store: &self_continuity_store,
+            private_doc_store: &private_doc_store,
+            private_garden_store: &private_garden_store,
+            mental_privacy_store: &mental_privacy_store,
+            remind_store: &remind_store,
+            task_store: &task_store,
+            turn_ledger_store: &turn_ledger_store,
+            skill_storage: &skill_storage,
+            continuity_capsule_store: &continuity_capsule_store,
+        });
+
+        assert!(
+            context
+                .private_garden_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("journal/afterglow.md"),
+            "prompt private_garden projection must load from board-owned scope"
+        );
+        assert!(
+            context
+                .self_state_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Private garden owner: board.self"),
+            "prompt self-state should carry deterministic ownership contract"
+        );
+        let scope_calls = private_garden_store
+            .scope_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert!(
+            scope_calls
+                .iter()
+                .all(|scope| scope == crate::memory::BOARD_SUBJECT_SCOPE_ID),
+            "prompt memory should query private garden by board scope, got {scope_calls:?}"
+        );
     }
 
     #[test]

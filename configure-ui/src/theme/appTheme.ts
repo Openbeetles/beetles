@@ -1,3 +1,4 @@
+import { createElement } from 'react'
 import { createTheme } from '@mui/material'
 import {
   BRAND_COLORS,
@@ -9,6 +10,13 @@ import {
   type ThemeMode,
 } from '../config/themeTokens'
 import { CONTENT_MAX_WIDTH } from '../config/layout'
+import {
+  OsCheckboxCheckedIcon,
+  OsCheckboxIcon,
+  OsCheckboxIndeterminateIcon,
+  OsRadioCheckedIcon,
+  OsRadioIcon,
+} from './osFormControlIcons'
 
 const R = LAYOUT_TOKENS.radiusControl
 const R_CARD = LAYOUT_TOKENS.radiusCard
@@ -423,6 +431,16 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
         },
       },
+      MuiInputLabel: {
+        styleOverrides: {
+          root: {
+            '&.Mui-disabled': {
+              color: 'var(--text-tertiary)',
+              opacity: 1,
+            },
+          },
+        },
+      },
       MuiOutlinedInput: {
         styleOverrides: {
           root: {
@@ -445,6 +463,24 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
               '& .MuiOutlinedInput-notchedOutline': {
                 borderColor: 'color-mix(in srgb, var(--primary) 38%, var(--border))',
                 borderWidth: 1,
+              },
+            },
+            /**
+             * 禁用态：贴近卡片底、弱描边（默认 disabled 偏闷、偏深）。
+             * Disabled: lighter well + subtler outline than MUI default.
+             */
+            '&.Mui-disabled': {
+              opacity: 1,
+              backgroundColor:
+                'color-mix(in srgb, var(--card) 94%, var(--foreground))',
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor:
+                  'color-mix(in srgb, var(--border) 12%, transparent)',
+              },
+              '& .MuiInputBase-input': {
+                color: 'var(--text-tertiary)',
+                WebkitTextFillColor: 'var(--text-tertiary)',
+                opacity: 1,
               },
             },
           },
@@ -496,48 +532,159 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
         },
       },
-      /** 与 macOS / Windows 设置页接近：无 ripple、轨道柔和、选中用主色 */
+      /**
+       * 开关：井底轨道 + 内凹阴影；滑块顶高光模拟 3D，选中轨与拇指同主色系。
+       * Switch — inset track well, glossy thumb; checked state aligns with primary.
+       */
       MuiSwitch: {
         defaultProps: { disableRipple: true },
         styleOverrides: {
+          /**
+           * MUI Root 默认 `overflow:hidden` 会裁掉滑块描边/外阴影（尤其未选态靠左时）。
+           * 已用收紧的 `input` 尺寸，可改为 visible 避免圆角被「切直边」。
+           */
+          root: {
+            overflow: 'visible',
+          },
+          /**
+           * MUI 默认将 `input` 设为 `width:300%; left:-100%` 以扩大触控区，会导致
+           * DevTools/布局测量出现远大于轨道的「幽灵宽度」并像溢出父级。收紧到 switchBase 内。
+           * Default oversized invisible input is constrained to the thumb hit area.
+           */
           switchBase: {
             color: 'var(--card)',
+            '& .MuiSwitch-input': {
+              left: 0,
+              width: '100%',
+              height: '100%',
+            },
             '& .MuiSwitch-thumb': {
+              backgroundColor: 'var(--card)',
+              backgroundImage:
+                'linear-gradient(180deg, color-mix(in srgb, var(--foreground) 14%, transparent) 0%, transparent 58%)',
+              border:
+                '1px solid color-mix(in srgb, var(--foreground) 18%, transparent)',
               boxShadow:
-                '0 1px 2px color-mix(in srgb, var(--foreground) 28%, transparent)',
+                '0 1px 3px color-mix(in srgb, var(--foreground) 32%, transparent), inset 0 1px 0 color-mix(in srgb, var(--foreground) 20%, transparent)',
             },
             '&.Mui-checked': {
               color: 'var(--primary)',
+              '& .MuiSwitch-thumb': {
+                backgroundImage:
+                  'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 38%, transparent) 0%, transparent 55%)',
+                border:
+                  '1px solid color-mix(in srgb, var(--primary) 50%, transparent)',
+                boxShadow:
+                  '0 1px 3px color-mix(in srgb, var(--primary) 30%, transparent), inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 28%, transparent)',
+              },
               '& + .MuiSwitch-track': {
-                backgroundColor: 'color-mix(in srgb, var(--primary) 44%, transparent)',
+                backgroundColor: 'color-mix(in srgb, var(--primary) 40%, transparent)',
+                border:
+                  '1px solid color-mix(in srgb, var(--primary) 48%, transparent)',
                 opacity: 1,
+                boxShadow:
+                  'inset 0 1px 2px color-mix(in srgb, var(--foreground) 10%, transparent)',
+              },
+            },
+            '&.Mui-focusVisible': {
+              outline: 'var(--focus-ring-width) solid var(--primary)',
+              outlineOffset: 2,
+              borderRadius: 999,
+            },
+            '@media (prefers-reduced-motion: reduce)': {
+              '& .MuiSwitch-thumb': {
+                transition: 'none',
               },
             },
           },
           track: {
             opacity: 1,
             borderRadius: 999,
-            backgroundColor: 'color-mix(in srgb, var(--foreground) 11%, transparent)',
+            border: '1px solid var(--outlined-border-rest)',
+            backgroundColor: 'var(--input-idle-well)',
+            boxShadow:
+              'inset 0 1px 2px color-mix(in srgb, var(--foreground) 9%, transparent)',
           },
         },
       },
-      MuiCheckbox: {
-        defaultProps: { disableRipple: true, color: 'primary' },
+      /**
+       * MUI 默认 `marginLeft:-11`（与 labelPlacement start 时 `marginRight:-11`）用于与 TextField 标签对齐，
+       * 会把 Switch/Checkbox 拉出卡片内容区，在 `overflow:auto` 的 Section 里裁切滑块描边。
+       * Remove negative margins; use flex gap for control/label spacing.
+       */
+      MuiFormControlLabel: {
         styleOverrides: {
           root: {
+            marginLeft: 0,
+            marginRight: 16,
+            columnGap: 8,
+            '&.MuiFormControlLabel-labelPlacementStart': {
+              marginRight: 0,
+              marginLeft: 16,
+              columnGap: 8,
+            },
+            '&.MuiFormControlLabel-labelPlacementTop, &.MuiFormControlLabel-labelPlacementBottom':
+              {
+                marginLeft: 16,
+              },
+          },
+        },
+      },
+      /** 矢量井字 + 对勾，与 `--input-idle-well` 一致 */
+      MuiCheckbox: {
+        defaultProps: {
+          disableRipple: true,
+          color: 'primary',
+          icon: createElement(OsCheckboxIcon),
+          checkedIcon: createElement(OsCheckboxCheckedIcon),
+          indeterminateIcon: createElement(OsCheckboxIndeterminateIcon),
+        },
+        styleOverrides: {
+          root: {
+            padding: 8,
             color: 'var(--muted)',
+            borderRadius: R,
+            transition:
+              'background-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease',
+            '&:hover': {
+              backgroundColor:
+                'color-mix(in srgb, var(--primary) 5%, transparent)',
+            },
+            '&.Mui-focusVisible': {
+              outline: 'var(--focus-ring-width) solid var(--primary)',
+              outlineOffset: 'var(--focus-ring-offset)',
+            },
             '&.Mui-checked, &.MuiCheckbox-indeterminate': {
               color: 'var(--primary)',
+            },
+            '&.Mui-disabled': {
+              opacity: 0.42,
             },
           },
         },
       },
       MuiRadio: {
-        defaultProps: { disableRipple: true, color: 'primary' },
+        defaultProps: {
+          disableRipple: true,
+          color: 'primary',
+          icon: createElement(OsRadioIcon),
+          checkedIcon: createElement(OsRadioCheckedIcon),
+        },
         styleOverrides: {
           root: {
+            padding: 8,
+            borderRadius: '50%',
             color: 'var(--muted)',
+            '&:hover': {
+              backgroundColor:
+                'color-mix(in srgb, var(--primary) 5%, transparent)',
+            },
+            '&.Mui-focusVisible': {
+              outline: 'var(--focus-ring-width) solid var(--primary)',
+              outlineOffset: 'var(--focus-ring-offset)',
+            },
             '&.Mui-checked': { color: 'var(--primary)' },
+            '&.Mui-disabled': { opacity: 0.42 },
           },
         },
       },

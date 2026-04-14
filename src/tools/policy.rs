@@ -135,6 +135,8 @@ impl ToolRollbackKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ToolMetadata {
     pub exposure: ToolExposure,
+    /// 普通用户 ingress 是否允许暴露给 LLM；task/stateful 默认允许。
+    pub allow_in_user_ingress: bool,
     /// system ingress 是否允许调用；普通 task 默认允许，stateful/admin/debug 默认禁止。
     pub allow_in_system_ingress: bool,
     /// 内部系统通道（如 cron / heartbeat）是否允许调用；默认禁止。
@@ -149,6 +151,7 @@ impl ToolMetadata {
     pub const fn task() -> Self {
         Self {
             exposure: ToolExposure::Task,
+            allow_in_user_ingress: true,
             allow_in_system_ingress: true,
             allow_in_system_channel: false,
             effect_class: ToolEffectClass::ReadOnly,
@@ -161,6 +164,7 @@ impl ToolMetadata {
     pub const fn stateful() -> Self {
         Self {
             exposure: ToolExposure::Stateful,
+            allow_in_user_ingress: true,
             allow_in_system_ingress: false,
             allow_in_system_channel: false,
             effect_class: ToolEffectClass::PersistentStateWrite,
@@ -173,6 +177,7 @@ impl ToolMetadata {
     pub const fn admin() -> Self {
         Self {
             exposure: ToolExposure::Admin,
+            allow_in_user_ingress: false,
             allow_in_system_ingress: false,
             allow_in_system_channel: false,
             effect_class: ToolEffectClass::ConfigWrite,
@@ -185,6 +190,7 @@ impl ToolMetadata {
     pub const fn debug() -> Self {
         Self {
             exposure: ToolExposure::Debug,
+            allow_in_user_ingress: false,
             allow_in_system_ingress: false,
             allow_in_system_channel: false,
             effect_class: ToolEffectClass::HostExecution,
@@ -196,6 +202,11 @@ impl ToolMetadata {
 
     pub const fn with_system_channel(mut self, allowed: bool) -> Self {
         self.allow_in_system_channel = allowed;
+        self
+    }
+
+    pub const fn with_user_ingress(mut self, allowed: bool) -> Self {
+        self.allow_in_user_ingress = allowed;
         self
     }
 
@@ -233,7 +244,7 @@ impl ToolMetadata {
                 } else if ctx.ingress == IngressKind::System {
                     self.allow_in_system_ingress
                 } else {
-                    true
+                    self.allow_in_user_ingress
                 }
             }
         }

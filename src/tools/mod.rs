@@ -70,9 +70,17 @@ pub mod i2c_device;
 pub mod i2c_sensor;
 pub mod kv_store;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod lua_datasheet_distill;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_memory_query;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod lua_protocol_frame_helper;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_query;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod lua_register_table_helper;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod lua_state_machine_checker;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod lua_tool_bridge;
 #[cfg(all(
@@ -202,9 +210,17 @@ pub use i2c_device::I2cDeviceTool;
 pub use i2c_sensor::I2cSensorTool;
 pub use kv_store::KvStoreTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use lua_datasheet_distill::LuaDatasheetDistillTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_memory_query::LuaMemoryQueryTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use lua_protocol_frame_helper::LuaProtocolFrameHelperTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_query::LuaQueryTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use lua_register_table_helper::LuaRegisterTableHelperTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use lua_state_machine_checker::LuaStateMachineCheckerTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use lua_tool_bridge::LuaToolBridgeTool;
 #[cfg(all(

@@ -1,6 +1,7 @@
 //! Linux programmable reasoning constitution and operator-visible contracts.
 
 mod constitution;
+mod engineering_distillation;
 mod experience_crystal;
 mod idle_forge;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -9,7 +10,10 @@ mod memory_attack;
 mod memory_query;
 mod operator;
 mod proposal;
+mod protocol_frame;
+mod register_table;
 mod runtime;
+mod state_machine;
 mod tool_request;
 
 pub use constitution::{
@@ -17,6 +21,10 @@ pub use constitution::{
     ProgrammableReasoningCapabilityContract, ProgrammableReasoningCapabilityKind,
     ProgrammableReasoningExecutionBackend, ProgrammableReasoningRuntimeContract,
     ProgrammableReasoningStage,
+};
+pub use engineering_distillation::{
+    validate_engineering_distillation_result, EngineeringDistillationAssetCandidate,
+    EngineeringDistillationAssetKind, EngineeringDistillationResult,
 };
 pub use experience_crystal::{
     build_experience_crystal_operator_summary, promote_skill_crystal_candidates,
@@ -50,16 +58,31 @@ pub use memory_query::{
 };
 pub use operator::{
     programmable_reasoning_operator_snapshot, programmable_reasoning_system_info_summary,
-    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningSystemInfoSummary,
+    ProgrammableReasoningMaintenanceDigest, ProgrammableReasoningOperatorSnapshot,
+    ProgrammableReasoningSystemInfoSummary, ProgrammableReasoningTimeline,
+    ProgrammableReasoningTimelineEvent, ProgrammableReasoningToolUsageSummary,
+    ProgrammableReasoningUsageAnalytics,
 };
 pub use proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposal,
     ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
 };
+pub use protocol_frame::{
+    validate_protocol_frame_result, ProtocolFieldEncoding, ProtocolFrameByteRange,
+    ProtocolFrameDirection, ProtocolFrameEntry, ProtocolFrameField, ProtocolFrameResult,
+};
+pub use register_table::{
+    validate_register_table_result, RegisterFieldAccess, RegisterTableBitRange, RegisterTableEntry,
+    RegisterTableField, RegisterTableResult,
+};
 pub use runtime::{
     default_lua_query_capabilities, CurrentExecutableLuaSandboxExecutor, DirectLuaSandboxExecutor,
     LuaQueryBudget, LuaQueryRequest, LuaQueryResponse, ReasoningExecutor,
     SubprocessLuaSandboxExecutor,
+};
+pub use state_machine::{
+    validate_state_machine_result, StateMachineFinding, StateMachineFindingKind, StateMachineModel,
+    StateMachineResult, StateMachineState, StateMachineTransition, StateNodeRole,
 };
 pub use tool_request::{validate_tool_request_result, ToolRequestProposal, ToolRequestResult};
 

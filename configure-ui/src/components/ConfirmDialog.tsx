@@ -6,7 +6,6 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import Typography from "@mui/material/Typography";
 import { useTranslation } from "react-i18next";
-import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -59,8 +58,15 @@ const ICON_INK: Record<
 const TITLE_ID = "confirm-dialog-title";
 const DESC_ID = "confirm-dialog-description";
 
+/** 比面板略松一档，避免确认弹窗显得挤在一起 */
+const DIALOG_PAD_X = 3;
+const DIALOG_PAD_TOP = 3.5;
+const DIALOG_PAD_BOTTOM = 3;
+const ACTIONS_PAD_Y = 2.5;
+
 /**
  * 通用操作确认弹窗：与壳层卡片一致的描边/轻投影，内容区与操作区分栏。
+ * 有 `icon` 时图标置顶水平居中，标题与说明居中；无图标时文案左对齐。
  */
 export function ConfirmDialog({
   open,
@@ -103,8 +109,6 @@ export function ConfirmDialog({
       onClose();
     }
   };
-
-  const contentPadding = PANEL_SECTION_PADDING;
 
   return (
     <Dialog
@@ -154,12 +158,13 @@ export function ConfirmDialog({
       >
         <Box
           sx={{
-            px: contentPadding,
-            pt: contentPadding,
-            pb: icon ? 2 : contentPadding,
+            px: DIALOG_PAD_X,
+            pt: DIALOG_PAD_TOP,
+            pb: DIALOG_PAD_BOTTOM,
             display: "flex",
-            alignItems: "flex-start",
-            gap: 2,
+            flexDirection: "column",
+            alignItems: icon ? "center" : "stretch",
+            gap: icon ? 2.5 : 0,
           }}
         >
           {icon && (
@@ -191,7 +196,13 @@ export function ConfirmDialog({
               </Box>
             </Box>
           )}
-          <Box sx={{ minWidth: 0, flex: 1, pt: icon ? 0.125 : 0 }}>
+          <Box
+            sx={{
+              minWidth: 0,
+              width: "100%",
+              textAlign: icon ? "center" : "left",
+            }}
+          >
             <Typography
               id={TITLE_ID}
               component="h2"
@@ -200,7 +211,7 @@ export function ConfirmDialog({
                 fontSize: "var(--font-size-body-lg)",
                 fontWeight: 700,
                 letterSpacing: "var(--letter-spacing-tight)",
-                lineHeight: "var(--line-height-snug)",
+                lineHeight: 1.45,
                 color: "var(--foreground)",
               }}
             >
@@ -210,7 +221,7 @@ export function ConfirmDialog({
               id={DESC_ID}
               component="p"
               sx={{
-                mt: 1.25,
+                mt: 1.75,
                 fontSize: "var(--font-size-body-sm)",
                 color: "var(--text-tertiary)",
                 lineHeight: wide
@@ -226,9 +237,9 @@ export function ConfirmDialog({
       </DialogContent>
       <DialogActions
         sx={{
-          px: contentPadding,
-          py: 1.75,
-          gap: 1,
+          px: DIALOG_PAD_X,
+          py: ACTIONS_PAD_Y,
+          gap: 1.5,
           justifyContent: "flex-end",
           flexWrap: "wrap",
           borderTop: "1px solid var(--border-subtle)",

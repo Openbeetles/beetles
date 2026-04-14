@@ -3606,7 +3606,7 @@ mod tests {
         assert!(!telemetry.delivery.current_primary_delivered);
         assert_eq!(telemetry.delivery.tool_outbound_suppressed, 0);
         let outbound = outbound_rx.try_recv().expect("visible update");
-        assert_eq!(outbound.content, "〔甲壳虫〕正在执行 message，继续推进 🪲");
+        assert_eq!(outbound.content, "正在执行 message，继续推进 🪲");
         assert!(outbound_rx.try_recv().is_err());
     }
 

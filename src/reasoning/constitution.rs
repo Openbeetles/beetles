@@ -12,6 +12,7 @@ pub enum ProgrammableReasoningStage {
     MemoryAttackDistillation,
     CapabilityBridgeExpansion,
     ExperienceCrystal,
+    EngineeringSynthesis,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -56,7 +57,7 @@ pub struct ProgrammableReasoningRuntimeContract {
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
     let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::ExperienceCrystal,
+        stage: ProgrammableReasoningStage::EngineeringSynthesis,
         linux_only: true,
         execution_backend: if execution_enabled {
             ProgrammableReasoningExecutionBackend::LuaSandbox
@@ -97,11 +98,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_moves_to_p6_experience_crystal() {
+    fn runtime_contract_moves_to_p7_engineering_synthesis() {
         let contract = programmable_reasoning_runtime_contract();
         assert_eq!(
             contract.stage,
-            ProgrammableReasoningStage::ExperienceCrystal
+            ProgrammableReasoningStage::EngineeringSynthesis
         );
         assert!(contract.linux_only);
         assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));

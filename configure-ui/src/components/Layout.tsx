@@ -27,7 +27,8 @@ import {
   consumeReconnectedAfterRestart,
   consumeRestartTimeout,
 } from "../store/deviceStatusStore";
-import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
+import { OS_ICON_DIALOG } from "../config/osIcons";
+import { Os3dIcon } from "./Os3dIcon";
 
 interface LayoutProps {
   onOpenSettings?: () => void;
@@ -236,7 +237,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
           onClose={() => setPendingPath(null)}
           title={t("common.unsavedLeaveTitle")}
           description={t("common.unsavedLeaveDesc")}
-          icon={<WarningAmberRounded />}
+          icon={<Os3dIcon src={OS_ICON_DIALOG.unsavedChanges} />}
           confirmColor="error"
           confirmLabel={t("common.discardChanges")}
           onConfirm={handleUnsavedConfirm}
@@ -278,15 +279,13 @@ export function Layout({ onOpenSettings }: LayoutProps) {
                 ? `${t("common.loading")}…`
                 : `${t("common.retry")} (${refreshCountdown}s)`
             }
-            clearCacheLabel={t("config.clearCache")}
             onEditConnection={() => {
-              setSuppressDisconnectedCacheOverlay(true);
+              clearCachedConfig();
               navigate("/device");
             }}
             onRetry={() => {
               void handleRefreshCachedConfig();
             }}
-            onClearCache={clearCachedConfig}
             retryDisabled={refreshingCache}
           />
         )}

@@ -14,6 +14,60 @@ use crate::reasoning::proposal::{
 use crate::skills::RuntimeSkillOperatorSummary;
 use serde::Serialize;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningToolUsageSummary {
+    pub tool_name: String,
+    pub total_attempts: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub denied: usize,
+    pub resource_denied: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningUsageAnalytics {
+    pub recent_total_attempts: usize,
+    pub recent_succeeded: usize,
+    pub recent_failed: usize,
+    pub recent_denied: usize,
+    pub recent_resource_denied: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_counts: Vec<ProgrammableReasoningToolUsageSummary>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningTimelineEvent {
+    pub recorded_at: u64,
+    pub tool_name: String,
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningTimeline {
+    #[serde(default)]
+    pub recent_events: Vec<ProgrammableReasoningTimelineEvent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningMaintenanceDigest {
+    pub status: String,
+    pub headline: String,
+    pub attention_event_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_status: Option<String>,
+    #[serde(default)]
+    pub attention_tools: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProgrammableReasoningOperatorSnapshot {
     pub stage: ProgrammableReasoningStage,
@@ -21,6 +75,9 @@ pub struct ProgrammableReasoningOperatorSnapshot {
     pub capabilities: Vec<ProgrammableReasoningCapabilityContract>,
     pub proposal_kinds: Vec<ProgrammableReasoningProposalKind>,
     pub experience_crystals: ExperienceCrystalOperatorSummary,
+    pub usage_analytics: ProgrammableReasoningUsageAnalytics,
+    pub timeline: ProgrammableReasoningTimeline,
+    pub maintenance_digest: ProgrammableReasoningMaintenanceDigest,
     pub operator_summary: String,
 }
 
@@ -43,7 +100,10 @@ pub fn programmable_reasoning_operator_snapshot() -> ProgrammableReasoningOperat
         experience_crystals: build_experience_crystal_operator_summary(
             &RuntimeSkillOperatorSummary::default(),
         ),
-        operator_summary: "experience_crystal: programmable reasoning can now validate adjudication-required skill crystal candidates and promote them into the governed runtime-skill path without adding a second execution plane".to_string(),
+        usage_analytics: ProgrammableReasoningUsageAnalytics::default(),
+        timeline: ProgrammableReasoningTimeline::default(),
+        maintenance_digest: ProgrammableReasoningMaintenanceDigest::default(),
+        operator_summary: "engineering_synthesis: programmable reasoning can now distill engineering references into structured datasheet assets without adding a second execution plane".to_string(),
     }
 }
 
@@ -63,11 +123,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operator_snapshot_reports_p6_contract() {
+    fn operator_snapshot_reports_p7_contract() {
         let snapshot = programmable_reasoning_operator_snapshot();
         assert_eq!(
             snapshot.stage,
-            ProgrammableReasoningStage::ExperienceCrystal
+            ProgrammableReasoningStage::EngineeringSynthesis
         );
         assert_eq!(snapshot.capabilities.len(), 6);
         assert_eq!(snapshot.proposal_kinds.len(), 5);
@@ -75,12 +135,19 @@ mod tests {
             snapshot.runtime_contract.execution_enabled,
             cfg!(target_os = "linux")
         );
+        assert_eq!(snapshot.usage_analytics.recent_total_attempts, 0);
+        assert!(snapshot.usage_analytics.tool_counts.is_empty());
+        assert!(snapshot.timeline.recent_events.is_empty());
+        assert!(snapshot.maintenance_digest.status.is_empty());
     }
 
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(summary.stage, ProgrammableReasoningStage::ExperienceCrystal);
+        assert_eq!(
+            summary.stage,
+            ProgrammableReasoningStage::EngineeringSynthesis
+        );
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);

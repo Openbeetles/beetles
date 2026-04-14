@@ -16,14 +16,14 @@ use super::{
     board_subject_scope_id, build_private_garden_preview, build_private_garden_usage,
     build_self_state,
     llm_json::{coerce_json_string_list, coerce_json_text, parse_llm_json_payload, LlmJsonPayload},
-    memory_policy, normalize_private_garden_doc_path, render_autonomy_strategy_block,
-    render_execution_state_block, render_internal_memory_topology_block,
-    render_private_doc_workspace_block, render_self_model_block, render_self_state_block,
-    summarize_private_garden_directories, AutonomyStrategy, ExecutionState, ExecutionStateStore,
-    InternalMemoryLayerFocus, MemoryProfile, PrivateDocStore, PrivateDocWorkspace,
-    PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenGovernancePolicy, PrivateGardenStore,
-    SelfModel, SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-    PRIVATE_GARDEN_MAX_DOC_BYTES,
+    memory_policy, normalize_private_garden_doc_path, private_garden_scope_id,
+    render_autonomy_strategy_block, render_execution_state_block,
+    render_internal_memory_topology_block, render_private_doc_workspace_block,
+    render_self_model_block, render_self_state_block, summarize_private_garden_directories,
+    AutonomyStrategy, ExecutionState, ExecutionStateStore, InternalMemoryLayerFocus, MemoryProfile,
+    PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
+    PrivateGardenGovernancePolicy, PrivateGardenStore, SelfModel, SelfModelStore, SessionMessage,
+    SessionStore, SessionSummaryStore, PRIVATE_GARDEN_MAX_DOC_BYTES,
 };
 
 pub const PRIVATE_GARDEN_GOVERNANCE_SYSTEM_PROMPT: &str = "You govern a persistent AI assistant's private garden: a free-form, self-owned internal workspace. Return JSON only: either null, or one object with optional writes, moves, and deletes fields. writes must be an array of objects {path, content}; each write replaces the full document body at that path. moves must be an array of objects {from_path, to_path} for reorganizing or renaming existing documents. deletes must be an array of document paths to remove. Use this workspace for private drafts, internal organization, and exploratory self-work, not shared factual memory. Keep documents current by rewriting, merging, or relocating in place instead of accumulating a history trail. Create new docs only when they materially improve continuity or organization. Delete stale, duplicated, or low-value scratch material when useful. Do not copy raw tool payloads, logs, large quotes, secrets, or transcript fragments. Do not duplicate stable kernel material that already belongs in the governed private self-model or typed private docs. Return null when no garden change is worth making.";
@@ -293,12 +293,14 @@ pub(crate) fn run_private_garden_governance_with_state(
             }
             for path in &deletes {
                 crate::platform::task_wdt::feed_current_task();
-                let _ = ctx.private_garden_store.delete(input.chat_id, path)?;
+                let _ = ctx
+                    .private_garden_store
+                    .delete(private_garden_scope_id(), path)?;
             }
             for move_action in &moves {
                 crate::platform::task_wdt::feed_current_task();
                 let _ = ctx.private_garden_store.move_doc(
-                    input.chat_id,
+                    private_garden_scope_id(),
                     &move_action.from_path,
                     &move_action.to_path,
                     input.now_secs,
@@ -307,7 +309,7 @@ pub(crate) fn run_private_garden_governance_with_state(
             for write in &writes {
                 crate::platform::task_wdt::feed_current_task();
                 let _ = ctx.private_garden_store.write(
-                    input.chat_id,
+                    private_garden_scope_id(),
                     &write.path,
                     &write.content,
                     input.now_secs,
@@ -335,7 +337,8 @@ fn load_private_garden_snapshot(
     chat_id: &str,
 ) -> Result<PrivateGardenSnapshot> {
     crate::platform::task_wdt::feed_current_task();
-    let mut records = store.list(chat_id, usize::MAX)?;
+    let _ = chat_id;
+    let mut records = store.list(private_garden_scope_id(), usize::MAX)?;
     records.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
@@ -344,7 +347,7 @@ fn load_private_garden_snapshot(
     let mut docs = Vec::with_capacity(records.len());
     for record in &records {
         crate::platform::task_wdt::feed_current_task();
-        if let Some(doc) = store.read(chat_id, &record.path)? {
+        if let Some(doc) = store.read(private_garden_scope_id(), &record.path)? {
             docs.push(doc);
         }
     }

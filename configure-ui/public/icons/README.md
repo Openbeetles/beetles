@@ -21,7 +21,7 @@
 ./scripts/fetch_fluent_3d_icons.sh
 ```
 
-需已安装 `curl`、可访问 GitHub raw。脚本内按行注释了 **本地文件名 → Fluent 目录名**；当前约 **70** 个 PNG（主导航、仪表盘、工具专用扩展）。
+需已安装 `curl`、可访问 GitHub raw。脚本内按行注释了 **本地文件名 → Fluent 目录名**；当前约 **72** 个 PNG（主导航、仪表盘、蒙层与工具专用扩展）。
 
 ## 映射单源
 

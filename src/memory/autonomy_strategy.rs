@@ -15,8 +15,8 @@ use super::{
         coerce_json_text, get_object_bool, get_object_text, get_object_u64, parse_llm_json_payload,
         LlmJsonPayload,
     },
-    memory_policy, relationship_scope_id, render_execution_state_block, render_inner_life_block,
-    render_private_doc_workspace_block, render_private_garden_block,
+    memory_policy, private_garden_scope_id, relationship_scope_id, render_execution_state_block,
+    render_inner_life_block, render_private_doc_workspace_block, render_private_garden_block,
     render_private_memory_boundary_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_shared_factual_plane_block, render_world_sense_block,
     render_world_snapshot_block, whole_record_lease_advanced, AutonomyStrategyPolicy,
@@ -257,7 +257,7 @@ pub fn run_autonomy_strategy_refresh(
     let self_continuity = ctx.self_continuity_store.get(subject_id)?;
     let private_docs = ctx.private_doc_store.get(subject_id)?;
     let private_garden_docs = ctx.private_garden_store.list(
-        input.chat_id,
+        private_garden_scope_id(),
         autonomy_strategy_private_garden_doc_limit(profile),
     )?;
     let world_sense = ctx.world_sense_store.get(&relationship_id)?;

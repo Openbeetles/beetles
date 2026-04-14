@@ -2,9 +2,14 @@
 //! 主体/关系作用域辅助：把“板级主体”与“当前关系层”明确分开。
 
 pub const BOARD_SUBJECT_SCOPE_ID: &str = "board.self";
+pub const PRIVATE_GARDEN_SCOPE_ID: &str = BOARD_SUBJECT_SCOPE_ID;
 
 pub fn board_subject_scope_id() -> &'static str {
     BOARD_SUBJECT_SCOPE_ID
+}
+
+pub fn private_garden_scope_id() -> &'static str {
+    PRIVATE_GARDEN_SCOPE_ID
 }
 
 pub fn relationship_scope_id(channel: &str, chat_id: &str) -> String {
@@ -43,7 +48,7 @@ fn push_hex_escape(out: &mut String, byte: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{board_subject_scope_id, relationship_scope_id};
+    use super::{board_subject_scope_id, private_garden_scope_id, relationship_scope_id};
 
     #[test]
     fn board_subject_scope_id_is_stable() {
@@ -56,5 +61,10 @@ mod tests {
             relationship_scope_id("qq/channel", "user:1"),
             "rel:qq_2fchannel:user_3a1"
         );
+    }
+
+    #[test]
+    fn private_garden_scope_id_is_board_subject_scope() {
+        assert_eq!(private_garden_scope_id(), board_subject_scope_id());
     }
 }

@@ -34,8 +34,15 @@ export const OS_ICON_DEVICE_CONFIG = {
 
 /** 设备首页仪表盘卡片（Fluent 3D 补充项） */
 export const OS_ICON_DASHBOARD = {
-  /** 连接 / 配对（与导航「链接」图标区分：无线） */
+  /** 连接 / 配对（与导航「链接」图标区分：无线；正常态用） */
   connection: "/icons/dash_connection_3d.png",
+  /** 故障与恢复（仪表盘磁贴） */
+  faults: "/icons/faults_3d.png",
+  /**
+   * 设备不可达 / 离线缓存全屏蒙层专用（Fluent **Cross mark** 3D，红叉；与正常无线 `dash_connection` 成对）。
+   * Dedicated overlay when device is unreachable — Cross mark, paired with healthy wireless tile.
+   */
+  deviceUnreachable: "/icons/device_unreachable_3d.png",
   /** 设备信息摘要 */
   deviceInfo: "/icons/device_info_3d.png",
   /** 通道连通性（与主导航「对话气泡」区分：信号格） */
@@ -48,8 +55,6 @@ export const OS_ICON_DASHBOARD = {
   strategy: "/icons/strategy_3d.png",
   /** 运行时 / 交换 */
   runtime: "/icons/runtime_3d.png",
-  /** 故障与恢复 */
-  faults: "/icons/faults_3d.png",
 } as const;
 
 export type OsDashboardIconKey = keyof typeof OS_ICON_DASHBOARD;
@@ -62,6 +67,18 @@ export const OS_ICON_SHELL = {
    * Shell preferences (locale & appearance) — distinct from device System Config gear.
    */
   preferences: "/icons/globe_3d.png",
+} as const;
+
+/**
+ * 全站级确认弹窗专用 3D 隐喻（与主导航 / 仪表盘磁贴解耦，避免复用）。
+ * Dedicated 3D glyphs for app-wide `ConfirmDialog` — not shared with nav or dashboard tiles.
+ */
+export const OS_ICON_DIALOG = {
+  /**
+   * 未保存修改 / 放弃编辑（Fluent **Clipboard** — 剪贴区待落盘草稿，非错误叉号、非设备离线）。
+   * Unsaved changes: clipboard as pending edits not yet persisted.
+   */
+  unsavedChanges: "/icons/unsaved_changes_3d.png",
 } as const;
 
 /**

@@ -16,7 +16,7 @@ const BACKDROP_SX = {
   WebkitBackdropFilter: "blur(var(--overlay-backdrop-blur))",
 };
 
-/** 与 `ConfirmDialog` / 状态卡一致的浮层卡片（细描边 + 轻投影） */
+/** 与 `ConfirmDialog` 同档内边距；细描边 + 轻投影 */
 const CARD_SX = {
   position: "fixed" as const,
   top: "50%",
@@ -31,8 +31,10 @@ const CARD_SX = {
   display: "flex",
   flexDirection: "column",
   alignItems: "stretch",
-  gap: 2,
-  p: 2.5,
+  gap: 2.5,
+  px: 3,
+  pt: 3.5,
+  pb: 3,
   borderRadius: "var(--radius-card)",
   border: "1px solid var(--form-outline-rest)",
   backgroundColor: "var(--card)",
@@ -47,15 +49,14 @@ export interface DisconnectedCacheOverlayProps {
   subtitle: string;
   editConnectionLabel: string;
   retryLabel: string;
-  clearCacheLabel: string;
   onEditConnection: () => void;
   onRetry: () => void;
-  onClearCache: () => void;
   retryDisabled: boolean;
 }
 
 /**
- * 设备不可达且存在本地缓存时的全屏提示：层次清晰的 CTA（编辑连接 / 重试 / 清空缓存）。
+ * 设备不可达且存在本地缓存时的全屏提示：图标置顶居中 + 文案居中，与 `ConfirmDialog` 一致。
+ * 「编辑设备连接」由调用方在导航前清空本地缓存（见 `Layout`）。
  * Full-screen overlay when the device is unreachable but cached config exists.
  */
 export function DisconnectedCacheOverlay({
@@ -63,97 +64,67 @@ export function DisconnectedCacheOverlay({
   subtitle,
   editConnectionLabel,
   retryLabel,
-  clearCacheLabel,
   onEditConnection,
   onRetry,
-  onClearCache,
   retryDisabled,
 }: DisconnectedCacheOverlayProps) {
   return (
     <>
       <Box aria-hidden sx={BACKDROP_SX} />
-      <Box
-        role="status"
-        aria-live="polite"
-        sx={{
-          ...CARD_SX,
-          borderLeft:
-            "var(--accent-line-width) solid var(--semantic-warning)",
-        }}
-      >
+      <Box role="status" aria-live="polite" sx={CARD_SX}>
         <PanelStateHeroRow
-          tone="warning"
-          icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} />}
+          tone="danger"
+          layout="stack"
+          icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceUnreachable} />}
           title={title}
           description={subtitle}
         />
 
-        <Box
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          useFlexGap
           sx={{
-            display: "flex",
-            flexDirection: { xs: "column", sm: "row" },
-            flexWrap: "wrap",
-            gap: 1,
-            alignItems: { xs: "stretch", sm: "center" },
-            justifyContent: { sm: "space-between" },
-            rowGap: 1.5,
+            width: "100%",
+            alignItems: "stretch",
+            justifyContent: "center",
           }}
         >
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1}
-            sx={{ flex: { sm: "1 1 auto" }, minWidth: 0 }}
-          >
-            <Button
-              size="medium"
-              variant="contained"
-              onClick={onEditConnection}
-              sx={{
-                borderRadius: "var(--radius-control)",
-                textTransform: "none",
-                fontWeight: 600,
-                boxShadow: "none",
-                "&:hover": { boxShadow: "none" },
-              }}
-            >
-              {editConnectionLabel}
-            </Button>
-            <Button
-              size="medium"
-              variant="outlined"
-              onClick={onRetry}
-              disabled={retryDisabled}
-              startIcon={
-                retryDisabled ? (
-                  <CircularProgress size={16} color="inherit" />
-                ) : undefined
-              }
-              sx={{
-                borderRadius: "var(--radius-control)",
-                textTransform: "none",
-                fontWeight: 600,
-                borderColor: "var(--primary)",
-                color: "var(--primary)",
-              }}
-            >
-              {retryLabel}
-            </Button>
-          </Stack>
           <Button
             size="medium"
-            variant="text"
-            onClick={onClearCache}
+            variant="contained"
+            onClick={onEditConnection}
             sx={{
-              alignSelf: { xs: "flex-start", sm: "center" },
               borderRadius: "var(--radius-control)",
               textTransform: "none",
               fontWeight: 600,
-              color: "var(--semantic-warning)",
+              boxShadow: "none",
+              "&:hover": { boxShadow: "none" },
             }}
           >
-            {clearCacheLabel}
+            {editConnectionLabel}
           </Button>
-        </Box>
+          <Button
+            size="medium"
+            variant="outlined"
+            onClick={onRetry}
+            disabled={retryDisabled}
+            startIcon={
+              retryDisabled ? (
+                <CircularProgress size={16} color="inherit" />
+              ) : undefined
+            }
+            sx={{
+              borderRadius: "var(--radius-control)",
+              textTransform: "none",
+              fontWeight: 600,
+              borderColor: "var(--primary)",
+              color: "var(--primary)",
+            }}
+          >
+            {retryLabel}
+          </Button>
+        </Stack>
       </Box>
     </>
   );

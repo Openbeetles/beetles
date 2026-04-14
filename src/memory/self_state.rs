@@ -9,9 +9,9 @@ use std::fmt::Write as _;
 use super::{
     estimate_autonomy_strategy_chars, estimate_inner_life_chars,
     estimate_private_doc_workspace_chars, estimate_self_continuity_chars,
-    estimate_self_model_chars, memory_policy, AutonomyGovernanceTendency, AutonomyStrategy,
-    InnerLife, MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord, SelfContinuity,
-    SelfModel, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT, INNER_LIFE_TOTAL_CHAR_LIMIT,
+    estimate_self_model_chars, memory_policy, private_garden_scope_id, AutonomyGovernanceTendency,
+    AutonomyStrategy, InnerLife, MemoryProfile, PrivateDocWorkspace, PrivateGardenDocRecord,
+    SelfContinuity, SelfModel, AUTONOMY_STRATEGY_TOTAL_CHAR_LIMIT, INNER_LIFE_TOTAL_CHAR_LIMIT,
     PRIVATE_DOC_WORKSPACE_TOTAL_CHAR_LIMIT, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
     PRIVATE_GARDEN_TOTAL_BYTE_LIMIT, SELF_CONTINUITY_TOTAL_CHAR_LIMIT, SELF_MODEL_TOTAL_CHAR_LIMIT,
 };
@@ -248,6 +248,7 @@ pub fn render_self_state_block(state: &SelfState, max_len: usize) -> Option<Stri
     let mut out = String::with_capacity(max_len.min(640));
     out.push_str("## Self State\n");
     out.push_str("These are your current internal memory-space and autonomy conditions. Use them when deciding whether to add, merge, rewrite, or delete private material.\n");
+    let _ = writeln!(out, "Private garden owner: {}", private_garden_scope_id());
     let _ = writeln!(out, "Memory pressure: {:?}", memory.pressure);
     let _ = writeln!(out, "Governance posture: {:?}", memory.governance_posture);
     let _ = writeln!(out, "Primary bottleneck: {:?}", memory.bottleneck);

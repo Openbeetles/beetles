@@ -38,6 +38,10 @@ fetch "assets/Electric%20plug/3D/electric_plug_3d.png" "power_3d.png"
 # —— 仪表盘磁贴（与主导航刻意区分，避免同页重复感）——
 fetch "assets/Wireless/3D/wireless_3d.png" "dash_connection_3d.png"
 fetch "assets/Antenna%20bars/3D/antenna_bars_3d.png" "dash_channels_3d.png"
+# 设备离线缓存蒙层：与「正常无线连接」成对的否定语义（Fluent Cross mark · 红叉）
+fetch "assets/Cross%20mark/3D/cross_mark_3d.png" "device_unreachable_3d.png"
+# 未保存修改弹窗：剪贴板草稿未写入（Fluent Clipboard，与错误/离线图标区分）
+fetch "assets/Clipboard/3D/clipboard_3d.png" "unsaved_changes_3d.png"
 
 # —— 通用工具基底 ——
 fetch "assets/Stopwatch/3D/stopwatch_3d.png" "time_3d.png"

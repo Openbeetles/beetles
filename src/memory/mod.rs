@@ -355,7 +355,10 @@ pub use self_runtime::{
     SelfRuntimeDecision, SelfRuntimeJobPayload, SelfRuntimeOutcome, SelfRuntimeTrigger,
     SELF_RUNTIME_CHANNEL, SELF_RUNTIME_SYSTEM_PROMPT,
 };
-pub use self_scope::{board_subject_scope_id, relationship_scope_id, BOARD_SUBJECT_SCOPE_ID};
+pub use self_scope::{
+    board_subject_scope_id, private_garden_scope_id, relationship_scope_id, BOARD_SUBJECT_SCOPE_ID,
+    PRIVATE_GARDEN_SCOPE_ID,
+};
 pub use self_state::{
     build_self_state, render_self_state_block, SelfAutonomyState, SelfAutonomyStatus,
     SelfInnerState, SelfMemoryGovernancePosture, SelfMemorySpaceActivity,
