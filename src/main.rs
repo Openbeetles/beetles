@@ -4,10 +4,11 @@
 //! ESP32: no graceful shutdown; process runs until power off.
 #![allow(clippy::items_after_test_module)]
 
+mod app_runtime_support;
+
 use beetle::bus::IngressKind;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
-use beetle::memory::MemoryStore;
 use beetle::network::{execute_stream_http_op, HttpClientClass, HttpFactory, NetworkGovernor};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
@@ -250,93 +251,6 @@ fn heap_used_percent(snapshot: &beetle::orchestrator::ResourceSnapshot) -> u8 {
     }
     let used = baseline - free;
     ((used as u64 * 100) / baseline as u64).min(100) as u8
-}
-
-/// 启动自检：存储可读（memory 或 soul 至少其一成功）。失败返回 false，调用方应 log 并 return。
-fn startup_self_check(memory_store: &dyn MemoryStore) -> bool {
-    memory_store.get_memory().is_ok() || memory_store.get_soul().is_ok()
-}
-
-/// 首次启动或空存储：当 get_memory 与 get_soul 均失败时写入占位数据，使后续自检可过、业务可进（如引导配置）。
-fn ensure_storage_ready(memory_store: &dyn MemoryStore) {
-    let need_memory = memory_store.get_memory().is_err();
-    let need_soul = memory_store.get_soul().is_err();
-    let need_user = memory_store.get_user().is_err();
-    if !need_memory && !need_soul && !need_user {
-        return;
-    }
-    log::info!(
-        "[{}] preparing default storage files memory_missing={} soul_missing={} user_missing={}",
-        TAG,
-        need_memory,
-        need_soul,
-        need_user
-    );
-    if need_memory {
-        if let Err(e) = memory_store.set_memory("") {
-            log::warn!("[{}] set_memory default failed: {}", TAG, e);
-        }
-    }
-    if need_soul {
-        if let Err(e) = memory_store.set_soul("") {
-            log::warn!("[{}] set_soul default failed: {}", TAG, e);
-        }
-    }
-    if need_user {
-        if let Err(e) = memory_store.set_user("") {
-            log::warn!("[{}] set_user default failed: {}", TAG, e);
-        }
-    }
-}
-
-fn log_runtime_store_lengths(stores: &RuntimeStores) {
-    if let Ok(s) = stores.memory_store.get_memory() {
-        log::info!("[{}] memory len={}", TAG, s.len());
-    } else {
-        log::warn!("[{}] memory read failed or empty", TAG);
-    }
-    if let Ok(s) = stores.memory_store.get_soul() {
-        log::info!("[{}] soul len={}", TAG, s.len());
-    } else {
-        log::warn!("[{}] soul read failed", TAG);
-    }
-    if let Ok(s) = stores.memory_store.get_user() {
-        log::info!("[{}] user len={}", TAG, s.len());
-    } else {
-        log::warn!("[{}] user read failed", TAG);
-    }
-}
-
-fn record_startup_failure_and_request_restart(
-    platform: &Arc<dyn Platform>,
-    error: &beetle::Error,
-    reason: &'static str,
-) {
-    beetle::state::set_last_error(error);
-    beetle::runtime::request_restart_with_continuity_flush(Arc::clone(platform), None, reason);
-}
-
-fn bootstrap_pending_retry_into_inbound(
-    pending_retry: &dyn beetle::memory::PendingRetryStore,
-    user_inbound_tx: &beetle::bus::UserInboundTx,
-    system_inbound_tx: &beetle::bus::SystemInboundTx,
-) {
-    let Ok(Some(msg)) = pending_retry.load_pending_retry() else {
-        return;
-    };
-    if let Err(error) = pending_retry.clear_pending_retry() {
-        log::warn!(
-            "[main] pending_retry clear failed during bootstrap: {}",
-            error
-        );
-    }
-    let inbound_tx = match msg.ingress {
-        IngressKind::User => user_inbound_tx,
-        IngressKind::System => system_inbound_tx,
-    };
-    if let Err(error) = inbound_tx.try_send(msg) {
-        log::warn!("[main] pending_retry bootstrap enqueue failed: {}", error);
-    }
 }
 
 /// Telegram 流式编辑器：复用同一 TLS 连接，避免每次 edit 重新握手。
@@ -625,7 +539,81 @@ mod tests {
         voice_sink_sender, StartedVoiceSession,
     };
     use beetle::config::default_disabled_audio_segment;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    struct TestMemoryStore {
+        has_memory: bool,
+        soul: Option<String>,
+        user: Option<String>,
+    }
+
+    impl beetle::memory::MemoryStore for TestMemoryStore {
+        fn get_memory(&self) -> beetle::Result<String> {
+            self.has_memory
+                .then(|| String::new())
+                .ok_or_else(|| beetle::Error::config("memory", "missing"))
+        }
+
+        fn set_memory(&self, _content: &str) -> beetle::Result<()> {
+            Ok(())
+        }
+
+        fn get_soul(&self) -> beetle::Result<String> {
+            self.soul
+                .clone()
+                .ok_or_else(|| beetle::Error::config("soul", "missing"))
+        }
+
+        fn set_soul(&self, _content: &str) -> beetle::Result<()> {
+            Ok(())
+        }
+
+        fn get_user(&self) -> beetle::Result<String> {
+            self.user
+                .clone()
+                .ok_or_else(|| beetle::Error::config("user", "missing"))
+        }
+
+        fn set_user(&self, _content: &str) -> beetle::Result<()> {
+            Ok(())
+        }
+
+        fn list_daily_note_names(&self, _recent_n: usize) -> beetle::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn get_daily_note(&self, _name: &str) -> beetle::Result<String> {
+            Ok(String::new())
+        }
+
+        fn write_daily_note(&self, _name: &str, _content: &str) -> beetle::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct TestPendingRetryStore {
+        loaded: Mutex<Option<beetle::PcMsg>>,
+        cleared: Mutex<bool>,
+    }
+
+    impl beetle::memory::PendingRetryStore for TestPendingRetryStore {
+        fn save_pending_retry(&self, _msg: &beetle::PcMsg) -> beetle::Result<()> {
+            Ok(())
+        }
+
+        fn load_pending_retry(&self) -> beetle::Result<Option<beetle::PcMsg>> {
+            Ok(self
+                .loaded
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
+        }
+
+        fn clear_pending_retry(&self) -> beetle::Result<()> {
+            *self.cleared.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            Ok(())
+        }
+    }
 
     #[test]
     fn voice_sink_requires_tts_token_even_if_speaker_ready() {
@@ -743,6 +731,40 @@ mod tests {
         assert_eq!(snapshot.heap_free_internal, 123);
         assert_eq!(snapshot.heap_free_spiram, 456);
         assert_eq!(snapshot.heap_largest_block_internal, 78);
+    }
+
+    #[test]
+    fn startup_self_check_accepts_soul_even_when_memory_missing() {
+        let store = TestMemoryStore {
+            has_memory: false,
+            soul: Some("soul".to_string()),
+            user: None,
+        };
+        assert!(super::app_runtime_support::startup_self_check(&store));
+    }
+
+    #[test]
+    fn bootstrap_pending_retry_routes_system_message_to_system_inbound() {
+        let pending = TestPendingRetryStore {
+            loaded: Mutex::new(Some(
+                beetle::PcMsg::new_system("system-maintenance", "chat-1", "retry later")
+                    .expect("system msg"),
+            )),
+            cleared: Mutex::new(false),
+        };
+        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+
+        super::app_runtime_support::bootstrap_pending_retry_into_inbound(
+            &pending,
+            &user_inbound_tx,
+            &system_inbound_tx,
+        );
+
+        assert!(user_inbound_rx.try_recv().is_err());
+        let system_msg = system_inbound_rx.try_recv().expect("system inbound");
+        assert_eq!(system_msg.channel.as_ref(), "system-maintenance");
+        assert!(*pending.cleared.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -2010,8 +2032,8 @@ fn prepare_runtime_assembly(
     let _ = skill_prompt_cache.refresh();
 
     let stores = RuntimeStores::collect(&platform);
-    ensure_storage_ready(stores.memory_store.as_ref());
-    log_runtime_store_lengths(&stores);
+    app_runtime_support::ensure_storage_ready(stores.memory_store.as_ref());
+    app_runtime_support::log_runtime_store_lengths(&stores);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("boot_memory_reads");
     beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_after_boot_memory_reads");
@@ -2022,7 +2044,7 @@ fn prepare_runtime_assembly(
         TAG,
         DEFAULT_CAPACITY
     );
-    bootstrap_pending_retry_into_inbound(
+    app_runtime_support::bootstrap_pending_retry_into_inbound(
         stores.pending_retry_store.as_ref(),
         &bus.user_inbound_tx,
         &bus.system_inbound_tx,
@@ -2104,7 +2126,7 @@ fn prepare_runtime_assembly(
         Arc::clone(&config),
     ));
 
-    if !startup_self_check(stores.memory_store.as_ref()) {
+    if !app_runtime_support::startup_self_check(stores.memory_store.as_ref()) {
         log::error!(
             "[{}] startup self-check failed: storage not readable (get_memory and get_soul both failed)",
             TAG
@@ -2761,7 +2783,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
     if let Err(error) = start_support_planes(&assembly, wifi_init_ok) {
         log::error!("[{}] support plane startup failed: {}", TAG, error);
-        record_startup_failure_and_request_restart(
+        app_runtime_support::record_startup_failure_and_request_restart(
             &assembly.platform,
             &error,
             "support_plane_startup_failed",
@@ -2771,7 +2793,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
 
     if let Err(error) = start_communication_planes(&mut assembly) {
         log::error!("[{}] communication plane startup failed: {}", TAG, error);
-        record_startup_failure_and_request_restart(
+        app_runtime_support::record_startup_failure_and_request_restart(
             &assembly.platform,
             &error,
             "communication_plane_startup_failed",
@@ -2783,7 +2805,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         Ok(handle) => handle,
         Err(error) => {
             log::error!("[{}] agent plane startup failed: {}", TAG, error);
-            record_startup_failure_and_request_restart(
+            app_runtime_support::record_startup_failure_and_request_restart(
                 &assembly.platform,
                 &error,
                 "agent_plane_startup_failed",
