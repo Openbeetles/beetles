@@ -21,6 +21,7 @@ import { OS_ICON_NAV } from "../config/osIcons";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
   SaveFeedback,
@@ -283,7 +284,9 @@ export function AIConfigPage() {
           icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} />}
           label={t("config.sectionLlm")}
         >
-          <FormLoadingSkeleton />
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
         </SettingsSection>
       </Box>
     );

@@ -11,6 +11,7 @@ import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateLoading,
   FormSectionSub,
   InlineAlert,
   SaveFeedback,
@@ -207,7 +208,9 @@ export function DisplayConfigPanel() {
           icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.display} />}
           label={t("displayConfig.sectionMain")}
         >
-          <FormLoadingSkeleton />
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
         </SettingsSection>
       </Box>
     );

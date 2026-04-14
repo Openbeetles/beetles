@@ -19,6 +19,7 @@ import type { SelectChangeEvent } from '@mui/material/Select'
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateLoading,
   FormSectionSub,
   FormSectionSubCollapsible,
   InlineAlert,
@@ -401,7 +402,9 @@ export function AudioConfigPanel() {
           icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.audio} />}
           label={t('audioConfig.sectionMain')}
         >
-          <FormLoadingSkeleton />
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
         </SettingsSection>
       </Box>
     )

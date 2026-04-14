@@ -191,3 +191,17 @@ export const TEXT_COLOR = {
   secondary: "var(--text-secondary)",
   tertiary: "var(--text-tertiary)",
 } as const
+
+/**
+ * SettingsSection 内「空数据 / 警告 / 错误」占位：居中、插画与正文权重与全屏状态卡一致。
+ * Empty / warning / danger blocks inside sections (aligned with status overlay cards).
+ */
+export const PANEL_STATE_AREA_SX = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
+  justifyContent: "center",
+  minHeight: { xs: 200, sm: 220 },
+  width: "100%",
+  boxSizing: "border-box" as const,
+} as const

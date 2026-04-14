@@ -67,6 +67,15 @@ export const LAYOUT_TOKENS = {
   iconContainerLg: 40,
   /** 图标容器尺寸：大（Agent 头像） */
   iconContainerXl: 46,
+  /**
+   * SettingsSection 内「空/加载说明/只读提示」插画外框与内图（px）。
+   * Panel empty-state / status hero; matches full-screen disconnect card weight.
+   */
+  panelStateIconWellPx: 52,
+  panelStateIconInnerPx: 40,
+  /** 紧凑条（如「请先连接设备」） */
+  panelStateIconWellCompactPx: 44,
+  panelStateIconInnerCompactPx: 32,
   /** 装饰圆点直径（px，Section 标题下小点） */
   dotDecorationPx: 4,
   /** 装饰线高度（px，Section 标题下渐变线、Tabs 指示条） */

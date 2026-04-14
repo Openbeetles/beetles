@@ -23,6 +23,8 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
   FormFieldStack,
   InlineAlert,
+  PanelStateBlock,
+  PanelStateLoading,
   SectionLoadingSkeleton,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
@@ -35,7 +37,6 @@ import {
   DIALOG_FOOTER_GUTTER_WIDE_SX,
   MAIN_CONTENT_INNER_SX,
   PAGE_STACK_OUTER_SX,
-  TEXT_BODY_TERTIARY_SX,
   TEXT_COLOR,
   TEXT_SUBSECTION_TITLE_SX,
 } from "../theme/panelStyles";
@@ -46,7 +47,6 @@ import {
   parseRootInventory,
 } from "../api/rootInventory";
 import {
-  SETTINGS_SECTION_LIST_EMPTY_SX,
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
 import { CONTENT_MAX_WIDTH } from "../config/layout";
@@ -294,21 +294,15 @@ export function SkillsPage() {
         }
       >
         {listState.loading ? (
-          <SectionLoadingSkeleton />
+          <PanelStateLoading>
+            <SectionLoadingSkeleton />
+          </PanelStateLoading>
         ) : listToShow.length === 0 ? (
-          <List dense disablePadding>
-            <ListItem sx={SETTINGS_SECTION_LIST_EMPTY_SX}>
-              <ListItemText
-                primary={t("skills.emptyList")}
-                slotProps={{
-                  primary: {
-                    variant: "body2",
-                    sx: TEXT_BODY_TERTIARY_SX,
-                  },
-                }}
-              />
-            </ListItem>
-          </List>
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/skills"]} />}
+            title={t("skills.emptyList")}
+          />
         ) : (
           <List
             dense

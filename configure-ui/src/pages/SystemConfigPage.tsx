@@ -10,6 +10,7 @@ import SaveRounded from "@mui/icons-material/SaveRounded";
 import WifiFind from "@mui/icons-material/WifiFind";
 import {
   FormLoadingSkeleton,
+  PanelStateLoading,
   FormSectionSub,
   InlineAlert,
   SaveFeedback,
@@ -129,7 +130,9 @@ export function SystemConfigPage() {
           icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} />}
           label={t("config.sectionSystem")}
         >
-          <FormLoadingSkeleton />
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
         </SettingsSection>
       </Box>
     );

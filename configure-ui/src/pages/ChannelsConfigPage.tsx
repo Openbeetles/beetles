@@ -8,6 +8,7 @@ import TextField from "@mui/material/TextField";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormLoadingSkeleton,
+  PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
   SaveFeedback,
@@ -106,7 +107,9 @@ export function ChannelsConfigPage() {
           icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} />}
           label={t("config.sectionChannels")}
         >
-          <FormLoadingSkeleton />
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
         </SettingsSection>
       </Box>
     );

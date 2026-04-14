@@ -11,6 +11,7 @@ import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
   SaveFeedback,
@@ -384,7 +385,9 @@ export function HardwareGpioPanel() {
           icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.hardware} />}
           label={t("hardwareConfig.sectionMain")}
         >
-          <FormLoadingSkeleton />
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
         </SettingsSection>
       </Box>
     );

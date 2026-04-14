@@ -5,10 +5,15 @@ import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemText from "@mui/material/ListItemText";
 import Typography from "@mui/material/Typography";
-import { InlineAlert, SectionLoadingSkeleton } from "../components/form";
+import {
+  InlineAlert,
+  PanelStateBlock,
+  PanelStateLoading,
+  SectionLoadingSkeleton,
+} from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
-import { OS_ICON_NAV } from "../config/osIcons";
+import { OS_ICON_DASHBOARD, OS_ICON_NAV } from "../config/osIcons";
 import {
   PAGE_STACK_OUTER_SX,
   TEXT_BODY_TERTIARY_SX,
@@ -121,11 +126,16 @@ export function SystemLogsPage() {
         label={t("systemLogs.sectionLogs")}
       >
         {!ready ? (
-          <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
-            {t("device.connectFirst")}
-          </Typography>
+          <PanelStateBlock
+            tone="warning"
+            size="compact"
+            icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} />}
+            title={t("device.connectFirst")}
+          />
         ) : logsState.loading ? (
-          <SectionLoadingSkeleton />
+          <PanelStateLoading>
+            <SectionLoadingSkeleton />
+          </PanelStateLoading>
         ) : (
           <Box
             sx={{
@@ -204,9 +214,11 @@ export function SystemLogsPage() {
               </Box>
             )}
             {!logsState.data.health && logsState.data.diagnose.length === 0 && !logsState.loading && ready && (
-              <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
-                {t("systemLogs.emptyLogs")}
-              </Typography>
+              <PanelStateBlock
+                tone="neutral"
+                icon={<Os3dIcon src={OS_ICON_NAV["/system-logs"]} />}
+                title={t("systemLogs.emptyLogs")}
+              />
             )}
           </Box>
         )}

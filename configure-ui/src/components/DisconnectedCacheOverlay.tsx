@@ -2,8 +2,8 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
 import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
 import { Os3dIcon } from "./Os3dIcon";
+import { PanelStateHeroRow } from "./PanelStateBlock";
 import { OS_ICON_DASHBOARD } from "../config/osIcons";
 
 const BACKDROP_SX = {
@@ -81,50 +81,12 @@ export function DisconnectedCacheOverlay({
             "var(--accent-line-width) solid var(--semantic-warning)",
         }}
       >
-        <Stack direction="row" alignItems="flex-start" spacing={2}>
-          <Box
-            sx={{
-              width: 52,
-              height: 52,
-              borderRadius: "var(--radius-chip)",
-              flexShrink: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor:
-                "color-mix(in srgb, var(--semantic-warning) 16%, transparent)",
-            }}
-          >
-            <Box sx={{ width: 40, height: 40 }}>
-              <Os3dIcon src={OS_ICON_DASHBOARD.connection} />
-            </Box>
-          </Box>
-          <Box sx={{ minWidth: 0, flex: 1, pt: 0.25 }}>
-            <Typography
-              component="h2"
-              sx={{
-                fontFamily: "var(--font-sans)",
-                fontSize: "var(--font-size-body-lg)",
-                fontWeight: 700,
-                letterSpacing: "var(--letter-spacing-tight)",
-                lineHeight: "var(--line-height-snug)",
-                color: "var(--foreground)",
-                mb: 0.75,
-              }}
-            >
-              {title}
-            </Typography>
-            <Typography
-              sx={{
-                fontSize: "var(--font-size-body-sm)",
-                lineHeight: "var(--line-height-relaxed)",
-                color: "var(--text-tertiary)",
-              }}
-            >
-              {subtitle}
-            </Typography>
-          </Box>
-        </Stack>
+        <PanelStateHeroRow
+          tone="warning"
+          icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} />}
+          title={title}
+          description={subtitle}
+        />
 
         <Box
           sx={{

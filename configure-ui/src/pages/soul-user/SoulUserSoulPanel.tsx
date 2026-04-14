@@ -4,6 +4,7 @@ import Button from "@mui/material/Button";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   InlineAlert,
+  PanelStateLoading,
   SaveFeedback,
   SectionLoadingSkeleton,
 } from "../../components/form";
@@ -69,7 +70,9 @@ export function SoulUserSoulPanel() {
         }
       >
         {soulState.loading ? (
-          <SectionLoadingSkeleton />
+          <PanelStateLoading>
+            <SectionLoadingSkeleton />
+          </PanelStateLoading>
         ) : (
           <SoulFormBody form={soulForm} setForm={setSoulForm} t={t} />
         )}

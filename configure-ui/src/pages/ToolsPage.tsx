@@ -5,7 +5,12 @@ import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
-import { InlineAlert, SectionLoadingSkeleton } from "../components/form";
+import {
+  InlineAlert,
+  PanelStateBlock,
+  PanelStateLoading,
+  SectionLoadingSkeleton,
+} from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
 import { OS_ICON_NAV } from "../config/osIcons";
@@ -17,14 +22,8 @@ import {
   endpointSupportedByInventory,
   parseRootInventory,
 } from "../api/rootInventory";
-import {
-  SETTINGS_SECTION_LIST_EMPTY_SX,
-  SETTINGS_SECTION_LIST_ROW_SX,
-} from "../theme/listItemStyles";
-import {
-  PAGE_STACK_OUTER_SX,
-  TEXT_BODY_TERTIARY_SX,
-} from "../theme/panelStyles";
+import { SETTINGS_SECTION_LIST_ROW_SX } from "../theme/listItemStyles";
+import { PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 
 export function ToolsPage() {
@@ -76,21 +75,15 @@ export function ToolsPage() {
         description={t("tools.sectionMainDesc")}
       >
         {state.loading ? (
-          <SectionLoadingSkeleton />
+          <PanelStateLoading>
+            <SectionLoadingSkeleton />
+          </PanelStateLoading>
         ) : state.error ? null : state.data.length === 0 ? (
-          <List dense disablePadding>
-            <ListItem sx={SETTINGS_SECTION_LIST_EMPTY_SX}>
-              <ListItemText
-                primary={t("tools.emptyList")}
-                slotProps={{
-                  primary: {
-                    variant: "body2",
-                    sx: TEXT_BODY_TERTIARY_SX,
-                  },
-                }}
-              />
-            </ListItem>
-          </List>
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/tools"]} />}
+            title={t("tools.emptyList")}
+          />
         ) : (
           <List
             dense
