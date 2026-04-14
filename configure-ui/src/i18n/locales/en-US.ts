@@ -22,7 +22,8 @@ export const enUS = {
     },
     device: {
       pageTitle: 'Connect device',
-      pageDesc: 'Enter device URL and pairing code; this site will call the device API over the same network. Pairing, WiFi, and system pages are built into the firmware.',
+      setupIntro:
+        'Enter device URL and pairing code; this site will call the device API over the same network. Pairing, WiFi, and system pages are built into the firmware.',
       sectionConnection: 'Device URL & pairing code',
       sectionConnectionDesc: 'Find the device URL on the device screen or packaging; set the pairing code on the device pairing page.',
       baseUrlLabel: 'Device URL',
@@ -194,7 +195,6 @@ export const enUS = {
     },
     deviceConfig: {
       pageTitle: 'Device configuration',
-      pageDesc: 'Display, hardware, and other device settings.',
       tabDisplay: 'Display',
       tabAudio: 'Audio',
       tabGpioDevices: 'GPIO devices',
@@ -566,19 +566,15 @@ export const enUS = {
     },
     aiConfig: {
       pageTitle: 'AI config',
-      pageDesc: 'LLM API, model, and multi-source fallback. Restart device after save.',
     },
     channelsConfig: {
       pageTitle: 'Channels',
-      pageDesc: 'Telegram, Feishu, DingTalk, WeCom, QQ Channel, WebSocket.',
     },
     systemConfig: {
       pageTitle: 'System config',
-      pageDesc: 'WiFi, proxy, session and other system options.',
     },
     displayConfig: {
       pageTitle: 'Display config',
-      pageDesc: 'Display driver, pin mapping and dashboard rendering parameters.',
       sectionMain: 'Display',
       sectionMainDesc: 'Changes take effect after restart.',
       sectionMainDescLinux:
@@ -634,13 +630,11 @@ export const enUS = {
     },
     systemLogs: {
       pageTitle: 'Logs',
-      pageDesc: 'Device health and diagnostic info.',
       sectionLogs: 'Logs',
       emptyLogs: 'No logs yet. Connect device to view health / diagnose.',
     },
     soulUser: {
       pageTitle: 'Personalization',
-      pageDesc: 'SOUL (assistant persona) and USER (your profile) are saved separately and included in context.',
       tabSoul: 'SOUL',
       tabUser: 'USER',
       sectionSoul: 'SOUL (assistant persona)',
@@ -712,7 +706,6 @@ export const enUS = {
     },
     skills: {
       pageTitle: 'Skills',
-      pageDesc: 'Skills list, enable/disable, order, import from URL.',
       sectionList: 'Skills list',
       sectionListDesc: 'Enable/disable, edit content, delete, or import from URL.',
       importFromUrl: 'Import from URL',
@@ -737,7 +730,6 @@ export const enUS = {
     },
     tools: {
       pageTitle: 'Tools',
-      pageDesc: 'Tools exposed to the agent on this firmware build.',
       sectionMain: 'Registered tools',
       sectionMainDesc: 'Tools available to the agent on this device.',
       emptyList: 'No tool entries.',

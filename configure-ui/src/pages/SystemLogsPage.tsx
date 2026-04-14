@@ -115,7 +115,7 @@ export function SystemLogsPage() {
       >
         {!ready ? (
           <Typography variant="body2" sx={{ color: "var(--muted)" }}>
-            {t("device.pageDesc")}
+            {t("device.connectFirst")}
           </Typography>
         ) : logsState.loading ? (
           <SectionLoadingSkeleton />

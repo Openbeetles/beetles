@@ -19,34 +19,28 @@ import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
 
-const PATH_TO_META: Record<string, { titleKey: string; descKey: string }> = {
-  "/device": { titleKey: "device.pageTitle", descKey: "device.pageDesc" },
+const PATH_TO_META: Record<string, { titleKey: string }> = {
+  "/device": { titleKey: "device.pageTitle" },
   "/device-config": {
     titleKey: "deviceConfig.pageTitle",
-    descKey: "deviceConfig.pageDesc",
   },
   "/ai-config": {
     titleKey: "aiConfig.pageTitle",
-    descKey: "aiConfig.pageDesc",
   },
   "/channels-config": {
     titleKey: "channelsConfig.pageTitle",
-    descKey: "channelsConfig.pageDesc",
   },
   "/system-config": {
     titleKey: "systemConfig.pageTitle",
-    descKey: "systemConfig.pageDesc",
   },
   "/system-logs": {
     titleKey: "systemLogs.pageTitle",
-    descKey: "systemLogs.pageDesc",
   },
   "/soul-user": {
     titleKey: "soulUser.pageTitle",
-    descKey: "soulUser.pageDesc",
   },
-  "/skills": { titleKey: "skills.pageTitle", descKey: "skills.pageDesc" },
-  "/tools": { titleKey: "tools.pageTitle", descKey: "tools.pageDesc" },
+  "/skills": { titleKey: "skills.pageTitle" },
+  "/tools": { titleKey: "tools.pageTitle" },
 };
 
 function metaForPathname(pathname: string) {
@@ -74,11 +68,11 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
   const { showToast } = useToast();
   const [restarting, setRestarting] = useState(false);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [brandIconHovered, setBrandIconHovered] = useState(false);
 
   const pathname = location.pathname;
   const meta = metaForPathname(pathname);
   const title = meta ? t(meta.titleKey) : pathname;
-  const description = meta ? t(meta.descKey) : undefined;
 
   const doRestart = async () => {
     if (!baseUrl?.trim() || !pairingCode?.trim()) return;
@@ -151,6 +145,8 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
           <IconButton
             size="small"
             onClick={handleWindowIconClick}
+            onMouseEnter={() => setBrandIconHovered(true)}
+            onMouseLeave={() => setBrandIconHovered(false)}
             aria-label={t("nav.brandHome")}
             sx={{
               flexShrink: 0,
@@ -178,6 +174,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
           >
             <BeetleIcon
               aria-hidden
+              animationActive={brandIconHovered}
               sx={{
                 width: 22,
                 height: 22,
@@ -186,7 +183,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
             />
           </IconButton>
         </Tooltip>
-        <PageHeader title={title} description={description} variant="bar" />
+        <PageHeader title={title} />
       </Stack>
       <Stack
         direction="row"

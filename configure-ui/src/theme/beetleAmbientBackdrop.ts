@@ -1,27 +1,15 @@
 /**
  * 全局底「甲壳虫」意象：大椭圆叠层模拟俯视身体 + 双翅，极淡、随主色/强调色变化；
- * 非侧栏 Logo 级矢量，仅氛围层。`prefers-reduced-motion: reduce` 下静止。
- * Ambient beetle hint via soft ellipses (body + wings); theme-colored, no detailed SVG.
+ * 静态呈现，避免与壳层抢「系统稳态」感。
+ * Ambient beetle hint via soft ellipses (body + wings); theme-colored, static.
  */
 export const BEETLE_AMBIENT_BACKDROP_SX = {
-  "@keyframes beetleAmbientBreath": {
-    "0%": {
-      opacity: 0.76,
-      transform: "scale(1) translate(0, 0)",
-    },
-    "50%": {
-      opacity: 0.94,
-      transform: "scale(1.028) translate(-0.45%, -0.28%)",
-    },
-    "100%": {
-      opacity: 0.76,
-      transform: "scale(1) translate(0, 0)",
-    },
-  },
   position: "fixed" as const,
   inset: 0,
   zIndex: 0,
   pointerEvents: "none" as const,
+  opacity: 0.86,
+  transform: "none",
   backgroundImage: [
     // 右下：身体（纵向椭圆）
     "radial-gradient(ellipse 22vmin 40vmin at 92% 96%, color-mix(in srgb, var(--primary) 6%, transparent) 0%, transparent 68%)",
@@ -36,10 +24,4 @@ export const BEETLE_AMBIENT_BACKDROP_SX = {
   ].join(", "),
   backgroundSize: "100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%",
   backgroundRepeat: "no-repeat",
-  animation: "beetleAmbientBreath 56s ease-in-out infinite",
-  "@media (prefers-reduced-motion: reduce)": {
-    animation: "none",
-    opacity: 0.8,
-    transform: "none",
-  },
 } as const;

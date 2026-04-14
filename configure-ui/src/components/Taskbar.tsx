@@ -1,6 +1,8 @@
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   useContext,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -66,6 +68,23 @@ function displayHost(baseUrl: string): string {
 
 const NAV_BLOCK_TOAST_COOLDOWN_MS = 2500;
 
+function collectStartMenuFocusables(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'a[href], button, [role="button"]',
+    ),
+  ).filter((el) => {
+    if (el.getAttribute("aria-hidden") === "true") return false;
+    if (el.getAttribute("aria-disabled") === "true") return false;
+    if ("disabled" in el && (el as HTMLButtonElement).disabled) return false;
+    if (el.tabIndex < 0) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    return true;
+  });
+}
+
 /** Windows 风格任务栏：甲壳虫徽标为「开始」、中部固定快捷方式、右侧托盘（连接状态）。 */
 export function Taskbar() {
   const { t } = useTranslation();
@@ -84,6 +103,8 @@ export function Taskbar() {
     null,
   );
   const [startAnchor, setStartAnchor] = useState<HTMLElement | null>(null);
+  const [startHovered, setStartHovered] = useState(false);
+  const startMenuPanelRef = useRef<HTMLDivElement | null>(null);
   const pathname = location.pathname;
   const canNavigate = (path: string) =>
     path === "/device" || (deviceConnected && !needDeviceHint);
@@ -93,6 +114,52 @@ export function Taskbar() {
 
   const handleStartClick = (e: MouseEvent<HTMLElement>) => {
     setStartAnchor(startOpen ? null : e.currentTarget);
+  };
+
+  useEffect(() => {
+    if (!startOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setStartAnchor(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [startOpen]);
+
+  useEffect(() => {
+    if (!startOpen || !startMenuPanelRef.current) return;
+    const id = window.requestAnimationFrame(() => {
+      const list = collectStartMenuFocusables(startMenuPanelRef.current);
+      list[0]?.focus();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [startOpen]);
+
+  const handleStartMenuKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!startOpen) return;
+    const keys = ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"];
+    if (!keys.includes(e.key)) return;
+    const root = startMenuPanelRef.current;
+    if (!root) return;
+    const list = collectStartMenuFocusables(root);
+    if (list.length === 0) return;
+    const active = document.activeElement as HTMLElement | null;
+    let i = list.indexOf(active as HTMLElement);
+    if (i < 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+        list[0]?.focus();
+        e.preventDefault();
+      }
+      return;
+    }
+    const next =
+      e.key === "ArrowDown" || e.key === "ArrowRight"
+        ? (i + 1) % list.length
+        : (i - 1 + list.length) % list.length;
+    list[next]?.focus();
+    e.preventDefault();
   };
 
   return (
@@ -119,6 +186,8 @@ export function Taskbar() {
           component="button"
           type="button"
           onClick={handleStartClick}
+          onMouseEnter={() => setStartHovered(true)}
+          onMouseLeave={() => setStartHovered(false)}
           aria-expanded={startOpen}
           aria-haspopup="menu"
           aria-label={t("nav.startMenu")}
@@ -159,6 +228,7 @@ export function Taskbar() {
         >
           <BeetleIcon
             aria-hidden
+            animationActive={startOpen || startHovered}
             sx={{
               width: 32,
               height: 32,
@@ -212,6 +282,17 @@ export function Taskbar() {
         }}
       >
         <Box
+          ref={startMenuPanelRef}
+          onKeyDown={handleStartMenuKeyDown}
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            flex: 1,
+            minHeight: 0,
+            outline: "none",
+          }}
+        >
+        <Box
           sx={{
             flexShrink: 0,
             px: 2,
@@ -226,6 +307,7 @@ export function Taskbar() {
           <Stack direction="row" alignItems="center" spacing={1.25}>
             <BeetleIcon
               aria-hidden
+              animationActive={startOpen || startHovered}
               sx={{
                 width: "var(--icon-container-md)",
                 height: "var(--icon-container-md)",
@@ -236,7 +318,7 @@ export function Taskbar() {
               <Typography
                 variant="subtitle2"
                 sx={{
-                  fontFamily: "var(--font-display)",
+                  fontFamily: "var(--font-sans)",
                   fontWeight: 700,
                   letterSpacing: "-0.02em",
                   textTransform: "uppercase",
@@ -529,6 +611,7 @@ export function Taskbar() {
               );
             })}
           </Box>
+        </Box>
         </Box>
       </Popover>
 

@@ -463,13 +463,13 @@ export function DevicePage() {
               flexShrink: 0,
             }}
           >
-            <BeetleIcon sx={{ width: 40, height: 40 }} />
+            <BeetleIcon motion="idle" sx={{ width: 40, height: 40 }} />
           </Box>
           <Box sx={{ minWidth: 0 }}>
             <Typography
               variant="h3"
               sx={{
-                fontFamily: "var(--font-display)",
+                fontFamily: "var(--font-brand)",
                 fontWeight: 800,
                 color: "var(--foreground)",
                 letterSpacing: "-0.02em",
@@ -644,6 +644,7 @@ export function DevicePage() {
         >
           {/* BeetleIcon 尺寸由 width/height 控制，勿用 fontSize；与容器约 82% 留白，避免过小 */}
           <BeetleIcon
+            motion="idle"
             sx={{
               width: "72px",
               height: "72px",
@@ -652,11 +653,11 @@ export function DevicePage() {
             }}
           />
         </Box>
-        <Typography variant="h4" sx={{ fontFamily: "var(--font-display)", fontWeight: 800, letterSpacing: "-0.02em", mb: 1.5 }}>
+        <Typography variant="h4" sx={{ fontFamily: "var(--font-brand)", fontWeight: 800, letterSpacing: "-0.02em", mb: 1.5 }}>
           beetle <Box component="span" sx={{ color: "var(--primary)" }}>OS</Box>
         </Typography>
         <Typography variant="body2" sx={{ color: "var(--text-secondary)", lineHeight: 1.6, maxWidth: "80%", mx: "auto" }}>
-          {t("device.pageDesc")}
+          {t("device.setupIntro")}
         </Typography>
       </Box>
 

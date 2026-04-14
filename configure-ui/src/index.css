@@ -1,10 +1,11 @@
-/* 系统 UI 优先的无衬线栈（桌面壳层感）+ IBM Plex 回退；等宽数据/代码；品牌标题用 Orbitron */
+/* 系统 UI：无衬线栈与壳层一致；`--font-brand` 仅用于少数营销/设备 Hero 标题 */
 :root {
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     'IBM Plex Sans', 'Noto Sans', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
-  --font-display: 'Orbitron', 'IBM Plex Sans', var(--font-sans);
+  --font-display: var(--font-sans);
+  --font-brand: 'Orbitron', 'IBM Plex Sans', var(--font-sans);
 }
 
 /* 与系统滚动条协调的细滚动条（不影响布局宽度语义） */

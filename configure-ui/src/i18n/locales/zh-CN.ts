@@ -22,7 +22,8 @@ export const zhCN = {
     },
     device: {
       pageTitle: '连接设备',
-      pageDesc: '填写设备地址与配对码后，本站在同网下可跨域调用设备 API。配对、WiFi、系统页由固件内置提供。',
+      setupIntro:
+        '填写设备地址与配对码后，本站在同网下可跨域调用设备 API。配对、WiFi、系统页由固件内置提供。',
       sectionConnection: '设备地址与配对码',
       sectionConnectionDesc: '设备地址可在设备显示屏或包装上查看；配对码需在设备配对页设置。',
       baseUrlLabel: '设备地址',
@@ -194,7 +195,6 @@ export const zhCN = {
     },
     deviceConfig: {
       pageTitle: '设备配置',
-      pageDesc: '显示、硬件等与设备相关的设置。',
       tabDisplay: '显示',
       tabAudio: '音频',
       tabGpioDevices: 'GPIO 设备',
@@ -565,19 +565,15 @@ export const zhCN = {
     },
     aiConfig: {
       pageTitle: 'AI 配置',
-      pageDesc: 'LLM API、模型与多源回退。保存后需重启设备生效。',
     },
     channelsConfig: {
       pageTitle: '通道配置',
-      pageDesc: 'Telegram、飞书、钉钉、企微、QQ 频道、WebSocket。',
     },
     systemConfig: {
       pageTitle: '系统配置',
-      pageDesc: 'WiFi、代理与会话等系统项。',
     },
     displayConfig: {
       pageTitle: '显示配置',
-      pageDesc: '显示驱动、引脚与仪表盘渲染参数。',
       sectionMain: '显示配置',
       sectionMainDesc: '保存后重启生效。',
       sectionMainDescLinux: 'Linux 使用内核 framebuffer；保存后重启生效。',
@@ -631,13 +627,11 @@ export const zhCN = {
     },
     systemLogs: {
       pageTitle: '系统日志',
-      pageDesc: '设备健康与诊断信息。',
       sectionLogs: '日志',
       emptyLogs: '暂无日志，可连接设备后查看 health / diagnose。',
     },
     soulUser: {
       pageTitle: '个性化配置',
-      pageDesc: '助手人格（SOUL）与你的画像（USER）分块保存，写入设备后参与对话上下文。',
       tabSoul: 'SOUL（人格）',
       tabUser: 'USER（画像）',
       sectionSoul: 'SOUL（助手人格）',
@@ -709,7 +703,6 @@ export const zhCN = {
     },
     skills: {
       pageTitle: '技能管理',
-      pageDesc: '技能列表、启用/禁用、排序、从 URL 导入。',
       sectionList: '技能列表',
       sectionListDesc: '启用/禁用、编辑内容、删除或从 URL 导入。',
       importFromUrl: '从 URL 导入',
@@ -732,7 +725,6 @@ export const zhCN = {
     },
     tools: {
       pageTitle: '工具管理',
-      pageDesc: '查看当前固件已向 Agent 暴露的工具列表（与设备构建特性一致）。',
       sectionMain: '已注册工具',
       sectionMainDesc: '当前设备上可供 Agent 使用的工具。',
       emptyList: '暂无工具数据。',

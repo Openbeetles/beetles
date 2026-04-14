@@ -1,19 +1,9 @@
 /**
  * 主内容区在 `var(--surface)` 上叠 PCB 丝印：96px 板框参考格 + 正交细网格 + 双环焊盘 + 过孔 + 主色格点
- * + 疏对角走线 + 角对位点；金属高光慢移；矢量封装见 [components/PcbDecorOverlay.tsx]。
- * `prefers-reduced-motion: reduce` 下关闭动画。
+ * + 疏对角走线 + 角对位点；金属高光为静态叠层（无漂移动画，更贴近系统设置「稳态桌面」）。
+ * Vector overlay: [components/PcbDecorOverlay.tsx].
  */
 export const MAIN_SURFACE_PCB_SX = {
-  "@keyframes pcbMainGridDrift": {
-    "0%": {
-      backgroundPosition:
-        "0px 0px, 0px 0px, 0px 0px, 0px 0px, 0px 0px, 8px 8px, 0px 0px, 0px 0px, 12px 12px, 0% 0%",
-    },
-    "100%": {
-      backgroundPosition:
-        "4px 4px, 4px 4px, 32px 32px, 24px 24px, 32px 32px, 24px 24px, 128px 128px, 48px 48px, 44px 44px, 100% 100%",
-    },
-  },
   backgroundColor: "var(--surface)",
   backgroundImage: [
     // 大格对齐线（极淡，模拟板框/拼板参考）
@@ -40,10 +30,6 @@ export const MAIN_SURFACE_PCB_SX = {
     "96px 96px, 96px 96px, 32px 32px, 32px 32px, 32px 32px, 16px 16px, 128px 128px, 56px 56px, 96px 96px, 220% 220%",
   backgroundPosition:
     "0px 0px, 0px 0px, 0px 0px, 0px 0px, 0px 0px, 8px 8px, 0px 0px, 0px 0px, 12px 12px, 0% 0%",
-  animation: "pcbMainGridDrift 40s linear infinite",
-  "@media (prefers-reduced-motion: reduce)": {
-    animation: "none",
-  },
 } as const;
 
 /**

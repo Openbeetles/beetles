@@ -3,8 +3,6 @@
 set -e
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_ROOT"
-# shellcheck source=/dev/null
-source "$SCRIPT_ROOT/scripts/build_board_detect.sh"
 
 # Colors (build + Linux SSH deploy)
 RED='\033[0;31m'
@@ -76,7 +74,8 @@ done
 
 MSG_TITLE="Beetle Build Script"
 MSG_SELECT_PLATFORM="Select build platform:"
-MSG_PLATFORM_ESP="ESP32-S3 Firmware (default)"
+MSG_PLATFORM_ESP_S3="ESP32-S3 Firmware (default)"
+MSG_PLATFORM_ESP_P4="ESP32-P4 Firmware"
 MSG_PLATFORM_LINUX="Linux x86_64"
 MSG_PLATFORM_LINUX_ARMV7="Linux armv7 (32-bit ARM hard-float)"
 MSG_PLATFORM_LINUX_AARCH64="Linux aarch64 (64-bit ARM)"
@@ -216,38 +215,6 @@ list_flash_ports() {
     for f in /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.SLAB* /dev/cu.wchusbserial* /dev/cu.UART*; do [[ -e "$f" ]] && ports+=("$f"); done
   fi
   printf '%s\n' "${ports[@]}"
-}
-
-autodetect_flash_port() {
-  local ports=()
-  local port
-  if [[ -n "${ESPFLASH_PORT:-}" ]]; then
-    printf '%s\n' "$ESPFLASH_PORT"
-    return 0
-  fi
-  while IFS= read -r port; do
-    [[ -n "$port" ]] && ports+=("$port")
-  done < <(list_flash_ports)
-  if [[ ${#ports[@]} -eq 1 ]]; then
-    printf '%s\n' "${ports[0]}"
-    return 0
-  fi
-  return 1
-}
-
-detect_board_from_connected_device() {
-  local port output parsed chip flash_size board
-  command -v espflash >/dev/null 2>&1 || return 1
-  port="$(autodetect_flash_port)" || return 1
-  output="$(espflash board-info --port "$port" --non-interactive 2>/dev/null)" || return 1
-  parsed="$(beetle_parse_board_info "$output")" || return 1
-  IFS=$'\t' read -r chip flash_size <<< "$parsed"
-  board="$(beetle_map_board_from_chip_flash "$chip" "$flash_size")" || return 1
-  AUTO_DETECTED_BOARD="$board"
-  AUTO_DETECTED_FLASH_PORT="$port"
-  AUTO_DETECTED_CHIP="$chip"
-  AUTO_DETECTED_FLASH_SIZE="$flash_size"
-  printf '%s\n' "$board"
 }
 
 linux_detect_pkg_manager() {
@@ -977,9 +944,9 @@ linux_remote_select_build_role() {
 
 linux_apply_docker_target_for_platform() {
     case "$PLATFORM_CHOICE" in
-        2) BUILD_TARGET="x86_64-unknown-linux-musl" ;;
-        3) BUILD_TARGET="armv7-unknown-linux-musleabihf" ;;
-        4) BUILD_TARGET="aarch64-unknown-linux-musl" ;;
+        3) BUILD_TARGET="x86_64-unknown-linux-musl" ;;
+        4) BUILD_TARGET="armv7-unknown-linux-musleabihf" ;;
+        5) BUILD_TARGET="aarch64-unknown-linux-musl" ;;
     esac
 }
 
@@ -992,9 +959,9 @@ linux_prepare_remote_build_context() {
     local remote_family=""
 
     case "$PLATFORM_CHOICE" in
-        2) selected_family="x86_64" ;;
-        3) selected_family="armv7" ;;
-        4) selected_family="aarch64" ;;
+        3) selected_family="x86_64" ;;
+        4) selected_family="armv7" ;;
+        5) selected_family="aarch64" ;;
         *)
             echo -e "${RED}Error: remote build only supports Linux targets${NC}"
             exit 1
@@ -2164,10 +2131,11 @@ build_target_override_from_args() {
 platform_choice_from_target() {
   local target="$1"
   case "$target" in
-    xtensa-*-espidf|riscv32*-esp-espidf) printf '%s\n' '1' ;;
-    x86_64-unknown-linux-*) printf '%s\n' '2' ;;
-    armv7-unknown-linux-*) printf '%s\n' '3' ;;
-    aarch64-unknown-linux-*) printf '%s\n' '4' ;;
+    xtensa-*-espidf) printf '%s\n' '1' ;;
+    riscv32imafc-esp-espidf) printf '%s\n' '2' ;;
+    x86_64-unknown-linux-*) printf '%s\n' '3' ;;
+    armv7-unknown-linux-*) printf '%s\n' '4' ;;
+    aarch64-unknown-linux-*) printf '%s\n' '5' ;;
     *) return 1 ;;
   esac
 }
@@ -2176,16 +2144,20 @@ select_build_platform() {
   # If TARGET env is set, skip interactive prompt.
   if [[ -n "${TARGET:-}" ]]; then
     case "${TARGET}" in
-      esp|esp32) PLATFORM_CHOICE=1; return 0 ;;  # ESP32
-      linux) PLATFORM_CHOICE=2; return 0 ;;      # Linux
-      linux-armv7|armv7) PLATFORM_CHOICE=3; return 0 ;;
-      linux-aarch64|aarch64) PLATFORM_CHOICE=4; return 0 ;;
-      *) echo "Error: Unknown TARGET=$TARGET. Use 'esp', 'linux', 'linux-armv7', or 'linux-aarch64'" >&2; exit 1 ;;
+      esp|esp32|esp32s3) PLATFORM_CHOICE=1; return 0 ;;
+      p4|esp32p4) PLATFORM_CHOICE=2; return 0 ;;
+      linux) PLATFORM_CHOICE=3; return 0 ;;
+      linux-armv7|armv7) PLATFORM_CHOICE=4; return 0 ;;
+      linux-aarch64|aarch64) PLATFORM_CHOICE=5; return 0 ;;
+      *) echo "Error: Unknown TARGET=$TARGET. Use 'esp', 'esp32s3', 'p4', 'linux', 'linux-armv7', or 'linux-aarch64'" >&2; exit 1 ;;
     esac
   fi
 
   if [[ -n "${BOARD:-}" ]]; then
-    PLATFORM_CHOICE=1
+    case "${BOARD}" in
+      esp32-p4-*) PLATFORM_CHOICE=2 ;;
+      *) PLATFORM_CHOICE=1 ;;
+    esac
     return 0
   fi
 
@@ -2199,7 +2171,7 @@ select_build_platform() {
     return 0
   fi
 
-  # If --flash / --flash-update is set, default to ESP32.
+  # If --flash / --flash-update is set, default to ESP32-S3.
   if [[ -n "$DO_FLASH" ]]; then
     PLATFORM_CHOICE=1
     return 0
@@ -2211,21 +2183,23 @@ select_build_platform() {
   echo "=========================================="
   echo ""
   echo "$MSG_SELECT_PLATFORM"
-  echo "  1) $MSG_PLATFORM_ESP"
-  echo "  2) $MSG_PLATFORM_LINUX"
-  echo "  3) $MSG_PLATFORM_LINUX_ARMV7"
-  echo "  4) $MSG_PLATFORM_LINUX_AARCH64"
+  echo "  1) $MSG_PLATFORM_ESP_S3"
+  echo "  2) $MSG_PLATFORM_ESP_P4"
+  echo "  3) $MSG_PLATFORM_LINUX"
+  echo "  4) $MSG_PLATFORM_LINUX_ARMV7"
+  echo "  5) $MSG_PLATFORM_LINUX_AARCH64"
   echo ""
 
   while true; do
-    read -r -p "$MSG_INPUT_OPTION [1-4] ($MSG_PRESS_ENTER 1): " choice
+    read -r -p "$MSG_INPUT_OPTION [1-5] ($MSG_PRESS_ENTER 1): " choice
     choice=${choice:-1}
     case "$choice" in
       1) PLATFORM_CHOICE=1; return 0 ;;
       2) PLATFORM_CHOICE=2; return 0 ;;
       3) PLATFORM_CHOICE=3; return 0 ;;
       4) PLATFORM_CHOICE=4; return 0 ;;
-      *) echo "$MSG_INVALID_OPTION 1, 2, 3, or 4" ;;
+      5) PLATFORM_CHOICE=5; return 0 ;;
+      *) echo "$MSG_INVALID_OPTION 1, 2, 3, 4, or 5" ;;
     esac
   done
 }
@@ -2234,13 +2208,13 @@ select_build_platform() {
 PLATFORM_CHOICE=1
 select_build_platform
 
-if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4 ]]; then
+if [[ $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4 || $PLATFORM_CHOICE -eq 5 ]]; then
   # Linux 构建
   echo ""
   echo "========== $MSG_LINUX_MODE =========="
-  if [[ $PLATFORM_CHOICE -eq 3 ]]; then
+  if [[ $PLATFORM_CHOICE -eq 4 ]]; then
     BUILD_TARGET="armv7-unknown-linux-musleabihf"
-  elif [[ $PLATFORM_CHOICE -eq 4 ]]; then
+  elif [[ $PLATFORM_CHOICE -eq 5 ]]; then
     BUILD_TARGET="aarch64-unknown-linux-musl"
   fi
 
@@ -2250,21 +2224,21 @@ if [[ $PLATFORM_CHOICE -eq 2 || $PLATFORM_CHOICE -eq 3 || $PLATFORM_CHOICE -eq 4
     # Linux 本机上，若当前宿主与目标架构一致，则优先使用原生 GNU target；
     # musl 主要用于 macOS/host 交叉产物与非原生 Linux 交叉路线。
     CURRENT_ARCH="$(uname -m)"
-    if [[ $PLATFORM_CHOICE -eq 2 ]]; then
+    if [[ $PLATFORM_CHOICE -eq 3 ]]; then
       BUILD_TARGET="x86_64-unknown-linux-gnu"
-    elif [[ $PLATFORM_CHOICE -eq 3 ]] && [[ "$CURRENT_ARCH" == "armv7l" || "$CURRENT_ARCH" == "armv6l" ]]; then
+    elif [[ $PLATFORM_CHOICE -eq 4 ]] && [[ "$CURRENT_ARCH" == "armv7l" || "$CURRENT_ARCH" == "armv6l" ]]; then
       BUILD_TARGET="armv7-unknown-linux-gnueabihf"
-    elif [[ $PLATFORM_CHOICE -eq 4 ]] && [[ "$CURRENT_ARCH" == "aarch64" || "$CURRENT_ARCH" == "arm64" ]]; then
+    elif [[ $PLATFORM_CHOICE -eq 5 ]] && [[ "$CURRENT_ARCH" == "aarch64" || "$CURRENT_ARCH" == "arm64" ]]; then
       BUILD_TARGET="aarch64-unknown-linux-gnu"
     fi
     echo "  $MSG_DETECTED_LINUX"
   elif [[ "$CURRENT_OS" == "Darwin" ]]; then
     # On macOS, cross-compile to Linux.
     echo "  $MSG_DETECTED_MACOS"
-    if [[ $PLATFORM_CHOICE -eq 2 ]]; then
+    if [[ $PLATFORM_CHOICE -eq 3 ]]; then
       BUILD_TARGET="x86_64-unknown-linux-musl"
       LOCAL_LINKER_CMD="x86_64-linux-musl-gcc"
-    elif [[ $PLATFORM_CHOICE -eq 3 ]]; then
+    elif [[ $PLATFORM_CHOICE -eq 4 ]]; then
       BUILD_TARGET="armv7-unknown-linux-musleabihf"
       LOCAL_LINKER_CMD="arm-linux-musleabihf-gcc"
     else
@@ -2349,8 +2323,10 @@ else
   echo ""
   echo "========== $MSG_ESP_MODE =========="
 
-  # --- BOARD => target/features from board_presets.toml ---
-  BUILD_TARGET="xtensa-esp32s3-espidf"
+  case "$PLATFORM_CHOICE" in
+    2) BUILD_TARGET="riscv32imafc-esp-espidf" ;;
+    *) BUILD_TARGET="xtensa-esp32s3-espidf" ;;
+  esac
   BUILD_FEATURES=""
   BUILD_PROFILE="release-size"
 fi
@@ -2369,12 +2345,6 @@ for (( i=0; i < ${#BUILD_ARGS[@]}; i++ )); do
       ;;
   esac
 done
-if [[ -z "${BOARD:-}" && -z "$CLI_BUILD_TARGET" && "${BUILD_TARGET:-}" == "xtensa-esp32s3-espidf" ]]; then
-  DETECTED_BOARD="$(detect_board_from_connected_device || true)"
-  if [[ -n "$DETECTED_BOARD" ]]; then
-    BOARD="$DETECTED_BOARD"
-  fi
-fi
 if [[ -n "${BOARD:-}" ]]; then
   if [[ ! "$BOARD" =~ ^[a-z0-9-]+$ ]]; then
     echo "Error: BOARD must contain only [a-z0-9-]. Got: $BOARD" >&2
@@ -2460,9 +2430,6 @@ echo "  Partition table:   $PARTITION_TABLE"
 echo "  Target MCU:        ${TARGET_MCU:-(N/A)}"
 echo "  SDKCONFIG overlay: ${BOARD_SDKCONFIG_OVERLAY:-(none)}"
 echo "  Chip (for flash):  ${FLASH_CHIP:-(N/A)}"
-if [[ -n "${AUTO_DETECTED_BOARD:-}" ]]; then
-  echo "  Auto-detected:     $AUTO_DETECTED_BOARD via ${AUTO_DETECTED_CHIP:-unknown}/${AUTO_DETECTED_FLASH_SIZE:-unknown} on ${AUTO_DETECTED_FLASH_PORT:-unknown}"
-fi
 echo "  Package profile:   ${PACKAGE_PROFILE:-(none)}"
 echo "  Features:          ${BUILD_FEATURES:-(none)}"
 echo "  Profile:           $BUILD_PROFILE"

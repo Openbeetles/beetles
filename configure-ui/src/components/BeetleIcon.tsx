@@ -3,19 +3,41 @@ import type { BoxProps } from "@mui/material/Box";
 import type { SxProps, Theme } from "@mui/material/styles";
 import { useId } from "react";
 
-const wingAndCoreSx = {
-  "& .wing-left": {
-    transformOrigin: "50% 35%",
-    animation: "beetle-wing-flap-left 0.8s ease-in-out infinite alternate",
-  },
-  "& .wing-right": {
-    transformOrigin: "50% 35%",
-    animation: "beetle-wing-flap-right 0.8s ease-in-out infinite alternate",
-  },
-  "& .core-glow": {
-    animation: "beetle-pulse-glow 1.5s ease-in-out infinite alternate",
-  },
+/** `idle`：持续翅/核动效（设备页品牌位）；`shell`：壳层静态，仅在 `animationActive` 时播放。 */
+export type BeetleIconMotion = "idle" | "shell";
+
+const wingAnimLeft = {
+  transformOrigin: "50% 35%",
+  animation: "beetle-wing-flap-left 0.8s ease-in-out infinite alternate",
 } as const;
+const wingAnimRight = {
+  transformOrigin: "50% 35%",
+  animation: "beetle-wing-flap-right 0.8s ease-in-out infinite alternate",
+} as const;
+const coreAnim = {
+  animation: "beetle-pulse-glow 1.5s ease-in-out infinite alternate",
+} as const;
+
+const idleMotionSx = {
+  "& .wing-left": wingAnimLeft,
+  "& .wing-right": wingAnimRight,
+  "& .core-glow": coreAnim,
+} as const;
+
+function shellMotionSx(animationActive: boolean) {
+  if (animationActive) {
+    return {
+      "& .wing-left": wingAnimLeft,
+      "& .wing-right": wingAnimRight,
+      "& .core-glow": coreAnim,
+    } as const;
+  }
+  return {
+    "& .wing-left": { ...wingAnimLeft, animation: "none" },
+    "& .wing-right": { ...wingAnimRight, animation: "none" },
+    "& .core-glow": { ...coreAnim, animation: "none" },
+  } as const;
+}
 
 const reducedMotionSx = {
   "@media (prefers-reduced-motion: reduce)": {
@@ -30,12 +52,28 @@ const reducedMotionSx = {
  * Cyber-beetle mark (same artwork as beetle_site); tints follow theme CSS variables.
  */
 export function BeetleIcon({
+  motion = "shell",
+  animationActive = false,
   sx,
   ...rest
-}: { sx?: SxProps<Theme> } & Omit<BoxProps, "sx">) {
+}: {
+  /** 默认 `shell`：任务栏/顶栏等系统壳层用静态标；设备页等传 `idle` 保留品牌动效。 */
+  motion?: BeetleIconMotion;
+  /** `shell` 下为 true 时播放翅/核动画（如开始按钮悬停或菜单打开）。 */
+  animationActive?: boolean;
+  sx?: SxProps<Theme>;
+} & Omit<BoxProps, "sx">) {
   const uid = useId().replace(/:/g, "");
   const bodyGradId = `cb-body-${uid}`;
   const wingGradId = `cb-wing-${uid}`;
+
+  const motionSx =
+    motion === "idle" ? idleMotionSx : shellMotionSx(animationActive);
+
+  const shellFilter =
+    motion === "shell" && !animationActive
+      ? "drop-shadow(0 1px 1px color-mix(in srgb, var(--foreground) 12%, transparent))"
+      : "drop-shadow(0 0 8px color-mix(in srgb, var(--primary) 35%, transparent))";
 
   return (
     <Box
@@ -45,7 +83,7 @@ export function BeetleIcon({
         width: "var(--icon-container-md)",
         height: "var(--icon-container-md)",
         position: "relative",
-        ...wingAndCoreSx,
+        ...motionSx,
         ...reducedMotionSx,
         ...sx,
       }}
@@ -59,8 +97,7 @@ export function BeetleIcon({
         style={{
           width: "100%",
           height: "100%",
-          filter:
-            "drop-shadow(0 0 8px color-mix(in srgb, var(--primary) 35%, transparent))",
+          filter: shellFilter,
         }}
       >
         <defs>

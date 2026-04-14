@@ -130,6 +130,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
       MuiCssBaseline: {
         styleOverrides: {
           ':root': {
+            '--font-brand':
+              "'Orbitron', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
             scrollBehavior: 'smooth',
             '--background': tokens.background,
             '--foreground': tokens.foreground,
@@ -272,7 +274,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         },
       },
       MuiButton: {
-        defaultProps: { disableElevation: true },
+        defaultProps: { disableElevation: true, disableRipple: true },
         styleOverrides: {
           root: {
             textTransform: 'none',
@@ -447,6 +449,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         },
       },
       MuiIconButton: {
+        defaultProps: { disableRipple: true },
         styleOverrides: {
           root: {
             borderRadius: R_CHIP,

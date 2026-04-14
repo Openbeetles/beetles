@@ -7,13 +7,8 @@ import { BEETLE_AMBIENT_BACKDROP_SX } from "../theme/beetleAmbientBackdrop";
 import { useAppPreferences } from "../hooks/useAppPreferences";
 import i18n from "../i18n";
 
-/** 主色渐变：极淡；极慢位移让全局底有轻微「呼吸」感（与 main 区 PCB 漂移呼应） */
+/** 主色渐变：极淡、静态（壳层与主区均不再做全局漂移呼吸）。 */
 const gradientBackground = {
-  "@keyframes pcbAmbientDrift": {
-    "0%": { backgroundPosition: "0% 0%, 0% 0%, 0% 0%" },
-    "50%": { backgroundPosition: "2% 1.5%, -1.5% 2%, 1% -1%" },
-    "100%": { backgroundPosition: "0% 0%, 0% 0%, 0% 0%" },
-  },
   position: "fixed" as const,
   inset: 0,
   zIndex: 0,
@@ -27,13 +22,9 @@ const gradientBackground = {
   backgroundSize: "100% 100%, 100% 100%, 100% 100%",
   backgroundPosition: "0 0, 0 0, 0 0",
   backgroundRepeat: "no-repeat",
-  animation: "pcbAmbientDrift 40s ease-in-out infinite",
-  "@media (prefers-reduced-motion: reduce)": {
-    animation: "none",
-  },
 } as const;
 
-/** 主内容区 PCB 点阵见 [theme/pcbSurface.ts]；全局甲壳虫氛围见 [theme/beetleAmbientBackdrop.ts]。 */
+/** 主内容区 PCB 见 [theme/pcbSurface.ts]；全局氛围见 [theme/beetleAmbientBackdrop.ts]（均为静态叠层）。 */
 
 export function ThemeAndBaseline({ children }: PropsWithChildren) {
   const { language, themeMode, themeBrand } = useAppPreferences();
