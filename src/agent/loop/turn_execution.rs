@@ -34,25 +34,9 @@ pub(super) fn execute_turn(
         outbound_message_count: 0,
         locale: loc,
     };
-    let compiler_tool_policy =
-        crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
-    let compiler_tool_specs = registry.tool_specs_for_llm(&compiler_tool_policy);
-    let request_semantics_started = Instant::now();
-    let request_semantics = super::super::request_semantics::compile_request_semantics(
-        &mut tool_ctx,
-        worker_llm,
-        super::super::request_semantics::RequestSemanticCompilerInput {
-            strategy: config.strategy,
-            ingress: msg.ingress,
-            channel: msg.channel.as_ref(),
-            is_group: msg.is_group,
-            content: &msg.content,
-            pressure: crate::orchestrator::current_pressure(),
-            runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-            tool_specs: &compiler_tool_specs,
-        },
-    );
-    latency.request_semantics_ms = request_semantics_started.elapsed().as_millis();
+    let request_semantics =
+        super::super::request_semantics::RequestSemantics::conservative_default();
+    latency.request_semantics_ms = 0;
     let request_plan = AgentRequestPlan::build(
         msg,
         registry,
@@ -115,7 +99,7 @@ pub(super) fn execute_turn(
         &mut tool_ctx,
         &mut latency,
     )?;
-    let reply_surface = ReplySurface::for_turn(msg.ingress, request_semantics);
+    let reply_surface = request_plan.reply_surface();
     if let Some(task_execution_outcome) = try_run_task_execution(
         worker_llm,
         msg,

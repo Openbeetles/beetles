@@ -148,9 +148,7 @@ pub use intelligence_replay::{
 pub(crate) use internal_memory_topology::{
     render_internal_memory_topology_block, InternalMemoryLayerFocus,
 };
-pub(crate) use llm_json::{
-    get_object_text, get_object_u64, parse_llm_json_payload, LlmJsonPayload,
-};
+pub(crate) use llm_json::{get_object_text, parse_llm_json_payload, LlmJsonPayload};
 pub(crate) use long_term::{
     canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
     govern_long_term_memory_entries, inspect_long_term_memory_merge_guard,

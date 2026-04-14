@@ -1,7 +1,7 @@
 //! Reply surface contract selection for user-visible answers.
 //! 统一回复面合同：把“这轮该怎么交付”升级成正式类型，而不是散落标签。
 
-use super::request_semantics::{DisclosureSurface, EvidenceNeed, RequestSemantics};
+use super::request_semantics::RequestSemantics;
 use crate::bus::IngressKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +30,7 @@ pub(crate) enum SurfaceFinalizationPolicy {
     InternalOnly,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReplySurface {
     PublicRuntime,
@@ -40,18 +41,11 @@ pub(crate) enum ReplySurface {
 }
 
 impl ReplySurface {
-    pub(crate) fn for_turn(ingress: IngressKind, semantics: RequestSemantics) -> Self {
+    pub(crate) fn for_turn(ingress: IngressKind, _semantics: RequestSemantics) -> Self {
         if ingress != IngressKind::User {
             return Self::InternalOnly;
         }
-        match semantics.disclosure_surface {
-            DisclosureSurface::Private => Self::PrivateBoundary,
-            DisclosureSurface::Public => match semantics.evidence_need {
-                EvidenceNeed::PublicRuntime | EvidenceNeed::HostTool => Self::PublicRuntime,
-                _ => Self::GovernedConversation,
-            },
-            DisclosureSurface::Governed => Self::GovernedConversation,
-        }
+        Self::GovernedConversation
     }
 
     pub(crate) fn evidence_policy(self) -> SurfaceEvidencePolicy {
@@ -168,7 +162,7 @@ mod tests {
             IngressKind::User,
             semantics(DisclosureSurface::Public, EvidenceNeed::PublicRuntime),
         );
-        assert_eq!(surface, ReplySurface::PublicRuntime);
+        assert_eq!(surface, ReplySurface::GovernedConversation);
     }
 
     #[test]
@@ -177,7 +171,7 @@ mod tests {
             IngressKind::User,
             semantics(DisclosureSurface::Private, EvidenceNeed::CanonicalMemory),
         );
-        assert_eq!(surface, ReplySurface::PrivateBoundary);
+        assert_eq!(surface, ReplySurface::GovernedConversation);
     }
 
     #[test]

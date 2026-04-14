@@ -3401,6 +3401,7 @@ mod tests {
         name: &'static str,
         msg: PcMsg,
         registry_mode: BenchmarkRegistryMode,
+        strategy: AgentRunStrategy,
         responses: Vec<LlmResponse>,
         expected_llm_calls: usize,
         expected_react_rounds: u32,
@@ -3441,7 +3442,8 @@ mod tests {
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = build_benchmark_registry(&case.registry_mode);
-        let config = test_agent_loop_config();
+        let mut config = test_agent_loop_config();
+        config.strategy = case.strategy;
         let mut repeat = HashMap::new();
 
         let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
@@ -4939,7 +4941,10 @@ mod tests {
         );
 
         let outbound = outbound_rx.try_recv().expect("outbound error reply");
-        assert_eq!(outbound.content, tr(UiMessage::OperationFailed, UiLocale::Zh));
+        assert_eq!(
+            outbound.content,
+            tr(UiMessage::OperationFailed, UiLocale::Zh)
+        );
         assert_eq!(
             turn_ledger.reply_preview,
             normalize_turn_preview(&tr(UiMessage::OperationFailed, UiLocale::Zh))
@@ -5340,6 +5345,7 @@ mod tests {
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "直接回答", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::Empty,
+                strategy: AgentRunStrategy::Embedded,
                 responses: vec![LlmResponse {
                     content: "直接答复".to_string(),
                     stop_reason: StopReason::EndTurn,
@@ -5358,6 +5364,7 @@ mod tests {
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "测试多轮发送", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
+                strategy: AgentRunStrategy::Embedded,
                 responses: vec![
                     LlmResponse {
                         content: "[tool_use]".to_string(),
@@ -5388,6 +5395,7 @@ mod tests {
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "兜底收尾", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
+                strategy: AgentRunStrategy::Embedded,
                 responses: vec![
                     LlmResponse {
                         content: "[tool_use]".to_string(),
@@ -5417,6 +5425,25 @@ mod tests {
                 expected_current_primary_delivered: false,
                 expected_outcome_fragment: "最终收尾",
                 expect_final_recovery: true,
+            },
+            AgentTurnBenchmarkCase {
+                name: "linux enhanced direct reply stays single main llm turn",
+                msg: PcMsg::new_inbound("qq_channel", "chat-1", "直接回答", false)
+                    .expect("message"),
+                registry_mode: BenchmarkRegistryMode::Empty,
+                strategy: AgentRunStrategy::LinuxEnhanced,
+                responses: vec![LlmResponse {
+                    content: "直接答复".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                }],
+                expected_llm_calls: 1,
+                expected_react_rounds: 1,
+                expected_tool_calls: 0,
+                expected_streamed: false,
+                expected_current_primary_delivered: false,
+                expected_outcome_fragment: "直接答复",
+                expect_final_recovery: false,
             },
         ];
 

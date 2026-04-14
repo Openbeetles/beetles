@@ -3,8 +3,7 @@
 //! agent loop stays thin and request understanding stays outside prompt hacks.
 
 use super::reply_surface::ReplySurface;
-use super::request_semantics::{EvidenceNeed, ExecutionPreference, RequestSemantics};
-use super::strategy::AgentRunStrategy;
+use super::request_semantics::RequestSemantics;
 use crate::bus::PcMsg;
 use crate::llm::tool_fallback::{append_tool_fallback_instructions, recover_text_tool_calls};
 use crate::llm::{LlmClient, LlmResponse, ToolCallSupport, ToolChoicePolicy, ToolSpec};
@@ -17,18 +16,10 @@ pub(crate) enum ToolCallMode {
     PromptGuided,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolUseDemand {
-    Flexible,
-    Preferred,
-    RequiredFirstTurn,
-}
-
 pub(crate) struct AgentRequestPlan<'a> {
     tool_policy: ToolPolicyContext<'a>,
     tool_specs: Vec<ToolSpec>,
     tool_call_mode: ToolCallMode,
-    tool_use_demand: ToolUseDemand,
     reply_surface: ReplySurface,
 }
 
@@ -37,7 +28,7 @@ impl<'a> AgentRequestPlan<'a> {
         msg: &'a PcMsg,
         registry: &ToolRegistry,
         worker_llm: &(dyn LlmClient + Send + Sync),
-        strategy: AgentRunStrategy,
+        _strategy: super::strategy::AgentRunStrategy,
         semantics: RequestSemantics,
     ) -> Self {
         let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
@@ -50,13 +41,11 @@ impl<'a> AgentRequestPlan<'a> {
                 ToolCallSupport::PromptGuided => ToolCallMode::PromptGuided,
             }
         };
-        let tool_use_demand = classify_tool_use_demand(strategy, semantics, &tool_specs);
         let reply_surface = ReplySurface::for_turn(msg.ingress, semantics);
         Self {
             tool_policy,
             tool_specs,
             tool_call_mode,
-            tool_use_demand,
             reply_surface,
         }
     }
@@ -82,14 +71,11 @@ impl<'a> AgentRequestPlan<'a> {
             .then_some(self.tool_specs.as_slice())
     }
 
-    pub(crate) fn tool_choice(&self, round: usize, any_tool_used: bool) -> ToolChoicePolicy {
+    pub(crate) fn tool_choice(&self, _round: usize, any_tool_used: bool) -> ToolChoicePolicy {
         if !self.uses_native_tools() || any_tool_used {
             return ToolChoicePolicy::Auto;
         }
-        match self.tool_use_demand {
-            ToolUseDemand::RequiredFirstTurn if round <= 1 => ToolChoicePolicy::Require,
-            _ => ToolChoicePolicy::Auto,
-        }
+        ToolChoicePolicy::Auto
     }
 
     pub(crate) fn apply_system_prompt(&self, system: &mut String, max_len: usize) {
@@ -107,35 +93,13 @@ impl<'a> AgentRequestPlan<'a> {
     }
 }
 
-fn classify_tool_use_demand(
-    strategy: AgentRunStrategy,
-    semantics: RequestSemantics,
-    tool_specs: &[ToolSpec],
-) -> ToolUseDemand {
-    if strategy != AgentRunStrategy::LinuxEnhanced || tool_specs.is_empty() {
-        return ToolUseDemand::Flexible;
-    }
-    if !semantics.supported_by_tools(tool_specs) {
-        return ToolUseDemand::Flexible;
-    }
-    match semantics.execution_preference {
-        ExecutionPreference::ToolFirst | ExecutionPreference::MemoryFirst => {
-            ToolUseDemand::RequiredFirstTurn
-        }
-        ExecutionPreference::AnswerDirect => match semantics.evidence_need {
-            EvidenceNeed::None => ToolUseDemand::Flexible,
-            EvidenceNeed::PublicRuntime
-            | EvidenceNeed::HostTool
-            | EvidenceNeed::ArchiveMemory
-            | EvidenceNeed::CanonicalMemory => ToolUseDemand::Preferred,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::request_semantics::{DisclosureSurface, RequestKind, RequestSemantics};
+    use crate::agent::request_semantics::{
+        DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind, RequestSemantics,
+    };
+    use crate::agent::AgentRunStrategy;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
     use crate::tools::{Tool, ToolMetadata};
     use crate::Result;
@@ -275,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn operational_requests_require_first_round_tool_for_linux_native_mode() {
+    fn operational_requests_do_not_force_first_round_tool_for_linux_native_mode() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool {
             name: "process",
@@ -291,12 +255,12 @@ mod tests {
             AgentRunStrategy::LinuxEnhanced,
             semantics(EvidenceNeed::HostTool, ExecutionPreference::ToolFirst),
         );
-        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
-        assert_eq!(plan.tool_choice(1, false), ToolChoicePolicy::Require);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+        assert_eq!(plan.tool_choice(1, false), ToolChoicePolicy::Auto);
     }
 
     #[test]
-    fn public_operational_observability_requests_require_first_round_tool() {
+    fn public_operational_observability_requests_do_not_force_first_round_tool() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool {
             name: "board_info",
@@ -311,11 +275,11 @@ mod tests {
             AgentRunStrategy::LinuxEnhanced,
             semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst),
         );
-        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
     }
 
     #[test]
-    fn memory_evidence_requests_require_first_round_tool() {
+    fn memory_evidence_requests_do_not_force_first_round_tool() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool {
             name: "memory_search",
@@ -339,7 +303,7 @@ mod tests {
                 ExecutionPreference::MemoryFirst,
             ),
         );
-        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
     }
 
     #[test]
