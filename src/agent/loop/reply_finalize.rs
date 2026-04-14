@@ -105,7 +105,7 @@ pub(super) fn finalize_turn(
         touched_targets: Vec::new(),
     };
     if !is_interrupt {
-        mental_privacy_review = super::maybe_apply_mental_privacy_review(
+        mental_privacy_review = super::worker_governance::maybe_apply_mental_privacy_review(
             http,
             worker_llm,
             config,
@@ -403,7 +403,7 @@ pub(super) fn complete_turn(
             .and_then(|ledger| ledger.subject_state)
     };
     turn_ledger.persona = if msg.ingress == IngressKind::User {
-        super::build_turn_persona_ledger(
+        super::worker_governance::build_turn_persona_ledger(
             pressure,
             worker_latency.tool_calls,
             delivered,

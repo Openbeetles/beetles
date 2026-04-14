@@ -8,12 +8,14 @@ mod driver;
 mod ingress_admission;
 mod reply_finalize;
 mod task_execution;
+mod task_execution_support;
 mod tool_round;
 mod turn_execution;
 mod turn_finalize;
 mod turn_prepare;
 mod worker_context_stages;
 mod worker_error;
+mod worker_governance;
 
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
 use super::final_reply::finalize_user_visible_reply;
@@ -564,117 +566,6 @@ fn build_json_error_object(message: &str) -> String {
     push_json_string_escaped(&mut out, message);
     out.push('}');
     out
-}
-
-fn should_consider_task_execution(
-    msg: &crate::bus::PcMsg,
-    has_tools: bool,
-    pressure: crate::orchestrator::PressureLevel,
-    has_active_run: bool,
-) -> bool {
-    if msg.ingress != IngressKind::User || msg.is_group {
-        return false;
-    }
-    if matches!(pressure, crate::orchestrator::PressureLevel::Critical) {
-        return false;
-    }
-    if has_active_run {
-        return true;
-    }
-    let content = msg.content.trim();
-    if content.is_empty() {
-        return false;
-    }
-    let char_count = content.chars().count();
-    let line_count = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    let separator_count = content
-        .chars()
-        .filter(|ch| matches!(ch, '\n' | ',' | '，' | '.' | '。' | ';' | '；'))
-        .count();
-    if has_tools {
-        char_count >= TASK_EXECUTION_MIN_CHARS
-            || line_count >= TASK_EXECUTION_MIN_LINES
-            || separator_count >= TASK_EXECUTION_MIN_SEPARATORS
-    } else {
-        char_count >= TASK_EXECUTION_MIN_CHARS.saturating_mul(2)
-            || line_count >= TASK_EXECUTION_MIN_LINES
-    }
-}
-
-fn parse_task_execution_json<T>(raw: &str, stage: &'static str) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(crate::error::Error::config(stage, "empty llm response"));
-    }
-    serde_json::from_str(trimmed)
-        .or_else(|_| {
-            let body = trimmed
-                .split_once("```")
-                .and_then(|(_, rest)| rest.split_once('\n'))
-                .and_then(|(_, rest)| rest.split_once("```"))
-                .map(|(json, _)| json.trim())
-                .ok_or_else(|| serde_json::Error::io(std::io::Error::other("no fence body")))?;
-            serde_json::from_str(body)
-        })
-        .or_else(|_| {
-            let start = trimmed.find('{').ok_or_else(|| {
-                serde_json::Error::io(std::io::Error::other("no json object start"))
-            })?;
-            let end = trimmed.rfind('}').ok_or_else(|| {
-                serde_json::Error::io(std::io::Error::other("no json object end"))
-            })?;
-            serde_json::from_str(&trimmed[start..=end])
-        })
-        .map_err(|error| crate::error::Error::config(stage, error.to_string()))
-}
-
-fn persist_task_run_record(store: &dyn TaskRunStore, record: &TaskRunRecord, stage: &str) {
-    if let Err(error) = store.upsert(record) {
-        log::warn!(
-            "[task_execution] failed to persist run stage={} run_id={}: {}",
-            stage,
-            record.run.run_id,
-            error
-        );
-    }
-}
-
-fn persist_task_artifact_record(
-    store: &dyn TaskArtifactStore,
-    record: &TaskArtifactRecord,
-    stage: &str,
-) {
-    if let Err(error) = store.put(record) {
-        log::warn!(
-            "[task_execution] failed to persist artifact stage={} run_id={} artifact_id={}: {}",
-            stage,
-            record.artifact.run_id,
-            record.artifact.artifact_id,
-            error
-        );
-    }
-}
-
-fn append_task_execution_ledger_entry(
-    store: &dyn TaskExecutionLedgerStore,
-    entry: &TaskExecutionLedgerEntry,
-    stage: &str,
-) {
-    if let Err(error) = store.append(&entry.run_id, entry) {
-        log::warn!(
-            "[task_execution] failed to append ledger stage={} run_id={} seq={}: {}",
-            stage,
-            entry.run_id,
-            entry.sequence,
-            error
-        );
-    }
 }
 
 fn generate_task_run_id(msg: &PcMsg) -> String {
@@ -1546,172 +1437,6 @@ fn handle_llm_gate(
             GateResult::Skipped
         }
     }
-}
-
-#[inline(never)]
-fn maybe_apply_mental_privacy_review(
-    http: &mut dyn PlatformHttpClient,
-    worker_llm: &(dyn LlmClient + Send + Sync),
-    config: &AgentLoopConfig,
-    msg: &PcMsg,
-    loc: UiLocale,
-    reply_surface: ReplySurface,
-    reply_content: String,
-    worker_latency: &mut WorkerLatency,
-) -> MentalPrivacyReviewOutcome {
-    if msg.ingress != IngressKind::User || reply_content.trim().is_empty() {
-        return MentalPrivacyReviewOutcome {
-            reply_content,
-            action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
-            applied: false,
-            touched_targets: Vec::new(),
-        };
-    }
-    if !reply_surface.allows_mental_privacy_review() {
-        return MentalPrivacyReviewOutcome {
-            reply_content,
-            action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
-            applied: false,
-            touched_targets: Vec::new(),
-        };
-    }
-
-    let t0 = metrics::record_llm_call_start();
-    let review_started = Instant::now();
-    let mut privacy_http = HttpClientToolContext {
-        http,
-        chat_id: Some(msg.chat_id.clone()),
-        ingress: msg.ingress,
-        channel: Some(msg.channel.clone()),
-        tool_registry: None,
-        channel_capability_registry: Arc::clone(&config.channel_capability_registry),
-        supports_current_chat_outbound_message: false,
-        supports_explicit_outbound_message: false,
-        outbound_message_budget: 0,
-        outbound_message_count: 0,
-        locale: loc,
-    };
-    match run_mental_privacy_review(
-        &mut privacy_http,
-        worker_llm,
-        MentalPrivacyReviewContext {
-            mental_privacy_store: config.mental_privacy_store.as_ref(),
-            relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-            self_model_store: config.self_model_store.as_ref(),
-            self_continuity_store: config.self_continuity_store.as_ref(),
-            inner_life_store: config.inner_life_store.as_ref(),
-            private_doc_store: config.private_doc_store.as_ref(),
-            private_garden_store: config.private_garden_store.as_ref(),
-        },
-        MentalPrivacyReviewInput {
-            channel: &msg.channel,
-            chat_id: &msg.chat_id,
-            user_content: &msg.content,
-            draft_reply: &reply_content,
-            now_secs: crate::util::current_unix_secs(),
-        },
-    ) {
-        Ok(review) => {
-            metrics::record_llm_call_end(t0);
-            worker_latency.mental_privacy_review_ms = worker_latency
-                .mental_privacy_review_ms
-                .saturating_add(review_started.elapsed().as_millis());
-            review
-        }
-        Err(error) => {
-            metrics::record_llm_call_end(t0);
-            metrics::record_llm_error();
-            worker_latency.mental_privacy_review_ms = worker_latency
-                .mental_privacy_review_ms
-                .saturating_add(review_started.elapsed().as_millis());
-            log::warn!("[agent_mental_privacy] review failed: {}", error);
-            MentalPrivacyReviewOutcome {
-                reply_content,
-                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
-                applied: false,
-                touched_targets: Vec::new(),
-            }
-        }
-    }
-}
-
-fn turn_persona_scope_from_share_action(
-    action: crate::memory::MentalPrivacyShareAction,
-) -> &'static str {
-    match action {
-        crate::memory::MentalPrivacyShareAction::Refuse => "refuse",
-        crate::memory::MentalPrivacyShareAction::Defer => "defer",
-        crate::memory::MentalPrivacyShareAction::AllowSummary
-        | crate::memory::MentalPrivacyShareAction::AllowRedactedExcerpt
-        | crate::memory::MentalPrivacyShareAction::ExplainWithoutQuote => "narrow",
-        crate::memory::MentalPrivacyShareAction::AllowRaw => "brief",
-        crate::memory::MentalPrivacyShareAction::AllowOriginal => "full",
-    }
-}
-
-fn derive_turn_persona_reply_scope(
-    is_interrupt: bool,
-    priority: Option<&PersonaPriorityAdjudication>,
-    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
-    review: &MentalPrivacyReviewOutcome,
-) -> String {
-    if is_interrupt {
-        return "interrupt".to_string();
-    }
-    let scope = priority
-        .map(|priority| priority.task_scope.trim())
-        .filter(|scope| !scope.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            disclosure.map(|adjudication| {
-                turn_persona_scope_from_share_action(adjudication.share_action).to_string()
-            })
-        })
-        .or_else(|| {
-            review
-                .applied
-                .then(|| turn_persona_scope_from_share_action(review.action).to_string())
-        })
-        .unwrap_or_else(|| "full".to_string());
-    normalize_turn_persona_scope(&scope)
-}
-
-fn build_turn_persona_targets(
-    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
-    review: &MentalPrivacyReviewOutcome,
-) -> Vec<String> {
-    let mut targets = disclosure
-        .map(|adjudication| adjudication.targets.clone())
-        .unwrap_or_default();
-    targets.extend(review.touched_targets.iter().cloned());
-    normalize_turn_persona_targets(&targets)
-}
-
-fn build_turn_persona_ledger(
-    pressure: crate::orchestrator::PressureLevel,
-    tool_calls: u32,
-    delivered: bool,
-    is_interrupt: bool,
-    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
-    priority: Option<&PersonaPriorityAdjudication>,
-    review: &MentalPrivacyReviewOutcome,
-    review_rewrite_applied: bool,
-) -> Option<TurnPersonaLedger> {
-    let persona = TurnPersonaLedger {
-        disclosure: disclosure.map(build_turn_persona_disclosure_ledger),
-        priority: priority.map(build_turn_persona_priority_ledger),
-        review: TurnPersonaReviewLedger {
-            action: review.action,
-            applied: review.applied,
-            rewrite_applied: review_rewrite_applied,
-        },
-        touched_targets: build_turn_persona_targets(disclosure, review),
-        pressure: pressure.into(),
-        tool_calls,
-        reply_scope: derive_turn_persona_reply_scope(is_interrupt, priority, disclosure, review),
-        reply_delivered: delivered,
-    };
-    persona.is_meaningful().then_some(persona)
 }
 
 #[cold]
@@ -4838,6 +4563,44 @@ mod tests {
             normalize_turn_preview(&tr(UiMessage::OperationFailed, UiLocale::Zh))
         );
         assert!(llm_failure_count.is_empty());
+    }
+
+    #[test]
+    fn build_turn_persona_ledger_marks_interrupt_scope() {
+        let review = crate::memory::MentalPrivacyReviewOutcome {
+            reply_content: "好的".to_string(),
+            action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+            applied: false,
+            touched_targets: Vec::new(),
+        };
+        let persona = self::worker_governance::build_turn_persona_ledger(
+            crate::orchestrator::PressureLevel::Normal,
+            0,
+            false,
+            true,
+            None,
+            None,
+            &review,
+            false,
+        )
+        .expect("persona ledger");
+        assert_eq!(persona.reply_scope, "interrupt");
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TaskExecutionJsonProbe {
+        answer: String,
+    }
+
+    #[test]
+    fn parse_task_execution_json_probe_accepts_fenced_json() {
+        let parsed: TaskExecutionJsonProbe =
+            self::task_execution_support::parse_task_execution_json(
+                "```json\n{\"answer\":\"ok\"}\n```",
+                "task_execution_probe",
+            )
+            .expect("parsed");
+        assert_eq!(parsed.answer, "ok");
     }
 
     fn runtime_mode_normal_snapshot() -> crate::runtime::RuntimeModeSnapshot {

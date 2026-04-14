@@ -31,7 +31,7 @@ pub(super) fn try_run_task_execution(
         active_task_run_for_chat(config.task_run_store.as_ref(), &msg.channel, &msg.chat_id)
             .ok()
             .flatten();
-    if !super::should_consider_task_execution(
+    if !super::task_execution_support::should_consider_task_execution(
         msg,
         request_plan.has_tools(),
         pressure,
@@ -70,10 +70,9 @@ pub(super) fn try_run_task_execution(
             return Ok(None);
         }
     };
-    let mut planner_decision = match super::parse_task_execution_json::<TaskPlannerDecision>(
-        &planner_response.content,
-        "task_execution_planner",
-    )
+    let mut planner_decision = match super::task_execution_support::parse_task_execution_json::<
+        TaskPlannerDecision,
+    >(&planner_response.content, "task_execution_planner")
     .and_then(normalize_task_planner_decision)
     {
         Ok(decision) => decision,
@@ -137,7 +136,7 @@ pub(super) fn try_run_task_execution(
                     "superseded by a newer task run in the same relationship".to_string();
                 previous_run.run.updated_at = now_secs;
                 previous_run.run.finished_at = now_secs;
-                super::persist_task_run_record(
+                super::task_execution_support::persist_task_run_record(
                     config.task_run_store.as_ref(),
                     &previous_run,
                     "supersede_previous_run",
@@ -146,13 +145,17 @@ pub(super) fn try_run_task_execution(
         }
     }
 
-    super::persist_task_run_record(config.task_run_store.as_ref(), &record, "task_plan_start");
+    super::task_execution_support::persist_task_run_record(
+        config.task_run_store.as_ref(),
+        &record,
+        "task_plan_start",
+    );
     let existing_ledger = config
         .task_execution_ledger_store
         .list(&record.run.run_id, usize::MAX)
         .unwrap_or_default();
     let mut ledger_sequence = next_ledger_sequence(&existing_ledger);
-    super::append_task_execution_ledger_entry(
+    super::task_execution_support::append_task_execution_ledger_entry(
         config.task_execution_ledger_store.as_ref(),
         &super::build_task_ledger_entry(
             &record.run.run_id,
@@ -166,7 +169,7 @@ pub(super) fn try_run_task_execution(
         "task_run_created",
     );
     ledger_sequence = ledger_sequence.saturating_add(1);
-    super::append_task_execution_ledger_entry(
+    super::task_execution_support::append_task_execution_ledger_entry(
         config.task_execution_ledger_store.as_ref(),
         &super::build_task_ledger_entry(
             &record.run.run_id,
@@ -219,9 +222,13 @@ pub(super) fn try_run_task_execution(
             }
         }
         record.run.updated_at = crate::util::current_unix_secs();
-        super::persist_task_run_record(config.task_run_store.as_ref(), &record, "step_started");
+        super::task_execution_support::persist_task_run_record(
+            config.task_run_store.as_ref(),
+            &record,
+            "step_started",
+        );
         let current_step = record.plan.ordered_steps[step_index].clone();
-        super::append_task_execution_ledger_entry(
+        super::task_execution_support::append_task_execution_ledger_entry(
             config.task_execution_ledger_store.as_ref(),
             &super::build_task_ledger_entry(
                 &record.run.run_id,
@@ -301,12 +308,12 @@ pub(super) fn try_run_task_execution(
             artifact_sequence,
             crate::util::current_unix_secs(),
         );
-        super::persist_task_artifact_record(
+        super::task_execution_support::persist_task_artifact_record(
             config.task_artifact_store.as_ref(),
             &step_artifact,
             "task_step_result",
         );
-        super::append_task_execution_ledger_entry(
+        super::task_execution_support::append_task_execution_ledger_entry(
             config.task_execution_ledger_store.as_ref(),
             &super::build_task_ledger_entry(
                 &record.run.run_id,
@@ -349,7 +356,7 @@ pub(super) fn try_run_task_execution(
                 latency.llm_round_total_ms = latency
                     .llm_round_total_ms
                     .saturating_add(review_started.elapsed().as_millis());
-                super::parse_task_execution_json::<TaskReviewOutcome>(
+                super::task_execution_support::parse_task_execution_json::<TaskReviewOutcome>(
                     &response.content,
                     "task_execution_review",
                 )
@@ -397,7 +404,7 @@ pub(super) fn try_run_task_execution(
             artifact_sequence + 1,
             crate::util::current_unix_secs(),
         );
-        super::persist_task_artifact_record(
+        super::task_execution_support::persist_task_artifact_record(
             config.task_artifact_store.as_ref(),
             &review_artifact,
             "task_review_result",
@@ -423,7 +430,7 @@ pub(super) fn try_run_task_execution(
                 );
             }
         }
-        super::append_task_execution_ledger_entry(
+        super::task_execution_support::append_task_execution_ledger_entry(
             config.task_execution_ledger_store.as_ref(),
             &super::build_task_ledger_entry(
                 &record.run.run_id,
@@ -454,7 +461,7 @@ pub(super) fn try_run_task_execution(
                 step.status = TaskStepStatus::Passed;
                 step.finished_at = crate::util::current_unix_secs();
                 apply_revised_remaining_steps(&mut record, &review_outcome.revised_steps)?;
-                super::append_task_execution_ledger_entry(
+                super::task_execution_support::append_task_execution_ledger_entry(
                     config.task_execution_ledger_store.as_ref(),
                     &super::build_task_ledger_entry(
                         &record.run.run_id,
@@ -474,7 +481,7 @@ pub(super) fn try_run_task_execution(
                 if step.attempt_count <= step.retry_budget {
                     step.status = TaskStepStatus::Retrying;
                     record.run.updated_at = crate::util::current_unix_secs();
-                    super::persist_task_run_record(
+                    super::task_execution_support::persist_task_run_record(
                         config.task_run_store.as_ref(),
                         &record,
                         "step_retry",
@@ -530,7 +537,11 @@ pub(super) fn try_run_task_execution(
             record.run.finished_at = crate::util::current_unix_secs();
             break;
         }
-        super::persist_task_run_record(config.task_run_store.as_ref(), &record, "step_passed");
+        super::task_execution_support::persist_task_run_record(
+            config.task_run_store.as_ref(),
+            &record,
+            "step_passed",
+        );
     }
 
     record.run.updated_at = crate::util::current_unix_secs();
@@ -603,12 +614,12 @@ pub(super) fn try_run_task_execution(
         final_artifact_count + 1,
         crate::util::current_unix_secs(),
     );
-    super::persist_task_artifact_record(
+    super::task_execution_support::persist_task_artifact_record(
         config.task_artifact_store.as_ref(),
         &final_artifact,
         "task_final_reply",
     );
-    super::append_task_execution_ledger_entry(
+    super::task_execution_support::append_task_execution_ledger_entry(
         config.task_execution_ledger_store.as_ref(),
         &super::build_task_ledger_entry(
             &record.run.run_id,
@@ -628,7 +639,11 @@ pub(super) fn try_run_task_execution(
     if record.run.status.is_terminal() && record.run.finished_at == 0 {
         record.run.finished_at = record.run.updated_at;
     }
-    super::persist_task_run_record(config.task_run_store.as_ref(), &record, "task_run_finished");
+    super::task_execution_support::persist_task_run_record(
+        config.task_run_store.as_ref(),
+        &record,
+        "task_run_finished",
+    );
     latency.react_rounds = latency.react_rounds.max(max_react_rounds.max(1));
     Ok(Some((
         WorkerOutcome::Content(final_reply),
