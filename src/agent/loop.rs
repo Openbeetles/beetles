@@ -1546,6 +1546,13 @@ fn handle_llm_gate(
     }
 }
 
+fn worker_path_error_uses_maintenance_copy(error: &crate::error::Error) -> bool {
+    !matches!(
+        error.stage(),
+        "final_reply_empty" | "final_reply_empty_after_finalize"
+    )
+}
+
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -1573,12 +1580,17 @@ fn handle_worker_path_error(
         .saturating_sub(admission_ms)
         .saturating_sub(worker_prepare_ms);
     let total_ms = msg_start.elapsed().as_millis();
+    let user_message = if worker_path_error_uses_maintenance_copy(&error) {
+        UiMessage::NodeMaintenance
+    } else {
+        UiMessage::OperationFailed
+    };
     turn_ledger.status = TurnLedgerStatus::Failed;
     turn_ledger.reason = normalize_turn_reason(error.stage());
     turn_ledger.updated_at_ms = now_unix_ms();
     turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;
     turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
-    turn_ledger.reply_preview = normalize_turn_preview(&tr(UiMessage::NodeMaintenance, loc));
+    turn_ledger.reply_preview = normalize_turn_preview(&tr(user_message.clone(), loc));
     persist_turn_ledger(
         config.turn_ledger_store.as_ref(),
         &relationship_id,
@@ -1602,34 +1614,36 @@ fn handle_worker_path_error(
     );
     state::set_last_error(&error);
 
-    let (counter, _) = llm_failure_count
-        .entry(msg_key)
-        .or_insert((0, Instant::now()));
-    *counter = counter.saturating_add(1);
+    if worker_path_error_uses_maintenance_copy(&error) {
+        let (counter, _) = llm_failure_count
+            .entry(msg_key)
+            .or_insert((0, Instant::now()));
+        *counter = counter.saturating_add(1);
 
-    if *counter < 3 && error.is_retryable_upstream() {
-        msg.enqueue_ts_ms = now_unix_ms();
-        let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
-        match inbound_tx.try_send(msg.clone()) {
-            Ok(()) => {}
-            Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                let _ = config.pending_retry.save_pending_retry(&m);
-                log::warn!(
-                    "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
-                    m.chat_id
-                );
+        if *counter < 3 && error.is_retryable_upstream() {
+            msg.enqueue_ts_ms = now_unix_ms();
+            let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
+            match inbound_tx.try_send(msg.clone()) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(m)) => {
+                    let _ = config.pending_retry.save_pending_retry(&m);
+                    log::warn!(
+                        "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
+                        m.chat_id
+                    );
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    log::error!("[agent] inbound_tx disconnected during llm retry");
+                }
             }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                log::error!("[agent] inbound_tx disconnected during llm retry");
-            }
+            let delay_ms =
+                (AGENT_RETRY_BASE_MS * (1 << (*counter as u64).min(4))).min(AGENT_RETRY_MAX_MS);
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            return;
         }
-        let delay_ms =
-            (AGENT_RETRY_BASE_MS * (1 << (*counter as u64).min(4))).min(AGENT_RETRY_MAX_MS);
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        return;
     }
 
-    match PcMsg::new_outbound_reply_to(msg, tr(UiMessage::NodeMaintenance, loc)) {
+    match PcMsg::new_outbound_reply_to(msg, tr(user_message, loc)) {
         Ok(reply) => {
             metrics::record_internal_error_copy_suppressed();
             let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
@@ -4884,6 +4898,53 @@ mod tests {
         assert!(
             matches!(outcome, WorkerOutcome::Content(ref text) if text == "[STOP] 好的，已停止。")
         );
+    }
+
+    #[test]
+    fn handle_worker_path_error_keeps_empty_final_reply_out_of_maintenance_copy() {
+        let config = test_agent_loop_config();
+        let mut msg =
+            PcMsg::new_inbound("qq_channel", "chat-empty-final", "继续", false).expect("message");
+        let (user_inbound_tx, _user_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut llm_failure_count = HashMap::new();
+        let mut turn_ledger = build_turn_ledger_start(
+            msg.req_id.as_deref().unwrap_or_default(),
+            &msg.channel,
+            msg.ingress,
+            &msg.content,
+            now_unix_ms(),
+        );
+
+        handle_worker_path_error(
+            crate::error::Error::config(
+                "final_reply_empty_after_finalize",
+                "reply_surface=governed_conversation",
+            ),
+            AGENT_LOOP_TAG,
+            &mut msg,
+            UiLocale::Zh,
+            Instant::now(),
+            0,
+            0,
+            0,
+            42,
+            &mut llm_failure_count,
+            &user_inbound_tx,
+            &system_inbound_tx,
+            &outbound_tx,
+            &config,
+            &mut turn_ledger,
+        );
+
+        let outbound = outbound_rx.try_recv().expect("outbound error reply");
+        assert_eq!(outbound.content, tr(UiMessage::OperationFailed, UiLocale::Zh));
+        assert_eq!(
+            turn_ledger.reply_preview,
+            normalize_turn_preview(&tr(UiMessage::OperationFailed, UiLocale::Zh))
+        );
+        assert!(llm_failure_count.is_empty());
     }
 
     fn runtime_mode_normal_snapshot() -> crate::runtime::RuntimeModeSnapshot {
