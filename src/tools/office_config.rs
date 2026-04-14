@@ -2,8 +2,8 @@ use crate::config::OfficeAccountsSegment;
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountDraftRequest, OfficeAccountIdentityClass, OfficeCapability,
-    OfficeConfigManagementService, OfficeCredentialDraftRequest, OfficeCredentialsSegment,
-    OfficeResolveRequest,
+    OfficeConfigAssessment, OfficeConfigManagementService, OfficeCredentialDraftRequest,
+    OfficeCredentialsSegment, OfficeResolveRequest,
 };
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
@@ -35,6 +35,12 @@ struct RevokeResponse<'a> {
     cleared_runtime_status: bool,
 }
 
+#[derive(Serialize)]
+struct AssessmentResponse {
+    count: usize,
+    accounts: Vec<crate::office::OfficeAccountAssessment>,
+}
+
 impl OfficeConfigTool {
     pub fn new(service: OfficeConfigManagementService) -> Self {
         Self { service }
@@ -47,11 +53,11 @@ impl Tool for OfficeConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage office authority through structured operations. Ops: inspect, resolve_account, draft_accounts, draft_credentials, validate_accounts, validate_credentials, commit_accounts, commit_credentials, revoke, probe."
+        "Manage office authority through structured operations. Ops: inspect, assess, resolve_account, draft_accounts, draft_credentials, validate_accounts, validate_credentials, commit_accounts, commit_credentials, revoke, probe."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|resolve_account|draft_accounts|draft_credentials|validate_accounts|validate_credentials|commit_accounts|commit_credentials|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"OfficeAccount payload for draft_accounts"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to account.account_key"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at account.account_key"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for draft_accounts"},"credential":{"type":"object","description":"OfficeCredential payload for draft_credentials"},"segment":{"type":"object","description":"OfficeAccountsSegment or OfficeCredentialsSegment payload for validate/commit ops"},"account_key":{"type":"string","description":"Account key for revoke or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for commit_* and revoke"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|assess|resolve_account|draft_accounts|draft_credentials|validate_accounts|validate_credentials|commit_accounts|commit_credentials|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"OfficeAccount payload for draft_accounts"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to account.account_key"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at account.account_key"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for draft_accounts"},"credential":{"type":"object","description":"OfficeCredential payload for draft_credentials"},"segment":{"type":"object","description":"OfficeAccountsSegment or OfficeCredentialsSegment payload for validate/commit ops"},"account_key":{"type":"string","description":"Optional account key for assess, revoke, or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for commit_* and revoke"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
@@ -69,6 +75,22 @@ impl Tool for OfficeConfigTool {
                     payload: self.service.inspect()?,
                 },
             ),
+            "assess" => {
+                let payload: OfficeConfigAssessment = self
+                    .service
+                    .assess(obj.get("account_key").and_then(Value::as_str))?;
+                serialize_tool_output(
+                    "tool_office_config",
+                    &OfficeConfigResponse {
+                        op: "assess",
+                        ok: true,
+                        payload: AssessmentResponse {
+                            count: payload.accounts.len(),
+                            accounts: payload.accounts,
+                        },
+                    },
+                )
+            }
             "resolve_account" => {
                 let capability =
                     parse_capability_value(obj.get("capability").ok_or_else(|| {
@@ -701,5 +723,57 @@ mod tests {
             .get("mail-work")
             .expect("runtime lookup")
             .is_none());
+    }
+
+    #[test]
+    fn assess_reports_missing_fields_and_next_action() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        crate::config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-work": {
+                            "account_key": "mail-work",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        ));
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(r#"{"op":"assess","account_key":"mail-work"}"#, &mut ctx)
+            .expect("assess");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(
+            payload["payload"]["accounts"][0]["account_key"],
+            "mail-work"
+        );
+        assert_eq!(
+            payload["payload"]["accounts"][0]["readiness"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["payload"]["accounts"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert!(payload["payload"]["accounts"][0]["missing_fields"]
+            .as_array()
+            .expect("missing fields array")
+            .iter()
+            .any(|item| item == "mail_imap_host"));
     }
 }

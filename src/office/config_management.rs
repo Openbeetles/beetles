@@ -2,7 +2,11 @@ use crate::config::{
     self, validate_office_accounts_candidate, validate_office_credentials_candidate,
     ConfigFileStore, OfficeAccountsSegment,
 };
+use crate::documents::{OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_USERNAME};
 use crate::error::{Error, Result};
+use crate::mail::{
+    OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST, OFFICE_METADATA_MAIL_USERNAME,
+};
 use crate::office::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAuthoritySummary, OfficeCapability,
     OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest,
@@ -11,11 +15,53 @@ use crate::office::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+const OFFICE_METADATA_CALENDAR_USERNAME_FIELD: &str = "calendar_username";
+const OFFICE_METADATA_CALENDAR_BASE_URL_FIELD: &str = "calendar_base_url";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigSnapshot {
     pub accounts: OfficeAccountsSegment,
     pub credentials: OfficeCredentialsSegment,
     pub summary: OfficeAuthoritySummary,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeConfigReadiness {
+    NeedsCredentialInput,
+    ReadyForProbe,
+    ProbeUnavailable,
+    Ready,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeConfigNextAction {
+    DraftCredentials,
+    Probe,
+    None,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeAccountAssessment {
+    pub account_key: String,
+    pub provider_kind: String,
+    pub enabled_capabilities: Vec<OfficeCapability>,
+    pub credential_present: bool,
+    pub credential_configured: bool,
+    pub probe_supported: bool,
+    #[serde(default)]
+    pub missing_fields: Vec<String>,
+    pub readiness: OfficeConfigReadiness,
+    pub next_action: OfficeConfigNextAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_status: Option<crate::office::OfficeAccountRuntimeStatus>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeConfigAssessment {
+    #[serde(default)]
+    pub accounts: Vec<OfficeAccountAssessment>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,6 +162,31 @@ impl OfficeConfigManagementService {
     pub fn resolve_account(&self, request: &OfficeResolveRequest) -> Result<OfficeResolveResult> {
         let accounts = self.load_accounts_segment()?;
         Ok(self.build_office_service(&accounts)?.resolve(request))
+    }
+
+    pub fn assess(&self, account_key: Option<&str>) -> Result<OfficeConfigAssessment> {
+        let accounts = self.load_accounts_segment()?;
+        let office = self.build_office_service(&accounts)?;
+        let mut items = if let Some(account_key) = account_key {
+            vec![self.build_account_assessment(&office, account_key)?]
+        } else {
+            let mut items = office
+                .summary()?
+                .accounts
+                .into_iter()
+                .map(|status| self.build_account_assessment(&office, &status.account_key))
+                .collect::<Result<Vec<_>>>()?;
+            items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+            items
+        };
+        items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        Ok(OfficeConfigAssessment { accounts: items })
+    }
+
+    pub fn assess_account(&self, account_key: &str) -> Result<OfficeAccountAssessment> {
+        let accounts = self.load_accounts_segment()?;
+        let office = self.build_office_service(&accounts)?;
+        self.build_account_assessment(&office, account_key)
     }
 
     pub fn draft_accounts(
@@ -244,6 +315,149 @@ impl OfficeConfigManagementService {
         let json = config::get_office_credentials_segment(self.credential_store.as_ref())?;
         serde_json::from_str(&json)
             .map_err(|error| Error::config("office_config_load_credentials", error.to_string()))
+    }
+
+    fn build_account_assessment(
+        &self,
+        office: &OfficeService,
+        account_key: &str,
+    ) -> Result<OfficeAccountAssessment> {
+        let account = office.account(account_key).ok_or_else(|| {
+            Error::config(
+                "office_config_assess",
+                format!("unknown office account '{}'", account_key),
+            )
+        })?;
+        let credential = office.credential(account_key)?;
+        let missing_fields = collect_missing_fields(&account, credential.as_ref());
+        let runtime_status = office.runtime_status(account_key)?;
+        let probe_supported = self
+            .probe_adapters
+            .iter()
+            .any(|adapter| adapter.provider_kind() == account.provider_kind);
+        let readiness = if missing_fields.is_empty() {
+            if runtime_status
+                .as_ref()
+                .is_some_and(|status| status.probe_ok)
+            {
+                OfficeConfigReadiness::Ready
+            } else if probe_supported {
+                OfficeConfigReadiness::ReadyForProbe
+            } else {
+                OfficeConfigReadiness::ProbeUnavailable
+            }
+        } else {
+            OfficeConfigReadiness::NeedsCredentialInput
+        };
+        let next_action = match readiness {
+            OfficeConfigReadiness::NeedsCredentialInput => OfficeConfigNextAction::DraftCredentials,
+            OfficeConfigReadiness::ReadyForProbe => OfficeConfigNextAction::Probe,
+            OfficeConfigReadiness::ProbeUnavailable | OfficeConfigReadiness::Ready => {
+                OfficeConfigNextAction::None
+            }
+        };
+        Ok(OfficeAccountAssessment {
+            account_key: account.account_key,
+            provider_kind: account.provider_kind,
+            enabled_capabilities: account.enabled_capabilities,
+            credential_present: credential.is_some(),
+            credential_configured: missing_fields.is_empty(),
+            probe_supported,
+            missing_fields,
+            readiness,
+            next_action,
+            runtime_status,
+        })
+    }
+}
+
+fn collect_missing_fields(
+    account: &OfficeAccount,
+    credential: Option<&OfficeCredential>,
+) -> Vec<String> {
+    let mut missing = std::collections::BTreeSet::new();
+    let access_token = credential
+        .map(|item| item.access_token.trim())
+        .unwrap_or_default();
+    let external_account_id = account.external_account_id.trim();
+    let metadata_value = |key: &str| {
+        credential
+            .and_then(|item| item.metadata_value(key))
+            .map(str::trim)
+            .unwrap_or_default()
+    };
+
+    match account.provider_kind.as_str() {
+        "imap_smtp" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+            if external_account_id.is_empty()
+                && metadata_value(OFFICE_METADATA_MAIL_USERNAME).is_empty()
+            {
+                missing.insert("mail_username".to_string());
+            }
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_MAIL_IMAP_HOST,
+                metadata_value(OFFICE_METADATA_MAIL_IMAP_HOST),
+            );
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_MAIL_SMTP_HOST,
+                metadata_value(OFFICE_METADATA_MAIL_SMTP_HOST),
+            );
+        }
+        "webdav" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+            if external_account_id.is_empty()
+                && metadata_value(OFFICE_METADATA_DOCUMENTS_USERNAME).is_empty()
+            {
+                missing.insert(OFFICE_METADATA_DOCUMENTS_USERNAME.to_string());
+            }
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_DOCUMENTS_BASE_URL,
+                metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL),
+            );
+        }
+        "caldav" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+            if external_account_id.is_empty()
+                && metadata_value(OFFICE_METADATA_CALENDAR_USERNAME_FIELD).is_empty()
+            {
+                missing.insert(OFFICE_METADATA_CALENDAR_USERNAME_FIELD.to_string());
+            }
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_CALENDAR_BASE_URL_FIELD,
+                metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL_FIELD),
+            );
+            push_missing_if_blank(
+                &mut missing,
+                crate::office::OFFICE_METADATA_CALENDAR_ID,
+                metadata_value(crate::office::OFFICE_METADATA_CALENDAR_ID),
+            );
+        }
+        _ => {
+            if account
+                .enabled_capabilities
+                .iter()
+                .any(|capability| *capability != OfficeCapability::ContactsDirectory)
+            {
+                push_missing_if_blank(&mut missing, "access_token", access_token);
+            }
+        }
+    }
+
+    missing.into_iter().collect()
+}
+
+fn push_missing_if_blank(
+    missing: &mut std::collections::BTreeSet<String>,
+    field: &str,
+    value: &str,
+) {
+    if value.trim().is_empty() {
+        missing.insert(field.to_string());
     }
 }
 
@@ -566,5 +780,126 @@ mod tests {
         let probe = service.probe("mail-work").expect("probe");
         assert_eq!(probe.disposition, OfficeProbeDisposition::Unsupported);
         assert_eq!(probe.reason, "probe_adapter_unavailable");
+    }
+
+    #[test]
+    fn assess_account_reports_missing_mail_transport_fields() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-work": {
+                            "account_key": "mail-work",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let credential_store = Arc::new(MemoryCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "mail-work".to_string(),
+                access_token: String::new(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: BTreeMap::new(),
+            })
+            .expect("seed credential");
+        let service = OfficeConfigManagementService::new(
+            config_file_store,
+            credential_store,
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        );
+
+        let assessment = service.assess_account("mail-work").expect("assess account");
+        assert_eq!(assessment.account_key, "mail-work");
+        assert_eq!(
+            assessment.readiness,
+            OfficeConfigReadiness::NeedsCredentialInput
+        );
+        assert_eq!(
+            assessment.next_action,
+            OfficeConfigNextAction::DraftCredentials
+        );
+        assert!(assessment
+            .missing_fields
+            .contains(&"access_token".to_string()));
+        assert!(assessment
+            .missing_fields
+            .contains(&"mail_username".to_string()));
+        assert!(assessment
+            .missing_fields
+            .contains(&"mail_imap_host".to_string()));
+        assert!(assessment
+            .missing_fields
+            .contains(&"mail_smtp_host".to_string()));
+    }
+
+    #[test]
+    fn assess_account_reports_ready_for_probe_when_transport_shape_is_complete() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "docs-work": {
+                            "account_key": "docs-work",
+                            "provider_kind": "webdav",
+                            "external_account_id": "work@example.com",
+                            "account_label": "Docs",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["documents"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let credential_store = Arc::new(MemoryCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "docs-work".to_string(),
+                access_token: "secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [(
+                    crate::documents::OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                    "https://dav.example.com/root".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed credential");
+        let service = OfficeConfigManagementService::new(
+            config_file_store,
+            credential_store,
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        )
+        .with_probe_adapters(vec![Arc::new(
+            crate::documents::providers::webdav::WebDavOfficeProbeAdapter,
+        )]);
+
+        let assessment = service.assess_account("docs-work").expect("assess account");
+        assert_eq!(assessment.readiness, OfficeConfigReadiness::ReadyForProbe);
+        assert_eq!(assessment.next_action, OfficeConfigNextAction::Probe);
+        assert!(assessment.missing_fields.is_empty());
+        assert!(assessment.probe_supported);
     }
 }
