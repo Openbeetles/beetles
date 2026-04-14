@@ -2,6 +2,22 @@
 
 use super::*;
 
+fn tool_failure_kind_from_outcome(
+    failure_kind: crate::tools::ToolExecutionFailureKind,
+) -> crate::agent::tool_outcome::ToolFailureKind {
+    match failure_kind {
+        crate::tools::ToolExecutionFailureKind::Retryable => {
+            crate::agent::tool_outcome::ToolFailureKind::Retryable
+        }
+        crate::tools::ToolExecutionFailureKind::Permanent => {
+            crate::agent::tool_outcome::ToolFailureKind::Permanent
+        }
+        crate::tools::ToolExecutionFailureKind::Capability => {
+            crate::agent::tool_outcome::ToolFailureKind::Capability
+        }
+    }
+}
+
 #[cold]
 #[inline(never)]
 fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult {
@@ -195,12 +211,22 @@ fn execute_tool_call(
                             }
                         }
                     }
-                    metrics::record_tool_call(true);
-                    ToolCallExecutionResult {
-                        result_owned: crate::util::scrub_credentials(&outcome.content),
-                        failure_kind: None,
-                        delivered_reply: None,
-                        call_succeeded: true,
+                    if let Some(failure_kind) = outcome.failure_kind {
+                        metrics::record_tool_call(false);
+                        ToolCallExecutionResult {
+                            result_owned: crate::util::scrub_credentials(&outcome.content),
+                            failure_kind: Some(tool_failure_kind_from_outcome(failure_kind)),
+                            delivered_reply: None,
+                            call_succeeded: false,
+                        }
+                    } else {
+                        metrics::record_tool_call(true);
+                        ToolCallExecutionResult {
+                            result_owned: crate::util::scrub_credentials(&outcome.content),
+                            failure_kind: None,
+                            delivered_reply: None,
+                            call_succeeded: true,
+                        }
                     }
                 }
                 Err(error) => {

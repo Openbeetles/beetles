@@ -237,7 +237,9 @@ impl ToolRegistry {
         }
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
-        self.observe_runtime_capability_success(name);
+        if outcome.failure_kind.is_none() {
+            self.observe_runtime_capability_success(name);
+        }
         Ok(outcome)
     }
 
@@ -309,14 +311,16 @@ impl ToolRegistry {
         })?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
-        self.observe_runtime_capability_success(permit.tool_name());
-        if let Some(governance) = self.execution_governance.as_ref() {
-            if let Err(error) = governance.record_success(permit, &outcome) {
-                log::warn!(
-                    "[tool_registry] failed to persist success audit for {}: {}",
-                    permit.tool_name(),
-                    error
-                );
+        if outcome.failure_kind.is_none() {
+            self.observe_runtime_capability_success(permit.tool_name());
+            if let Some(governance) = self.execution_governance.as_ref() {
+                if let Err(error) = governance.record_success(permit, &outcome) {
+                    log::warn!(
+                        "[tool_registry] failed to persist success audit for {}: {}",
+                        permit.tool_name(),
+                        error
+                    );
+                }
             }
         }
         Ok(outcome)
@@ -1314,6 +1318,8 @@ mod tests {
 
     struct ExplicitIntentTool;
 
+    struct SemanticFailureTool;
+
     impl Tool for ExplicitIntentTool {
         fn name(&self) -> &'static str {
             "explicit_tool"
@@ -1333,6 +1339,33 @@ mod tests {
 
         fn metadata(&self) -> ToolMetadata {
             ToolMetadata::task().with_approval_mode(ToolApprovalMode::ExplicitIntent)
+        }
+    }
+
+    impl Tool for SemanticFailureTool {
+        fn name(&self) -> &'static str {
+            "semantic_failure"
+        }
+
+        fn description(&self) -> &str {
+            "returns a structured semantic failure"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text(r#"{"ok":false}"#)
+                .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability))
         }
     }
 
@@ -1460,6 +1493,21 @@ mod tests {
                 delivery_kind: crate::tools::ToolOutboundDeliveryKind::Primary,
                 content: "tool delivered reply".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn registry_execute_preserves_reported_failure_kind() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SemanticFailureTool));
+        let mut ctx = StubToolContext;
+        let outcome = registry
+            .execute("semantic_failure", "{}", &mut ctx)
+            .expect("execute");
+        assert_eq!(outcome.content, r#"{"ok":false}"#);
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
         );
     }
 

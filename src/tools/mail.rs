@@ -9,12 +9,13 @@ use crate::mail::{
     MailProviderRegistry, MailQuery, MailSendRequest, MailService,
 };
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -166,22 +167,27 @@ impl MailTool {
             contacts_directory,
         }
     }
-}
 
-impl Tool for MailTool {
-    fn name(&self) -> &'static str {
-        "mail"
+    fn office_operation_failure(
+        &self,
+        op: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        error: &Error,
+    ) -> Result<ToolExecutionOutcome> {
+        build_office_operation_failure_outcome(OfficeOperationFailureInput {
+            stage: "tool_mail",
+            op,
+            provider,
+            account_key,
+            capability: OfficeCapability::Mail,
+            default_account_key: self.service.office_default_account_key()?,
+            account_assessments: self.service.office_account_assessments()?,
+            error,
+        })
     }
 
-    fn description(&self) -> &'static str {
-        "Access office mail through shared account authority. Ops: provider_status, list, get, send, draft, reply, forward. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
-    }
-
-    fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
-    }
-
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_mail")?;
         let op = obj
             .get("op")
@@ -197,7 +203,7 @@ impl Tool for MailTool {
                     .collect::<Vec<_>>();
                 let configured_providers = self.service.list_provider_statuses()?;
                 let office_runtime_statuses = self.service.office_runtime_statuses()?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailProviderStatusResponse {
                         op: "provider_status",
@@ -212,15 +218,28 @@ impl Tool for MailTool {
                         configured_providers,
                         office_runtime_statuses,
                     },
-                )
+                )?))
             }
             "list" => {
-                let provider = self
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
                     .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
-                let items = self.service.list(
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "list",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let items = match self.service.list(
                     &provider,
-                    parse_account_key(&obj).as_deref(),
+                    requested_account_key.as_deref(),
                     MailQuery {
                         mailbox: optional_str(&obj, "mailbox"),
                         unread_only: obj
@@ -234,8 +253,18 @@ impl Tool for MailTool {
                         limit: obj.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize,
                     }
                     .with_limit_clamped(),
-                )?;
-                serialize_tool_output(
+                ) {
+                    Ok(items) => items,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "list",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailListResponse {
                         op: "list",
@@ -243,31 +272,69 @@ impl Tool for MailTool {
                         count: items.len(),
                         items,
                     },
-                )
+                )?))
             }
             "get" => {
-                let provider = self
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
                     .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "get",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let id = required_str(&obj, "id")?;
-                let message = self
-                    .service
-                    .get(&provider, parse_account_key(&obj).as_deref(), id)?
-                    .ok_or_else(|| Error::config("tool_mail", "message not found"))?;
-                serialize_tool_output(
+                let message =
+                    match self
+                        .service
+                        .get(&provider, requested_account_key.as_deref(), id)
+                    {
+                        Ok(Some(message)) => message,
+                        Ok(None) => return Err(Error::config("tool_mail", "message not found")),
+                        Err(error) => {
+                            return self.office_operation_failure(
+                                "get",
+                                Some(provider.as_str()),
+                                requested_account_key.as_deref(),
+                                &error,
+                            )
+                        }
+                    };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailGetResponse {
                         op: "get",
                         provider,
                         message,
                     },
-                )
+                )?))
             }
             "send" => {
                 require_confirm(&obj, "send")?;
-                let provider = self
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
                     .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "send",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let (to_lookup, to_lookup_resolved) =
                     self.resolve_recipient_queries(&obj, "to_lookup", "to")?;
                 let (cc_lookup, cc_lookup_resolved) =
@@ -283,9 +350,9 @@ impl Tool for MailTool {
                         "send requires at least one recipient in to, cc, bcc, or *_lookup",
                     ));
                 }
-                let message = self.service.send(
+                let message = match self.service.send(
                     &provider,
-                    parse_account_key(&obj).as_deref(),
+                    requested_account_key.as_deref(),
                     &MailSendRequest {
                         subject: required_str(&obj, "subject")?.to_string(),
                         text_body: required_str(&obj, "text_body")?.to_string(),
@@ -295,10 +362,20 @@ impl Tool for MailTool {
                         in_reply_to: String::new(),
                         references: String::new(),
                     },
-                )?;
+                ) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "send",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let office_runtime_status =
                     self.service.office_runtime_status(&message.account_key)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailMutationResponse {
                         op: "send",
@@ -315,17 +392,30 @@ impl Tool for MailTool {
                         .collect(),
                         office_runtime_status,
                     },
-                )
+                )?))
             }
             "draft" => {
                 require_confirm(&obj, "draft")?;
-                let provider = self
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
                     .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "draft",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
-                let message = self.service.draft(
+                let message = match self.service.draft(
                     &provider,
-                    parse_account_key(&obj).as_deref(),
+                    requested_account_key.as_deref(),
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
                         text_body: optional_str(&obj, "text_body"),
@@ -335,10 +425,20 @@ impl Tool for MailTool {
                         in_reply_to: String::new(),
                         references: String::new(),
                     },
-                )?;
+                ) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "draft",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let office_runtime_status =
                     self.service.office_runtime_status(&message.account_key)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailMutationResponse {
                         op: "draft",
@@ -348,17 +448,30 @@ impl Tool for MailTool {
                         resolved_contacts,
                         office_runtime_status,
                     },
-                )
+                )?))
             }
             "reply" => {
                 require_confirm(&obj, "reply")?;
-                let provider = self
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
                     .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "reply",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
-                let message = self.service.reply(
+                let message = match self.service.reply(
                     &provider,
-                    parse_account_key(&obj).as_deref(),
+                    requested_account_key.as_deref(),
                     required_str(&obj, "id")?,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
@@ -369,10 +482,20 @@ impl Tool for MailTool {
                         in_reply_to: String::new(),
                         references: String::new(),
                     },
-                )?;
+                ) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "reply",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let office_runtime_status =
                     self.service.office_runtime_status(&message.account_key)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailMutationResponse {
                         op: "reply",
@@ -382,13 +505,26 @@ impl Tool for MailTool {
                         resolved_contacts,
                         office_runtime_status,
                     },
-                )
+                )?))
             }
             "forward" => {
                 require_confirm(&obj, "forward")?;
-                let provider = self
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
                     .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "forward",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
                 if to.is_empty() && cc.is_empty() && bcc.is_empty() {
                     return Err(Error::config(
@@ -396,9 +532,9 @@ impl Tool for MailTool {
                         "forward requires at least one recipient in to, cc, bcc, or *_lookup",
                     ));
                 }
-                let message = self.service.forward(
+                let message = match self.service.forward(
                     &provider,
-                    parse_account_key(&obj).as_deref(),
+                    requested_account_key.as_deref(),
                     required_str(&obj, "id")?,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
@@ -409,10 +545,20 @@ impl Tool for MailTool {
                         in_reply_to: String::new(),
                         references: String::new(),
                     },
-                )?;
+                ) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "forward",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
                 let office_runtime_status =
                     self.service.office_runtime_status(&message.account_key)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailMutationResponse {
                         op: "forward",
@@ -422,10 +568,36 @@ impl Tool for MailTool {
                         resolved_contacts,
                         office_runtime_status,
                     },
-                )
+                )?))
             }
             _ => Err(Error::config("tool_mail", format!("unknown op '{}'", op))),
         }
+    }
+}
+
+impl Tool for MailTool {
+    fn name(&self) -> &'static str {
+        "mail"
+    }
+
+    fn description(&self) -> &'static str {
+        "Access office mail through shared account authority. Ops: provider_status, list, get, send, draft, reply, forward. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
+    }
+
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
+    }
+
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        Ok(self.execute_impl(args, ctx)?.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        self.execute_impl(args, ctx)
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -704,7 +876,10 @@ mod tests {
     use super::*;
     use crate::config::{save_office_accounts_segment, ConfigFileStore};
     use crate::contacts_directory::{ContactsDirectoryStore, StateFsContactsDirectoryStore};
-    use crate::mail::{MailOperation, MailProvider, MailProviderCredential};
+    use crate::mail::{
+        MailOperation, MailProvider, MailProviderCredential,
+        OfficeBackedMailProviderCredentialStore,
+    };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
@@ -1203,6 +1378,39 @@ mod tests {
         )
     }
 
+    fn build_office_backed_tool_without_credentials() -> MailTool {
+        let provider = Arc::new(StubProvider::default());
+        let mut providers = MailProviderRegistry::new();
+        providers.register(provider);
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Mail, "mail-work".to_string());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            Arc::new(StubOfficeCredentialStore::default()),
+            Arc::new(StubRuntimeStatusStore::default()),
+        );
+
+        MailTool::with_office_service(
+            Arc::new(OfficeBackedMailProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        )
+    }
+
     #[test]
     fn mail_tool_provider_status_reports_defaults_and_runtime() {
         let (tool, _provider, _runtime_store) = build_tool();
@@ -1442,5 +1650,46 @@ mod tests {
             .expect("provider status");
         let status: Value = serde_json::from_str(&status).expect("valid status");
         assert_eq!(status["default_mail_account_key"], "mail-personal");
+    }
+
+    #[test]
+    fn mail_tool_list_returns_structured_office_failure_when_default_account_has_no_credential() {
+        let tool = build_office_backed_tool_without_credentials();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list"}"#, &mut ctx)
+            .expect("structured failure outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
+        );
+
+        let payload: Value =
+            serde_json::from_str(&outcome.content).expect("valid failure response json");
+        assert_eq!(payload["op"], "list");
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["failure_kind"], "capability");
+        assert_eq!(payload["office_assessment"]["capability"], "mail");
+        assert_eq!(
+            payload["office_assessment"]["default_account_key"],
+            "mail-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["account_key"],
+            "mail-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["readiness"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert!(payload["error"]
+            .as_str()
+            .expect("error string")
+            .contains("no configured credential"));
     }
 }

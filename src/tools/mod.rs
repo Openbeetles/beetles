@@ -100,6 +100,11 @@ pub mod office_config;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+pub(crate) mod office_failure;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod office_status;
 #[cfg(all(
     feature = "tools_network_extra",
@@ -298,6 +303,13 @@ pub enum ToolOutboundDeliveryKind {
     Primary,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolExecutionFailureKind {
+    Retryable,
+    Permanent,
+    Capability,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolOutboundIntent {
     pub target: ToolOutboundTarget,
@@ -309,6 +321,7 @@ pub struct ToolOutboundIntent {
 pub struct ToolExecutionOutcome {
     pub content: String,
     pub outbound_intents: Vec<ToolOutboundIntent>,
+    pub failure_kind: Option<ToolExecutionFailureKind>,
 }
 
 impl ToolExecutionOutcome {
@@ -316,6 +329,7 @@ impl ToolExecutionOutcome {
         Self {
             content: content.into(),
             outbound_intents: Vec::new(),
+            failure_kind: None,
         }
     }
 
@@ -330,6 +344,11 @@ impl ToolExecutionOutcome {
             delivery_kind: ToolOutboundDeliveryKind::Primary,
             content: content.into(),
         });
+        self
+    }
+
+    pub fn with_failure_kind(mut self, failure_kind: ToolExecutionFailureKind) -> Self {
+        self.failure_kind = Some(failure_kind);
         self
     }
 }

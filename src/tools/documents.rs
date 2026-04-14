@@ -7,12 +7,13 @@ use crate::documents::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -109,6 +110,196 @@ impl DocumentsTool {
             ),
         }
     }
+
+    fn office_operation_failure(
+        &self,
+        op: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        error: &Error,
+    ) -> Result<ToolExecutionOutcome> {
+        build_office_operation_failure_outcome(OfficeOperationFailureInput {
+            stage: "tool_documents",
+            op,
+            provider,
+            account_key,
+            capability: OfficeCapability::Documents,
+            default_account_key: self.service.office_default_account_key()?,
+            account_assessments: self.service.office_account_assessments()?,
+            error,
+        })
+    }
+
+    fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+        let obj = parse_tool_args(args, "tool_documents")?;
+        let op = obj
+            .get("op")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::config("tool_documents", "missing op"))?;
+        match op {
+            "provider_status" => {
+                let registered_remote_providers = self
+                    .service
+                    .provider_names()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_documents",
+                    &DocumentsProviderStatusResponse {
+                        op: "provider_status",
+                        registered_remote_providers,
+                        default_documents_account_key: self.service.office_default_account_key()?,
+                        configured_providers: self.service.list_provider_statuses()?,
+                        account_assessments: self.service.office_account_assessments()?,
+                        office_runtime_statuses: self.service.office_runtime_statuses()?,
+                    },
+                )?))
+            }
+            "list" => {
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
+                    .service
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "list",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let items = match self.service.list(
+                    &provider,
+                    requested_account_key.as_deref(),
+                    DocumentsQuery {
+                        path: optional_str(&obj, "path"),
+                        limit: parse_limit(obj.get("limit")),
+                    },
+                ) {
+                    Ok(items) => items,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "list",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_documents",
+                    &DocumentsListResponse {
+                        op: "list",
+                        provider,
+                        count: items.len(),
+                        items,
+                    },
+                )?))
+            }
+            "read" => {
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
+                    .service
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "read",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let document = match self.service.read(
+                    &provider,
+                    requested_account_key.as_deref(),
+                    required_str(&obj, "path")?,
+                    parse_max_chars(obj.get("max_chars"))?,
+                ) {
+                    Ok(document) => document,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "read",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_documents",
+                    &DocumentsReadResponse {
+                        op: "read",
+                        provider,
+                        document,
+                    },
+                )?))
+            }
+            "search" => {
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
+                    .service
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "search",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let hits = match self.service.search(
+                    &provider,
+                    requested_account_key.as_deref(),
+                    DocumentsSearchQuery {
+                        path: optional_str(&obj, "path"),
+                        query: required_str(&obj, "query")?.to_string(),
+                        limit: parse_limit(obj.get("limit")),
+                        case_sensitive: obj
+                            .get("case_sensitive")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        max_read_bytes: parse_max_read_bytes(obj.get("max_read_bytes"))?,
+                    },
+                ) {
+                    Ok(hits) => hits,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "search",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_documents",
+                    &DocumentsSearchResponse {
+                        op: "search",
+                        provider,
+                        count: hits.len(),
+                        hits,
+                    },
+                )?))
+            }
+            _ => Err(Error::config(
+                "tool_documents",
+                format!("unknown op '{}'", op),
+            )),
+        }
+    }
 }
 
 impl Tool for DocumentsTool {
@@ -124,106 +315,16 @@ impl Tool for DocumentsTool {
         r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
     }
 
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
-        let obj = parse_tool_args(args, "tool_documents")?;
-        let op = obj
-            .get("op")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_documents", "missing op"))?;
-        match op {
-            "provider_status" => {
-                let registered_remote_providers = self
-                    .service
-                    .provider_names()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>();
-                serialize_tool_output(
-                    "tool_documents",
-                    &DocumentsProviderStatusResponse {
-                        op: "provider_status",
-                        registered_remote_providers,
-                        default_documents_account_key: self.service.office_default_account_key()?,
-                        configured_providers: self.service.list_provider_statuses()?,
-                        account_assessments: self.service.office_account_assessments()?,
-                        office_runtime_statuses: self.service.office_runtime_statuses()?,
-                    },
-                )
-            }
-            "list" => {
-                let provider = self
-                    .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
-                let items = self.service.list(
-                    &provider,
-                    parse_account_key(&obj).as_deref(),
-                    DocumentsQuery {
-                        path: optional_str(&obj, "path"),
-                        limit: parse_limit(obj.get("limit")),
-                    },
-                )?;
-                serialize_tool_output(
-                    "tool_documents",
-                    &DocumentsListResponse {
-                        op: "list",
-                        provider,
-                        count: items.len(),
-                        items,
-                    },
-                )
-            }
-            "read" => {
-                let provider = self
-                    .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
-                let document = self.service.read(
-                    &provider,
-                    parse_account_key(&obj).as_deref(),
-                    required_str(&obj, "path")?,
-                    parse_max_chars(obj.get("max_chars"))?,
-                )?;
-                serialize_tool_output(
-                    "tool_documents",
-                    &DocumentsReadResponse {
-                        op: "read",
-                        provider,
-                        document,
-                    },
-                )
-            }
-            "search" => {
-                let provider = self
-                    .service
-                    .resolve_provider_name(parse_provider(&obj).as_deref())?;
-                let hits = self.service.search(
-                    &provider,
-                    parse_account_key(&obj).as_deref(),
-                    DocumentsSearchQuery {
-                        path: optional_str(&obj, "path"),
-                        query: required_str(&obj, "query")?.to_string(),
-                        limit: parse_limit(obj.get("limit")),
-                        case_sensitive: obj
-                            .get("case_sensitive")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        max_read_bytes: parse_max_read_bytes(obj.get("max_read_bytes"))?,
-                    },
-                )?;
-                serialize_tool_output(
-                    "tool_documents",
-                    &DocumentsSearchResponse {
-                        op: "search",
-                        provider,
-                        count: hits.len(),
-                        hits,
-                    },
-                )
-            }
-            _ => Err(Error::config(
-                "tool_documents",
-                format!("unknown op '{}'", op),
-            )),
-        }
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        Ok(self.execute_impl(args, ctx)?.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        self.execute_impl(args, ctx)
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -332,7 +433,10 @@ fn parse_max_read_bytes(value: Option<&Value>) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documents::{DocumentsOperation, DocumentsProvider, DocumentsProviderCredential};
+    use crate::documents::{
+        DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
+        OfficeBackedDocumentsProviderCredentialStore,
+    };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
@@ -631,6 +735,39 @@ mod tests {
         DocumentsTool::with_office_service(credential_store, providers, office_service)
     }
 
+    fn build_office_backed_tool_without_credentials() -> DocumentsTool {
+        let mut providers = DocumentsProviderRegistry::new();
+        providers.register(Arc::new(StubProvider));
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "docs-work".to_string(),
+            provider_kind: "webdav".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Documents, "docs-work".to_string());
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            Arc::new(StubRuntimeStatusStore),
+        );
+
+        DocumentsTool::with_office_service(
+            Arc::new(OfficeBackedDocumentsProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        )
+    }
+
     #[test]
     fn documents_tool_provider_status_reports_defaults_and_runtime() {
         let tool = build_tool();
@@ -676,5 +813,47 @@ mod tests {
         let search: Value = serde_json::from_str(&search).expect("valid search json");
         assert_eq!(search["hits"][0]["match_kind"], "content");
         assert_eq!(search["hits"][0]["snippet"], "match: quarterly");
+    }
+
+    #[test]
+    fn documents_tool_list_returns_structured_office_failure_when_default_account_has_no_credential(
+    ) {
+        let tool = build_office_backed_tool_without_credentials();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list"}"#, &mut ctx)
+            .expect("structured failure outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
+        );
+
+        let payload: Value =
+            serde_json::from_str(&outcome.content).expect("valid failure response json");
+        assert_eq!(payload["op"], "list");
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["failure_kind"], "capability");
+        assert_eq!(payload["office_assessment"]["capability"], "documents");
+        assert_eq!(
+            payload["office_assessment"]["default_account_key"],
+            "docs-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["account_key"],
+            "docs-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["readiness"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert!(payload["error"]
+            .as_str()
+            .expect("error string")
+            .contains("no configured credential"));
     }
 }

@@ -9,10 +9,13 @@ use crate::calendar::{
 
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
-use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
+    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+};
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
 use serde_json::Value;
@@ -147,22 +150,27 @@ impl CalendarTool {
             ),
         }
     }
-}
 
-impl Tool for CalendarTool {
-    fn name(&self) -> &'static str {
-        "calendar"
+    fn office_operation_failure(
+        &self,
+        op: &str,
+        provider: &str,
+        account_key: Option<&str>,
+        error: &Error,
+    ) -> Result<ToolExecutionOutcome> {
+        build_office_operation_failure_outcome(OfficeOperationFailureInput {
+            stage: "tool_calendar",
+            op,
+            provider: Some(provider),
+            account_key,
+            capability: OfficeCapability::Calendar,
+            default_account_key: self.service.office_default_account_key()?,
+            account_assessments: self.service.office_account_assessments()?,
+            error,
+        })
     }
 
-    fn description(&self) -> &'static str {
-        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by explicit account_key or office calendar defaults when multiple accounts exist. Times accept Unix seconds or ISO8601."
-    }
-
-    fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|get|create|update|delete|provider_status"},"provider":{"type":"string","description":"Calendar provider. Defaults to local."},"account_key":{"type":"string","description":"Optional remote account key when a provider has multiple configured accounts."},"id":{"type":"string","description":"Event ID for get/update/delete"},"title":{"type":"string","description":"Event title for create/update"},"start_at":{"description":"Start time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"end_at":{"description":"End time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"timezone":{"type":"string","description":"Optional timezone label"},"location":{"type":"string","description":"Optional location"},"notes":{"type":"string","description":"Optional notes"},"calendar_id":{"type":"string","description":"Optional calendar ID. Defaults to default for local events."},"status":{"type":"string","description":"Optional status for update: confirmed|cancelled"},"start_from":{"description":"List query lower bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"start_to":{"description":"List query upper bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"limit":{"type":"integer","description":"List limit, default 10, max 50"},"include_cancelled":{"type":"boolean","description":"Whether list should include cancelled events"}},"required":["op"]}"#
-    }
-
-    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_calendar")?;
         let op = obj
             .get("op")
@@ -170,13 +178,14 @@ impl Tool for CalendarTool {
             .ok_or_else(|| Error::config("tool_calendar", "missing op"))?;
         match op {
             "provider_status" => {
-                let registered_remote_providers = self.service.provider_names();
-                let registered_remote_providers = registered_remote_providers
+                let registered_remote_providers = self
+                    .service
+                    .provider_names()
                     .into_iter()
                     .map(str::to_string)
                     .collect::<Vec<_>>();
                 let configured_providers = self.service.list_provider_statuses()?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarProviderStatusResponse {
                         op: "provider_status",
@@ -187,7 +196,7 @@ impl Tool for CalendarTool {
                         account_assessments: self.service.office_account_assessments()?,
                         office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },
-                )
+                )?))
             }
             "list" => {
                 let provider = parse_provider(&obj);
@@ -203,11 +212,22 @@ impl Tool for CalendarTool {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                 };
-                let items = with_calendar_http(&provider, ctx, |http| {
+                let items = match with_calendar_http(&provider, ctx, |http| {
                     self.service
                         .list(http, &provider, account_key.as_deref(), query)
-                })?;
-                serialize_tool_output(
+                }) {
+                    Ok(items) => items,
+                    Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
+                        return self.office_operation_failure(
+                            "list",
+                            provider.as_str(),
+                            account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarListResponse {
                         op: "list",
@@ -215,25 +235,36 @@ impl Tool for CalendarTool {
                         count: items.len(),
                         items,
                     },
-                )
+                )?))
             }
             "get" => {
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
                 let id = required_str(&obj, "id", "tool_calendar")?;
-                let event = with_calendar_http(&provider, ctx, |http| {
+                let event = match with_calendar_http(&provider, ctx, |http| {
                     self.service
                         .get(http, &provider, account_key.as_deref(), id)
-                })?
-                .ok_or_else(|| Error::config("tool_calendar", "event not found"))?;
-                serialize_tool_output(
+                }) {
+                    Ok(Some(event)) => event,
+                    Ok(None) => return Err(Error::config("tool_calendar", "event not found")),
+                    Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
+                        return self.office_operation_failure(
+                            "get",
+                            provider.as_str(),
+                            account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarGetResponse {
                         op: "get",
                         provider,
                         event,
                     },
-                )
+                )?))
             }
             "create" => {
                 let provider = parse_provider(&obj);
@@ -256,11 +287,22 @@ impl Tool for CalendarTool {
                     status: CalendarEventStatus::Confirmed,
                     updated_at: now_secs,
                 })?;
-                let event = with_calendar_http(&provider, ctx, |http| {
+                let event = match with_calendar_http(&provider, ctx, |http| {
                     self.service
                         .upsert(http, &provider, account_key.as_deref(), &event, true)
-                })?;
-                serialize_tool_output(
+                }) {
+                    Ok(event) => event,
+                    Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
+                        return self.office_operation_failure(
+                            "create",
+                            provider.as_str(),
+                            account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarMutationResponse {
                         op: "create",
@@ -268,17 +310,28 @@ impl Tool for CalendarTool {
                         provider,
                         event,
                     },
-                )
+                )?))
             }
             "update" => {
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
                 let id = required_str(&obj, "id", "tool_calendar")?;
-                let mut event = with_calendar_http(&provider, ctx, |http| {
+                let mut event = match with_calendar_http(&provider, ctx, |http| {
                     self.service
                         .get(http, &provider, account_key.as_deref(), id)
-                })?
-                .ok_or_else(|| Error::config("tool_calendar", "event not found"))?;
+                }) {
+                    Ok(Some(event)) => event,
+                    Ok(None) => return Err(Error::config("tool_calendar", "event not found")),
+                    Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
+                        return self.office_operation_failure(
+                            "update",
+                            provider.as_str(),
+                            account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                };
                 let mut updated = Vec::new();
                 if let Some(title) = obj.get("title").and_then(Value::as_str) {
                     event.title = title.to_string();
@@ -313,7 +366,7 @@ impl Tool for CalendarTool {
                     updated.push("status");
                 }
                 if updated.is_empty() {
-                    return serialize_tool_output(
+                    return Ok(ToolExecutionOutcome::text(serialize_tool_output(
                         "tool_calendar",
                         &CalendarUpdateResponse {
                             op: "update",
@@ -323,16 +376,27 @@ impl Tool for CalendarTool {
                             event: None,
                             error: Some("no fields to update"),
                         },
-                    );
+                    )?));
                 }
                 event.provider = provider.clone();
                 event.updated_at = current_unix_secs();
                 let event = normalize_calendar_event(event)?;
-                let event = with_calendar_http(&provider, ctx, |http| {
+                let event = match with_calendar_http(&provider, ctx, |http| {
                     self.service
                         .upsert(http, &provider, account_key.as_deref(), &event, false)
-                })?;
-                serialize_tool_output(
+                }) {
+                    Ok(event) => event,
+                    Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
+                        return self.office_operation_failure(
+                            "update",
+                            provider.as_str(),
+                            account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarUpdateResponse {
                         op: "update",
@@ -342,17 +406,28 @@ impl Tool for CalendarTool {
                         event: Some(event),
                         error: None,
                     },
-                )
+                )?))
             }
             "delete" => {
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
                 let id = required_str(&obj, "id", "tool_calendar")?;
-                let removed = with_calendar_http(&provider, ctx, |http| {
+                let removed = match with_calendar_http(&provider, ctx, |http| {
                     self.service
                         .delete(http, &provider, account_key.as_deref(), id)
-                })?;
-                serialize_tool_output(
+                }) {
+                    Ok(removed) => removed,
+                    Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
+                        return self.office_operation_failure(
+                            "delete",
+                            provider.as_str(),
+                            account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarDeleteResponse {
                         op: "delete",
@@ -360,13 +435,39 @@ impl Tool for CalendarTool {
                         id,
                         ok: removed,
                     },
-                )
+                )?))
             }
             _ => Err(Error::config(
                 "tool_calendar",
                 format!("unknown op: {}", op),
             )),
         }
+    }
+}
+
+impl Tool for CalendarTool {
+    fn name(&self) -> &'static str {
+        "calendar"
+    }
+
+    fn description(&self) -> &'static str {
+        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by explicit account_key or office calendar defaults when multiple accounts exist. Times accept Unix seconds or ISO8601."
+    }
+
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: list|get|create|update|delete|provider_status"},"provider":{"type":"string","description":"Calendar provider. Defaults to local."},"account_key":{"type":"string","description":"Optional remote account key when a provider has multiple configured accounts."},"id":{"type":"string","description":"Event ID for get/update/delete"},"title":{"type":"string","description":"Event title for create/update"},"start_at":{"description":"Start time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"end_at":{"description":"End time as Unix seconds or ISO8601","oneOf":[{"type":"number"},{"type":"string"}]},"timezone":{"type":"string","description":"Optional timezone label"},"location":{"type":"string","description":"Optional location"},"notes":{"type":"string","description":"Optional notes"},"calendar_id":{"type":"string","description":"Optional calendar ID. Defaults to default for local events."},"status":{"type":"string","description":"Optional status for update: confirmed|cancelled"},"start_from":{"description":"List query lower bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"start_to":{"description":"List query upper bound on start time","oneOf":[{"type":"number"},{"type":"string"}]},"limit":{"type":"integer","description":"List limit, default 10, max 50"},"include_cancelled":{"type":"boolean","description":"Whether list should include cancelled events"}},"required":["op"]}"#
+    }
+
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        Ok(self.execute_impl(args, ctx)?.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        self.execute_impl(args, ctx)
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -487,7 +588,7 @@ mod tests {
     use super::*;
     use crate::calendar::{
         CalendarOperation, CalendarProvider, CalendarProviderCredential,
-        CalendarProviderCredentialStore,
+        CalendarProviderCredentialStore, OfficeBackedCalendarProviderCredentialStore,
     };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry,
@@ -1027,5 +1128,75 @@ mod tests {
             status["account_assessments"][1]["account_key"],
             "calendar-work"
         );
+    }
+
+    #[test]
+    fn calendar_tool_remote_list_returns_structured_office_failure_when_default_account_has_no_credential(
+    ) {
+        let mut providers = CalendarProviderRegistry::new();
+        providers.register(Arc::new(StubProvider));
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "calendar-work".to_string(),
+            provider_kind: "mock_remote".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Calendar],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            Arc::new(StubOfficeCredentialStore::default()),
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let tool = CalendarTool::with_office_service(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(OfficeBackedCalendarProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list","provider":"mock_remote"}"#, &mut ctx)
+            .expect("structured failure outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&outcome.content).expect("valid failure response json");
+        assert_eq!(payload["op"], "list");
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["provider"], "mock_remote");
+        assert_eq!(payload["failure_kind"], "capability");
+        assert_eq!(payload["office_assessment"]["capability"], "calendar");
+        assert_eq!(
+            payload["office_assessment"]["default_account_key"],
+            "calendar-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["account_key"],
+            "calendar-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["readiness"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert!(payload["error"]
+            .as_str()
+            .expect("error string")
+            .contains("no configured credential"));
     }
 }
