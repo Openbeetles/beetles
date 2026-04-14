@@ -44,13 +44,13 @@ export function SectionSubTitleRow({
         }}
       />
       <Typography
-        variant="caption"
+        variant="subtitle2"
         sx={{
           fontWeight: 600,
-          letterSpacing: "var(--letter-spacing-label)",
-          color: "var(--foreground-soft)",
-          textTransform: "uppercase",
-          fontSize: "var(--font-size-caption)",
+          letterSpacing: "0.01em",
+          color: "var(--foreground)",
+          textTransform: "none",
+          fontSize: "var(--font-size-body-sm)",
         }}
       >
         {title}

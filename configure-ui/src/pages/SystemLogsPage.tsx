@@ -8,6 +8,7 @@ import Typography from "@mui/material/Typography";
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
 import { InlineAlert, SectionLoadingSkeleton } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import type {
   DiagnoseItem,
@@ -106,10 +107,11 @@ export function SystemLogsPage() {
   };
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={logsState.error || null} onRetry={loadLogs} />
-      
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<DescriptionOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("systemLogs.sectionLogs")}
       >

@@ -24,6 +24,7 @@ import {
 } from "../contexts/appPreferencesContext";
 import { THEME_BRAND_KEYS } from "../config/themeTokens";
 import { SETTINGS_DRAWER_WIDTH } from "../config/layout";
+import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
 import { SettingsSection } from "./SettingsSection";
 
 interface SettingsDrawerProps {
@@ -92,7 +93,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           direction="row"
           alignItems="center"
           justifyContent="space-between"
-          sx={{ px: 2.5, py: 2, minHeight: 68 }}
+          sx={{ px: PANEL_SECTION_PADDING, py: 2, minHeight: 68 }}
         >
           <Stack direction="row" alignItems="center" spacing={1.5}>
             <Box
@@ -137,12 +138,15 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           </IconButton>
         </Stack>
 
-        <Stack sx={{ flex: 1, overflow: "auto", p: 2.5 }} spacing={1.5}>
+        <Stack
+          sx={{ flex: 1, overflow: "auto", p: PANEL_SECTION_PADDING }}
+          spacing={1.5}
+        >
           <SettingsSection
             icon={<LanguageIcon sx={{ fontSize: "var(--icon-size-sm)" }} />}
             label={t("settings.language")}
           >
-            <FormControl size="small" fullWidth>
+            <FormControl fullWidth>
               <Select<AppLanguage>
                 value={language}
                 onChange={handleLanguageChange}
@@ -182,7 +186,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               exclusive
               onChange={handleThemeModeChange}
               fullWidth
-              size="small"
             >
               <ToggleButton value="light">
                 <WbSunnyOutlinedIcon
@@ -292,7 +295,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           justifyContent="center"
           spacing={1.25}
           sx={{
-            px: 2.5,
+            px: PANEL_SECTION_PADDING,
             py: 2,
             borderTop: "none",
           }}

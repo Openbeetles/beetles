@@ -12,8 +12,10 @@ import {
   FormSectionSubCollapsible,
   InlineAlert,
   SaveFeedback,
+  SettingsRow,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 import Typography from "@mui/material/Typography";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
@@ -92,8 +94,10 @@ export function ChannelsConfigPage() {
 
   if (loading && !config) {
     return (
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
           icon={
             <NotificationsOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
           }
@@ -108,9 +112,11 @@ export function ChannelsConfigPage() {
   const saveDisabled = saveFeedback.status === "saving" || !form;
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={error} onRetry={loadConfig} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={
           <NotificationsOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
         }
@@ -147,25 +153,28 @@ export function ChannelsConfigPage() {
           </Typography>
         ) : (
           <>
-        <TextField
-          select
+        <SettingsRow
           label={t("config.enabledChannel")}
-          value={form.enabled_channel ?? ""}
-          onChange={(e) => update("enabled_channel", e.target.value)}
-          size="small"
-          fullWidth
-          helperText={t("config.enabledChannelHelp")}
-          slotProps={{
-            inputLabel: { shrink: true },
-          }}
-          sx={{ mb: 2 }}
+          description={t("config.enabledChannelHelp")}
         >
-          {ENABLED_CHANNEL_OPTIONS.map((opt) => (
-            <MenuItem key={opt.value || "none"} value={opt.value}>
-              {t(opt.labelKey)}
-            </MenuItem>
-          ))}
-        </TextField>
+          <TextField
+            select
+            hiddenLabel
+            fullWidth
+            value={form.enabled_channel ?? ""}
+            onChange={(e) => update("enabled_channel", e.target.value)}
+            aria-label={t("config.enabledChannel")}
+            slotProps={{
+              inputLabel: { shrink: true },
+            }}
+          >
+            {ENABLED_CHANNEL_OPTIONS.map((opt) => (
+              <MenuItem key={opt.value || "none"} value={opt.value}>
+                {t(opt.labelKey)}
+              </MenuItem>
+            ))}
+          </TextField>
+        </SettingsRow>
         <FormSectionSubCollapsible
           title="Telegram"
           defaultOpen={!form.enabled_channel || form.enabled_channel === "telegram"}
@@ -175,7 +184,6 @@ export function ChannelsConfigPage() {
             value={form.tg_token}
             onChange={(e) => update("tg_token", e.target.value)}
             type={isRevealed("tg_token") ? "text" : "password"}
-            size="small"
             fullWidth
             slotProps={{
               htmlInput: {
@@ -189,28 +197,32 @@ export function ChannelsConfigPage() {
             label={t("config.tgAllowedChatIds")}
             value={form.tg_allowed_chat_ids}
             onChange={(e) => update("tg_allowed_chat_ids", e.target.value)}
-            size="small"
             fullWidth
             helperText={t("config.tgAllowedChatIdsHelp")}
             slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
           />
-          <TextField
-            select
+          <SettingsRow
             label={t("config.tgGroupActivation")}
-            value={form.tg_group_activation}
-            onChange={(e) => update("tg_group_activation", e.target.value)}
-            size="small"
-            fullWidth
-            slotProps={{
-              inputLabel: { shrink: true },
-            }}
+            divider={false}
           >
-            {TG_ACTIVATION_OPTIONS.map((opt) => (
-              <MenuItem key={opt} value={opt}>
-                {t(`config.tgGroupActivation_${opt}`)}
-              </MenuItem>
-            ))}
-          </TextField>
+            <TextField
+              select
+              hiddenLabel
+              fullWidth
+              value={form.tg_group_activation}
+              onChange={(e) => update("tg_group_activation", e.target.value)}
+              aria-label={t("config.tgGroupActivation")}
+              slotProps={{
+                inputLabel: { shrink: true },
+              }}
+            >
+              {TG_ACTIVATION_OPTIONS.map((opt) => (
+                <MenuItem key={opt} value={opt}>
+                  {t(`config.tgGroupActivation_${opt}`)}
+                </MenuItem>
+              ))}
+            </TextField>
+          </SettingsRow>
         </FormSectionSubCollapsible>
 
         <FormSectionSubCollapsible
@@ -221,7 +233,6 @@ export function ChannelsConfigPage() {
             label={t("config.feishuAppId")}
             value={form.feishu_app_id}
             onChange={(e) => update("feishu_app_id", e.target.value)}
-            size="small"
             fullWidth
             slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
           />
@@ -230,7 +241,6 @@ export function ChannelsConfigPage() {
             value={form.feishu_app_secret}
             onChange={(e) => update("feishu_app_secret", e.target.value)}
             type={isRevealed("feishu_app_secret") ? "text" : "password"}
-            size="small"
             fullWidth
             slotProps={{
               htmlInput: {
@@ -243,7 +253,6 @@ export function ChannelsConfigPage() {
             label={t("config.feishuAllowedChatIds")}
             value={form.feishu_allowed_chat_ids}
             onChange={(e) => update("feishu_allowed_chat_ids", e.target.value)}
-            size="small"
             fullWidth
             slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
           />
@@ -258,7 +267,6 @@ export function ChannelsConfigPage() {
             value={form.dingtalk_webhook_url}
             onChange={(e) => update("dingtalk_webhook_url", e.target.value)}
             type="url"
-            size="small"
             fullWidth
             helperText={`${form.dingtalk_webhook_url.length}/${MAX_DINGTALK}`}
             slotProps={{
@@ -278,7 +286,6 @@ export function ChannelsConfigPage() {
             label={t("config.wecomCorpId")}
             value={form.wecom_corp_id}
             onChange={(e) => update("wecom_corp_id", e.target.value)}
-            size="small"
             fullWidth
             slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
           />
@@ -287,7 +294,6 @@ export function ChannelsConfigPage() {
             value={form.wecom_corp_secret}
             onChange={(e) => update("wecom_corp_secret", e.target.value)}
             type={isRevealed("wecom_corp_secret") ? "text" : "password"}
-            size="small"
             fullWidth
             slotProps={{
               htmlInput: {
@@ -300,7 +306,6 @@ export function ChannelsConfigPage() {
             label={t("config.wecomAgentId")}
             value={form.wecom_agent_id}
             onChange={(e) => update("wecom_agent_id", e.target.value)}
-            size="small"
             fullWidth
             slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
           />
@@ -308,7 +313,6 @@ export function ChannelsConfigPage() {
             label={t("config.wecomDefaultTouser")}
             value={form.wecom_default_touser}
             onChange={(e) => update("wecom_default_touser", e.target.value)}
-            size="small"
             fullWidth
             helperText={`${t("config.wecomDefaultTouserHelp")} · ${form.wecom_default_touser.length}/${MAX_WECOM_TOUSER}`}
             slotProps={{ htmlInput: { maxLength: MAX_WECOM_TOUSER } }}
@@ -323,7 +327,6 @@ export function ChannelsConfigPage() {
             label={t("config.qqChannelAppId")}
             value={form.qq_channel_app_id}
             onChange={(e) => update("qq_channel_app_id", e.target.value)}
-            size="small"
             fullWidth
             slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
           />
@@ -332,7 +335,6 @@ export function ChannelsConfigPage() {
             value={form.qq_channel_secret}
             onChange={(e) => update("qq_channel_secret", e.target.value)}
             type={isRevealed("qq_channel_secret") ? "text" : "password"}
-            size="small"
             fullWidth
             slotProps={{
               htmlInput: {
@@ -363,7 +365,6 @@ export function ChannelsConfigPage() {
             value={form.webhook_token}
             onChange={(e) => update("webhook_token", e.target.value)}
             type={isRevealed("webhook_token") ? "text" : "password"}
-            size="small"
             fullWidth
             slotProps={{
               htmlInput: {

@@ -13,7 +13,7 @@ export function PageHeader({ title }: PageHeaderProps) {
   return (
     <Box
       sx={{
-        py: 1.25,
+        py: 0.5,
         flex: 1,
         minWidth: 0,
         position: 'relative',

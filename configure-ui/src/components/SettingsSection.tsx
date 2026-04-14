@@ -1,8 +1,9 @@
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import type { SxProps, Theme } from "@mui/material/styles";
 import type { PropsWithChildren, ReactNode } from "react";
-import { CONFIG_PANEL_SX } from "../theme/panelStyles";
+import { CONFIG_PANEL_SX, PANEL_SECTION_PADDING } from "../theme/panelStyles";
 
 interface SettingsSectionProps {
   icon: ReactNode;
@@ -15,6 +16,13 @@ interface SettingsSectionProps {
    * Keeps the title row a single-line flex; avoids a tall right column next to the title.
    */
   belowTitleRow?: ReactNode;
+  /**
+   * 为 true 时：标题、说明、保存等留在卡片顶缘固定，仅 children 在卡片内滚动。
+   * When true, header stays fixed; only the form body scrolls inside the card.
+   */
+  pinHeader?: boolean;
+  /** 合并到最外层卡片容器（便于与 `PAGE_COLUMN_FILL_SX` 等组合） */
+  sx?: SxProps<Theme>;
 }
 
 export function SettingsSection({
@@ -23,22 +31,15 @@ export function SettingsSection({
   description,
   accessory,
   belowTitleRow,
+  pinHeader = false,
+  sx: sxProp,
   children,
 }: PropsWithChildren<SettingsSectionProps>) {
   const titleRowMb = belowTitleRow ? 1 : description ? 1 : 2;
   const belowRowMb = description ? 1 : 2;
 
-  return (
-    <Box
-      sx={{
-        ...CONFIG_PANEL_SX,
-        p: 2.5,
-        transition: "border-color var(--transition-duration) ease",
-        "&:hover": {
-          borderColor: "color-mix(in srgb, var(--border) 32%, transparent)",
-        },
-      }}
-    >
+  const headerBlock = (
+    <>
       <Stack
         direction="row"
         alignItems="center"
@@ -68,10 +69,10 @@ export function SettingsSection({
           <Typography
             component="span"
             sx={{
-              fontSize: "var(--font-size-body-sm)",
+              fontSize: "var(--font-size-h4)",
               fontWeight: 700,
-              letterSpacing: "var(--letter-spacing-label)",
-              lineHeight: "var(--line-height-tight)",
+              letterSpacing: "-0.02em",
+              lineHeight: "var(--line-height-snug)",
               color: "var(--foreground)",
             }}
           >
@@ -97,6 +98,50 @@ export function SettingsSection({
           {description}
         </Typography>
       )}
+    </>
+  );
+
+  if (pinHeader) {
+    return (
+      <Box
+        sx={{
+          ...CONFIG_PANEL_SX,
+          p: PANEL_SECTION_PADDING,
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+          ...sxProp,
+        }}
+      >
+        <Box sx={{ flexShrink: 0 }}>{headerBlock}</Box>
+        <Box
+          data-app-scroll-region
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            width: "100%",
+            boxSizing: "border-box",
+            overflow: "auto",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
+          {children}
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      sx={{
+        ...CONFIG_PANEL_SX,
+        p: PANEL_SECTION_PADDING,
+        ...sxProp,
+      }}
+    >
+      {headerBlock}
       {children}
     </Box>
   );

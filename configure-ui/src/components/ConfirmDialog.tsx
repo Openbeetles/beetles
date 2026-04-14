@@ -4,6 +4,7 @@ import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import Typography from "@mui/material/Typography";
 import { useTranslation } from "react-i18next";
+import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -32,7 +33,10 @@ export interface ConfirmDialogProps {
   confirmColor?: "primary" | "error" | "warning";
 }
 
-const ICON_COLOR: Record<NonNullable<ConfirmDialogProps["confirmColor"]>, string> = {
+const ICON_COLOR: Record<
+  NonNullable<ConfirmDialogProps["confirmColor"]>,
+  string
+> = {
   primary: "var(--primary)",
   error: "var(--semantic-danger)",
   warning: "var(--semantic-warning)",
@@ -95,7 +99,7 @@ export function ConfirmDialog({
         paper: {
           sx: {
             width: "100%",
-            maxWidth: wide ? undefined : 'var(--dialog-narrow-max-width)',
+            maxWidth: wide ? undefined : "var(--dialog-narrow-max-width)",
             borderRadius: "var(--radius-card)",
             border: "none",
             boxShadow: "none",
@@ -103,10 +107,17 @@ export function ConfirmDialog({
           },
         },
       }}
-      sx={{ "& .MuiDialog-container": { alignItems: "center", justifyContent: "center" } }}
+      sx={{
+        "& .MuiDialog-container": {
+          alignItems: "center",
+          justifyContent: "center",
+        },
+      }}
     >
-      <Box sx={{ p: 2.5 }}>
-        <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, mb: 2 }}>
+      <Box sx={{ p: PANEL_SECTION_PADDING }}>
+        <Box
+          sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, mb: 2 }}
+        >
           {icon && (
             <Box
               sx={{
@@ -118,7 +129,8 @@ export function ConfirmDialog({
                 justifyContent: "center",
                 flexShrink: 0,
                 color: ICON_COLOR[confirmColor],
-                backgroundColor: "color-mix(in srgb, var(--foreground) 6%, transparent)",
+                backgroundColor:
+                  "color-mix(in srgb, var(--foreground) 6%, transparent)",
               }}
             >
               <Box

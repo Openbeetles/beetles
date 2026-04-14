@@ -4,6 +4,12 @@ export const zhCN = {
       name: '甲壳虫',
       tagline: '配置',
     },
+    shell: {
+      breadcrumbRoot: '甲壳虫',
+      statusConnected: '已连接',
+      statusDisconnected: '未连接',
+      statusChecking: '检测中…',
+    },
     nav: {
       brandHome: '返回首页',
       /** 甲壳虫徽标按钮：桌面 Shell「开始」菜单 */
@@ -446,6 +452,8 @@ export const zhCN = {
       errorBoundaryDesc: '页面发生错误，请点击重试或刷新页面。',
       na: '—',
       openMenu: '打开侧边导航',
+      /** 设备配置 / 个性配置 子分区侧栏（无障碍） */
+      configSectionNavAria: '配置分区导航',
     },
     form: {
       expandSection: '展开区块：{{title}}',

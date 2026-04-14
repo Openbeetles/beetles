@@ -4,6 +4,12 @@ export const enUS = {
       name: 'beetle',
       tagline: 'Config',
     },
+    shell: {
+      breadcrumbRoot: 'Beetle',
+      statusConnected: 'Connected',
+      statusDisconnected: 'Disconnected',
+      statusChecking: 'Checking…',
+    },
     nav: {
       brandHome: 'Back to home',
       /** Beetle mark opens the shell Start menu */
@@ -446,6 +452,8 @@ export const enUS = {
       errorBoundaryDesc: 'An error occurred. Click Retry or refresh the page.',
       na: '—',
       openMenu: 'Open side navigation',
+      /** ARIA label for device / soul-user sub-section side nav */
+      configSectionNavAria: 'Section navigation',
     },
     form: {
       expandSection: 'Expand section: {{title}}',

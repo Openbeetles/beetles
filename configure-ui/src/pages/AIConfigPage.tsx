@@ -25,6 +25,7 @@ import {
   SaveFeedback,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
@@ -268,8 +269,10 @@ export function AIConfigPage() {
 
   if (loading && !config) {
     return (
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
           icon={<SmartToyOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
           label={t("config.sectionLlm")}
         >
@@ -282,7 +285,7 @@ export function AIConfigPage() {
   const saveDisabled = !config || saveFeedback.status === "saving";
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={error} onRetry={loadConfig} />
       <ConfirmDialog
         open={removeSourceIndex != null}
@@ -295,6 +298,8 @@ export function AIConfigPage() {
         onConfirm={confirmRemoveSource}
       />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<SmartToyOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("config.sectionLlm")}
         description={t("config.sectionLlmDesc")}
@@ -395,7 +400,7 @@ export function AIConfigPage() {
               }
             >
               <FormFieldStack>
-                <FormControl size="small" fullWidth>
+                <FormControl fullWidth>
                   <InputLabel id={`llm-provider-${i}`}>{t("config.llmProvider")}</InputLabel>
                   <Select
                     labelId={`llm-provider-${i}`}
@@ -417,7 +422,6 @@ export function AIConfigPage() {
                   value={row.api_key}
                   onChange={(e) => updateSource(i, "api_key", e.target.value)}
                   type={isRevealed(`api_key_${i}`) ? "text" : "password"}
-                  size="small"
                   fullWidth
                   slotProps={{
                     htmlInput: {
@@ -431,7 +435,6 @@ export function AIConfigPage() {
                   label={t("config.llmModel")}
                   value={row.model}
                   onChange={(e) => updateSource(i, "model", e.target.value)}
-                  size="small"
                   fullWidth
                   placeholder={defaultModelForProvider(row.provider)}
                   slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
@@ -440,7 +443,6 @@ export function AIConfigPage() {
                   label={t("config.llmApiUrl")}
                   value={row.api_url}
                   onChange={(e) => updateSource(i, "api_url", e.target.value)}
-                  size="small"
                   fullWidth
                   placeholder={defaultApiUrlForProvider(row.provider)}
                   slotProps={{
@@ -484,7 +486,6 @@ export function AIConfigPage() {
                       v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
                   }));
                 }}
-                size="small"
                 sx={{ minWidth: 280, flex: 1 }}
                 slotProps={{
                   inputLabel: { shrink: true }
@@ -511,7 +512,6 @@ export function AIConfigPage() {
                       v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
                   }));
                 }}
-                size="small"
                 sx={{ minWidth: 280, flex: 1 }}
                 slotProps={{
                   inputLabel: { shrink: true }

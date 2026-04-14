@@ -14,15 +14,8 @@ const R = LAYOUT_TOKENS.radiusControl
 const R_CARD = LAYOUT_TOKENS.radiusCard
 const R_CHIP = LAYOUT_TOKENS.radiusChip
 
-/** 卡片内图片 hover 缩放样式，供列表/卡片等复用（动效时长来自 LAYOUT_TOKENS） */
-export const cardImageHoverSx = {
-  '& img': {
-    transition: `transform ${LAYOUT_TOKENS.durationImageHoverMs}ms var(--ease-out-smooth)`,
-  },
-  '&:hover img': {
-    transform: 'scale(1.04)',
-  },
-} as const
+/** 预留：卡片内图片不再做 hover 缩放，避免无意义动效 */
+export const cardImageHoverSx = {} as const
 
 export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
   const tokens = getThemeTokens(mode, brand)
@@ -185,6 +178,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--hero-accent-height': `${LAYOUT_TOKENS.heroAccentHeight}px`,
             '--stagger-step-ms': `${LAYOUT_TOKENS.staggerStepMs}ms`,
             '--radius-search-pill': `${LAYOUT_TOKENS.radiusSearchPill}px`,
+            /** 全圆角（pill 按钮、状态 chip）；与 `radiusSearchPill` 同语义，便于组件直写 */
+            '--radius-full': '9999px',
+            /** 列表行、横幅底边等弱分割线与 SettingsRow 一致 */
+            '--divider-row':
+              '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
             '--accent-line-width': `${LAYOUT_TOKENS.accentLineWidth}px`,
             '--card-accent-line-width': `${LAYOUT_TOKENS.cardAccentLineWidth}px`,
             '--icon-size-sm': `${LAYOUT_TOKENS.iconSizeSm}px`,
@@ -271,8 +269,26 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             cursor: 'default',
           },
           '*:focus-visible': {
-            outline: `none`,
+            outline: `2px solid color-mix(in srgb, var(--primary) 62%, transparent)`,
             outlineOffset: LAYOUT_TOKENS.focusRingOffset,
+          },
+        },
+      },
+      MuiTextField: {
+        defaultProps: {
+          size: 'medium',
+        },
+      },
+      MuiFormControl: {
+        defaultProps: {
+          size: 'medium',
+        },
+      },
+      MuiDrawer: {
+        styleOverrides: {
+          paper: {
+            transition:
+              'transform 280ms var(--ease-emphasized), box-shadow var(--transition-duration) ease, border-color var(--transition-duration) ease',
           },
         },
       },
@@ -358,9 +374,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             boxShadow: 'none',
-            border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
+            border: 'none',
             backgroundImage: 'none',
-            transition: 'border-color var(--transition-duration) ease',
           },
         },
       },
@@ -368,11 +383,9 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 22%, transparent)',
+            border: 'none',
             boxShadow: 'var(--shadow-card)',
             backgroundColor: 'var(--card)',
-            transition:
-              'border-color var(--transition-duration) ease, box-shadow var(--transition-duration-emphasized) var(--ease-emphasized)',
           },
         },
       },

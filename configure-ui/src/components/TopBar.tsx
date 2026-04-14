@@ -15,6 +15,10 @@ import { useToast } from "../hooks/useToast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { BeetleIcon } from "./BeetleIcon";
 import { PageHeader } from "./PageHeader";
+import {
+  ShellBreadcrumb,
+  ShellConnectionStatus,
+} from "./ShellChromeTrail";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
@@ -126,7 +130,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
         display: "flex",
         alignItems: "stretch",
         justifyContent: "space-between",
-        pl: 1.5,
+        pl: { xs: 2, sm: 3 },
         pr: 0,
         position: "relative",
         ...SHELL_TITLEBAR_CHROME_SX,
@@ -183,8 +187,12 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
             />
           </IconButton>
         </Tooltip>
-        <PageHeader title={title} />
+        <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
+          <PageHeader title={title} />
+          <ShellBreadcrumb />
+        </Stack>
       </Stack>
+      <ShellConnectionStatus />
       <Stack
         direction="row"
         alignItems="stretch"

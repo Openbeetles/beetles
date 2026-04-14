@@ -6,6 +6,7 @@ import OpenInNewRounded from "@mui/icons-material/OpenInNewRounded";
 import { useTranslation } from "react-i18next";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi } from "../hooks/useDeviceApi";
+import { MAIN_CONTENT_INNER_SX } from "../theme/panelStyles";
 
 /**
  * 与 Rust API 一致：无设备地址 / 设备未激活 / 未填配对码 时在 TopBar 下展示横幅；未激活时提供跳转固件配对页按钮。
@@ -33,15 +34,14 @@ export function DeviceBanner() {
       role="status"
       aria-live="polite"
       sx={{
+        ...MAIN_CONTENT_INNER_SX,
         flexShrink: 0,
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 2,
-        px: 2,
         py: 1.25,
-        borderBottom:
-          "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+        borderBottom: "var(--divider-row)",
         borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
         backgroundColor:
           "color-mix(in srgb, var(--semantic-warning) 4%, var(--surface))",
@@ -65,7 +65,9 @@ export function DeviceBanner() {
             href={pairingUrl}
             target="_blank"
             rel="noopener noreferrer"
-            endIcon={<OpenInNewRounded sx={{ fontSize: "var(--icon-size-sm)" }} />}
+            endIcon={
+              <OpenInNewRounded sx={{ fontSize: "var(--icon-size-sm)" }} />
+            }
             sx={{
               flexShrink: 0,
               borderRadius: "var(--radius-control)",
@@ -73,7 +75,8 @@ export function DeviceBanner() {
               color: "var(--semantic-warning)",
               "&:hover": {
                 borderColor: "var(--semantic-warning)",
-                backgroundColor: "color-mix(in srgb, var(--semantic-warning) 8%, var(--surface))",
+                backgroundColor:
+                  "color-mix(in srgb, var(--semantic-warning) 8%, var(--surface))",
               },
             }}
           >

@@ -20,6 +20,7 @@ import {
   SETTINGS_SECTION_LIST_EMPTY_SX,
   SETTINGS_SECTION_LIST_ROW_SX,
 } from "../theme/listItemStyles";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 
 export function ToolsPage() {
   const { t } = useTranslation();
@@ -60,9 +61,11 @@ export function ToolsPage() {
   }, [ready, load]);
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={state.error || null} onRetry={load} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<HandymanOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("tools.sectionMain")}
         description={t("tools.sectionMainDesc")}

@@ -17,6 +17,7 @@ import {
   SaveFeedback,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
@@ -375,12 +376,16 @@ export function HardwareGpioPanel() {
     draftI2cSensors == null
   ) {
     return (
-      <SettingsSection
-        icon={<MemoryOutlined />}
-        label={t("hardwareConfig.sectionMain")}
-      >
-        <FormLoadingSkeleton />
-      </SettingsSection>
+      <Box sx={PAGE_COLUMN_FILL_SX}>
+        <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
+          icon={<MemoryOutlined />}
+          label={t("hardwareConfig.sectionMain")}
+        >
+          <FormLoadingSkeleton />
+        </SettingsSection>
+      </Box>
     );
   }
 
@@ -395,9 +400,11 @@ export function HardwareGpioPanel() {
   } as const;
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={hardwareError} onRetry={loadHardwareConfig} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<MemoryOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("hardwareConfig.sectionMain")}
         description={t("hardwareConfig.sectionMainDesc")}
@@ -457,7 +464,6 @@ export function HardwareGpioPanel() {
             >
               <Box sx={fieldGridSx}>
                 <TextField
-                  size="small"
                   fullWidth
                   required
                   disabled
@@ -468,7 +474,6 @@ export function HardwareGpioPanel() {
                 />
                 <TextField
                   select
-                  size="small"
                   fullWidth
                   label={t("hardwareConfig.deviceType")}
                   helperText={riskHint}
@@ -529,7 +534,6 @@ export function HardwareGpioPanel() {
                 </TextField>
                 <TextField
                   type="number"
-                  size="small"
                   required
                   label={t("hardwareConfig.pin")}
                   helperText={riskHint}
@@ -551,7 +555,6 @@ export function HardwareGpioPanel() {
                 {dev.device_type === "pwm_out" && (
                   <TextField
                     type="number"
-                    size="small"
                     label={t("hardwareConfig.pwmFreqHz")}
                     helperText={`${t("hardwareConfig.pwmFreqHelp")} ${riskHint}`}
                     value={
@@ -579,7 +582,6 @@ export function HardwareGpioPanel() {
                   <>
                     <TextField
                       select
-                      size="small"
                       fullWidth
                       label={t("hardwareConfig.dhtModel")}
                       helperText={`${t("hardwareConfig.dhtModelHelp")} ${riskHint}`}
@@ -603,7 +605,6 @@ export function HardwareGpioPanel() {
                     </TextField>
                     <TextField
                       select
-                      size="small"
                       fullWidth
                       label={t("hardwareConfig.dhtWatchField")}
                       helperText={`${t("hardwareConfig.dhtWatchFieldHelp")} ${riskHint}`}
@@ -624,7 +625,6 @@ export function HardwareGpioPanel() {
                     </TextField>
                     <TextField
                       select
-                      size="small"
                       fullWidth
                       label={t("hardwareConfig.dhtPull")}
                       helperText={`${t("hardwareConfig.dhtPullHelp")} ${riskHint}`}
@@ -647,7 +647,6 @@ export function HardwareGpioPanel() {
                   </>
                 )}
                 <TextField
-                  size="small"
                   fullWidth
                   label={t("hardwareConfig.what")}
                   helperText={riskHint}
@@ -659,7 +658,6 @@ export function HardwareGpioPanel() {
                   sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
                 />
                 <TextField
-                  size="small"
                   fullWidth
                   multiline
                   minRows={2}
@@ -727,7 +725,6 @@ export function HardwareGpioPanel() {
               >
                 <Box sx={fieldGridSx}>
                   <TextField
-                    size="small"
                     fullWidth
                     required
                     disabled
@@ -738,7 +735,6 @@ export function HardwareGpioPanel() {
                   />
                   <TextField
                     type="number"
-                    size="small"
                     required
                     label={t("hardwareConfig.i2cSensorAddr")}
                     helperText={t("hardwareConfig.i2cSensorAddrHelp")}
@@ -759,7 +755,6 @@ export function HardwareGpioPanel() {
                   />
                   <TextField
                     select
-                    size="small"
                     fullWidth
                     label={t("hardwareConfig.i2cSensorModel")}
                     helperText={t("hardwareConfig.i2cSensorModelHelp")}
@@ -809,7 +804,6 @@ export function HardwareGpioPanel() {
                   </TextField>
                   <TextField
                     select
-                    size="small"
                     fullWidth
                     label={t("hardwareConfig.i2cSensorWatchField")}
                     helperText={t("hardwareConfig.i2cSensorWatchFieldHelp")}
@@ -828,7 +822,6 @@ export function HardwareGpioPanel() {
                   {sens.model === "raw" && (
                     <>
                       <TextField
-                        size="small"
                         fullWidth
                         label={t("hardwareConfig.i2cSensorRawInit")}
                         helperText={t("hardwareConfig.i2cSensorRawInitHelp")}
@@ -876,7 +869,6 @@ export function HardwareGpioPanel() {
                       />
                       <TextField
                         type="number"
-                        size="small"
                         label={t("hardwareConfig.i2cSensorRawReadLen")}
                         helperText={t("hardwareConfig.i2cSensorRawReadLenHelp")}
                         value={
@@ -899,7 +891,6 @@ export function HardwareGpioPanel() {
                       />
                       <TextField
                         type="number"
-                        size="small"
                         label={t("hardwareConfig.i2cSensorRawWait")}
                         helperText={t("hardwareConfig.i2cSensorRawWaitHelp")}
                         value={
@@ -927,7 +918,6 @@ export function HardwareGpioPanel() {
                     </>
                   )}
                   <TextField
-                    size="small"
                     fullWidth
                     label={t("hardwareConfig.what")}
                     helperText={riskHint}
@@ -939,7 +929,6 @@ export function HardwareGpioPanel() {
                     sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
                   />
                   <TextField
-                    size="small"
                     fullWidth
                     multiline
                     minRows={2}

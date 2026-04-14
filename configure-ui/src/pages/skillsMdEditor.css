@@ -41,8 +41,8 @@
 
 .skill-edit-scroll--immersive .skills-rich-md-wrap [class*='toolbarRoot'] {
   background-color: color-mix(in srgb, var(--surface) 85%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(var(--overlay-backdrop-blur));
+  -webkit-backdrop-filter: blur(var(--overlay-backdrop-blur));
   position: sticky;
   top: 0;
   z-index: 10;

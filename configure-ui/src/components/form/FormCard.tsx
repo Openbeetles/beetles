@@ -1,7 +1,7 @@
 import Box from "@mui/material/Box";
 import type { ReactNode } from "react";
 
-/** 表单内分组卡片：浅底 + 细边框，用于 LLM 源、可折叠区块等。 */
+/** 表单内分组卡片：浅底无边框，用于 LLM 源、可折叠区块等。 */
 export function FormCard({
   children,
   header,
@@ -17,11 +17,7 @@ export function FormCard({
         p: 2,
         borderRadius: "var(--radius-control)",
         bgcolor: "var(--form-group-well)",
-        border: "1px solid var(--form-outline-rest)",
-        transition: "border-color var(--transition-duration) ease",
-        "&:focus-within": {
-          borderColor: "color-mix(in srgb, var(--primary) 28%, var(--border))",
-        },
+        border: "none",
       }}
     >
       {(header || action) && (

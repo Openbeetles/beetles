@@ -1,0 +1,148 @@
+import Box from "@mui/material/Box";
+import Typography from "@mui/material/Typography";
+import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded";
+import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
+import { NAV_ITEMS } from "../config/navItems";
+import { useDeviceApi } from "../hooks/useDeviceApi";
+
+/** 取最长匹配的导航项，使 /device-config/display 归类到「设备配置」 */
+function navPathForLocation(pathname: string): string {
+  const p = pathname || "/device";
+  let best: string | null = null;
+  let bestLen = -1;
+  for (const item of NAV_ITEMS) {
+    if (item.path === "/device") {
+      if (p === "/device" || p === "/") {
+        return "/device";
+      }
+      continue;
+    }
+    if (p === item.path || p.startsWith(`${item.path}/`)) {
+      if (item.path.length > bestLen) {
+        best = item.path;
+        bestLen = item.path.length;
+      }
+    }
+  }
+  return best ?? "/device";
+}
+
+/** 顶栏面包屑：根 › 当前页（与任务栏路由一致） */
+export function ShellBreadcrumb() {
+  const { t } = useTranslation();
+  const { pathname } = useLocation();
+  const path = navPathForLocation(pathname);
+  const item = NAV_ITEMS.find((n) => n.path === path);
+  const currentLabel = item ? t(item.labelKey) : pathname;
+
+  return (
+    <Box
+      component="nav"
+      aria-label="breadcrumb"
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.5,
+        minWidth: 0,
+        flexWrap: "wrap",
+      }}
+    >
+      <Typography
+        component="span"
+        sx={{
+          fontSize: "var(--font-size-caption)",
+          fontWeight: 500,
+          color: "var(--foreground-soft)",
+          letterSpacing: "0.01em",
+        }}
+      >
+        {t("shell.breadcrumbRoot")}
+      </Typography>
+      <ChevronRightRounded
+        sx={{
+          fontSize: "1rem",
+          color: "var(--muted)",
+          opacity: 0.85,
+          flexShrink: 0,
+        }}
+        aria-hidden
+      />
+      <Typography
+        component="span"
+        sx={{
+          fontSize: "var(--font-size-caption)",
+          fontWeight: 600,
+          color: "var(--foreground)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          maxWidth: "min(52vw, 280px)",
+        }}
+      >
+        {currentLabel}
+      </Typography>
+    </Box>
+  );
+}
+
+/** 顶栏轻量连接状态（与 DeviceBanner 互补，常驻一条） */
+export function ShellConnectionStatus() {
+  const { t } = useTranslation();
+  const { deviceConnected, connectionChecking } = useDeviceApi();
+
+  const label = connectionChecking
+    ? t("shell.statusChecking")
+    : deviceConnected
+      ? t("shell.statusConnected")
+      : t("shell.statusDisconnected");
+
+  const tone = connectionChecking
+    ? "var(--semantic-warning)"
+    : deviceConnected
+      ? "var(--semantic-success)"
+      : "var(--muted)";
+
+  return (
+    <Box
+      role="status"
+      sx={{
+        alignSelf: "center",
+        display: { xs: "none", sm: "inline-flex" },
+        alignItems: "center",
+        gap: 1,
+        px: 1.5,
+        py: 0.5,
+        borderRadius: "var(--radius-chip)",
+        border: "1px solid color-mix(in srgb, var(--border) 35%, transparent)",
+        bgcolor: "color-mix(in srgb, var(--foreground) 3%, transparent)",
+        maxWidth: 200,
+      }}
+    >
+      <Box
+        aria-hidden
+        sx={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          bgcolor: tone,
+          flexShrink: 0,
+          boxShadow: `0 0 0 2px color-mix(in srgb, ${tone} 35%, transparent)`,
+        }}
+      />
+      <Typography
+        component="span"
+        sx={{
+          fontSize: "var(--font-size-caption)",
+          fontWeight: 600,
+          color: "var(--foreground-soft)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </Typography>
+    </Box>
+  );
+}

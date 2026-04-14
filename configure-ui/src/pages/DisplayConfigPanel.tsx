@@ -17,6 +17,7 @@ import {
   SaveFeedback,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
@@ -198,12 +199,16 @@ export function DisplayConfigPanel() {
 
   if (displayLoading && !displayConfig && !draft) {
     return (
-      <SettingsSection
-        icon={<MonitorOutlined />}
-        label={t("displayConfig.sectionMain")}
-      >
-        <FormLoadingSkeleton />
-      </SettingsSection>
+      <Box sx={PAGE_COLUMN_FILL_SX}>
+        <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
+          icon={<MonitorOutlined />}
+          label={t("displayConfig.sectionMain")}
+        >
+          <FormLoadingSkeleton />
+        </SettingsSection>
+      </Box>
     );
   }
 
@@ -242,9 +247,11 @@ export function DisplayConfigPanel() {
   } as const;
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={displayError} onRetry={loadDisplayConfig} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<MonitorOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("displayConfig.sectionMain")}
         description={sectionDesc}
@@ -294,7 +301,6 @@ export function DisplayConfigPanel() {
               {isLinuxRuntime ? (
                 <TextField
                   select
-                  size="small"
                   fullWidth
                   disabled={!form.enabled}
                   value={form.driver}
@@ -321,7 +327,6 @@ export function DisplayConfigPanel() {
               ) : (
                 <TextField
                   select
-                  size="small"
                   fullWidth
                   disabled={!form.enabled}
                   value={form.driver}
@@ -342,7 +347,6 @@ export function DisplayConfigPanel() {
               )}
               {showLinuxFramebuffer ? (
                 <TextField
-                  size="small"
                   fullWidth
                   disabled
                   label={t("displayConfig.rotation")}
@@ -352,7 +356,6 @@ export function DisplayConfigPanel() {
               ) : (
                 <TextField
                   select
-                  size="small"
                   fullWidth
                   disabled={!form.enabled}
                   value={form.rotation}
@@ -374,7 +377,6 @@ export function DisplayConfigPanel() {
                 <>
                   <TextField
                     select
-                    size="small"
                     fullWidth
                     disabled={!form.enabled}
                     value={form.color_order}
@@ -432,7 +434,6 @@ export function DisplayConfigPanel() {
             <Box sx={fieldGridSx}>
               <TextField
                 type="number"
-                size="small"
                 label={t("displayConfig.width")}
                 disabled={!form.enabled}
                 value={form.width}
@@ -443,7 +444,6 @@ export function DisplayConfigPanel() {
               />
               <TextField
                 type="number"
-                size="small"
                 label={t("displayConfig.height")}
                 disabled={!form.enabled}
                 value={form.height}
@@ -456,7 +456,6 @@ export function DisplayConfigPanel() {
                 <>
                   <TextField
                     type="number"
-                    size="small"
                     label={t("displayConfig.offsetX")}
                     disabled={!form.enabled}
                     value={form.offset_x}
@@ -467,7 +466,6 @@ export function DisplayConfigPanel() {
                   />
                   <TextField
                     type="number"
-                    size="small"
                     label={t("displayConfig.offsetY")}
                     disabled={!form.enabled}
                     value={form.offset_y}
@@ -485,7 +483,6 @@ export function DisplayConfigPanel() {
             <FormSectionSub title={t("displayConfig.sectionFramebuffer")}>
               <Box sx={fieldGridSx}>
                 <TextField
-                  size="small"
                   fullWidth
                   disabled={!form.enabled}
                   label={t("displayConfig.fbDevice")}
@@ -494,7 +491,6 @@ export function DisplayConfigPanel() {
                   onChange={(e) => setField("fb_device", e.target.value)}
                 />
                 <TextField
-                  size="small"
                   fullWidth
                   disabled={!form.enabled}
                   label={t("displayConfig.backlightSysfs")}
@@ -514,7 +510,6 @@ export function DisplayConfigPanel() {
               <Box sx={fieldGridSx}>
                 <TextField
                   select
-                  size="small"
                   fullWidth
                   disabled={!form.enabled}
                   value={form.spi.host}
@@ -536,7 +531,6 @@ export function DisplayConfigPanel() {
                     <TextField
                       key={k}
                       type="number"
-                      size="small"
                       disabled={!form.enabled}
                       label={t(
                         `displayConfig.spi${k[0].toUpperCase()}${k.slice(1)}`,
@@ -563,7 +557,6 @@ export function DisplayConfigPanel() {
                 )}
                 <TextField
                   type="number"
-                  size="small"
                   label={t("displayConfig.spiFreqHz")}
                   disabled={!form.enabled}
                   value={form.spi.freq_hz}
@@ -584,7 +577,6 @@ export function DisplayConfigPanel() {
           <FormSectionSub title={t("displayConfig.sleepTimeoutSecs")}>
             <TextField
               type="number"
-              size="small"
               label={t("displayConfig.sleepTimeoutSecs")}
               helperText={
                 isLinuxRuntime

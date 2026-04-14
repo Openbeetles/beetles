@@ -26,6 +26,7 @@ import {
   SaveFeedback,
 } from '../components/form'
 import { SettingsSection } from '../components/SettingsSection'
+import { PAGE_COLUMN_FILL_SX } from '../theme/panelStyles'
 import { useConfig } from '../hooks/useConfig'
 import { useDeviceApi } from '../hooks/useDeviceApi'
 import { useRevealedPasswordFields } from '../hooks/useRevealedPassword'
@@ -392,12 +393,16 @@ export function AudioConfigPanel() {
 
   if (audioLoading && !audioConfig && !draft) {
     return (
-      <SettingsSection
-        icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
-        label={t('audioConfig.sectionMain')}
-      >
-        <FormLoadingSkeleton />
-      </SettingsSection>
+      <Box sx={PAGE_COLUMN_FILL_SX}>
+        <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
+          icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
+          label={t('audioConfig.sectionMain')}
+        >
+          <FormLoadingSkeleton />
+        </SettingsSection>
+      </Box>
     )
   }
 
@@ -447,9 +452,11 @@ export function AudioConfigPanel() {
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={audioError} onRetry={loadAudioConfig} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<HearingRounded sx={{ fontSize: 'var(--icon-size-md)' }} />}
         label={t('audioConfig.sectionMain')}
         description={t('audioConfig.sectionMainDesc')}
@@ -542,7 +549,7 @@ export function AudioConfigPanel() {
                 {micOn ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <Box sx={fieldGridSx}>
-                    <FormControl size="small" fullWidth>
+                    <FormControl fullWidth>
                       <InputLabel id="mic-device-type">{t('audioConfig.deviceType')}</InputLabel>
                       <Select
                         labelId="mic-device-type"
@@ -567,7 +574,7 @@ export function AudioConfigPanel() {
                         ))}
                       </Select>
                     </FormControl>
-                    <FormControl size="small" fullWidth>
+                    <FormControl fullWidth>
                       <InputLabel id="mic-sr">{t('audioConfig.sampleRate')}</InputLabel>
                       <Select
                         labelId="mic-sr"
@@ -591,7 +598,7 @@ export function AudioConfigPanel() {
                     </FormControl>
                     </Box>
                     <Box sx={fieldGridSx}>
-                    <FormControl size="small" fullWidth>
+                    <FormControl fullWidth>
                       <InputLabel id="mic-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
                       <Select
                         labelId="mic-bits"
@@ -613,7 +620,7 @@ export function AudioConfigPanel() {
                         ))}
                       </Select>
                     </FormControl>
-                    <FormControl size="small" fullWidth>
+                    <FormControl fullWidth>
                       <InputLabel id="mic-buf">{t('audioConfig.bufferSize')}</InputLabel>
                       <Select
                         labelId="mic-buf"
@@ -635,7 +642,7 @@ export function AudioConfigPanel() {
                         ))}
                       </Select>
                     </FormControl>
-                    <FormControl size="small" fullWidth>
+                    <FormControl fullWidth>
                       <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
                       <Select
                         labelId="vad-th"
@@ -657,7 +664,7 @@ export function AudioConfigPanel() {
                         ))}
                       </Select>
                     </FormControl>
-                    <FormControl size="small" fullWidth>
+                    <FormControl fullWidth>
                       <InputLabel id="vad-sil">{t('audioConfig.vadSilenceMs')}</InputLabel>
                       <Select
                         labelId="vad-sil"
@@ -686,7 +693,6 @@ export function AudioConfigPanel() {
                       </Select>
                     </FormControl>
                     <TextField
-                      size="small"
                       label={t('audioConfig.pinWs')}
                       value={String(form.microphone.pins.ws)}
                       onChange={(e) => {
@@ -702,7 +708,6 @@ export function AudioConfigPanel() {
                       }}
                     />
                     <TextField
-                      size="small"
                       label={t('audioConfig.pinSck')}
                       value={String(form.microphone.pins.sck)}
                       onChange={(e) => {
@@ -718,7 +723,6 @@ export function AudioConfigPanel() {
                       }}
                     />
                     <TextField
-                      size="small"
                       label={t('audioConfig.pinDin')}
                       value={String(form.microphone.pins.din)}
                       onChange={(e) => {
@@ -755,7 +759,7 @@ export function AudioConfigPanel() {
                 {spkOn ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <Box sx={fieldGridSx}>
-                      <FormControl size="small" fullWidth>
+                      <FormControl fullWidth>
                         <InputLabel id="spk-device-type">{t('audioConfig.deviceType')}</InputLabel>
                         <Select
                           labelId="spk-device-type"
@@ -780,7 +784,7 @@ export function AudioConfigPanel() {
                           ))}
                         </Select>
                       </FormControl>
-                      <FormControl size="small" fullWidth>
+                      <FormControl fullWidth>
                         <InputLabel id="spk-sr">{t('audioConfig.sampleRate')}</InputLabel>
                         <Select
                           labelId="spk-sr"
@@ -816,7 +820,6 @@ export function AudioConfigPanel() {
                           }}
                         >
                           <FormControl
-                            size="small"
                             fullWidth
                             sx={{
                               flex: '1 1 auto',
@@ -872,7 +875,7 @@ export function AudioConfigPanel() {
                       ) : null}
                     </Box>
                     <Box sx={fieldGridSx}>
-                      <FormControl size="small" fullWidth>
+                      <FormControl fullWidth>
                         <InputLabel id="spk-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
                         <Select
                           labelId="spk-bits"
@@ -897,7 +900,6 @@ export function AudioConfigPanel() {
                       {!speakerUsesUsbDevice ? (
                         <>
                           <TextField
-                            size="small"
                             label={t('audioConfig.pinWs')}
                             value={String(speakerPins.ws)}
                             onChange={(e) => {
@@ -913,7 +915,6 @@ export function AudioConfigPanel() {
                             }}
                           />
                           <TextField
-                            size="small"
                             label={t('audioConfig.pinSck')}
                             value={String(speakerPins.sck)}
                             onChange={(e) => {
@@ -929,7 +930,6 @@ export function AudioConfigPanel() {
                             }}
                           />
                           <TextField
-                            size="small"
                             label={t('audioConfig.pinDout')}
                             value={String(speakerPins.dout)}
                             onChange={(e) => {
@@ -945,7 +945,6 @@ export function AudioConfigPanel() {
                             }}
                           />
                           <TextField
-                            size="small"
                             label={t('audioConfig.pinSdOptional')}
                             placeholder={t('audioConfig.pinOptionalPlaceholder')}
                             value={speakerPins.sd != null ? String(speakerPins.sd) : ''}
@@ -1003,7 +1002,7 @@ export function AudioConfigPanel() {
                             </Typography>
                           ) : null}
                           <Box sx={fieldGridSx}>
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="speech-provider">{t('audioConfig.serviceProvider')}</InputLabel>
                               <Select
                                 labelId="speech-provider"
@@ -1045,7 +1044,6 @@ export function AudioConfigPanel() {
                             </FormControl>
                             {showSpeechCredentials ? (
                               <TextField
-                                size="small"
                                 label={t('audioConfig.speechApiKey')}
                                 type={isRevealed('audio_speech_api_key') ? 'text' : 'password'}
                                 value={form.speech.api_key}
@@ -1065,7 +1063,6 @@ export function AudioConfigPanel() {
                             ) : null}
                             {showSpeechCredentials ? (
                               <TextField
-                                size="small"
                                 label={t('audioConfig.speechApiSecret')}
                                 type={isRevealed('audio_speech_api_secret') ? 'text' : 'password'}
                                 value={form.speech.api_secret}
@@ -1085,7 +1082,6 @@ export function AudioConfigPanel() {
                             ) : null}
                             {showSpeechOutput ? (
                               <TextField
-                                size="small"
                                 label={t('audioConfig.ttsVoice')}
                                 value={form.tts.voice}
                                 onChange={(e) =>
@@ -1099,7 +1095,7 @@ export function AudioConfigPanel() {
                           </Box>
                           <Box sx={fieldGridSx}>
                             {showSpeechInput ? (
-                              <FormControl size="small" fullWidth>
+                              <FormControl fullWidth>
                                 <InputLabel id="speech-lang">{t('audioConfig.speechLanguage')}</InputLabel>
                                 <Select
                                   labelId="speech-lang"
@@ -1127,7 +1123,6 @@ export function AudioConfigPanel() {
                             ) : null}
                             {showSpeechInput ? (
                               <TextField
-                                size="small"
                                 label={t('audioConfig.speechModel')}
                                 value={form.speech.model}
                                 onChange={(e) =>
@@ -1143,7 +1138,6 @@ export function AudioConfigPanel() {
                             ) : null}
                             {showSpeechInput ? (
                               <TextField
-                                size="small"
                                 sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
                                 label={t('audioConfig.speechApiUrl')}
                                 value={form.speech.api_url}
@@ -1159,7 +1153,7 @@ export function AudioConfigPanel() {
                               />
                             ) : null}
                             {showSpeechOutput ? (
-                              <FormControl size="small" fullWidth>
+                              <FormControl fullWidth>
                                 <InputLabel id="tts-rate">{t('audioConfig.ttsRate')}</InputLabel>
                                 <Select
                                   labelId="tts-rate"
@@ -1184,7 +1178,7 @@ export function AudioConfigPanel() {
                               </FormControl>
                             ) : null}
                             {showSpeechOutput ? (
-                              <FormControl size="small" fullWidth>
+                              <FormControl fullWidth>
                                 <InputLabel id="tts-pitch">{t('audioConfig.ttsPitch')}</InputLabel>
                                 <Select
                                   labelId="tts-pitch"
@@ -1231,7 +1225,7 @@ export function AudioConfigPanel() {
                         />
                         {form.wake_word.enabled ? (
                           <>
-                            <FormControl size="small" sx={{ minWidth: { xs: '100%', md: 320 } }}>
+                            <FormControl sx={{ minWidth: { xs: '100%', md: 320 } }}>
                               <InputLabel id="wake-kw">{t('audioConfig.wakeWordKeyword')}</InputLabel>
                               <Select
                                 labelId="wake-kw"
@@ -1253,7 +1247,6 @@ export function AudioConfigPanel() {
                             </FormControl>
                             {showWakePrompt ? (
                               <TextField
-                                size="small"
                                 sx={{ maxWidth: { xs: '100%', md: 520 } }}
                                 label={t('audioConfig.wakePrompt')}
                                 value={form.wake_word.wake_prompt}
@@ -1285,7 +1278,7 @@ export function AudioConfigPanel() {
                             {`${t('audioConfig.realtimeSampleRateHint')} ${realtimeSampleRate} Hz`}
                           </Typography>
                           <Box sx={fieldGridSx}>
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="realtime-provider">{t('audioConfig.realtimeProvider')}</InputLabel>
                               <Select
                                 labelId="realtime-provider"
@@ -1349,7 +1342,6 @@ export function AudioConfigPanel() {
                               </Select>
                             </FormControl>
                             <TextField
-                              size="small"
                               label={t('audioConfig.realtimeApiKey')}
                               type={isRevealed('audio_realtime_api_key') ? 'text' : 'password'}
                               value={form.realtime.api_key}
@@ -1367,7 +1359,6 @@ export function AudioConfigPanel() {
                               }}
                             />
                             <TextField
-                              size="small"
                               label={t('audioConfig.realtimeModel')}
                               value={form.realtime.model}
                               onChange={(e) =>
@@ -1381,7 +1372,6 @@ export function AudioConfigPanel() {
                               }
                             />
                             <TextField
-                              size="small"
                               label={t('audioConfig.realtimeVoice')}
                               value={form.realtime.voice}
                               onChange={(e) =>
@@ -1397,7 +1387,6 @@ export function AudioConfigPanel() {
                           </Box>
                           <Box sx={fieldGridSx}>
                             <TextField
-                              size="small"
                               sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
                               label={t('audioConfig.realtimeWsUrl')}
                               value={form.realtime.ws_url}
@@ -1412,7 +1401,6 @@ export function AudioConfigPanel() {
                               }
                             />
                             <TextField
-                              size="small"
                               multiline
                               minRows={3}
                               sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
@@ -1489,7 +1477,6 @@ export function AudioConfigPanel() {
                                     key={ev}
                                     control={
                                       <Checkbox
-                                        size="small"
                                         checked={presetSoundEventsSelected(
                                           form.ambient_listening.sound_events,
                                         ).has(ev)}
@@ -1501,7 +1488,6 @@ export function AudioConfigPanel() {
                                 ))}
                               </FormGroup>
                               <TextField
-                                size="small"
                                 fullWidth
                                 sx={{ mt: 1 }}
                                 label={t('audioConfig.ambientSoundEventsExtra')}
@@ -1510,7 +1496,7 @@ export function AudioConfigPanel() {
                                 onChange={(e) => setExtraSoundEventsStr(e.target.value)}
                               />
                             </Box>
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="amb-cool">{t('audioConfig.ambientCooldownMinutes')}</InputLabel>
                               <Select
                                 labelId="amb-cool"
@@ -1537,7 +1523,7 @@ export function AudioConfigPanel() {
                                 )}
                               </Select>
                             </FormControl>
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="amb-int">{t('audioConfig.ambientCheckIntervalSeconds')}</InputLabel>
                               <Select
                                 labelId="amb-int"
@@ -1591,7 +1577,6 @@ export function AudioConfigPanel() {
                         {form.led_indicator.enabled ? (
                           <>
                             <TextField
-                              size="small"
                               label={t('audioConfig.ledPin')}
                               value={String(form.led_indicator.pin)}
                               onChange={(e) => {
@@ -1603,7 +1588,7 @@ export function AudioConfigPanel() {
                                 })
                               }}
                             />
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="led-l">{t('audioConfig.ledListening')}</InputLabel>
                               <Select
                                 labelId="led-l"
@@ -1634,7 +1619,7 @@ export function AudioConfigPanel() {
                                 ))}
                               </Select>
                             </FormControl>
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="led-p">{t('audioConfig.ledProcessing')}</InputLabel>
                               <Select
                                 labelId="led-p"
@@ -1665,7 +1650,7 @@ export function AudioConfigPanel() {
                                 ))}
                               </Select>
                             </FormControl>
-                            <FormControl size="small" fullWidth>
+                            <FormControl fullWidth>
                               <InputLabel id="led-s">{t('audioConfig.ledSpeaking')}</InputLabel>
                               <Select
                                 labelId="led-s"

@@ -17,8 +17,7 @@ import { DeviceBanner } from "./DeviceBanner";
 import { Taskbar } from "./Taskbar";
 import { TopBar } from "./TopBar";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
-import { PcbDecorOverlay } from "./PcbDecorOverlay";
-import { MAIN_SURFACE_PCB_SX } from "../theme/pcbSurface";
+import { MAIN_CONTENT_INNER_SX } from "../theme/panelStyles";
 import { UnsavedContext } from "../contexts/UnsavedContext";
 import { useConfig } from "../hooks/useConfig";
 import { useToast } from "../hooks/useToast";
@@ -38,29 +37,36 @@ function MainSurface({ children }: { children: ReactNode }) {
   return (
     <Box
       component="main"
+      data-main-surface
       sx={{
-        ...MAIN_SURFACE_PCB_SX,
         position: "relative",
-        flex: 1,
+        /** `1 1 0`：中间列占满顶栏与任务栏之间槽位，避免 basis 随内容撑开导致滚动高度不对 */
+        flex: "1 1 0",
         minHeight: 0,
-        overflow: "auto",
-        pt: 5,
-        pb: 6,
-        /** 水平不设 padding：丝印底与顶栏同宽；内层与 TopBar/DeviceBanner 的 px:2 对齐 */
+        /** 由子路由在「主表单区」内滚动，避免顶栏/任务栏与标题栏跟内容一起滚 */
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        /** 水平不设 padding：内层与 `MAIN_CONTENT_INNER_SX` / 顶栏 pl 对齐 */
         px: 0,
         width: "100%",
         /** 与顶栏接缝处内凹高光，强化「桌面工作区」层次 */
         boxShadow: "var(--shell-main-inset-top)",
       }}
     >
-      <PcbDecorOverlay />
       <Box
         sx={{
           position: "relative",
           zIndex: 1,
-          px: { xs: 2, sm: 3 },
-          maxWidth: "100%",
-          boxSizing: "border-box",
+          ...MAIN_CONTENT_INNER_SX,
+          alignItems: "stretch",
+          alignSelf: "stretch",
+          flex: "1 1 0",
+          flexBasis: 0,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
         }}
       >
         {children}
@@ -84,8 +90,10 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const [refreshCountdown, setRefreshCountdown] =
     useState(AUTO_REFRESH_SECONDS);
   /** 离线缓存蒙层下允许进入「连接设备」修改地址；离开该页或重连后恢复提示 */
-  const [suppressDisconnectedCacheOverlay, setSuppressDisconnectedCacheOverlay] =
-    useState(false);
+  const [
+    suppressDisconnectedCacheOverlay,
+    setSuppressDisconnectedCacheOverlay,
+  ] = useState(false);
   const showRestartBanner = restartPhase !== "idle";
   const showDisconnectedCacheBanner =
     !deviceConnected &&
@@ -218,7 +226,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
           display: "flex",
           height: "100vh",
           overflow: "hidden",
-          /** 透明以便 ThemeAndBaseline 的 fixed 渐变 / 甲壳虫层透出；顶栏/任务栏用 shellChromeSurface 变体 */
+          /** 透明以便 body 纯色底透出；顶栏/任务栏用 shellChromeSurface 变体 */
           backgroundColor: "transparent",
         }}
       >
@@ -269,7 +277,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
                 flexDirection: "column",
                 alignItems: "stretch",
                 gap: 1.5,
-                borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
+                borderLeft:
+                  "var(--accent-line-width) solid var(--semantic-warning)",
               }}
             >
               <Typography
@@ -349,13 +358,37 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             minHeight: 0,
           }}
         >
-          <Box sx={{ position: 'relative', zIndex: 10, boxShadow: '0 4px 20px color-mix(in srgb, var(--foreground) 5%, transparent)' }}>
+          <Box
+            sx={{
+              position: "relative",
+              zIndex: 10,
+              boxShadow:
+                "0 4px 20px color-mix(in srgb, var(--foreground) 5%, transparent)",
+            }}
+          >
             <TopBar onOpenSettings={onOpenSettings} />
             <DeviceBanner />
           </Box>
+          {/** 与 main 平级的占位条：上下呼吸感；主区内滚动仍占满 main（见 panelStyles / MainSurface flex 链） */}
+          <Box
+            aria-hidden
+            sx={(theme) => ({
+              flexShrink: 0,
+              height: theme.spacing(5),
+              minHeight: theme.spacing(5),
+            })}
+          />
           <MainSurface>
             <Outlet />
           </MainSurface>
+          <Box
+            aria-hidden
+            sx={(theme) => ({
+              flexShrink: 0,
+              height: theme.spacing(6),
+              minHeight: theme.spacing(6),
+            })}
+          />
           <Taskbar />
         </Box>
       </Box>

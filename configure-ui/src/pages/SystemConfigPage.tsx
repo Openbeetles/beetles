@@ -16,6 +16,7 @@ import {
   SaveFeedback,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useDeviceApi } from "../hooks/useDeviceApi";
@@ -115,8 +116,10 @@ export function SystemConfigPage() {
 
   if (loading && !config) {
     return (
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
           icon={
             <SettingsEthernetOutlined
               sx={{ fontSize: "var(--icon-size-md)" }}
@@ -143,9 +146,11 @@ export function SystemConfigPage() {
       : "";
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={error} onRetry={loadConfig} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={
           <SettingsEthernetOutlined sx={{ fontSize: "var(--icon-size-md)" }} />
         }
@@ -232,7 +237,6 @@ export function SystemConfigPage() {
                   const v = e.target.value;
                   if (v !== WIFI_MANUAL) update("wifi_ssid", v);
                 }}
-                size="small"
                 fullWidth
                 slotProps={{
                   inputLabel: { shrink: true },
@@ -251,7 +255,6 @@ export function SystemConfigPage() {
                   label={t("config.wifiSsidManual")}
                   value={form.wifi_ssid}
                   onChange={(e) => update("wifi_ssid", e.target.value)}
-                  size="small"
                   fullWidth
                   placeholder={t("config.wifiSsidHelp")}
                   slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
@@ -263,7 +266,6 @@ export function SystemConfigPage() {
               label={t("config.wifiSsid")}
               value={form.wifi_ssid}
               onChange={(e) => update("wifi_ssid", e.target.value)}
-              size="small"
               fullWidth
               helperText={t("config.wifiSsidHelp")}
               slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
@@ -274,7 +276,6 @@ export function SystemConfigPage() {
             value={form.wifi_pass}
             onChange={(e) => update("wifi_pass", e.target.value)}
             type={wifiPassType}
-            size="small"
             fullWidth
             slotProps={{
               htmlInput: {
@@ -292,7 +293,6 @@ export function SystemConfigPage() {
             value={form.proxy_url ?? ""}
             onChange={(e) => update("proxy_url", e.target.value)}
             placeholder={t("config.placeholderProxyUrl")}
-            size="small"
             fullWidth
             error={!!proxyUrlError}
             helperText={proxyUrlError || t("config.proxyUrlHint")}

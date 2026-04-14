@@ -209,10 +209,13 @@ export const BRAND_COLORS: Record<ThemeBrand, string> = {
 /** 设置里展示顺序：默认品牌 logo 放首位 */
 export const THEME_BRAND_KEYS: ThemeBrand[] = ['logo', 'blue', 'teal', 'firmware']
 
+/** 浅色模式页面画布：系统浅灰（非纯白），卡片 `card` 仍为白以保留层次 */
+const LIGHT_PAGE_BACKGROUND = '#eceef1'
+
 const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
   light: {
     blue: {
-      background: '#ffffff',
+      background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
       surface: '#f8f9fc',
@@ -237,7 +240,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       badgeNew: '#ef4444',
     },
     teal: {
-      background: '#ffffff',
+      background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
       surface: '#f8f9fc',
@@ -262,7 +265,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       badgeNew: '#ef4444',
     },
     logo: {
-      background: '#ffffff',
+      background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
       surface: '#f7f5ff',
@@ -287,7 +290,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       badgeNew: '#ef4444',
     },
     firmware: {
-      background: '#ffffff',
+      background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
       surface: '#f8f9fc',

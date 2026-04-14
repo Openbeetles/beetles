@@ -95,7 +95,6 @@ export function SoulFormBody({
             label={t("soulUser.soulFieldName")}
             value={form.name}
             onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-            size="small"
             fullWidth
             inputProps={{ maxLength: 128 }}
           />
@@ -191,7 +190,6 @@ export function SoulFormBody({
           multiline
           minRows={3}
           maxRows={8}
-          size="small"
           fullWidth
           helperText={t("soulUser.soulFieldExtraHelp")}
         />
@@ -222,7 +220,6 @@ export function UserFormBody({
             onChange={(e) =>
               setForm((p) => ({ ...p, nickname: e.target.value }))
             }
-            size="small"
             fullWidth
             inputProps={{ maxLength: 128 }}
           />
@@ -316,7 +313,6 @@ export function UserFormBody({
             onChange={(e) =>
               setForm((p) => ({ ...p, occupation: e.target.value }))
             }
-            size="small"
             fullWidth
             inputProps={{ maxLength: 256 }}
           />
@@ -339,7 +335,6 @@ export function UserFormBody({
             onChange={(e) =>
               setForm((p) => ({ ...p, timezone: e.target.value }))
             }
-            size="small"
             fullWidth
             placeholder={t("soulUser.userFieldTimezonePlaceholder")}
             inputProps={{ maxLength: 128 }}
@@ -358,7 +353,6 @@ export function UserFormBody({
           multiline
           minRows={3}
           maxRows={8}
-          size="small"
           fullWidth
           helperText={t("soulUser.userFieldExtraHelp")}
         />

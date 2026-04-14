@@ -9,6 +9,7 @@ import {
   SectionLoadingSkeleton,
 } from "../../components/form";
 import { SettingsSection } from "../../components/SettingsSection";
+import { PAGE_COLUMN_FILL_SX } from "../../theme/panelStyles";
 import { useSoulUserConfig } from "../../hooks/useSoulUserConfig";
 import { SoulFormBody } from "./formBodies";
 
@@ -33,9 +34,11 @@ export function SoulUserSoulPanel() {
     !ready || soulSaveStatus === "saving" || soulState.loading;
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={soulAlert} onRetry={retryLoadSoul} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<PsychologyOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("soulUser.sectionSoul")}
         description={t("soulUser.soulDesc")}

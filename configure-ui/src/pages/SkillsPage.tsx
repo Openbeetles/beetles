@@ -1,9 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type SyntheticEvent,
-} from "react";
+import { useCallback, useEffect, useState, type SyntheticEvent } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import CircularProgress from "@mui/material/CircularProgress";
@@ -35,6 +30,11 @@ import { SettingsSection } from "../components/SettingsSection";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
 import { useAppPreferences } from "../hooks/useAppPreferences";
 import { useToast } from "../hooks/useToast";
+import {
+  DIALOG_FOOTER_GUTTER_WIDE_SX,
+  MAIN_CONTENT_INNER_SX,
+  PAGE_COLUMN_FILL_SX,
+} from "../theme/panelStyles";
 import { createAsyncState } from "../types/asyncState";
 import {
   endpointSupportedByInventory,
@@ -87,12 +87,12 @@ export function SkillsPage() {
         data: { skills: res.data.skills, order: res.data.order ?? [] },
       });
     } else {
-      let nextError = res.error ?? ""
+      let nextError = res.error ?? "";
       if (nextError === "Not Found" || nextError === "not found") {
-        const probe = await api.device.probe()
-        const inventory = probe.ok ? parseRootInventory(probe.data) : null
+        const probe = await api.device.probe();
+        const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/skills")) {
-          nextError = t("skills.unsupportedEndpoint")
+          nextError = t("skills.unsupportedEndpoint");
         }
       }
       setListState((prev) => ({
@@ -262,9 +262,11 @@ export function SkillsPage() {
   const listToShow = [...orderedSkills, ...missingFromOrder];
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <Box sx={{ ...PAGE_COLUMN_FILL_SX, gap: 2 }}>
       <InlineAlert message={listState.error || null} onRetry={loadList} />
       <SettingsSection
+        pinHeader
+        sx={{ flex: 1, minHeight: 0 }}
         icon={<ExtensionOutlined sx={{ fontSize: "var(--icon-size-md)" }} />}
         label={t("skills.sectionList")}
         description={t("skills.sectionListDesc")}
@@ -405,9 +407,7 @@ export function SkillsPage() {
       />
       <Dialog
         open={!!editName}
-        onClose={() =>
-          !editSaving && !editBodyLoading && closeEditDialog()
-        }
+        onClose={() => !editSaving && !editBodyLoading && closeEditDialog()}
         maxWidth={false}
         fullWidth
         scroll="paper"
@@ -442,8 +442,8 @@ export function SkillsPage() {
         <DialogTitle
           component="div"
           sx={{
+            ...MAIN_CONTENT_INNER_SX,
             flexShrink: 0,
-            px: { xs: 2, sm: 3 },
             pt: 4,
             pb: 1.5,
             backgroundColor: "var(--surface)",
@@ -458,7 +458,10 @@ export function SkillsPage() {
               component="h1"
               sx={{
                 fontFamily: "var(--font-mono)",
-                fontSize: { xs: "var(--font-size-h2)", sm: "var(--font-size-h1)" },
+                fontSize: {
+                  xs: "var(--font-size-h2)",
+                  sm: "var(--font-size-h1)",
+                },
                 fontWeight: 800,
                 color: "var(--foreground)",
                 lineHeight: "var(--line-height-tight)",
@@ -473,7 +476,10 @@ export function SkillsPage() {
             <Typography
               component="h1"
               sx={{
-                fontSize: { xs: "var(--font-size-h2)", sm: "var(--font-size-h1)" },
+                fontSize: {
+                  xs: "var(--font-size-h2)",
+                  sm: "var(--font-size-h1)",
+                },
                 fontWeight: 800,
                 color: "var(--foreground)",
                 textAlign: "center",
@@ -549,16 +555,17 @@ export function SkillsPage() {
         </DialogContent>
         <DialogActions
           sx={{
+            ...DIALOG_FOOTER_GUTTER_WIDE_SX,
             flexShrink: 0,
-            px: { xs: 2, sm: 4 },
             py: 2,
             gap: 1.5,
             flexWrap: "wrap",
             justifyContent: "space-between",
             alignItems: "center",
-            backgroundColor: "color-mix(in srgb, var(--surface) 85%, transparent)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
+            backgroundColor:
+              "color-mix(in srgb, var(--surface) 85%, transparent)",
+            backdropFilter: "blur(var(--overlay-backdrop-blur))",
+            WebkitBackdropFilter: "blur(var(--overlay-backdrop-blur))",
             borderTop: "1px solid var(--border-subtle)",
           }}
         >
@@ -598,7 +605,8 @@ export function SkillsPage() {
                 fontWeight: 600,
                 color: "var(--muted)",
                 "&:hover": {
-                  bgcolor: "color-mix(in srgb, var(--foreground) 6%, transparent)",
+                  bgcolor:
+                    "color-mix(in srgb, var(--foreground) 6%, transparent)",
                 },
               }}
             >
@@ -656,7 +664,6 @@ export function SkillsPage() {
               onChange={(e) => setImportUrl(e.target.value)}
               placeholder={t("skills.importUrlPlaceholder")}
               fullWidth
-              size="small"
               slotProps={{
                 htmlInput: { style: { fontFamily: "var(--font-mono)" } },
               }}
@@ -666,7 +673,6 @@ export function SkillsPage() {
               value={importName}
               onChange={(e) => setImportName(e.target.value)}
               fullWidth
-              size="small"
               slotProps={{
                 htmlInput: { style: { fontFamily: "var(--font-mono)" } },
               }}
@@ -681,7 +687,7 @@ export function SkillsPage() {
             </Typography>
           )}
         </DialogContent>
-        <DialogActions sx={{ px: 2.5, pb: 2 }}>
+        <DialogActions sx={{ ...MAIN_CONTENT_INNER_SX, pb: 2 }}>
           <Button
             onClick={requestCloseImport}
             disabled={importSaving}

@@ -127,13 +127,6 @@ function ChannelStatusPill({
         maxWidth: "min(52%, 240px)",
         ...MICRO_CELL_SX,
         color: accent,
-        transition:
-          "border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)",
-        "&:hover": {
-          borderColor:
-            "color-mix(in srgb, var(--primary) 14%, var(--border-subtle))",
-          boxShadow: "none",
-        },
       }}
     >
       <Icon
