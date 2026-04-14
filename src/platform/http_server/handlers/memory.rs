@@ -369,7 +369,7 @@ fn build_trace_input(inspection: &MemoryDeepInspection) -> MemoryOperatorTraceIn
         snapshot_manifest: inspection.snapshot_preview.manifest.clone(),
         intelligence_replay: inspection.intelligence_replay.clone(),
         recall: MemoryOperatorRecallTrace {
-            prompt_recall_intent: inspection.recall.prompt_recall_intent.clone(),
+            prompt_recall_intent: inspection.recall.prompt_recall_intent,
             shared_factual_report: inspection.recall.shared_factual_report.clone(),
             continuity_capsule_report: inspection.recall.continuity_capsule_report.clone(),
             runtime_skill_report: inspection.recall.runtime_skill_report.clone(),

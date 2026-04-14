@@ -119,12 +119,12 @@ pub fn submit_operator_maintenance_request(
             WorkflowEffect::EnqueueSystemJob,
             WorkflowRecoveryPolicy::RetryAfterModeResume,
         );
-        return Ok(OperatorMaintenanceSubmission {
+        Ok(OperatorMaintenanceSubmission {
             accepted: true,
             request_id: request.request_id.clone(),
             action: request.action,
             delivery: "persisted_bridge",
-        });
+        })
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

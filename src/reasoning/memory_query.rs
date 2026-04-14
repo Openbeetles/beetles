@@ -48,22 +48,19 @@ impl MemoryQuerySelection {
                 let mut normalized = query.normalized();
                 normalized.limit = self
                     .long_term_limit
-                    .max(1)
-                    .min(MEMORY_QUERY_MAX_LONG_TERM_LIMIT);
+                    .clamp(1, MEMORY_QUERY_MAX_LONG_TERM_LIMIT);
                 normalized
             }),
             long_term_limit: self
                 .long_term_limit
-                .max(1)
-                .min(MEMORY_QUERY_MAX_LONG_TERM_LIMIT),
+                .clamp(1, MEMORY_QUERY_MAX_LONG_TERM_LIMIT),
             continuity_scope: self
                 .continuity_scope
                 .as_ref()
                 .and_then(|scope| scope.normalized()),
             continuity_limit: self
                 .continuity_limit
-                .max(1)
-                .min(MEMORY_QUERY_MAX_CONTINUITY_LIMIT),
+                .clamp(1, MEMORY_QUERY_MAX_CONTINUITY_LIMIT),
             include_long_term: self.include_long_term,
             include_continuity: self.include_continuity,
         }

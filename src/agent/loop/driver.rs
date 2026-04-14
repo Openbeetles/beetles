@@ -206,28 +206,6 @@ fn parse_surface_finalization_reply(reply_surface: ReplySurface, raw: &str) -> O
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn private_boundary_has_structured_finalization_prompt() {
-        assert!(structured_finalization_system_suffix(ReplySurface::PrivateBoundary).is_some());
-        assert!(
-            structured_finalization_system_suffix(ReplySurface::GovernedConversation).is_none()
-        );
-    }
-
-    #[test]
-    fn parse_surface_finalization_reply_accepts_private_boundary_json() {
-        let raw =
-            r#"{"surface":"private_boundary","reply":"这部分属于私域材料，我不能直接公开。"}"#;
-        let parsed = parse_surface_finalization_reply(ReplySurface::PrivateBoundary, raw)
-            .expect("parsed reply");
-        assert_eq!(parsed, "这部分属于私域材料，我不能直接公开。");
-    }
-}
-
 pub(super) fn run_surface_finalization_round(
     worker_llm: &(dyn LlmClient + Send + Sync),
     tool_ctx: &mut HttpClientToolContext<'_>,
@@ -362,5 +340,27 @@ pub(super) fn recv_next_agent_msg(
         } else {
             std::thread::sleep(wait);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_boundary_has_structured_finalization_prompt() {
+        assert!(structured_finalization_system_suffix(ReplySurface::PrivateBoundary).is_some());
+        assert!(
+            structured_finalization_system_suffix(ReplySurface::GovernedConversation).is_none()
+        );
+    }
+
+    #[test]
+    fn parse_surface_finalization_reply_accepts_private_boundary_json() {
+        let raw =
+            r#"{"surface":"private_boundary","reply":"这部分属于私域材料，我不能直接公开。"}"#;
+        let parsed = parse_surface_finalization_reply(ReplySurface::PrivateBoundary, raw)
+            .expect("parsed reply");
+        assert_eq!(parsed, "这部分属于私域材料，我不能直接公开。");
     }
 }

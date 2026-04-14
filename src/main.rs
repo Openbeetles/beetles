@@ -12,6 +12,8 @@ use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::network::{execute_stream_http_op, HttpClientClass, HttpFactory, NetworkGovernor};
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
+#[cfg(feature = "cli")]
+use beetle::runtime::spawn_planned;
 use beetle::runtime::{spawn_planned_handle, thread_plan};
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
@@ -550,7 +552,7 @@ mod tests {
     impl beetle::memory::MemoryStore for TestMemoryStore {
         fn get_memory(&self) -> beetle::Result<String> {
             self.has_memory
-                .then(|| String::new())
+                .then(String::new)
                 .ok_or_else(|| beetle::Error::config("memory", "missing"))
         }
 

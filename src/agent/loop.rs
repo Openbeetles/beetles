@@ -892,9 +892,9 @@ fn append_surface_evidence_block(
         return false;
     };
     let mut open_tag = String::with_capacity(96);
-    let _ = write!(
+    let _ = writeln!(
         &mut open_tag,
-        "<surface_evidence surface=\"{}\" authority=\"{}\">\n",
+        "<surface_evidence surface=\"{}\" authority=\"{}\">",
         reply_surface.as_str(),
         authority
     );
@@ -4640,14 +4640,9 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_public_runtime_rewrites_generic_greeting_into_structured_final_answer() {
+    fn execute_turn_does_not_programmatically_rewrite_greeting_drift_without_semantics_probe() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
-                LlmResponse {
-                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
                 LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,
@@ -4679,7 +4674,7 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4692,22 +4687,19 @@ mod tests {
         )
         .expect("execute turn");
 
-        assert!(matches!(
-            outcome,
-            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
-                if text == "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
-        ));
+        let delivered = match outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        assert_eq!(delivered, "你好！很高兴见到你。有什么我可以帮你的吗？");
+        assert_eq!(telemetry.latency.request_semantics_ms, 0);
+        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
+        assert!(!telemetry.used_surface_finalization);
     }
 
     #[test]
-    fn execute_turn_public_runtime_parses_structured_finalization_after_empty_draft() {
+    fn execute_turn_empty_draft_after_tool_use_uses_final_answer_recovery() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
-                LlmResponse {
-                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
                 LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,
@@ -4723,7 +4715,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: r#"{"surface":"public_runtime","reply":"系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"}"#.to_string(),
+                    content: "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。".to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -4739,7 +4731,7 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4752,22 +4744,24 @@ mod tests {
         )
         .expect("execute turn");
 
-        assert!(matches!(
-            outcome,
-            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
-                if text == "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
-        ));
+        let delivered = match outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        assert_eq!(
+            delivered,
+            "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
+        );
+        assert!(telemetry.used_final_answer_recovery);
+        assert!(!telemetry.used_surface_finalization);
+        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
     }
 
     #[test]
-    fn execute_turn_public_runtime_rewrites_internal_mechanism_refusal_into_grounded_reply() {
-        let llm = SequenceStubLlm {
+    fn execute_turn_governed_surface_does_not_programmatically_rewrite_internal_mechanism_refusal()
+    {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![
-                LlmResponse {
-                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
                 LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,
@@ -4778,16 +4772,14 @@ mod tests {
                     }]),
                 },
                 LlmResponse {
-                    content: "系统信息属于内部运行机制，为了保护持续性和稳定性，这部分内容不对外公开。".to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"public_runtime","reply":"系统信息如下：主机 beetle 在线，资源压力 Normal，WiFi 已连接，当前运行正常。"}"#.to_string(),
+                    content:
+                        "系统信息属于内部运行机制，为了保护持续性和稳定性，这部分内容不对外公开。"
+                            .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
             ]),
+            observed: Arc::clone(&observed),
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
@@ -4799,7 +4791,7 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let turn_execution::ExecutedTurn { outcome, .. } = turn_execution::execute_turn(
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -4815,21 +4807,18 @@ mod tests {
         assert!(matches!(
             outcome,
             WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
-                if text == "系统信息如下：主机 beetle 在线，资源压力 Normal，WiFi 已连接，当前运行正常。"
+                if text == "系统信息属于内部运行机制，为了保护持续性和稳定性，这部分内容不对外公开。"
         ));
+        assert!(!telemetry.used_surface_finalization);
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 2);
     }
 
     #[test]
-    fn execute_turn_public_runtime_finalization_input_uses_surface_evidence_without_memory_grounding(
-    ) {
+    fn execute_turn_governed_surface_does_not_issue_public_runtime_finalization_request() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![
-                LlmResponse {
-                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","confidence":100}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
                 LlmResponse {
                     content: "[tool_use]".to_string(),
                     stop_reason: StopReason::ToolUse,
@@ -4876,17 +4865,20 @@ mod tests {
         .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        let finalization_request = observed
-            .iter()
-            .find(|request| request.system.contains("Public Runtime Finalization"))
-            .expect("finalization request");
-        assert!(finalization_request.message_dump.contains(
-            "<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">"
-        ));
-        assert!(finalization_request.message_dump.contains("board_info"));
-        assert!(!finalization_request
-            .message_dump
-            .contains("<memory_grounding>"));
+        assert!(
+            observed
+                .iter()
+                .all(|request| !request.system.contains("Public Runtime Finalization")),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .any(|request| request.message_dump.contains(
+                    "<surface_evidence surface=\"governed_conversation\" authority=\"governed_context\">"
+                )),
+            "{observed:#?}"
+        );
     }
 
     #[test]

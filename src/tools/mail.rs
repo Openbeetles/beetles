@@ -442,16 +442,18 @@ impl Tool for MailTool {
     }
 }
 
+type ComposeRecipients = (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<MailResolvedContact>,
+);
+
 impl MailTool {
     fn resolve_compose_recipients(
         &self,
         obj: &serde_json::Map<String, Value>,
-    ) -> Result<(
-        Vec<String>,
-        Vec<String>,
-        Vec<String>,
-        Vec<MailResolvedContact>,
-    )> {
+    ) -> Result<ComposeRecipients> {
         let (to_lookup, to_lookup_resolved) =
             self.resolve_recipient_queries(obj, "to_lookup", "to")?;
         let (cc_lookup, cc_lookup_resolved) =

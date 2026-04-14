@@ -871,7 +871,8 @@ mod tests {
         }
         assert_ne!(root, PathBuf::from("/tmp/beetle"));
         assert!(
-            root == PathBuf::from("/var/lib/beetle") || root == PathBuf::from("/data/beetle"),
+            root.as_path() == std::path::Path::new("/var/lib/beetle")
+                || root.as_path() == std::path::Path::new("/data/beetle"),
             "unexpected state root: {}",
             root.display()
         );

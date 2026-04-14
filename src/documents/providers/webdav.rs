@@ -472,7 +472,7 @@ fn relative_path_from_href(credential: &DocumentsProviderCredential, href: &str)
     let trimmed = relative.trim_matches('/');
     Some(
         urlencoding::decode(trimmed)
-            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(trimmed))
+            .unwrap_or(std::borrow::Cow::Borrowed(trimmed))
             .into_owned(),
     )
 }

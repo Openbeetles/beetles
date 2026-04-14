@@ -50,16 +50,16 @@ impl OfficeResolver {
             }
         }
 
-        if !policy.global_default_account_key.is_empty() {
-            if account_supports_capability(
+        if !policy.global_default_account_key.is_empty()
+            && account_supports_capability(
                 registry,
                 &policy.global_default_account_key,
                 request.capability,
-            ) {
-                return OfficeResolveResult::Selected(OfficeResolveSelection {
-                    account_key: policy.global_default_account_key.clone(),
-                });
-            }
+            )
+        {
+            return OfficeResolveResult::Selected(OfficeResolveSelection {
+                account_key: policy.global_default_account_key.clone(),
+            });
         }
 
         let mut candidates = registry.accounts_for_capability(request.capability);

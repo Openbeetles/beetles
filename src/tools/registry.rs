@@ -806,7 +806,7 @@ fn register_core_tools(
     )));
     registry.register(Box::new(super::DiagnoseVoicePathTool::new(
         Arc::clone(platform),
-        Arc::clone(&config_store),
+        Arc::clone(config_store),
     )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
@@ -1502,12 +1502,14 @@ mod tests {
         assert!(ctx.tool_registry.get("diagnose_voice_path").is_some());
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn default_registry_registers_documents_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         assert!(ctx.tool_registry.get("documents").is_some());
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn default_registry_registers_contacts_directory_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();

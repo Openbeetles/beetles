@@ -639,9 +639,9 @@ fn unfold_ical_lines(text: &str) -> Vec<String> {
     lines
 }
 
-fn parse_ical_property<'a>(
-    line: &'a str,
-) -> Option<(&'a str, std::collections::BTreeMap<String, String>, &'a str)> {
+fn parse_ical_property(
+    line: &str,
+) -> Option<(&str, std::collections::BTreeMap<String, String>, &str)> {
     let (name_and_params, value) = line.split_once(':')?;
     let mut parts = name_and_params.split(';');
     let name = parts.next()?.trim();
@@ -743,7 +743,7 @@ fn href_remote_id(href: &str) -> Option<String> {
         .filter(|segment| !segment.trim().is_empty())?;
     Some(
         urlencoding::decode(segment)
-            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(segment))
+            .unwrap_or(std::borrow::Cow::Borrowed(segment))
             .into_owned(),
     )
 }

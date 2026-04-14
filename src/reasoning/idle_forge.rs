@@ -52,9 +52,10 @@ pub enum IdleMemoryForgeJobStatus {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleMemoryForgeAdjudicationState {
+    #[default]
     Clean,
     RequiresAdjudication,
 }
@@ -146,12 +147,6 @@ pub struct IdleMemoryForgeJobPayload {
     pub trigger: IdleMemoryForgeTrigger,
     pub source_channel: String,
     pub scheduled_at: u64,
-}
-
-impl Default for IdleMemoryForgeAdjudicationState {
-    fn default() -> Self {
-        Self::Clean
-    }
 }
 
 pub fn idle_memory_forge_job_contracts() -> Vec<IdleMemoryForgeJobContract> {
