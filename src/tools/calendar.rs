@@ -9,7 +9,8 @@ use crate::calendar::{
 
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService,
+    SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use crate::util::{current_unix_secs, parse_iso8601};
@@ -33,6 +34,7 @@ struct CalendarProviderStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     default_calendar_account_key: Option<String>,
     configured_providers: Vec<CalendarProviderCredentialStatus>,
+    account_assessments: Vec<OfficeAccountAssessment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
 }
@@ -182,6 +184,7 @@ impl Tool for CalendarTool {
                         registered_remote_providers,
                         default_calendar_account_key: self.service.office_default_account_key()?,
                         configured_providers,
+                        account_assessments: self.service.office_account_assessments()?,
                         office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },
                 )
@@ -879,6 +882,11 @@ mod tests {
             payload["configured_providers"][0]["has_refresh_token"],
             true
         );
+        assert!(payload["account_assessments"].as_array().is_some());
+        assert!(payload["account_assessments"]
+            .as_array()
+            .expect("account assessments array")
+            .is_empty());
     }
 
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -922,6 +930,10 @@ mod tests {
             "https://dav.example.com/remote.php/dav/calendars"
         );
         assert_eq!(payload["configured_providers"][0]["root_path"], "/work");
+        assert!(payload["account_assessments"]
+            .as_array()
+            .expect("account assessments array")
+            .is_empty());
     }
 
     #[test]
@@ -1007,5 +1019,13 @@ mod tests {
             .unwrap();
         let status: Value = serde_json::from_str(&status).unwrap();
         assert_eq!(status["default_calendar_account_key"], "calendar-work");
+        assert_eq!(
+            status["account_assessments"][0]["account_key"],
+            "calendar-personal"
+        );
+        assert_eq!(
+            status["account_assessments"][1]["account_key"],
+            "calendar-work"
+        );
     }
 }

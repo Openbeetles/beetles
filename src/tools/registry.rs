@@ -904,9 +904,14 @@ fn register_office_tools(
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));
-    registry.register(Box::new(super::OfficeStatusTool::with_authority(
-        office_authority,
-    )));
+    registry.register(Box::new(
+        super::OfficeStatusTool::with_probe_supported_provider_kinds(
+            office_authority,
+            ["imap_smtp", "webdav", "caldav"]
+                .into_iter()
+                .map(str::to_string),
+        ),
+    ));
 }
 
 #[cold]

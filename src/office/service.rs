@@ -1,4 +1,6 @@
 use crate::error::Result;
+#[cfg(feature = "capability_office")]
+use crate::office::{assess_office_account, OfficeAccountAssessment};
 use crate::office::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeAccountRuntimeStatus,
     OfficeCapability, OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStatus,
@@ -127,6 +129,77 @@ impl OfficeService {
 
     pub fn clear_runtime_status(&self, account_key: &str) -> Result<()> {
         self.runtime_status_store.clear(account_key)
+    }
+
+    #[cfg(feature = "capability_office")]
+    pub fn assess_account(
+        &self,
+        account_key: &str,
+        probe_supported: bool,
+    ) -> Result<Option<OfficeAccountAssessment>> {
+        let Some(account) = self.account(account_key) else {
+            return Ok(None);
+        };
+        let credential = self.credential(account_key)?;
+        let runtime_status = self.runtime_status(account_key)?;
+        Ok(Some(assess_office_account(
+            &account,
+            credential.as_ref(),
+            runtime_status.as_ref(),
+            probe_supported,
+        )))
+    }
+
+    #[cfg(feature = "capability_office")]
+    pub fn assess_capability_accounts<F>(
+        &self,
+        capability: OfficeCapability,
+        mut probe_supported_for_provider: F,
+    ) -> Result<Vec<OfficeAccountAssessment>>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut items = self
+            .accounts_for_capability(capability)
+            .into_iter()
+            .map(|account| {
+                self.assess_account(
+                    &account.account_key,
+                    probe_supported_for_provider(account.provider_kind.as_str()),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        Ok(items)
+    }
+
+    #[cfg(feature = "capability_office")]
+    pub fn assess_all_accounts<F>(
+        &self,
+        mut probe_supported_for_provider: F,
+    ) -> Result<Vec<OfficeAccountAssessment>>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut items = self
+            .registry
+            .all_accounts()
+            .into_iter()
+            .map(|account| {
+                self.assess_account(
+                    &account.account_key,
+                    probe_supported_for_provider(account.provider_kind.as_str()),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        Ok(items)
     }
 
     pub fn summary(&self) -> Result<OfficeAuthoritySummary> {

@@ -4,8 +4,8 @@ use crate::calendar::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use std::sync::Arc;
 
@@ -86,6 +86,15 @@ impl CalendarService {
             .into_iter()
             .filter(|status| calendar_accounts.contains(&status.account_key))
             .collect())
+    }
+
+    pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
+        let Some(service) = self.load_office_service()? else {
+            return Ok(Vec::new());
+        };
+        service.assess_capability_accounts(OfficeCapability::Calendar, |provider_kind| {
+            self.providers.get(provider_kind).is_some()
+        })
     }
 
     pub fn list(

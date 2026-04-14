@@ -5,8 +5,8 @@ use crate::mail::{
     MailSendRequest,
 };
 use crate::office::{
-    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::util::current_unix_secs;
 use std::sync::Arc;
@@ -128,6 +128,15 @@ impl MailService {
             return Ok(None);
         };
         service.runtime_status(account_key)
+    }
+
+    pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
+        let Some(service) = self.load_office_service()? else {
+            return Ok(Vec::new());
+        };
+        service.assess_capability_accounts(OfficeCapability::Mail, |provider_kind| {
+            self.providers.get(provider_kind).is_some()
+        })
     }
 
     pub fn provider_supports(&self, provider: &str, op: MailOperation) -> bool {

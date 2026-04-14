@@ -9,7 +9,8 @@ use crate::mail::{
     MailProviderRegistry, MailQuery, MailSendRequest, MailService,
 };
 use crate::office::{
-    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeService,
+    SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
@@ -31,6 +32,8 @@ struct MailProviderStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     default_mail_account_key: Option<String>,
     configured_providers: Vec<MailProviderCredentialStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_assessments: Vec<OfficeAccountAssessment>,
     account_statuses: Vec<MailAccountStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
@@ -200,6 +203,7 @@ impl Tool for MailTool {
                         op: "provider_status",
                         registered_remote_providers,
                         default_mail_account_key: self.service.office_default_account_key()?,
+                        account_assessments: self.service.office_account_assessments()?,
                         account_statuses: build_mail_account_statuses(
                             &self.service,
                             &configured_providers,
@@ -748,22 +752,43 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubOfficeCredentialStore;
+    struct StubOfficeCredentialStore {
+        items: Mutex<HashMap<String, OfficeCredential>>,
+    }
 
     impl OfficeCredentialStore for StubOfficeCredentialStore {
-        fn get(&self, _account_key: &str) -> Result<Option<OfficeCredential>> {
-            Ok(None)
+        fn get(&self, account_key: &str) -> Result<Option<OfficeCredential>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(account_key)
+                .cloned())
         }
 
         fn list(&self) -> Result<Vec<OfficeCredential>> {
-            Ok(Vec::new())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .cloned()
+                .collect())
         }
 
-        fn set(&self, _credential: &OfficeCredential) -> Result<()> {
+        fn set(&self, credential: &OfficeCredential) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(credential.account_key.clone(), credential.clone());
             Ok(())
         }
 
-        fn clear(&self, _account_key: &str) -> Result<()> {
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -1079,11 +1104,36 @@ mod tests {
                 updated_at: 8,
             })
             .expect("seed runtime status");
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for account_key in ["mail-work", "mail-personal"] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: [
+                        (
+                            crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                            "imap.example.com".to_string(),
+                        ),
+                        (
+                            crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                            "smtp.example.com".to_string(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })
+                .expect("seed office credential");
+        }
         let office_service = OfficeService::new(
             registry,
             binding,
             OfficeSelectionPolicy::default(),
-            Arc::new(StubOfficeCredentialStore),
+            office_credential_store,
             runtime_store.clone(),
         );
 
@@ -1173,6 +1223,16 @@ mod tests {
             .find(|item| item["account_key"] == "mail-work")
             .expect("mail-work status");
         assert_eq!(work_status["send_ready"], true);
+        let assessments = payload["account_assessments"]
+            .as_array()
+            .expect("account assessments array");
+        let work_assessment = assessments
+            .iter()
+            .find(|item| item["account_key"] == "mail-work")
+            .expect("mail-work assessment");
+        assert_eq!(work_assessment["readiness"], "ready");
+        assert_eq!(work_assessment["next_action"], "none");
+        assert_eq!(work_assessment["probe_supported"], true);
     }
 
     #[test]
@@ -1346,7 +1406,7 @@ mod tests {
         save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
         let office_source = Arc::new(ReloadingOfficeAuthoritySource::new(
             config_file_store.clone(),
-            Arc::new(StubOfficeCredentialStore),
+            Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore::default()),
         ));
         let provider = Arc::new(StubProvider::default());

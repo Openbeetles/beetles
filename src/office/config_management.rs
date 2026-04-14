@@ -2,66 +2,21 @@ use crate::config::{
     self, validate_office_accounts_candidate, validate_office_credentials_candidate,
     ConfigFileStore, OfficeAccountsSegment,
 };
-use crate::documents::{OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_USERNAME};
 use crate::error::{Error, Result};
-use crate::mail::{
-    OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST, OFFICE_METADATA_MAIL_USERNAME,
-};
 use crate::office::{
-    OfficeAccount, OfficeAccountIdentityClass, OfficeAuthoritySummary, OfficeCapability,
-    OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest,
-    OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
+    assess_office_account, OfficeAccount, OfficeAccountAssessment, OfficeAccountIdentityClass,
+    OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment, OfficeCredential,
+    OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest, OfficeResolveResult,
+    OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-const OFFICE_METADATA_CALENDAR_USERNAME_FIELD: &str = "calendar_username";
-const OFFICE_METADATA_CALENDAR_BASE_URL_FIELD: &str = "calendar_base_url";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigSnapshot {
     pub accounts: OfficeAccountsSegment,
     pub credentials: OfficeCredentialsSegment,
     pub summary: OfficeAuthoritySummary,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OfficeConfigReadiness {
-    NeedsCredentialInput,
-    ReadyForProbe,
-    ProbeUnavailable,
-    Ready,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OfficeConfigNextAction {
-    DraftCredentials,
-    Probe,
-    None,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeAccountAssessment {
-    pub account_key: String,
-    pub provider_kind: String,
-    pub enabled_capabilities: Vec<OfficeCapability>,
-    pub credential_present: bool,
-    pub credential_configured: bool,
-    pub probe_supported: bool,
-    #[serde(default)]
-    pub missing_fields: Vec<String>,
-    pub readiness: OfficeConfigReadiness,
-    pub next_action: OfficeConfigNextAction,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime_status: Option<crate::office::OfficeAccountRuntimeStatus>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeConfigAssessment {
-    #[serde(default)]
-    pub accounts: Vec<OfficeAccountAssessment>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -329,135 +284,17 @@ impl OfficeConfigManagementService {
             )
         })?;
         let credential = office.credential(account_key)?;
-        let missing_fields = collect_missing_fields(&account, credential.as_ref());
         let runtime_status = office.runtime_status(account_key)?;
         let probe_supported = self
             .probe_adapters
             .iter()
             .any(|adapter| adapter.provider_kind() == account.provider_kind);
-        let readiness = if missing_fields.is_empty() {
-            if runtime_status
-                .as_ref()
-                .is_some_and(|status| status.probe_ok)
-            {
-                OfficeConfigReadiness::Ready
-            } else if probe_supported {
-                OfficeConfigReadiness::ReadyForProbe
-            } else {
-                OfficeConfigReadiness::ProbeUnavailable
-            }
-        } else {
-            OfficeConfigReadiness::NeedsCredentialInput
-        };
-        let next_action = match readiness {
-            OfficeConfigReadiness::NeedsCredentialInput => OfficeConfigNextAction::DraftCredentials,
-            OfficeConfigReadiness::ReadyForProbe => OfficeConfigNextAction::Probe,
-            OfficeConfigReadiness::ProbeUnavailable | OfficeConfigReadiness::Ready => {
-                OfficeConfigNextAction::None
-            }
-        };
-        Ok(OfficeAccountAssessment {
-            account_key: account.account_key,
-            provider_kind: account.provider_kind,
-            enabled_capabilities: account.enabled_capabilities,
-            credential_present: credential.is_some(),
-            credential_configured: missing_fields.is_empty(),
+        Ok(assess_office_account(
+            &account,
+            credential.as_ref(),
+            runtime_status.as_ref(),
             probe_supported,
-            missing_fields,
-            readiness,
-            next_action,
-            runtime_status,
-        })
-    }
-}
-
-fn collect_missing_fields(
-    account: &OfficeAccount,
-    credential: Option<&OfficeCredential>,
-) -> Vec<String> {
-    let mut missing = std::collections::BTreeSet::new();
-    let access_token = credential
-        .map(|item| item.access_token.trim())
-        .unwrap_or_default();
-    let external_account_id = account.external_account_id.trim();
-    let metadata_value = |key: &str| {
-        credential
-            .and_then(|item| item.metadata_value(key))
-            .map(str::trim)
-            .unwrap_or_default()
-    };
-
-    match account.provider_kind.as_str() {
-        "imap_smtp" => {
-            push_missing_if_blank(&mut missing, "access_token", access_token);
-            if external_account_id.is_empty()
-                && metadata_value(OFFICE_METADATA_MAIL_USERNAME).is_empty()
-            {
-                missing.insert("mail_username".to_string());
-            }
-            push_missing_if_blank(
-                &mut missing,
-                OFFICE_METADATA_MAIL_IMAP_HOST,
-                metadata_value(OFFICE_METADATA_MAIL_IMAP_HOST),
-            );
-            push_missing_if_blank(
-                &mut missing,
-                OFFICE_METADATA_MAIL_SMTP_HOST,
-                metadata_value(OFFICE_METADATA_MAIL_SMTP_HOST),
-            );
-        }
-        "webdav" => {
-            push_missing_if_blank(&mut missing, "access_token", access_token);
-            if external_account_id.is_empty()
-                && metadata_value(OFFICE_METADATA_DOCUMENTS_USERNAME).is_empty()
-            {
-                missing.insert(OFFICE_METADATA_DOCUMENTS_USERNAME.to_string());
-            }
-            push_missing_if_blank(
-                &mut missing,
-                OFFICE_METADATA_DOCUMENTS_BASE_URL,
-                metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL),
-            );
-        }
-        "caldav" => {
-            push_missing_if_blank(&mut missing, "access_token", access_token);
-            if external_account_id.is_empty()
-                && metadata_value(OFFICE_METADATA_CALENDAR_USERNAME_FIELD).is_empty()
-            {
-                missing.insert(OFFICE_METADATA_CALENDAR_USERNAME_FIELD.to_string());
-            }
-            push_missing_if_blank(
-                &mut missing,
-                OFFICE_METADATA_CALENDAR_BASE_URL_FIELD,
-                metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL_FIELD),
-            );
-            push_missing_if_blank(
-                &mut missing,
-                crate::office::OFFICE_METADATA_CALENDAR_ID,
-                metadata_value(crate::office::OFFICE_METADATA_CALENDAR_ID),
-            );
-        }
-        _ => {
-            if account
-                .enabled_capabilities
-                .iter()
-                .any(|capability| *capability != OfficeCapability::ContactsDirectory)
-            {
-                push_missing_if_blank(&mut missing, "access_token", access_token);
-            }
-        }
-    }
-
-    missing.into_iter().collect()
-}
-
-fn push_missing_if_blank(
-    missing: &mut std::collections::BTreeSet<String>,
-    field: &str,
-    value: &str,
-) {
-    if value.trim().is_empty() {
-        missing.insert(field.to_string());
+        ))
     }
 }
 
@@ -505,7 +342,9 @@ fn capability_key(capability: OfficeCapability) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::office::OfficeAccountRuntimeStatus;
+    use crate::office::{
+        OfficeAccountRuntimeStatus, OfficeConfigNextAction, OfficeConfigReadiness,
+    };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;
 

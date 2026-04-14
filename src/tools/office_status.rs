@@ -1,15 +1,17 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAuthoritySource, OfficeAuthoritySummary, OfficeCapability, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAuthoritySource, OfficeAuthoritySummary, OfficeCapability,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub struct OfficeStatusTool {
     authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    probe_supported_provider_kinds: BTreeSet<String>,
 }
 
 #[derive(Serialize)]
@@ -18,6 +20,8 @@ struct OfficeStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     capability: Option<OfficeCapability>,
     summary: OfficeAuthoritySummary,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_assessments: Vec<OfficeAccountAssessment>,
 }
 
 impl OfficeStatusTool {
@@ -26,7 +30,17 @@ impl OfficeStatusTool {
     }
 
     pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
-        Self { authority }
+        Self::with_probe_supported_provider_kinds(authority, Vec::<String>::new())
+    }
+
+    pub fn with_probe_supported_provider_kinds(
+        authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+        provider_kinds: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            authority,
+            probe_supported_provider_kinds: provider_kinds.into_iter().collect(),
+        }
     }
 }
 
@@ -46,7 +60,17 @@ impl Tool for OfficeStatusTool {
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_office_status")?;
         let capability = obj.get("capability").map(parse_capability).transpose()?;
-        let mut summary = self.authority.load()?.summary()?;
+        let service = self.authority.load()?;
+        let mut summary = service.summary()?;
+        let account_assessments = if let Some(capability) = capability {
+            service.assess_capability_accounts(capability, |provider_kind| {
+                self.probe_supported_provider_kinds.contains(provider_kind)
+            })?
+        } else {
+            service.assess_all_accounts(|provider_kind| {
+                self.probe_supported_provider_kinds.contains(provider_kind)
+            })?
+        };
         if let Some(capability) = capability {
             summary
                 .defaults
@@ -62,6 +86,7 @@ impl Tool for OfficeStatusTool {
                 op: "status",
                 capability,
                 summary,
+                account_assessments,
             },
         )
     }
@@ -263,5 +288,37 @@ mod tests {
             second["summary"]["defaults"][0]["account_key"],
             "mail-personal"
         );
+    }
+
+    #[test]
+    fn office_status_tool_reports_account_assessments() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::default());
+        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        let tool = OfficeStatusTool::with_authority(Arc::new(ReloadingOfficeAuthoritySource::new(
+            config_file_store,
+            Arc::new(StubOfficeCredentialStore),
+            Arc::new(StubRuntimeStatusStore),
+        )));
+        let mut ctx = DummyCtx;
+
+        let payload = tool.execute("{}", &mut ctx).expect("office status");
+        let payload: Value = serde_json::from_str(&payload).expect("valid office status");
+        assert_eq!(
+            payload["account_assessments"][0]["account_key"],
+            "mail-personal"
+        );
+        assert_eq!(
+            payload["account_assessments"][0]["readiness"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert!(payload["account_assessments"][0]["missing_fields"]
+            .as_array()
+            .expect("missing fields array")
+            .iter()
+            .any(|item| item == "access_token"));
     }
 }

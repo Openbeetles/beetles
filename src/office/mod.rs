@@ -2,6 +2,8 @@
 
 mod account;
 #[cfg(feature = "capability_office")]
+mod assessment;
+#[cfg(feature = "capability_office")]
 mod authority_source;
 mod binding;
 #[cfg(feature = "capability_office")]
@@ -18,16 +20,20 @@ pub use account::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
 };
 #[cfg(feature = "capability_office")]
+pub use assessment::{
+    assess_office_account, OfficeAccountAssessment, OfficeConfigAssessment, OfficeConfigNextAction,
+    OfficeConfigReadiness,
+};
+#[cfg(feature = "capability_office")]
 pub use authority_source::{
     OfficeAuthoritySource, ReloadingOfficeAuthoritySource, SnapshotOfficeAuthoritySource,
 };
 pub use binding::OfficeCapabilityBinding;
 #[cfg(feature = "capability_office")]
 pub use config_management::{
-    OfficeAccountAssessment, OfficeAccountDraftRequest, OfficeConfigAssessment,
-    OfficeConfigManagementService, OfficeConfigNextAction, OfficeConfigReadiness,
-    OfficeConfigSnapshot, OfficeCredentialDraftRequest, OfficePolicyPatch, OfficeProbeAdapter,
-    OfficeProbeDisposition, OfficeProbeResult,
+    OfficeAccountDraftRequest, OfficeConfigManagementService, OfficeConfigSnapshot,
+    OfficeCredentialDraftRequest, OfficePolicyPatch, OfficeProbeAdapter, OfficeProbeDisposition,
+    OfficeProbeResult,
 };
 pub use credentials::{
     OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore, OfficeCredentialsSegment,
