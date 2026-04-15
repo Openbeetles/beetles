@@ -2,8 +2,22 @@
 
 use crate::config;
 use crate::i18n::{locale_from_store, tr, tr_error, Message};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::office::{
+    OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeCapability,
+    OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigManagementService,
+};
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
+use serde::Deserialize;
 use serde_json::Value;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use std::sync::Arc;
 
 use super::HandlerContext;
 
@@ -79,25 +93,193 @@ pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std:
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-/// GET /api/config/accounts：返回 OfficeAccountsSegment JSON（文件不存在时返回空默认配置）。
-pub fn get_accounts_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    config::get_office_accounts_segment(ctx.config_file_store.as_ref())
-        .map_err(|e| to_io(e.to_string()))
+#[derive(serde::Serialize)]
+struct AccountSummaryListResponse {
+    count: usize,
+    items: Vec<OfficeConfigAccountSummary>,
 }
 
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-/// POST /api/config/accounts：仅写办公账户段，body 为 OfficeAccountsSegment JSON。
+#[derive(Deserialize)]
+struct RevokeRequest {
+    #[serde(default = "default_true")]
+    clear_runtime_status: bool,
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn default_true() -> bool {
+    true
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn office_config_service(ctx: &HandlerContext) -> OfficeConfigManagementService {
+    OfficeConfigManagementService::new(
+        Arc::clone(&ctx.config_file_store),
+        ctx.platform.office_credential_store(),
+        ctx.platform.office_runtime_status_store(),
+    )
+    .with_default_probe_adapters()
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn parse_capability(capability: Option<&str>) -> Result<Option<OfficeCapability>, std::io::Error> {
+    let Some(capability) = capability else {
+        return Ok(None);
+    };
+    let value = match capability.trim() {
+        "mail" => OfficeCapability::Mail,
+        "calendar" => OfficeCapability::Calendar,
+        "documents" => OfficeCapability::Documents,
+        "contacts_directory" => OfficeCapability::ContactsDirectory,
+        other => {
+            return Err(to_io(format!("unknown office capability '{}'", other)));
+        }
+    };
+    Ok(Some(value))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// GET /api/config/accounts：返回账户配置摘要列表。
+pub fn get_accounts_body(
+    ctx: &HandlerContext,
+    capability: Option<&str>,
+) -> Result<String, std::io::Error> {
+    let items = office_config_service(ctx)
+        .account_summaries(parse_capability(capability)?)
+        .map_err(|e| to_io(e.to_string()))?;
+    serde_json::to_string(&AccountSummaryListResponse {
+        count: items.len(),
+        items,
+    })
+    .map_err(|e| to_io(e.to_string()))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// POST /api/config/accounts：创建或更新单个账户注册。
 pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
-    match config::save_office_accounts_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => {
+    let request: OfficeAccountDraftRequest = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+    };
+    match office_config_service(ctx).save_account(&request) {
+        Ok(detail) => {
             ctx.reload_config();
-            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+            let body = serde_json::to_string(&detail).map_err(|error| to_io(error.to_string()))?;
+            Ok(ApiResponse::ok_200_json(&body))
         }
         Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// GET /api/config/accounts/:account_key：返回单账户详情和编辑字段。
+pub fn get_account_detail_body(
+    ctx: &HandlerContext,
+    account_key: &str,
+) -> Result<String, std::io::Error> {
+    let detail: OfficeConfigAccountDetail = office_config_service(ctx)
+        .account_detail(account_key)
+        .map_err(|e| to_io(e.to_string()))?;
+    serde_json::to_string(&detail).map_err(|e| to_io(e.to_string()))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// POST /api/config/accounts/:account_key/config：保存单账户 provider 配置。
+pub fn post_account_config(
+    ctx: &HandlerContext,
+    account_key: &str,
+    body: &str,
+) -> Result<ApiResponse, std::io::Error> {
+    let loc = locale_from_store(ctx.config_store.as_ref());
+    let request: OfficeAccountConfigSaveRequest = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+    };
+    match office_config_service(ctx).save_account_config(account_key, &request) {
+        Ok(detail) => {
+            ctx.reload_config();
+            let body = serde_json::to_string(&detail).map_err(|error| to_io(error.to_string()))?;
+            Ok(ApiResponse::ok_200_json(&body))
+        }
+        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// POST /api/config/accounts/:account_key/probe：对单账户执行真实远端探测。
+pub fn post_account_probe(
+    ctx: &HandlerContext,
+    account_key: &str,
+) -> Result<ApiResponse, std::io::Error> {
+    let loc = locale_from_store(ctx.config_store.as_ref());
+    match office_config_service(ctx).probe(account_key) {
+        Ok(result) => {
+            let body = serde_json::to_string(&result).map_err(|error| to_io(error.to_string()))?;
+            Ok(ApiResponse::ok_200_json(&body))
+        }
+        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// POST /api/config/accounts/:account_key/revoke：清除单账户凭证并可选清理运行态。
+pub fn post_account_revoke(
+    ctx: &HandlerContext,
+    account_key: &str,
+    body: &str,
+) -> Result<ApiResponse, std::io::Error> {
+    let loc = locale_from_store(ctx.config_store.as_ref());
+    let request: RevokeRequest = if body.trim().is_empty() {
+        RevokeRequest {
+            clear_runtime_status: true,
+        }
+    } else {
+        match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+        }
+    };
+    match office_config_service(ctx).revoke(account_key, request.clear_runtime_status) {
+        Ok(()) => Ok(ApiResponse::ok_200_json(
+            &serde_json::json!({
+                "ok": true,
+                "account_key": account_key,
+                "cleared_runtime_status": request.clear_runtime_status,
+            })
+            .to_string(),
+        )),
+        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
     }
 }
 

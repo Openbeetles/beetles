@@ -5,10 +5,11 @@ use crate::config::{
 use crate::error::{Error, Result};
 use crate::office::{
     assess_office_account, office_provider_schema, office_provider_schemas, OfficeAccount,
-    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment, OfficeCredential,
-    OfficeCredentialStore, OfficeCredentialsSegment, OfficeProviderSchema, OfficeResolveRequest,
-    OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
+    OfficeAccountAssessment, OfficeAccountAuthorityStatus, OfficeAccountIdentityClass,
+    OfficeAccountRuntimeStatus, OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment,
+    OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeProviderFieldLocation,
+    OfficeProviderFieldSchema, OfficeProviderSchema, OfficeResolveRequest, OfficeResolveResult,
+    OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,6 +48,49 @@ pub struct OfficeAccountDraftRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeCredentialDraftRequest {
     pub credential: OfficeCredential,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeConfigAccountSummary {
+    pub account_key: String,
+    pub provider_kind: String,
+    pub account_label: String,
+    pub identity_class: OfficeAccountIdentityClass,
+    #[serde(default)]
+    pub enabled_capabilities: Vec<OfficeCapability>,
+    #[serde(default)]
+    pub selected_for_capabilities: Vec<OfficeCapability>,
+    pub readiness: crate::office::OfficeConfigReadiness,
+    pub next_action: crate::office::OfficeConfigNextAction,
+    pub missing_fields_count: usize,
+    pub has_runtime_error: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeAccountConfigSaveRequest {
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
+    #[serde(default)]
+    pub clear_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeConfigFieldState {
+    #[serde(flatten)]
+    pub schema: OfficeProviderFieldSchema,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<String>,
+    #[serde(default)]
+    pub configured: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeConfigAccountDetail {
+    pub account: OfficeAccountAuthorityStatus,
+    pub assessment: OfficeAccountAssessment,
+    pub provider_display_name: String,
+    #[serde(default)]
+    pub fields: Vec<OfficeConfigFieldState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,6 +147,10 @@ impl OfficeConfigManagementService {
     ) -> Self {
         self.probe_adapters = probe_adapters;
         self
+    }
+
+    pub fn with_default_probe_adapters(self) -> Self {
+        self.with_probe_adapters(default_office_probe_adapters())
     }
 
     pub fn inspect(&self) -> Result<OfficeConfigSnapshot> {
@@ -163,6 +211,87 @@ impl OfficeConfigManagementService {
         Ok(office_provider_schemas(capability))
     }
 
+    pub fn account_summaries(
+        &self,
+        capability: Option<OfficeCapability>,
+    ) -> Result<Vec<OfficeConfigAccountSummary>> {
+        let accounts = self.load_accounts_segment()?;
+        let office = self.build_office_service(&accounts)?;
+        let summary = office.summary()?;
+        let assessments = office.assess_all_accounts(|provider_kind| {
+            self.probe_supported_for_provider(provider_kind)
+        })?;
+        let assessment_by_account = assessments
+            .into_iter()
+            .map(|assessment| (assessment.account_key.clone(), assessment))
+            .collect::<BTreeMap<_, _>>();
+        let mut items = summary
+            .accounts
+            .into_iter()
+            .filter(|account| {
+                capability
+                    .map(|value| account.enabled_capabilities.contains(&value))
+                    .unwrap_or(true)
+            })
+            .filter_map(|account| {
+                assessment_by_account
+                    .get(&account.account_key)
+                    .map(|assessment| OfficeConfigAccountSummary {
+                        account_key: account.account_key.clone(),
+                        provider_kind: account.provider_kind.clone(),
+                        account_label: account.account_label.clone(),
+                        identity_class: account.identity_class,
+                        enabled_capabilities: account.enabled_capabilities.clone(),
+                        selected_for_capabilities: account.selected_for_capabilities.clone(),
+                        readiness: assessment.readiness,
+                        next_action: assessment.next_action,
+                        missing_fields_count: assessment.missing_fields.len(),
+                        has_runtime_error: account
+                            .runtime_status
+                            .as_ref()
+                            .is_some_and(|status| !status.last_error.trim().is_empty()),
+                    })
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        Ok(items)
+    }
+
+    pub fn account_detail(&self, account_key: &str) -> Result<OfficeConfigAccountDetail> {
+        let accounts = self.load_accounts_segment()?;
+        let office = self.build_office_service(&accounts)?;
+        let summary = office.summary()?;
+        let account = summary
+            .accounts
+            .into_iter()
+            .find(|item| item.account_key == account_key)
+            .ok_or_else(|| {
+                Error::config(
+                    "office_config_account_detail",
+                    format!("unknown office account '{}'", account_key),
+                )
+            })?;
+        let assessment = self.build_account_assessment(&office, account_key)?;
+        let provider_schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
+            Error::config(
+                "office_config_account_detail",
+                format!("unknown office provider '{}'", account.provider_kind),
+            )
+        })?;
+        let credential = office.credential(account_key)?;
+        let fields = provider_schema
+            .fields
+            .iter()
+            .map(|schema| build_field_state(&account, credential.as_ref(), schema))
+            .collect::<Vec<_>>();
+        Ok(OfficeConfigAccountDetail {
+            account,
+            assessment,
+            provider_display_name: provider_schema.display_name,
+            fields,
+        })
+    }
+
     pub fn draft_accounts(
         &self,
         request: &OfficeAccountDraftRequest,
@@ -221,6 +350,94 @@ impl OfficeConfigManagementService {
             Error::config("office_config_commit_credentials", error.to_string())
         })?;
         config::save_office_credentials_segment(self.credential_store.as_ref(), &body)
+    }
+
+    pub fn save_account(
+        &self,
+        request: &OfficeAccountDraftRequest,
+    ) -> Result<OfficeConfigAccountDetail> {
+        let segment = self.draft_accounts(request)?;
+        self.commit_accounts(&segment)?;
+        self.account_detail(&request.account.account_key)
+    }
+
+    pub fn save_account_config(
+        &self,
+        account_key: &str,
+        request: &OfficeAccountConfigSaveRequest,
+    ) -> Result<OfficeConfigAccountDetail> {
+        let mut accounts = self.load_accounts_segment()?;
+        let mut account = accounts.registry.get(account_key).cloned().ok_or_else(|| {
+            Error::config(
+                "office_config_save_account_config",
+                format!("unknown office account '{}'", account_key),
+            )
+        })?;
+        let provider_schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
+            Error::config(
+                "office_config_save_account_config",
+                format!("unknown office provider '{}'", account.provider_kind),
+            )
+        })?;
+        let field_schemas = provider_schema
+            .fields
+            .into_iter()
+            .map(|field| (field.key.clone(), field))
+            .collect::<BTreeMap<_, _>>();
+        for key in request.fields.keys() {
+            if !field_schemas.contains_key(key) {
+                return Err(Error::config(
+                    "office_config_save_account_config",
+                    format!(
+                        "provider '{}' does not accept config field '{}'",
+                        account.provider_kind, key
+                    ),
+                ));
+            }
+        }
+        for key in &request.clear_fields {
+            if !field_schemas.contains_key(key) {
+                return Err(Error::config(
+                    "office_config_save_account_config",
+                    format!(
+                        "provider '{}' does not accept config field '{}'",
+                        account.provider_kind, key
+                    ),
+                ));
+            }
+        }
+
+        let mut credential =
+            self.credential_store
+                .get(account_key)?
+                .unwrap_or_else(|| OfficeCredential {
+                    account_key: account_key.to_string(),
+                    ..OfficeCredential::default()
+                });
+        let clear_fields = request
+            .clear_fields
+            .iter()
+            .map(|field| field.trim().to_string())
+            .collect::<BTreeSet<_>>();
+        let now = crate::util::current_unix_secs();
+        for (key, schema) in &field_schemas {
+            if let Some(next_value) = request.fields.get(key) {
+                apply_config_field_value(&mut account, &mut credential, schema, next_value);
+                continue;
+            }
+            if clear_fields.contains(key) {
+                apply_config_field_value(&mut account, &mut credential, schema, "");
+            }
+        }
+        credential.updated_at = now;
+        credential.account_key = account.account_key.clone();
+        accounts.registry.insert(account.clone());
+        self.validate_accounts(&accounts)?;
+        let normalized_credential = self.normalize_credential_for_account(&account, &credential)?;
+
+        self.commit_accounts(&accounts)?;
+        self.credential_store.set(&normalized_credential)?;
+        self.account_detail(account_key)
     }
 
     pub fn revoke(&self, account_key: &str, clear_runtime_status: bool) -> Result<()> {
@@ -316,6 +533,12 @@ impl OfficeConfigManagementService {
             runtime_status.as_ref(),
             probe_supported,
         ))
+    }
+
+    fn probe_supported_for_provider(&self, provider_kind: &str) -> bool {
+        self.probe_adapters
+            .iter()
+            .any(|adapter| adapter.provider_kind() == provider_kind)
     }
 
     fn normalize_credentials_segment(
@@ -451,6 +674,93 @@ impl OfficeConfigManagementService {
         }
         office.set_runtime_status(&status)
     }
+}
+
+fn build_field_state(
+    account: &OfficeAccountAuthorityStatus,
+    credential: Option<&OfficeCredential>,
+    schema: &OfficeProviderFieldSchema,
+) -> OfficeConfigFieldState {
+    let raw_value = match schema.location {
+        OfficeProviderFieldLocation::AccessToken => credential
+            .map(|item| item.access_token.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        OfficeProviderFieldLocation::RefreshToken => credential
+            .map(|item| item.refresh_token.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        OfficeProviderFieldLocation::TokenEndpoint => credential
+            .map(|item| item.token_endpoint.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        OfficeProviderFieldLocation::ExternalAccountId => {
+            let value = account.external_account_id.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        }
+        OfficeProviderFieldLocation::Metadata => credential
+            .and_then(|item| item.metadata_value(&schema.key))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    };
+    let configured = raw_value.is_some()
+        || schema
+            .default_value
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+    let current_value = if schema.secret {
+        None
+    } else {
+        raw_value.or_else(|| schema.default_value.clone())
+    };
+    OfficeConfigFieldState {
+        schema: schema.clone(),
+        current_value,
+        configured,
+    }
+}
+
+fn apply_config_field_value(
+    account: &mut OfficeAccount,
+    credential: &mut OfficeCredential,
+    schema: &OfficeProviderFieldSchema,
+    value: &str,
+) {
+    match schema.location {
+        OfficeProviderFieldLocation::AccessToken => credential.access_token = value.to_string(),
+        OfficeProviderFieldLocation::RefreshToken => credential.refresh_token = value.to_string(),
+        OfficeProviderFieldLocation::TokenEndpoint => credential.token_endpoint = value.to_string(),
+        OfficeProviderFieldLocation::ExternalAccountId => {
+            account.external_account_id = value.to_string();
+        }
+        OfficeProviderFieldLocation::Metadata => {
+            credential
+                .metadata
+                .insert(schema.key.clone(), value.to_string());
+        }
+    }
+}
+
+fn default_office_probe_adapters() -> Vec<Arc<dyn OfficeProbeAdapter + Send + Sync>> {
+    vec![
+        Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
+        Arc::new(crate::mail::providers::feishu::FeishuMailOfficeProbeAdapter),
+        Arc::new(crate::mail::providers::wecom::WecomMailOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::wecom::WecomDocumentsOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::wecom::WecomCalendarOfficeProbeAdapter),
+        Arc::new(
+            crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
+        ),
+        Arc::new(
+            crate::contacts_directory::providers::wecom::WecomContactsDirectoryOfficeProbeAdapter,
+        ),
+    ]
 }
 
 fn apply_policy_patch(policy: &mut OfficeSelectionPolicy, patch: &OfficePolicyPatch) {

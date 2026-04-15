@@ -842,23 +842,7 @@ fn register_office_tools(
         platform.office_credential_store(),
         platform.office_runtime_status_store(),
     )
-    .with_probe_adapters(vec![
-        Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
-        Arc::new(crate::mail::providers::feishu::FeishuMailOfficeProbeAdapter),
-        Arc::new(crate::mail::providers::wecom::WecomMailOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::wecom::WecomDocumentsOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::wecom::WecomCalendarOfficeProbeAdapter),
-        Arc::new(
-            crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
-        ),
-        Arc::new(
-            crate::contacts_directory::providers::wecom::WecomContactsDirectoryOfficeProbeAdapter,
-        ),
-    ]);
+    .with_default_probe_adapters();
     let office_authority = Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
         Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
         platform.office_credential_store(),

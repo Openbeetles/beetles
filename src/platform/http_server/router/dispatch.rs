@@ -90,6 +90,42 @@ fn hardware_capability_from_uri(uri: &str) -> Option<HardwareCapability> {
     query_param_from_uri(uri, "capability").and_then(HardwareCapability::parse)
 }
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AccountConfigRoute<'a> {
+    Collection,
+    Detail(&'a str),
+    Config(&'a str),
+    Probe(&'a str),
+    Revoke(&'a str),
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn parse_account_config_route(path: &str) -> Option<AccountConfigRoute<'_>> {
+    if path == "/api/config/accounts" {
+        return Some(AccountConfigRoute::Collection);
+    }
+    let rest = path.strip_prefix("/api/config/accounts/")?;
+    let mut parts = rest.split('/');
+    let account_key = parts.next()?.trim();
+    if account_key.is_empty() {
+        return None;
+    }
+    match (parts.next(), parts.next()) {
+        (None, None) => Some(AccountConfigRoute::Detail(account_key)),
+        (Some("config"), None) => Some(AccountConfigRoute::Config(account_key)),
+        (Some("probe"), None) => Some(AccountConfigRoute::Probe(account_key)),
+        (Some("revoke"), None) => Some(AccountConfigRoute::Revoke(account_key)),
+        _ => None,
+    }
+}
+
 #[inline(never)]
 fn api_to_out(r: ApiResponse) -> OutgoingResponse {
     OutgoingResponse {
@@ -130,6 +166,92 @@ fn err_other(stage: &'static str, msg: impl std::fmt::Display) -> Error {
         source: Box::new(std::io::Error::other(msg.to_string())),
         stage,
     }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn dispatch_account_config(
+    ctx: &HandlerContext,
+    store: &dyn crate::platform::ConfigStore,
+    method: &str,
+    path: &str,
+    uri: &str,
+    incoming: &IncomingRequest,
+) -> Result<Option<OutgoingResponse>> {
+    let Some(route) = parse_account_config_route(path) else {
+        return Ok(None);
+    };
+    let decoded_key = |value: &str| crate::util::percent_decode_query(value);
+    let response = match (method, route) {
+        ("GET", AccountConfigRoute::Collection) => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(Some(api_to_out(r)));
+            }
+            match handlers::config::get_accounts_body(ctx, query_param_from_uri(uri, "capability"))
+            {
+                Ok(body) => Some(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+            }
+        }
+        ("POST", AccountConfigRoute::Collection) => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(Some(o));
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::config::post_accounts(ctx, body_str)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Some(api_to_out(r))
+        }
+        ("GET", AccountConfigRoute::Detail(account_key)) => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(Some(api_to_out(r)));
+            }
+            match handlers::config::get_account_detail_body(ctx, &decoded_key(account_key)) {
+                Ok(body) => Some(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+            }
+        }
+        ("POST", AccountConfigRoute::Config(account_key)) => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(Some(o));
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::config::post_account_config(ctx, &decoded_key(account_key), body_str)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Some(api_to_out(r))
+        }
+        ("POST", AccountConfigRoute::Probe(account_key)) => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(Some(o));
+            }
+            let r = handlers::config::post_account_probe(ctx, &decoded_key(account_key))
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Some(api_to_out(r))
+        }
+        ("POST", AccountConfigRoute::Revoke(account_key)) => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(Some(o));
+            }
+            let body_str = utf8_body(&incoming.body)?;
+            let r = handlers::config::post_account_revoke(ctx, &decoded_key(account_key), body_str)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Some(api_to_out(r))
+        }
+        _ => None,
+    };
+    Ok(response)
 }
 
 fn operator_window_required_response(path: &str) -> OutgoingResponse {
@@ -176,6 +298,14 @@ pub fn dispatch(
             .window_required_for_deep_routes
     {
         return Ok(operator_window_required_response(path));
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    if let Some(response) = dispatch_account_config(ctx, store, method, path, uri, &incoming)? {
+        return Ok(response);
     }
 
     match (method, path) {
@@ -300,36 +430,6 @@ pub fn dispatch(
             }
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::config::post_system(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("GET", "/api/config/accounts") => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(r));
-            }
-            let body = handlers::config::get_accounts_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("POST", "/api/config/accounts") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_accounts(ctx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
@@ -1039,6 +1139,8 @@ fn dispatch_ota(
 mod tests {
     use super::dispatch;
     use crate::bus::new_inbound_channel;
+    use crate::config::{self, OfficeAccountsSegment};
+    use crate::office::{OfficeAccount, OfficeAccountIdentityClass, OfficeCapability};
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, HandlerContext,
     };
@@ -1046,7 +1148,7 @@ mod tests {
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
     fn build_router_env() -> RouterEnv {
         let (inbound_tx, _inbound_rx, _inbound_depth) =
@@ -1074,6 +1176,86 @@ mod tests {
             .expect("set pairing code");
         crate::platform::csrf::init().expect("init csrf");
         ctx
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn office_test_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn authed_get(uri: &str) -> IncomingRequest {
+        IncomingRequest {
+            method: "GET".to_string(),
+            uri: uri.to_string(),
+            headers: vec![("X-Pairing-Code".to_string(), "123456".to_string())],
+            body: Vec::new(),
+        }
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn authed_post(uri: &str, body: serde_json::Value) -> IncomingRequest {
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        IncomingRequest {
+            method: "POST".to_string(),
+            uri: uri.to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: serde_json::to_vec(&body).expect("serialize request body"),
+        }
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn seed_account(ctx: &HandlerContext, account_key: &str) {
+        let mut segment = OfficeAccountsSegment::default();
+        segment.registry.insert(OfficeAccount {
+            account_key: account_key.to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: String::new(),
+            account_label: "Work mail".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        segment
+            .binding
+            .set_default_account(OfficeCapability::Mail, account_key.to_string());
+        let body = serde_json::to_string(&segment).expect("serialize accounts segment");
+        config::save_office_accounts_segment(ctx.config_file_store.as_ref(), &body)
+            .expect("save accounts");
+        let credential_body = serde_json::json!({
+            "items": [{
+                "account_key": account_key,
+                "access_token": "secret-token",
+                "metadata": {
+                    "mail_imap_host": "imap.example.com",
+                    "mail_smtp_host": "smtp.example.com",
+                    "mail_username": "alice"
+                }
+            }]
+        });
+        config::save_office_credentials_segment(
+            ctx.platform.office_credential_store().as_ref(),
+            &credential_body.to_string(),
+        )
+        .expect("save office credentials");
     }
 
     #[test]
@@ -1113,5 +1295,167 @@ mod tests {
         let request: OperatorMaintenanceRequest =
             serde_json::from_str(&queued.content).expect("decode queued request");
         assert_eq!(request.action, OperatorMaintenanceAction::RunRepairPlan);
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_get_returns_summary_instead_of_raw_segment() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        seed_account(&ctx, "test-http-mail-summary");
+
+        let response = dispatch(&ctx, &env, authed_get("/api/config/accounts"))
+            .expect("dispatch accounts summary");
+        assert_eq!(response.status, 200);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert!(
+            parsed["items"].is_array(),
+            "summary should expose items array"
+        );
+        assert!(
+            parsed.get("registry").is_none(),
+            "raw accounts segment should not leak"
+        );
+        assert!(
+            parsed["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .any(|item| item["account_key"] == "test-http-mail-summary"),
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_account_detail_returns_fields_and_masks_secret_values() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        seed_account(&ctx, "test-http-mail-detail");
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_get("/api/config/accounts/test-http-mail-detail"),
+        )
+        .expect("dispatch account detail");
+        assert_eq!(
+            response.status,
+            200,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["account"]["account_key"], "test-http-mail-detail");
+        let fields = parsed["fields"].as_array().expect("fields array");
+        let access_token = fields
+            .iter()
+            .find(|field| field["key"] == "access_token")
+            .expect("access_token field");
+        assert_eq!(access_token["configured"], true);
+        assert!(access_token["current_value"].is_null());
+        let imap_host = fields
+            .iter()
+            .find(|field| field["key"] == "mail_imap_host")
+            .expect("mail_imap_host field");
+        assert_eq!(imap_host["current_value"], "imap.example.com");
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_account_save_preserves_existing_secret_when_omitted() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        let account_key = "test-http-mail-save";
+        seed_account(&ctx, account_key);
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                &format!("/api/config/accounts/{account_key}/config"),
+                serde_json::json!({
+                    "fields": {
+                        "external_account_id": "mailbox-123",
+                        "mail_imap_host": "imap.changed.example.com"
+                    }
+                }),
+            ),
+        )
+        .expect("dispatch account config save");
+        assert_eq!(response.status, 200);
+
+        let credential = ctx
+            .platform
+            .office_credential_store()
+            .get(account_key)
+            .expect("load saved credential")
+            .expect("credential exists");
+        assert_eq!(credential.access_token, "secret-token");
+        assert_eq!(
+            credential.metadata_value("mail_imap_host"),
+            Some("imap.changed.example.com")
+        );
+
+        let detail = dispatch(
+            &ctx,
+            &env,
+            authed_get(&format!("/api/config/accounts/{account_key}")),
+        )
+        .expect("dispatch saved account detail");
+        let parsed: Value = serde_json::from_slice(&detail.body).expect("parse detail");
+        assert_eq!(parsed["account"]["external_account_id"], "mailbox-123");
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_post_upserts_single_account_registration() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        let account_key = "test-http-mail-upsert";
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                "/api/config/accounts",
+                serde_json::json!({
+                    "account": {
+                        "account_key": account_key,
+                        "provider_kind": "imap_smtp",
+                        "external_account_id": "",
+                        "account_label": "Upserted mail",
+                        "identity_class": "work",
+                        "enabled_capabilities": ["mail"]
+                    },
+                    "set_defaults": ["mail"]
+                }),
+            ),
+        )
+        .expect("dispatch account upsert");
+        assert_eq!(response.status, 200);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["account"]["account_key"], account_key);
+        assert_eq!(parsed["account"]["selected_for_capabilities"][0], "mail");
     }
 }

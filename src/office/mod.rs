@@ -38,9 +38,10 @@ pub use authority_source::{
 pub use binding::OfficeCapabilityBinding;
 #[cfg(feature = "capability_office")]
 pub use config_management::{
-    OfficeAccountDraftRequest, OfficeConfigManagementService, OfficeConfigSnapshot,
-    OfficeCredentialDraftRequest, OfficePolicyPatch, OfficeProbeAdapter, OfficeProbeDisposition,
-    OfficeProbeResult,
+    OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeConfigAccountDetail,
+    OfficeConfigAccountSummary, OfficeConfigFieldState, OfficeConfigManagementService,
+    OfficeConfigSnapshot, OfficeCredentialDraftRequest, OfficePolicyPatch, OfficeProbeAdapter,
+    OfficeProbeDisposition, OfficeProbeResult,
 };
 pub use credentials::{
     OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore, OfficeCredentialsSegment,

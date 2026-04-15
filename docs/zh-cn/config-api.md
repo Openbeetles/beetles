@@ -126,7 +126,7 @@
 ### GET /api/config
 
 - **用途**：读取当前完整配置。注意，返回内容里会包含真实密钥。
-- **鉴权**：已激活；GET **不必**附带配对码。
+- **鉴权**：已激活 + 配对码。
 - **响应**：200，JSON 为 `AppConfig` 序列化，各字段为实际存储值。
 - **多大模型来源**：`llm_sources` 是数组，每一项包含 `provider`、`api_key`、`model`、`api_url`、`max_tokens`。如果是旧配置，加载时会自动补成单来源格式。可选的 **`llm_router_source_index`** 和 **`llm_worker_source_index`** 用来调整尝试顺序；如果设置有效，就先试这两个，再按列表顺序试其他来源。全局流式开关是 `llm_stream`。
 
@@ -162,38 +162,92 @@
 
 ### GET /api/config/accounts
 
-- **用途**：读取办公账户配置，也就是 `config/accounts.json` 的内容。
-- **鉴权**：已激活；GET **不必**附带配对码。
-- **响应**：200，JSON 为 `OfficeAccountsSegment`。文件不存在时返回空默认值：
-  - `registry.accounts`：以 `account_key` 为稳定主键的账户注册表
-  - `binding.capability_defaults`：各 capability 的默认账户
-  - `policy`：全局默认账户、歧义策略、身份偏好
-- **说明**：这是原始配置段接口，适合配置页和脚本整段读写；如果是 Agent 要代用户完成 inspect / draft / validate / commit / revoke / probe，应优先走 `office_config` 工具，而不是直接编辑这段 JSON。
-- **补充**：provider 需要哪些字段，不应由前端或调用方硬编码猜测；应该通过 `office_config {"op":"provider_schema", ...}` 查询结构化合同。
-- **补充**：通过 `office_config` 走受控配置路径时，后端会按 provider schema 自动裁剪字段、补默认值并拒绝合同外 metadata key；这个原始段接口不承担这层受控归一化。
+- **用途**：读取账户配置摘要列表。
+- **鉴权**：已激活 + 配对码。
+- **查询参数**：
+  - `capability`：可选，`mail|calendar|documents|contacts_directory`
+- **响应**：200，JSON 形如：
+  - `count`：账户条数
+  - `items[]`：
+    - `account_key`
+    - `provider_kind`
+    - `account_label`
+    - `identity_class`
+    - `enabled_capabilities`
+    - `selected_for_capabilities`
+    - `readiness`
+    - `next_action`
+    - `missing_fields_count`
+    - `has_runtime_error`
+- **说明**：这是公开账户配置主入口，不再返回 `config/accounts.json` 的 raw 段内容。
 
 ### POST /api/config/accounts
 
-- **用途**：写入办公账户配置，保存到 `config/accounts.json`。请求体要把这一整段完整传上来。
+- **用途**：创建或更新单个账户注册。
 - **鉴权**：已激活 + 配对码 + CSRF。
-- **请求**：`Content-Type: application/json`，Body 为 `OfficeAccountsSegment`。
-- **校验**（仅本段）：
-  - 账户总数不能超过实现限定上限
-  - 每个账户都必须有非空 `account_key`、`provider_kind`
-  - 每个账户必须声明至少一个 `enabled_capabilities`
-  - `binding.capability_defaults` 指向的账户必须存在，并且该账户必须启用对应 capability
-  - `policy.global_default_account_key` 如果存在，必须能在注册表中找到
-- **响应**：成功 200 `{"ok": true}`；校验失败 400。
+- **请求**：`Content-Type: application/json`，Body 为 `OfficeAccountDraftRequest`：
+  - `account`：单个账户注册
+  - `set_defaults[]`：可选，要绑定成默认账户的 capability
+  - `clear_defaults[]`：可选，要清掉默认绑定的 capability
+  - `policy_patch`：可选，更新全局默认账户、歧义策略、身份偏好
+- **响应**：成功 200，返回该账户的最新详情；校验失败 400。
+
+### GET /api/config/accounts/:account_key
+
+- **用途**：读取单个账户的完整编辑详情。
+- **鉴权**：已激活 + 配对码。
+- **响应**：200，JSON 形如：
+  - `account`：账户基础信息、默认 capability 命中情况、credential/runtime status
+  - `assessment`：缺项、`readiness`、`next_action`
+  - `provider_display_name`
+  - `fields[]`：当前 provider 的可编辑字段合同和当前值
+    - `key` / `label` / `description`
+    - `location`
+    - `value_kind`
+    - `required`
+    - `secret`
+    - `default_value`
+    - `configured`
+    - `current_value`
+- **说明**：详情响应已经带齐编辑页需要的 schema 和当前值，不再拆出独立 `/schema` 或 `GET .../config`。
+
+### POST /api/config/accounts/:account_key/config
+
+- **用途**：保存单个账户的 provider 配置。
+- **鉴权**：已激活 + 配对码 + CSRF。
+- **请求**：`Content-Type: application/json`，Body 形如：
+  - `fields`：要更新的字段键值对
+  - `clear_fields[]`：要清空的字段名
+- **说明**：
+  - 保存时会做本地 schema 校验、归一化和结构化报错
+  - 如果某个 secret 字段未出现在 `fields` / `clear_fields` 中，会保留旧值
+  - 不再单独暴露伪语义的 `validate` HTTP 接口
+- **响应**：成功 200，返回保存后的账户详情；校验失败 400。
+
+### POST /api/config/accounts/:account_key/probe
+
+- **用途**：对单个账户执行真实远端探测。
+- **鉴权**：已激活 + 配对码 + CSRF。
+- **说明**：这是会真正请求对方接口/登录/探测可用性的接口；如果只是本地字段检查，属于保存接口内部语义，不单独暴露。
+- **响应**：成功 200，返回 `account_key`、`provider_kind`、`configured`、`disposition`、`reason`；失败 400。
+
+### POST /api/config/accounts/:account_key/revoke
+
+- **用途**：撤销单个账户当前凭证，并可选清理运行态。
+- **鉴权**：已激活 + 配对码 + CSRF。
+- **请求**：`Content-Type: application/json`，Body 可选：
+  - `clear_runtime_status`：默认 `true`
+- **响应**：成功 200 `{"ok": true, "account_key": "...", "cleared_runtime_status": true}`；失败 400。
 
 ### GET /api/config/office_credentials
 
 - **用途**：读取办公凭证权威层，也就是 `config/office_credentials.json` 的内容。
-- **鉴权**：已激活；GET **不必**附带配对码。
+- **鉴权**：已激活 + 配对码。
 - **响应**：200，JSON 为 `OfficeCredentialsSegment`：
   - `items[].account_key`：账户主键，和 `/api/config/accounts` 里的注册表对齐
   - `items[].access_token` / `refresh_token` / `token_endpoint`：受控凭证字段
   - `items[].metadata`：账户补充元数据；provider-specific key 仍然落在这里，但调用方不应该把这份文档当成所有 provider 字段合同的唯一真源。具体字段要求请通过 `office_config {"op":"provider_schema", ...}` 查询。
-- **说明**：这是 office 域共享凭证层，不再由 `calendar` 私有维护自己的 credential 真相。
+- **说明**：这是 office 域共享凭证层的 raw authority 接口；正式账户配置优先走 `/api/config/accounts/*`。
 - **补充**：`mail`、`calendar`、`documents` 都消费这层共享凭证；调用方不需要再为每个能力维护一份单独的私有凭证文件。
 - **补充**：运行态 probe/错误状态不在这个接口里，运行派生真相由 `runtime/office_runtime_status.json` 承载，并通过 `office_status` / `office_config probe` 这类上层能力消费。
 - **补充**：如果调用方需要 provider-aware 的受控配置合同，请不要把这里的 `metadata` 当成完整字段字典，而是通过 `office_config {"op":"provider_schema", ...}` 获取。
