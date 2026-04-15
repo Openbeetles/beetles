@@ -107,6 +107,16 @@ enum AccountConfigRoute<'a> {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CapabilityConfigRoute<'a> {
+    Collection,
+    Detail(&'a str),
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 fn parse_account_config_route(path: &str) -> Option<AccountConfigRoute<'_>> {
     if path == "/api/config/accounts" {
         return Some(AccountConfigRoute::Collection);
@@ -124,6 +134,21 @@ fn parse_account_config_route(path: &str) -> Option<AccountConfigRoute<'_>> {
         (Some("revoke"), None) => Some(AccountConfigRoute::Revoke(account_key)),
         _ => None,
     }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn parse_capability_config_route(path: &str) -> Option<CapabilityConfigRoute<'_>> {
+    if path == "/api/config/capabilities" {
+        return Some(CapabilityConfigRoute::Collection);
+    }
+    let capability = path.strip_prefix("/api/config/capabilities/")?.trim();
+    if capability.is_empty() {
+        return None;
+    }
+    Some(CapabilityConfigRoute::Detail(capability))
 }
 
 #[inline(never)]
@@ -254,6 +279,55 @@ fn dispatch_account_config(
     Ok(response)
 }
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn dispatch_capability_config(
+    ctx: &HandlerContext,
+    store: &dyn crate::platform::ConfigStore,
+    method: &str,
+    path: &str,
+    uri: &str,
+    incoming: &IncomingRequest,
+) -> Result<Option<OutgoingResponse>> {
+    let Some(route) = parse_capability_config_route(path) else {
+        return Ok(None);
+    };
+    let response = match (method, route) {
+        ("GET", CapabilityConfigRoute::Collection) => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(Some(api_to_out(r)));
+            }
+            match handlers::config::get_capabilities_body(ctx) {
+                Ok(body) => Some(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+            }
+        }
+        ("GET", CapabilityConfigRoute::Detail(capability)) => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(Some(api_to_out(r)));
+            }
+            match handlers::config::get_capability_detail_body(ctx, capability) {
+                Ok(body) => Some(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+            }
+        }
+        _ => None,
+    };
+    Ok(response)
+}
+
 fn operator_window_required_response(path: &str) -> OutgoingResponse {
     let body = serde_json::json!({
         "error": "operator window required",
@@ -305,6 +379,14 @@ pub fn dispatch(
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     if let Some(response) = dispatch_account_config(ctx, store, method, path, uri, &incoming)? {
+        return Ok(response);
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    if let Some(response) = dispatch_capability_config(ctx, store, method, path, uri, &incoming)? {
         return Ok(response);
     }
 
@@ -1457,5 +1539,66 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
         assert_eq!(parsed["account"]["account_key"], account_key);
         assert_eq!(parsed["account"]["selected_for_capabilities"][0], "mail");
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_capabilities_get_returns_capability_statuses() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        seed_account(&ctx, "test-http-mail-capability");
+
+        let response = dispatch(&ctx, &env, authed_get("/api/config/capabilities"))
+            .expect("dispatch capabilities summary");
+        assert_eq!(
+            response.status,
+            200,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let items = parsed["items"].as_array().expect("items array");
+        let mail = items
+            .iter()
+            .find(|item| item["capability"] == "mail")
+            .expect("mail capability");
+        assert_eq!(mail["default_account_key"], "test-http-mail-capability");
+        assert_eq!(mail["selection_status"], "selected");
+        assert_eq!(mail["selected_account_key"], "test-http-mail-capability");
+        assert!(mail["accounts"].is_array());
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_capabilities_detail_returns_single_capability() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        seed_account(&ctx, "test-http-mail-capability-detail");
+
+        let response = dispatch(&ctx, &env, authed_get("/api/config/capabilities/mail"))
+            .expect("dispatch capability detail");
+        assert_eq!(
+            response.status,
+            200,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["capability"], "mail");
+        assert_eq!(
+            parsed["selected_account_key"],
+            "test-http-mail-capability-detail"
+        );
+        assert_eq!(parsed["accounts"].as_array().expect("accounts").len(), 1);
     }
 }

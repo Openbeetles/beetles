@@ -93,6 +93,39 @@ pub struct OfficeConfigAccountDetail {
     pub fields: Vec<OfficeConfigFieldState>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeConfigCapabilitySelectionStatus {
+    Selected,
+    Ambiguous,
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeConfigCapabilityNextAction {
+    CreateAccount,
+    SelectDefaultAccount,
+    DraftCredentials,
+    Probe,
+    ReviewRuntimeError,
+    None,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeConfigCapabilityStatus {
+    pub capability: OfficeCapability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_account_key: Option<String>,
+    pub selection_status: OfficeConfigCapabilitySelectionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_account_key: Option<String>,
+    pub ready: bool,
+    pub next_action: OfficeConfigCapabilityNextAction,
+    #[serde(default)]
+    pub accounts: Vec<OfficeConfigAccountSummary>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OfficeProbeDisposition {
@@ -236,24 +269,113 @@ impl OfficeConfigManagementService {
             .filter_map(|account| {
                 assessment_by_account
                     .get(&account.account_key)
-                    .map(|assessment| OfficeConfigAccountSummary {
-                        account_key: account.account_key.clone(),
-                        provider_kind: account.provider_kind.clone(),
-                        account_label: account.account_label.clone(),
-                        identity_class: account.identity_class,
-                        enabled_capabilities: account.enabled_capabilities.clone(),
-                        selected_for_capabilities: account.selected_for_capabilities.clone(),
-                        readiness: assessment.readiness,
-                        next_action: assessment.next_action,
-                        missing_fields_count: assessment.missing_fields.len(),
-                        has_runtime_error: account
-                            .runtime_status
-                            .as_ref()
-                            .is_some_and(|status| !status.last_error.trim().is_empty()),
-                    })
+                    .map(|assessment| build_account_summary(&account, assessment))
             })
             .collect::<Vec<_>>();
         items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        Ok(items)
+    }
+
+    pub fn capability_statuses(
+        &self,
+        capability: Option<OfficeCapability>,
+    ) -> Result<Vec<OfficeConfigCapabilityStatus>> {
+        let accounts = self.load_accounts_segment()?;
+        let office = self.build_office_service(&accounts)?;
+        let summary = office.summary()?;
+        let assessments = office.assess_all_accounts(|provider_kind| {
+            self.probe_supported_for_provider(provider_kind)
+        })?;
+        let assessment_by_account = assessments
+            .into_iter()
+            .map(|assessment| (assessment.account_key.clone(), assessment))
+            .collect::<BTreeMap<_, _>>();
+        let account_status_by_key = summary
+            .accounts
+            .iter()
+            .map(|account| (account.account_key.clone(), account))
+            .collect::<BTreeMap<_, _>>();
+        let default_by_capability = summary
+            .defaults
+            .iter()
+            .map(|item| (item.capability, item.account_key.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let capabilities = capability
+            .map(|value| vec![value])
+            .unwrap_or_else(|| OfficeCapability::all().to_vec());
+        let mut items = Vec::with_capacity(capabilities.len());
+        for capability in capabilities {
+            let mut capability_accounts = summary
+                .accounts
+                .iter()
+                .filter(|account| account.enabled_capabilities.contains(&capability))
+                .filter_map(|account| {
+                    assessment_by_account
+                        .get(&account.account_key)
+                        .map(|assessment| build_account_summary(account, assessment))
+                })
+                .collect::<Vec<_>>();
+            capability_accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+            let resolve_result = office.resolve(&OfficeResolveRequest {
+                capability,
+                preferred_account_key: None,
+                preferred_identity_class: None,
+            });
+            let default_account_key = default_by_capability.get(&capability).cloned().flatten();
+            let (selection_status, selected_account_key, ready, next_action) = match resolve_result
+            {
+                OfficeResolveResult::Selected(selection) => {
+                    let assessment = assessment_by_account
+                        .get(&selection.account_key)
+                        .ok_or_else(|| {
+                            Error::config(
+                                "office_config_capability_status",
+                                format!(
+                                    "missing assessment for selected office account '{}'",
+                                    selection.account_key
+                                ),
+                            )
+                        })?;
+                    let has_runtime_error = account_status_by_key
+                        .get(&selection.account_key)
+                        .and_then(|account| account.runtime_status.as_ref())
+                        .is_some_and(runtime_status_indicates_failure);
+                    let next_action = if has_runtime_error {
+                        OfficeConfigCapabilityNextAction::ReviewRuntimeError
+                    } else {
+                        map_account_next_action(assessment.next_action)
+                    };
+                    (
+                        OfficeConfigCapabilitySelectionStatus::Selected,
+                        Some(selection.account_key),
+                        assessment.readiness == crate::office::OfficeConfigReadiness::Ready
+                            && !has_runtime_error,
+                        next_action,
+                    )
+                }
+                OfficeResolveResult::Ambiguous => (
+                    OfficeConfigCapabilitySelectionStatus::Ambiguous,
+                    None,
+                    false,
+                    OfficeConfigCapabilityNextAction::SelectDefaultAccount,
+                ),
+                OfficeResolveResult::Missing => (
+                    OfficeConfigCapabilitySelectionStatus::Missing,
+                    None,
+                    false,
+                    OfficeConfigCapabilityNextAction::CreateAccount,
+                ),
+            };
+            items.push(OfficeConfigCapabilityStatus {
+                capability,
+                default_account_key,
+                selection_status,
+                selected_account_key,
+                ready,
+                next_action,
+                accounts: capability_accounts,
+            });
+        }
         Ok(items)
     }
 
@@ -719,6 +841,44 @@ fn build_field_state(
         schema: schema.clone(),
         current_value,
         configured,
+    }
+}
+
+fn build_account_summary(
+    account: &OfficeAccountAuthorityStatus,
+    assessment: &OfficeAccountAssessment,
+) -> OfficeConfigAccountSummary {
+    OfficeConfigAccountSummary {
+        account_key: account.account_key.clone(),
+        provider_kind: account.provider_kind.clone(),
+        account_label: account.account_label.clone(),
+        identity_class: account.identity_class,
+        enabled_capabilities: account.enabled_capabilities.clone(),
+        selected_for_capabilities: account.selected_for_capabilities.clone(),
+        readiness: assessment.readiness,
+        next_action: assessment.next_action,
+        missing_fields_count: assessment.missing_fields.len(),
+        has_runtime_error: account
+            .runtime_status
+            .as_ref()
+            .is_some_and(runtime_status_indicates_failure),
+    }
+}
+
+fn runtime_status_indicates_failure(status: &OfficeAccountRuntimeStatus) -> bool {
+    !status.last_error.trim().is_empty()
+        || (!status.last_activity_kind.trim().is_empty() && !status.last_activity_ok)
+}
+
+fn map_account_next_action(
+    next_action: crate::office::OfficeConfigNextAction,
+) -> OfficeConfigCapabilityNextAction {
+    match next_action {
+        crate::office::OfficeConfigNextAction::DraftCredentials => {
+            OfficeConfigCapabilityNextAction::DraftCredentials
+        }
+        crate::office::OfficeConfigNextAction::Probe => OfficeConfigCapabilityNextAction::Probe,
+        crate::office::OfficeConfigNextAction::None => OfficeConfigCapabilityNextAction::None,
     }
 }
 

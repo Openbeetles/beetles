@@ -2764,7 +2764,7 @@ pub fn save_display_segment(
     Ok(())
 }
 
-/// GET /api/config/accounts：返回 accounts.json 内容（不存在时返回空 office accounts 配置）。
+/// 读取 `config/accounts.json` authority 段；不存在时返回空账户注册表默认值。
 pub fn get_office_accounts_segment(reader: &dyn ConfigFileStore) -> Result<String> {
     match reader.read_config_file("config/accounts.json")? {
         Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
@@ -2773,7 +2773,7 @@ pub fn get_office_accounts_segment(reader: &dyn ConfigFileStore) -> Result<Strin
     }
 }
 
-/// POST /api/config/accounts：校验并写入 SPIFFS config/accounts.json；body 即全量，不做合并。
+/// 校验并整体写入 `config/accounts.json` authority 段；body 为完整注册表快照，不做合并。
 pub fn save_office_accounts_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: OfficeAccountsSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
@@ -2788,7 +2788,7 @@ pub fn validate_office_accounts_candidate(seg: &OfficeAccountsSegment) -> Result
     validate_office_accounts_segment(seg)
 }
 
-/// GET /api/config/office_credentials：返回 OfficeCredentialsSegment JSON。
+/// 读取 office credential authority，序列化为 `OfficeCredentialsSegment` JSON。
 pub fn get_office_credentials_segment(store: &dyn OfficeCredentialStore) -> Result<String> {
     let mut items = store.list()?;
     items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
@@ -2796,7 +2796,7 @@ pub fn get_office_credentials_segment(store: &dyn OfficeCredentialStore) -> Resu
         .map_err(|e| Error::config("office_credentials", e.to_string()))
 }
 
-/// POST /api/config/office_credentials：严格解析并整体替换 office credentials authority。
+/// 严格解析并整体替换 office credential authority。
 pub fn save_office_credentials_segment(
     store: &dyn OfficeCredentialStore,
     body: &str,

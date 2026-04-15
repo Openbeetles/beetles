@@ -8,7 +8,8 @@ use crate::i18n::{locale_from_store, tr, tr_error, Message};
 ))]
 use crate::office::{
     OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeCapability,
-    OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigManagementService,
+    OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigCapabilityStatus,
+    OfficeConfigManagementService,
 };
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
 use serde::Deserialize;
@@ -103,6 +104,16 @@ struct AccountSummaryListResponse {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+#[derive(serde::Serialize)]
+struct CapabilityStatusListResponse {
+    count: usize,
+    items: Vec<OfficeConfigCapabilityStatus>,
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 #[derive(Deserialize)]
 struct RevokeRequest {
     #[serde(default = "default_true")]
@@ -167,6 +178,42 @@ pub fn get_accounts_body(
         items,
     })
     .map_err(|e| to_io(e.to_string()))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// GET /api/config/capabilities：返回能力配置读模型。
+pub fn get_capabilities_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    let items = office_config_service(ctx)
+        .capability_statuses(None)
+        .map_err(|e| to_io(e.to_string()))?;
+    serde_json::to_string(&CapabilityStatusListResponse {
+        count: items.len(),
+        items,
+    })
+    .map_err(|e| to_io(e.to_string()))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// GET /api/config/capabilities/:capability：返回单能力配置读模型。
+pub fn get_capability_detail_body(
+    ctx: &HandlerContext,
+    capability: &str,
+) -> Result<String, std::io::Error> {
+    let capability =
+        parse_capability(Some(capability))?.ok_or_else(|| to_io("missing office capability"))?;
+    let status = office_config_service(ctx)
+        .capability_statuses(Some(capability))
+        .map_err(|e| to_io(e.to_string()))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| to_io(format!("missing capability status for '{capability:?}'")))?;
+    serde_json::to_string(&status).map_err(|e| to_io(e.to_string()))
 }
 
 #[cfg(all(

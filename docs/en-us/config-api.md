@@ -2,83 +2,82 @@
 
 [中文](../zh-cn/config-api.md) | **English** | [Doc index](../README.md)
 
-This page is for developers calling Beetle over HTTP.
+This document defines the public Beetle HTTP configuration contract. It is intended for developers building:
 
-Use it when you need:
+- external configuration UIs
+- scripts and automation
+- third-party integrations against Beetle devices
 
-- the pairing and CSRF rules
-- the exact read/write API behavior
-- the endpoint list for your own frontend, script, or integration
+It covers:
 
-If you only want to bring up a device and use the built-in configuration flow, read [configuration.md](configuration.md) first.
+- base access and auth rules
+- request and response contracts
+- important status codes and side effects
 
-This is a technical reference, not a first-time user guide.
+If you only need the built-in provisioning flow, read [configuration.md](configuration.md) first.
 
-## Network and access
+## Basics
 
-- **ESP SoftAP**: ESP firmware starts a hotspot named **Beetle** (no password) on first boot. When connected to that hotspot, use **http://192.168.4.1**.
-- **Linux inherited WiFi**: If the Linux SBC already has a valid system WiFi connection, Beetle inherits it and the same HTTP service is reachable on the device's current LAN IP.
-- **Linux fallback provisioning**: Beetle starts its own hotspot/provisioning fallback on Linux only when the system does not currently have a valid WiFi connection.
-- **CORS**: All responses for `/api/*` and `GET /` must include `Access-Control-Allow-Origin: *`. OPTIONS returns 200 with `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS` and `Access-Control-Allow-Headers: Content-Type, X-Pairing-Code, X-CSRF-Token` (case-insensitive matches apply in practice), so the external config UI can call the API cross-origin.
+- **ESP SoftAP address**: on first boot, ESP firmware starts a hotspot named **Beetle**. Use `http://192.168.4.1` after connecting.
+- **Linux device address**: if the system already has a valid WiFi connection, Beetle serves HTTP on the device's current LAN IP.
+- **CORS**: `/api/*` and `GET /` include `Access-Control-Allow-Origin: *`. `OPTIONS` returns `200 OK` with standard CORS headers.
 
-## Pairing code and auth
+## Auth model
 
 ### Terms
 
-- **Not activated**: No valid 6-digit pairing code stored in NVS.
+- **Not activated**: no valid 6-digit pairing code has been stored yet.
 - **Activated**: `POST /api/pairing_code` has succeeded at least once.
-- **Activated only** (`require_activated`): The device must already be activated, but the request itself does **not** need `?code=` or `X-Pairing-Code`.
-- **Writes**: After activation, state-changing APIs normally require **pairing code + CSRF**. The exact list and exceptions are below.
+- **Pairing code**: sent via query `?code=` or header `X-Pairing-Code`.
+- **CSRF token**: sent via `X-CSRF-Token`, with the value returned by `GET /api/csrf_token`.
 
-### Allowed when not activated
+### Routes callable before activation
 
-- Any **OPTIONS**.
-- **GET /**: **302** to the pairing flow (`Location: /pairing`); no JSON list.
-- **GET /wifi**: Built-in config page HTML.
-- **GET /pairing**, **GET /common.css**, **GET /common.js**.
-- **GET /api/pairing_code**, **POST /api/pairing_code** (initial pairing only).
-- **GET /api/wifi/scan**, **GET /api/csrf_token** (callable before activation).
-- Channel callbacks: **POST /api/feishu/event**, **POST /api/dingtalk/webhook**, **GET/POST /api/wecom/webhook**, **POST /api/webhook/qq** (QQ may 404 if disabled).
+- any `OPTIONS`
+- `GET /`
+- `GET /wifi`
+- `GET /pairing`
+- `GET /common.css`
+- `GET /common.js`
+- `GET /api/pairing_code`
+- `POST /api/pairing_code`
+- `GET /api/wifi/scan`
+- `GET /api/csrf_token`
+- channel callbacks:
+  - `POST /api/feishu/event`
+  - `POST /api/dingtalk/webhook`
+  - `GET /api/wecom/webhook`
+  - `POST /api/wecom/webhook`
+  - `POST /api/webhook/qq`
 
-Other paths return **401** when not activated (wording may vary by locale).
+All other routes normally return `401 Unauthorized` before activation.
 
-### Read-only APIs after activation (no pairing code in request)
+### General write rule
 
-These require **activation** but **not** `?code=` or `X-Pairing-Code` (this is what “no pairing code” means in user docs: **not** “works before activation”):
+After activation, state-changing `POST` and `DELETE` routes require:
 
-**GET /**, **GET /api/config**, **GET /api/config/hardware**, **GET /api/config/audio**, **GET /api/config/display**, **GET /api/health**, **GET /api/metrics**, **GET /api/resource**, **GET /api/tools**, **GET /api/diagnose**, **GET /api/system_info**, **GET /api/channel_connectivity**, **GET /api/sessions**, **GET /api/memory/status**, **GET /api/skills**, **GET /api/soul**, **GET /api/user**; with `ota` feature, **GET /api/ota/check**.
+- pairing code
+- CSRF token
 
-### Writes: pairing code + CSRF
+Exceptions:
 
-After activation, these **POST**/**DELETE** calls also need:
+- `POST /api/pairing_code` is only available before activation and requires neither
+- channel callbacks use vendor-specific verification instead of Beetle pairing and CSRF
 
-1. **Pairing code**: `?code=<6 digits>` and/or `X-Pairing-Code: <6 digits>`.
-2. **CSRF**: Header `X-CSRF-Token` or `x-csrf-token` with the `csrf_token` value from **GET /api/csrf_token**; missing/invalid → **403**.
-
-Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/api/config/system`, `/api/config/hardware`, `/api/config/audio`, `/api/config/display`; **POST/DELETE /api/skills**, **POST /api/skills/import**; **POST /api/soul**, **POST /api/user**; **DELETE /api/sessions**; **POST /api/restart**, **POST /api/config_reset**, **POST /api/webhook**; **POST /api/ota** (if built with `ota`).
-
-**Exceptions**: **POST /api/pairing_code** (not activated only) needs neither; **channel webhooks** use platform-specific verification, not pairing/CSRF.
-
-### GET /api/csrf_token
-
-- **Auth**: None.
-- **Response**: 200, `{"csrf_token":"<token>"}`.
-
-### Factory reset
-
-**POST /api/config_reset** requires pairing code + CSRF; on success the device is not activated again (implementation removes SPIFFS files such as `config/skills_meta.json`, `config/llm.json`, `config/channels.json`, `config/hardware.json`, `config/audio.json`, `config/display.json`—see [`config_reset` handler](../../src/platform/http_server/handlers/config_reset.rs)).
-
----
-
-## Root and discovery
+## Discovery and pairing
 
 ### GET /
 
-- **Not activated**: **302**, `Location: /pairing`.
-- **Activated**: 200 JSON; `name` is **`beetle`**, `version` is firmware version, `endpoints` is a string array.
-- **Note**: `endpoints` is useful for discovery, but do not treat it as the only API list. Use the routes documented on this page when building integrations.
+- **Auth**: callable before activation; after activation, no pairing code is required in the request
+- **Response**:
+  - not activated: `302 Found`, `Location: /pairing`
+  - activated: `200 OK`, JSON
+- **Body**:
+  - `name`
+  - `version`
+  - `endpoints`
 
-**Example** (exact fields and order depend on the device build):
+Example:
 
 ```json
 {
@@ -90,375 +89,571 @@ Includes: `POST /api/config/wifi`, `/api/config/llm`, `/api/config/channels`, `/
 
 ### GET /api/pairing_code
 
-- **Purpose**: Whether a code is set (never returns the secret) and current UI locale.
-- **Response**: 200, `{"code_set":true|false,"locale":"zh"|"en"}` (locale per firmware).
-- **Auth**: Callable when not activated.
+- **Auth**: none
+- **Response**: `200 OK`
+- **Body**:
+  - `code_set`
+  - `locale`
 
 ### POST /api/pairing_code
 
-- **Purpose**: Set the 6-digit code once (not activated only).
-- **Request**: `Content-Type: application/json`, body `{"code": "123456"}`.
-- **Response**: 200 `{"ok": true}`; 400 if already set or invalid.
-- **Auth**: No pairing/CSRF.
+- **Auth**: none; available only before activation
+- **Headers**: `Content-Type: application/json`
+- **Body**:
+
+```json
+{ "code": "123456" }
+```
+
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - invalid request or already set: `400 Bad Request`
+
+### GET /api/csrf_token
+
+- **Auth**: none
+- **Response**: `200 OK`
+
+```json
+{ "csrf_token": "<token>" }
+```
 
 ### GET /pairing
 
-- **Purpose**: Pairing page HTML.
-- **Response**: 200, `text/html; charset=utf-8`.
+- **Auth**: none
+- **Response**: `200 OK`
+- **Content-Type**: `text/html; charset=utf-8`
 
 ### GET /wifi
 
-- **Purpose**: Built-in config page HTML.
-- **Response**: 200, `text/html; charset=utf-8`.
+- **Auth**: none
+- **Response**: `200 OK`
+- **Content-Type**: `text/html; charset=utf-8`
 
-## Config read/write
-
-**Storage**: NVS holds only 6 small keys (WiFi SSID/password, proxy, session count, group trigger, UI locale). LLM multi-source and channel config are on SPIFFS (`config/llm.json`, `config/channels.json`); hardware device config on `config/hardware.json`; audio on `config/audio.json`; display on `config/display.json`; skill enable/order on `config/skills_meta.json`. GET /api/config merges NVS and SPIFFS and returns the full config.
-
-### GET /api/wifi/scan
-
-- **Purpose**: Device scans nearby WiFi and returns SSID list for the config UI dropdown.
-- **Auth**: Works when not activated; request does **not** need a pairing code.
-- **Response**: 200, JSON array `[{ "ssid": "MyWiFi", "rssi": -50 }, ...]`, sorted by signal strength (rssi) descending. 503 when scan is unavailable (non-ESP or WiFi not ready).
+## Config overview
 
 ### GET /api/config
 
-- **Purpose**: Get the current full config (real values for all fields, including secrets).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON is `AppConfig` serialization; all fields are stored values.
-- **Multi-LLM**: `llm_sources` is an array; each item has `provider`, `api_key`, `model`, `api_url`, optional `max_tokens` (u32; null means clients use built-in default 1024). Optional **`llm_router_source_index`** and **`llm_worker_source_index`** (`u32`, indices into `llm_sources`) reorder the worker’s [`FallbackLlmClient`](../../src/llm/fallback.rs) chain: if a valid `llm_router_source_index` is set, that source is tried **first**, then (if set and valid) `llm_worker_source_index`, then remaining valid sources; if neither is set, order follows valid sources in list order. Global streaming: top-level `llm_stream` in the LLM segment.
+- **Auth**: activated + pairing code
+- **Response**: `200 OK`
+- **Body**: full `AppConfig` JSON with current stored values
 
-### POST /api/config/llm
+### GET /api/wifi/scan
 
-- **Purpose**: Write only the LLM segment (multi-source + global streaming flag) to SPIFFS (`config/llm.json`); request body is the full segment; backend validates and writes.
-- **Auth**: Activated + pairing code + CSRF (same rules as **Writes: pairing code + CSRF** in this doc).
-- **Request**: `Content-Type: application/json`, Body `{ "llm_sources": [...], "llm_stream": false, "llm_router_source_index": null, "llm_worker_source_index": null }` (last two optional; omit = null). `llm_sources` must be non-empty; each item must have `api_key`. Each item may include:
-  - `provider` (required non-empty string; length checks in `config`. Runtime client selection: [`llm/mod.rs`](../../src/llm/mod.rs)—common values include `anthropic`, `openai`, `openai_compatible`, `gemini`, `glm`, `qwen`, `deepseek`, `moonshot`, `ollama`; see [LLM providers](llm-providers.md))
-  - `api_key` (required)
-  - `model` (required)
-  - `api_url` (field required; if empty for OpenAI-compatible providers, clients use vendor default base URLs per `build_llm_clients`)
-  - `max_tokens` (optional u32, default null; null means clients use built-in default 1024)
-- **Validation**: This segment only—`llm_sources` non-empty; field lengths (provider/api_key/model ≤ 64, api_url ≤ 256); `llm_stream` boolean; optional indices must be in range for `llm_sources` (`validate_llm_source_indices` in `config`).
-- **Response**: Success 200 `{"ok": true}`; validation failure 400.
+- **Auth**: none
+- **Response**:
+  - success: `200 OK`
+  - unavailable: `503 Service Unavailable`
+- **Body**: WiFi scan results sorted by signal strength
 
-### POST /api/config/channels
-
-- **Purpose**: Write only the channels segment (Telegram, Feishu, DingTalk, WeCom, QQ Channel, Webhook) to SPIFFS (`config/channels.json`); request body is the full segment; backend validates and writes.
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, full channels segment as `ChannelsSegment` in firmware `config.rs`—includes the usual Telegram/Feishu/DingTalk/WeCom/QQ/webhook fields plus optional **`wecom_token`**, **`wecom_encoding_aes_key`**, **`dingtalk_app_secret`**, etc.
-- **Validation**: This segment’s field lengths (tg/feishu/wecom/qq etc. ≤ 64, dingtalk_webhook_url ≤ 512, wecom_default_touser ≤ 128).
-- **Response**: Success 200 `{"ok": true}`; validation failure 400.
-
-### POST /api/config/system
-
-- **Purpose**: Write only the system segment (WiFi, proxy, session count, group trigger, UI locale); request body is the full segment; backend validates and writes.
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body includes `wifi_ssid`, `wifi_pass`, `proxy_url`, `session_max_messages` (1–128), `tg_group_activation` (`"mention"` or `"always"`), optional `locale` (`"zh"` or `"en"`).
-- **Validation**: This segment only—wifi field length ≤ 64; `proxy_url` empty or like `http://host:port`; `session_max_messages`, `tg_group_activation` as above.
-- **Response**: Success 200 `{"ok": true}`; validation failure 400.
-- **Note**: WiFi changes take effect after reboot.
-
-### GET /api/config/hardware
-
-- **Purpose**: Get current hardware device config segment (`config/hardware.json` content).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON is `HardwareSegment`: `{ "hardware_devices": [...] }`. Returns `{ "hardware_devices": [] }` when the file does not exist.
-- **Note**: GET returns the raw file content. If validation failed at boot, Beetle falls back to an empty device list and `load_errors` will include `hardware_validation_failed`.
-
-### POST /api/config/hardware
-
-- **Purpose**: Write the hardware device config segment to SPIFFS (`config/hardware.json`); request body is the full segment; backend validates and writes. Takes effect after reboot. If validation fails when loading after reboot, `load_errors` will include `hardware_validation_failed`; full validation rules in [Hardware device config & LLM-driven control](hardware-device-config.md).
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body is `HardwareSegment`:
-  ```json
-  {
-    "hardware_devices": [
-      {
-        "id": "onboard_led",
-        "device_type": "gpio_out",
-        "pins": { "pin": 2 },
-        "what": "Onboard LED indicator, toggleable",
-        "how": "Pass value: 1=on, 0=off"
-      }
-    ]
-  }
-  ```
-  Each `DeviceEntry` has `id`, `device_type`, `pins`, `what`, `how`, optional `options`.
-- **Validation** (this segment only):
-  - Total device count ≤ 8
-  - `id` non-empty, ≤ 32 bytes, must be unique
-  - `device_type` must be one of `gpio_out` / `gpio_in` / `pwm_out` / `adc_in` / `buzzer`
-  - `what` ≤ 128 bytes, `how` ≤ 256 bytes
-  - `pins` must have a `"pin"` key; pin value 1–48, must not be strapping pins (0, 3, 46), must not conflict across devices
-  - `adc_in` pin must be in ADC1 range (GPIO 1–10)
-  - `pwm_out` device count ≤ 4; `options.frequency_hz` if present must be 1–40000
-- **Response**: Success 200 `{"ok": true}`; validation failure 400.
-
-### GET /api/config/audio
-
-- **Purpose**: Get current audio device config segment (`config/audio.json` content).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON is `AudioSegment`. If the file does not exist, returns disabled defaults (`enabled=false`).
-
-### POST /api/config/audio
-
-- **Purpose**: Write the audio device config segment to SPIFFS (`config/audio.json`); request body is the full segment; backend validates and writes. Takes effect after reboot.
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body is `AudioSegment`, structure aligned with the `config/audio.json` example in [`voice-interaction-plan.md`](../../dev-docs/voice-interaction-plan.md) (`microphone`, `speaker`, `vad`, `wake_word`, `speech`, `tts`, `realtime`, `ambient_listening`, `led_indicator`).
-- **Validation** (this segment only):
-  - `version` must be `1`
-  - For enabled microphone/speaker: pins in 1–48; sample rate 8000–48000; bits per sample in 16/24/32
-  - microphone `buffer_size` must be 256–16384
-  - When the wake-word path is enabled but realtime voice is not configured, the current fallback speech provider still requires its credentials; for `baidu`, both `speech.api_key` and `speech.api_secret` are required
-  - `realtime.provider` currently supports only `openai_compatible`, `qwen`, and `doubao`
-  - When realtime voice is enabled, `realtime.api_key`, `realtime.model`, `realtime.voice`, and `realtime.ws_url` are required, and both microphone/speaker sample rates must be `24000`
-  - The firmware validates presence/shape only; provider-specific voice catalogs are not hard-blocked in firmware and should be adjusted through frontend defaults or user config when vendors change their supported voices
-  - `vad.threshold` must be in [0,1], `silence_duration_ms` in 1–60000
-  - `ambient_listening.sound_events` max 16 items, each 1–32 chars; `check_interval_seconds` in 1–86400
-- **Response**: Success 200 `{"ok": true, "restart_required": true}`; validation failure 400.
+```json
+[
+  { "ssid": "MyWiFi", "rssi": -50 }
+]
+```
 
 ### POST /api/config/wifi
 
-- **Purpose**: Write only WiFi SSID/password to NVS for the “WiFi only” config flow.
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body `{"wifi_ssid":"...","wifi_pass":"..."}`; field length ≤ 64.
-- **Response**: Success 200, `{"ok": true, "restart_required": true}`; validation failure 400.
-- **Note**: After saving WiFi to NVS, device must restart to apply. Optional: send query `?restart=1` to trigger restart after save (same as `POST /api/restart`).
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**:
+
+```json
+{
+  "wifi_ssid": "MyWiFi",
+  "wifi_pass": "secret"
+}
+```
+
+- **Response**:
+  - success: `200 OK`
+  - validation failure: `400 Bad Request`
+- **Success body**:
+
+```json
+{ "ok": true, "restart_required": true }
+```
+
+### POST /api/config/system
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: system config segment JSON
+- **Primary fields**:
+  - `wifi_ssid`
+  - `wifi_pass`
+  - `proxy_url`
+  - `session_max_messages`
+  - `tg_group_activation`
+  - `locale`
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - validation failure: `400 Bad Request`
+
+### POST /api/config/llm
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: full LLM config segment
+- **Primary fields**:
+  - `llm_sources[]`
+  - `llm_stream`
+  - `llm_router_source_index`
+  - `llm_worker_source_index`
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - validation failure: `400 Bad Request`
+
+### POST /api/config/channels
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: full channels config segment
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - validation failure: `400 Bad Request`
+
+## Account configuration
+
+### GET /api/config/capabilities
+
+- **Auth**: activated + pairing code
+- **Response**: `200 OK`
+- **Body**:
+  - `count`
+  - `items[]`
+    - `capability`
+    - `default_account_key`
+    - `selection_status`
+    - `selected_account_key`
+    - `ready`
+    - `next_action`
+    - `accounts[]`
+
+### GET /api/config/capabilities/:capability
+
+- **Auth**: activated + pairing code
+- **Path parameter**:
+  - `capability`: `mail|calendar|documents|contacts_directory`
+- **Response**: `200 OK`
+- **Body**: one capability status object with the same fields as one `items[]` entry from `GET /api/config/capabilities`
+
+### GET /api/config/accounts
+
+- **Auth**: activated + pairing code
+- **Query parameters**:
+  - `capability`: optional, `mail|calendar|documents|contacts_directory`
+- **Response**: `200 OK`
+- **Body**:
+  - `count`
+  - `items[]`
+    - `account_key`
+    - `provider_kind`
+    - `account_label`
+    - `identity_class`
+    - `enabled_capabilities`
+    - `selected_for_capabilities`
+    - `readiness`
+    - `next_action`
+    - `missing_fields_count`
+    - `has_runtime_error`
+
+### POST /api/config/accounts
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: `OfficeAccountDraftRequest`
+- **Primary fields**:
+  - `account`
+  - `set_defaults[]`
+  - `clear_defaults[]`
+  - `policy_patch`
+- **Response**:
+  - success: `200 OK`, returns refreshed account detail
+  - validation failure: `400 Bad Request`
+
+### GET /api/config/accounts/:account_key
+
+- **Auth**: activated + pairing code
+- **Path parameter**:
+  - `account_key`
+- **Response**: `200 OK`
+- **Body**:
+  - `account`
+  - `assessment`
+  - `provider_display_name`
+  - `fields[]`
+    - `key`
+    - `label`
+    - `description`
+    - `location`
+    - `value_kind`
+    - `required`
+    - `secret`
+    - `default_value`
+    - `configured`
+    - `current_value`
+
+### POST /api/config/accounts/:account_key/config
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**:
+
+```json
+{
+  "fields": {
+    "field_key": "value"
+  },
+  "clear_fields": ["another_field"]
+}
+```
+
+- **Response**:
+  - success: `200 OK`, returns refreshed account detail
+  - validation failure: `400 Bad Request`
+
+### POST /api/config/accounts/:account_key/probe
+
+- **Auth**: activated + pairing code + CSRF
+- **Path parameter**:
+  - `account_key`
+- **Response**:
+  - success: `200 OK`
+  - failure: `400 Bad Request`
+- **Body**:
+  - `account_key`
+  - `provider_kind`
+  - `configured`
+  - `disposition`
+  - `reason`
+
+### POST /api/config/accounts/:account_key/revoke
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: optional; if present:
+
+```json
+{
+  "clear_runtime_status": true
+}
+```
+
+- **Response**:
+  - success: `200 OK`
+  - failure: `400 Bad Request`
+
+## Raw config segment endpoints
+
+### GET /api/config/office_credentials
+
+- **Auth**: activated + pairing code
+- **Response**: `200 OK`
+- **Body**: `OfficeCredentialsSegment`
+
+### POST /api/config/office_credentials
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: full `OfficeCredentialsSegment`
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - validation failure: `400 Bad Request`
+
+### GET /api/config/hardware
+
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: `HardwareSegment`
+
+### POST /api/config/hardware
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: full `HardwareSegment`
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - validation failure: `400 Bad Request`
+
+### GET /api/config/audio
+
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: `AudioSegment`
+
+### POST /api/config/audio
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**: full `AudioSegment`
+- **Response**:
+  - success: `200 OK`
+  - validation failure: `400 Bad Request`
+- **Success body**:
+
+```json
+{ "ok": true, "restart_required": true }
+```
+
+### GET /api/config/display
+
+- **Auth**: activated
+- **Response**: `200 OK`
+
+### POST /api/config/display
+
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Response**:
+  - success: `200 OK`
+  - validation failure: `400 Bad Request`
+
+## Text content configuration
 
 ### GET /api/soul
 
-- **Purpose**: Get current SOUL (persona) content for the external config UI to display or edit.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, `Content-Type: text/plain`, Body is SOUL file content (UTF-8); read failure 500, `{"error":"..."}`.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Content-Type**: `text/plain`
 
 ### POST /api/soul
 
-- **Purpose**: Submit SOUL content and write to SPIFFS (config/SOUL.md).
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: Body is plain text or JSON `{"content": "..."}`; length ≤ 32KB (MAX_SOUL_USER_LEN).
-- **Response**: Success 200, `{"ok": true}`; too long or invalid UTF-8 400; write failure 500.
+- **Auth**: activated + pairing code + CSRF
+- **Body**: plain text, or JSON `{"content":"..."}`, max length 32KB
+- **Response**:
+  - success: `200 OK`
+  - invalid request: `400 Bad Request`
+  - write failure: `500 Internal Server Error`
 
 ### GET /api/user
 
-- **Purpose**: Get current USER (user info) config content.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, `Content-Type: text/plain`, Body is USER file content; read failure 500.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Content-Type**: `text/plain`
 
 ### POST /api/user
 
-- **Purpose**: Submit USER content and write to SPIFFS (config/USER.md).
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: Same as POST /api/soul (plain text or `{"content":"..."}`, ≤ 32KB).
-- **Response**: Same as POST /api/soul.
+- **Auth**: activated + pairing code + CSRF
+- **Body**: plain text, or JSON `{"content":"..."}`, max length 32KB
+- **Response**:
+  - success: `200 OK`
+  - invalid request: `400 Bad Request`
+  - write failure: `500 Internal Server Error`
+
+## Sessions, memory, and tools
 
 ### GET /api/sessions
 
-- **Purpose**: Paginated chat_id list or recent messages for one session (read-only).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Query**:
-  - Without `chat_id` / `name`: paginated list. **`page`** (default 1), **`limit`** (default 20, max 100). Response 200 JSON: `{"items":["id1",...],"total":N,"page":1,"limit":20,"total_pages":...}`.
-  - With **`chat_id`** or **`name`** (either query key, value = session id): recent messages JSON for that session (~50 messages max; see [`sessions.rs`](../../src/platform/http_server/handlers/sessions.rs)). Failure 500, `{"error":"..."}`.
+- **Auth**: activated
+- **Query parameters**:
+  - list mode: `page`, `limit`
+  - detail mode: `chat_id` or `name`
+- **Response**: `200 OK`
+
+### DELETE /api/sessions?chat_id=...
+
+- **Auth**: activated + pairing code + CSRF
+- **Query parameter**:
+  - `chat_id`: required
+- **Response**:
+  - success: `200 OK`
+  - invalid request: `400 Bad Request`
 
 ### GET /api/memory/status
 
-- **Purpose**: Return the memory operator surface: memory stores, personality continuity, continuity tooling, task learning / execution, and optional chat-scoped deep inspection.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON object with top-level fields including `memory_system_kind`, `memory_len`, `soul_len`, `user_len`, `long_term_count`, `continuity_capsule_count`, `stores`, `personality`, `continuity_tooling`, `continuity_capsules`, `task_execution`, `learning`, and optional `inspection`.
-- **Responsibility**: this route returns the operator-facing memory and learning surface; queue depth is on `GET /api/resource`, while session lists and details are on `GET /api/sessions`.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: memory operator status object
 
 ### GET /api/tools
 
-- **Purpose**: JSON array of `{name, description}` for HTTP discovery of tool names.
-- **Auth**: Activated; GET does **not** need a pairing code.
-- **Response**: 200, `[{"name":"get_time","description":"..."}, ...]`. Built in [`handlers/tools.rs`](../../src/platform/http_server/handlers/tools.rs); entries depend on Cargo features such as **`tools_network_extra`** / **`tools_diagnostics`** and may **not** match every tool loaded by Beetle from [`build_default_registry`](../../src/tools/registry.rs) (for example **env** and **file_write** may be missing). **Authoritative tool set**: the tool registry and [tools](tools.md).
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: tool list array
 
 ## Skills
 
 ### GET /api/skills
 
-- **Purpose**: List skills or get a single skill. Without query, returns list and order; with `?name=xxx` returns that skill’s plain text (for edit).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response (no name)**: 200, JSON `{"skills": [{"name": "x", "enabled": true}, ...], "order": ["a", "b"]}`.
-- **Response (name=xxx)**: 200, `Content-Type: text/plain`, Body is skill content; not found 404.
+- **Auth**: activated
+- **Query parameter**:
+  - `name`: optional
+- **Response**:
+  - without `name`: `200 OK`, returns skill list and order
+  - with `name`: `200 OK`, returns skill text; `404 Not Found` if missing
 
 ### POST /api/skills
 
-- **Purpose**: Update enabled state, write content, or update order. Body shape determines behavior.
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`.
-  - Enable only: `{"name": "x", "enabled": true|false}`.
-  - Write/overwrite skill: `{"name": "x", "content": "..."}`; content length ≤ 32KB.
-  - Order only: `{"order": ["a", "b", "c"]}`.
-- **Response**: Success 200, `{"ok": true}`; failure 400/500.
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**:
+  - enable or disable: `{"name":"x","enabled":true}`
+  - write content: `{"name":"x","content":"..."}`
+  - update order: `{"order":["a","b"]}`
+- **Response**:
+  - success: `200 OK`
+  - invalid request: `400 Bad Request`
+  - processing failure: `500 Internal Server Error`
 
 ### DELETE /api/skills?name=xxx
 
-- **Purpose**: Delete the given skill file. Query must include `name`.
-- **Auth**: Activated + pairing code + CSRF.
-- **Response**: Success 200, `{"ok": true}`; invalid name 400; file not found 404.
+- **Auth**: activated + pairing code + CSRF
+- **Query parameter**:
+  - `name`: required
+- **Response**:
+  - success: `200 OK`
+  - invalid request: `400 Bad Request`
+  - missing file: `404 Not Found`
 
 ### POST /api/skills/import
 
-- **Purpose**: Fetch content from URL and save as a new skill.
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body `{"url": "https://...", "name": "xxx"}`. url must be http(s); name must be valid (no `..`, `/`, `\`).
-- **Response**: Success 200, `{"ok": true}`; url fetch failure 502/500; body not UTF-8 or too long 400.
+- **Auth**: activated + pairing code + CSRF
+- **Headers**: `Content-Type: application/json`
+- **Body**:
 
-### POST /api/webhook
+```json
+{
+  "url": "https://example.com/skill.md",
+  "name": "skill-name"
+}
+```
 
-- **Purpose**: External HTTP POST to inject one inbound message; body is used as content and pushed to the inbound queue for the agent.
-- **Auth**: Activated + pairing code + CSRF; then the **webhook token** check in the same subsection.
-- **Config**: Requires `webhook_enabled: true` and non-empty `webhook_token` in config; otherwise 403.
-- **Token check**: After pairing and CSRF, the request must include the configured token: Header `X-Webhook-Token` or query `token`; mismatch returns 401.
-- **Request**: Body is arbitrary UTF-8 text as inbound message content; max 4KB.
 - **Response**:
-  - Success: 200, `{"ok": true}`.
-  - Webhook disabled or token empty: 403, `{"error": "webhook disabled"}`.
-  - Token mismatch: 401, `{"error": "invalid token"}`.
-  - Body not UTF-8 or too long: 400/413.
-  - Inbound queue full: 503, `{"error": "queue full"}`.
+  - success: `200 OK`
+  - invalid request: `400 Bad Request`
+  - upstream fetch failure: `502 Bad Gateway` or `500 Internal Server Error`
 
-## Health and ops
+## Health and operations
 
 ### GET /api/health
 
-- **Purpose**: Lightweight health summary for homepage and status cards.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON example (field names match serde structs):
-  ```json
-  {
-    "wifi": "connected",
-    "last_error": "none",
-    "display": { "available": true },
-    "audio": {
-      "duplex_profile": "FullDuplex",
-      "duplex_capabilities": {
-        "input_available": true,
-        "output_available": true,
-        "full_duplex_available": true
-      }
-    }
-  }
-  ```
-  - `wifi`: `"connected"` | `"disconnected"` (**STA associated with upstream AP / outbound path**; may still be `disconnected` when only the device SoftAP is used for provisioning).
-  - `last_error`: Last error summary (stage/message only, no secrets); or `"none"`.
-  - `display.available`: Whether the display subsystem is available.
-  - `audio.duplex_profile` / `audio.duplex_capabilities`: Audio input/output capability summary.
-- **Responsibility**: this route returns lightweight health summary; counters are on `GET /api/metrics`, resources/queues/budget are on `GET /api/resource`, and device identity/build summary is on `GET /api/system_info`.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: lightweight health object, including fields such as `wifi`, `last_error`, `display`, and `audio`
 
 ### GET /api/diagnose
 
-- **Purpose**: Device self-check (Doctor-style), returns a list of structured results for the config UI “Device status”.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Response**: 200, JSON array; each item has `severity`, `category`, `message`:
-  ```json
-  [
-    { "severity": "ok", "category": "storage", "message": "storage readable" },
-    { "severity": "ok", "category": "storage", "message": "spiffs total=... used=... free=..." },
-    { "severity": "ok", "category": "config", "message": "nvs accessible" },
-    { "severity": "warn", "category": "config", "message": "wifi disconnected" },
-    { "severity": "ok", "category": "channel", "message": "inbound_depth=0 outbound_depth=0" },
-    { "severity": "warn", "category": "channel", "message": "last_error: ..." }
-  ]
-  ```
-  - `severity`: `"ok"` | `"warn"` | `"error"`.
-  - `category`: `"storage"` (readable, SPIFFS) | `"channel"` (queue depth, last_error) | `"config"` (NVS, WiFi).
-  - `message`: Human-readable; `last_error` summary truncated to 200 chars.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: diagnostic result array; each item includes:
+  - `severity`
+  - `category`
+  - `message`
 
 ### GET /api/operator/status
 
-- **Purpose**: Return the operator-host surface for OS/runtime/host contracts, system closure, presence / initiative, runtime mode, soul kernel, runtime capabilities, and Linux supervisor / release state.
-- **Auth**: Activated; GET does **not** need a pairing code.
-- **Responsibility**: this route returns the operator-host runtime surface; queue depth is on `GET /api/resource`, error summary is on `GET /api/health`, and device identity plus storage media are on `GET /api/system_info`.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: operator runtime status object
 
 ### GET /api/metrics
 
-- **Purpose**: Metrics snapshot JSON (fields per firmware `metrics` module). Optional query **`format=prometheus`** returns Prometheus text (`Content-Type: text/plain`).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
+- **Auth**: activated
+- **Query parameter**:
+  - `format=prometheus`: optional
+- **Response**:
+  - default: `200 OK`, JSON
+  - with `format=prometheus`: `200 OK`, Prometheus text
 
 ### GET /api/resource
 
-- **Purpose**: Orchestrator resource snapshot JSON for runtime pressure, queues, sessions, storage usage, and runtime budget.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Responsibility**: this route returns resources, pressure, queues, sessions, and runtime budget; live channel state is on `GET /api/channel_connectivity`.
-- **Key fields**:
-  - `pressure`: overall orchestrator pressure level.
-  - `tls_fragmentation_risk`: ESP-only outbound TLS fragmentation risk derived from the current largest internal free block. Expected values are `not_applicable`, `healthy`, `cautious`, and `critical`.
-  - `heap_largest_block_internal`: largest internal free block in bytes; on Linux this remains `0` (`N/A`).
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: resource, queue, pressure, and budget status object
 
 ### GET /api/system_info
 
-- **Purpose**: Device-summary and build-info JSON.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Responsibility**: this route returns device identity and device summary fields. `wifi` / `last_error` are on `GET /api/health`, while `pressure` and queue state are on `GET /api/resource`.
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: device summary and build information
 
 ### GET /api/channel_connectivity
 
-- **Purpose**: Channel connectivity probe JSON.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **ESP behavior**: if WiFi STA is not yet settled, or orchestrator reports `tls_fragmentation_risk` as `cautious` / `critical`, the route returns a stale-unavailable snapshot instead of forcing a fresh outbound HTTP/TLS probe. This keeps diagnostics from consuming the same TLS admission budget as production traffic.
-
-### GET /api/config/display
-
-- **Purpose**: Read display-related config segment JSON (when display subsystem is enabled).
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-
-### POST /api/config/display
-
-- **Purpose**: Write display segment; may support `?restart=1` similar to WiFi segment where applicable.
-- **Auth**: Activated + pairing code + CSRF.
-
-### DELETE /api/sessions?chat_id=...
-
-- **Purpose**: Delete one session.
-- **Auth**: Activated + pairing code + CSRF; query **must** include `chat_id`.
-
-### Channel callbacks (no pairing / no CSRF)
-
-Called by vendor servers; each handler applies its own signature/token rules—**not** the pairing+CSRF flow above:
-
-- **POST /api/feishu/event**
-- **POST /api/dingtalk/webhook**
-- **GET /api/wecom/webhook** (URL verification), **POST /api/wecom/webhook**
-- **POST /api/webhook/qq** (404 if QQ channel not enabled)
+- **Auth**: activated
+- **Response**: `200 OK`
+- **Body**: channel connectivity status object
 
 ### POST /api/restart
 
-- **Purpose**: Trigger device restart so new config takes effect.
-- **Auth**: Activated + pairing code + CSRF.
-- **Response**: Returns 200, `{"ok": true}`, then device restarts within ~100–500ms.
-- **Extra behavior**: Before the actual restart, Beetle tries to flush a continuity bundle for recent active chats into the state root so reboot/handoff recovery has a fresh runtime snapshot. A flush failure is logged but does not block restart.
-- **Throttle**: Only one successful restart allowed within 60 seconds.
+- **Auth**: activated + pairing code + CSRF
+- **Response**:
+  - success: `200 OK`, then the device restarts
+  - throttled or failed: `400` / `500`
 
 ### GET /api/ota/check
 
-- **Purpose**: Check for available firmware update for current board and channel (uses build-time `OTA_MANIFEST_URL` and manifest). Only present when the `ota` feature is enabled.
-- **Auth**: Activated; GET does **not** need a pairing code in the request.
-- **Request**: GET, optional query `channel` (default `stable`).
-- **Response**: 200 JSON. Fields: `current_version` (current firmware), `latest_version` (latest for channel, if any), `update_available` (whether an update exists), `url` (download URL when update available), optional `release_notes`, optional `error` (human message, e.g. channel not configured or fetch failed). If manifest is missing or fetch/parse fails, still 200 with `update_available: false` and optional `error`.
+- **Auth**: activated
+- **Precondition**: firmware built with `ota`
+- **Query parameter**:
+  - `channel`: optional, default `stable`
+- **Response**: `200 OK`
+- **Body**:
+  - `current_version`
+  - `latest_version`
+  - `update_available`
+  - `url`
+  - `release_notes`
+  - `error`
 
 ### POST /api/ota
 
-- **Purpose**: Fetch firmware from the given URL and perform OTA update; on success the device restarts. Only present when the firmware is built with the `ota` feature (GET / endpoints will include `"POST /api/ota"`).
-- **Auth**: Activated + pairing code + CSRF.
-- **Request**: `Content-Type: application/json`, Body `{"url": "https://..."}`; url must be non-empty and start with `http://` or `https://`.
-- **Response**: Success 200, `{"ok": true}`, then device runs OTA and restarts; invalid or missing url 400, `{"error": "invalid url"}`; OTA download, verify, or write failure 500, `{"error": "human-readable message"}` (e.g. “Network or download failed, check network and retry”, “Firmware verification failed, try another source”, “Write failed, do not power off and retry”). Response includes CORS headers.
-- **Note**: On failure the current running partition is not overwritten; device keeps running; caller can retry or use another URL.
+- **Auth**: activated + pairing code + CSRF
+- **Precondition**: firmware built with `ota`
+- **Headers**: `Content-Type: application/json`
+- **Body**:
 
-**OTA channel manifest format** (produced by CI/Release and served at `OTA_MANIFEST_URL`): JSON root has `boards`; keys are board IDs (`esp32-s3-8mb`, `esp32-s3-16mb`, `esp32-s3-32mb`), values are channel objects; each channel (e.g. `stable`) has `version`, `url` (required), optional `release_notes`. Example: `{"boards":{"esp32-s3-16mb":{"stable":{"version":"0.2.0","url":"https://...","release_notes":"..."}}}}`. Board and manifest URL are set at build time via `BOARD`, `OTA_MANIFEST_URL`.
+```json
+{ "url": "https://example.com/firmware.bin" }
+```
+
+- **Response**:
+  - success: `200 OK`, then OTA starts and the device restarts
+  - invalid request: `400 Bad Request`
+  - download, verification, or write failure: `500 Internal Server Error`
 
 ### POST /api/config_reset
 
-- **Purpose**: Factory reset (clear NVS config area and remove SPIFFS `config/llm.json`, `config/channels.json`, `config/hardware.json`, `config/audio.json`, `config/display.json`, `config/skills_meta.json`, etc.); same as CLI `config_reset yes`.
-- **Auth**: Activated + pairing code + CSRF.
-- **Response**: Success 200, `{"ok": true}`; failure 500, `{"error": "reset failed"}`.
-- **Note**: After calling, user should restart; after restart `AppConfig::load()` uses only env; NVS keeps the 6 small keys (wifi, proxy, session, tg_group, locale, etc.); the rest is on SPIFFS.
+- **Auth**: activated + pairing code + CSRF
+- **Response**:
+  - success: `200 OK`, `{"ok": true}`
+  - failure: `500 Internal Server Error`
 
-## How to get the device IP
+## Webhook and platform callbacks
 
-- When connected to hotspot **Beetle**: use **http://192.168.4.1** (firmware SoftAP fixed address).
-- When on STA and device is on the same LAN: use the IP assigned by the router to the device.
+### POST /api/webhook
 
-## Config UI ownership
+- **Auth**: activated + pairing code + CSRF; webhook token also required
+- **Body**: UTF-8 text, max 4KB
+- **Response**:
+  - success: `200 OK`
+  - token mismatch: `401 Unauthorized`
+  - webhook disabled: `403 Forbidden`
+  - invalid request: `400` / `413`
+  - queue full: `503 Service Unavailable`
 
-Firmware embeds **`GET /wifi`** (config HTML), **`GET /pairing`**, **`GET /common.css`**, **`GET /common.js`**, etc. (see route tables above). A richer experience can still be built with this repo’s **`configure-ui`** or any static host talking to the same HTTP API.
+### Platform callback routes
+
+These routes do not use Beetle pairing code and CSRF:
+
+- `POST /api/feishu/event`
+- `POST /api/dingtalk/webhook`
+- `GET /api/wecom/webhook`
+- `POST /api/wecom/webhook`
+- `POST /api/webhook/qq`
+
+## Device IP discovery
+
+- When connected to the **Beetle** hotspot: use `http://192.168.4.1`
+- When the device is already on the LAN: use the IP assigned by the router
+
+## Built-in config pages
+
+Firmware embeds:
+
+- `GET /wifi`
+- `GET /pairing`
+- `GET /common.css`
+- `GET /common.js`
+
+You can also use the repo’s `configure-ui`, or any custom frontend calling the same HTTP API.
