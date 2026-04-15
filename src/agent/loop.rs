@@ -1962,7 +1962,10 @@ fn run_agent_loop_main(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::request_semantics::DisclosureSurface;
+    use crate::agent::request_semantics::{
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
+        ResumeRelation,
+    };
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
     use crate::memory::{
@@ -2165,16 +2168,31 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubExecutionStateStore;
+    struct StubExecutionStateStore {
+        entries: Mutex<HashMap<String, ExecutionState>>,
+    }
 
     impl ExecutionStateStore for StubExecutionStateStore {
-        fn get(&self, _chat_id: &str) -> Result<Option<ExecutionState>> {
-            Ok(None)
+        fn get(&self, chat_id: &str) -> Result<Option<ExecutionState>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned())
         }
-        fn set(&self, _chat_id: &str, _state: &ExecutionState) -> Result<()> {
+        fn set(&self, chat_id: &str, state: &ExecutionState) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), state.clone());
             Ok(())
         }
-        fn clear(&self, _chat_id: &str) -> Result<()> {
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
             Ok(())
         }
     }
@@ -2867,6 +2885,7 @@ mod tests {
     struct ObservedAgentRequest {
         system: String,
         tool_count: usize,
+        tool_choice: ToolChoicePolicy,
         last_message: String,
         message_dump: String,
     }
@@ -2887,7 +2906,7 @@ mod tests {
             system: &str,
             messages: &[Message],
             tools: Option<&[crate::llm::ToolSpec]>,
-            _tool_choice: ToolChoicePolicy,
+            tool_choice: ToolChoicePolicy,
         ) -> Result<LlmResponse> {
             self.observed
                 .lock()
@@ -2895,6 +2914,7 @@ mod tests {
                 .push(ObservedAgentRequest {
                     system: system.to_string(),
                     tool_count: tools.map_or(0, |specs| specs.len()),
+                    tool_choice,
                     last_message: messages
                         .last()
                         .map(|message| message.content.clone())
@@ -2961,7 +2981,7 @@ mod tests {
             ),
             session_store: Arc::new(StubSessionStore::default()),
             session_summary_store: Arc::new(StubSessionSummaryStore),
-            execution_state_store: Arc::new(StubExecutionStateStore),
+            execution_state_store: Arc::new(StubExecutionStateStore::default()),
             self_model_store: Arc::new(StubSelfModelStore),
             self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),
             core_revision_ledger_store: Arc::new(StubCoreRevisionLedgerStore),
@@ -4486,6 +4506,119 @@ mod tests {
     }
 
     #[test]
+    fn finalize_turn_truth_guard_rewrites_obvious_future_action_narration() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(Vec::new()),
+        };
+        let mut http = DummyPlatformHttp;
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-truth-guard", "继续配置", false)
+            .expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: runtime_mode_normal_snapshot(),
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics {
+                request_kind: RequestKind::General,
+                evidence_need: EvidenceNeed::HostTool,
+                disclosure_surface: DisclosureSurface::Governed,
+                execution_preference: ExecutionPreference::ToolFirst,
+                action_family: ActionFamily::ActiveAction,
+                resume_relation: ResumeRelation::ResumeActiveAction,
+                confidence: 90,
+            },
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content("我需要先检查当前邮件状态，然后继续配置。".to_string()),
+            telemetry,
+        )
+        .expect("finalize turn");
+
+        assert_eq!(
+            finalized.reply_content,
+            "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。"
+        );
+    }
+
+    #[test]
+    fn finalize_turn_truth_guard_keeps_truthful_blocker_reply() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(Vec::new()),
+        };
+        let mut http = DummyPlatformHttp;
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-truth-blocker", "继续配置", false)
+            .expect("message");
+        let telemetry = WorkerRunTelemetry {
+            streamed: false,
+            latency: WorkerLatency::default(),
+            delivery: DeliveryReport::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            task_execution_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            runtime_mode: runtime_mode_normal_snapshot(),
+            deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+            request_semantics: RequestSemantics {
+                request_kind: RequestKind::General,
+                evidence_need: EvidenceNeed::HostTool,
+                disclosure_surface: DisclosureSurface::Governed,
+                execution_preference: ExecutionPreference::ToolFirst,
+                action_family: ActionFamily::ActiveAction,
+                resume_relation: ResumeRelation::SupplyActiveActionInput,
+                confidence: 90,
+            },
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &llm,
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            WorkerOutcome::Content("当前还缺授权码，无法继续。".to_string()),
+            telemetry,
+        )
+        .expect("finalize turn");
+
+        assert_eq!(finalized.reply_content, "当前还缺授权码，无法继续。");
+    }
+
+    #[test]
     fn execute_turn_treats_stop_marker_as_plain_text_after_stop_semantics_removal() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![LlmResponse {
@@ -4673,7 +4806,7 @@ mod tests {
         let mut registry = crate::tools::ToolRegistry::new();
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        config.strategy = AgentRunStrategy::Embedded;
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
         let mut repeat = HashMap::new();
@@ -4695,9 +4828,609 @@ mod tests {
             WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
         };
         assert_eq!(delivered, "你好！很高兴见到你。有什么我可以帮你的吗？");
-        assert_eq!(telemetry.latency.request_semantics_ms, 0);
         assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
         assert!(!telemetry.used_surface_finalization);
+    }
+
+    #[test]
+    fn execute_turn_runs_request_semantics_probe_before_public_runtime_tool_turn() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","action_family":"conversation","confidence":96}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "系统状态正常。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"public_runtime","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-request-semantics-probe",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(observed.len() >= 3, "{observed:#?}");
+        assert!(
+            observed[0].system.contains("Request Semantics Probe"),
+            "{observed:#?}"
+        );
+        assert_eq!(observed[0].tool_count, 0, "{observed:#?}");
+        assert_eq!(
+            observed[1].tool_choice,
+            ToolChoicePolicy::Require,
+            "{observed:#?}"
+        );
+        assert_eq!(observed[1].tool_count, 1, "{observed:#?}");
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 1);
+    }
+
+    #[test]
+    fn execute_turn_runs_active_action_probe_before_supply_input_tool_turn() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"general","evidence_need":"host_tool","disclosure_surface":"governed","execution_preference":"tool_first","action_family":"active_action","resume_relation":"supply_active_action_input","confidence":92}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "继续配置。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let execution_state_store = Arc::new(StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-config".to_string(),
+                ExecutionState {
+                    status: crate::memory::ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    next_action: "等待用户补充授权码后继续配置".to_string(),
+                    updated_at: 9,
+                    ..ExecutionState::default()
+                },
+            )])),
+        });
+        config.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-config",
+            "授权码是 hqvqcibpdvqgbdba",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-active-action-supply-probe",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(observed.len() >= 3, "{observed:#?}");
+        assert!(
+            observed[0].system.contains("Request Semantics Probe"),
+            "{observed:#?}"
+        );
+        assert!(
+            observed[0].last_message.contains("## Execution State"),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .skip(1)
+                .any(|request| request.tool_choice == ToolChoicePolicy::Require),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .skip(1)
+                .any(|request| request.tool_count == 1),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .skip(1)
+                .all(|request| !request.system.contains("## Task Execution Planner")),
+            "{observed:#?}"
+        );
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 1);
+    }
+
+    #[test]
+    fn execute_turn_group_active_action_tool_round_emits_action_and_tool_progress() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "继续配置。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let execution_state_store = Arc::new(StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-group-config".to_string(),
+                ExecutionState {
+                    status: crate::memory::ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    next_action: "等待用户继续配置".to_string(),
+                    updated_at: 9,
+                    ..ExecutionState::default()
+                },
+            )])),
+        });
+        config.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-group-config", "继续", true).expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-group-active-action-tool-round",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 2, "{observed:#?}");
+        assert!(
+            observed
+                .iter()
+                .all(|request| !request.system.contains("Request Semantics Probe")),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .all(|request| !request.system.contains("## Task Execution Planner")),
+            "{observed:#?}"
+        );
+        assert_eq!(
+            observed[0].tool_choice,
+            ToolChoicePolicy::Require,
+            "{observed:#?}"
+        );
+        assert_eq!(observed[0].tool_count, 1, "{observed:#?}");
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 1);
+    }
+
+    #[test]
+    fn execute_turn_runs_active_action_probe_before_switch_request_tool_turn() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"general","evidence_need":"host_tool","disclosure_surface":"governed","execution_preference":"tool_first","action_family":"action_request","resume_relation":"switch_to_new_request","confidence":93}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "开始切换并配置 Telegram。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"reply":"开始切换并配置 Telegram。"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let execution_state_store = Arc::new(StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-switch".to_string(),
+                ExecutionState {
+                    status: crate::memory::ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    next_action: "等待用户继续补充邮箱配置参数".to_string(),
+                    updated_at: 9,
+                    ..ExecutionState::default()
+                },
+            )])),
+        });
+        config.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-switch",
+            "别配邮箱了，改成配置 Telegram",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-active-action-switch-probe",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 1);
+        assert_eq!(
+            executed.telemetry.delivery.terminal_progress_updates_sent,
+            0
+        );
+        assert_eq!(observed.len(), 3, "{observed:#?}");
+        assert!(
+            observed[0].system.contains("Request Semantics Probe"),
+            "{observed:#?}"
+        );
+        assert!(
+            observed[0].last_message.contains("## Execution State"),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .skip(1)
+                .all(|request| !request.system.contains("## Task Execution Planner")),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .skip(1)
+                .any(|request| request.tool_choice == ToolChoicePolicy::Require),
+            "{observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .skip(1)
+                .any(|request| request.tool_count == 1),
+            "{observed:#?}"
+        );
+    }
+
+    #[test]
+    fn complete_turn_seeds_execution_state_for_tool_backed_user_turn() {
+        let execution_state_store = Arc::new(StubExecutionStateStore::default());
+        let mut config = test_agent_loop_config();
+        config.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-execution-seed",
+            "帮我配置 QQ 邮箱账户",
+            false,
+        )
+        .expect("message");
+        let turn_ledger = build_turn_ledger_start(
+            "req-seed-execution-state",
+            msg.channel.as_ref(),
+            msg.ingress,
+            &msg.content,
+            1,
+        );
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply_content: "我先检查当前邮件状态，然后继续配置。".to_string(),
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: Some(TurnObservationLedger {
+                execution_class: TurnExecutionClass::ToolAssisted,
+                deliberation_class: crate::memory::TurnDeliberationClass::Standard,
+                final_outcome: "final_answer".to_string(),
+                pressure: crate::memory::TurnPersonaPressureLevel::Normal,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: "tool_round".to_string(),
+                    tool_calls: 1,
+                    react_rounds: 1,
+                    current_primary_delivered: false,
+                    final_answer_recovered: false,
+                },
+                blocker: None,
+            }),
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "我先检查当前邮件状态，然后继续配置。".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "我先检查当前邮件状态，然后继续配置。".to_string(),
+            worker_latency: WorkerLatency {
+                tool_calls: 1,
+                ..WorkerLatency::default()
+            },
+            any_tool_used: true,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            request_semantics: RequestSemantics::public_tool_first(),
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg: msg.clone(),
+                loc: UiLocale::Zh,
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger,
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            finalized,
+            delivery_handoff::DeliveryHandoff {
+                delivered: true,
+                outbound_enqueue_ms: 0,
+                reply_handoff_ms: 1,
+            },
+        );
+
+        let stored = execution_state_store
+            .get(msg.chat_id.as_ref())
+            .expect("execution state get")
+            .expect("seeded execution state");
+        assert_eq!(stored.goal, "帮我配置 QQ 邮箱账户");
+        assert_eq!(
+            stored.next_action,
+            "deliver current primary answer before more tool work"
+        );
+    }
+
+    #[test]
+    fn complete_turn_clears_execution_state_for_cancel_active_action_turn() {
+        let execution_state_store = Arc::new(StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-cancel-execution-state".to_string(),
+                ExecutionState {
+                    status: crate::memory::ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    next_action: "等待用户补充邮箱参数".to_string(),
+                    updated_at: 9,
+                    ..ExecutionState::default()
+                },
+            )])),
+        });
+        let mut config = test_agent_loop_config();
+        config.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-cancel-execution-state",
+            "先别配了，这个动作取消",
+            false,
+        )
+        .expect("message");
+        let turn_ledger = build_turn_ledger_start(
+            "req-clear-execution-state",
+            msg.channel.as_ref(),
+            msg.ingress,
+            &msg.content,
+            1,
+        );
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply_content: "好，当前配置动作先取消。".to_string(),
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: None,
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "好，当前配置动作先取消。".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "好，当前配置动作先取消。".to_string(),
+            worker_latency: WorkerLatency::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            request_semantics: RequestSemantics {
+                request_kind: crate::agent::request_semantics::RequestKind::General,
+                evidence_need: crate::agent::request_semantics::EvidenceNeed::None,
+                disclosure_surface: crate::agent::request_semantics::DisclosureSurface::Governed,
+                execution_preference:
+                    crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
+                action_family: crate::agent::request_semantics::ActionFamily::ActiveAction,
+                resume_relation:
+                    crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction,
+                confidence: 100,
+            },
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg: msg.clone(),
+                loc: UiLocale::Zh,
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger,
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            finalized,
+            delivery_handoff::DeliveryHandoff {
+                delivered: true,
+                outbound_enqueue_ms: 0,
+                reply_handoff_ms: 1,
+            },
+        );
+
+        assert!(execution_state_store
+            .get(msg.chat_id.as_ref())
+            .expect("execution state get")
+            .is_none());
     }
 
     #[test]
@@ -4730,7 +5463,7 @@ mod tests {
         let mut registry = crate::tools::ToolRegistry::new();
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        config.strategy = AgentRunStrategy::Embedded;
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
         let mut repeat = HashMap::new();
@@ -4850,7 +5583,7 @@ mod tests {
         let mut registry = crate::tools::ToolRegistry::new();
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        config.strategy = AgentRunStrategy::Embedded;
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
         let mut repeat = HashMap::new();
@@ -4873,14 +5606,6 @@ mod tests {
             observed
                 .iter()
                 .all(|request| !request.system.contains("Public Runtime Finalization")),
-            "{observed:#?}"
-        );
-        assert!(
-            observed
-                .iter()
-                .any(|request| request.message_dump.contains(
-                    "<surface_evidence surface=\"governed_conversation\" authority=\"governed_context\">"
-                )),
             "{observed:#?}"
         );
     }

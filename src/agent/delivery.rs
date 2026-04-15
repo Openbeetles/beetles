@@ -38,6 +38,10 @@ pub trait StreamEditor {
 pub(crate) struct DeliveryReport {
     pub presence_pulses_sent: u8,
     pub progress_updates_sent: u8,
+    pub planner_progress_updates_sent: u8,
+    pub tool_progress_updates_sent: u8,
+    pub action_progress_updates_sent: u8,
+    pub terminal_progress_updates_sent: u8,
     pub partial_updates_sent: u8,
     pub tool_outbound_intents_seen: u8,
     pub tool_visible_updates_sent: u8,
@@ -132,6 +136,30 @@ enum PresencePulseProfile {
 struct PresencePulseContract {
     loc: UiLocale,
     profile: PresencePulseProfile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VisibleUpdateKind {
+    PlannerProgress,
+    ToolProgress,
+    ActionProgress,
+    TerminalProgress,
+    NeutralSupplemental,
+    PartialDraft,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskActionProgressKind {
+    Started,
+    Resumed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskTerminalProgressKind {
+    Completed,
+    PartialComplete,
+    Blocked,
+    Aborted,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -239,9 +267,33 @@ impl<'a> DeliverySession<'a> {
         }
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, true, false)
+                delivery.force_visible_update(&text, VisibleUpdateKind::PlannerProgress)
             }
-            DeliveryMode::Queued(ref mut delivery) => delivery.emit(&text, true, false),
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.emit(&text, VisibleUpdateKind::PlannerProgress)
+            }
+            DeliveryMode::Silent => {}
+        }
+    }
+
+    pub(crate) fn emit_task_planner_progress(&mut self) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
+        let text = normalize_visible_update(
+            &self.presence_contract.task_planner_progress(),
+            MAX_QUEUED_PROGRESS_CHARS,
+        );
+        if text.is_empty() {
+            return;
+        }
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.force_visible_update(&text, VisibleUpdateKind::PlannerProgress)
+            }
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.emit(&text, VisibleUpdateKind::PlannerProgress)
+            }
             DeliveryMode::Silent => {}
         }
     }
@@ -259,9 +311,55 @@ impl<'a> DeliverySession<'a> {
         }
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, true, false)
+                delivery.force_visible_update(&text, VisibleUpdateKind::ToolProgress)
             }
-            DeliveryMode::Queued(ref mut delivery) => delivery.emit(&text, true, false),
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.emit(&text, VisibleUpdateKind::ToolProgress)
+            }
+            DeliveryMode::Silent => {}
+        }
+    }
+
+    pub(crate) fn emit_task_action_progress(&mut self, kind: TaskActionProgressKind) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
+        let text = normalize_visible_update(
+            &self.presence_contract.task_action_progress(kind),
+            MAX_QUEUED_PROGRESS_CHARS,
+        );
+        if text.is_empty() {
+            return;
+        }
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.force_visible_update(&text, VisibleUpdateKind::ActionProgress)
+            }
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.emit(&text, VisibleUpdateKind::ActionProgress)
+            }
+            DeliveryMode::Silent => {}
+        }
+    }
+
+    pub(crate) fn emit_task_terminal_progress(&mut self, kind: TaskTerminalProgressKind) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
+        let text = normalize_visible_update(
+            &self.presence_contract.task_terminal_progress(kind),
+            MAX_QUEUED_PROGRESS_CHARS,
+        );
+        if text.is_empty() {
+            return;
+        }
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.force_visible_update(&text, VisibleUpdateKind::TerminalProgress)
+            }
+            DeliveryMode::Queued(ref mut delivery) => {
+                delivery.emit(&text, VisibleUpdateKind::TerminalProgress)
+            }
             DeliveryMode::Silent => {}
         }
     }
@@ -276,7 +374,7 @@ impl<'a> DeliverySession<'a> {
         }
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, false, true)
+                delivery.force_visible_update(&text, VisibleUpdateKind::PartialDraft)
             }
             // Non-edit channels cannot revise previously sent text, so exposing ToolUse-time
             // assistant drafts here tends to leak unfinished step plans to the user.
@@ -458,16 +556,11 @@ impl<'a> EditDelivery<'a> {
         self.edit_existing(accumulated);
     }
 
-    fn force_visible_update(&mut self, content: &str, is_progress: bool, is_partial: bool) {
+    fn force_visible_update(&mut self, content: &str, kind: VisibleUpdateKind) {
         if self.edit_disabled || self.lifecycle.is_closed() {
             return;
         }
-        if is_progress {
-            self.report.progress_updates_sent = self.report.progress_updates_sent.saturating_add(1);
-        }
-        if is_partial {
-            self.report.partial_updates_sent = self.report.partial_updates_sent.saturating_add(1);
-        }
+        record_visible_update_kind(&mut self.report, kind);
         if self.message_id.is_none() {
             self.send_initial(content);
         } else {
@@ -587,7 +680,7 @@ impl<'a> QueuedDelivery<'a> {
             .store(true, Ordering::Relaxed);
     }
 
-    fn emit(&mut self, content: &str, is_progress: bool, is_partial: bool) {
+    fn emit(&mut self, content: &str, kind: VisibleUpdateKind) {
         if self.lifecycle.is_closed() {
             return;
         }
@@ -595,12 +688,7 @@ impl<'a> QueuedDelivery<'a> {
         if normalized.is_empty() || normalized == self.last_visible_text {
             return;
         }
-        if is_progress {
-            self.report.progress_updates_sent = self.report.progress_updates_sent.saturating_add(1);
-        }
-        if is_partial {
-            self.report.partial_updates_sent = self.report.partial_updates_sent.saturating_add(1);
-        }
+        record_visible_update_kind(&mut self.report, kind);
         if !self.try_claim_visible_slot() {
             return;
         }
@@ -630,7 +718,7 @@ impl<'a> QueuedDelivery<'a> {
             return false;
         }
         let before = self.last_visible_text.clone();
-        self.emit(content, false, false);
+        self.emit(content, VisibleUpdateKind::NeutralSupplemental);
         self.last_visible_text != before
     }
 
@@ -729,6 +817,87 @@ impl PresencePulseContract {
                 )
             }
             UiLocale::En => format!("Running {}, still moving 🪲", name),
+        }
+    }
+
+    fn task_planner_progress(self) -> String {
+        match self.loc {
+            UiLocale::Zh => "正在判断当前动作路径，继续推进 🪲".to_string(),
+            UiLocale::En => "Evaluating the current action path, still moving 🪲".to_string(),
+        }
+    }
+
+    fn task_action_progress(self, kind: TaskActionProgressKind) -> String {
+        match (self.loc, kind) {
+            (UiLocale::Zh, TaskActionProgressKind::Started) => {
+                "已进入任务执行，继续推进 🪲".to_string()
+            }
+            (UiLocale::Zh, TaskActionProgressKind::Resumed) => {
+                "已恢复当前任务，继续推进 🪲".to_string()
+            }
+            (UiLocale::En, TaskActionProgressKind::Started) => {
+                "Task execution started, still moving 🪲".to_string()
+            }
+            (UiLocale::En, TaskActionProgressKind::Resumed) => {
+                "Current task resumed, still moving 🪲".to_string()
+            }
+        }
+    }
+
+    fn task_terminal_progress(self, kind: TaskTerminalProgressKind) -> String {
+        match (self.loc, kind) {
+            (UiLocale::Zh, TaskTerminalProgressKind::Completed) => {
+                "当前任务已完成，正在整理答复 🪲".to_string()
+            }
+            (UiLocale::Zh, TaskTerminalProgressKind::PartialComplete) => {
+                "当前任务已部分完成，正在整理结果 🪲".to_string()
+            }
+            (UiLocale::Zh, TaskTerminalProgressKind::Blocked) => {
+                "当前任务已阻塞，正在整理结果 🪲".to_string()
+            }
+            (UiLocale::Zh, TaskTerminalProgressKind::Aborted) => {
+                "当前任务已终止，正在整理结果 🪲".to_string()
+            }
+            (UiLocale::En, TaskTerminalProgressKind::Completed) => {
+                "Task completed, preparing the final reply 🪲".to_string()
+            }
+            (UiLocale::En, TaskTerminalProgressKind::PartialComplete) => {
+                "Task partially completed, preparing the result 🪲".to_string()
+            }
+            (UiLocale::En, TaskTerminalProgressKind::Blocked) => {
+                "Task blocked, preparing the result 🪲".to_string()
+            }
+            (UiLocale::En, TaskTerminalProgressKind::Aborted) => {
+                "Task aborted, preparing the result 🪲".to_string()
+            }
+        }
+    }
+}
+
+fn record_visible_update_kind(report: &mut DeliveryReport, kind: VisibleUpdateKind) {
+    match kind {
+        VisibleUpdateKind::PlannerProgress => {
+            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
+            report.planner_progress_updates_sent =
+                report.planner_progress_updates_sent.saturating_add(1);
+        }
+        VisibleUpdateKind::ToolProgress => {
+            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
+            report.tool_progress_updates_sent = report.tool_progress_updates_sent.saturating_add(1);
+        }
+        VisibleUpdateKind::ActionProgress => {
+            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
+            report.action_progress_updates_sent =
+                report.action_progress_updates_sent.saturating_add(1);
+        }
+        VisibleUpdateKind::TerminalProgress => {
+            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
+            report.terminal_progress_updates_sent =
+                report.terminal_progress_updates_sent.saturating_add(1);
+        }
+        VisibleUpdateKind::NeutralSupplemental => {}
+        VisibleUpdateKind::PartialDraft => {
+            report.partial_updates_sent = report.partial_updates_sent.saturating_add(1);
         }
     }
 }
@@ -1177,6 +1346,7 @@ mod tests {
             delivery.report(),
             DeliveryReport {
                 progress_updates_sent: 1,
+                planner_progress_updates_sent: 1,
                 finalize_streamed: true,
                 visible_text_updates_sent: 1,
                 ..DeliveryReport::default()
@@ -1440,6 +1610,108 @@ mod tests {
 
         let outbound = outbound_rx.try_recv().expect("tool pulse");
         assert_eq!(outbound.content, "正在执行 board_info，继续推进 🪲");
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                tool_progress_updates_sent: 1,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
+    }
+
+    #[test]
+    fn queued_delivery_task_planner_progress_uses_typed_progress_contract() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_task_planner_progress();
+
+        let outbound = outbound_rx.try_recv().expect("planner pulse");
+        assert_eq!(outbound.content, "正在判断当前动作路径，继续推进 🪲");
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                planner_progress_updates_sent: 1,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
+    }
+
+    #[test]
+    fn queued_delivery_task_action_progress_uses_typed_progress_contract() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_task_action_progress(TaskActionProgressKind::Resumed);
+
+        let outbound = outbound_rx.try_recv().expect("action pulse");
+        assert_eq!(outbound.content, "已恢复当前任务，继续推进 🪲");
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                action_progress_updates_sent: 1,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
+    }
+
+    #[test]
+    fn queued_delivery_task_terminal_progress_uses_typed_progress_contract() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_task_terminal_progress(TaskTerminalProgressKind::PartialComplete);
+
+        let outbound = outbound_rx.try_recv().expect("terminal pulse");
+        assert_eq!(outbound.content, "当前任务已部分完成，正在整理结果 🪲");
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                terminal_progress_updates_sent: 1,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
     }
 
     #[test]

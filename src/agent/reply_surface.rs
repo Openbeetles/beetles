@@ -1,7 +1,7 @@
 //! Reply surface contract selection for user-visible answers.
 //! 统一回复面合同：把“这轮该怎么交付”升级成正式类型，而不是散落标签。
 
-use super::request_semantics::RequestSemantics;
+use super::request_semantics::{ActionFamily, DisclosureSurface, EvidenceNeed, RequestSemantics};
 use crate::bus::IngressKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,9 +41,23 @@ pub(crate) enum ReplySurface {
 }
 
 impl ReplySurface {
-    pub(crate) fn for_turn(ingress: IngressKind, _semantics: RequestSemantics) -> Self {
+    pub(crate) fn for_turn(ingress: IngressKind, semantics: RequestSemantics) -> Self {
         if ingress != IngressKind::User {
             return Self::InternalOnly;
+        }
+        if semantics.action_family == ActionFamily::TaskExecution {
+            return Self::TaskExecution;
+        }
+        if semantics.disclosure_surface == DisclosureSurface::Private {
+            return Self::PrivateBoundary;
+        }
+        if semantics.disclosure_surface == DisclosureSurface::Public
+            && matches!(
+                semantics.evidence_need,
+                EvidenceNeed::PublicRuntime | EvidenceNeed::HostTool
+            )
+        {
+            return Self::PublicRuntime;
         }
         Self::GovernedConversation
     }
@@ -140,7 +154,8 @@ impl ReplySurface {
 mod tests {
     use super::*;
     use crate::agent::request_semantics::{
-        DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
+        ResumeRelation,
     };
 
     fn semantics(
@@ -152,6 +167,8 @@ mod tests {
             evidence_need,
             disclosure_surface,
             execution_preference: ExecutionPreference::AnswerDirect,
+            action_family: ActionFamily::Conversation,
+            resume_relation: ResumeRelation::IndependentTurn,
             confidence: 100,
         }
     }
@@ -162,7 +179,7 @@ mod tests {
             IngressKind::User,
             semantics(DisclosureSurface::Public, EvidenceNeed::PublicRuntime),
         );
-        assert_eq!(surface, ReplySurface::GovernedConversation);
+        assert_eq!(surface, ReplySurface::PublicRuntime);
     }
 
     #[test]
@@ -171,7 +188,7 @@ mod tests {
             IngressKind::User,
             semantics(DisclosureSurface::Private, EvidenceNeed::CanonicalMemory),
         );
-        assert_eq!(surface, ReplySurface::GovernedConversation);
+        assert_eq!(surface, ReplySurface::PrivateBoundary);
     }
 
     #[test]

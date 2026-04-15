@@ -325,6 +325,14 @@ pub struct TurnDeliveryLedger {
     #[serde(default)]
     pub progress_updates_sent: u8,
     #[serde(default)]
+    pub planner_progress_updates_sent: u8,
+    #[serde(default)]
+    pub tool_progress_updates_sent: u8,
+    #[serde(default)]
+    pub action_progress_updates_sent: u8,
+    #[serde(default)]
+    pub terminal_progress_updates_sent: u8,
+    #[serde(default)]
     pub partial_updates_sent: u8,
     #[serde(default)]
     pub tool_outbound_intents_seen: u8,

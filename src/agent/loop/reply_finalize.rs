@@ -1,4 +1,6 @@
 use super::*;
+use crate::agent::final_reply::reply_has_concrete_anchor;
+use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 
 pub(super) struct FinalizedTurn {
     pub(super) delivery: DeliveryReport,
@@ -18,6 +20,8 @@ pub(super) struct FinalizedTurn {
     pub(super) used_surface_finalization: bool,
     pub(super) used_final_answer_recovery: bool,
     pub(super) pressure: crate::orchestrator::PressureLevel,
+    pub(super) request_semantics: crate::agent::request_semantics::RequestSemantics,
+    pub(super) reply_surface: ReplySurface,
     pub(super) prompt_recall_intent: crate::memory::PromptRecallIntent,
     pub(super) runtime_skill_selected_ids: Vec<String>,
     pub(super) task_learning_selected_ids: Vec<String>,
@@ -40,6 +44,86 @@ fn should_run_full_mental_privacy_review(
             disclosure.is_some()
         }
     }
+}
+
+fn truthful_no_new_execution_result_copy(loc: UiLocale) -> &'static str {
+    match loc {
+        UiLocale::Zh => "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。",
+        UiLocale::En => "This turn has not executed a new tool or task step yet, so there is no new result to report.",
+    }
+}
+
+fn looks_like_truthful_blocker_or_input_request(content: &str) -> bool {
+    let trimmed = content.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    trimmed.contains('?')
+        || trimmed.contains('？')
+        || trimmed.contains("缺")
+        || trimmed.contains("无法继续")
+        || trimmed.contains("不能继续")
+        || trimmed.contains("请提供")
+        || trimmed.contains("请把")
+        || trimmed.contains("请发")
+        || lower.contains("missing ")
+        || lower.contains("cannot continue")
+        || lower.contains("can't continue")
+        || lower.contains("please provide")
+        || lower.contains("please send")
+}
+
+fn looks_like_future_action_narration(content: &str) -> bool {
+    let trimmed = content.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    [
+        "我先",
+        "我需要",
+        "让我",
+        "现在我需要",
+        "我需要调整方法",
+        "我明白了问题所在",
+        "我了解了正确的配置结构",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
+        || [
+            "let me ",
+            "i need to ",
+            "now i need to ",
+            "i will ",
+            "i'll ",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+fn should_apply_truth_guard(
+    strategy: AgentRunStrategy,
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
+    delivery: &DeliveryReport,
+    any_tool_used: bool,
+    external_content_used: bool,
+    reply_content: &str,
+) -> bool {
+    if strategy != AgentRunStrategy::LinuxEnhanced
+        || request_semantics.execution_preference != ExecutionPreference::ToolFirst
+        || !matches!(
+            request_semantics.action_family,
+            ActionFamily::ActionRequest | ActionFamily::ActiveAction | ActionFamily::TaskExecution
+        )
+        || any_tool_used
+        || external_content_used
+        || delivery.planner_progress_updates_sent > 0
+        || delivery.tool_progress_updates_sent > 0
+        || delivery.action_progress_updates_sent > 0
+        || delivery.terminal_progress_updates_sent > 0
+    {
+        return false;
+    }
+    let trimmed = reply_content.trim();
+    !trimmed.is_empty()
+        && !reply_has_concrete_anchor(trimmed)
+        && !looks_like_truthful_blocker_or_input_request(trimmed)
+        && looks_like_future_action_narration(trimmed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -75,7 +159,7 @@ pub(super) fn finalize_turn(
         pressure,
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
-        request_semantics: _request_semantics,
+        request_semantics,
         reply_surface,
         prompt_recall_intent,
         runtime_skill_selected_ids,
@@ -111,6 +195,24 @@ pub(super) fn finalize_turn(
 
     if !is_interrupt && apply_finalizer {
         reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
+    }
+    if !is_interrupt
+        && should_apply_truth_guard(
+            config.strategy,
+            request_semantics,
+            &delivery,
+            any_tool_used,
+            external_content_used,
+            &reply_content,
+        )
+    {
+        log::warn!(
+            "[reply_surface] truth_guard replaced unsupported future-action narration surface={} channel={} chat_id={}",
+            reply_surface.as_str(),
+            msg.channel,
+            msg.chat_id
+        );
+        reply_content = truthful_no_new_execution_result_copy(loc).to_string();
     }
     let review_input_before = reply_content.clone();
     let mut mental_privacy_review = MentalPrivacyReviewOutcome {
@@ -198,6 +300,8 @@ pub(super) fn finalize_turn(
         used_surface_finalization,
         used_final_answer_recovery,
         pressure,
+        request_semantics,
+        reply_surface,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -246,6 +350,8 @@ pub(super) fn complete_turn(
         used_surface_finalization,
         used_final_answer_recovery,
         pressure,
+        request_semantics,
+        reply_surface,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -311,6 +417,60 @@ pub(super) fn complete_turn(
         let _ = config
             .important_message_store
             .set_important_offset_from_end(&msg.chat_id, 1);
+    }
+    if delivered
+        && msg.ingress == IngressKind::User
+        && matches!(
+            request_semantics.resume_relation,
+            crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
+                | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
+        )
+    {
+        if let Err(error) = config.execution_state_store.clear(&msg.chat_id) {
+            log::warn!(
+                "[agent_execution_state] clear failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+        }
+    }
+    if delivered
+        && msg.ingress == IngressKind::User
+        && request_semantics.disclosure_surface
+            != crate::agent::request_semantics::DisclosureSurface::Private
+        && (worker_latency.tool_calls > 0
+            || matches!(
+                request_semantics.resume_relation,
+                crate::agent::request_semantics::ResumeRelation::ConfirmActiveAction
+                    | crate::agent::request_semantics::ResumeRelation::SupplyActiveActionInput
+                    | crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
+                    | crate::agent::request_semantics::ResumeRelation::ResumeActiveTaskRun
+            )
+            || matches!(reply_surface, ReplySurface::TaskExecution)
+            || turn_observation
+                .as_ref()
+                .and_then(|observation| observation.blocker.as_ref())
+                .is_some())
+    {
+        if let Err(error) = crate::memory::seed_execution_state_from_turn(
+            config.execution_state_store.as_ref(),
+            crate::memory::ProvisionalExecutionStateInput {
+                chat_id: &msg.chat_id,
+                ingress: msg.ingress,
+                channel: msg.channel.as_ref(),
+                user_content: &msg.content,
+                reply_content: &reply_content,
+                tool_calls: worker_latency.tool_calls,
+                now_secs: super::now_unix_ms() / 1000,
+                turn_observation: turn_observation.as_ref(),
+            },
+        ) {
+            log::warn!(
+                "[agent_execution_state] provisional seed failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+        }
     }
     let llm_ms = worker_latency
         .context_ms

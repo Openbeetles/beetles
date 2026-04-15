@@ -6,11 +6,30 @@ pub(super) fn extract_worker_outcome_text(outcome: WorkerOutcome) -> String {
     }
 }
 
+fn terminal_progress_kind_for_status(
+    status: TaskRunStatus,
+) -> Option<crate::agent::delivery::TaskTerminalProgressKind> {
+    match status {
+        TaskRunStatus::Completed => {
+            Some(crate::agent::delivery::TaskTerminalProgressKind::Completed)
+        }
+        TaskRunStatus::PartialComplete => {
+            Some(crate::agent::delivery::TaskTerminalProgressKind::PartialComplete)
+        }
+        TaskRunStatus::Blocked | TaskRunStatus::Failed => {
+            Some(crate::agent::delivery::TaskTerminalProgressKind::Blocked)
+        }
+        TaskRunStatus::Aborted => Some(crate::agent::delivery::TaskTerminalProgressKind::Aborted),
+        TaskRunStatus::Planning | TaskRunStatus::Running => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn try_run_task_execution(
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &crate::bus::PcMsg,
     outbound_tx: &OutboundTx,
+    delivery: &mut DeliverySession<'_>,
     registry: &crate::tools::ToolRegistry,
     config: &AgentLoopConfig,
     request_plan: &AgentRequestPlan<'_>,
@@ -23,23 +42,21 @@ pub(super) fn try_run_task_execution(
     pressure: crate::orchestrator::PressureLevel,
     deliberation_class: crate::memory::TurnDeliberationClass,
     request_semantics: crate::agent::request_semantics::RequestSemantics,
+    active_run: Option<TaskRunRecord>,
     subject_state: Option<SubjectState>,
     mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 ) -> Result<Option<(WorkerOutcome, WorkerRunTelemetry)>> {
-    let active_run =
-        active_task_run_for_chat(config.task_run_store.as_ref(), &msg.channel, &msg.chat_id)
-            .ok()
-            .flatten();
     if !super::task_execution_support::should_consider_task_execution(
         msg,
         request_plan.has_tools(),
         pressure,
-        active_run.is_some(),
+        request_semantics,
     ) {
         return Ok(None);
     }
 
+    delivery.emit_task_planner_progress();
     let planner_system = super::prepare_system_with_suffix(
         system,
         TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX,
@@ -91,6 +108,12 @@ pub(super) fn try_run_task_execution(
     if planner_decision.route == TaskExecutionRoute::ResumeRun && active_run.is_none() {
         planner_decision.route = TaskExecutionRoute::StartRun;
     }
+    delivery.emit_task_action_progress(match planner_decision.route {
+        TaskExecutionRoute::ResumeRun => crate::agent::delivery::TaskActionProgressKind::Resumed,
+        TaskExecutionRoute::StartRun | TaskExecutionRoute::DirectReply => {
+            crate::agent::delivery::TaskActionProgressKind::Started
+        }
+    });
 
     let now_secs = crate::util::current_unix_secs();
     let mut record = match planner_decision.route {
@@ -551,6 +574,9 @@ pub(super) fn try_run_task_execution(
     if record.run.status.is_terminal() && record.run.finished_at == 0 {
         record.run.finished_at = record.run.updated_at;
     }
+    if let Some(kind) = terminal_progress_kind_for_status(record.run.status) {
+        delivery.emit_task_terminal_progress(kind);
+    }
     let final_artifact_count = config
         .task_artifact_store
         .list_for_run(&record.run.run_id, usize::MAX)
@@ -662,7 +688,7 @@ pub(super) fn try_run_task_execution(
                 react_rounds: latency.react_rounds,
                 tool_calls: latency.tool_calls,
             },
-            delivery: DeliveryReport::default(),
+            delivery: delivery.report(),
             any_tool_used,
             external_content_used,
             used_surface_finalization: false,

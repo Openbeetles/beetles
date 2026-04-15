@@ -868,6 +868,37 @@ mod tests {
     }
 
     #[test]
+    fn invalidate_display_cache_after_backlight_wake_resets_all_dashboard_cache_fields() {
+        use super::{invalidate_display_cache_after_backlight_wake, DisplayLoopState};
+        use beetle::{DisplayPressureLevel, DisplaySystemState};
+
+        let mut state = DisplayLoopState {
+            last_state: Some(DisplaySystemState::Busy),
+            last_presence_subtitle: Some("busy".to_string()),
+            last_ip: "192.168.4.1".to_string(),
+            last_channels: [(true, false, 3); 5],
+            last_pressure: Some(DisplayPressureLevel::Critical),
+            last_heap: 77,
+            last_msg_in: 11,
+            last_msg_out: 12,
+            last_llm_ms: 345,
+            ..DisplayLoopState::default()
+        };
+
+        invalidate_display_cache_after_backlight_wake(&mut state);
+
+        assert_eq!(state.last_state, None);
+        assert_eq!(state.last_presence_subtitle, None);
+        assert!(state.last_ip.is_empty());
+        assert_eq!(state.last_channels, [(false, false, 0); 5]);
+        assert_eq!(state.last_pressure, None);
+        assert_eq!(state.last_heap, 255);
+        assert_eq!(state.last_msg_in, u32::MAX);
+        assert_eq!(state.last_msg_out, u32::MAX);
+        assert_eq!(state.last_llm_ms, 0);
+    }
+
+    #[test]
     fn display_thread_stack_budget_is_large_enough_for_dashboard_render_path() {
         let stack_budget = std::hint::black_box(beetle::util::STACK_DISPLAY);
         assert!(
@@ -915,16 +946,68 @@ mod tests {
     }
 
     #[test]
-    fn steady_state_state_change_uses_header_only_refresh() {
+    fn display_refresh_plan_keeps_footer_and_channels_updates_when_state_header_changes() {
         use beetle::DisplaySystemState;
 
+        let deltas = super::DisplayRefreshDeltas {
+            state_changed: true,
+            subtitle_changed: false,
+            ip_changed: false,
+            channels_changed: true,
+            footer_changed: true,
+        };
+
         assert_eq!(
-            super::state_change_display_refresh_mode(Some(DisplaySystemState::Idle)),
-            super::StateChangeDisplayRefreshMode::StateHeaderOnly,
+            super::plan_display_refresh(Some(DisplaySystemState::Idle), deltas),
+            super::DisplayRefreshPlan {
+                header: Some(super::StateChangeDisplayRefreshMode::StateHeaderOnly),
+                ip: false,
+                channels: true,
+                footer: true,
+            }
         );
+    }
+
+    #[test]
+    fn display_refresh_plan_uses_full_dashboard_only_for_first_render() {
+        let deltas = super::DisplayRefreshDeltas {
+            state_changed: true,
+            subtitle_changed: true,
+            ip_changed: true,
+            channels_changed: true,
+            footer_changed: true,
+        };
+
         assert_eq!(
-            super::state_change_display_refresh_mode(None),
-            super::StateChangeDisplayRefreshMode::FullDashboard,
+            super::plan_display_refresh(None, deltas),
+            super::DisplayRefreshPlan {
+                header: Some(super::StateChangeDisplayRefreshMode::FullDashboard),
+                ip: false,
+                channels: false,
+                footer: false,
+            }
+        );
+    }
+
+    #[test]
+    fn display_error_flash_emits_flash_on_then_flash_off_transition() {
+        let mut state = super::DisplayLoopState::default();
+        let mut metrics = beetle::metrics::snapshot();
+
+        metrics.errors_other = 1;
+        assert_eq!(
+            super::update_display_error_flash(&mut state, &metrics),
+            super::DisplayErrorFlashUpdate::FlashOn
+        );
+
+        assert_eq!(
+            super::update_display_error_flash(&mut state, &metrics),
+            super::DisplayErrorFlashUpdate::FlashOff
+        );
+
+        assert_eq!(
+            super::update_display_error_flash(&mut state, &metrics),
+            super::DisplayErrorFlashUpdate::NoChange
         );
     }
 }
@@ -973,7 +1056,13 @@ fn build_voice_event_channel(
     })
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 #[derive(Clone)]
 struct DisplayLoopState {
     last_state: Option<DisplaySystemState>,
@@ -1005,7 +1094,12 @@ enum StateChangeDisplayRefreshMode {
     StateHeaderOnly,
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 impl Default for DisplayLoopState {
     fn default() -> Self {
         Self {
@@ -1044,7 +1138,107 @@ fn state_change_display_refresh_mode(
     }
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayRefreshDeltas {
+    state_changed: bool,
+    subtitle_changed: bool,
+    ip_changed: bool,
+    channels_changed: bool,
+    footer_changed: bool,
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayRefreshPlan {
+    header: Option<StateChangeDisplayRefreshMode>,
+    ip: bool,
+    channels: bool,
+    footer: bool,
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn plan_display_refresh(
+    last_state: Option<DisplaySystemState>,
+    deltas: DisplayRefreshDeltas,
+) -> DisplayRefreshPlan {
+    let header = deltas
+        .state_changed
+        .then(|| state_change_display_refresh_mode(last_state));
+    if header == Some(StateChangeDisplayRefreshMode::FullDashboard) {
+        return DisplayRefreshPlan {
+            header,
+            ip: false,
+            channels: false,
+            footer: false,
+        };
+    }
+    DisplayRefreshPlan {
+        header,
+        ip: header.is_none() && (deltas.ip_changed || deltas.subtitle_changed),
+        channels: deltas.channels_changed,
+        footer: deltas.footer_changed,
+    }
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DisplayErrorFlashUpdate {
+    NoChange,
+    FlashOn,
+    FlashOff,
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopState) {
+    loop_state.last_state = None;
+    loop_state.last_presence_subtitle = None;
+    loop_state.last_ip.clear();
+    loop_state.last_channels = [(false, false, 0); 5];
+    loop_state.last_pressure = None;
+    loop_state.last_heap = 255;
+    loop_state.last_msg_in = u32::MAX;
+    loop_state.last_msg_out = u32::MAX;
+    loop_state.last_llm_ms = 0;
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 struct DisplayLoopCacheUpdate<'a> {
     presence_subtitle: &'a Option<String>,
     ip: &'a String,
@@ -1056,7 +1250,13 @@ struct DisplayLoopCacheUpdate<'a> {
     llm_ms: Option<u32>,
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 fn update_display_loop_cache(
     loop_state: &mut DisplayLoopState,
     update: DisplayLoopCacheUpdate<'_>,
@@ -1095,7 +1295,13 @@ fn update_display_loop_cache(
     }
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 fn build_display_channels(
     enabled: &str,
     snapshot: &beetle::orchestrator::ResourceSnapshot,
@@ -1134,11 +1340,17 @@ fn build_display_channels(
     ]
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 fn update_display_error_flash(
     loop_state: &mut DisplayLoopState,
     metrics: &beetle::metrics::MetricsSnapshot,
-) -> bool {
+) -> DisplayErrorFlashUpdate {
     let current_error_total = metrics.errors_agent_chat
         + metrics.errors_agent_context
         + metrics.errors_tool_execute
@@ -1157,12 +1369,12 @@ fn update_display_error_flash(
     };
     if error_flash {
         loop_state.flash_active = true;
-        true
+        DisplayErrorFlashUpdate::FlashOn
     } else if loop_state.flash_active {
         loop_state.flash_active = false;
-        false
+        DisplayErrorFlashUpdate::FlashOff
     } else {
-        false
+        DisplayErrorFlashUpdate::NoChange
     }
 }
 
@@ -1180,9 +1392,7 @@ fn update_display_backlight(
     if any_change && loop_state.backlight_off {
         let _ = platform.fade_display_backlight(0, 100, 500);
         loop_state.backlight_off = false;
-        loop_state.last_state = None;
-        loop_state.last_presence_subtitle = None;
-        loop_state.last_heap = 255;
+        invalidate_display_cache_after_backlight_wake(loop_state);
         log::info!("[{}] display backlight woke up", TAG);
         return true;
     }
@@ -1240,14 +1450,15 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         let msg_out = metrics.messages_out as u32;
         let last_active = metrics.last_active_epoch_secs as u32;
         let llm_ms = metrics.llm_last_ms as u32;
-        let uptime_secs = beetle::platform::time::uptime_secs();
+        let uptime_secs = beetle::platform::time::app_uptime_secs();
 
         loop_state.busy_toggle = state == DisplaySystemState::Busy && !loop_state.busy_toggle;
         if state != DisplaySystemState::Busy {
             loop_state.busy_toggle = false;
         }
 
-        let show_flash = update_display_error_flash(&mut loop_state, &metrics);
+        let flash_update = update_display_error_flash(&mut loop_state, &metrics);
+        let show_flash = flash_update == DisplayErrorFlashUpdate::FlashOn;
         let state_changed = loop_state.last_state != Some(state);
         let subtitle_changed =
             loop_state.last_presence_subtitle != display_projection.subtitle_override;
@@ -1259,15 +1470,17 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         let heap_changed = loop_state.last_heap.abs_diff(heap_percent) >= 2;
         let msg_changed = msg_in != loop_state.last_msg_in || msg_out != loop_state.last_msg_out;
         let llm_changed = llm_ms != loop_state.last_llm_ms;
-        let any_change = state_changed
-            || ip_changed
-            || channels_changed
-            || pressure_changed
+        let footer_changed = pressure_changed
             || heap_changed
             || msg_changed
             || llm_changed
+            || flash_update != DisplayErrorFlashUpdate::NoChange;
+        let any_change = state_changed
+            || ip_changed
+            || channels_changed
+            || footer_changed
             || subtitle_changed
-            || show_flash;
+            || flash_update != DisplayErrorFlashUpdate::NoChange;
 
         if any_change {
             loop_state.last_activity_at = Instant::now();
@@ -1288,10 +1501,21 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             continue;
         }
 
-        if state_changed {
+        let refresh_plan = plan_display_refresh(
+            loop_state.last_state,
+            DisplayRefreshDeltas {
+                state_changed,
+                subtitle_changed,
+                ip_changed,
+                channels_changed,
+                footer_changed,
+            },
+        );
+
+        if let Some(header_mode) = refresh_plan.header {
             let presence_subtitle = display_projection.subtitle_override.clone();
             let ip_owned = ip.clone();
-            let cmd = match state_change_display_refresh_mode(loop_state.last_state) {
+            let cmd = match header_mode {
                 StateChangeDisplayRefreshMode::FullDashboard => DisplayCommand::RefreshDashboard {
                     state,
                     presence_subtitle,
@@ -1318,79 +1542,97 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                     }
                 }
             };
-            if let Err(e) = platform.display_command(cmd) {
-                log::warn!("[{}] display refresh failed: {}", TAG, e);
+            match platform.display_command(cmd) {
+                Ok(()) => {
+                    beetle::bootstrap::observe_heap_checkpoint(
+                        TAG,
+                        "heap_display_loop_after_state_command",
+                    );
+                    loop_state.last_state = Some(state);
+                    loop_state
+                        .last_presence_subtitle
+                        .clone_from(&display_projection.subtitle_override);
+                    loop_state.last_ip.clone_from(&ip_owned);
+                    if header_mode == StateChangeDisplayRefreshMode::FullDashboard {
+                        update_display_loop_cache(
+                            &mut loop_state,
+                            DisplayLoopCacheUpdate {
+                                presence_subtitle: &display_projection.subtitle_override,
+                                ip: &ip_owned,
+                                channels: &channels,
+                                pressure: Some(pressure),
+                                heap_percent: Some(heap_percent),
+                                msg_in: Some(msg_in),
+                                msg_out: Some(msg_out),
+                                llm_ms: Some(llm_ms),
+                            },
+                        );
+                        loop_state.refresh_secs = compute_refresh_secs(
+                            state,
+                            loop_state.backlight_off,
+                            &loop_state.last_activity_at,
+                        );
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[{}] display refresh failed: {}", TAG, e);
+                }
             }
-            beetle::bootstrap::observe_heap_checkpoint(
-                TAG,
-                "heap_display_loop_after_state_command",
-            );
-            loop_state.last_state = Some(state);
-            update_display_loop_cache(
-                &mut loop_state,
-                DisplayLoopCacheUpdate {
-                    presence_subtitle: &display_projection.subtitle_override,
-                    ip: &ip_owned,
-                    channels: &channels,
-                    pressure: Some(pressure),
-                    heap_percent: Some(heap_percent),
-                    msg_in: Some(msg_in),
-                    msg_out: Some(msg_out),
-                    llm_ms: Some(llm_ms),
-                },
-            );
-            loop_state.refresh_secs = compute_refresh_secs(
-                state,
-                loop_state.backlight_off,
-                &loop_state.last_activity_at,
-            );
-            continue;
         }
 
-        if ip_changed || subtitle_changed {
+        if refresh_plan.ip {
             let presence_subtitle = display_projection.subtitle_override.clone();
             let ip_owned = ip.clone();
-            let _ = platform.display_command(DisplayCommand::UpdateIp {
+            match platform.display_command(DisplayCommand::UpdateIp {
                 ip: ip_owned.clone(),
                 presence_subtitle,
                 uptime_secs,
-            });
-            update_display_loop_cache(
-                &mut loop_state,
-                DisplayLoopCacheUpdate {
-                    presence_subtitle: &display_projection.subtitle_override,
-                    ip: &ip_owned,
-                    channels: &channels,
-                    pressure: None,
-                    heap_percent: None,
-                    msg_in: None,
-                    msg_out: None,
-                    llm_ms: None,
-                },
-            );
+            }) {
+                Ok(()) => {
+                    update_display_loop_cache(
+                        &mut loop_state,
+                        DisplayLoopCacheUpdate {
+                            presence_subtitle: &display_projection.subtitle_override,
+                            ip: &ip_owned,
+                            channels: &channels,
+                            pressure: None,
+                            heap_percent: None,
+                            msg_in: None,
+                            msg_out: None,
+                            llm_ms: None,
+                        },
+                    );
+                }
+                Err(e) => log::warn!("[{}] display ip refresh failed: {}", TAG, e),
+            }
         }
-        if channels_changed {
+        if refresh_plan.channels {
             let last_presence_subtitle = loop_state.last_presence_subtitle.clone();
             let last_ip = loop_state.last_ip.clone();
-            let _ = platform.display_command(DisplayCommand::UpdateChannels { channels });
-            update_display_loop_cache(
-                &mut loop_state,
-                DisplayLoopCacheUpdate {
-                    presence_subtitle: &last_presence_subtitle,
-                    ip: &last_ip,
-                    channels: &channels,
-                    pressure: None,
-                    heap_percent: None,
-                    msg_in: None,
-                    msg_out: None,
-                    llm_ms: None,
-                },
-            );
+            match platform.display_command(DisplayCommand::UpdateChannels { channels }) {
+                Ok(()) => {
+                    update_display_loop_cache(
+                        &mut loop_state,
+                        DisplayLoopCacheUpdate {
+                            presence_subtitle: &last_presence_subtitle,
+                            ip: &last_ip,
+                            channels: &channels,
+                            pressure: None,
+                            heap_percent: None,
+                            msg_in: None,
+                            msg_out: None,
+                            llm_ms: None,
+                        },
+                    );
+                }
+                Err(e) => log::warn!("[{}] display channels refresh failed: {}", TAG, e),
+            }
         }
-        if pressure_changed || heap_changed || msg_changed || llm_changed || show_flash {
+        if refresh_plan.footer {
             let last_presence_subtitle = loop_state.last_presence_subtitle.clone();
             let last_ip = loop_state.last_ip.clone();
-            let _ = platform.display_command(DisplayCommand::UpdatePressure {
+            match platform.display_command(DisplayCommand::UpdatePressure {
                 level: pressure,
                 heap_percent,
                 messages_in: msg_in,
@@ -1398,20 +1640,24 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                 last_active_epoch_secs: last_active,
                 llm_last_ms: llm_ms,
                 error_flash: show_flash,
-            });
-            update_display_loop_cache(
-                &mut loop_state,
-                DisplayLoopCacheUpdate {
-                    presence_subtitle: &last_presence_subtitle,
-                    ip: &last_ip,
-                    channels: &channels,
-                    pressure: Some(pressure),
-                    heap_percent: Some(heap_percent),
-                    msg_in: Some(msg_in),
-                    msg_out: Some(msg_out),
-                    llm_ms: Some(llm_ms),
-                },
-            );
+            }) {
+                Ok(()) => {
+                    update_display_loop_cache(
+                        &mut loop_state,
+                        DisplayLoopCacheUpdate {
+                            presence_subtitle: &last_presence_subtitle,
+                            ip: &last_ip,
+                            channels: &channels,
+                            pressure: Some(pressure),
+                            heap_percent: Some(heap_percent),
+                            msg_in: Some(msg_in),
+                            msg_out: Some(msg_out),
+                            llm_ms: Some(llm_ms),
+                        },
+                    );
+                }
+                Err(e) => log::warn!("[{}] display footer refresh failed: {}", TAG, e),
+            }
         }
         loop_state.refresh_secs = compute_refresh_secs(
             state,
@@ -1523,9 +1769,13 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                     println!("Recent turn total_ms: {}", ledger.total_ms);
                     println!("Recent turn tool_calls: {}", ledger.tool_calls);
                     println!(
-                        "Recent turn delivery: presence_pulses_sent={} progress_updates_sent={} partial_updates_sent={} tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
+                        "Recent turn delivery: presence_pulses_sent={} progress_updates_sent={} planner_progress_updates_sent={} tool_progress_updates_sent={} action_progress_updates_sent={} terminal_progress_updates_sent={} partial_updates_sent={} tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
                         ledger.delivery.presence_pulses_sent,
                         ledger.delivery.progress_updates_sent,
+                        ledger.delivery.planner_progress_updates_sent,
+                        ledger.delivery.tool_progress_updates_sent,
+                        ledger.delivery.action_progress_updates_sent,
+                        ledger.delivery.terminal_progress_updates_sent,
                         ledger.delivery.partial_updates_sent,
                         ledger.delivery.tool_outbound_intents_seen,
                         ledger.delivery.tool_visible_updates_sent,

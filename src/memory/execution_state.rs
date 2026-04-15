@@ -123,6 +123,18 @@ pub struct ExecutionStateRefreshContext<'a> {
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProvisionalExecutionStateInput<'a> {
+    pub(crate) chat_id: &'a str,
+    pub(crate) ingress: IngressKind,
+    pub(crate) channel: &'a str,
+    pub(crate) user_content: &'a str,
+    pub(crate) reply_content: &'a str,
+    pub(crate) tool_calls: u32,
+    pub(crate) now_secs: u64,
+    pub(crate) turn_observation: Option<&'a TurnObservationLedger>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionStateRefreshOutcome {
     Skipped,
@@ -232,6 +244,85 @@ pub fn render_execution_state_block(state: &ExecutionState, max_len: usize) -> O
     }
     let capped = truncate_content_to_max(trimmed, max_len).into_owned();
     (!capped.trim().is_empty()).then_some(capped)
+}
+
+pub(crate) fn should_resume_active_execution_state(
+    state: &ExecutionState,
+    user_content: &str,
+) -> bool {
+    let Some(state) = normalize_execution_state(state.clone(), state.updated_at) else {
+        return false;
+    };
+    if !should_persist_execution_state(&state) {
+        return false;
+    }
+    let user_content = normalize_field(user_content, EXECUTION_STATE_GOAL_MAX_CHARS);
+    if user_content.is_empty() {
+        return false;
+    }
+    if focus_strings_match(&user_content, &state.goal)
+        || focus_strings_match(&user_content, &state.progress)
+        || focus_strings_match(&user_content, &state.next_action)
+        || state
+            .next_best_actions
+            .iter()
+            .any(|item| focus_strings_match(&user_content, item))
+    {
+        return true;
+    }
+    field_specificity_score(&user_content) < MIN_FIELD_SPECIFICITY_SCORE
+        && execution_state_has_pending_work(&state)
+}
+
+pub(crate) fn seed_execution_state_from_turn(
+    store: &dyn ExecutionStateStore,
+    input: ProvisionalExecutionStateInput<'_>,
+) -> Result<bool> {
+    if input.ingress != IngressKind::User || input.channel == "cron" {
+        return Ok(false);
+    }
+    let user_content = input.user_content.trim();
+    let reply_content = input.reply_content.trim();
+    if user_content.is_empty() || reply_content.is_empty() {
+        return Ok(false);
+    }
+    let mut candidate = ExecutionState {
+        status: if input
+            .turn_observation
+            .and_then(|observation| observation.blocker.as_ref())
+            .is_some()
+        {
+            ExecutionStatus::Blocked
+        } else {
+            ExecutionStatus::Active
+        },
+        goal: normalize_field(user_content, EXECUTION_STATE_GOAL_MAX_CHARS),
+        last_output: if should_capture_last_output(reply_content) {
+            normalize_field(reply_content, EXECUTION_STATE_FIELD_MAX_CHARS)
+        } else {
+            String::new()
+        },
+        updated_at: input.now_secs,
+        ..ExecutionState::default()
+    };
+    if let Some(observation) = input.turn_observation {
+        tighten_execution_state_with_recent_observation(&mut candidate, Some(observation));
+    }
+    if input.tool_calls == 0
+        && !execution_state_has_pending_work(&candidate)
+        && field_specificity_score(&candidate.goal) < MIN_STRONG_STATE_FIELD_SCORE
+    {
+        return Ok(false);
+    }
+    let existing = store.get(input.chat_id)?;
+    let Some(merged) = merge_execution_state(existing.as_ref(), candidate, input.now_secs) else {
+        return Ok(false);
+    };
+    if !should_persist_execution_state(&merged) {
+        return Ok(false);
+    }
+    store.set(input.chat_id, &merged)?;
+    Ok(true)
 }
 
 pub fn run_execution_state_refresh(
@@ -734,6 +825,14 @@ fn merge_execution_state(
         next.next_best_actions
     };
     normalize_execution_state(next, now_secs)
+}
+
+fn execution_state_has_pending_work(state: &ExecutionState) -> bool {
+    !state.next_action.is_empty()
+        || !state.blocker.is_empty()
+        || !state.active_constraints.is_empty()
+        || !state.open_questions.is_empty()
+        || !state.next_best_actions.is_empty()
 }
 
 fn should_persist_execution_state(state: &ExecutionState) -> bool {
@@ -1773,6 +1872,120 @@ mod tests {
         assert_eq!(outcome, ExecutionStateRefreshOutcome::Skipped);
         let stored = execution_store.get("chat-1").unwrap().unwrap();
         assert_eq!(stored.goal, "收口 execution state");
+    }
+
+    #[test]
+    fn resume_check_accepts_low_signal_turn_when_state_has_pending_work() {
+        let state = ExecutionState {
+            status: ExecutionStatus::Active,
+            goal: "配置 QQ 邮箱账户".to_string(),
+            next_action: "补认证信息并继续配置".to_string(),
+            updated_at: 9,
+            ..ExecutionState::default()
+        };
+
+        assert!(should_resume_active_execution_state(&state, "继续"));
+        assert!(should_resume_active_execution_state(&state, "继续配置邮箱"));
+        assert!(!should_resume_active_execution_state(
+            &state,
+            "今天天气怎么样"
+        ));
+    }
+
+    #[test]
+    fn resume_check_rejects_low_signal_turn_without_pending_work() {
+        let state = ExecutionState {
+            status: ExecutionStatus::Active,
+            goal: "查看系统状态".to_string(),
+            last_output: "系统状态正常：主机 beetle 在线".to_string(),
+            updated_at: 9,
+            ..ExecutionState::default()
+        };
+
+        assert!(!should_resume_active_execution_state(&state, "继续"));
+        assert!(!should_resume_active_execution_state(&state, "谢谢"));
+    }
+
+    #[test]
+    fn provisional_seed_persists_concrete_tool_backed_state() {
+        let execution_store = StubExecutionStateStore::default();
+        let seeded = seed_execution_state_from_turn(
+            &execution_store,
+            ProvisionalExecutionStateInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "帮我配置 QQ 邮箱账户",
+                reply_content: "我先检查当前邮件状态，然后继续配置。",
+                tool_calls: 1,
+                now_secs: 77,
+                turn_observation: Some(&TurnObservationLedger {
+                    execution_class: TurnExecutionClass::ToolAssisted,
+                    deliberation_class: TurnDeliberationClass::Standard,
+                    final_outcome: "final_answer".to_string(),
+                    pressure: TurnPersonaPressureLevel::Normal,
+                    mode: TurnModeSnapshotLedger {
+                        current_mode: "normal".to_string(),
+                        allow_non_voice_outbound: true,
+                        allow_idle_self_runtime: true,
+                    },
+                    tool_path: TurnToolPathLedger {
+                        path: "tool_round".to_string(),
+                        tool_calls: 1,
+                        react_rounds: 1,
+                        current_primary_delivered: false,
+                        final_answer_recovered: false,
+                    },
+                    blocker: None,
+                }),
+            },
+        )
+        .unwrap();
+
+        assert!(seeded);
+        let stored = execution_store.get("chat-1").unwrap().unwrap();
+        assert_eq!(stored.goal, "帮我配置 QQ 邮箱账户");
+        assert_eq!(
+            stored.next_action,
+            "deliver current primary answer before more tool work"
+        );
+        assert_eq!(stored.updated_at, 77);
+    }
+
+    #[test]
+    fn provisional_seed_does_not_overwrite_existing_state_for_low_signal_turn() {
+        let execution_store = StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-1".to_string(),
+                ExecutionState {
+                    status: ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    next_action: "补认证信息并继续配置".to_string(),
+                    updated_at: 11,
+                    ..ExecutionState::default()
+                },
+            )])),
+            clears: Mutex::new(0),
+        };
+        let seeded = seed_execution_state_from_turn(
+            &execution_store,
+            ProvisionalExecutionStateInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "好",
+                reply_content: "继续处理中。",
+                tool_calls: 0,
+                now_secs: 12,
+                turn_observation: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!seeded);
+        let stored = execution_store.get("chat-1").unwrap().unwrap();
+        assert_eq!(stored.goal, "配置 QQ 邮箱账户");
+        assert_eq!(stored.next_action, "补认证信息并继续配置");
     }
 
     #[test]

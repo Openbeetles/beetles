@@ -103,21 +103,21 @@ fn split_paragraphs(content: &str) -> Vec<String> {
 fn should_strip_heading_prefix(first: &str, second: &str) -> bool {
     let trimmed = first.trim();
     trimmed.chars().count() <= 20
-        && !content_has_concrete_anchor(trimmed)
+        && !reply_has_concrete_anchor(trimmed)
         && (trimmed.ends_with('：') || trimmed.ends_with(':'))
         && content_has_substantive_payload(second)
 }
 
 fn content_has_substantive_payload(content: &str) -> bool {
     content.chars().count() >= 24
-        && (content_has_concrete_anchor(content)
+        && (reply_has_concrete_anchor(content)
             || content.contains('\n')
             || content.starts_with("- ")
             || content.starts_with("1. ")
             || content.starts_with("2. "))
 }
 
-fn content_has_concrete_anchor(content: &str) -> bool {
+pub(crate) fn reply_has_concrete_anchor(content: &str) -> bool {
     let lower = content.to_ascii_lowercase();
     let file_markers = [
         ".rs", ".md", ".json", ".toml", ".yaml", ".yml", ".log", ".txt", ".py", ".sh",

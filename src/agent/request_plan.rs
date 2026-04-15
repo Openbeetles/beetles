@@ -21,6 +21,8 @@ pub(crate) struct AgentRequestPlan<'a> {
     tool_specs: Vec<ToolSpec>,
     tool_call_mode: ToolCallMode,
     reply_surface: ReplySurface,
+    semantics: RequestSemantics,
+    strategy: super::strategy::AgentRunStrategy,
 }
 
 impl<'a> AgentRequestPlan<'a> {
@@ -28,7 +30,7 @@ impl<'a> AgentRequestPlan<'a> {
         msg: &'a PcMsg,
         registry: &ToolRegistry,
         worker_llm: &(dyn LlmClient + Send + Sync),
-        _strategy: super::strategy::AgentRunStrategy,
+        strategy: super::strategy::AgentRunStrategy,
         semantics: RequestSemantics,
     ) -> Self {
         let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
@@ -47,6 +49,8 @@ impl<'a> AgentRequestPlan<'a> {
             tool_specs,
             tool_call_mode,
             reply_surface,
+            semantics,
+            strategy,
         }
     }
 
@@ -71,11 +75,30 @@ impl<'a> AgentRequestPlan<'a> {
             .then_some(self.tool_specs.as_slice())
     }
 
-    pub(crate) fn tool_choice(&self, _round: usize, any_tool_used: bool) -> ToolChoicePolicy {
+    pub(crate) fn tool_choice(&self, round: usize, any_tool_used: bool) -> ToolChoicePolicy {
         if !self.uses_native_tools() || any_tool_used {
             return ToolChoicePolicy::Auto;
         }
+        if self.requires_native_tool_first_round(round) {
+            return ToolChoicePolicy::Require;
+        }
         ToolChoicePolicy::Auto
+    }
+
+    fn requires_native_tool_first_round(&self, round: usize) -> bool {
+        if round > 0
+            || self.strategy != super::strategy::AgentRunStrategy::LinuxEnhanced
+            || self.semantics.execution_preference
+                != super::request_semantics::ExecutionPreference::ToolFirst
+            || self.semantics.confidence < 75
+        {
+            return false;
+        }
+        matches!(
+            self.semantics.evidence_need,
+            super::request_semantics::EvidenceNeed::PublicRuntime
+                | super::request_semantics::EvidenceNeed::HostTool
+        )
     }
 
     pub(crate) fn apply_system_prompt(&self, system: &mut String, max_len: usize) {
@@ -97,7 +120,8 @@ impl<'a> AgentRequestPlan<'a> {
 mod tests {
     use super::*;
     use crate::agent::request_semantics::{
-        DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind, RequestSemantics,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
+        RequestSemantics, ResumeRelation,
     };
     use crate::agent::AgentRunStrategy;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
@@ -122,6 +146,8 @@ mod tests {
             evidence_need,
             disclosure_surface: DisclosureSurface::Governed,
             execution_preference,
+            action_family: ActionFamily::Conversation,
+            resume_relation: ResumeRelation::IndependentTurn,
             confidence: 90,
         }
     }
@@ -239,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn operational_requests_do_not_force_first_round_tool_for_linux_native_mode() {
+    fn operational_requests_require_first_round_tool_for_linux_native_mode() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool {
             name: "process",
@@ -255,12 +281,12 @@ mod tests {
             AgentRunStrategy::LinuxEnhanced,
             semantics(EvidenceNeed::HostTool, ExecutionPreference::ToolFirst),
         );
-        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
         assert_eq!(plan.tool_choice(1, false), ToolChoicePolicy::Auto);
     }
 
     #[test]
-    fn public_operational_observability_requests_do_not_force_first_round_tool() {
+    fn public_operational_observability_requests_require_first_round_tool() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool {
             name: "board_info",
@@ -275,7 +301,7 @@ mod tests {
             AgentRunStrategy::LinuxEnhanced,
             semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst),
         );
-        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
     }
 
     #[test]
@@ -307,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_semantics_do_not_force_tools() {
+    fn low_confidence_tool_first_semantics_do_not_force_tools() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态", false).expect("pcmsg");
@@ -316,7 +342,10 @@ mod tests {
             &registry,
             &NativeLlm,
             AgentRunStrategy::LinuxEnhanced,
-            semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst),
+            RequestSemantics {
+                confidence: 40,
+                ..semantics(EvidenceNeed::PublicRuntime, ExecutionPreference::ToolFirst)
+            },
         );
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
     }
@@ -354,6 +383,78 @@ mod tests {
             RequestSemantics::conservative_default(),
         );
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+    }
+
+    #[test]
+    fn active_action_resume_requires_native_tool_on_first_round() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "继续配置", false).expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics {
+                request_kind: RequestKind::General,
+                evidence_need: EvidenceNeed::HostTool,
+                disclosure_surface: DisclosureSurface::Governed,
+                execution_preference: ExecutionPreference::ToolFirst,
+                action_family: ActionFamily::ActiveAction,
+                resume_relation: ResumeRelation::ResumeActiveAction,
+                confidence: 100,
+            },
+        );
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+        assert_eq!(plan.tool_choice(1, false), ToolChoicePolicy::Auto);
+        assert_eq!(plan.tool_choice(0, true), ToolChoicePolicy::Auto);
+    }
+
+    #[test]
+    fn task_execution_resume_requires_native_tool_on_first_round() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "继续配置", false).expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics {
+                request_kind: RequestKind::General,
+                evidence_need: EvidenceNeed::HostTool,
+                disclosure_surface: DisclosureSurface::Governed,
+                execution_preference: ExecutionPreference::ToolFirst,
+                action_family: ActionFamily::TaskExecution,
+                resume_relation: ResumeRelation::ResumeActiveTaskRun,
+                confidence: 100,
+            },
+        );
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+    }
+
+    #[test]
+    fn active_action_supply_input_requires_native_tool_on_first_round() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "授权码是 hqvqcibpdvqgbdba", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            RequestSemantics {
+                request_kind: RequestKind::General,
+                evidence_need: EvidenceNeed::HostTool,
+                disclosure_surface: DisclosureSurface::Governed,
+                execution_preference: ExecutionPreference::ToolFirst,
+                action_family: ActionFamily::ActiveAction,
+                resume_relation: ResumeRelation::SupplyActiveActionInput,
+                confidence: 92,
+            },
+        );
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
     }
 
     #[test]

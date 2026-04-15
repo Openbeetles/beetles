@@ -5,6 +5,28 @@ pub(super) struct ExecutedTurn {
     pub(super) telemetry: WorkerRunTelemetry,
 }
 
+fn action_progress_kind_for_regular_tool_round(
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
+    any_tool_used: bool,
+    delivery: &DeliverySession<'_>,
+) -> Option<crate::agent::delivery::TaskActionProgressKind> {
+    use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
+
+    if any_tool_used
+        || request_semantics.execution_preference != ExecutionPreference::ToolFirst
+        || delivery.report().action_progress_updates_sent > 0
+    {
+        return None;
+    }
+    match request_semantics.action_family {
+        ActionFamily::ActionRequest => {
+            Some(crate::agent::delivery::TaskActionProgressKind::Started)
+        }
+        ActionFamily::ActiveAction => Some(crate::agent::delivery::TaskActionProgressKind::Resumed),
+        ActionFamily::Conversation | ActionFamily::TaskExecution => None,
+    }
+}
+
 /// 完整 context + worker LLM + ReAct 循环，返回执行结果与 telemetry。
 /// telemetry.streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
 #[allow(clippy::too_many_arguments)]
@@ -34,9 +56,31 @@ pub(super) fn execute_turn(
         outbound_message_count: 0,
         locale: loc,
     };
+    let request_semantics_started = Instant::now();
+    let active_run =
+        active_task_run_for_chat(config.task_run_store.as_ref(), &msg.channel, &msg.chat_id)
+            .ok()
+            .flatten();
+    let active_execution_state = config
+        .execution_state_store
+        .get(&msg.chat_id)
+        .ok()
+        .flatten();
+    let tool_policy = crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
+    let has_tools = !registry.tool_specs_for_llm(&tool_policy).is_empty();
     let request_semantics =
-        super::super::request_semantics::RequestSemantics::conservative_default();
-    latency.request_semantics_ms = 0;
+        super::super::request_semantics::RequestSemantics::compile_or_probe_for_turn(
+            &mut tool_ctx,
+            worker_llm,
+            config.strategy,
+            super::super::request_semantics::RequestSemanticsCompileInput {
+                msg,
+                has_tools,
+                has_active_task_run: active_run.is_some(),
+                active_execution_state: active_execution_state.as_ref(),
+            },
+        );
+    latency.request_semantics_ms = request_semantics_started.elapsed().as_millis();
     let request_plan = AgentRequestPlan::build(
         msg,
         registry,
@@ -104,6 +148,7 @@ pub(super) fn execute_turn(
         worker_llm,
         msg,
         outbound_tx,
+        &mut delivery,
         registry,
         config,
         &request_plan,
@@ -116,6 +161,7 @@ pub(super) fn execute_turn(
         pressure,
         deliberation_gate.class,
         request_semantics,
+        active_run,
         subject_state.as_deref().cloned(),
         mental_privacy_adjudication.as_deref().cloned(),
         persona_priority_adjudication.as_deref().cloned(),
@@ -333,6 +379,13 @@ pub(super) fn execute_turn(
                 mark_ttft_if_visible(&mut latency, worker_start, &response.content);
                 final_content = response.content;
                 break;
+            }
+            if let Some(kind) = action_progress_kind_for_regular_tool_round(
+                request_semantics,
+                any_tool_used,
+                &delivery,
+            ) {
+                delivery.emit_task_action_progress(kind);
             }
             if !response.content.trim().is_empty() && response.content.trim() != "[tool_use]" {
                 mark_ttft_if_visible(&mut latency, worker_start, &response.content);
