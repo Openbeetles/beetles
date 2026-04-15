@@ -469,8 +469,10 @@ export function DevicePage() {
               justifyContent: "center",
               bgcolor: "color-mix(in srgb, var(--primary) 12%, transparent)",
               color: "var(--primary)",
-              boxShadow:
-                "0 8px 16px color-mix(in srgb, var(--primary) 10%, transparent)",
+              boxShadow: [
+                "var(--os3d-pedestal-lift-stack)",
+                "0 10px 22px color-mix(in srgb, var(--primary) 11%, transparent)",
+              ].join(", "),
               flexShrink: 0,
             }}
           >
@@ -732,7 +734,7 @@ export function DevicePage() {
   const renderConnectionCard = () => (
     <DashboardCard
       title={t("device.sectionConnection")}
-      icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} />}
+      icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} variant="tile" />}
       sx={{ height: "100%" }}
     >
       <Box
@@ -853,8 +855,10 @@ export function DevicePage() {
             justifyContent: "center",
             lineHeight: 0,
             color: "var(--primary)",
-            boxShadow:
-              "0 12px 24px color-mix(in srgb, var(--primary) 10%, transparent)",
+            boxShadow: [
+              "var(--os3d-pedestal-lift-stack)",
+              "0 14px 28px color-mix(in srgb, var(--primary) 10%, transparent)",
+            ].join(", "),
           }}
         >
           {/* BeetleIcon 尺寸由 width/height 控制，勿用 fontSize；与容器约 82% 留白，避免过小 */}
@@ -1059,7 +1063,7 @@ export function DevicePage() {
                 >
                   <DashboardCard
                     title={t("device.sectionDeviceInfo")}
-                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceInfo} />}
+                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceInfo} variant="tile" />}
                   >
                     <Box
                       sx={{
@@ -1093,7 +1097,7 @@ export function DevicePage() {
                 >
                   <DashboardCard
                     title={t("device.sectionChannelConnectivity")}
-                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.channels} />}
+                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.channels} variant="tile" />}
                   >
                     <ChannelConnectivityPanel
                       channels={channelList}

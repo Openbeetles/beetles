@@ -45,6 +45,7 @@ export function DeviceBanner() {
         borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
         backgroundColor:
           "color-mix(in srgb, var(--semantic-warning) 4%, var(--surface))",
+        boxShadow: "var(--os3d-banner-ribbon-stack)",
       }}
     >
       <Typography

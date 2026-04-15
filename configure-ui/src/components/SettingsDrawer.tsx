@@ -59,7 +59,11 @@ function ModeToggleIcon({ src }: { src: string }) {
         justifyContent: "center",
       }}
     >
-      <Os3dIcon src={src} sx={{ width: "100%", height: "100%" }} />
+      <Os3dIcon
+        src={src}
+        variant="inline"
+        sx={{ width: "100%", height: "100%" }}
+      />
     </Box>
   );
 }
@@ -106,7 +110,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           borderLeft: "1px solid var(--form-outline-rest)",
           borderTopLeftRadius: "var(--radius-card)",
           borderBottomLeftRadius: "var(--radius-card)",
-          boxShadow: "none",
+          boxShadow: "var(--os3d-content-plate-stack)",
           backgroundColor: "var(--card)",
           transition: "border-color var(--transition-duration) ease",
         },
@@ -149,7 +153,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   justifyContent: "center",
                 }}
               >
-                <Os3dIcon src={OS_ICON_SHELL.preferences} />
+                <Os3dIcon src={OS_ICON_SHELL.preferences} variant="inline" />
               </Box>
             </Box>
             <Typography

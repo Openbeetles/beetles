@@ -56,9 +56,10 @@ export function InlineAlert({ message, onRetry }: InlineAlertProps) {
         px: 2,
         py: 1.5,
         borderRadius: 'var(--radius-control)',
-        border: "none",
+        border: '1px solid color-mix(in srgb, var(--semantic-danger) 22%, transparent)',
         borderLeft: 'var(--accent-line-width) solid var(--semantic-danger)',
         backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 5%, var(--surface))',
+        boxShadow: 'var(--os3d-alert-strip-stack)',
       }}
     >
       <ErrorOutline

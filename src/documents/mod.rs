@@ -36,6 +36,7 @@ pub use content::{
 pub use credentials::{
     DocumentsProviderCredential, DocumentsProviderCredentialStatus,
     DocumentsProviderCredentialStore, OfficeBackedDocumentsProviderCredentialStore,
+    FEISHU_DOCUMENTS_DEFAULT_BASE_URL, OFFICE_METADATA_DOCUMENTS_APP_ID,
     OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_ROOT_PATH,
     OFFICE_METADATA_DOCUMENTS_USERNAME,
 };

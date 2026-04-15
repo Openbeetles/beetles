@@ -185,7 +185,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
                 justifyContent: "center",
               }}
             >
-              <Os3dIcon src={OS_ICON_SHELL.preferences} />
+              <Os3dIcon src={OS_ICON_SHELL.preferences} variant="inline" />
             </Box>
           </IconButton>
         )}

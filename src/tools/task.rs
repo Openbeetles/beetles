@@ -1285,6 +1285,7 @@ mod tests {
                 account_label: "Work".to_string(),
                 calendar_id: "team".to_string(),
                 username: String::new(),
+                app_id: String::new(),
                 base_url: String::new(),
                 root_path: String::new(),
                 access_token: "token-work".to_string(),

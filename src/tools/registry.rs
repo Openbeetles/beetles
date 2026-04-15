@@ -845,7 +845,12 @@ fn register_office_tools(
     .with_probe_adapters(vec![
         Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
         Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
+        Arc::new(
+            crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
+        ),
     ]);
     let office_authority = Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
         Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
@@ -872,6 +877,13 @@ fn register_office_tools(
             office_authority.clone(),
         ),
     );
+    let contacts_directory_credential_store: Arc<
+        dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync,
+    > = Arc::new(
+        crate::contacts_directory::OfficeBackedContactsDirectoryProviderCredentialStore::with_authority(
+            office_authority.clone(),
+        ),
+    );
     let mut mail_providers = crate::mail::MailProviderRegistry::new();
     mail_providers.register(Arc::new(
         crate::mail::providers::imap_smtp::ImapSmtpProvider,
@@ -880,10 +892,24 @@ fn register_office_tools(
     documents_providers.register(Arc::new(
         crate::documents::providers::webdav::WebDavProvider,
     ));
+    documents_providers.register(Arc::new(
+        crate::documents::providers::feishu::FeishuDocumentsProvider,
+    ));
     let mut calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
+    calendar_providers.register(Arc::new(
+        crate::calendar::providers::feishu::FeishuCalendarProvider,
+    ));
+    let mut contacts_directory_providers =
+        crate::contacts_directory::ContactsDirectoryProviderRegistry::new();
+    contacts_directory_providers.register(Arc::new(
+        crate::contacts_directory::providers::feishu::FeishuContactsDirectoryProvider,
+    ));
     let mut task_calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     task_calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
+    task_calendar_providers.register(Arc::new(
+        crate::calendar::providers::feishu::FeishuCalendarProvider,
+    ));
 
     registry.register(Box::new(super::CalendarTool::with_office_authority(
         platform.calendar_store(),
@@ -898,16 +924,26 @@ fn register_office_tools(
         office_authority.clone(),
     )));
     registry.register(Box::new(
-        super::MailTool::with_office_authority_and_contacts(
+        super::MailTool::with_office_authority_and_contacts_service(
             Arc::clone(&mail_credential_store),
             mail_providers,
             office_authority.clone(),
-            Arc::clone(&contacts_directory_store),
+            crate::contacts_directory::ContactsDirectoryService::with_office_authority(
+                Arc::clone(&contacts_directory_store),
+                Arc::clone(&contacts_directory_credential_store),
+                contacts_directory_providers.clone(),
+                office_authority.clone(),
+            ),
         ),
     ));
-    registry.register(Box::new(super::ContactsDirectoryTool::new(Arc::clone(
-        &contacts_directory_store,
-    ))));
+    registry.register(Box::new(
+        super::ContactsDirectoryTool::with_office_authority(
+            Arc::clone(&contacts_directory_store),
+            Arc::clone(&contacts_directory_credential_store),
+            contacts_directory_providers,
+            office_authority.clone(),
+        ),
+    ));
     registry.register(Box::new(super::DocumentsTool::with_office_authority(
         Arc::clone(&documents_credential_store),
         documents_providers,
@@ -919,9 +955,16 @@ fn register_office_tools(
     registry.register(Box::new(
         super::OfficeStatusTool::with_probe_supported_provider_kinds(
             office_authority,
-            ["imap_smtp", "webdav", "caldav"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "imap_smtp",
+                "webdav",
+                "feishu_documents",
+                "caldav",
+                "feishu_calendar",
+                "feishu_contacts_directory",
+            ]
+            .into_iter()
+            .map(str::to_string),
         ),
     ));
 }

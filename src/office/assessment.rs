@@ -1,4 +1,9 @@
-use crate::documents::{OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_USERNAME};
+use crate::calendar::OFFICE_METADATA_CALENDAR_APP_ID;
+use crate::contacts_directory::OFFICE_METADATA_CONTACTS_APP_ID;
+use crate::documents::{
+    OFFICE_METADATA_DOCUMENTS_APP_ID, OFFICE_METADATA_DOCUMENTS_BASE_URL,
+    OFFICE_METADATA_DOCUMENTS_ROOT_PATH, OFFICE_METADATA_DOCUMENTS_USERNAME,
+};
 use crate::mail::{
     OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST, OFFICE_METADATA_MAIL_USERNAME,
 };
@@ -141,6 +146,19 @@ fn collect_missing_fields(
                 metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL),
             );
         }
+        "feishu_documents" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_DOCUMENTS_APP_ID,
+                metadata_value(OFFICE_METADATA_DOCUMENTS_APP_ID),
+            );
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_DOCUMENTS_ROOT_PATH,
+                metadata_value(OFFICE_METADATA_DOCUMENTS_ROOT_PATH),
+            );
+        }
         "caldav" => {
             push_missing_if_blank(&mut missing, "access_token", access_token);
             if external_account_id.is_empty()
@@ -157,6 +175,27 @@ fn collect_missing_fields(
                 &mut missing,
                 OFFICE_METADATA_CALENDAR_ID,
                 metadata_value(OFFICE_METADATA_CALENDAR_ID),
+            );
+        }
+        "feishu_calendar" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_CALENDAR_APP_ID,
+                metadata_value(OFFICE_METADATA_CALENDAR_APP_ID),
+            );
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_CALENDAR_ID,
+                metadata_value(OFFICE_METADATA_CALENDAR_ID),
+            );
+        }
+        "feishu_contacts_directory" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+            push_missing_if_blank(
+                &mut missing,
+                OFFICE_METADATA_CONTACTS_APP_ID,
+                metadata_value(OFFICE_METADATA_CONTACTS_APP_ID),
             );
         }
         _ => {
@@ -180,5 +219,105 @@ fn push_missing_if_blank(
 ) {
     if value.trim().is_empty() {
         missing.insert(field.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::documents::OFFICE_METADATA_DOCUMENTS_ROOT_PATH;
+    use crate::office::OfficeAccountIdentityClass;
+
+    #[test]
+    fn assess_office_account_marks_feishu_documents_missing_app_id_and_root_path() {
+        let account = OfficeAccount {
+            account_key: "docs-feishu".to_string(),
+            provider_kind: "feishu_documents".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        };
+        let credential = OfficeCredential {
+            account_key: "docs-feishu".to_string(),
+            access_token: "app-secret".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 0,
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let assessment = assess_office_account(&account, Some(&credential), None, true);
+        assert_eq!(
+            assessment.readiness,
+            OfficeConfigReadiness::NeedsCredentialInput
+        );
+        assert!(assessment
+            .missing_fields
+            .contains(&"documents_app_id".to_string()));
+        assert!(assessment
+            .missing_fields
+            .contains(&OFFICE_METADATA_DOCUMENTS_ROOT_PATH.to_string()));
+    }
+
+    #[test]
+    fn assess_office_account_marks_feishu_calendar_missing_app_id_and_calendar_id() {
+        let account = OfficeAccount {
+            account_key: "calendar-feishu".to_string(),
+            provider_kind: "feishu_calendar".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Calendar".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Calendar],
+        };
+        let credential = OfficeCredential {
+            account_key: "calendar-feishu".to_string(),
+            access_token: "app-secret".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 0,
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let assessment = assess_office_account(&account, Some(&credential), None, true);
+        assert_eq!(
+            assessment.readiness,
+            OfficeConfigReadiness::NeedsCredentialInput
+        );
+        assert!(assessment
+            .missing_fields
+            .contains(&"calendar_app_id".to_string()));
+        assert!(assessment
+            .missing_fields
+            .contains(&"calendar_id".to_string()));
+    }
+
+    #[test]
+    fn assess_office_account_marks_feishu_contacts_missing_app_id() {
+        let account = OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        };
+        let credential = OfficeCredential {
+            account_key: "contacts-feishu".to_string(),
+            access_token: "app-secret".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 0,
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let assessment = assess_office_account(&account, Some(&credential), None, true);
+        assert_eq!(
+            assessment.readiness,
+            OfficeConfigReadiness::NeedsCredentialInput
+        );
+        assert!(assessment
+            .missing_fields
+            .contains(&"contacts_app_id".to_string()));
     }
 }

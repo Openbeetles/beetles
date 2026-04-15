@@ -17,6 +17,7 @@ import {
   OsRadioCheckedIcon,
   OsRadioIcon,
 } from './osFormControlIcons'
+import { os3dRootCssVars } from './os3dLanguage'
 
 const R = LAYOUT_TOKENS.radiusControl
 const R_CARD = LAYOUT_TOKENS.radiusCard
@@ -233,11 +234,10 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--shadow-shell-titlebar': 'none',
             /** 侧栏：扁平，与主区靠右边框分隔（见 Layout） */
             '--shadow-shell-rail': 'none',
-            /** 主内容区顶缘：不外投/内凹阴影，与顶栏仅靠边框分隔 */
-            '--shell-main-inset-top': 'none',
+            ...os3dRootCssVars(mode),
             /** 浮动面板（设置抽屉等）：无投影，靠左边框与主区分隔 */
             '--shadow-shell-floating': 'none',
-            /** 任务栏：不外投阴影，与顶栏一致 */
+            /** 任务栏条带本身不外投；立体靠 `--os3d-chrome-taskbar-stack`（见 shellChromeSurface） */
             '--shadow-shell-taskbar': 'none',
             /** 开始菜单弹出层：扁平，不外投阴影（与壳层一致） */
             '--shadow-shell-start-flyout': 'none',
@@ -393,7 +393,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             borderRadius: R_CARD,
             border: '1px solid var(--form-outline-rest)',
-            boxShadow: 'none',
+            boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
           },
         },
@@ -446,7 +446,10 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             borderRadius: R,
             backgroundColor: 'var(--input-idle-well)',
-            transition: 'background-color var(--transition-duration) ease',
+            /** 静止：输入沉在浅槽；聚焦：略抬起，与凹底形成对照 */
+            boxShadow: 'var(--os3d-micro-well-stack)',
+            transition:
+              'background-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)',
             '& .MuiOutlinedInput-notchedOutline': {
               borderColor: 'var(--outlined-border-rest)',
               transition: 'border-color var(--transition-duration-emphasized) var(--ease-emphasized), border-width var(--transition-duration) ease',
@@ -460,6 +463,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             },
             '&.Mui-focused': {
               backgroundColor: 'var(--card)',
+              boxShadow: 'var(--os3d-pedestal-lift-stack)',
               '& .MuiOutlinedInput-notchedOutline': {
                 borderColor: 'color-mix(in srgb, var(--primary) 38%, var(--border))',
                 borderWidth: 1,
@@ -473,6 +477,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
               opacity: 1,
               backgroundColor:
                 'color-mix(in srgb, var(--card) 94%, var(--foreground))',
+              boxShadow: 'none',
               '& .MuiOutlinedInput-notchedOutline': {
                 borderColor:
                   'color-mix(in srgb, var(--border) 12%, transparent)',
@@ -496,6 +501,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
           outlined: {
             borderColor: 'color-mix(in srgb, var(--border) 28%, transparent)',
+            boxShadow: 'var(--os3d-chip-lift-stack)',
             '&:hover': {
               backgroundColor: 'color-mix(in srgb, var(--primary) 4%, transparent)',
               borderColor: 'color-mix(in srgb, var(--border) 40%, transparent)',
@@ -708,7 +714,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           paper: {
             borderRadius: R_CARD,
             border: '1px solid var(--form-outline-rest)',
-            boxShadow: 'none',
+            boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
             backgroundImage: 'none',
           },
@@ -719,7 +725,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           paper: {
             borderRadius: R_CARD,
             border: '1px solid var(--form-outline-rest)',
-            boxShadow: 'none',
+            boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
             backgroundImage: 'none',
           },
@@ -810,7 +816,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
       },
       MuiToggleButtonGroup: {
         styleOverrides: {
-          root: { gap: LAYOUT_TOKENS.toggleGroupGap },
+          root: {
+            gap: LAYOUT_TOKENS.toggleGroupGap,
+            padding: '5px',
+            borderRadius: 'var(--radius-control)',
+            backgroundColor: 'var(--form-group-well)',
+            boxShadow: 'var(--os3d-micro-well-stack)',
+          },
           grouped: {
             border: '1px solid color-mix(in srgb, var(--border) 22%, transparent)',
             borderRadius: 'var(--radius-control) !important',
@@ -820,13 +832,16 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             paddingTop: LAYOUT_TOKENS.toggleButtonPaddingY,
             paddingBottom: LAYOUT_TOKENS.toggleButtonPaddingY,
             transition:
-              'background-color var(--transition-duration) ease, color var(--transition-duration) ease, border-color var(--transition-duration) ease',
+              'background-color var(--transition-duration) ease, color var(--transition-duration) ease, border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease',
             backgroundColor: 'transparent',
             color: 'var(--muted)',
             '&.Mui-selected': {
               backgroundColor: 'var(--primary-soft)',
               color: 'var(--primary)',
               borderColor: 'color-mix(in srgb, var(--primary) 35%, var(--border))',
+              boxShadow: 'var(--os3d-chip-lift-stack)',
+              position: 'relative',
+              zIndex: 1,
               '&:hover': {
                 backgroundColor: 'color-mix(in srgb, var(--primary) 6%, var(--primary-soft))',
               },

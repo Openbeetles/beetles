@@ -164,6 +164,20 @@ impl MailTool {
         )
     }
 
+    pub fn with_office_authority_and_contacts_service(
+        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
+        providers: MailProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+        contacts_directory: ContactsDirectoryService,
+    ) -> Self {
+        Self::with_runtime(
+            credential_store,
+            providers,
+            Some(office_authority),
+            Some(contacts_directory),
+        )
+    }
+
     fn with_runtime(
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
@@ -956,7 +970,12 @@ fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()>
 mod tests {
     use super::*;
     use crate::config::{save_office_accounts_segment, ConfigFileStore};
-    use crate::contacts_directory::{ContactsDirectoryStore, StateFsContactsDirectoryStore};
+    use crate::contacts_directory::{
+        ContactEntry, ContactsDirectoryProvider, ContactsDirectoryProviderCredential,
+        ContactsDirectoryProviderRegistry, ContactsDirectoryService, ContactsDirectoryStore,
+        OfficeBackedContactsDirectoryProviderCredentialStore, StateFsContactsDirectoryStore,
+        OFFICE_METADATA_CONTACTS_APP_ID,
+    };
     use crate::mail::{
         MailOperation, MailProvider, MailProviderCredential,
         OfficeBackedMailProviderCredentialStore,
@@ -1637,6 +1656,179 @@ mod tests {
         assert_eq!(payload["message"]["to"][0], "alice@example.com");
         assert_eq!(payload["resolved_contacts"][0]["field"], "to");
         assert_eq!(payload["resolved_contacts"][0]["contact_id"], "alice-zhang");
+    }
+
+    struct StubRemoteContactsProvider {
+        contacts: Vec<ContactEntry>,
+    }
+
+    impl ContactsDirectoryProvider for StubRemoteContactsProvider {
+        fn provider_name(&self) -> &'static str {
+            "feishu_contacts_directory"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Feishu Contacts Directory"
+        }
+
+        fn lookup_contacts(
+            &self,
+            _credential: &ContactsDirectoryProviderCredential,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<ContactEntry>> {
+            Ok(self.contacts.clone())
+        }
+    }
+
+    #[test]
+    fn mail_tool_send_resolves_lookup_recipients_via_remote_contacts_directory() {
+        let provider = Arc::new(StubProvider::default());
+        let mut providers = MailProviderRegistry::new();
+        providers.register(provider.clone());
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        credential_store
+            .items
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                "mail-work".to_string(),
+                MailProviderCredential {
+                    account_key: "mail-work".to_string(),
+                    provider: "imap_smtp".to_string(),
+                    account_id: "work@example.com".to_string(),
+                    account_label: "Work".to_string(),
+                    username: "work@example.com".to_string(),
+                    secret: "secret".to_string(),
+                    imap_host: "imap.example.com".to_string(),
+                    imap_port: 993,
+                    imap_mailbox: "INBOX".to_string(),
+                    draft_mailbox: "Drafts".to_string(),
+                    imap_tls: true,
+                    smtp_host: "smtp.example.com".to_string(),
+                    smtp_port: 465,
+                    smtp_tls: true,
+                    from_address: "work@example.com".to_string(),
+                    from_name: "Work".to_string(),
+                },
+            );
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Mail, "mail-work".to_string());
+        binding.set_default_account(
+            OfficeCapability::ContactsDirectory,
+            "contacts-feishu".to_string(),
+        );
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        office_credential_store
+            .set(&OfficeCredential {
+                account_key: "mail-work".to_string(),
+                access_token: "secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed mail office credential");
+        office_credential_store
+            .set(&OfficeCredential {
+                account_key: "contacts-feishu".to_string(),
+                access_token: "app-secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [(
+                    OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                    "cli_contacts".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed contacts office credential");
+        let runtime_store = Arc::new(StubRuntimeStatusStore::default());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            runtime_store,
+        );
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut contacts_providers = ContactsDirectoryProviderRegistry::new();
+        contacts_providers.register(Arc::new(StubRemoteContactsProvider {
+            contacts: vec![ContactEntry {
+                id: "ou_alice".to_string(),
+                display_name: "Alice Zhang".to_string(),
+                emails: vec!["alice@beetle.cn".to_string()],
+                aliases: vec!["阿丽丝".to_string()],
+                organization: "Beetle".to_string(),
+                notes: String::new(),
+                updated_at_unix_secs: 1,
+            }],
+        }));
+        let contacts_service = ContactsDirectoryService::with_office_service(
+            contacts_store,
+            contacts_credentials,
+            contacts_providers,
+            office_service.clone(),
+        );
+        let tool = MailTool::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            contacts_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"send","subject":"Hello","text_body":"Need sync","to_lookup":["Alice Zhang"],"confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("send via remote contacts directory");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["message"]["to"][0], "alice@beetle.cn");
+        assert_eq!(payload["resolved_contacts"][0]["contact_id"], "ou_alice");
     }
 
     #[test]

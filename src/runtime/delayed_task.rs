@@ -251,12 +251,12 @@ mod tests {
 
         for (idx, offset_ms) in [(1, 20_u64), (2, 5_u64), (3, 10_u64)] {
             let executed = Arc::clone(&executed);
-            schedule_delayed_task(
+            assert!(schedule_delayed_task(
                 now + Duration::from_millis(offset_ms),
                 Box::new(move || {
                     executed.lock().unwrap_or_else(|e| e.into_inner()).push(idx);
                 }),
-            );
+            ));
         }
 
         std::thread::sleep(Duration::from_millis(30));

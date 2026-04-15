@@ -75,7 +75,12 @@ export function DisconnectedCacheOverlay({
         <PanelStateHeroRow
           tone="danger"
           layout="stack"
-          icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceUnreachable} />}
+          icon={
+            <Os3dIcon
+              src={OS_ICON_DASHBOARD.deviceUnreachable}
+              variant="hero"
+            />
+          }
           title={title}
           description={subtitle}
         />

@@ -202,7 +202,6 @@ export function Taskbar() {
         gap: { xs: 1, sm: 1.25 },
         ...SHELL_TASKBAR_CHROME_SX,
         borderTop: "1px solid var(--border-subtle)",
-        boxShadow: "none",
         position: "relative",
         zIndex: 2,
       }}
@@ -399,7 +398,7 @@ export function Taskbar() {
                           justifyContent: "center",
                         }}
                       >
-                        <Os3dIcon src={OS_ICON_SHELL.power} />
+                        <Os3dIcon src={OS_ICON_SHELL.power} variant="inline" />
                       </Box>
                     </IconButton>
                   </span>
@@ -664,7 +663,7 @@ export function Taskbar() {
                         },
                       }}
                     >
-                        <Os3dIcon src={iconSrc} />
+                        <Os3dIcon src={iconSrc} variant="tile" />
                     </Box>
                     <Typography
                       variant="caption"
@@ -812,7 +811,7 @@ export function Taskbar() {
                 },
               }}
             >
-              <Os3dIcon src={iconSrc} />
+              <Os3dIcon src={iconSrc} variant="dock" />
               {active && allowNav ? (
                 <Box
                   aria-hidden

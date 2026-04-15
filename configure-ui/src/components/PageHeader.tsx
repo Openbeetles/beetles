@@ -38,6 +38,18 @@ export function PageHeader({ title }: PageHeaderProps) {
       >
         {title}
       </Typography>
+      <Box
+        aria-hidden
+        sx={{
+          mt: 0.75,
+          width: 36,
+          height: 3,
+          borderRadius: 'var(--radius-full)',
+          background: `linear-gradient(90deg, color-mix(in srgb, var(--primary) 52%, transparent), color-mix(in srgb, var(--primary) 12%, transparent))`,
+          boxShadow:
+            '0 0 18px color-mix(in srgb, var(--primary) 14%, transparent), inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 18%, transparent)',
+        }}
+      />
     </Box>
   )
 }

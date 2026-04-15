@@ -50,7 +50,9 @@ Keep three things in mind:
 
 - Uses the local calendar by default.
 - After you link external calendar accounts, the same tool can also list, create, update, and delete remote events.
+- External calendar accounts can now come from either CalDAV or Feishu Calendar.
 - If more than one external account is available, pass `account_key` explicitly or set a default office account first.
+- A Feishu calendar account is meant for direct team-calendar access, but you still keep using the same `calendar` tool for the actual event work.
 - `provider_status` shows which calendar accounts are available, which one is the default, and whether each account is ready, still needs setup, or recently failed.
 
 ### `mail`
@@ -75,6 +77,7 @@ Keep three things in mind:
 ### `documents`
 
 - `documents` is the external office document-library capability. It does not replace the local/public document-reading tools.
+- Documents accounts can now come from either WebDAV or Feishu document libraries.
 - Supported operations:
   - `provider_status`
   - `list`
@@ -82,20 +85,24 @@ Keep three things in mind:
   - `summarize`
   - `search`
 - If a default documents account is configured, or only one documents account is available, you can omit `provider` / `account_key`.
+- A Feishu documents account works well when you share one Feishu folder with Beetle and then keep using the same `documents` tool to browse, read, and search it.
 - `provider_status` shows which document-library accounts are available, which one is the default, and whether each account is ready to use.
 - `summarize` turns a document into a short brief with key points, action items, and handoff content you can reuse in mail or task follow-up.
 - If `documents` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
 
 ### `contacts_directory`
 
-- `contacts_directory` is the local people-support layer, not a shell around an external directory provider.
+- `contacts_directory` remains Beetle's unified people-support layer; local contacts and connected office directories now feed into the same people lookup surface.
 - Supported operations:
   - `status`
+  - `provider_status`
   - `list`
   - `lookup`
   - `upsert`
   - `delete`
 - Use it to persist stable person data such as names, emails, aliases, organizations, and short notes.
+- If a Feishu contacts account is connected, `lookup` can supplement local contacts with directory matches; you can also pass `provider` / `account_key` to target a specific directory account.
+- `provider_status` shows which contacts-directory accounts are available, which one is the default, and whether each account is ready to use.
 - `mail send` already consumes this shared people lookup through `*_lookup` recipient fields; later calendar attendee routing should reuse the same layer instead of inventing a separate contact model.
 
 ### `office_config`

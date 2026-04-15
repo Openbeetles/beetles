@@ -743,6 +743,12 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn delayed_task_runtime_guard() -> std::sync::MutexGuard<'static, ()> {
+        let guard = crate::runtime::delayed_task::delayed_task_test_guard();
+        crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
+        guard
+    }
+
     #[derive(Default)]
     struct CountingSessionStore {
         list_calls: AtomicUsize,
@@ -879,6 +885,7 @@ mod tests {
     #[test]
     fn self_runtime_tick_skips_session_enumeration_when_idle_runtime_is_not_due() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
@@ -929,6 +936,7 @@ mod tests {
     #[test]
     fn self_runtime_tick_skips_session_enumeration_when_voice_exclusive_is_active() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         crate::state::set_voice_exclusive_active(true);
@@ -983,6 +991,7 @@ mod tests {
     #[test]
     fn enqueue_self_runtime_post_reply_records_deferred_workflow_audit() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
@@ -1013,6 +1022,7 @@ mod tests {
     #[test]
     fn enqueue_self_runtime_job_now_records_execute_now_workflow_audit() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, system_inbound_rx, _depth) = new_inbound_channel(4);

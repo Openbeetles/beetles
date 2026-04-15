@@ -74,24 +74,23 @@ export const DIALOG_FOOTER_GUTTER_WIDE_SX = {
 } as const
 
 /**
- * 固件 / 设备配置类面板：与主表面靠细描边 + 白/卡面色区分（无投影）。
- * SettingsSection、个性配置等共用。
+ * 固件 / 设备配置类面板：`--os3d-content-plate-stack` 实体板层次 + 描边（见 `os3dLanguage.ts`）。
  */
 export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
   border: "1px solid var(--form-outline-rest)",
-  boxShadow: "none",
+  boxShadow: "var(--os3d-content-plate-stack)",
 } as const
 
 /**
- * 设备首页仪表盘卡片：Gateway 卡与 `DashboardCard` 共用（无 hover 态）。
+ * 设备首页仪表盘卡片：Gateway 卡与 `DashboardCard` 共用。
  */
 export const DASHBOARD_CARD_SURFACE_SX = {
   bgcolor: "var(--card)",
   borderRadius: "var(--radius-card)",
   border: "1px solid var(--form-outline-rest)",
-  boxShadow: "none",
+  boxShadow: "var(--os3d-content-plate-stack)",
   overflow: "hidden",
 } as const
 
@@ -110,13 +109,14 @@ export const DASHBOARD_BLOCK_GAP = 1.5
 /** 卡片内主要区块纵向间距（运行策略：表盘区 / 行为 / 预算） */
 export const DASHBOARD_SECTION_STACK_GAP = 2
 
-/** 卡片正文区：与顶栏左右 padding 对齐 */
+/** 卡片正文区：与顶栏左右 padding 对齐；相对标题栏略「沉」入屏坑 */
 export const DASHBOARD_CARD_BODY_SX = {
   p: 2.5,
   flex: 1,
   display: "flex",
   flexDirection: "column",
   minHeight: 0,
+  boxShadow: "var(--os3d-dashboard-body-recess)",
 } as const
 
 /** 仪表盘卡片顶栏（与 Gateway 首行对齐） */
@@ -129,6 +129,8 @@ export const DASHBOARD_CARD_HEADER_ROW_SX = {
   bgcolor: "color-mix(in srgb, var(--foreground) 2.5%, transparent)",
   /** 顶栏与正文区层次分离（与 DeviceBanner `divider-row` 同阶） */
   borderBottom: "var(--divider-row)",
+  /** 微型窗口标题栏上沿高光 */
+  boxShadow: "var(--os3d-dashboard-card-header-lip)",
 } as const
 
 /** 次级标签：降噪（相对全大写 caption），用于表盘下钻、LED 条等 */

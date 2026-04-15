@@ -10,6 +10,8 @@ use std::sync::Arc;
 pub const OFFICE_METADATA_CALENDAR_USERNAME: &str = "calendar_username";
 pub const OFFICE_METADATA_CALENDAR_BASE_URL: &str = "calendar_base_url";
 pub const OFFICE_METADATA_CALENDAR_ROOT_PATH: &str = "calendar_root_path";
+pub const OFFICE_METADATA_CALENDAR_APP_ID: &str = "calendar_app_id";
+pub const FEISHU_CALENDAR_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CalendarProviderCredential {
@@ -23,6 +25,8 @@ pub struct CalendarProviderCredential {
     pub calendar_id: String,
     #[serde(default)]
     pub username: String,
+    #[serde(default)]
+    pub app_id: String,
     #[serde(default)]
     pub base_url: String,
     #[serde(default)]
@@ -52,6 +56,8 @@ pub struct CalendarProviderCredentialStatus {
     #[serde(default)]
     pub username: String,
     #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
     pub base_url: String,
     #[serde(default)]
     pub root_path: String,
@@ -75,10 +81,14 @@ pub trait CalendarProviderCredentialStore: Send + Sync {
 
 impl CalendarProviderCredential {
     pub fn status(&self) -> CalendarProviderCredentialStatus {
-        let transport_configured = if self.provider == "caldav" {
-            !self.username.trim().is_empty() && !self.base_url.trim().is_empty()
-        } else {
-            true
+        let transport_configured = match self.provider.as_str() {
+            "caldav" => !self.username.trim().is_empty() && !self.base_url.trim().is_empty(),
+            "feishu_calendar" => {
+                !self.app_id.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+                    && !self.calendar_id.trim().is_empty()
+            }
+            _ => true,
         };
         CalendarProviderCredentialStatus {
             account_key: self.account_key.clone(),
@@ -87,6 +97,7 @@ impl CalendarProviderCredential {
             account_label: self.account_label.clone(),
             calendar_id: self.calendar_id.clone(),
             username: self.username.clone(),
+            app_id: self.app_id.clone(),
             base_url: self.base_url.clone(),
             root_path: self.root_path.clone(),
             configured: !self.access_token.trim().is_empty() && transport_configured,
@@ -194,6 +205,12 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
                 credential.username.trim().to_string(),
             );
         }
+        if !credential.app_id.trim().is_empty() {
+            metadata.insert(
+                OFFICE_METADATA_CALENDAR_APP_ID.to_string(),
+                credential.app_id.trim().to_string(),
+            );
+        }
         if !credential.base_url.trim().is_empty() {
             metadata.insert(
                 OFFICE_METADATA_CALENDAR_BASE_URL.to_string(),
@@ -247,6 +264,35 @@ pub(crate) fn calendar_credential_from_office(
         .metadata_value(OFFICE_METADATA_CALENDAR_ID)
         .unwrap_or_default()
         .to_string();
+    if account.provider_kind == "feishu_calendar" {
+        let app_id = credential
+            .metadata_value(OFFICE_METADATA_CALENDAR_APP_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let base_url = credential
+            .metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL)
+            .unwrap_or(FEISHU_CALENDAR_DEFAULT_BASE_URL)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        return CalendarProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            calendar_id,
+            username: String::new(),
+            app_id,
+            base_url,
+            root_path: String::new(),
+            access_token: credential.access_token,
+            refresh_token: credential.refresh_token,
+            token_endpoint: credential.token_endpoint,
+            expires_at_unix_secs: credential.expires_at_unix_secs,
+            updated_at: credential.updated_at,
+        };
+    }
     let username = credential
         .metadata_value(OFFICE_METADATA_CALENDAR_USERNAME)
         .unwrap_or(account.external_account_id.as_str())
@@ -270,6 +316,7 @@ pub(crate) fn calendar_credential_from_office(
         account_label: account.account_label,
         calendar_id,
         username,
+        app_id: String::new(),
         base_url,
         root_path,
         access_token: credential.access_token,
@@ -325,5 +372,45 @@ mod tests {
             "https://dav.example.com/remote.php/dav/calendars"
         );
         assert_eq!(value["root_path"], "/work");
+    }
+
+    #[test]
+    fn calendar_credential_from_office_maps_feishu_calendar_metadata() {
+        let credential = calendar_credential_from_office(
+            OfficeAccount {
+                account_key: "calendar-feishu".to_string(),
+                provider_kind: "feishu_calendar".to_string(),
+                external_account_id: "work-calendar".to_string(),
+                account_label: "Feishu Calendar".to_string(),
+                identity_class: OfficeAccountIdentityClass::Work,
+                enabled_capabilities: vec![OfficeCapability::Calendar],
+            },
+            OfficeCredential {
+                account_key: "calendar-feishu".to_string(),
+                access_token: "app-secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 42,
+                metadata: [
+                    (
+                        OFFICE_METADATA_CALENDAR_ID.to_string(),
+                        "cal_a1b2".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_CALENDAR_APP_ID.to_string(),
+                        "cli_calendar".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+
+        assert_eq!(credential.provider, "feishu_calendar");
+        assert_eq!(credential.calendar_id, "cal_a1b2");
+        assert_eq!(credential.app_id, "cli_calendar");
+        assert_eq!(credential.base_url, FEISHU_CALENDAR_DEFAULT_BASE_URL);
+        assert_eq!(credential.username, "");
     }
 }

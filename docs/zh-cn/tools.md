@@ -50,7 +50,9 @@
 
 - 默认使用本地日历。
 - 接入外部日历账户后，也可以查看、创建、更新和删除外部事件。
+- 现在外部日历账户既可以接 CalDAV，也可以接飞书日历。
 - 如果同类外部账户有多个，可以显式传 `account_key`，也可以先在 office 配置里设默认账户。
+- 飞书日历账户适合直接接团队日历；接好后，还是继续用同一个 `calendar` 工具管理事件，不需要换一套工具。
 - `provider_status` 会告诉你当前有哪些日历账户、默认走哪个账户，以及每个账户现在是可用、还需要补配置，还是最近连接/使用出过问题。
 - 远端 `list` / `get` / `create` / `update` / `delete` 后，后续状态查询会显示最近一次使用是否成功，方便排查问题。
 
@@ -76,6 +78,7 @@
 ### `documents`
 
 - `documents` 是外部办公文档库/文件库能力，不替代本地文档读取工具。
+- 现在文档账户既可以接 WebDAV，也可以接飞书文档库。
 - 当前支持：
   - `provider_status`
   - `list`
@@ -83,6 +86,7 @@
   - `summarize`
   - `search`
 - 如果已经配置默认文档账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
+- 飞书文档账户适合接一个已经共享给 Beetle 的飞书文件夹，然后继续用同一个 `documents` 工具查看目录、读取文档和搜索内容。
 - `provider_status` 会告诉你当前有哪些文档账户、默认走哪个账户，以及每个账户现在是否可用。
 - `summarize` 会把文档整理成简短摘要、关键点、待办，以及可直接交给邮件或任务流程继续使用的内容。
 - 远端 `list` / `read` / `search` 后，后续状态查询会显示最近一次使用是否成功，方便排查问题。
@@ -91,14 +95,17 @@
 
 ### `contacts_directory`
 
-- `contacts_directory` 是本地联系人支撑层，不是外部通讯录 provider 的壳子。
+- `contacts_directory` 仍然是 Beetle 的统一联系人支撑层；本地联系人和接入的办公目录都会从这里汇合到同一套 people lookup。
 - 当前支持：
   - `status`
+  - `provider_status`
   - `list`
   - `lookup`
   - `upsert`
   - `delete`
 - 它的目标是把“人”的稳定资料沉淀下来，比如姓名、邮箱、别名、组织和备注。
+- 如果已经接入飞书联系人账户，`lookup` 会在本地联系人之外继续补充飞书目录结果；显式传 `provider` / `account_key` 时，也可以指定要查哪一个目录账户。
+- `provider_status` 会告诉你当前有哪些联系人目录账户、默认走哪个账户，以及每个账户现在是否可用。
 - 现在 `mail send` 已经会消费这里的 people lookup；后续 `calendar` 的参会人路由也应该继续复用这一层，而不是再造一套联系人逻辑。
 
 ### `office_config`

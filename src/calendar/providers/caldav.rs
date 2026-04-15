@@ -785,6 +785,7 @@ mod tests {
             account_label: "Work Calendar".to_string(),
             calendar_id: "team".to_string(),
             username: "caldav-user".to_string(),
+            app_id: String::new(),
             base_url: "https://dav.example.com/remote.php/dav/calendars".to_string(),
             root_path: "/work".to_string(),
             access_token: "app-password".to_string(),

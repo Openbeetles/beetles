@@ -87,6 +87,18 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
           flexDirection: "column",
         }}
       >
+        <Box
+          sx={{
+            flex: { md: 1 },
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            borderRadius: "var(--radius-control)",
+            bgcolor: "color-mix(in srgb, var(--foreground) 1.2%, var(--card))",
+            boxShadow: "var(--os3d-subnav-track-recess)",
+            overflow: "hidden",
+          }}
+        >
         <List
           disablePadding
           sx={{
@@ -117,8 +129,10 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
                   transition:
                     "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth)",
                   "&.Mui-selected": {
-                    boxShadow:
+                    boxShadow: [
                       "inset 3px 0 0 0 var(--primary)",
+                      "var(--os3d-chip-lift-stack)",
+                    ].join(", "),
                     backgroundColor:
                       "color-mix(in srgb, var(--primary) 9%, transparent)",
                   },
@@ -148,7 +162,7 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
                         justifyContent: "center",
                       }}
                     >
-                      <Os3dIcon src={item.iconSrc} />
+                      <Os3dIcon src={item.iconSrc} variant="inline" />
                     </Box>
                   </ListItemIcon>
                 ) : null}
@@ -163,6 +177,7 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
             </ListItem>
           ))}
         </List>
+        </Box>
       </Box>
       <Box
         sx={{

@@ -9,6 +9,8 @@ use std::sync::Arc;
 pub const OFFICE_METADATA_DOCUMENTS_USERNAME: &str = "documents_username";
 pub const OFFICE_METADATA_DOCUMENTS_BASE_URL: &str = "documents_base_url";
 pub const OFFICE_METADATA_DOCUMENTS_ROOT_PATH: &str = "documents_root_path";
+pub const OFFICE_METADATA_DOCUMENTS_APP_ID: &str = "documents_app_id";
+pub const FEISHU_DOCUMENTS_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocumentsProviderCredential {
@@ -22,6 +24,8 @@ pub struct DocumentsProviderCredential {
     pub username: String,
     #[serde(default)]
     pub secret: String,
+    #[serde(default)]
+    pub app_id: String,
     #[serde(default)]
     pub base_url: String,
     #[serde(default)]
@@ -52,14 +56,25 @@ pub trait DocumentsProviderCredentialStore: Send + Sync {
 
 impl DocumentsProviderCredential {
     pub fn status(&self) -> DocumentsProviderCredentialStatus {
+        let configured = match self.provider.as_str() {
+            "feishu_documents" => {
+                !self.app_id.trim().is_empty()
+                    && !self.secret.trim().is_empty()
+                    && !self.root_path.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+            }
+            _ => {
+                !self.username.trim().is_empty()
+                    && !self.secret.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+            }
+        };
         DocumentsProviderCredentialStatus {
             account_key: self.account_key.clone(),
             provider: self.provider.clone(),
             account_id: self.account_id.clone(),
             account_label: self.account_label.clone(),
-            configured: !self.username.trim().is_empty()
-                && !self.secret.trim().is_empty()
-                && !self.base_url.trim().is_empty(),
+            configured,
             root_path: self.root_path.clone(),
             base_url: self.base_url.clone(),
         }
@@ -140,6 +155,48 @@ pub(crate) fn documents_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<DocumentsProviderCredential> {
+    if account.provider_kind == "feishu_documents" {
+        let app_id = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_APP_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let base_url = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL)
+            .unwrap_or(FEISHU_DOCUMENTS_DEFAULT_BASE_URL)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        let root_path = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_ROOT_PATH)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if app_id.is_empty() {
+            return Err(Error::config(
+                "documents_provider_credential",
+                "documents_app_id must not be empty",
+            ));
+        }
+        if root_path.is_empty() {
+            return Err(Error::config(
+                "documents_provider_credential",
+                "documents_root_path must not be empty",
+            ));
+        }
+        return Ok(DocumentsProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            username: String::new(),
+            secret: credential.access_token,
+            app_id,
+            base_url,
+            root_path,
+        });
+    }
+
     let username = credential
         .metadata_value(OFFICE_METADATA_DOCUMENTS_USERNAME)
         .unwrap_or(account.external_account_id.as_str())
@@ -169,6 +226,7 @@ pub(crate) fn documents_credential_from_office(
         account_label: account.account_label,
         username,
         secret: credential.access_token,
+        app_id: String::new(),
         base_url,
         root_path,
     })
@@ -307,5 +365,57 @@ mod tests {
         assert_eq!(credential.provider, "webdav");
         assert_eq!(credential.username, "user@example.com");
         assert_eq!(credential.root_path, "/Workspace");
+    }
+
+    #[test]
+    fn office_backed_store_adapts_feishu_documents_metadata() {
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "docs-feishu".to_string(),
+            provider_kind: "feishu_documents".to_string(),
+            external_account_id: "tenant-docs".to_string(),
+            account_label: "Feishu Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        let credential_store = std::sync::Arc::new(StubCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "docs-feishu".to_string(),
+                access_token: "app-secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [
+                    (
+                        OFFICE_METADATA_DOCUMENTS_APP_ID.to_string(),
+                        "cli_a1b2c3".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_DOCUMENTS_ROOT_PATH.to_string(),
+                        "fldcn-root".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed feishu office credential");
+        let office = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy::default(),
+            credential_store,
+            std::sync::Arc::new(StubRuntimeStatusStore),
+        );
+        let store = OfficeBackedDocumentsProviderCredentialStore::new(office);
+        let credential = store
+            .get("docs-feishu")
+            .expect("store get")
+            .expect("credential present");
+        assert_eq!(credential.provider, "feishu_documents");
+        assert_eq!(credential.app_id, "cli_a1b2c3");
+        assert_eq!(credential.root_path, "fldcn-root");
+        assert_eq!(credential.base_url, "https://open.feishu.cn");
     }
 }

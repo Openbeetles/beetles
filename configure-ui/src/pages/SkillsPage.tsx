@@ -434,9 +434,9 @@ export function SkillsPage() {
               width: "100%",
               maxWidth: `min(${CONTENT_MAX_WIDTH}px, calc(100vw - 24px))`,
               borderRadius: "var(--radius-card)",
-              border: "none",
-              backgroundColor: "var(--surface)",
-              boxShadow: "none",
+              border: "1px solid var(--form-outline-rest)",
+              backgroundColor: "var(--card)",
+              boxShadow: "var(--os3d-content-plate-stack)",
               display: "flex",
               flexDirection: "column",
               maxHeight: "calc(100vh - 16px)",
@@ -456,7 +456,7 @@ export function SkillsPage() {
             flexShrink: 0,
             pt: 4,
             pb: 1.5,
-            backgroundColor: "var(--surface)",
+            backgroundColor: "var(--card)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -516,7 +516,7 @@ export function SkillsPage() {
               minHeight: 0,
               display: "flex",
               flexDirection: "column",
-              bgcolor: "var(--surface)",
+              bgcolor: "var(--card)",
               p: 0,
               overflow: "hidden",
             }}
@@ -673,9 +673,9 @@ export function SkillsPage() {
           paper: {
             sx: {
               borderRadius: "var(--radius-card)",
-              border: "none",
-              backgroundColor: "var(--surface)",
-              boxShadow: "none",
+              border: "1px solid var(--form-outline-rest)",
+              backgroundColor: "var(--card)",
+              boxShadow: "var(--os3d-content-plate-stack)",
             },
           },
         }}

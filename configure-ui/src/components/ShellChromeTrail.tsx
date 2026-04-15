@@ -40,11 +40,19 @@ export function ShellBreadcrumb() {
       component="nav"
       aria-label="breadcrumb"
       sx={{
-        display: "flex",
+        display: "inline-flex",
         alignItems: "center",
         gap: 0.5,
         minWidth: 0,
         flexWrap: "wrap",
+        mt: 0.25,
+        py: 0.35,
+        px: 1,
+        borderRadius: "var(--radius-chip)",
+        border: "1px solid color-mix(in srgb, var(--border) 22%, transparent)",
+        backgroundColor:
+          "color-mix(in srgb, var(--foreground) 2.5%, var(--surface))",
+        boxShadow: "var(--os3d-breadcrumb-lift-stack)",
       }}
     >
       <Typography

@@ -8,6 +8,7 @@ export function ToolGlyph({ name }: { name: string }) {
   return (
     <Os3dIcon
       src={osIconSrcForToolName(name)}
+      variant="inline"
       sx={{
         width: "var(--icon-size-md)",
         height: "var(--icon-size-md)",

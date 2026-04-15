@@ -508,8 +508,8 @@ function DigitalCounter({
         gap: 0.5,
         border: isDanger
           ? "1px solid color-mix(in srgb, var(--semantic-danger) 38%, transparent)"
-          : "none",
-        boxShadow: "none",
+          : "1px solid color-mix(in srgb, var(--border) 22%, transparent)",
+        boxShadow: "var(--os3d-chip-lift-stack)",
         minWidth: 0,
       }}
     >
@@ -614,7 +614,7 @@ export function SystemStatusPanel({
     <React.Fragment>
       {/* Storage Gauge (Span 4 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusStorage")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.storage} />}>
+        <DashboardCard title={t("device.systemStatusStorage")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.storage} variant="tile" />}>
           <CircularGauge 
             value={storageUsed} 
             max={storageTotal} 
@@ -627,7 +627,7 @@ export function SystemStatusPanel({
 
       {/* RAM & Memory (Span 4 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusGroupMemory")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.memory} />}>
+        <DashboardCard title={t("device.systemStatusGroupMemory")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.memory} variant="tile" />}>
           <Box sx={{ display: "grid", gridTemplateColumns: "1fr", gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
             {memoryMetrics.map((item) => (
               <DigitalCounter
@@ -643,7 +643,7 @@ export function SystemStatusPanel({
 
       {/* Runtime Strategy (Span 4 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusStrategy")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.strategy} />}>
+        <DashboardCard title={t("device.systemStatusStrategy")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.strategy} variant="tile" />}>
           {strategy ? (
             <Box sx={{ display: "flex", flexDirection: "column", gap: DASHBOARD_SECTION_STACK_GAP, height: "100%" }}>
               <Box
@@ -696,7 +696,7 @@ export function SystemStatusPanel({
 
       {/* Traffic & Ops (Span 12 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
-        <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.runtime} />}>
+        <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.runtime} variant="tile" />}>
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
             {runtimeTelemetry.map((item) => {
               let value: string | number;
@@ -733,13 +733,12 @@ export function SystemStatusPanel({
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard 
           title={t("device.systemStatusGroupFaults")} 
-          icon={<Os3dIcon src={OS_ICON_DASHBOARD.faults} />}
+          icon={<Os3dIcon src={OS_ICON_DASHBOARD.faults} variant="tile" />}
           sx={
             hasErrors
               ? {
                   border:
                     "1px solid color-mix(in srgb, var(--semantic-danger) 32%, transparent)",
-                  boxShadow: "none",
                 }
               : undefined
           }

@@ -71,6 +71,7 @@ export function PanelStateHeroRow({
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: TONE_WELL[tone],
+        boxShadow: "var(--os3d-pedestal-lift-stack)",
       }}
     >
       <Box sx={{ width: inner, height: inner }}>{icon}</Box>

@@ -1,5 +1,20 @@
 //! Shared contacts directory domain: local people records, lookup scoring, and persistent store.
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+mod credentials;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+mod provider;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub mod providers;
 mod service;
 mod store;
 
@@ -7,6 +22,23 @@ use crate::error::{Error, Result};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use credentials::{
+    ContactsDirectoryProviderCredential, ContactsDirectoryProviderCredentialStatus,
+    ContactsDirectoryProviderCredentialStore, OfficeBackedContactsDirectoryProviderCredentialStore,
+    FEISHU_CONTACTS_DEFAULT_BASE_URL, OFFICE_METADATA_CONTACTS_APP_ID,
+    OFFICE_METADATA_CONTACTS_BASE_URL,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use provider::{
+    ContactsDirectoryOperation, ContactsDirectoryProvider, ContactsDirectoryProviderRegistry,
+};
 pub use service::ContactsDirectoryService;
 pub use store::StateFsContactsDirectoryStore;
 
@@ -52,6 +84,12 @@ pub struct ContactsDirectoryLookupHit {
     pub contact: ContactEntry,
     pub match_reason: String,
     pub score: u32,
+    #[serde(default = "default_contact_source_kind")]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +100,12 @@ pub struct ContactsDirectoryEmailResolution {
     pub email: String,
     pub match_reason: String,
     pub score: u32,
+    #[serde(default = "default_contact_source_kind")]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +248,10 @@ fn looks_like_email(value: &str) -> bool {
         return false;
     };
     !local.is_empty() && !domain.is_empty() && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
+fn default_contact_source_kind() -> String {
+    "local".to_string()
 }
 
 #[cfg(test)]

@@ -65,6 +65,7 @@ export function SettingsSection({
               borderRadius: "var(--radius-chip)",
               backgroundColor:
                 "color-mix(in srgb, var(--foreground) 4%, transparent)",
+              boxShadow: "var(--os3d-pedestal-lift-stack)",
             }}
           >
             {icon}

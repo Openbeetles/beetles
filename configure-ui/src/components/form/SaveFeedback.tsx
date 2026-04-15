@@ -52,10 +52,10 @@ export function SaveFeedback({
         bgcolor: isOk
           ? 'color-mix(in srgb, var(--semantic-success) 6%, transparent)'
           : 'color-mix(in srgb, var(--semantic-danger) 6%, transparent)',
-        border: 'none',
-        borderColor: isOk
-          ? 'color-mix(in srgb, var(--semantic-success) 16%, transparent)'
-          : 'color-mix(in srgb, var(--semantic-danger) 12%, transparent)',
+        border: isOk
+          ? '1px solid color-mix(in srgb, var(--semantic-success) 22%, transparent)'
+          : '1px solid color-mix(in srgb, var(--semantic-danger) 20%, transparent)',
+        boxShadow: 'var(--os3d-alert-strip-stack)',
         transition: 'opacity var(--transition-duration) ease',
       }}
     >

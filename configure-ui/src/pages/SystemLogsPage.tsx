@@ -129,7 +129,7 @@ export function SystemLogsPage() {
           <PanelStateBlock
             tone="warning"
             size="compact"
-            icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} />}
+            icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} variant="inline" />}
             title={t("device.connectFirst")}
           />
         ) : logsState.loading ? (

@@ -15,16 +15,17 @@ import { DASHBOARD_INSET_WELL_BG } from "../theme/panelStyles";
 /** 与 SystemStatusPanel 小节面板一致：中性底，不用 --surface 色块 */
 const SECTION_PANEL_SX = {
   borderRadius: "var(--radius-control)",
-  border: "none",
+  border: "1px solid var(--form-outline-rest)",
   bgcolor: "var(--card)",
-  boxShadow: "none",
+  boxShadow: "var(--os3d-inset-panel-stack)",
 } as const;
 
 /** 与 SystemStatusPanel StatRow 微卡片一致 */
 const MICRO_CELL_SX = {
   borderRadius: "var(--radius-chip)",
-  border: "none",
+  border: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
   bgcolor: DASHBOARD_INSET_WELL_BG,
+  boxShadow: "var(--os3d-chip-lift-stack)",
 } as const;
 
 const ROW_DIVIDER = "none";
@@ -451,8 +452,10 @@ export function ChannelConnectivityPanel({
                 borderLeftColor: "var(--semantic-warning)",
                 bgcolor:
                   "color-mix(in srgb, var(--semantic-warning) 10%, var(--card))",
-                boxShadow:
+                boxShadow: [
+                  "var(--os3d-inset-panel-stack)",
                   "inset 0 0 0 1px color-mix(in srgb, var(--semantic-warning) 22%, transparent)",
+                ].join(", "),
               }}
             >
               <WarningAmberRounded
