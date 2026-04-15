@@ -215,6 +215,39 @@ Example:
 
 ## Account configuration
 
+### GET /api/config/providers
+
+- **Auth**: activated + pairing code
+- **Query parameters**:
+  - `capability`: optional, `mail|calendar|documents|contacts_directory`
+- **Response**: `200 OK`
+- **Body**:
+  - `count`
+  - `items[]`
+    - `provider_kind`
+    - `display_name`
+    - `capabilities`
+    - `account_fields[]`
+      - `key`
+      - `label`
+      - `description`
+      - `value_kind`
+      - `required`
+      - `secret`
+      - `multiple`
+      - `default_value`
+      - `default_values`
+      - `options[]`
+    - `config_fields[]`
+      - `key`
+      - `label`
+      - `description`
+      - `location`
+      - `value_kind`
+      - `required`
+      - `secret`
+      - `default_value`
+
 ### GET /api/config/capabilities
 
 - **Auth**: activated + pairing code
@@ -262,12 +295,21 @@ Example:
 
 - **Auth**: activated + pairing code + CSRF
 - **Headers**: `Content-Type: application/json`
-- **Body**: `OfficeAccountDraftRequest`
+- **Body**: one account upsert payload
 - **Primary fields**:
   - `account`
+    - `account_key`
+    - `provider_kind`
+    - `external_account_id`
+    - `account_label`
+    - `identity_class`
+    - `enabled_capabilities`
   - `set_defaults[]`
   - `clear_defaults[]`
   - `policy_patch`
+  - `config`
+    - `fields`
+    - `clear_fields[]`
 - **Response**:
   - success: `200 OK`, returns refreshed account detail
   - validation failure: `400 Bad Request`
@@ -343,6 +385,24 @@ Example:
 - **Response**:
   - success: `200 OK`
   - failure: `400 Bad Request`
+
+### DELETE /api/config/accounts/:account_key
+
+- **Auth**: activated + pairing code + CSRF
+- **Path parameter**:
+  - `account_key`
+- **Response**:
+  - success: `200 OK`
+  - failure: `400 Bad Request`
+- **Success body**:
+
+```json
+{
+  "ok": true,
+  "account_key": "mail-work",
+  "deleted": true
+}
+```
 
 ## Raw config segment endpoints
 

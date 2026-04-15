@@ -117,6 +117,15 @@ enum CapabilityConfigRoute<'a> {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProviderConfigRoute {
+    Collection,
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 fn parse_account_config_route(path: &str) -> Option<AccountConfigRoute<'_>> {
     if path == "/api/config/accounts" {
         return Some(AccountConfigRoute::Collection);
@@ -149,6 +158,17 @@ fn parse_capability_config_route(path: &str) -> Option<CapabilityConfigRoute<'_>
         return None;
     }
     Some(CapabilityConfigRoute::Detail(capability))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn parse_provider_config_route(path: &str) -> Option<ProviderConfigRoute> {
+    if path == "/api/config/providers" {
+        return Some(ProviderConfigRoute::Collection);
+    }
+    None
 }
 
 #[inline(never)]
@@ -248,6 +268,14 @@ fn dispatch_account_config(
                 Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
             }
         }
+        ("DELETE", AccountConfigRoute::Detail(account_key)) => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(Some(o));
+            }
+            let r = handlers::config::delete_account(ctx, &decoded_key(account_key))
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Some(api_to_out(r))
+        }
         ("POST", AccountConfigRoute::Config(account_key)) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(Some(o));
@@ -328,6 +356,42 @@ fn dispatch_capability_config(
     Ok(response)
 }
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn dispatch_provider_config(
+    ctx: &HandlerContext,
+    store: &dyn crate::platform::ConfigStore,
+    method: &str,
+    path: &str,
+    uri: &str,
+    incoming: &IncomingRequest,
+) -> Result<Option<OutgoingResponse>> {
+    let Some(route) = parse_provider_config_route(path) else {
+        return Ok(None);
+    };
+    let response = match (method, route) {
+        ("GET", ProviderConfigRoute::Collection) => {
+            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
+                return Ok(Some(api_to_out(r)));
+            }
+            match handlers::config::get_providers_body(ctx, query_param_from_uri(uri, "capability"))
+            {
+                Ok(body) => Some(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+            }
+        }
+        _ => None,
+    };
+    Ok(response)
+}
+
 fn operator_window_required_response(path: &str) -> OutgoingResponse {
     let body = serde_json::json!({
         "error": "operator window required",
@@ -372,6 +436,14 @@ pub fn dispatch(
             .window_required_for_deep_routes
     {
         return Ok(operator_window_required_response(path));
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    if let Some(response) = dispatch_provider_config(ctx, store, method, path, uri, &incoming)? {
+        return Ok(response);
     }
 
     #[cfg(all(
@@ -1306,6 +1378,23 @@ mod tests {
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
+    fn authed_delete(uri: &str) -> IncomingRequest {
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        IncomingRequest {
+            method: "DELETE".to_string(),
+            uri: uri.to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+            ],
+            body: Vec::new(),
+        }
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     fn seed_account(ctx: &HandlerContext, account_key: &str) {
         let mut segment = OfficeAccountsSegment::default();
         segment.registry.insert(OfficeAccount {
@@ -1409,6 +1498,46 @@ mod tests {
                 .expect("items array")
                 .iter()
                 .any(|item| item["account_key"] == "test-http-mail-summary"),
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_providers_get_returns_provider_catalog_with_create_contract() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(&ctx, &env, authed_get("/api/config/providers"))
+            .expect("dispatch provider catalog");
+        assert_eq!(response.status, 200);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let items = parsed["items"].as_array().expect("items array");
+        let imap = items
+            .iter()
+            .find(|item| item["provider_kind"] == "imap_smtp")
+            .expect("imap_smtp provider");
+        assert!(
+            imap["account_fields"]
+                .as_array()
+                .expect("account_fields array")
+                .iter()
+                .any(|field| field["key"] == "account_key"),
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+        assert!(
+            imap["config_fields"]
+                .as_array()
+                .expect("config_fields array")
+                .iter()
+                .any(|field| field["key"] == "mail_imap_host"),
             "body={}",
             String::from_utf8_lossy(&response.body)
         );
@@ -1539,6 +1668,136 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
         assert_eq!(parsed["account"]["account_key"], account_key);
         assert_eq!(parsed["account"]["selected_for_capabilities"][0], "mail");
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_post_creates_account_with_initial_provider_config() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        let account_key = "test-http-mail-create-complete";
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                "/api/config/accounts",
+                serde_json::json!({
+                    "account": {
+                        "account_key": account_key,
+                        "provider_kind": "imap_smtp",
+                        "external_account_id": "",
+                        "account_label": "Primary mail",
+                        "identity_class": "work",
+                        "enabled_capabilities": ["mail"]
+                    },
+                    "set_defaults": ["mail"],
+                    "config": {
+                        "fields": {
+                            "access_token": "secret-token",
+                            "mail_username": "alice",
+                            "mail_imap_host": "imap.example.com",
+                            "mail_smtp_host": "smtp.example.com"
+                        }
+                    }
+                }),
+            ),
+        )
+        .expect("dispatch account create");
+        assert_eq!(
+            response.status,
+            200,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        let credential = ctx
+            .platform
+            .office_credential_store()
+            .get(account_key)
+            .expect("load credential")
+            .expect("credential exists");
+        assert_eq!(credential.access_token, "secret-token");
+        assert_eq!(credential.metadata_value("mail_username"), Some("alice"));
+        assert_eq!(
+            credential.metadata_value("mail_imap_host"),
+            Some("imap.example.com")
+        );
+        assert_eq!(
+            credential.metadata_value("mail_smtp_host"),
+            Some("smtp.example.com")
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_delete_removes_account_and_related_state() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        let account_key = "test-http-mail-delete";
+        seed_account(&ctx, account_key);
+        let runtime = crate::office::OfficeAccountRuntimeStatus {
+            account_key: account_key.to_string(),
+            probe_ok: false,
+            last_error: "auth_failed".to_string(),
+            last_probe_at_unix_secs: 1,
+            last_activity_kind: String::new(),
+            last_activity_ok: false,
+            last_activity_at_unix_secs: 0,
+            updated_at: 1,
+        };
+        ctx.platform
+            .office_runtime_status_store()
+            .set(&runtime)
+            .expect("seed runtime");
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_delete(&format!("/api/config/accounts/{account_key}")),
+        )
+        .expect("dispatch account delete");
+        assert_eq!(
+            response.status,
+            200,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        assert!(ctx
+            .platform
+            .office_credential_store()
+            .get(account_key)
+            .expect("load credential")
+            .is_none());
+        assert!(ctx
+            .platform
+            .office_runtime_status_store()
+            .get(account_key)
+            .expect("load runtime")
+            .is_none());
+
+        let detail = dispatch(
+            &ctx,
+            &env,
+            authed_get(&format!("/api/config/accounts/{account_key}")),
+        )
+        .expect("dispatch deleted account detail");
+        assert_eq!(detail.status, 400);
+
+        let capabilities = dispatch(&ctx, &env, authed_get("/api/config/capabilities/mail"))
+            .expect("dispatch capability detail");
+        let parsed: Value = serde_json::from_slice(&capabilities.body).expect("parse capability");
+        assert_eq!(parsed["selection_status"], "missing");
+        assert!(parsed["selected_account_key"].is_null());
     }
 
     #[cfg(all(

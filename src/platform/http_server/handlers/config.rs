@@ -7,9 +7,9 @@ use crate::i18n::{locale_from_store, tr, tr_error, Message};
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::office::{
-    OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeCapability,
+    OfficeAccountConfigSaveRequest, OfficeAccountUpsertRequest, OfficeCapability,
     OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigCapabilityStatus,
-    OfficeConfigManagementService,
+    OfficeConfigManagementService, OfficeConfigProviderCatalogItem,
 };
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
 use serde::Deserialize;
@@ -114,6 +114,16 @@ struct CapabilityStatusListResponse {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+#[derive(serde::Serialize)]
+struct ProviderCatalogListResponse {
+    count: usize,
+    items: Vec<OfficeConfigProviderCatalogItem>,
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 #[derive(Deserialize)]
 struct RevokeRequest {
     #[serde(default = "default_true")]
@@ -184,6 +194,25 @@ pub fn get_accounts_body(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+/// GET /api/config/providers：返回账户创建所需的 provider catalog。
+pub fn get_providers_body(
+    ctx: &HandlerContext,
+    capability: Option<&str>,
+) -> Result<String, std::io::Error> {
+    let items = office_config_service(ctx)
+        .provider_catalog(parse_capability(capability)?)
+        .map_err(|e| to_io(e.to_string()))?;
+    serde_json::to_string(&ProviderCatalogListResponse {
+        count: items.len(),
+        items,
+    })
+    .map_err(|e| to_io(e.to_string()))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 /// GET /api/config/capabilities：返回能力配置读模型。
 pub fn get_capabilities_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let items = office_config_service(ctx)
@@ -223,11 +252,11 @@ pub fn get_capability_detail_body(
 /// POST /api/config/accounts：创建或更新单个账户注册。
 pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
-    let request: OfficeAccountDraftRequest = match serde_json::from_str(body) {
+    let request: OfficeAccountUpsertRequest = match serde_json::from_str(body) {
         Ok(value) => value,
         Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
     };
-    match office_config_service(ctx).save_account(&request) {
+    match office_config_service(ctx).save_account_upsert(&request) {
         Ok(detail) => {
             ctx.reload_config();
             let body = serde_json::to_string(&detail).map_err(|error| to_io(error.to_string()))?;
@@ -326,6 +355,32 @@ pub fn post_account_revoke(
             })
             .to_string(),
         )),
+        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+/// DELETE /api/config/accounts/:account_key：删除单账户注册及其关联状态。
+pub fn delete_account(
+    ctx: &HandlerContext,
+    account_key: &str,
+) -> Result<ApiResponse, std::io::Error> {
+    let loc = locale_from_store(ctx.config_store.as_ref());
+    match office_config_service(ctx).delete_account(account_key) {
+        Ok(()) => {
+            ctx.reload_config();
+            Ok(ApiResponse::ok_200_json(
+                &serde_json::json!({
+                    "ok": true,
+                    "account_key": account_key,
+                    "deleted": true,
+                })
+                .to_string(),
+            ))
+        }
         Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
     }
 }

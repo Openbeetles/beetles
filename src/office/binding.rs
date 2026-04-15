@@ -13,6 +13,10 @@ impl OfficeCapabilityBinding {
         self.capability_defaults.insert(capability, account_key);
     }
 
+    pub fn clear_default_account(&mut self, capability: OfficeCapability) {
+        self.capability_defaults.remove(&capability);
+    }
+
     pub fn default_account_for(&self, capability: OfficeCapability) -> Option<&str> {
         self.capability_defaults
             .get(&capability)

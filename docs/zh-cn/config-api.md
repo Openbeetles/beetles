@@ -209,6 +209,39 @@
 
 ## 账户配置
 
+### GET /api/config/providers
+
+- **鉴权**：已激活 + 配对码
+- **查询参数**：
+  - `capability`：可选，`mail|calendar|documents|contacts_directory`
+- **响应**：`200 OK`
+- **响应体**：
+  - `count`
+  - `items[]`
+    - `provider_kind`
+    - `display_name`
+    - `capabilities`
+    - `account_fields[]`
+      - `key`
+      - `label`
+      - `description`
+      - `value_kind`
+      - `required`
+      - `secret`
+      - `multiple`
+      - `default_value`
+      - `default_values`
+      - `options[]`
+    - `config_fields[]`
+      - `key`
+      - `label`
+      - `description`
+      - `location`
+      - `value_kind`
+      - `required`
+      - `secret`
+      - `default_value`
+
 ### GET /api/config/capabilities
 
 - **鉴权**：已激活 + 配对码
@@ -256,12 +289,21 @@
 
 - **鉴权**：已激活 + 配对码 + CSRF
 - **请求头**：`Content-Type: application/json`
-- **请求体**：`OfficeAccountDraftRequest`
+- **请求体**：单个账户 upsert payload
 - **主要字段**：
   - `account`
+    - `account_key`
+    - `provider_kind`
+    - `external_account_id`
+    - `account_label`
+    - `identity_class`
+    - `enabled_capabilities`
   - `set_defaults[]`
   - `clear_defaults[]`
   - `policy_patch`
+  - `config`
+    - `fields`
+    - `clear_fields[]`
 - **响应**：
   - 成功：`200 OK`，返回更新后的账户详情
   - 校验失败：`400 Bad Request`
@@ -337,6 +379,24 @@
 - **响应**：
   - 成功：`200 OK`
   - 失败：`400 Bad Request`
+
+### DELETE /api/config/accounts/:account_key
+
+- **鉴权**：已激活 + 配对码 + CSRF
+- **路径参数**：
+  - `account_key`
+- **响应**：
+  - 成功：`200 OK`
+  - 失败：`400 Bad Request`
+- **成功响应**：
+
+```json
+{
+  "ok": true,
+  "account_key": "mail-work",
+  "deleted": true
+}
+```
 
 ## 原始配置段接口
 

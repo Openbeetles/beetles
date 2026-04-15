@@ -52,6 +52,10 @@ impl OfficeAccountRegistry {
         self.accounts.get(account_key)
     }
 
+    pub fn remove(&mut self, account_key: &str) -> Option<OfficeAccount> {
+        self.accounts.remove(account_key)
+    }
+
     pub fn all_accounts(&self) -> Vec<&OfficeAccount> {
         self.accounts.values().collect()
     }
