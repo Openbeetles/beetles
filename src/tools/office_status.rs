@@ -3,7 +3,10 @@ use crate::office::{
     OfficeAccountAssessment, OfficeAuthoritySource, OfficeAuthoritySummary, OfficeCapability,
     OfficeService, SnapshotOfficeAuthoritySource,
 };
-use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
+    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -22,6 +25,8 @@ struct OfficeStatusResponse {
     summary: OfficeAuthoritySummary,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_diagnostics: Vec<OfficeAccountDiagnostic>,
 }
 
 impl OfficeStatusTool {
@@ -86,6 +91,7 @@ impl Tool for OfficeStatusTool {
                 op: "status",
                 capability,
                 summary,
+                account_diagnostics: build_account_diagnostics(&account_assessments),
                 account_assessments,
             },
         )
@@ -116,11 +122,13 @@ fn parse_capability(value: &Value) -> Result<OfficeCapability> {
 mod tests {
     use super::*;
     use crate::config::{save_office_accounts_segment, ConfigFileStore};
+    use crate::documents::OFFICE_METADATA_DOCUMENTS_BASE_URL;
+    use crate::mail::{OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST};
     use crate::office::{
-        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        ReloadingOfficeAuthoritySource,
+        OfficeAccountRuntimeStatus, OfficeCredential, OfficeCredentialStore,
+        OfficeRuntimeStatusStore, ReloadingOfficeAuthoritySource,
     };
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -177,6 +185,48 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct MemoryOfficeCredentialStore {
+        items: Mutex<BTreeMap<String, OfficeCredential>>,
+    }
+
+    impl OfficeCredentialStore for MemoryOfficeCredentialStore {
+        fn get(&self, account_key: &str) -> Result<Option<OfficeCredential>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(account_key)
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<OfficeCredential>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn set(&self, credential: &OfficeCredential) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(credential.account_key.clone(), credential.clone());
+            Ok(())
+        }
+
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(account_key);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubRuntimeStatusStore;
 
     impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
@@ -196,6 +246,48 @@ mod tests {
         }
 
         fn clear(&self, _account_key: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryRuntimeStatusStore {
+        items: Mutex<BTreeMap<String, OfficeAccountRuntimeStatus>>,
+    }
+
+    impl OfficeRuntimeStatusStore for MemoryRuntimeStatusStore {
+        fn get(&self, account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(account_key)
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn set(&self, status: &OfficeAccountRuntimeStatus) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(status.account_key.clone(), status.clone());
+            Ok(())
+        }
+
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -265,6 +357,37 @@ mod tests {
         )
     }
 
+    fn save_documents_accounts(
+        config_file_store: &dyn ConfigFileStore,
+        default_account_key: &str,
+    ) -> Result<()> {
+        save_office_accounts_segment(
+            config_file_store,
+            &format!(
+                r#"{{
+                    "registry": {{
+                        "accounts": {{
+                            "docs-work": {{
+                                "account_key": "docs-work",
+                                "provider_kind": "webdav",
+                                "external_account_id": "work@example.com",
+                                "account_label": "Work Docs",
+                                "identity_class": "work",
+                                "enabled_capabilities": ["documents"]
+                            }}
+                        }}
+                    }},
+                    "binding": {{
+                        "capability_defaults": {{
+                            "documents": "{default_account_key}"
+                        }}
+                    }},
+                    "policy": {{}}
+                }}"#
+            ),
+        )
+    }
+
     #[test]
     fn office_status_tool_reloads_accounts_after_commit() {
         let config_file_store = Arc::new(MemoryConfigFileStore::default());
@@ -320,5 +443,152 @@ mod tests {
             .expect("missing fields array")
             .iter()
             .any(|item| item == "access_token"));
+        assert_eq!(
+            payload["account_diagnostics"][0]["diagnosis_kind"],
+            "needs_credential_input"
+        );
+        assert!(payload["account_diagnostics"][0]["summary"]
+            .as_str()
+            .expect("diagnostic summary")
+            .contains("access_token"));
+    }
+
+    #[test]
+    fn office_status_tool_reports_runtime_failure_diagnostics() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::default());
+        let credential_store = Arc::new(MemoryOfficeCredentialStore::default());
+        let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
+        save_documents_accounts(config_file_store.as_ref(), "docs-work")
+            .expect("seed document accounts");
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "docs-work".to_string(),
+                access_token: "secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 0,
+                metadata: vec![(
+                    OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                    "https://dav.example.com/root".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed office credential");
+        runtime_status_store
+            .set(&OfficeAccountRuntimeStatus {
+                account_key: "docs-work".to_string(),
+                probe_ok: false,
+                last_error: "remote read failed: 403 forbidden".to_string(),
+                last_probe_at_unix_secs: 0,
+                last_activity_kind: "documents_read".to_string(),
+                last_activity_ok: false,
+                last_activity_at_unix_secs: 1_710_000_123,
+                updated_at: 1_710_000_123,
+            })
+            .expect("seed runtime status");
+        let tool = OfficeStatusTool::with_probe_supported_provider_kinds(
+            Arc::new(ReloadingOfficeAuthoritySource::new(
+                config_file_store,
+                credential_store,
+                runtime_status_store,
+            )),
+            vec!["webdav".to_string()],
+        );
+        let mut ctx = DummyCtx;
+
+        let payload = tool
+            .execute(r#"{"capability":"documents"}"#, &mut ctx)
+            .expect("office status");
+        let payload: Value = serde_json::from_str(&payload).expect("valid office status");
+        assert_eq!(
+            payload["account_diagnostics"][0]["account_key"],
+            "docs-work"
+        );
+        assert_eq!(
+            payload["account_diagnostics"][0]["diagnosis_kind"],
+            "runtime_failure"
+        );
+        assert_eq!(
+            payload["account_diagnostics"][0]["recommended_action"],
+            "review_runtime_error"
+        );
+        assert_eq!(
+            payload["account_diagnostics"][0]["last_activity_kind"],
+            "documents_read"
+        );
+        assert!(payload["account_diagnostics"][0]["summary"]
+            .as_str()
+            .expect("diagnostic summary")
+            .contains("403 forbidden"));
+        assert_eq!(
+            payload["account_assessments"][0]["readiness"],
+            "ready_for_probe"
+        );
+    }
+
+    #[test]
+    fn office_status_tool_reports_ready_diagnostics_for_healthy_account() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::default());
+        let credential_store = Arc::new(MemoryOfficeCredentialStore::default());
+        let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
+        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "mail-work".to_string(),
+                access_token: "secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 0,
+                metadata: vec![
+                    (
+                        OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed mail credential");
+        runtime_status_store
+            .set(&OfficeAccountRuntimeStatus {
+                account_key: "mail-work".to_string(),
+                probe_ok: true,
+                last_error: String::new(),
+                last_probe_at_unix_secs: 1_710_000_999,
+                last_activity_kind: "mail_list".to_string(),
+                last_activity_ok: true,
+                last_activity_at_unix_secs: 1_710_001_000,
+                updated_at: 1_710_001_000,
+            })
+            .expect("seed runtime status");
+        let tool = OfficeStatusTool::with_probe_supported_provider_kinds(
+            Arc::new(ReloadingOfficeAuthoritySource::new(
+                config_file_store,
+                credential_store,
+                runtime_status_store,
+            )),
+            vec!["imap_smtp".to_string()],
+        );
+        let mut ctx = DummyCtx;
+
+        let payload = tool
+            .execute(r#"{"capability":"mail"}"#, &mut ctx)
+            .expect("office status");
+        let payload: Value = serde_json::from_str(&payload).expect("valid office status");
+        let diagnosis = payload["account_diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .find(|item| item["account_key"] == "mail-work")
+            .expect("mail-work diagnosis");
+        assert_eq!(diagnosis["diagnosis_kind"], "ready");
+        assert_eq!(diagnosis["recommended_action"], "none");
     }
 }

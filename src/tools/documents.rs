@@ -1,9 +1,10 @@
 //! Documents tool: office-routed document libraries backed by shared office authority.
 
 use crate::documents::{
-    DocumentsEntry, DocumentsProviderCredentialStatus, DocumentsProviderCredentialStore,
-    DocumentsProviderRegistry, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
-    DocumentsSearchQuery, DocumentsService,
+    summarize_document_read_result, DocumentsEntry, DocumentsProviderCredentialStatus,
+    DocumentsProviderCredentialStore, DocumentsProviderRegistry, DocumentsQuery,
+    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery, DocumentsService,
+    DocumentsSummaryResult,
 };
 use crate::error::{Error, Result};
 use crate::office::{
@@ -11,6 +12,7 @@ use crate::office::{
     OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
     ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
@@ -39,6 +41,8 @@ struct DocumentsProviderStatusResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_diagnostics: Vec<OfficeAccountDiagnostic>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
 }
 
@@ -55,6 +59,13 @@ struct DocumentsReadResponse {
     op: &'static str,
     provider: String,
     document: DocumentsReadResult,
+}
+
+#[derive(Serialize)]
+struct DocumentsSummaryResponse {
+    op: &'static str,
+    provider: String,
+    summary: DocumentsSummaryResult,
 }
 
 #[derive(Serialize)]
@@ -144,6 +155,7 @@ impl DocumentsTool {
                     .into_iter()
                     .map(str::to_string)
                     .collect::<Vec<_>>();
+                let account_assessments = self.service.office_account_assessments()?;
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_documents",
                     &DocumentsProviderStatusResponse {
@@ -151,7 +163,8 @@ impl DocumentsTool {
                         registered_remote_providers,
                         default_documents_account_key: self.service.office_default_account_key()?,
                         configured_providers: self.service.list_provider_statuses()?,
-                        account_assessments: self.service.office_account_assessments()?,
+                        account_diagnostics: build_account_diagnostics(&account_assessments),
+                        account_assessments,
                         office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },
                 )?))
@@ -243,6 +256,52 @@ impl DocumentsTool {
                     },
                 )?))
             }
+            "summarize" => {
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
+                    .service
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "summarize",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let document = match self.service.read(
+                    &provider,
+                    requested_account_key.as_deref(),
+                    required_str(&obj, "path")?,
+                    parse_max_chars(obj.get("max_chars"))?,
+                ) {
+                    Ok(document) => document,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "summarize",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let summary = summarize_document_read_result(
+                    &document,
+                    obj.get("focus").and_then(Value::as_str),
+                );
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_documents",
+                    &DocumentsSummaryResponse {
+                        op: "summarize",
+                        provider,
+                        summary,
+                    },
+                )?))
+            }
             "search" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
@@ -308,11 +367,11 @@ impl Tool for DocumentsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Access office document libraries through shared account authority. Ops: provider_status, list, read, search. Provider can be omitted when office documents defaults or a single configured provider make routing unambiguous."
+        "Access office document libraries through shared account authority. Ops: provider_status, list, read, summarize, search. Provider can be omitted when office documents defaults or a single configured provider make routing unambiguous."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|summarize|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"focus":{"type":"string","description":"Optional phrase to emphasize in summarize output."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read or summarize, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -353,7 +412,7 @@ impl Tool for DocumentsTool {
             .get("op")
             .and_then(Value::as_str)
             .unwrap_or("provider_status");
-        Ok(matches!(op, "list" | "read" | "search"))
+        Ok(matches!(op, "list" | "read" | "summarize" | "search"))
     }
 }
 
@@ -635,13 +694,22 @@ mod tests {
             Ok(DocumentsReadResult {
                 entry: DocumentsEntry {
                     path: path.to_string(),
-                    name: credential.account_label.clone(),
+                    name: path
+                        .rsplit('/')
+                        .next()
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(credential.account_label.as_str())
+                        .to_string(),
                     kind: "text".to_string(),
                     is_dir: false,
                     content_type: Some("text/plain".to_string()),
                     size_bytes: Some(24),
                 },
-                content: "quarterly summary".to_string(),
+                content: if path.ends_with("quarterly-plan.txt") {
+                    "Q1 Review\n- Calendar bridge shipped to remote office calendar\n- Documents summary should feed weekly updates\nAction: send summary to finance\nTODO: create follow-up task for customer review".to_string()
+                } else {
+                    "quarterly summary".to_string()
+                },
                 truncated: false,
                 raw_bytes: 24,
                 warning: None,
@@ -787,6 +855,15 @@ mod tests {
         assert_eq!(payload["account_assessments"][0]["readiness"], "ready");
         assert_eq!(payload["account_assessments"][0]["next_action"], "none");
         assert_eq!(payload["account_assessments"][0]["probe_supported"], true);
+        assert_eq!(
+            payload["account_diagnostics"][0]["account_key"],
+            "docs-work"
+        );
+        assert_eq!(payload["account_diagnostics"][0]["diagnosis_kind"], "ready");
+        assert_eq!(
+            payload["account_diagnostics"][0]["recommended_action"],
+            "none"
+        );
     }
 
     #[test]
@@ -813,6 +890,42 @@ mod tests {
         let search: Value = serde_json::from_str(&search).expect("valid search json");
         assert_eq!(search["hits"][0]["match_kind"], "content");
         assert_eq!(search["hits"][0]["snippet"], "match: quarterly");
+    }
+
+    #[test]
+    fn documents_tool_summarize_returns_structured_summary_and_handoff() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+
+        let payload = tool
+            .execute(
+                r#"{"op":"summarize","path":"Reports/quarterly-plan.txt","focus":"summary"}"#,
+                &mut ctx,
+            )
+            .expect("summarize document");
+        let payload: Value = serde_json::from_str(&payload).expect("valid summarize json");
+        assert_eq!(payload["provider"], "webdav");
+        assert_eq!(payload["summary"]["focus"], "summary");
+        assert_eq!(
+            payload["summary"]["summary"],
+            "Documents summary should feed weekly updates"
+        );
+        assert_eq!(
+            payload["summary"]["key_points"][0],
+            "Documents summary should feed weekly updates"
+        );
+        assert_eq!(
+            payload["summary"]["action_items"][0],
+            "send summary to finance"
+        );
+        assert_eq!(
+            payload["summary"]["handoff"]["task_candidates"][1],
+            "create follow-up task for customer review"
+        );
+        assert!(payload["summary"]["handoff"]["mail_brief"]
+            .as_str()
+            .expect("mail brief")
+            .contains("Q1 Review"));
     }
 
     #[test]
@@ -849,6 +962,18 @@ mod tests {
         );
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["account_key"],
+            "docs-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["diagnosis_kind"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["recommended_action"],
             "draft_credentials"
         );
         assert!(payload["error"]

@@ -12,6 +12,10 @@ pub const MAX_TASK_ID_CHARS: usize = 128;
 pub const MAX_TASK_CHANNEL_CHARS: usize = 32;
 pub const MAX_TASK_CHAT_ID_CHARS: usize = 160;
 pub const MAX_TASK_CALENDAR_EVENT_ID_CHARS: usize = 128;
+pub const MAX_TASK_CALENDAR_PROVIDER_CHARS: usize = 32;
+pub const MAX_TASK_CALENDAR_ACCOUNT_KEY_CHARS: usize = 128;
+pub const MAX_TASK_CALENDAR_TARGET_ID_CHARS: usize = 64;
+pub const MAX_TASK_CALENDAR_REMOTE_ID_CHARS: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +62,14 @@ pub struct TaskItem {
     pub due_notified_at_unix_secs: u64,
     #[serde(default)]
     pub calendar_event_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub calendar_provider: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub calendar_account_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub calendar_calendar_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub calendar_remote_id: String,
     #[serde(default)]
     pub calendar_start_at_unix_secs: u64,
     #[serde(default)]
@@ -126,6 +138,18 @@ pub fn normalize_task_item(mut task: TaskItem) -> Result<TaskItem> {
     task.project = normalize_field(&task.project, MAX_TASK_PROJECT_CHARS);
     task.calendar_event_id =
         normalize_field(&task.calendar_event_id, MAX_TASK_CALENDAR_EVENT_ID_CHARS);
+    task.calendar_provider =
+        normalize_field(&task.calendar_provider, MAX_TASK_CALENDAR_PROVIDER_CHARS);
+    task.calendar_account_key = normalize_field(
+        &task.calendar_account_key,
+        MAX_TASK_CALENDAR_ACCOUNT_KEY_CHARS,
+    );
+    task.calendar_calendar_id = normalize_field(
+        &task.calendar_calendar_id,
+        MAX_TASK_CALENDAR_TARGET_ID_CHARS,
+    );
+    task.calendar_remote_id =
+        normalize_field(&task.calendar_remote_id, MAX_TASK_CALENDAR_REMOTE_ID_CHARS);
     task.calendar_timezone = normalize_field(&task.calendar_timezone, MAX_TASK_DETAIL_CHARS);
     task.calendar_location = normalize_field(&task.calendar_location, MAX_TASK_DETAIL_CHARS);
     task.calendar_notes = normalize_field(&task.calendar_notes, MAX_TASK_DETAIL_CHARS);

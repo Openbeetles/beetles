@@ -6,13 +6,14 @@ use crate::contacts_directory::{
 use crate::error::{Error, Result};
 use crate::mail::{
     MailMessage, MailMessageSummary, MailProviderCredentialStatus, MailProviderCredentialStore,
-    MailProviderRegistry, MailQuery, MailSendRequest, MailService,
+    MailProviderRegistry, MailQuery, MailSearchQuery, MailSendRequest, MailService,
 };
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
     OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
     ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
@@ -35,6 +36,8 @@ struct MailProviderStatusResponse {
     configured_providers: Vec<MailProviderCredentialStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_diagnostics: Vec<OfficeAccountDiagnostic>,
     account_statuses: Vec<MailAccountStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
@@ -44,6 +47,15 @@ struct MailProviderStatusResponse {
 struct MailListResponse {
     op: &'static str,
     provider: String,
+    count: usize,
+    items: Vec<MailMessageSummary>,
+}
+
+#[derive(Serialize)]
+struct MailSearchResponse {
+    op: &'static str,
+    provider: String,
+    query: String,
     count: usize,
     items: Vec<MailMessageSummary>,
 }
@@ -203,13 +215,15 @@ impl MailTool {
                     .collect::<Vec<_>>();
                 let configured_providers = self.service.list_provider_statuses()?;
                 let office_runtime_statuses = self.service.office_runtime_statuses()?;
+                let account_assessments = self.service.office_account_assessments()?;
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailProviderStatusResponse {
                         op: "provider_status",
                         registered_remote_providers,
                         default_mail_account_key: self.service.office_default_account_key()?,
-                        account_assessments: self.service.office_account_assessments()?,
+                        account_diagnostics: build_account_diagnostics(&account_assessments),
+                        account_assessments,
                         account_statuses: build_mail_account_statuses(
                             &self.service,
                             &configured_providers,
@@ -269,6 +283,66 @@ impl MailTool {
                     &MailListResponse {
                         op: "list",
                         provider,
+                        count: items.len(),
+                        items,
+                    },
+                )?))
+            }
+            "search" => {
+                let requested_provider = parse_provider(&obj);
+                let requested_account_key = parse_account_key(&obj);
+                let provider = match self
+                    .service
+                    .resolve_provider_name(requested_provider.as_deref())
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "search",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                let query = required_str(&obj, "query")?.trim().to_string();
+                if query.is_empty() {
+                    return Err(Error::config("tool_mail", "query must not be empty"));
+                }
+                let items = match self.service.search(
+                    &provider,
+                    requested_account_key.as_deref(),
+                    MailSearchQuery {
+                        mailbox: optional_str(&obj, "mailbox"),
+                        query: query.clone(),
+                        unread_only: obj
+                            .get("unread_only")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        received_after_unix_secs: parse_optional_u64(
+                            obj.get("received_after_unix_secs"),
+                            "received_after_unix_secs",
+                        )?,
+                        limit: obj.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize,
+                    }
+                    .with_limit_clamped(),
+                ) {
+                    Ok(items) => items,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "search",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            &error,
+                        )
+                    }
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_mail",
+                    &MailSearchResponse {
+                        op: "search",
+                        provider,
+                        query,
                         count: items.len(),
                         items,
                     },
@@ -581,11 +655,11 @@ impl Tool for MailTool {
     }
 
     fn description(&self) -> &'static str {
-        "Access office mail through shared account authority. Ops: provider_status, list, get, send, draft, reply, forward. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
+        "Access office mail through shared account authority. Ops: provider_status, list, search, get, send, draft, reply, forward. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list. Defaults to provider mailbox."},"unread_only":{"type":"boolean","description":"Whether list should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|search|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list or search. Defaults to provider mailbox."},"query":{"type":"string","description":"Required free-text search query for search."},"unread_only":{"type":"boolean","description":"Whether list or search should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List or search limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -625,7 +699,7 @@ impl Tool for MailTool {
                     _ => "mail_forward",
                 })
                 .with_approval_granted(confirm),
-            "provider_status" | "list" | "get" => self
+            "provider_status" | "list" | "search" | "get" => self
                 .metadata()
                 .default_execution_shape(op)
                 .with_effect_class(ToolEffectClass::ReadOnly)
@@ -645,7 +719,7 @@ impl Tool for MailTool {
             .unwrap_or("provider_status");
         Ok(matches!(
             op,
-            "list" | "get" | "send" | "draft" | "reply" | "forward"
+            "list" | "search" | "get" | "send" | "draft" | "reply" | "forward"
         ))
     }
 }
@@ -759,6 +833,13 @@ trait MailQueryExt {
 }
 
 impl MailQueryExt for MailQuery {
+    fn with_limit_clamped(mut self) -> Self {
+        self.limit = self.limit.clamp(1, 50);
+        self
+    }
+}
+
+impl MailQueryExt for MailSearchQuery {
     fn with_limit_clamped(mut self) -> Self {
         self.limit = self.limit.clamp(1, 50);
         self
@@ -1138,6 +1219,29 @@ mod tests {
             }])
         }
 
+        fn search_messages(
+            &self,
+            credential: &MailProviderCredential,
+            query: MailSearchQuery,
+        ) -> Result<Vec<MailMessageSummary>> {
+            Ok(vec![MailMessageSummary {
+                id: format!("search-{}", credential.account_key),
+                provider: credential.provider.clone(),
+                account_key: credential.account_key.clone(),
+                mailbox: if query.mailbox.is_empty() {
+                    credential.imap_mailbox.clone()
+                } else {
+                    query.mailbox
+                },
+                subject: format!("match {}", query.query.trim()),
+                from: credential.from_address.clone(),
+                to: vec![credential.account_id.clone()],
+                preview: "search preview".to_string(),
+                unread: true,
+                received_at_unix_secs: 1,
+            }])
+        }
+
         fn get_message(
             &self,
             credential: &MailProviderCredential,
@@ -1441,6 +1545,15 @@ mod tests {
         assert_eq!(work_assessment["readiness"], "ready");
         assert_eq!(work_assessment["next_action"], "none");
         assert_eq!(work_assessment["probe_supported"], true);
+        let diagnostics = payload["account_diagnostics"]
+            .as_array()
+            .expect("account diagnostics array");
+        let work_diagnostic = diagnostics
+            .iter()
+            .find(|item| item["account_key"] == "mail-work")
+            .expect("mail-work diagnostic");
+        assert_eq!(work_diagnostic["diagnosis_kind"], "ready");
+        assert_eq!(work_diagnostic["recommended_action"], "none");
     }
 
     #[test]
@@ -1452,6 +1565,24 @@ mod tests {
             .expect("list mail");
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(payload["provider"], "imap_smtp");
+        assert_eq!(payload["items"][0]["account_key"], "mail-work");
+    }
+
+    #[test]
+    fn mail_tool_search_returns_results_and_uses_office_default() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"search","query":"hello project","limit":5}"#,
+                &mut ctx,
+            )
+            .expect("search mail");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["op"], "search");
+        assert_eq!(payload["provider"], "imap_smtp");
+        assert_eq!(payload["query"], "hello project");
+        assert_eq!(payload["count"], 1);
         assert_eq!(payload["items"][0]["account_key"], "mail-work");
     }
 
@@ -1685,6 +1816,18 @@ mod tests {
         );
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["account_key"],
+            "mail-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["diagnosis_kind"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["recommended_action"],
             "draft_credentials"
         );
         assert!(payload["error"]

@@ -13,6 +13,7 @@ use crate::office::{
     OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
 };
@@ -38,6 +39,8 @@ struct CalendarProviderStatusResponse {
     default_calendar_account_key: Option<String>,
     configured_providers: Vec<CalendarProviderCredentialStatus>,
     account_assessments: Vec<OfficeAccountAssessment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_diagnostics: Vec<OfficeAccountDiagnostic>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_runtime_statuses: Vec<OfficeAccountRuntimeStatus>,
 }
@@ -185,6 +188,7 @@ impl CalendarTool {
                     .map(str::to_string)
                     .collect::<Vec<_>>();
                 let configured_providers = self.service.list_provider_statuses()?;
+                let account_assessments = self.service.office_account_assessments()?;
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_calendar",
                     &CalendarProviderStatusResponse {
@@ -193,7 +197,8 @@ impl CalendarTool {
                         registered_remote_providers,
                         default_calendar_account_key: self.service.office_default_account_key()?,
                         configured_providers,
-                        account_assessments: self.service.office_account_assessments()?,
+                        account_diagnostics: build_account_diagnostics(&account_assessments),
+                        account_assessments,
                         office_runtime_statuses: self.service.office_runtime_statuses()?,
                     },
                 )?))
@@ -1128,6 +1133,22 @@ mod tests {
             status["account_assessments"][1]["account_key"],
             "calendar-work"
         );
+        assert_eq!(
+            status["account_diagnostics"][0]["account_key"],
+            "calendar-personal"
+        );
+        assert_eq!(
+            status["account_diagnostics"][0]["diagnosis_kind"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            status["account_diagnostics"][1]["account_key"],
+            "calendar-work"
+        );
+        assert_eq!(
+            status["account_diagnostics"][1]["diagnosis_kind"],
+            "needs_credential_input"
+        );
     }
 
     #[test]
@@ -1192,6 +1213,18 @@ mod tests {
         );
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["next_action"],
+            "draft_credentials"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["account_key"],
+            "calendar-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["diagnosis_kind"],
+            "needs_credential_input"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_diagnostics"][0]["recommended_action"],
             "draft_credentials"
         );
         assert!(payload["error"]

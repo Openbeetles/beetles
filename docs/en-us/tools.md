@@ -39,12 +39,19 @@ Keep three things in mind:
 
 ## Key Notes
 
+### `task`
+
+- `task` supports optional calendar sync.
+- It uses the local calendar by default. If office calendar accounts are already configured, you can also point a task at a remote calendar provider when creating or updating it.
+- If more than one remote calendar account is available for that provider, pass `calendar_account_key` explicitly or set a default office account first.
+- When a task is completed, the linked calendar item is closed with it. If you delete the task or clear calendar sync, the linked calendar item is removed as well.
+
 ### `calendar`
 
 - Uses the local calendar by default.
 - After you link external calendar accounts, the same tool can also list, create, update, and delete remote events.
 - If more than one external account is available, pass `account_key` explicitly or set a default office account first.
-- `provider_status` returns the current calendar capability view, configured account status, and default-account/runtime summary.
+- `provider_status` shows which calendar accounts are available, which one is the default, and whether each account is ready, still needs setup, or recently failed.
 
 ### `mail`
 
@@ -52,15 +59,18 @@ Keep three things in mind:
 - Supported operations:
   - `provider_status`
   - `list`
+  - `search`
   - `get`
   - `send`
   - `draft`
   - `reply`
   - `forward`
 - If a default mail account is configured, or only one mail account is available, you can omit `provider` / `account_key`.
+- `search` finds messages in a mailbox by keyword and returns ids you can pass straight into follow-up actions like `get`, `reply`, or `forward`.
 - `send`, `draft`, `reply`, and `forward` are explicit remote mutations and require `confirm=true`.
 - `send`, `draft`, and `forward` can use direct email arrays (`to` / `cc` / `bcc`) and contact-query arrays (`to_lookup` / `cc_lookup` / `bcc_lookup`) resolved through `contacts_directory`; `reply` keeps the original message sender as the base recipient and can still merge extra recipients.
-- `provider_status` now includes per-account mail readiness and latest runtime activity evidence, not just configured-provider rows.
+- `provider_status` shows whether each mail account is ready to use and whether it has recently had connection or send problems.
+- If `mail` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
 
 ### `documents`
 
@@ -69,9 +79,12 @@ Keep three things in mind:
   - `provider_status`
   - `list`
   - `read`
+  - `summarize`
   - `search`
 - If a default documents account is configured, or only one documents account is available, you can omit `provider` / `account_key`.
-- `provider_status` returns the current documents capability view, configured account status, and default-account/runtime summary.
+- `provider_status` shows which document-library accounts are available, which one is the default, and whether each account is ready to use.
+- `summarize` turns a document into a short brief with key points, action items, and handoff content you can reuse in mail or task follow-up.
+- If `documents` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
 
 ### `contacts_directory`
 
@@ -107,6 +120,7 @@ Keep three things in mind:
 
 - Reads the unified office state instead of any one tool's private status.
 - Use it to inspect accounts, defaults, whether credentials exist, and the latest runtime status.
+- It now directly tells you whether each account is ready, missing sign-in info, needs a connection check, or recently failed.
 - Optional `capability` lets you scope the result to `calendar`, `mail`, `documents`, or `contacts_directory`.
 
 ## Tools Behind `tools_network_extra`

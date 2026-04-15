@@ -7,6 +7,7 @@ use crate::office::{
     OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
     OfficeService, SnapshotOfficeAuthoritySource,
 };
+use crate::util::current_unix_secs;
 use std::sync::Arc;
 
 pub struct CalendarService {
@@ -72,6 +73,17 @@ impl CalendarService {
             .and_then(|service| service.default_account_key(OfficeCapability::Calendar)))
     }
 
+    pub fn resolve_account_key_for_provider(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+    ) -> Result<Option<String>> {
+        if is_local_provider(provider) {
+            return Ok(None);
+        }
+        self.resolve_account_key(provider, account_key).map(Some)
+    }
+
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
         let Some(service) = self.load_office_service()? else {
             return Ok(Vec::new());
@@ -110,7 +122,13 @@ impl CalendarService {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, CalendarOperation::List)?;
         let http = require_http(provider, http)?;
-        provider_impl.list_events(http, &credential, query)
+        let result = provider_impl.list_events(http, &credential, query);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "calendar_list",
+            result.as_ref().err(),
+        );
+        result
     }
 
     pub fn get(
@@ -126,7 +144,13 @@ impl CalendarService {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, CalendarOperation::Get)?;
         let http = require_http(provider, http)?;
-        provider_impl.get_event(http, &credential, id)
+        let result = provider_impl.get_event(http, &credential, id);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "calendar_get",
+            result.as_ref().err(),
+        );
+        result
     }
 
     pub fn upsert(
@@ -151,11 +175,21 @@ impl CalendarService {
         };
         let (provider_impl, credential) = self.resolve_remote(provider, account_key, op)?;
         let http = require_http(provider, http)?;
-        if is_create {
+        let result = if is_create {
             provider_impl.create_event(http, &credential, event)
         } else {
             provider_impl.update_event(http, &credential, event)
-        }
+        };
+        self.record_runtime_activity(
+            &credential.account_key,
+            if is_create {
+                "calendar_create"
+            } else {
+                "calendar_update"
+            },
+            result.as_ref().err(),
+        );
+        result
     }
 
     pub fn delete(
@@ -171,7 +205,13 @@ impl CalendarService {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, CalendarOperation::Delete)?;
         let http = require_http(provider, http)?;
-        provider_impl.delete_event(http, &credential, id)
+        let result = provider_impl.delete_event(http, &credential, id);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "calendar_delete",
+            result.as_ref().err(),
+        );
+        result
     }
 
     fn resolve_remote(
@@ -262,6 +302,58 @@ impl CalendarService {
             .map(|authority| authority.load())
             .transpose()
     }
+
+    fn record_runtime_activity(
+        &self,
+        account_key: &str,
+        activity_kind: &'static str,
+        error: Option<&Error>,
+    ) {
+        let Some(office_service) = self.load_office_service().unwrap_or_else(|load_error| {
+            log::warn!(
+                "[calendar_runtime] failed to load office authority for {}: {}",
+                account_key,
+                load_error
+            );
+            None
+        }) else {
+            return;
+        };
+        let now = current_unix_secs();
+        let mut status = match office_service.runtime_status(account_key) {
+            Ok(Some(status)) => status,
+            Ok(None) => OfficeAccountRuntimeStatus {
+                account_key: account_key.to_string(),
+                ..OfficeAccountRuntimeStatus::default()
+            },
+            Err(load_error) => {
+                log::warn!(
+                    "[calendar_runtime] failed to load runtime status for {}: {}",
+                    account_key,
+                    load_error
+                );
+                return;
+            }
+        };
+        status.account_key = account_key.to_string();
+        status.last_activity_kind = activity_kind.to_string();
+        status.last_activity_ok = error.is_none();
+        status.last_activity_at_unix_secs = now;
+        status.updated_at = now;
+        if let Some(error) = error {
+            status.last_error = error.to_string();
+        } else {
+            status.last_error.clear();
+            status.probe_ok = true;
+        }
+        if let Err(store_error) = office_service.set_runtime_status(&status) {
+            log::warn!(
+                "[calendar_runtime] failed to persist runtime status for {}: {}",
+                account_key,
+                store_error
+            );
+        }
+    }
 }
 
 fn resolve_office_default_account_key(
@@ -317,7 +409,7 @@ mod tests {
         OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     };
     use crate::platform::ResponseBody;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -460,22 +552,43 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubRuntimeStatusStore;
+    struct MemoryRuntimeStatusStore {
+        items: Mutex<BTreeMap<String, OfficeAccountRuntimeStatus>>,
+    }
 
-    impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
-        fn get(&self, _account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
-            Ok(None)
+    impl OfficeRuntimeStatusStore for MemoryRuntimeStatusStore {
+        fn get(&self, account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(account_key)
+                .cloned())
         }
 
         fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-            Ok(Vec::new())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
         }
 
-        fn set(&self, _status: &OfficeAccountRuntimeStatus) -> Result<()> {
+        fn set(&self, status: &OfficeAccountRuntimeStatus) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(status.account_key.clone(), status.clone());
             Ok(())
         }
 
-        fn clear(&self, _account_key: &str) -> Result<()> {
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -646,7 +759,7 @@ mod tests {
             binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
-            Arc::new(StubRuntimeStatusStore),
+            Arc::new(MemoryRuntimeStatusStore::default()),
         );
         let service = CalendarService::with_office_service(
             Arc::new(StubCalendarStore::default()),
@@ -760,6 +873,129 @@ mod tests {
         }
     }
 
+    struct FailingRemoteProvider;
+
+    impl CalendarProvider for FailingRemoteProvider {
+        fn provider_name(&self) -> &'static str {
+            "mock_remote"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Mock Remote"
+        }
+
+        fn supports(&self, _op: CalendarOperation) -> bool {
+            true
+        }
+
+        fn list_events(
+            &self,
+            _http: &mut dyn CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _query: CalendarQuery,
+        ) -> Result<Vec<CalendarEvent>> {
+            Err(Error::config(
+                "calendar_provider_test",
+                "remote list failed",
+            ))
+        }
+
+        fn get_event(
+            &self,
+            _http: &mut dyn CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _id: &str,
+        ) -> Result<Option<CalendarEvent>> {
+            Err(Error::config("calendar_provider_test", "remote get failed"))
+        }
+
+        fn create_event(
+            &self,
+            _http: &mut dyn CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _event: &CalendarEvent,
+        ) -> Result<CalendarEvent> {
+            Err(Error::config(
+                "calendar_provider_test",
+                "remote create failed",
+            ))
+        }
+
+        fn update_event(
+            &self,
+            _http: &mut dyn CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _event: &CalendarEvent,
+        ) -> Result<CalendarEvent> {
+            Err(Error::config(
+                "calendar_provider_test",
+                "remote update failed",
+            ))
+        }
+
+        fn delete_event(
+            &self,
+            _http: &mut dyn CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _id: &str,
+        ) -> Result<bool> {
+            Err(Error::config(
+                "calendar_provider_test",
+                "remote delete failed",
+            ))
+        }
+    }
+
+    fn build_remote_office_service(
+        runtime_status_store: Arc<MemoryRuntimeStatusStore>,
+        provider: Arc<dyn CalendarProvider>,
+    ) -> CalendarService {
+        let credential_store = Arc::new(StubCredentialStore::default());
+        credential_store
+            .set(&CalendarProviderCredential {
+                account_key: "work".to_string(),
+                provider: "mock_remote".to_string(),
+                account_id: "work@example.com".to_string(),
+                account_label: "Work".to_string(),
+                calendar_id: "work".to_string(),
+                username: String::new(),
+                base_url: String::new(),
+                root_path: String::new(),
+                access_token: "token-work".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+            })
+            .unwrap();
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "work".to_string(),
+            provider_kind: "mock_remote".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Calendar],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Calendar, "work".to_string());
+        let mut providers = CalendarProviderRegistry::new();
+        providers.register(provider);
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            Arc::new(StubOfficeCredentialStore::default()),
+            runtime_status_store,
+        );
+        CalendarService::with_office_service(
+            Arc::new(StubCalendarStore::default()),
+            credential_store,
+            providers,
+            Some(office_service),
+        )
+    }
+
     #[test]
     fn service_routes_local_queries_to_local_store() {
         let local_store = Arc::new(StubCalendarStore::default());
@@ -834,5 +1070,112 @@ mod tests {
             .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].provider, "mock_remote");
+    }
+
+    #[test]
+    fn remote_provider_records_runtime_activity_for_remote_operations() {
+        let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
+        let service =
+            build_remote_office_service(runtime_status_store.clone(), Arc::new(MockRemoteProvider));
+        let mut http = StubHttp;
+
+        let _ = service
+            .list(
+                Some(&mut http),
+                "mock_remote",
+                None,
+                CalendarQuery::upcoming(0, 10),
+            )
+            .expect("list remote events");
+        let status = runtime_status_store
+            .get("work")
+            .expect("load runtime after list")
+            .expect("runtime status after list");
+        assert_eq!(status.last_activity_kind, "calendar_list");
+        assert!(status.last_activity_ok);
+        assert!(status.last_error.is_empty());
+
+        let _ = service
+            .get(Some(&mut http), "mock_remote", None, "remote-1")
+            .expect("get remote event");
+        let status = runtime_status_store
+            .get("work")
+            .expect("load runtime after get")
+            .expect("runtime status after get");
+        assert_eq!(status.last_activity_kind, "calendar_get");
+        assert!(status.last_activity_ok);
+
+        let event = CalendarEvent {
+            id: "remote-2".to_string(),
+            title: "New remote meeting".to_string(),
+            start_at_unix_secs: 100,
+            end_at_unix_secs: 160,
+            timezone: String::new(),
+            location: String::new(),
+            notes: String::new(),
+            provider: "mock_remote".to_string(),
+            calendar_id: "work".to_string(),
+            remote_id: "r2".to_string(),
+            status: CalendarEventStatus::Confirmed,
+            updated_at: 1,
+        };
+        let _ = service
+            .upsert(Some(&mut http), "mock_remote", None, &event, true)
+            .expect("create remote event");
+        let status = runtime_status_store
+            .get("work")
+            .expect("load runtime after create")
+            .expect("runtime status after create");
+        assert_eq!(status.last_activity_kind, "calendar_create");
+        assert!(status.last_activity_ok);
+
+        let _ = service
+            .upsert(Some(&mut http), "mock_remote", None, &event, false)
+            .expect("update remote event");
+        let status = runtime_status_store
+            .get("work")
+            .expect("load runtime after update")
+            .expect("runtime status after update");
+        assert_eq!(status.last_activity_kind, "calendar_update");
+        assert!(status.last_activity_ok);
+
+        let _ = service
+            .delete(Some(&mut http), "mock_remote", None, "remote-2")
+            .expect("delete remote event");
+        let status = runtime_status_store
+            .get("work")
+            .expect("load runtime after delete")
+            .expect("runtime status after delete");
+        assert_eq!(status.last_activity_kind, "calendar_delete");
+        assert!(status.last_activity_ok);
+        assert!(status.last_error.is_empty());
+    }
+
+    #[test]
+    fn remote_provider_records_runtime_failure_for_remote_operations() {
+        let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
+        let service = build_remote_office_service(
+            runtime_status_store.clone(),
+            Arc::new(FailingRemoteProvider),
+        );
+        let mut http = StubHttp;
+
+        let error = service
+            .list(
+                Some(&mut http),
+                "mock_remote",
+                None,
+                CalendarQuery::upcoming(0, 10),
+            )
+            .expect_err("failing provider should surface error");
+        assert!(error.to_string().contains("remote list failed"));
+
+        let status = runtime_status_store
+            .get("work")
+            .expect("load runtime after failure")
+            .expect("runtime status after failure");
+        assert_eq!(status.last_activity_kind, "calendar_list");
+        assert!(!status.last_activity_ok);
+        assert!(status.last_error.contains("remote list failed"));
     }
 }

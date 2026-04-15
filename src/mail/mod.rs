@@ -64,6 +64,18 @@ pub struct MailQuery {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MailSearchQuery {
+    #[serde(default)]
+    pub mailbox: String,
+    pub query: String,
+    #[serde(default)]
+    pub unread_only: bool,
+    #[serde(default)]
+    pub received_after_unix_secs: Option<u64>,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MailSendRequest {
     pub subject: String,
     pub text_body: String,

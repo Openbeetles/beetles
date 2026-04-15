@@ -882,11 +882,19 @@ fn register_office_tools(
     ));
     let mut calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
+    let mut task_calendar_providers = crate::calendar::CalendarProviderRegistry::new();
+    task_calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
 
     registry.register(Box::new(super::CalendarTool::with_office_authority(
         platform.calendar_store(),
         Arc::clone(&calendar_credential_store),
         calendar_providers,
+        office_authority.clone(),
+    )));
+    registry.register(Box::new(super::TaskTool::with_office_authority(
+        platform.task_store(),
+        platform.calendar_store(),
+        task_calendar_providers,
         office_authority.clone(),
     )));
     registry.register(Box::new(

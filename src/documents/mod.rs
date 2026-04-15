@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 
 pub use content::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, detect_document_kind, DecodedReadableDocument,
-    EMPTY_DOCUMENT_WARNING,
+    decode_searchable_document_text, detect_document_kind, summarize_document_read_result,
+    DecodedReadableDocument, EMPTY_DOCUMENT_WARNING,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -89,6 +89,33 @@ pub struct DocumentsReadResult {
     pub raw_bytes: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentsSummaryResult {
+    pub entry: DocumentsEntry,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub focus: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_points: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_items: Vec<String>,
+    pub handoff: DocumentsSummaryHandoff,
+    #[serde(default)]
+    pub truncated_source: bool,
+    #[serde(default)]
+    pub raw_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentsSummaryHandoff {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_candidates: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mail_brief: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

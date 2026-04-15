@@ -8,6 +8,7 @@ use crate::office::{
     OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
     OfficeService, SnapshotOfficeAuthoritySource,
 };
+use crate::util::current_unix_secs;
 use std::sync::Arc;
 
 pub struct DocumentsService {
@@ -138,7 +139,13 @@ impl DocumentsService {
     ) -> Result<Vec<DocumentsEntry>> {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, DocumentsOperation::List)?;
-        provider_impl.list_entries(&credential, query)
+        let result = provider_impl.list_entries(&credential, query);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "documents_list",
+            result.as_ref().err(),
+        );
+        result
     }
 
     pub fn read(
@@ -150,7 +157,13 @@ impl DocumentsService {
     ) -> Result<DocumentsReadResult> {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, DocumentsOperation::Read)?;
-        provider_impl.read_document(&credential, path, max_chars)
+        let result = provider_impl.read_document(&credential, path, max_chars);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "documents_read",
+            result.as_ref().err(),
+        );
+        result
     }
 
     pub fn search(
@@ -161,7 +174,13 @@ impl DocumentsService {
     ) -> Result<Vec<DocumentsSearchHit>> {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, DocumentsOperation::Search)?;
-        provider_impl.search_documents(&credential, query)
+        let result = provider_impl.search_documents(&credential, query);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "documents_search",
+            result.as_ref().err(),
+        );
+        result
     }
 
     fn resolve_remote(
@@ -243,6 +262,58 @@ impl DocumentsService {
             .map(|authority| authority.load())
             .transpose()
     }
+
+    fn record_runtime_activity(
+        &self,
+        account_key: &str,
+        activity_kind: &'static str,
+        error: Option<&Error>,
+    ) {
+        let Some(office_service) = self.load_office_service().unwrap_or_else(|load_error| {
+            log::warn!(
+                "[documents_runtime] failed to load office authority for {}: {}",
+                account_key,
+                load_error
+            );
+            None
+        }) else {
+            return;
+        };
+        let now = current_unix_secs();
+        let mut status = match office_service.runtime_status(account_key) {
+            Ok(Some(status)) => status,
+            Ok(None) => OfficeAccountRuntimeStatus {
+                account_key: account_key.to_string(),
+                ..OfficeAccountRuntimeStatus::default()
+            },
+            Err(load_error) => {
+                log::warn!(
+                    "[documents_runtime] failed to load runtime status for {}: {}",
+                    account_key,
+                    load_error
+                );
+                return;
+            }
+        };
+        status.account_key = account_key.to_string();
+        status.last_activity_kind = activity_kind.to_string();
+        status.last_activity_ok = error.is_none();
+        status.last_activity_at_unix_secs = now;
+        status.updated_at = now;
+        if let Some(error) = error {
+            status.last_error = error.to_string();
+        } else {
+            status.last_error.clear();
+            status.probe_ok = true;
+        }
+        if let Err(store_error) = office_service.set_runtime_status(&status) {
+            log::warn!(
+                "[documents_runtime] failed to persist runtime status for {}: {}",
+                account_key,
+                store_error
+            );
+        }
+    }
 }
 
 fn resolve_office_default_account_key(
@@ -282,7 +353,7 @@ mod tests {
         OfficeSelectionPolicy,
     };
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct StubCredentialStore {
@@ -324,19 +395,40 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubRuntimeStatusStore;
+    struct MemoryRuntimeStatusStore {
+        items: Mutex<BTreeMap<String, OfficeAccountRuntimeStatus>>,
+    }
 
-    impl OfficeRuntimeStatusStore for StubRuntimeStatusStore {
-        fn get(&self, _account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
-            Ok(None)
+    impl OfficeRuntimeStatusStore for MemoryRuntimeStatusStore {
+        fn get(&self, account_key: &str) -> Result<Option<OfficeAccountRuntimeStatus>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(account_key)
+                .cloned())
         }
         fn list(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-            Ok(Vec::new())
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
         }
-        fn set(&self, _status: &OfficeAccountRuntimeStatus) -> Result<()> {
+        fn set(&self, status: &OfficeAccountRuntimeStatus) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(status.account_key.clone(), status.clone());
             Ok(())
         }
-        fn clear(&self, _account_key: &str) -> Result<()> {
+        fn clear(&self, account_key: &str) -> Result<()> {
+            self.items
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(account_key);
             Ok(())
         }
     }
@@ -417,7 +509,63 @@ mod tests {
         }
     }
 
+    struct FailingProvider;
+
+    impl DocumentsProvider for FailingProvider {
+        fn provider_name(&self) -> &'static str {
+            "webdav"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "WebDAV"
+        }
+
+        fn supports(&self, _op: DocumentsOperation) -> bool {
+            true
+        }
+
+        fn list_entries(
+            &self,
+            _credential: &DocumentsProviderCredential,
+            _query: DocumentsQuery,
+        ) -> Result<Vec<DocumentsEntry>> {
+            Err(Error::config(
+                "documents_provider_test",
+                "remote list failed",
+            ))
+        }
+
+        fn read_document(
+            &self,
+            _credential: &DocumentsProviderCredential,
+            _path: &str,
+            _max_chars: usize,
+        ) -> Result<DocumentsReadResult> {
+            Err(Error::config(
+                "documents_provider_test",
+                "remote read failed",
+            ))
+        }
+
+        fn search_documents(
+            &self,
+            _credential: &DocumentsProviderCredential,
+            _query: DocumentsSearchQuery,
+        ) -> Result<Vec<DocumentsSearchHit>> {
+            Err(Error::config(
+                "documents_provider_test",
+                "remote search failed",
+            ))
+        }
+    }
+
     fn build_service() -> DocumentsService {
+        build_service_with_runtime_store(Arc::new(MemoryRuntimeStatusStore::default())).0
+    }
+
+    fn build_service_with_runtime_store(
+        runtime_status_store: Arc<MemoryRuntimeStatusStore>,
+    ) -> (DocumentsService, Arc<MemoryRuntimeStatusStore>) {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(OfficeAccount {
             account_key: "docs-work".to_string(),
@@ -459,14 +607,74 @@ mod tests {
                 preferred_identity_class: None,
             },
             credential_store.clone(),
-            Arc::new(StubRuntimeStatusStore),
+            runtime_status_store.clone(),
         );
         let docs_credentials: Arc<dyn DocumentsProviderCredentialStore + Send + Sync> = Arc::new(
             OfficeBackedDocumentsProviderCredentialStore::new(office.clone()),
         );
         let mut providers = DocumentsProviderRegistry::new();
         providers.register(Arc::new(StubProvider));
-        DocumentsService::with_office_service(docs_credentials, providers, Some(office))
+        (
+            DocumentsService::with_office_service(docs_credentials, providers, Some(office)),
+            runtime_status_store,
+        )
+    }
+
+    fn build_failing_service_with_runtime_store(
+        runtime_status_store: Arc<MemoryRuntimeStatusStore>,
+    ) -> (DocumentsService, Arc<MemoryRuntimeStatusStore>) {
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "docs-work".to_string(),
+            provider_kind: "webdav".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        let credential_store = Arc::new(StubCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "docs-work".to_string(),
+                access_token: "secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [
+                    (
+                        OFFICE_METADATA_DOCUMENTS_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                        "https://dav.example.com/root".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed office credential");
+        let office = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy {
+                global_default_account_key: "docs-work".to_string(),
+                ask_when_ambiguous: false,
+                preferred_identity_class: None,
+            },
+            credential_store.clone(),
+            runtime_status_store.clone(),
+        );
+        let docs_credentials: Arc<dyn DocumentsProviderCredentialStore + Send + Sync> = Arc::new(
+            OfficeBackedDocumentsProviderCredentialStore::new(office.clone()),
+        );
+        let mut providers = DocumentsProviderRegistry::new();
+        providers.register(Arc::new(FailingProvider));
+        (
+            DocumentsService::with_office_service(docs_credentials, providers, Some(office)),
+            runtime_status_store,
+        )
     }
 
     #[test]
@@ -484,5 +692,80 @@ mod tests {
             .expect("list documents");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "report.txt");
+    }
+
+    #[test]
+    fn documents_service_records_runtime_activity_for_remote_operations() {
+        let (service, runtime_status_store) =
+            build_service_with_runtime_store(Arc::new(MemoryRuntimeStatusStore::default()));
+
+        let _ = service
+            .list(
+                "webdav",
+                None,
+                DocumentsQuery {
+                    path: String::new(),
+                    limit: 10,
+                },
+            )
+            .expect("list documents");
+        let status = runtime_status_store
+            .get("docs-work")
+            .expect("load runtime after list")
+            .expect("runtime status after list");
+        assert_eq!(status.last_activity_kind, "documents_list");
+        assert!(status.last_activity_ok);
+        assert!(status.last_error.is_empty());
+
+        let _ = service
+            .read("webdav", None, "report.txt", 1_000)
+            .expect("read document");
+        let status = runtime_status_store
+            .get("docs-work")
+            .expect("load runtime after read")
+            .expect("runtime status after read");
+        assert_eq!(status.last_activity_kind, "documents_read");
+        assert!(status.last_activity_ok);
+        assert!(status.last_error.is_empty());
+
+        let _ = service
+            .search(
+                "webdav",
+                None,
+                DocumentsSearchQuery {
+                    path: String::new(),
+                    query: "body".to_string(),
+                    limit: 10,
+                    case_sensitive: false,
+                    max_read_bytes: 1_024,
+                },
+            )
+            .expect("search documents");
+        let status = runtime_status_store
+            .get("docs-work")
+            .expect("load runtime after search")
+            .expect("runtime status after search");
+        assert_eq!(status.last_activity_kind, "documents_search");
+        assert!(status.last_activity_ok);
+        assert!(status.last_error.is_empty());
+    }
+
+    #[test]
+    fn documents_service_records_runtime_failure_for_remote_operations() {
+        let (service, runtime_status_store) =
+            build_failing_service_with_runtime_store(Arc::new(MemoryRuntimeStatusStore::default()));
+
+        let error = service
+            .read("webdav", None, "report.txt", 1_000)
+            .expect_err("failing provider should surface error");
+        assert!(error.to_string().contains("remote read failed"));
+
+        let status = runtime_status_store
+            .get("docs-work")
+            .expect("load runtime after failure")
+            .expect("runtime status after failure");
+        assert_eq!(status.last_activity_kind, "documents_read");
+        assert!(!status.last_activity_ok);
+        assert!(status.last_error.contains("remote read failed"));
     }
 }

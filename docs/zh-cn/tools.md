@@ -39,12 +39,20 @@
 
 ## 重点补充
 
+### `task`
+
+- `task` 支持可选日历联动。
+- 默认联动本地日历；如果已经接好 office 日历账户，也可以在创建或更新任务时指定远端日历 provider。
+- 如果同类远端日历账户有多个，可以显式传 `calendar_account_key`，也可以先在 office 配置里设默认账户。
+- 任务完成后，已联动的日历事项会同步收口；删除任务或清除日历联动时，对应日历事项也会一起移除。
+
 ### `calendar`
 
 - 默认使用本地日历。
 - 接入外部日历账户后，也可以查看、创建、更新和删除外部事件。
 - 如果同类外部账户有多个，可以显式传 `account_key`，也可以先在 office 配置里设默认账户。
-- `provider_status` 返回的是当前可用日历能力、已配置账户状态，以及默认账户和运行状态摘要。
+- `provider_status` 会告诉你当前有哪些日历账户、默认走哪个账户，以及每个账户现在是可用、还需要补配置，还是最近连接/使用出过问题。
+- 远端 `list` / `get` / `create` / `update` / `delete` 后，后续状态查询会显示最近一次使用是否成功，方便排查问题。
 
 ### `mail`
 
@@ -52,15 +60,18 @@
 - 当前支持：
   - `provider_status`
   - `list`
+  - `search`
   - `get`
   - `send`
   - `draft`
   - `reply`
   - `forward`
 - 如果已经配置默认邮件账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
+- `search` 可以按关键词在指定邮箱里找邮件，返回的结果可直接继续交给 `get`、`reply`、`forward` 等后续动作使用。
 - `send`、`draft`、`reply`、`forward` 都属于显式远端变更动作，要求 `confirm=true`。
 - `send`、`draft`、`forward` 既支持直接邮箱数组 `to` / `cc` / `bcc`，也支持通过 `contacts_directory` 解析的联系人查询数组 `to_lookup` / `cc_lookup` / `bcc_lookup`；`reply` 会保留原消息发送者作为基础收件人，并允许继续合并额外收件人。
-- `provider_status` 现在不仅返回已配置账户，还会返回每个邮件账户的发送可用性和最近运行态活动证据。
+- `provider_status` 会直接告诉你每个邮件账户现在能不能用，以及最近有没有连接或发送失败。
+- 如果 `mail` 因为账户没配好、凭证失效，或最近连接失败而不能使用，返回结果会直接说明原因。
 
 ### `documents`
 
@@ -69,9 +80,13 @@
   - `provider_status`
   - `list`
   - `read`
+  - `summarize`
   - `search`
 - 如果已经配置默认文档账户，或当前只有一个可用账户，可以省略 `provider` / `account_key`。
-- `provider_status` 返回的是当前可用文档能力、已配置账户状态，以及默认账户和运行状态摘要。
+- `provider_status` 会告诉你当前有哪些文档账户、默认走哪个账户，以及每个账户现在是否可用。
+- `summarize` 会把文档整理成简短摘要、关键点、待办，以及可直接交给邮件或任务流程继续使用的内容。
+- 远端 `list` / `read` / `search` 后，后续状态查询会显示最近一次使用是否成功，方便排查问题。
+- 如果 `documents` 因为账户没配好、凭证失效，或最近连接失败而不能使用，返回结果会直接说明原因。
 - `documents` 读取的是“办公文档库/文件库”能力；本地设备存储里的文件检索仍然继续使用 `document_search`、`document_read`、`document_extract`
 
 ### `contacts_directory`
@@ -108,6 +123,7 @@
 
 - 读取 office 域的统一状态，而不是某个工具自己的私有状态。
 - 可以用来查看账户、默认绑定、凭证是否存在，以及最近一次运行状态。
+- 现在会直接说明每个账户当前是可用、缺少登录信息、需要重新检查连接，还是最近一次使用失败。
 - 可选传 `capability`，只看某一个能力，比如 `calendar`、`mail`、`documents` 或 `contacts_directory`。
 
 ## `tools_network_extra` 工具

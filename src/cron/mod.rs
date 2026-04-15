@@ -162,7 +162,14 @@ mod tests {
     use crate::bus::new_inbound_channel;
     use crate::memory::MemoryStore;
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
+
+    fn cron_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("cron test lock poisoned")
+    }
 
     struct TestMemoryStore {
         daily_notes: Mutex<HashMap<String, String>>,
@@ -234,6 +241,7 @@ mod tests {
 
     #[test]
     fn cron_tick_without_tasks_does_not_enqueue_synthetic_tick() {
+        let _guard = cron_test_guard();
         let (tx, rx, _depth) = new_inbound_channel(4);
         let resolve_locale: Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             Arc::new(|| crate::i18n::Locale::Zh);
@@ -247,6 +255,7 @@ mod tests {
 
     #[test]
     fn cron_tick_enqueues_due_persisted_task() {
+        let _guard = cron_test_guard();
         let (tx, rx, _depth) = new_inbound_channel(4);
         let resolve_locale: Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             Arc::new(|| crate::i18n::Locale::Zh);

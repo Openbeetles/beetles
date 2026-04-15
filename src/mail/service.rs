@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::mail::{
     MailMessage, MailMessageSummary, MailOperation, MailProvider, MailProviderCredential,
     MailProviderCredentialStatus, MailProviderCredentialStore, MailProviderRegistry, MailQuery,
-    MailSendRequest,
+    MailSearchQuery, MailSendRequest,
 };
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
@@ -154,6 +154,17 @@ impl MailService {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, MailOperation::List)?;
         provider_impl.list_messages(&credential, query)
+    }
+
+    pub fn search(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        query: MailSearchQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
+        let (provider_impl, credential) =
+            self.resolve_remote(provider, account_key, MailOperation::Search)?;
+        provider_impl.search_messages(&credential, query)
     }
 
     pub fn get(
@@ -655,6 +666,28 @@ mod tests {
                 received_at_unix_secs: 1,
             }])
         }
+        fn search_messages(
+            &self,
+            credential: &MailProviderCredential,
+            query: MailSearchQuery,
+        ) -> Result<Vec<MailMessageSummary>> {
+            Ok(vec![MailMessageSummary {
+                id: "search-1".to_string(),
+                provider: credential.provider.clone(),
+                account_key: credential.account_key.clone(),
+                mailbox: if query.mailbox.is_empty() {
+                    credential.imap_mailbox.clone()
+                } else {
+                    query.mailbox
+                },
+                subject: format!("matched {}", query.query.trim()),
+                from: credential.from_address.clone(),
+                to: vec![credential.account_id.clone()],
+                preview: "search preview".to_string(),
+                unread: true,
+                received_at_unix_secs: 1,
+            }])
+        }
         fn get_message(
             &self,
             credential: &MailProviderCredential,
@@ -799,6 +832,27 @@ mod tests {
             .expect("list mail");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].account_key, "mail-work");
+    }
+
+    #[test]
+    fn mail_service_search_uses_office_default_account_resolution() {
+        let (service, _provider, _runtime_store) = build_service();
+        let items = service
+            .search(
+                "imap_smtp",
+                None,
+                MailSearchQuery {
+                    mailbox: "INBOX".to_string(),
+                    query: "hello project".to_string(),
+                    unread_only: true,
+                    received_after_unix_secs: None,
+                    limit: 10,
+                },
+            )
+            .expect("search mail");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].account_key, "mail-work");
+        assert_eq!(items[0].subject, "matched hello project");
     }
 
     #[test]

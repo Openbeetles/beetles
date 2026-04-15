@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use crate::mail::{
     credentials::mail_credential_from_office, MailMessage, MailMessageSummary, MailOperation,
-    MailProvider, MailProviderCredential, MailQuery, MailSendRequest,
+    MailProvider, MailProviderCredential, MailQuery, MailSearchQuery, MailSendRequest,
 };
 use crate::office::{OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
 use crate::util::{current_unix_secs, truncate_content_to_max};
@@ -46,6 +46,15 @@ impl MailProvider for ImapSmtpProvider {
     ) -> Result<Vec<MailMessageSummary>> {
         validate_imap_smtp_credential(credential)?;
         build_mail_runtime()?.block_on(async_list_messages(credential, query))
+    }
+
+    fn search_messages(
+        &self,
+        credential: &MailProviderCredential,
+        query: MailSearchQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
+        validate_imap_smtp_credential(credential)?;
+        build_mail_runtime()?.block_on(async_search_messages(credential, query))
     }
 
     fn get_message(
@@ -203,46 +212,50 @@ async fn async_list_messages(
         .uid_search(criteria)
         .await
         .map_err(|error| Error::config("imap_smtp_search", error.to_string()))?;
-    let mut uids = uids.into_iter().collect::<Vec<_>>();
-    uids.sort_unstable_by(|left, right| right.cmp(left));
-    if uids.len() > query.limit {
-        uids.truncate(query.limit);
-    }
-    if uids.is_empty() {
-        session
-            .logout()
-            .await
-            .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
-        return Ok(Vec::new());
-    }
-    let uid_set = uids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let fetches = session
-        .uid_fetch(&uid_set, "RFC822")
+    let items = fetch_message_summaries_for_uids(
+        &mut session,
+        credential,
+        mailbox,
+        uids.into_iter().collect(),
+        query.received_after_unix_secs,
+        query.limit,
+    )
+    .await?;
+    session
+        .logout()
         .await
-        .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
-    let fetches: Vec<Fetch> = fetches
-        .try_collect()
+        .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
+    Ok(items)
+}
+
+async fn async_search_messages(
+    credential: &MailProviderCredential,
+    query: MailSearchQuery,
+) -> Result<Vec<MailMessageSummary>> {
+    let mut session = connect_imap(credential).await?;
+    let mailbox = if query.mailbox.trim().is_empty() {
+        credential.imap_mailbox.as_str()
+    } else {
+        query.mailbox.as_str()
+    };
+    session
+        .select(mailbox)
         .await
-        .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
-    let mut items = fetches
-        .into_iter()
-        .map(|fetch| summarize_fetch(credential, mailbox, fetch))
-        .collect::<Result<Vec<_>>>()?;
-    if let Some(received_after) = query.received_after_unix_secs {
-        items.retain(|item| {
-            item.received_at_unix_secs == 0 || item.received_at_unix_secs >= received_after
-        });
-    }
-    items.sort_by(|left, right| {
-        right
-            .received_at_unix_secs
-            .cmp(&left.received_at_unix_secs)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+        .map_err(|error| Error::config("imap_smtp_select", error.to_string()))?;
+    let criteria = render_search_criteria(&query)?;
+    let uids = session
+        .uid_search(criteria)
+        .await
+        .map_err(|error| Error::config("imap_smtp_search", error.to_string()))?;
+    let items = fetch_message_summaries_for_uids(
+        &mut session,
+        credential,
+        mailbox,
+        uids.into_iter().collect(),
+        query.received_after_unix_secs,
+        query.limit,
+    )
+    .await?;
     session
         .logout()
         .await
@@ -281,6 +294,68 @@ async fn async_get_message(
         .await
         .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
     Ok(result)
+}
+
+async fn fetch_message_summaries_for_uids(
+    session: &mut ImapSession,
+    credential: &MailProviderCredential,
+    mailbox: &str,
+    mut uids: Vec<u32>,
+    received_after_unix_secs: Option<u64>,
+    limit: usize,
+) -> Result<Vec<MailMessageSummary>> {
+    uids.sort_unstable_by(|left, right| right.cmp(left));
+    if uids.len() > limit {
+        uids.truncate(limit);
+    }
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let uid_set = uids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let fetches = session
+        .uid_fetch(&uid_set, "RFC822")
+        .await
+        .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
+    let fetches: Vec<Fetch> = fetches
+        .try_collect()
+        .await
+        .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
+    let mut items = fetches
+        .into_iter()
+        .map(|fetch| summarize_fetch(credential, mailbox, fetch))
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(received_after) = received_after_unix_secs {
+        items.retain(|item| {
+            item.received_at_unix_secs == 0 || item.received_at_unix_secs >= received_after
+        });
+    }
+    items.sort_by(|left, right| {
+        right
+            .received_at_unix_secs
+            .cmp(&left.received_at_unix_secs)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(items)
+}
+
+fn render_search_criteria(query: &MailSearchQuery) -> Result<String> {
+    let needle = query.query.trim();
+    if needle.is_empty() {
+        return Err(Error::config("imap_smtp_search", "query must not be empty"));
+    }
+    let base = if query.unread_only { "UNSEEN" } else { "ALL" };
+    Ok(format!(
+        r#"{base} TEXT "{}""#,
+        escape_imap_search_string(needle)
+    ))
+}
+
+fn escape_imap_search_string(value: &str) -> String {
+    value.replace('\\', r"\\").replace('"', r#"\""#)
 }
 
 async fn save_draft_via_imap(
@@ -553,6 +628,19 @@ mod tests {
             render_mail_preview("hello\n\nworld   beetle"),
             "hello world beetle"
         );
+    }
+
+    #[test]
+    fn render_search_criteria_keeps_unseen_and_escapes_quotes() {
+        let criteria = render_search_criteria(&MailSearchQuery {
+            mailbox: "INBOX".to_string(),
+            query: r#"hello "project""#.to_string(),
+            unread_only: true,
+            received_after_unix_secs: None,
+            limit: 10,
+        })
+        .expect("criteria");
+        assert_eq!(criteria, r#"UNSEEN TEXT "hello \"project\"""#);
     }
 
     #[test]

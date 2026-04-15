@@ -1,4 +1,6 @@
+use crate::documents::{DocumentsReadResult, DocumentsSummaryHandoff, DocumentsSummaryResult};
 use crate::error::{Error, Result};
+use std::collections::HashSet;
 
 pub const EMPTY_DOCUMENT_WARNING: &str = "document is empty or contains no readable text";
 
@@ -142,6 +144,57 @@ pub fn build_search_snippet(text: &str, query: &str, case_sensitive: bool) -> St
     out
 }
 
+pub fn summarize_document_read_result(
+    document: &DocumentsReadResult,
+    focus: Option<&str>,
+) -> DocumentsSummaryResult {
+    let focus = focus.map(str::trim).unwrap_or_default().to_string();
+    let content = document.content.trim();
+    if content.is_empty() {
+        return DocumentsSummaryResult {
+            entry: document.entry.clone(),
+            focus,
+            summary: document
+                .warning
+                .clone()
+                .unwrap_or_else(|| EMPTY_DOCUMENT_WARNING.to_string()),
+            key_points: Vec::new(),
+            action_items: Vec::new(),
+            handoff: DocumentsSummaryHandoff::default(),
+            truncated_source: document.truncated,
+            raw_bytes: document.raw_bytes,
+            warning: document.warning.clone(),
+        };
+    }
+
+    let focus_ref = (!focus.is_empty()).then_some(focus.as_str());
+    let mut key_points = extract_key_points(content, focus_ref);
+    let action_items = extract_action_items(content);
+    if key_points.is_empty() {
+        key_points.push(truncate_line(content, 180));
+    }
+    let summary = build_summary_line(content, &key_points, focus_ref);
+    let handoff = build_handoff(
+        &document.entry.name,
+        detect_document_title(content),
+        &summary,
+        &key_points,
+        &action_items,
+    );
+
+    DocumentsSummaryResult {
+        entry: document.entry.clone(),
+        focus,
+        summary,
+        key_points,
+        action_items,
+        handoff,
+        truncated_source: document.truncated,
+        raw_bytes: document.raw_bytes,
+        warning: document.warning.clone(),
+    }
+}
+
 fn source_head(text: &str, radius: usize) -> String {
     let char_count = text.chars().count();
     if char_count <= radius * 2 {
@@ -189,6 +242,255 @@ fn truncate_chars(text: &str, max_chars: usize) -> (String, bool) {
     let mut out = text.chars().take(max_chars).collect::<String>();
     out.push_str("\n\n... [truncated] ...");
     (out, true)
+}
+
+fn extract_key_points(text: &str, focus: Option<&str>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut focused = Vec::new();
+    let mut bullets = Vec::new();
+    let mut sentences = Vec::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line == "... [truncated] ..." {
+            continue;
+        }
+        if let Some(cleaned) = normalize_action_candidate(line) {
+            if push_unique(&mut seen, &cleaned) {
+                if matches_focus(&cleaned, focus) {
+                    focused.push(cleaned);
+                } else {
+                    bullets.push(cleaned);
+                }
+            }
+            continue;
+        }
+        if let Some(cleaned) = normalize_bullet_candidate(line) {
+            if push_unique(&mut seen, &cleaned) {
+                if matches_focus(&cleaned, focus) {
+                    focused.push(cleaned);
+                } else {
+                    bullets.push(cleaned);
+                }
+            }
+            continue;
+        }
+        for sentence in split_sentences(line) {
+            if push_unique(&mut seen, &sentence) {
+                if matches_focus(&sentence, focus) {
+                    focused.push(sentence);
+                } else {
+                    sentences.push(sentence);
+                }
+            }
+        }
+    }
+    focused
+        .into_iter()
+        .chain(bullets)
+        .chain(sentences)
+        .take(5)
+        .collect()
+}
+
+fn extract_action_items(text: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if let Some(cleaned) = normalize_action_candidate(line) {
+            if push_unique(&mut seen, &cleaned) {
+                items.push(cleaned);
+            }
+        }
+    }
+    items.truncate(5);
+    items
+}
+
+fn build_summary_line(text: &str, key_points: &[String], focus: Option<&str>) -> String {
+    if let Some(point) = key_points
+        .iter()
+        .find(|point| matches_focus(point.as_str(), focus))
+    {
+        return truncate_line(point, 240);
+    }
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line == "... [truncated] ..." {
+            continue;
+        }
+        if matches_focus(line, focus) {
+            return truncate_line(line, 240);
+        }
+    }
+    key_points
+        .first()
+        .map(|point| truncate_line(point, 240))
+        .unwrap_or_else(|| truncate_line(text, 240))
+}
+
+fn build_handoff(
+    document_name: &str,
+    document_title: Option<String>,
+    summary: &str,
+    key_points: &[String],
+    action_items: &[String],
+) -> DocumentsSummaryHandoff {
+    let task_candidates = action_items
+        .iter()
+        .map(|item| truncate_line(item, 140))
+        .collect::<Vec<_>>();
+    let mut mail_lines = vec![format!("Document: {}", document_name), summary.to_string()];
+    if let Some(title) = document_title.filter(|title| !title.eq_ignore_ascii_case(document_name)) {
+        mail_lines.insert(1, format!("Topic: {}", title));
+    }
+    if !key_points.is_empty() {
+        mail_lines.push("Key points:".to_string());
+        mail_lines.extend(
+            key_points
+                .iter()
+                .take(3)
+                .map(|point| format!("- {}", point)),
+        );
+    }
+    if !action_items.is_empty() {
+        mail_lines.push("Action items:".to_string());
+        mail_lines.extend(
+            action_items
+                .iter()
+                .take(3)
+                .map(|item| format!("- {}", item)),
+        );
+    }
+    DocumentsSummaryHandoff {
+        task_candidates,
+        mail_brief: mail_lines.join("\n"),
+    }
+}
+
+fn normalize_action_candidate(line: &str) -> Option<String> {
+    let prefixes = [
+        "Action:",
+        "Actions:",
+        "Next:",
+        "Next step:",
+        "TODO:",
+        "Follow-up:",
+        "Follow up:",
+        "待办：",
+        "待办:",
+        "行动项：",
+        "行动项:",
+        "下一步：",
+        "下一步:",
+    ];
+    for prefix in prefixes {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let cleaned = rest.trim();
+            return (!cleaned.is_empty()).then(|| truncate_line(cleaned, 180));
+        }
+    }
+    strip_checkbox(line).map(|value| truncate_line(value, 180))
+}
+
+fn detect_document_title(text: &str) -> Option<String> {
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line == "... [truncated] ..." {
+            continue;
+        }
+        if normalize_action_candidate(line).is_some() || normalize_bullet_candidate(line).is_some()
+        {
+            continue;
+        }
+        let title = truncate_line(line, 120);
+        if title.chars().count() <= 80 {
+            return Some(title);
+        }
+    }
+    None
+}
+
+fn normalize_bullet_candidate(line: &str) -> Option<String> {
+    let stripped = if let Some(rest) = line.strip_prefix("- ") {
+        rest
+    } else if let Some(rest) = line.strip_prefix("* ") {
+        rest
+    } else if let Some(rest) = line.strip_prefix("• ") {
+        rest
+    } else if let Some(rest) = strip_ordered_prefix(line) {
+        rest
+    } else {
+        return None;
+    };
+    let cleaned = stripped.trim();
+    (!cleaned.is_empty()).then(|| truncate_line(cleaned, 180))
+}
+
+fn strip_checkbox(line: &str) -> Option<&str> {
+    ["- [ ] ", "* [ ] ", "[ ] ", "- [x] ", "* [x] ", "[x] "]
+        .into_iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn strip_ordered_prefix(line: &str) -> Option<&str> {
+    let (head, tail) = line.split_once(". ")?;
+    head.chars()
+        .all(|ch| ch.is_ascii_digit())
+        .then_some(tail.trim())
+}
+
+fn split_sentences(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in line.chars() {
+        current.push(ch);
+        if matches!(ch, '.' | '!' | '?' | ';' | '。' | '！' | '？' | '；') {
+            push_sentence(&mut out, &mut current);
+        }
+    }
+    push_sentence(&mut out, &mut current);
+    out.into_iter().take(5).collect()
+}
+
+fn push_sentence(out: &mut Vec<String>, current: &mut String) {
+    let trimmed = current.trim();
+    if trimmed.is_empty() {
+        current.clear();
+        return;
+    }
+    if trimmed.chars().count() >= 12 {
+        out.push(truncate_line(trimmed, 180));
+    }
+    current.clear();
+}
+
+fn matches_focus(line: &str, focus: Option<&str>) -> bool {
+    let Some(focus) = focus.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    contains_query_text(line, focus, false)
+}
+
+fn push_unique(seen: &mut HashSet<String>, value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    if seen.contains(&normalized) {
+        return false;
+    }
+    seen.insert(normalized);
+    true
+}
+
+fn truncate_line(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out = trimmed.chars().take(max_chars).collect::<String>();
+    out.push_str("...");
+    out
 }
 
 fn looks_like_json(source: &str, text: &str) -> bool {
@@ -427,5 +729,47 @@ mod tests {
             true,
         );
         assert!(snippet.contains("delta"));
+    }
+
+    #[test]
+    fn summarize_document_read_result_extracts_key_points_actions_and_handoff() {
+        let summary = summarize_document_read_result(
+            &DocumentsReadResult {
+                entry: crate::documents::DocumentsEntry {
+                    path: "Reports/q1.txt".to_string(),
+                    name: "Q1 Review".to_string(),
+                    kind: "text".to_string(),
+                    is_dir: false,
+                    content_type: Some("text/plain".to_string()),
+                    size_bytes: Some(128),
+                },
+                content: "Q1 Review\n- Calendar bridge shipped to remote office calendar\n- Documents summary should feed weekly updates\nAction: send summary to finance\nTODO: create follow-up task for customer review".to_string(),
+                truncated: false,
+                raw_bytes: 128,
+                warning: None,
+            },
+            Some("summary"),
+        );
+
+        assert_eq!(summary.focus, "summary");
+        assert_eq!(
+            summary.summary,
+            "Documents summary should feed weekly updates"
+        );
+        assert_eq!(
+            summary.key_points[0],
+            "Documents summary should feed weekly updates"
+        );
+        assert!(summary
+            .action_items
+            .contains(&"send summary to finance".to_string()));
+        assert!(summary
+            .action_items
+            .contains(&"create follow-up task for customer review".to_string()));
+        assert!(summary
+            .handoff
+            .task_candidates
+            .contains(&"send summary to finance".to_string()));
+        assert!(summary.handoff.mail_brief.contains("Q1 Review"));
     }
 }

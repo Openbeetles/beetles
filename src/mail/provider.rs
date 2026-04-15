@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::mail::{
-    MailMessage, MailMessageSummary, MailProviderCredential, MailQuery, MailSendRequest,
+    MailMessage, MailMessageSummary, MailProviderCredential, MailQuery, MailSearchQuery,
+    MailSendRequest,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MailOperation {
     List,
+    Search,
     Get,
     Send,
     Draft,
@@ -21,6 +23,11 @@ pub trait MailProvider: Send + Sync {
         &self,
         credential: &MailProviderCredential,
         query: MailQuery,
+    ) -> Result<Vec<MailMessageSummary>>;
+    fn search_messages(
+        &self,
+        credential: &MailProviderCredential,
+        query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>>;
     fn get_message(
         &self,

@@ -1,6 +1,9 @@
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccountAssessment, OfficeCapability};
-use crate::tools::{serialize_tool_output, ToolExecutionFailureKind, ToolExecutionOutcome};
+use crate::tools::{
+    office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
+    serialize_tool_output, ToolExecutionFailureKind, ToolExecutionOutcome,
+};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -24,6 +27,8 @@ struct OfficeOperationAssessmentHint {
     default_account_key: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    account_diagnostics: Vec<OfficeAccountDiagnostic>,
 }
 
 pub(crate) struct OfficeOperationFailureInput<'a> {
@@ -41,6 +46,8 @@ pub(crate) fn build_office_operation_failure_outcome(
     input: OfficeOperationFailureInput<'_>,
 ) -> Result<ToolExecutionOutcome> {
     let failure_kind = classify_office_failure_kind(input.error);
+    let relevant_assessments =
+        filter_relevant_assessments(input.account_assessments, input.provider, input.account_key);
     let payload = OfficeOperationFailureResponse {
         op: input.op.to_string(),
         ok: false,
@@ -60,11 +67,8 @@ pub(crate) fn build_office_operation_failure_outcome(
         office_assessment: OfficeOperationAssessmentHint {
             capability: office_capability_label(input.capability).to_string(),
             default_account_key: input.default_account_key,
-            account_assessments: filter_relevant_assessments(
-                input.account_assessments,
-                input.provider,
-                input.account_key,
-            ),
+            account_diagnostics: build_account_diagnostics(&relevant_assessments),
+            account_assessments: relevant_assessments,
         },
     };
     Ok(

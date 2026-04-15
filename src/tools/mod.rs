@@ -108,6 +108,11 @@ pub mod office_config;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+pub(crate) mod office_diagnostics;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub(crate) mod office_failure;
 #[cfg(all(
     feature = "capability_office",
