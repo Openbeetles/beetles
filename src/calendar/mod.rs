@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 pub use credentials::{
     CalendarProviderCredential, CalendarProviderCredentialStatus, CalendarProviderCredentialStore,
     OfficeBackedCalendarProviderCredentialStore, FEISHU_CALENDAR_DEFAULT_BASE_URL,
-    OFFICE_METADATA_CALENDAR_APP_ID,
+    OFFICE_METADATA_CALENDAR_APP_ID, OFFICE_METADATA_CALENDAR_CORP_ID,
 };
 #[cfg(all(
     feature = "capability_office",

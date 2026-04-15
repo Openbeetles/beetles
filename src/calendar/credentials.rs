@@ -11,6 +11,7 @@ pub const OFFICE_METADATA_CALENDAR_USERNAME: &str = "calendar_username";
 pub const OFFICE_METADATA_CALENDAR_BASE_URL: &str = "calendar_base_url";
 pub const OFFICE_METADATA_CALENDAR_ROOT_PATH: &str = "calendar_root_path";
 pub const OFFICE_METADATA_CALENDAR_APP_ID: &str = "calendar_app_id";
+pub const OFFICE_METADATA_CALENDAR_CORP_ID: &str = "calendar_corp_id";
 pub const FEISHU_CALENDAR_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,7 +84,7 @@ impl CalendarProviderCredential {
     pub fn status(&self) -> CalendarProviderCredentialStatus {
         let transport_configured = match self.provider.as_str() {
             "caldav" => !self.username.trim().is_empty() && !self.base_url.trim().is_empty(),
-            "feishu_calendar" => {
+            "feishu_calendar" | "wecom_calendar" => {
                 !self.app_id.trim().is_empty()
                     && !self.base_url.trim().is_empty()
                     && !self.calendar_id.trim().is_empty()
@@ -264,15 +265,28 @@ pub(crate) fn calendar_credential_from_office(
         .metadata_value(OFFICE_METADATA_CALENDAR_ID)
         .unwrap_or_default()
         .to_string();
-    if account.provider_kind == "feishu_calendar" {
+    if matches!(
+        account.provider_kind.as_str(),
+        "feishu_calendar" | "wecom_calendar"
+    ) {
+        let app_id_key = if account.provider_kind == "wecom_calendar" {
+            OFFICE_METADATA_CALENDAR_CORP_ID
+        } else {
+            OFFICE_METADATA_CALENDAR_APP_ID
+        };
+        let default_base_url = if account.provider_kind == "wecom_calendar" {
+            crate::office::WECOM_DEFAULT_BASE_URL
+        } else {
+            FEISHU_CALENDAR_DEFAULT_BASE_URL
+        };
         let app_id = credential
-            .metadata_value(OFFICE_METADATA_CALENDAR_APP_ID)
+            .metadata_value(app_id_key)
             .unwrap_or_default()
             .trim()
             .to_string();
         let base_url = credential
             .metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL)
-            .unwrap_or(FEISHU_CALENDAR_DEFAULT_BASE_URL)
+            .unwrap_or(default_base_url)
             .trim()
             .trim_end_matches('/')
             .to_string();
@@ -411,6 +425,40 @@ mod tests {
         assert_eq!(credential.calendar_id, "cal_a1b2");
         assert_eq!(credential.app_id, "cli_calendar");
         assert_eq!(credential.base_url, FEISHU_CALENDAR_DEFAULT_BASE_URL);
+        assert_eq!(credential.username, "");
+    }
+
+    #[test]
+    fn calendar_credential_from_office_maps_wecom_calendar_metadata() {
+        let credential = calendar_credential_from_office(
+            OfficeAccount {
+                account_key: "calendar-wecom".to_string(),
+                provider_kind: "wecom_calendar".to_string(),
+                external_account_id: "calendar-admin".to_string(),
+                account_label: "WeCom Calendar".to_string(),
+                identity_class: OfficeAccountIdentityClass::Work,
+                enabled_capabilities: vec![OfficeCapability::Calendar],
+            },
+            OfficeCredential {
+                account_key: "calendar-wecom".to_string(),
+                access_token: "corp-secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 42,
+                metadata: [
+                    ("calendar_id".to_string(), "cal-wecom-1".to_string()),
+                    ("calendar_corp_id".to_string(), "wwcorp123".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+
+        assert_eq!(credential.provider, "wecom_calendar");
+        assert_eq!(credential.calendar_id, "cal-wecom-1");
+        assert_eq!(credential.app_id, "wwcorp123");
+        assert_eq!(credential.base_url, crate::office::WECOM_DEFAULT_BASE_URL);
         assert_eq!(credential.username, "");
     }
 }

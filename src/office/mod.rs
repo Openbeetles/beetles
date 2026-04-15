@@ -15,6 +15,11 @@ mod resolver;
 #[cfg(feature = "capability_office")]
 mod service;
 mod status;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+mod wecom;
 
 pub use account::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
@@ -51,4 +56,12 @@ pub use service::{
 pub use status::{
     OfficeAccountRuntimeStatus, OfficeAccountStatusSummary, OfficeRuntimeStatusStore,
     REL_PATH_OFFICE_RUNTIME_STATUS,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use wecom::{
+    fetch_wecom_access_token_ureq, request_wecom_json_ureq, WecomApiEnvelope, WecomAuthCredential,
+    WecomTokenPayload, WECOM_DEFAULT_BASE_URL,
 };

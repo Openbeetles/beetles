@@ -30,7 +30,7 @@ pub use credentials::{
     ContactsDirectoryProviderCredential, ContactsDirectoryProviderCredentialStatus,
     ContactsDirectoryProviderCredentialStore, OfficeBackedContactsDirectoryProviderCredentialStore,
     FEISHU_CONTACTS_DEFAULT_BASE_URL, OFFICE_METADATA_CONTACTS_APP_ID,
-    OFFICE_METADATA_CONTACTS_BASE_URL,
+    OFFICE_METADATA_CONTACTS_BASE_URL, OFFICE_METADATA_CONTACTS_CORP_ID,
 };
 #[cfg(all(
     feature = "capability_office",

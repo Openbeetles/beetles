@@ -18,6 +18,8 @@ pub const OFFICE_METADATA_MAIL_SMTP_PORT: &str = "mail_smtp_port";
 pub const OFFICE_METADATA_MAIL_SMTP_TLS: &str = "mail_smtp_tls";
 pub const OFFICE_METADATA_MAIL_FROM_ADDRESS: &str = "mail_from_address";
 pub const OFFICE_METADATA_MAIL_FROM_NAME: &str = "mail_from_name";
+pub const OFFICE_METADATA_MAIL_CORP_ID: &str = "mail_corp_id";
+pub const OFFICE_METADATA_MAIL_BASE_URL: &str = "mail_base_url";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MailProviderCredential {
@@ -30,7 +32,11 @@ pub struct MailProviderCredential {
     #[serde(default)]
     pub username: String,
     #[serde(default)]
+    pub corp_id: String,
+    #[serde(default)]
     pub secret: String,
+    #[serde(default)]
+    pub base_url: String,
     #[serde(default)]
     pub imap_host: String,
     #[serde(default)]
@@ -77,15 +83,25 @@ pub trait MailProviderCredentialStore: Send + Sync {
 
 impl MailProviderCredential {
     pub fn status(&self) -> MailProviderCredentialStatus {
+        let configured = match self.provider.as_str() {
+            "wecom_mail" => {
+                !self.secret.trim().is_empty()
+                    && !self.corp_id.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+            }
+            _ => {
+                !self.secret.trim().is_empty()
+                    && !self.username.trim().is_empty()
+                    && !self.imap_host.trim().is_empty()
+                    && !self.smtp_host.trim().is_empty()
+            }
+        };
         MailProviderCredentialStatus {
             account_key: self.account_key.clone(),
             provider: self.provider.clone(),
             account_id: self.account_id.clone(),
             account_label: self.account_label.clone(),
-            configured: !self.secret.trim().is_empty()
-                && !self.username.trim().is_empty()
-                && !self.imap_host.trim().is_empty()
-                && !self.smtp_host.trim().is_empty(),
+            configured,
             mailbox: self.imap_mailbox.clone(),
             from_address: self.from_address.clone(),
         }
@@ -166,6 +182,56 @@ pub(crate) fn mail_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<MailProviderCredential> {
+    if account.provider_kind == "wecom_mail" {
+        let corp_id = credential
+            .metadata_value(OFFICE_METADATA_MAIL_CORP_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let base_url = credential
+            .metadata_value(OFFICE_METADATA_MAIL_BASE_URL)
+            .unwrap_or(crate::office::WECOM_DEFAULT_BASE_URL)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        if corp_id.is_empty() {
+            return Err(Error::config(
+                "mail_provider_credential",
+                "mail_corp_id must not be empty",
+            ));
+        }
+        let from_address = credential
+            .metadata_value(OFFICE_METADATA_MAIL_FROM_ADDRESS)
+            .unwrap_or(account.external_account_id.as_str())
+            .trim()
+            .to_string();
+        let from_name = credential
+            .metadata_value(OFFICE_METADATA_MAIL_FROM_NAME)
+            .unwrap_or(account.account_label.as_str())
+            .trim()
+            .to_string();
+        return Ok(MailProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            username: String::new(),
+            corp_id,
+            secret: credential.access_token,
+            base_url,
+            imap_host: String::new(),
+            imap_port: 0,
+            imap_mailbox: DEFAULT_MAILBOX.to_string(),
+            draft_mailbox: DEFAULT_DRAFT_MAILBOX.to_string(),
+            imap_tls: false,
+            smtp_host: String::new(),
+            smtp_port: 0,
+            smtp_tls: false,
+            from_address,
+            from_name,
+        });
+    }
+
     let imap_port = parse_mail_port(
         credential.metadata_value(OFFICE_METADATA_MAIL_IMAP_PORT),
         993,
@@ -221,7 +287,9 @@ pub(crate) fn mail_credential_from_office(
         account_id: account.external_account_id,
         account_label: account.account_label,
         username,
+        corp_id: String::new(),
         secret: credential.access_token,
+        base_url: String::new(),
         imap_host,
         imap_port,
         imap_mailbox,

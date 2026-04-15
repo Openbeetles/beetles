@@ -650,6 +650,7 @@ mod tests {
             username: String::new(),
             secret: "app-secret".to_string(),
             app_id: "cli_a1b2c3".to_string(),
+            space_id: String::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             root_path: "fldcn-root".to_string(),
         }

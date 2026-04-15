@@ -10,6 +10,8 @@ pub const OFFICE_METADATA_DOCUMENTS_USERNAME: &str = "documents_username";
 pub const OFFICE_METADATA_DOCUMENTS_BASE_URL: &str = "documents_base_url";
 pub const OFFICE_METADATA_DOCUMENTS_ROOT_PATH: &str = "documents_root_path";
 pub const OFFICE_METADATA_DOCUMENTS_APP_ID: &str = "documents_app_id";
+pub const OFFICE_METADATA_DOCUMENTS_CORP_ID: &str = "documents_corp_id";
+pub const OFFICE_METADATA_DOCUMENTS_SPACE_ID: &str = "documents_space_id";
 pub const FEISHU_DOCUMENTS_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +28,8 @@ pub struct DocumentsProviderCredential {
     pub secret: String,
     #[serde(default)]
     pub app_id: String,
+    #[serde(default)]
+    pub space_id: String,
     #[serde(default)]
     pub base_url: String,
     #[serde(default)]
@@ -60,6 +64,13 @@ impl DocumentsProviderCredential {
             "feishu_documents" => {
                 !self.app_id.trim().is_empty()
                     && !self.secret.trim().is_empty()
+                    && !self.root_path.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+            }
+            "wecom_documents" => {
+                !self.app_id.trim().is_empty()
+                    && !self.secret.trim().is_empty()
+                    && !self.space_id.trim().is_empty()
                     && !self.root_path.trim().is_empty()
                     && !self.base_url.trim().is_empty()
             }
@@ -192,6 +203,61 @@ pub(crate) fn documents_credential_from_office(
             username: String::new(),
             secret: credential.access_token,
             app_id,
+            space_id: String::new(),
+            base_url,
+            root_path,
+        });
+    }
+
+    if account.provider_kind == "wecom_documents" {
+        let app_id = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_CORP_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let space_id = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_SPACE_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let base_url = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL)
+            .unwrap_or(crate::office::WECOM_DEFAULT_BASE_URL)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        let root_path = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_ROOT_PATH)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if app_id.is_empty() {
+            return Err(Error::config(
+                "documents_provider_credential",
+                "documents_corp_id must not be empty",
+            ));
+        }
+        if space_id.is_empty() {
+            return Err(Error::config(
+                "documents_provider_credential",
+                "documents_space_id must not be empty",
+            ));
+        }
+        if root_path.is_empty() {
+            return Err(Error::config(
+                "documents_provider_credential",
+                "documents_root_path must not be empty",
+            ));
+        }
+        return Ok(DocumentsProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            username: String::new(),
+            secret: credential.access_token,
+            app_id,
+            space_id,
             base_url,
             root_path,
         });
@@ -227,6 +293,7 @@ pub(crate) fn documents_credential_from_office(
         username,
         secret: credential.access_token,
         app_id: String::new(),
+        space_id: String::new(),
         base_url,
         root_path,
     })
@@ -417,5 +484,59 @@ mod tests {
         assert_eq!(credential.app_id, "cli_a1b2c3");
         assert_eq!(credential.root_path, "fldcn-root");
         assert_eq!(credential.base_url, "https://open.feishu.cn");
+    }
+
+    #[test]
+    fn office_backed_store_adapts_wecom_documents_metadata() {
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "docs-wecom".to_string(),
+            provider_kind: "wecom_documents".to_string(),
+            external_account_id: String::new(),
+            account_label: "WeCom Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        let credential_store = std::sync::Arc::new(StubCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "docs-wecom".to_string(),
+                access_token: "corp-secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [
+                    ("documents_corp_id".to_string(), "wwcorp123".to_string()),
+                    ("documents_space_id".to_string(), "space-1".to_string()),
+                    (
+                        OFFICE_METADATA_DOCUMENTS_ROOT_PATH.to_string(),
+                        "folder-root".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed wecom office credential");
+        let office = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy::default(),
+            credential_store,
+            std::sync::Arc::new(StubRuntimeStatusStore),
+        );
+        let store = OfficeBackedDocumentsProviderCredentialStore::new(office);
+        let credential = store
+            .get("docs-wecom")
+            .expect("store get")
+            .expect("credential present");
+        assert_eq!(credential.provider, "wecom_documents");
+        assert_eq!(credential.app_id, "wwcorp123");
+        assert_eq!(credential.root_path, "folder-root");
+        assert_eq!(credential.base_url, crate::office::WECOM_DEFAULT_BASE_URL);
+        assert_eq!(
+            serde_json::to_value(&credential).expect("serialize")["space_id"],
+            "space-1"
+        );
     }
 }

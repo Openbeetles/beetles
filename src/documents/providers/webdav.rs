@@ -545,6 +545,7 @@ mod tests {
             username: "user".to_string(),
             secret: "secret".to_string(),
             app_id: String::new(),
+            space_id: String::new(),
             base_url: "https://dav.example.com/remote.php/dav/files/user".to_string(),
             root_path: "/Workspace".to_string(),
         }

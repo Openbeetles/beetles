@@ -72,12 +72,13 @@ Keep three things in mind:
 - `send`, `draft`, `reply`, and `forward` are explicit remote mutations and require `confirm=true`.
 - `send`, `draft`, and `forward` can use direct email arrays (`to` / `cc` / `bcc`) and contact-query arrays (`to_lookup` / `cc_lookup` / `bcc_lookup`) resolved through `contacts_directory`; `reply` keeps the original message sender as the base recipient and can still merge extra recipients.
 - `provider_status` shows whether each mail account is ready to use and whether it has recently had connection or send problems.
+- Mail accounts can now use generic `imap_smtp`, dedicated `feishu_mail`, or dedicated `wecom_mail`; all three follow the same mail tool contract.
 - If `mail` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
 
 ### `documents`
 
 - `documents` is the external office document-library capability. It does not replace the local/public document-reading tools.
-- Documents accounts can now come from either WebDAV or Feishu document libraries.
+- Documents accounts can now come from WebDAV, Feishu document libraries, or WeCom Wedrive libraries.
 - Supported operations:
   - `provider_status`
   - `list`
@@ -85,7 +86,7 @@ Keep three things in mind:
   - `summarize`
   - `search`
 - If a default documents account is configured, or only one documents account is available, you can omit `provider` / `account_key`.
-- A Feishu documents account works well when you share one Feishu folder with Beetle and then keep using the same `documents` tool to browse, read, and search it.
+- A Feishu documents account works well when you share one Feishu folder with Beetle; a WeCom documents account works the same way once you provide the Wedrive `space_id` plus the shared root folder id.
 - `provider_status` shows which document-library accounts are available, which one is the default, and whether each account is ready to use.
 - `summarize` turns a document into a short brief with key points, action items, and handoff content you can reuse in mail or task follow-up.
 - If `documents` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
@@ -101,7 +102,7 @@ Keep three things in mind:
   - `upsert`
   - `delete`
 - Use it to persist stable person data such as names, emails, aliases, organizations, and short notes.
-- If a Feishu contacts account is connected, `lookup` can supplement local contacts with directory matches; you can also pass `provider` / `account_key` to target a specific directory account.
+- If a Feishu or WeCom contacts account is connected, `lookup` can supplement local contacts with directory matches; you can also pass `provider` / `account_key` to target a specific directory account.
 - `provider_status` shows which contacts-directory accounts are available, which one is the default, and whether each account is ready to use.
 - `mail send` already consumes this shared people lookup through `*_lookup` recipient fields; later calendar attendee routing should reuse the same layer instead of inventing a separate contact model.
 

@@ -844,12 +844,19 @@ fn register_office_tools(
     )
     .with_probe_adapters(vec![
         Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
+        Arc::new(crate::mail::providers::feishu::FeishuMailOfficeProbeAdapter),
+        Arc::new(crate::mail::providers::wecom::WecomMailOfficeProbeAdapter),
         Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
         Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
+        Arc::new(crate::documents::providers::wecom::WecomDocumentsOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
+        Arc::new(crate::calendar::providers::wecom::WecomCalendarOfficeProbeAdapter),
         Arc::new(
             crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
+        ),
+        Arc::new(
+            crate::contacts_directory::providers::wecom::WecomContactsDirectoryOfficeProbeAdapter,
         ),
     ]);
     let office_authority = Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
@@ -888,6 +895,8 @@ fn register_office_tools(
     mail_providers.register(Arc::new(
         crate::mail::providers::imap_smtp::ImapSmtpProvider,
     ));
+    mail_providers.register(Arc::new(crate::mail::providers::feishu::FeishuMailProvider));
+    mail_providers.register(Arc::new(crate::mail::providers::wecom::WecomMailProvider));
     let mut documents_providers = crate::documents::DocumentsProviderRegistry::new();
     documents_providers.register(Arc::new(
         crate::documents::providers::webdav::WebDavProvider,
@@ -895,20 +904,32 @@ fn register_office_tools(
     documents_providers.register(Arc::new(
         crate::documents::providers::feishu::FeishuDocumentsProvider,
     ));
+    documents_providers.register(Arc::new(
+        crate::documents::providers::wecom::WecomDocumentsProvider,
+    ));
     let mut calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
     calendar_providers.register(Arc::new(
         crate::calendar::providers::feishu::FeishuCalendarProvider,
+    ));
+    calendar_providers.register(Arc::new(
+        crate::calendar::providers::wecom::WecomCalendarProvider,
     ));
     let mut contacts_directory_providers =
         crate::contacts_directory::ContactsDirectoryProviderRegistry::new();
     contacts_directory_providers.register(Arc::new(
         crate::contacts_directory::providers::feishu::FeishuContactsDirectoryProvider,
     ));
+    contacts_directory_providers.register(Arc::new(
+        crate::contacts_directory::providers::wecom::WecomContactsDirectoryProvider,
+    ));
     let mut task_calendar_providers = crate::calendar::CalendarProviderRegistry::new();
     task_calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
     task_calendar_providers.register(Arc::new(
         crate::calendar::providers::feishu::FeishuCalendarProvider,
+    ));
+    task_calendar_providers.register(Arc::new(
+        crate::calendar::providers::wecom::WecomCalendarProvider,
     ));
 
     registry.register(Box::new(super::CalendarTool::with_office_authority(
@@ -957,11 +978,16 @@ fn register_office_tools(
             office_authority,
             [
                 "imap_smtp",
+                "feishu_mail",
+                "wecom_mail",
                 "webdav",
                 "feishu_documents",
+                "wecom_documents",
                 "caldav",
                 "feishu_calendar",
+                "wecom_calendar",
                 "feishu_contacts_directory",
+                "wecom_contacts_directory",
             ]
             .into_iter()
             .map(str::to_string),

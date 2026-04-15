@@ -757,6 +757,7 @@ mod tests {
                     username: "work@example.com".to_string(),
                     secret: "secret".to_string(),
                     app_id: String::new(),
+                    space_id: String::new(),
                     base_url: "https://dav.example.com/root".to_string(),
                     root_path: "/Workspace".to_string(),
                 },

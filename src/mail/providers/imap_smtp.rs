@@ -169,7 +169,7 @@ fn validate_imap_smtp_credential(credential: &MailProviderCredential) -> Result<
     Ok(())
 }
 
-fn render_mail_preview(text: &str) -> String {
+pub(crate) fn render_mail_preview(text: &str) -> String {
     truncate_content_to_max(&text.split_whitespace().collect::<Vec<_>>().join(" "), 160).to_string()
 }
 
@@ -463,7 +463,7 @@ fn message_from_fetch(
     })
 }
 
-fn extract_first_address(addresses: Option<&mail_parser::Address<'_>>) -> String {
+pub(crate) fn extract_first_address(addresses: Option<&mail_parser::Address<'_>>) -> String {
     match addresses {
         Some(mail_parser::Address::List(items)) => items
             .iter()
@@ -480,7 +480,7 @@ fn extract_first_address(addresses: Option<&mail_parser::Address<'_>>) -> String
     }
 }
 
-fn extract_addresses(addresses: Option<&mail_parser::Address<'_>>) -> Vec<String> {
+pub(crate) fn extract_addresses(addresses: Option<&mail_parser::Address<'_>>) -> Vec<String> {
     match addresses {
         Some(mail_parser::Address::List(items)) => items
             .iter()
@@ -495,7 +495,7 @@ fn extract_addresses(addresses: Option<&mail_parser::Address<'_>>) -> Vec<String
     }
 }
 
-fn extract_text(parsed: &mail_parser::Message<'_>) -> String {
+pub(crate) fn extract_text(parsed: &mail_parser::Message<'_>) -> String {
     if let Some(text) = parsed.body_text(0) {
         return text.to_string();
     }
@@ -595,7 +595,9 @@ mod tests {
             account_id: "work@example.com".to_string(),
             account_label: "Work".to_string(),
             username: "work@example.com".to_string(),
+            corp_id: String::new(),
             secret: "secret".to_string(),
+            base_url: String::new(),
             imap_host: "imap.example.com".to_string(),
             imap_port: 993,
             imap_mailbox: "INBOX".to_string(),
