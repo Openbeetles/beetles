@@ -61,6 +61,8 @@ That means:
 - manual foreground supervisor start should use `beetle supervise`
 - the final `systemd` `ExecStart` should point to `.../beetle supervise`
 - `/opt/beetle/current/beetle` is always the active release binary
+- startup banners now explicitly label `[supervisor]` or `[agent]` so the control-plane process and the execution-plane child are easy to distinguish in logs
+- heartbeat `uptime_secs` now means **beetle process uptime**, not raw Linux host `/proc/uptime`
 
 If a device still has an old unit file or an entrypoint without `supervise`, that is not a broken binary. It is **drift between the service template and the CLI contract**.
 

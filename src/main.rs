@@ -7,7 +7,13 @@
 mod app_runtime_support;
 
 use beetle::bus::IngressKind;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(unused_imports))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
 use beetle::network::{execute_stream_http_op, HttpClientClass, HttpFactory, NetworkGovernor};
 #[cfg(feature = "feishu")]
@@ -26,7 +32,13 @@ use beetle::{
     parse_allowed_chat_ids, run_agent_loop, run_dispatch, send_chat_action, AppConfig, MessageBus,
     DEFAULT_CAPACITY,
 };
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(unused_imports))]
 use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use clap::Parser;
@@ -39,7 +51,13 @@ use std::sync::Mutex;
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 use std::sync::RwLock;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(unused_imports))]
 use std::time::{Duration, Instant};
 
 const TAG: &str = "beetle";
@@ -538,7 +556,7 @@ mod tests {
     use super::{
         communication_plane_startup, compute_voice_runtime_capabilities,
         finalize_required_thread_start, register_process_memory_snapshot_provider,
-        voice_sink_sender, StartedVoiceSession,
+        startup_banner_lines, voice_sink_sender, StartedVoiceSession, VERSION,
     };
     use beetle::config::default_disabled_audio_segment;
     use std::sync::{Arc, Mutex};
@@ -733,6 +751,19 @@ mod tests {
         assert_eq!(snapshot.heap_free_internal, 123);
         assert_eq!(snapshot.heap_free_spiram, 456);
         assert_eq!(snapshot.heap_largest_block_internal, 78);
+    }
+
+    #[test]
+    fn startup_banner_lines_include_entrypoint_role() {
+        let lines = startup_banner_lines("supervisor", Some("/tmp/beetle.toml"));
+
+        assert_eq!(
+            lines[1],
+            format!("  甲壳虫 beetle v{} [supervisor]", VERSION)
+        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("using config file: /tmp/beetle.toml")));
     }
 
     #[test]
@@ -1788,13 +1819,37 @@ fn handle_release_rollback_command(platform: &Arc<dyn Platform>) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn log_start_banner(config_path: Option<&str>) {
-    log::info!("========================================");
-    log::info!("  甲壳虫 beetle v{}", VERSION);
-    log::info!("========================================");
+fn startup_banner_lines(entrypoint: &str, config_path: Option<&str>) -> Vec<String> {
+    let mut lines = vec![
+        "========================================".to_string(),
+        format!("  甲壳虫 beetle v{} [{}]", VERSION, entrypoint),
+        "========================================".to_string(),
+    ];
     if let Some(path) = config_path {
-        log::info!("[{}] using config file: {}", TAG, path);
+        lines.push(format!("[{}] using config file: {}", TAG, path));
     }
+    lines
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn log_start_banner(entrypoint: &str, config_path: Option<&str>) {
+    for line in startup_banner_lines(entrypoint, config_path) {
+        log::info!("{}", line);
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn log_launch_role(role: &str) {
+    log::info!("[{}] entrypoint_role={}", TAG, role);
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
+    log_launch_role("agent");
+    register_platform_memory_snapshot_provider(&platform);
+    startup_soul_kernel_recovery(Arc::clone(&platform));
+    let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
+    run_app(platform, config, wifi_init_ok);
 }
 
 fn register_process_memory_snapshot_provider(
@@ -1814,14 +1869,6 @@ fn register_platform_memory_snapshot_provider(platform: &Arc<dyn Platform>) {
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn install_linux_rustls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
-    register_platform_memory_snapshot_provider(&platform);
-    startup_soul_kernel_recovery(Arc::clone(&platform));
-    let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
-    run_app(platform, config, wifi_init_ok);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1871,7 +1918,8 @@ fn main() {
         Commands::Supervise {
             config: config_path,
         } => {
-            log_start_banner(config_path.as_deref());
+            log_start_banner("supervisor", config_path.as_deref());
+            log_launch_role("supervisor");
             if let Err(error) = beetle::runtime::linux_supervisor::run_supervisor(
                 Arc::clone(&platform),
                 config_path,
@@ -1883,7 +1931,7 @@ fn main() {
         Commands::Agent {
             config: config_path,
         } => {
-            log_start_banner(config_path.as_deref());
+            log_start_banner("agent", config_path.as_deref());
             run_linux_agent_entry(platform);
         }
         Commands::Config { action } => {

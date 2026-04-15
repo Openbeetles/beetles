@@ -4073,7 +4073,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_turn_uses_reply_surface_contract_for_privacy_review_decision() {
+    fn finalize_turn_skips_full_privacy_review_without_disclosure_hit_for_governed_surface() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![LlmResponse {
@@ -4161,8 +4161,12 @@ mod tests {
         .expect("finalize turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(observed.len(), 1);
-        assert!(!finalized.reply_content.trim().is_empty());
+        assert!(
+            observed.is_empty(),
+            "governed replies without a disclosure adjudication hit should skip the full review round"
+        );
+        assert!(!finalized.mental_privacy_review.applied);
+        assert_eq!(finalized.reply_content, "这是受治理的普通答复。");
     }
 
     #[test]

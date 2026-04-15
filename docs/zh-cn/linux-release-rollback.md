@@ -61,6 +61,8 @@
 - 手工前台启动 supervisor：`beetle supervise`
 - `systemd` unit 的 `ExecStart` 必须指向 `.../beetle supervise`
 - `/opt/beetle/current/beetle` 永远代表当前发布版本
+- 启动日志里的 banner 现在会显式标注 `[supervisor]` / `[agent]`，用于区分控制面进程与执行面子进程
+- heartbeat 的 `uptime_secs` 口径表示 **beetle 进程 uptime**，不再直接复用 Linux 宿主机 `/proc/uptime`
 
 如果机器上残留旧 unit，或者入口没有带 `supervise`，那不是“二进制坏了”，而是 **service 模板与 CLI 契约漂移**。
 

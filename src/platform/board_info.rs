@@ -53,7 +53,7 @@ fn collect_esp() -> String {
         crate::platform::runtime_board::esp_chip_model_revision_cores();
     let snap = crate::orchestrator::snapshot();
     let heap_min_free = crate::platform::heap::heap_min_free_internal() as u64;
-    let uptime_secs = crate::platform::time::uptime_secs();
+    let uptime_secs = crate::platform::time::app_uptime_secs();
     let idf_version = option_env!("IDF_VERSION").unwrap_or("unknown");
     let wifi_sta_connected = crate::platform::is_wifi_sta_connected();
     let (spiffs, spiffs_usage_pct) = crate::platform::spiffs_usage()
@@ -176,7 +176,7 @@ fn non_linux_os_payload(
 fn collect_host() -> String {
     let snap = crate::orchestrator::snapshot();
     let wifi_sta_connected = crate::platform::is_wifi_sta_connected();
-    let uptime_secs = crate::platform::time::uptime_secs();
+    let uptime_secs = crate::platform::time::app_uptime_secs();
 
     #[cfg(target_os = "linux")]
     let out = linux_host_payload(&snap, wifi_sta_connected, uptime_secs);

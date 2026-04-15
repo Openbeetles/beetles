@@ -45,7 +45,7 @@ pub fn run_heartbeat_loop(version: &'static str, interval_secs: u64) {
             loop {
                 std::thread::sleep(interval);
                 crate::orchestrator::update_heap_state();
-                let uptime_secs = crate::platform::time::uptime_secs();
+                let uptime_secs = crate::platform::time::app_uptime_secs();
                 log::info!(
                     "[{}] HEARTBEAT version={} uptime_secs={} {}",
                     TAG,
@@ -138,7 +138,7 @@ pub(crate) fn heartbeat_tick(
     let out_d = outbound_depth.load(std::sync::atomic::Ordering::Relaxed) as u32;
     crate::orchestrator::update_queue_depth(in_d, out_d);
     crate::orchestrator::update_heap_state();
-    let uptime_secs = crate::platform::time::uptime_secs();
+    let uptime_secs = crate::platform::time::app_uptime_secs();
     log::info!(
         "[{}] HEARTBEAT version={} uptime_secs={} {}",
         TAG,

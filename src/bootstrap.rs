@@ -199,7 +199,7 @@ fn post_wifi_display_bootstrap(
         let ip = platform
             .wifi_sta_ip()
             .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
-        let uptime_secs = crate::platform::time::uptime_secs();
+        let uptime_secs = crate::platform::time::app_uptime_secs();
         let _ = platform.display_command(DisplayCommand::UpdateIp {
             ip,
             presence_subtitle: None,

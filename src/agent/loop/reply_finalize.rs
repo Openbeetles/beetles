@@ -27,6 +27,21 @@ pub(super) struct FinalizedTurn {
     pub(super) persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
+fn should_run_full_mental_privacy_review(
+    reply_surface: ReplySurface,
+    disclosure: Option<&crate::memory::MentalPrivacyDisclosureAdjudication>,
+) -> bool {
+    match reply_surface.governance_policy() {
+        crate::agent::reply_surface::SurfaceGovernancePolicy::SkipMentalPrivacyReview
+        | crate::agent::reply_surface::SurfaceGovernancePolicy::SuppressUserDelivery => false,
+        crate::agent::reply_surface::SurfaceGovernancePolicy::PrivateBoundaryReview
+        | crate::agent::reply_surface::SurfaceGovernancePolicy::TaskExecutionReview => true,
+        crate::agent::reply_surface::SurfaceGovernancePolicy::ApplyMentalPrivacyReview => {
+            disclosure.is_some()
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn finalize_turn(
     http: &mut dyn PlatformHttpClient,
@@ -104,7 +119,12 @@ pub(super) fn finalize_turn(
         applied: false,
         touched_targets: Vec::new(),
     };
-    if !is_interrupt {
+    if !is_interrupt
+        && should_run_full_mental_privacy_review(
+            reply_surface,
+            mental_privacy_adjudication.as_ref(),
+        )
+    {
         mental_privacy_review = super::worker_governance::maybe_apply_mental_privacy_review(
             http,
             worker_llm,
