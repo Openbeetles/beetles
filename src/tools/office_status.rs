@@ -443,6 +443,15 @@ mod tests {
             .expect("missing fields array")
             .iter()
             .any(|item| item == "access_token"));
+        assert!(payload["account_assessments"][0]["missing_field_details"]
+            .as_array()
+            .expect("missing field details array")
+            .iter()
+            .any(|item| {
+                item["key"] == "access_token"
+                    && item["secret"] == true
+                    && item["label"] == "Access token / app secret"
+            }));
         assert_eq!(
             payload["account_diagnostics"][0]["diagnosis_kind"],
             "needs_credential_input"

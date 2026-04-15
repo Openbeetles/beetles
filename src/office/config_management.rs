@@ -4,12 +4,14 @@ use crate::config::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    assess_office_account, OfficeAccount, OfficeAccountAssessment, OfficeAccountIdentityClass,
-    OfficeAccountRuntimeStatus, OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment,
-    OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest,
+    assess_office_account, office_provider_schema, office_provider_schemas, OfficeAccount,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment, OfficeCredential,
+    OfficeCredentialStore, OfficeCredentialsSegment, OfficeProviderSchema, OfficeResolveRequest,
     OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +146,23 @@ impl OfficeConfigManagementService {
         self.build_account_assessment(&office, account_key)
     }
 
+    pub fn provider_schemas(
+        &self,
+        provider_kind: Option<&str>,
+        capability: Option<OfficeCapability>,
+    ) -> Result<Vec<OfficeProviderSchema>> {
+        if let Some(provider_kind) = provider_kind {
+            let schema = office_provider_schema(provider_kind).ok_or_else(|| {
+                Error::config(
+                    "office_config_provider_schema",
+                    format!("unknown office provider '{}'", provider_kind),
+                )
+            })?;
+            return Ok(vec![schema]);
+        }
+        Ok(office_provider_schemas(capability))
+    }
+
     pub fn draft_accounts(
         &self,
         request: &OfficeAccountDraftRequest,
@@ -178,11 +197,7 @@ impl OfficeConfigManagementService {
             .items
             .retain(|item| item.account_key != request.credential.account_key);
         segment.items.push(request.credential.clone());
-        segment
-            .items
-            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        self.validate_credentials(&segment)?;
-        Ok(segment)
+        self.normalize_credentials_segment(&segment)
     }
 
     pub fn validate_accounts(&self, segment: &OfficeAccountsSegment) -> Result<()> {
@@ -190,7 +205,7 @@ impl OfficeConfigManagementService {
     }
 
     pub fn validate_credentials(&self, segment: &OfficeCredentialsSegment) -> Result<()> {
-        validate_office_credentials_candidate(segment)
+        self.normalize_credentials_segment(segment).map(|_| ())
     }
 
     pub fn commit_accounts(&self, segment: &OfficeAccountsSegment) -> Result<()> {
@@ -201,8 +216,8 @@ impl OfficeConfigManagementService {
     }
 
     pub fn commit_credentials(&self, segment: &OfficeCredentialsSegment) -> Result<()> {
-        self.validate_credentials(segment)?;
-        let body = serde_json::to_string(segment).map_err(|error| {
+        let normalized = self.normalize_credentials_segment(segment)?;
+        let body = serde_json::to_string(&normalized).map_err(|error| {
             Error::config("office_config_commit_credentials", error.to_string())
         })?;
         config::save_office_credentials_segment(self.credential_store.as_ref(), &body)
@@ -301,6 +316,109 @@ impl OfficeConfigManagementService {
             runtime_status.as_ref(),
             probe_supported,
         ))
+    }
+
+    fn normalize_credentials_segment(
+        &self,
+        segment: &OfficeCredentialsSegment,
+    ) -> Result<OfficeCredentialsSegment> {
+        validate_office_credentials_candidate(segment)?;
+        let accounts = self.load_accounts_segment()?;
+        let mut items = Vec::with_capacity(segment.items.len());
+        for credential in &segment.items {
+            let account_key = credential.account_key.trim();
+            let account = accounts.registry.get(account_key).ok_or_else(|| {
+                Error::config(
+                    "office_config_credentials",
+                    format!(
+                        "credential account_key '{}' is not registered in office accounts",
+                        account_key
+                    ),
+                )
+            })?;
+            items.push(self.normalize_credential_for_account(account, credential)?);
+        }
+        items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        let normalized = OfficeCredentialsSegment { items };
+        validate_office_credentials_candidate(&normalized)?;
+        Ok(normalized)
+    }
+
+    fn normalize_credential_for_account(
+        &self,
+        account: &OfficeAccount,
+        credential: &OfficeCredential,
+    ) -> Result<OfficeCredential> {
+        let schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
+            Error::config(
+                "office_config_credentials",
+                format!("unknown office provider '{}'", account.provider_kind),
+            )
+        })?;
+        let mut allowed_metadata_keys = BTreeSet::new();
+        let mut metadata_defaults = BTreeMap::new();
+        for field in schema.fields {
+            if field.location != crate::office::OfficeProviderFieldLocation::Metadata {
+                continue;
+            }
+            allowed_metadata_keys.insert(field.key.clone());
+            if let Some(default_value) = field.default_value.as_ref() {
+                metadata_defaults.insert(field.key.clone(), default_value.clone());
+            }
+        }
+
+        let mut metadata = BTreeMap::new();
+        for (key, value) in &credential.metadata {
+            let key = key.trim();
+            if key.is_empty() {
+                return Err(Error::config(
+                    "office_config_credentials",
+                    "credential metadata key must not be empty",
+                ));
+            }
+            if !allowed_metadata_keys.contains(key) {
+                return Err(Error::config(
+                    "office_config_credentials",
+                    format!(
+                        "provider '{}' does not accept credential metadata key '{}'",
+                        account.provider_kind, key
+                    ),
+                ));
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                if let Some(default_value) = metadata_defaults.get(key) {
+                    metadata.insert(key.to_string(), default_value.clone());
+                }
+                continue;
+            }
+            metadata.insert(key.to_string(), value.to_string());
+        }
+        for (key, default_value) in metadata_defaults {
+            metadata.entry(key).or_insert(default_value);
+        }
+
+        let normalized = OfficeCredential {
+            account_key: credential.account_key.trim().to_string(),
+            access_token: credential.access_token.trim().to_string(),
+            refresh_token: credential.refresh_token.trim().to_string(),
+            token_endpoint: credential.token_endpoint.trim().to_string(),
+            expires_at_unix_secs: credential.expires_at_unix_secs,
+            updated_at: credential.updated_at,
+            metadata,
+        };
+        let assessment = assess_office_account(account, Some(&normalized), None, false);
+        if !assessment.missing_fields.is_empty() {
+            return Err(Error::config(
+                "office_config_credentials",
+                format!(
+                    "credential for account '{}' is missing required fields: {}",
+                    account.account_key,
+                    assessment.missing_fields.join(", ")
+                ),
+            ));
+        }
+        Ok(normalized)
     }
 
     fn persist_probe_runtime_status(

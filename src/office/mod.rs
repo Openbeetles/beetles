@@ -11,6 +11,8 @@ mod config_management;
 mod credentials;
 mod policy;
 #[cfg(feature = "capability_office")]
+mod provider_schema;
+#[cfg(feature = "capability_office")]
 mod resolver;
 #[cfg(feature = "capability_office")]
 mod service;
@@ -45,6 +47,11 @@ pub use credentials::{
     OFFICE_METADATA_CALENDAR_ID, REL_PATH_OFFICE_CREDENTIALS,
 };
 pub use policy::OfficeSelectionPolicy;
+#[cfg(feature = "capability_office")]
+pub use provider_schema::{
+    office_provider_schema, office_provider_schemas, OfficeProviderFieldLocation,
+    OfficeProviderFieldSchema, OfficeProviderFieldValueKind, OfficeProviderSchema,
+};
 #[cfg(feature = "capability_office")]
 pub use resolver::{
     OfficeResolveRequest, OfficeResolveResult, OfficeResolveSelection, OfficeResolver,

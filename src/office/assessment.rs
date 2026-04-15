@@ -7,14 +7,14 @@ use crate::documents::{
     OFFICE_METADATA_DOCUMENTS_SPACE_ID, OFFICE_METADATA_DOCUMENTS_USERNAME,
 };
 use crate::mail::{
-    OFFICE_METADATA_MAIL_BASE_URL, OFFICE_METADATA_MAIL_CORP_ID, OFFICE_METADATA_MAIL_IMAP_HOST,
-    OFFICE_METADATA_MAIL_SMTP_HOST, OFFICE_METADATA_MAIL_USERNAME,
+    OFFICE_METADATA_MAIL_CORP_ID, OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST,
+    OFFICE_METADATA_MAIL_USERNAME,
 };
 use serde::{Deserialize, Serialize};
 
 use super::{
-    OfficeAccount, OfficeAccountRuntimeStatus, OfficeCapability, OfficeCredential,
-    OFFICE_METADATA_CALENDAR_ID,
+    office_provider_schema, OfficeAccount, OfficeAccountRuntimeStatus, OfficeCapability,
+    OfficeCredential, OfficeProviderFieldSchema, OFFICE_METADATA_CALENDAR_ID,
 };
 
 const OFFICE_METADATA_CALENDAR_USERNAME_FIELD: &str = "calendar_username";
@@ -47,6 +47,8 @@ pub struct OfficeAccountAssessment {
     pub probe_supported: bool,
     #[serde(default)]
     pub missing_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_field_details: Vec<OfficeProviderFieldSchema>,
     pub readiness: OfficeConfigReadiness,
     pub next_action: OfficeConfigNextAction,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +68,7 @@ pub fn assess_office_account(
     probe_supported: bool,
 ) -> OfficeAccountAssessment {
     let missing_fields = collect_missing_fields(account, credential);
+    let missing_field_details = missing_field_details(&account.provider_kind, &missing_fields);
     let readiness = if missing_fields.is_empty() {
         if runtime_status
             .as_ref()
@@ -95,6 +98,7 @@ pub fn assess_office_account(
         credential_configured: missing_fields.is_empty(),
         probe_supported,
         missing_fields,
+        missing_field_details,
         readiness,
         next_action,
         runtime_status: runtime_status.cloned(),
@@ -142,11 +146,6 @@ fn collect_missing_fields(
                 &mut missing,
                 OFFICE_METADATA_MAIL_CORP_ID,
                 metadata_value(OFFICE_METADATA_MAIL_CORP_ID),
-            );
-            push_missing_if_blank(
-                &mut missing,
-                OFFICE_METADATA_MAIL_BASE_URL,
-                metadata_value(OFFICE_METADATA_MAIL_BASE_URL),
             );
         }
         "webdav" => {
@@ -275,6 +274,20 @@ fn push_missing_if_blank(
     if value.trim().is_empty() {
         missing.insert(field.to_string());
     }
+}
+
+fn missing_field_details(
+    provider_kind: &str,
+    missing_fields: &[String],
+) -> Vec<OfficeProviderFieldSchema> {
+    let Some(schema) = office_provider_schema(provider_kind) else {
+        return Vec::new();
+    };
+    schema
+        .fields
+        .into_iter()
+        .filter(|field| missing_fields.iter().any(|missing| missing == &field.key))
+        .collect()
 }
 
 #[cfg(test)]
@@ -505,5 +518,36 @@ mod tests {
         assert!(assessment
             .missing_fields
             .contains(&OFFICE_METADATA_MAIL_SMTP_HOST.to_string()));
+    }
+
+    #[test]
+    fn assess_office_account_does_not_require_wecom_mail_base_url() {
+        let account = OfficeAccount {
+            account_key: "mail-wecom".to_string(),
+            provider_kind: "wecom_mail".to_string(),
+            external_account_id: String::new(),
+            account_label: "WeCom Mail".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        };
+        let credential = OfficeCredential {
+            account_key: "mail-wecom".to_string(),
+            access_token: "corp-secret".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 0,
+            metadata: [(
+                OFFICE_METADATA_MAIL_CORP_ID.to_string(),
+                "wwcorp".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let assessment = assess_office_account(&account, Some(&credential), None, true);
+        assert_eq!(assessment.readiness, OfficeConfigReadiness::ReadyForProbe);
+        assert!(!assessment
+            .missing_fields
+            .contains(&"mail_base_url".to_string()));
     }
 }

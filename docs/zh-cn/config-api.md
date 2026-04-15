@@ -169,6 +169,8 @@
   - `binding.capability_defaults`：各 capability 的默认账户
   - `policy`：全局默认账户、歧义策略、身份偏好
 - **说明**：这是原始配置段接口，适合配置页和脚本整段读写；如果是 Agent 要代用户完成 inspect / draft / validate / commit / revoke / probe，应优先走 `office_config` 工具，而不是直接编辑这段 JSON。
+- **补充**：provider 需要哪些字段，不应由前端或调用方硬编码猜测；应该通过 `office_config {"op":"provider_schema", ...}` 查询结构化合同。
+- **补充**：通过 `office_config` 走受控配置路径时，后端会按 provider schema 自动裁剪字段、补默认值并拒绝合同外 metadata key；这个原始段接口不承担这层受控归一化。
 
 ### POST /api/config/accounts
 
@@ -190,27 +192,11 @@
 - **响应**：200，JSON 为 `OfficeCredentialsSegment`：
   - `items[].account_key`：账户主键，和 `/api/config/accounts` 里的注册表对齐
   - `items[].access_token` / `refresh_token` / `token_endpoint`：受控凭证字段
-  - `items[].metadata`：账户补充元数据；不同办公能力会在这里读取各自需要的结构化字段，例如：
-    - `calendar_id`：calendar provider 默认日历标识
-    - `calendar_username`
-    - `calendar_base_url`
-    - `calendar_root_path`
-    - `mail_username`
-    - `mail_imap_host`
-    - `mail_imap_port`
-    - `mail_imap_mailbox`
-    - `mail_imap_tls`
-    - `mail_smtp_host`
-    - `mail_smtp_port`
-    - `mail_smtp_tls`
-    - `mail_from_address`
-    - `mail_from_name`
-    - `documents_username`
-    - `documents_base_url`
-    - `documents_root_path`
+  - `items[].metadata`：账户补充元数据；provider-specific key 仍然落在这里，但调用方不应该把这份文档当成所有 provider 字段合同的唯一真源。具体字段要求请通过 `office_config {"op":"provider_schema", ...}` 查询。
 - **说明**：这是 office 域共享凭证层，不再由 `calendar` 私有维护自己的 credential 真相。
 - **补充**：`mail`、`calendar`、`documents` 都消费这层共享凭证；调用方不需要再为每个能力维护一份单独的私有凭证文件。
 - **补充**：运行态 probe/错误状态不在这个接口里，运行派生真相由 `runtime/office_runtime_status.json` 承载，并通过 `office_status` / `office_config probe` 这类上层能力消费。
+- **补充**：如果调用方需要 provider-aware 的受控配置合同，请不要把这里的 `metadata` 当成完整字段字典，而是通过 `office_config {"op":"provider_schema", ...}` 获取。
 
 ### POST /api/config/office_credentials
 

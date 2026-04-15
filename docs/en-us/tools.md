@@ -111,6 +111,8 @@ Keep three things in mind:
 - This is the unified office configuration tool, not a private control plane for one service.
 - Supported operations:
   - `inspect`
+  - `assess`
+  - `provider_schema`
   - `resolve_account`
   - `draft_accounts`
   - `draft_credentials`
@@ -120,8 +122,11 @@ Keep three things in mind:
   - `commit_credentials`
   - `revoke`
   - `probe`
+- `provider_schema` is the backend truth source for provider onboarding. It returns the structured field contract for a specific `provider_kind`, or for every provider under one `capability`.
 - `draft_*` / `validate_*` work on structured drafts only and do not write state.
+- `draft_credentials` / `validate_credentials` / `commit_credentials` are now schema-driven: they trim credential values, apply provider defaults, reject metadata keys outside the provider contract, and block missing required fields before write.
 - `commit_*` and `revoke` are explicit write actions and require `confirm=true`.
+- `assess` and `office_status` now include `missing_field_details`, so callers do not need to guess raw metadata keys.
 - `probe` reports only real status. Missing config, unsupported probe paths, or current unavailability are returned explicitly.
 
 ### `office_status`

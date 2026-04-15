@@ -114,6 +114,8 @@
 - 这是 office 域的统一配置工具，不是某个单独服务的私有控制面。
 - 当前支持：
   - `inspect`
+  - `assess`
+  - `provider_schema`
   - `resolve_account`
   - `draft_accounts`
   - `draft_credentials`
@@ -123,8 +125,11 @@
   - `commit_credentials`
   - `revoke`
   - `probe`
+- `provider_schema` 是 provider onboarding 的后端真源。它可以按 `provider_kind` 返回单个 provider 的结构化字段合同，也可以按 `capability` 返回一组 provider。
 - `draft_*` / `validate_*` 只处理结构化草案，不会直接写盘。
+- `draft_credentials` / `validate_credentials` / `commit_credentials` 现在按 provider schema 执行：会裁剪字段、补 provider 默认值、拒绝合同外 metadata key，并在写入前挡住缺失必填项。
 - `commit_*` 和 `revoke` 属于显式配置写操作，要求 `confirm=true`。
+- `assess` 和 `office_status` 现在会带上 `missing_field_details`，上层不需要再自己猜 metadata key。
 - `probe` 只返回真实状态，不会假装成功；缺配置、不可探测或当前不可用都会明确说明原因。
 
 ### `office_status`

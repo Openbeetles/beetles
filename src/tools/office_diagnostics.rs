@@ -1,4 +1,7 @@
-use crate::office::{OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeConfigReadiness};
+use crate::office::{
+    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeConfigReadiness,
+    OfficeProviderFieldSchema,
+};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -32,7 +35,10 @@ fn build_account_diagnostic(assessment: &OfficeAccountAssessment) -> OfficeAccou
     {
         (
             "needs_credential_input",
-            format_missing_fields_summary(&assessment.missing_fields),
+            format_missing_fields_summary(
+                &assessment.missing_fields,
+                &assessment.missing_field_details,
+            ),
             "draft_credentials",
         )
     } else if runtime_indicates_failure(runtime) {
@@ -79,10 +85,22 @@ fn build_account_diagnostic(assessment: &OfficeAccountAssessment) -> OfficeAccou
     }
 }
 
-fn format_missing_fields_summary(missing_fields: &[String]) -> String {
+fn format_missing_fields_summary(
+    missing_fields: &[String],
+    missing_field_details: &[OfficeProviderFieldSchema],
+) -> String {
+    let detail_summary = if missing_field_details.is_empty() {
+        missing_fields.join(", ")
+    } else {
+        missing_field_details
+            .iter()
+            .map(|field| format!("{} ({})", field.label, field.key))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
         "Missing required credential/config fields: {}.",
-        missing_fields.join(", ")
+        detail_summary
     )
 }
 

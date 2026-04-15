@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountDraftRequest, OfficeAccountIdentityClass, OfficeCapability,
     OfficeConfigAssessment, OfficeConfigManagementService, OfficeCredentialDraftRequest,
-    OfficeCredentialsSegment, OfficeResolveRequest,
+    OfficeCredentialsSegment, OfficeProviderSchema, OfficeResolveRequest,
 };
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
@@ -41,6 +41,12 @@ struct AssessmentResponse {
     accounts: Vec<crate::office::OfficeAccountAssessment>,
 }
 
+#[derive(Serialize)]
+struct ProviderSchemaResponse {
+    count: usize,
+    providers: Vec<OfficeProviderSchema>,
+}
+
 impl OfficeConfigTool {
     pub fn new(service: OfficeConfigManagementService) -> Self {
         Self { service }
@@ -53,11 +59,11 @@ impl Tool for OfficeConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage office authority through structured operations. Ops: inspect, assess, resolve_account, draft_accounts, draft_credentials, validate_accounts, validate_credentials, commit_accounts, commit_credentials, revoke, probe."
+        "Manage office authority through structured operations. Ops: inspect, assess, provider_schema, resolve_account, draft_accounts, draft_credentials, validate_accounts, validate_credentials, commit_accounts, commit_credentials, revoke, probe."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|assess|resolve_account|draft_accounts|draft_credentials|validate_accounts|validate_credentials|commit_accounts|commit_credentials|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"OfficeAccount payload for draft_accounts"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to account.account_key"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at account.account_key"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for draft_accounts"},"credential":{"type":"object","description":"OfficeCredential payload for draft_credentials"},"segment":{"type":"object","description":"OfficeAccountsSegment or OfficeCredentialsSegment payload for validate/commit ops"},"account_key":{"type":"string","description":"Optional account key for assess, revoke, or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for commit_* and revoke"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|assess|provider_schema|resolve_account|draft_accounts|draft_credentials|validate_accounts|validate_credentials|commit_accounts|commit_credentials|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"provider_kind":{"type":"string","description":"Optional provider kind for provider_schema"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"OfficeAccount payload for draft_accounts"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to account.account_key"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at account.account_key"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for draft_accounts"},"credential":{"type":"object","description":"OfficeCredential payload for draft_credentials"},"segment":{"type":"object","description":"OfficeAccountsSegment or OfficeCredentialsSegment payload for validate/commit ops"},"account_key":{"type":"string","description":"Optional account key for assess, revoke, or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for commit_* and revoke"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
@@ -87,6 +93,27 @@ impl Tool for OfficeConfigTool {
                         payload: AssessmentResponse {
                             count: payload.accounts.len(),
                             accounts: payload.accounts,
+                        },
+                    },
+                )
+            }
+            "provider_schema" => {
+                let capability = obj
+                    .get("capability")
+                    .map(parse_capability_value)
+                    .transpose()?;
+                let providers = self.service.provider_schemas(
+                    obj.get("provider_kind").and_then(Value::as_str),
+                    capability,
+                )?;
+                serialize_tool_output(
+                    "tool_office_config",
+                    &OfficeConfigResponse {
+                        op: "provider_schema",
+                        ok: true,
+                        payload: ProviderSchemaResponse {
+                            count: providers.len(),
+                            providers,
                         },
                     },
                 )
@@ -775,5 +802,308 @@ mod tests {
             .expect("missing fields array")
             .iter()
             .any(|item| item == "mail_imap_host"));
+        assert!(payload["payload"]["accounts"][0]["missing_field_details"]
+            .as_array()
+            .expect("missing field details array")
+            .iter()
+            .any(|item| {
+                item["key"] == "mail_imap_host"
+                    && item["label"] == "IMAP host"
+                    && item["required"] == true
+            }));
+    }
+
+    #[test]
+    fn provider_schema_reports_wecom_documents_onboarding_contract() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{"op":"provider_schema","provider_kind":"wecom_documents"}"#,
+                &mut ctx,
+            )
+            .expect("provider schema");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["op"], "provider_schema");
+        assert_eq!(payload["payload"]["count"], 1);
+        assert_eq!(
+            payload["payload"]["providers"][0]["provider_kind"],
+            "wecom_documents"
+        );
+        assert!(payload["payload"]["providers"][0]["fields"]
+            .as_array()
+            .expect("fields array")
+            .iter()
+            .any(|item| {
+                item["key"] == "documents_space_id"
+                    && item["location"] == "metadata"
+                    && item["value_kind"] == "identifier"
+                    && item["required"] == true
+            }));
+        assert!(payload["payload"]["providers"][0]["fields"]
+            .as_array()
+            .expect("fields array")
+            .iter()
+            .any(|item| {
+                item["key"] == "documents_base_url"
+                    && item["required"] == false
+                    && item["default_value"] == crate::office::WECOM_DEFAULT_BASE_URL
+            }));
+    }
+
+    #[test]
+    fn draft_credentials_normalizes_wecom_documents_defaults_and_trims_values() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        crate::config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry":{"accounts":{
+                    "docs-wecom":{
+                        "account_key":"docs-wecom",
+                        "provider_kind":"wecom_documents",
+                        "external_account_id":"",
+                        "account_label":"WeCom Docs",
+                        "identity_class":"work",
+                        "enabled_capabilities":["documents"]
+                    }
+                }},
+                "binding":{},
+                "policy":{}
+            }"#,
+        )
+        .expect("seed accounts");
+        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        ));
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{
+                    "op":"draft_credentials",
+                    "credential":{
+                        "account_key":"docs-wecom",
+                        "access_token":"  corp-secret  ",
+                        "metadata":{
+                            "documents_corp_id":"  wwcorp  ",
+                            "documents_space_id":"  space-1  ",
+                            "documents_root_path":"  /shared/docs  ",
+                            "documents_base_url":"   "
+                        }
+                    }
+                }"#,
+                &mut ctx,
+            )
+            .expect("draft credentials");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        let credential = &payload["payload"]["items"][0];
+        assert_eq!(credential["access_token"], "corp-secret");
+        assert_eq!(credential["metadata"]["documents_corp_id"], "wwcorp");
+        assert_eq!(credential["metadata"]["documents_space_id"], "space-1");
+        assert_eq!(
+            credential["metadata"]["documents_root_path"],
+            "/shared/docs"
+        );
+        assert_eq!(
+            credential["metadata"]["documents_base_url"],
+            crate::office::WECOM_DEFAULT_BASE_URL
+        );
+    }
+
+    #[test]
+    fn validate_credentials_rejects_unknown_provider_metadata_key() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        crate::config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry":{"accounts":{
+                    "docs-wecom":{
+                        "account_key":"docs-wecom",
+                        "provider_kind":"wecom_documents",
+                        "external_account_id":"",
+                        "account_label":"WeCom Docs",
+                        "identity_class":"work",
+                        "enabled_capabilities":["documents"]
+                    }
+                }},
+                "binding":{},
+                "policy":{}
+            }"#,
+        )
+        .expect("seed accounts");
+        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        ));
+        let mut ctx = DummyCtx;
+        let error = tool
+            .execute(
+                r#"{
+                    "op":"validate_credentials",
+                    "segment":{
+                        "items":[
+                            {
+                                "account_key":"docs-wecom",
+                                "access_token":"corp-secret",
+                                "metadata":{
+                                    "documents_corp_id":"wwcorp",
+                                    "documents_space_id":"space-1",
+                                    "documents_root_path":"/shared/docs",
+                                    "documents_extra":"oops"
+                                }
+                            }
+                        ]
+                    }
+                }"#,
+                &mut ctx,
+            )
+            .expect_err("unexpected metadata key must fail");
+        assert!(error.to_string().contains("documents_extra"));
+    }
+
+    #[test]
+    fn validate_credentials_rejects_unknown_account_key() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let error = fixture
+            .tool
+            .execute(
+                r#"{
+                    "op":"validate_credentials",
+                    "segment":{
+                        "items":[
+                            {
+                                "account_key":"missing-account",
+                                "access_token":"secret"
+                            }
+                        ]
+                    }
+                }"#,
+                &mut ctx,
+            )
+            .expect_err("unknown account must fail");
+        assert!(error.to_string().contains("missing-account"));
+    }
+
+    #[test]
+    fn validate_credentials_rejects_missing_conditional_transport_fields() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        crate::config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry":{"accounts":{
+                    "mail-work":{
+                        "account_key":"mail-work",
+                        "provider_kind":"imap_smtp",
+                        "external_account_id":"",
+                        "account_label":"Work",
+                        "identity_class":"work",
+                        "enabled_capabilities":["mail"]
+                    }
+                }},
+                "binding":{},
+                "policy":{}
+            }"#,
+        )
+        .expect("seed accounts");
+        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        ));
+        let mut ctx = DummyCtx;
+        let error = tool
+            .execute(
+                r#"{
+                    "op":"validate_credentials",
+                    "segment":{
+                        "items":[
+                            {
+                                "account_key":"mail-work",
+                                "access_token":"secret",
+                                "metadata":{
+                                    "mail_imap_host":"imap.example.com",
+                                    "mail_smtp_host":"smtp.example.com"
+                                }
+                            }
+                        ]
+                    }
+                }"#,
+                &mut ctx,
+            )
+            .expect_err("conditional missing fields must fail");
+        assert!(error.to_string().contains("mail_username"));
+    }
+
+    #[test]
+    fn commit_credentials_persists_normalized_schema_defaults() {
+        let fixture = build_fixture();
+        crate::config::save_office_accounts_segment(
+            fixture.config_file_store.as_ref(),
+            r#"{
+                "registry":{"accounts":{
+                    "docs-wecom":{
+                        "account_key":"docs-wecom",
+                        "provider_kind":"wecom_documents",
+                        "external_account_id":"",
+                        "account_label":"WeCom Docs",
+                        "identity_class":"work",
+                        "enabled_capabilities":["documents"]
+                    }
+                }},
+                "binding":{},
+                "policy":{}
+            }"#,
+        )
+        .expect("seed accounts");
+        let mut ctx = DummyCtx;
+        fixture
+            .tool
+            .execute(
+                r#"{
+                    "op":"commit_credentials",
+                    "segment":{
+                        "items":[
+                            {
+                                "account_key":"docs-wecom",
+                                "access_token":"  corp-secret  ",
+                                "metadata":{
+                                    "documents_corp_id":"  wwcorp  ",
+                                    "documents_space_id":"  space-1  ",
+                                    "documents_root_path":"  /shared/docs  ",
+                                    "documents_base_url":""
+                                }
+                            }
+                        ]
+                    },
+                    "confirm":true
+                }"#,
+                &mut ctx,
+            )
+            .expect("commit credentials");
+
+        let credential = fixture
+            .credential_store
+            .get("docs-wecom")
+            .expect("credential lookup")
+            .expect("credential persisted");
+        assert_eq!(credential.access_token, "corp-secret");
+        assert_eq!(
+            credential
+                .metadata
+                .get("documents_base_url")
+                .map(String::as_str),
+            Some(crate::office::WECOM_DEFAULT_BASE_URL)
+        );
+        assert_eq!(
+            credential
+                .metadata
+                .get("documents_root_path")
+                .map(String::as_str),
+            Some("/shared/docs")
+        );
     }
 }
