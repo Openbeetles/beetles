@@ -14,10 +14,17 @@ use crate::office::{OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeA
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::tools::office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::tools::office_failure::{
+    build_office_operation_failure_outcome, OfficeOperationFailureInput,
+};
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolCapabilityContract,
-    ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
-    ToolRollbackKind,
+    ToolContext, ToolEffectClass, ToolExecutionOutcome, ToolExecutionShape, ToolMetadata,
+    ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -131,35 +138,44 @@ impl ContactsDirectoryTool {
             ),
         }
     }
-}
 
-impl Tool for ContactsDirectoryTool {
-    fn name(&self) -> &'static str {
-        "contacts_directory"
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn office_operation_failure(
+        &self,
+        op: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        error: &Error,
+    ) -> Result<ToolExecutionOutcome> {
+        build_office_operation_failure_outcome(OfficeOperationFailureInput {
+            stage: "tool_contacts_directory",
+            op,
+            provider,
+            account_key,
+            capability: crate::office::OfficeCapability::ContactsDirectory,
+            default_account_key: self.service.office_default_account_key()?,
+            account_assessments: self.service.office_account_assessments()?,
+            error,
+        })
     }
 
-    fn description(&self) -> &'static str {
-        "Manage a local contacts directory the agent can use for people lookup and future mail/calendar composition. Ops: status, list, lookup, upsert, delete, provider_status."
-    }
-
-    fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: status|provider_status|list|lookup|upsert|delete"},"provider":{"type":"string","description":"Optional explicit remote contacts provider for lookup."},"account_key":{"type":"string","description":"Optional explicit office contacts account key for lookup."},"id":{"type":"string","description":"Contact id for upsert or delete. Optional for create-style upsert."},"query":{"type":"string","description":"Lookup phrase, typically a name, alias, organization, or email."},"limit":{"type":"integer","description":"Maximum items to return for list or lookup. Default 10, max 50."},"display_name":{"type":"string","description":"Primary display name for upsert."},"emails":{"type":"array","items":{"type":"string"},"description":"Known email addresses for upsert."},"aliases":{"type":"array","items":{"type":"string"},"description":"Alternative names or nicknames for upsert."},"organization":{"type":"string","description":"Optional organization or team name for upsert."},"notes":{"type":"string","description":"Optional short notes for upsert."}},"required":["op"]}"#
-    }
-
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_contacts_directory")?;
         let op = obj
             .get("op")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::config("tool_contacts_directory", "missing op"))?;
         match op {
-            "status" => serialize_tool_output(
+            "status" => Ok(ToolExecutionOutcome::text(serialize_tool_output(
                 "tool_contacts_directory",
                 &ContactsDirectoryStatusResponse {
                     op: "status",
                     status: self.service.status()?,
                 },
-            ),
+            )?)),
             "provider_status" => {
                 #[cfg(all(
                     feature = "capability_office",
@@ -167,7 +183,7 @@ impl Tool for ContactsDirectoryTool {
                 ))]
                 {
                     let account_assessments = self.service.office_account_assessments()?;
-                    serialize_tool_output(
+                    Ok(ToolExecutionOutcome::text(serialize_tool_output(
                         "tool_contacts_directory",
                         &ContactsDirectoryProviderStatusResponse {
                             op: "provider_status",
@@ -185,7 +201,7 @@ impl Tool for ContactsDirectoryTool {
                             account_assessments,
                             office_runtime_statuses: self.service.office_runtime_statuses()?,
                         },
-                    )
+                    )?))
                 }
                 #[cfg(not(all(
                     feature = "capability_office",
@@ -200,24 +216,49 @@ impl Tool for ContactsDirectoryTool {
             }
             "list" => {
                 let items = self.service.list(parse_limit(&obj))?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_contacts_directory",
                     &ContactsDirectoryListResponse {
                         op: "list",
                         count: items.len(),
                         items,
                     },
-                )
+                )?))
             }
             "lookup" => {
                 let query = required_str(&obj, "query")?;
-                let items = self.service.lookup_with_route(
+                let provider = parse_provider(&obj);
+                let account_key = parse_account_key(&obj);
+                let items = match self.service.lookup_with_route(
                     query,
                     parse_limit(&obj),
-                    parse_provider(&obj).as_deref(),
-                    parse_account_key(&obj).as_deref(),
-                )?;
-                serialize_tool_output(
+                    provider.as_deref(),
+                    account_key.as_deref(),
+                ) {
+                    Ok(items) => items,
+                    Err(error) => {
+                        #[cfg(all(
+                            feature = "capability_office",
+                            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+                        ))]
+                        {
+                            let remote_context = provider.is_some()
+                                || account_key.is_some()
+                                || self.service.office_default_account_key()?.is_some()
+                                || self.service.list_provider_statuses()?.len() == 1;
+                            if remote_context {
+                                return self.office_operation_failure(
+                                    "lookup",
+                                    provider.as_deref(),
+                                    account_key.as_deref(),
+                                    &error,
+                                );
+                            }
+                        }
+                        return Err(error);
+                    }
+                };
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_contacts_directory",
                     &ContactsDirectoryLookupResponse {
                         op: "lookup",
@@ -225,7 +266,7 @@ impl Tool for ContactsDirectoryTool {
                         count: items.len(),
                         items,
                     },
-                )
+                )?))
             }
             "upsert" => {
                 let ContactsDirectoryUpsertResult { created, contact } =
@@ -238,32 +279,58 @@ impl Tool for ContactsDirectoryTool {
                         notes: optional_str(&obj, "notes").unwrap_or_default(),
                         updated_at_unix_secs: 0,
                     })?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_contacts_directory",
                     &ContactsDirectoryUpsertResponse {
                         op: "upsert",
                         created,
                         contact,
                     },
-                )
+                )?))
             }
             "delete" => {
                 let id = required_str(&obj, "id")?;
                 let deleted = self.service.delete(id)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_contacts_directory",
                     &ContactsDirectoryDeleteResponse {
                         op: "delete",
                         id: id.to_string(),
                         deleted,
                     },
-                )
+                )?))
             }
             _ => Err(Error::config(
                 "tool_contacts_directory",
                 format!("unknown op '{op}'"),
             )),
         }
+    }
+}
+
+impl Tool for ContactsDirectoryTool {
+    fn name(&self) -> &'static str {
+        "contacts_directory"
+    }
+
+    fn description(&self) -> &'static str {
+        "Manage a local contacts directory the agent can use for people lookup and future mail/calendar composition. Ops: status, list, lookup, upsert, delete, provider_status."
+    }
+
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: status|provider_status|list|lookup|upsert|delete"},"provider":{"type":"string","description":"Optional explicit remote contacts provider for lookup."},"account_key":{"type":"string","description":"Optional explicit office contacts account key for lookup."},"id":{"type":"string","description":"Contact id for upsert or delete. Optional for create-style upsert."},"query":{"type":"string","description":"Lookup phrase, typically a name, alias, organization, or email."},"limit":{"type":"integer","description":"Maximum items to return for list or lookup. Default 10, max 50."},"display_name":{"type":"string","description":"Primary display name for upsert."},"emails":{"type":"array","items":{"type":"string"},"description":"Known email addresses for upsert."},"aliases":{"type":"array","items":{"type":"string"},"description":"Alternative names or nicknames for upsert."},"organization":{"type":"string","description":"Optional organization or team name for upsert."},"notes":{"type":"string","description":"Optional short notes for upsert."}},"required":["op"]}"#
+    }
+
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        Ok(self.execute_impl(args, ctx)?.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        self.execute_impl(args, ctx)
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -403,7 +470,7 @@ mod tests {
         StateFsContactsDirectoryStore, FEISHU_CONTACTS_DEFAULT_BASE_URL,
         OFFICE_METADATA_CONTACTS_APP_ID,
     };
-    use crate::error::Result;
+    use crate::error::{Error, Result};
     use crate::i18n::Locale;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
@@ -588,6 +655,30 @@ mod tests {
         }
     }
 
+    struct FailingRemoteProvider;
+
+    impl ContactsDirectoryProvider for FailingRemoteProvider {
+        fn provider_name(&self) -> &'static str {
+            "feishu_contacts_directory"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Feishu Contacts Directory"
+        }
+
+        fn lookup_contacts(
+            &self,
+            _credential: &ContactsDirectoryProviderCredential,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<ContactEntry>> {
+            Err(Error::config(
+                "contacts_directory_lookup",
+                "remote directory unavailable",
+            ))
+        }
+    }
+
     #[test]
     fn contacts_directory_tool_provider_status_reports_feishu_defaults_and_diagnostics() {
         let state_fs = Arc::new(MockStateFs::default());
@@ -662,6 +753,86 @@ mod tests {
         assert_eq!(
             payload["account_assessments"][0]["provider_kind"].as_str(),
             Some("feishu_contacts_directory")
+        );
+    }
+
+    #[test]
+    fn contacts_directory_tool_remote_lookup_returns_structured_office_failure() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let local_store = Arc::new(StateFsContactsDirectoryStore::new(state_fs));
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(
+            OfficeCapability::ContactsDirectory,
+            "contacts-feishu".to_string(),
+        );
+        let credential_store = Arc::new(StubOfficeCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "contacts-feishu".to_string(),
+                access_token: "app-secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [(
+                    OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                    "cli_contacts".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed office credential");
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            credential_store,
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut providers = ContactsDirectoryProviderRegistry::new();
+        providers.register(Arc::new(FailingRemoteProvider));
+        let tool = ContactsDirectoryTool::with_office_service(
+            local_store,
+            contacts_credentials,
+            providers,
+            office_service,
+        );
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"lookup","query":"alice"}"#, &mut ctx)
+            .expect("structured failure outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Permanent)
+        );
+
+        let payload: Value = serde_json::from_str(&outcome.content).expect("failure json");
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["op"], "lookup");
+        assert_eq!(
+            payload["office_assessment"]["capability"],
+            "contacts_directory"
+        );
+        assert_eq!(
+            payload["office_assessment"]["default_account_key"],
+            "contacts-feishu"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["account_key"],
+            "contacts-feishu"
         );
     }
 }

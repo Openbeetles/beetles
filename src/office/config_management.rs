@@ -5,9 +5,9 @@ use crate::config::{
 use crate::error::{Error, Result};
 use crate::office::{
     assess_office_account, OfficeAccount, OfficeAccountAssessment, OfficeAccountIdentityClass,
-    OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment, OfficeCredential,
-    OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest, OfficeResolveResult,
-    OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
+    OfficeAccountRuntimeStatus, OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment,
+    OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeResolveRequest,
+    OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -226,28 +226,34 @@ impl OfficeConfigManagementService {
             )
         })?;
         let Some(credential) = office.credential(account_key)? else {
-            return Ok(OfficeProbeResult {
+            let result = OfficeProbeResult {
                 account_key: account.account_key,
                 provider_kind: account.provider_kind,
                 configured: false,
                 disposition: OfficeProbeDisposition::MissingCredential,
                 reason: "credential_missing".to_string(),
-            });
+            };
+            self.persist_probe_runtime_status(&office, &result)?;
+            return Ok(result);
         };
         if let Some(adapter) = self
             .probe_adapters
             .iter()
             .find(|adapter| adapter.provider_kind() == account.provider_kind)
         {
-            return adapter.probe(&account, &credential);
+            let result = adapter.probe(&account, &credential)?;
+            self.persist_probe_runtime_status(&office, &result)?;
+            return Ok(result);
         }
-        Ok(OfficeProbeResult {
+        let result = OfficeProbeResult {
             account_key: account.account_key,
             provider_kind: account.provider_kind,
             configured: !credential.access_token.trim().is_empty(),
             disposition: OfficeProbeDisposition::Unsupported,
             reason: "probe_adapter_unavailable".to_string(),
-        })
+        };
+        self.persist_probe_runtime_status(&office, &result)?;
+        Ok(result)
     }
 
     fn build_office_service(&self, accounts: &OfficeAccountsSegment) -> Result<OfficeService> {
@@ -295,6 +301,37 @@ impl OfficeConfigManagementService {
             runtime_status.as_ref(),
             probe_supported,
         ))
+    }
+
+    fn persist_probe_runtime_status(
+        &self,
+        office: &OfficeService,
+        result: &OfficeProbeResult,
+    ) -> Result<()> {
+        let now = crate::util::current_unix_secs();
+        let mut status = office
+            .runtime_status(&result.account_key)?
+            .unwrap_or_else(|| OfficeAccountRuntimeStatus {
+                account_key: result.account_key.clone(),
+                ..OfficeAccountRuntimeStatus::default()
+            });
+        status.account_key = result.account_key.clone();
+        status.last_probe_at_unix_secs = now;
+        status.updated_at = now;
+        status.last_activity_kind.clear();
+        status.last_activity_ok = false;
+        status.last_activity_at_unix_secs = 0;
+        match result.disposition {
+            OfficeProbeDisposition::Ready => {
+                status.probe_ok = true;
+                status.last_error.clear();
+            }
+            OfficeProbeDisposition::MissingCredential | OfficeProbeDisposition::Unsupported => {
+                status.probe_ok = false;
+                status.last_error = result.reason.clone();
+            }
+        }
+        office.set_runtime_status(&status)
     }
 }
 
@@ -619,6 +656,126 @@ mod tests {
         let probe = service.probe("mail-work").expect("probe");
         assert_eq!(probe.disposition, OfficeProbeDisposition::Unsupported);
         assert_eq!(probe.reason, "probe_adapter_unavailable");
+    }
+
+    #[test]
+    fn probe_success_persists_runtime_probe_state() {
+        #[derive(Clone)]
+        struct ReadyProbeAdapter;
+
+        impl OfficeProbeAdapter for ReadyProbeAdapter {
+            fn provider_kind(&self) -> &'static str {
+                "imap_smtp"
+            }
+
+            fn probe(
+                &self,
+                account: &OfficeAccount,
+                _credential: &OfficeCredential,
+            ) -> Result<OfficeProbeResult> {
+                Ok(OfficeProbeResult {
+                    account_key: account.account_key.clone(),
+                    provider_kind: account.provider_kind.clone(),
+                    configured: true,
+                    disposition: OfficeProbeDisposition::Ready,
+                    reason: "imap_ok".to_string(),
+                })
+            }
+        }
+
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-work": {
+                            "account_key": "mail-work",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "work@example.com",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let credential_store = Arc::new(MemoryCredentialStore::default());
+        credential_store
+            .set(&OfficeCredential {
+                account_key: "mail-work".to_string(),
+                access_token: "token".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: BTreeMap::new(),
+            })
+            .expect("seed credential");
+        let runtime_store = Arc::new(MemoryRuntimeStatusStore::default());
+        let service = OfficeConfigManagementService::new(
+            config_file_store,
+            credential_store,
+            runtime_store.clone(),
+        )
+        .with_probe_adapters(vec![Arc::new(ReadyProbeAdapter)]);
+
+        let probe = service.probe("mail-work").expect("probe");
+        assert_eq!(probe.disposition, OfficeProbeDisposition::Ready);
+
+        let runtime = runtime_store
+            .get("mail-work")
+            .expect("load runtime")
+            .expect("runtime status");
+        assert!(runtime.probe_ok);
+        assert!(runtime.last_error.is_empty());
+        assert_eq!(runtime.last_activity_kind, "");
+    }
+
+    #[test]
+    fn probe_missing_credential_persists_runtime_failure_state() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-work": {
+                            "account_key": "mail-work",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "work@example.com",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let runtime_store = Arc::new(MemoryRuntimeStatusStore::default());
+        let service = OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            runtime_store.clone(),
+        );
+
+        let probe = service.probe("mail-work").expect("probe");
+        assert_eq!(probe.disposition, OfficeProbeDisposition::MissingCredential);
+
+        let runtime = runtime_store
+            .get("mail-work")
+            .expect("load runtime")
+            .expect("runtime status");
+        assert!(!runtime.probe_ok);
+        assert_eq!(runtime.last_error, "credential_missing");
+        assert_eq!(runtime.last_activity_kind, "");
     }
 
     #[test]

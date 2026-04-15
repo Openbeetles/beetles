@@ -153,7 +153,9 @@ impl MailService {
     ) -> Result<Vec<MailMessageSummary>> {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, MailOperation::List)?;
-        provider_impl.list_messages(&credential, query)
+        let result = provider_impl.list_messages(&credential, query);
+        self.record_runtime_activity(&credential.account_key, "mail_list", result.as_ref().err());
+        result
     }
 
     pub fn search(
@@ -164,7 +166,13 @@ impl MailService {
     ) -> Result<Vec<MailMessageSummary>> {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, MailOperation::Search)?;
-        provider_impl.search_messages(&credential, query)
+        let result = provider_impl.search_messages(&credential, query);
+        self.record_runtime_activity(
+            &credential.account_key,
+            "mail_search",
+            result.as_ref().err(),
+        );
+        result
     }
 
     pub fn get(
@@ -175,7 +183,9 @@ impl MailService {
     ) -> Result<Option<MailMessage>> {
         let (provider_impl, credential) =
             self.resolve_remote(provider, account_key, MailOperation::Get)?;
-        provider_impl.get_message(&credential, id)
+        let result = provider_impl.get_message(&credential, id);
+        self.record_runtime_activity(&credential.account_key, "mail_get", result.as_ref().err());
+        result
     }
 
     pub fn send(

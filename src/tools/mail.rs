@@ -1618,6 +1618,57 @@ mod tests {
     }
 
     #[test]
+    fn mail_tool_list_updates_runtime_status() {
+        let (tool, _provider, runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        tool.execute(r#"{"op":"list"}"#, &mut ctx)
+            .expect("list mail");
+
+        let runtime = runtime_store
+            .get("mail-work")
+            .expect("load runtime")
+            .expect("runtime status");
+        assert_eq!(runtime.last_activity_kind, "mail_list");
+        assert!(runtime.last_activity_ok);
+        assert!(runtime.probe_ok);
+    }
+
+    #[test]
+    fn mail_tool_search_updates_runtime_status() {
+        let (tool, _provider, runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        tool.execute(r#"{"op":"search","query":"hello"}"#, &mut ctx)
+            .expect("search mail");
+
+        let runtime = runtime_store
+            .get("mail-work")
+            .expect("load runtime")
+            .expect("runtime status");
+        assert_eq!(runtime.last_activity_kind, "mail_search");
+        assert!(runtime.last_activity_ok);
+        assert!(runtime.probe_ok);
+    }
+
+    #[test]
+    fn mail_tool_get_updates_runtime_status() {
+        let (tool, _provider, runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        tool.execute(r#"{"op":"get","provider":"imap_smtp","id":"42"}"#, &mut ctx)
+            .expect("get mail");
+
+        let runtime = runtime_store
+            .get("mail-work")
+            .expect("load runtime")
+            .expect("runtime status");
+        assert_eq!(runtime.last_activity_kind, "mail_get");
+        assert!(runtime.last_activity_ok);
+        assert!(runtime.probe_ok);
+    }
+
+    #[test]
     fn mail_tool_send_requires_confirm_and_returns_summary() {
         let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;

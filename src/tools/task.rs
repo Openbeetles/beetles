@@ -21,9 +21,20 @@ use crate::error::{Error, Result};
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-use crate::office::{OfficeAuthoritySource, OfficeService, SnapshotOfficeAuthoritySource};
+use crate::office::{
+    OfficeAuthoritySource, OfficeCapability, OfficeService, SnapshotOfficeAuthoritySource,
+};
 use crate::task::{normalize_task_item, TaskItem, TaskPriority, TaskQuery, TaskStatus, TaskStore};
-use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::tools::office_failure::{
+    build_office_operation_failure_outcome, OfficeOperationFailureInput,
+};
+use crate::tools::{
+    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+};
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
 use serde_json::Value;
@@ -211,6 +222,24 @@ impl Tool for TaskTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        Ok(self.execute_impl(args, ctx)?.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        self.execute_impl(args, ctx)
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::stateful()
+    }
+}
+
+impl TaskTool {
+    fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_task")?;
         let op = obj
             .get("op")
@@ -231,14 +260,14 @@ impl Tool for TaskTool {
                     limit: obj.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
                 };
                 let tasks = self.store.list(&channel, &chat_id, query)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_task",
                     &TaskListResponse {
                         op: "list",
                         count: tasks.len(),
                         tasks,
                     },
-                )
+                )?))
             }
             "get" => {
                 let id = required_string(&obj, "id")?;
@@ -246,7 +275,10 @@ impl Tool for TaskTool {
                     .store
                     .get(&channel, &chat_id, id)?
                     .ok_or_else(|| Error::config("tool_task", "task not found"))?;
-                serialize_tool_output("tool_task", &TaskGetResponse { op: "get", task })
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
+                    "tool_task",
+                    &TaskGetResponse { op: "get", task },
+                )?))
             }
             "create" => {
                 let now_secs = current_unix_secs();
@@ -295,16 +327,30 @@ impl Tool for TaskTool {
                     task.completed_at_unix_secs = now_secs;
                 }
                 task = normalize_task_item(task)?;
-                self.sync_calendar(&mut task, TaskCalendarLink::default(), now_secs, ctx)?;
+                if let Err(error) =
+                    self.sync_calendar(&mut task, TaskCalendarLink::default(), now_secs, ctx)
+                {
+                    if let Some((provider, account_key)) =
+                        task_calendar_failure_context(&task, &TaskCalendarLink::default())
+                    {
+                        return self.office_operation_failure(
+                            "create",
+                            Some(provider.as_str()),
+                            account_key.as_deref(),
+                            &error,
+                        );
+                    }
+                    return Err(error);
+                }
                 self.store.upsert(&task)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_task",
                     &TaskMutationResponse {
                         op: "create",
                         ok: true,
                         task,
                     },
-                )
+                )?))
             }
             "update" => {
                 let now_secs = current_unix_secs();
@@ -393,7 +439,7 @@ impl Tool for TaskTool {
                     updated.push("clear_calendar");
                 }
                 if updated.is_empty() {
-                    return serialize_tool_output(
+                    return Ok(ToolExecutionOutcome::text(serialize_tool_output(
                         "tool_task",
                         &TaskUpdateResponse {
                             op: "update",
@@ -402,7 +448,7 @@ impl Tool for TaskTool {
                             task: None,
                             error: Some("no fields to update"),
                         },
-                    );
+                    )?));
                 }
                 if task.status == TaskStatus::Completed {
                     task.completed_at_unix_secs = now_secs;
@@ -411,9 +457,23 @@ impl Tool for TaskTool {
                 }
                 task.updated_at = now_secs;
                 task = normalize_task_item(task)?;
-                self.sync_calendar(&mut task, previous_calendar_link, now_secs, ctx)?;
+                if let Err(error) =
+                    self.sync_calendar(&mut task, previous_calendar_link.clone(), now_secs, ctx)
+                {
+                    if let Some((provider, account_key)) =
+                        task_calendar_failure_context(&task, &previous_calendar_link)
+                    {
+                        return self.office_operation_failure(
+                            "update",
+                            Some(provider.as_str()),
+                            account_key.as_deref(),
+                            &error,
+                        );
+                    }
+                    return Err(error);
+                }
                 self.store.upsert(&task)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_task",
                     &TaskUpdateResponse {
                         op: "update",
@@ -422,7 +482,7 @@ impl Tool for TaskTool {
                         task: Some(task),
                         error: None,
                     },
-                )
+                )?))
             }
             "complete" => {
                 let now_secs = current_unix_secs();
@@ -436,42 +496,105 @@ impl Tool for TaskTool {
                 task.completed_at_unix_secs = now_secs;
                 task.updated_at = now_secs;
                 task = normalize_task_item(task)?;
-                self.sync_calendar(&mut task, previous_calendar_link, now_secs, ctx)?;
+                if let Err(error) =
+                    self.sync_calendar(&mut task, previous_calendar_link.clone(), now_secs, ctx)
+                {
+                    if let Some((provider, account_key)) =
+                        task_calendar_failure_context(&task, &previous_calendar_link)
+                    {
+                        return self.office_operation_failure(
+                            "complete",
+                            Some(provider.as_str()),
+                            account_key.as_deref(),
+                            &error,
+                        );
+                    }
+                    return Err(error);
+                }
                 self.store.upsert(&task)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_task",
                     &TaskMutationResponse {
                         op: "complete",
                         ok: true,
                         task,
                     },
-                )
+                )?))
             }
             "delete" => {
                 let id = required_string(&obj, "id")?;
                 if let Some(task) = self.store.get(&channel, &chat_id, id)? {
-                    self.delete_calendar_link(&TaskCalendarLink::from_task(&task), ctx)?;
+                    let previous_calendar_link = TaskCalendarLink::from_task(&task);
+                    if let Err(error) = self.delete_calendar_link(&previous_calendar_link, ctx) {
+                        if let Some((provider, account_key)) =
+                            previous_link_failure_context(&previous_calendar_link)
+                        {
+                            return self.office_operation_failure(
+                                "delete",
+                                Some(provider.as_str()),
+                                account_key.as_deref(),
+                                &error,
+                            );
+                        }
+                        return Err(error);
+                    }
                 }
                 let removed = self.store.delete(&channel, &chat_id, id)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_task",
                     &TaskDeleteResponse {
                         op: "delete",
                         id,
                         ok: removed,
                     },
-                )
+                )?))
             }
             _ => Err(Error::config("tool_task", format!("unknown op: {}", op))),
         }
     }
 
-    fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::stateful()
+    fn office_operation_failure(
+        &self,
+        op: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        error: &Error,
+    ) -> Result<ToolExecutionOutcome> {
+        #[cfg(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        {
+            let Some(calendar_service) = self.calendar_service.as_ref() else {
+                return Err(Error::config(
+                    "tool_task",
+                    "office calendar runtime is unavailable in this context",
+                ));
+            };
+            build_office_operation_failure_outcome(OfficeOperationFailureInput {
+                stage: "tool_task",
+                op,
+                provider,
+                account_key,
+                capability: OfficeCapability::Calendar,
+                default_account_key: calendar_service.office_default_account_key()?,
+                account_assessments: calendar_service.office_account_assessments()?,
+                error,
+            })
+        }
+        #[cfg(not(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        )))]
+        {
+            let _ = (op, provider, account_key);
+            Err(Error::config(
+                "tool_task",
+                format!("office calendar failure handling unavailable: {}", error),
+            ))
+        }
     }
-}
 
-impl TaskTool {
     fn sync_calendar(
         &self,
         task: &mut TaskItem,
@@ -685,6 +808,29 @@ fn default_calendar_id_for_task(provider: &str, calendar_id: &str) -> String {
     } else {
         String::new()
     }
+}
+
+fn task_calendar_failure_context(
+    task: &TaskItem,
+    previous_link: &TaskCalendarLink,
+) -> Option<(String, Option<String>)> {
+    let provider = desired_calendar_provider(task);
+    if provider != CALENDAR_PROVIDER_LOCAL {
+        let account_key = (!task.calendar_account_key.trim().is_empty())
+            .then(|| task.calendar_account_key.clone());
+        return Some((provider, account_key));
+    }
+    previous_link_failure_context(previous_link)
+}
+
+fn previous_link_failure_context(link: &TaskCalendarLink) -> Option<(String, Option<String>)> {
+    if link.is_empty() || link.is_local() {
+        return None;
+    }
+    Some((
+        link.provider.clone(),
+        (!link.account_key.trim().is_empty()).then(|| link.account_key.clone()),
+    ))
 }
 
 fn require_session_scope(ctx: &dyn ToolContext) -> Result<(&str, &str)> {
@@ -1275,6 +1421,91 @@ mod tests {
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
+    struct FailingRemoteProvider;
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    impl CalendarProvider for FailingRemoteProvider {
+        fn provider_name(&self) -> &'static str {
+            "mock_remote"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Mock Remote"
+        }
+
+        fn supports(&self, op: CalendarOperation) -> bool {
+            matches!(
+                op,
+                CalendarOperation::List
+                    | CalendarOperation::Get
+                    | CalendarOperation::Create
+                    | CalendarOperation::Update
+                    | CalendarOperation::Delete
+            )
+        }
+
+        fn list_events(
+            &self,
+            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _query: CalendarQuery,
+        ) -> Result<Vec<CalendarEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn get_event(
+            &self,
+            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _id: &str,
+        ) -> Result<Option<CalendarEvent>> {
+            Ok(None)
+        }
+
+        fn create_event(
+            &self,
+            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _event: &CalendarEvent,
+        ) -> Result<CalendarEvent> {
+            Err(Error::config(
+                "calendar_provider",
+                "remote calendar unavailable",
+            ))
+        }
+
+        fn update_event(
+            &self,
+            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _event: &CalendarEvent,
+        ) -> Result<CalendarEvent> {
+            Err(Error::config(
+                "calendar_provider",
+                "remote calendar unavailable",
+            ))
+        }
+
+        fn delete_event(
+            &self,
+            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _credential: &CalendarProviderCredential,
+            _id: &str,
+        ) -> Result<bool> {
+            Err(Error::config(
+                "calendar_provider",
+                "remote calendar unavailable",
+            ))
+        }
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     fn build_remote_calendar_service(provider: Arc<dyn CalendarProvider>) -> CalendarService {
         let credential_store = Arc::new(StubCalendarCredentialStore::default());
         credential_store
@@ -1474,5 +1705,42 @@ mod tests {
             RemoteCall::Delete { account_key, id }
                 if account_key == "calendar-work" && id == &event_id
         ));
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn task_tool_remote_calendar_create_returns_structured_office_failure() {
+        let tool = TaskTool::with_office_calendar_service(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+            build_remote_calendar_service(Arc::new(FailingRemoteProvider)),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"op":"create","title":"客户例会","calendar_provider":"mock_remote","calendar_start_at":1700000000,"calendar_end_at":1700003600}"#,
+                &mut ctx,
+            )
+            .expect("structured failure outcome");
+        let payload: Value = serde_json::from_str(&outcome.content).expect("failure json");
+
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Permanent)
+        );
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["office_assessment"]["capability"], "calendar");
+        assert_eq!(
+            payload["office_assessment"]["default_account_key"],
+            "calendar-work"
+        );
+        assert_eq!(
+            payload["office_assessment"]["account_assessments"][0]["account_key"],
+            "calendar-work"
+        );
     }
 }
