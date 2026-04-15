@@ -219,7 +219,6 @@
   - `count`
   - `items[]`
     - `provider_kind`
-    - `display_name`
     - `capabilities`
     - `account_fields[]`
       - `key`
@@ -258,7 +257,6 @@
     - `accounts[]`
       - `account_key`
       - `provider_kind`
-      - `provider_display_name`
       - `account_label`
       - `identity_class`
       - `enabled_capabilities`
@@ -288,7 +286,6 @@
   - `items[]`
     - `account_key`
     - `provider_kind`
-    - `provider_display_name`
     - `account_label`
     - `identity_class`
     - `enabled_capabilities`
@@ -302,10 +299,9 @@
 
 - **鉴权**：已激活 + 配对码 + CSRF
 - **请求头**：`Content-Type: application/json`
-- **请求体**：单个账户 upsert payload
+- **请求体**：单个账户 create / upsert payload
 - **主要字段**：
   - `account`
-    - `account_key`
     - `provider_kind`
     - `external_account_id`
     - `account_label`
@@ -320,6 +316,9 @@
 - **响应**：
   - 成功：`200 OK`，返回更新后的账户详情
   - 校验失败：`400 Bad Request`
+- **补充**：
+  - 如果 `account.account_key` 省略或为空，由服务端自动生成稳定的账户标识。
+  - 响应体会返回生成后的 `account_key`，后续详情、配置、探测、撤销和删除都继续使用这个路径键。
 
 ### GET /api/config/accounts/:account_key
 
@@ -330,7 +329,6 @@
 - **响应体**：
   - `account`
   - `assessment`
-  - `provider_display_name`
   - `fields[]`
     - `key`
     - `label`

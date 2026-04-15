@@ -66,6 +66,11 @@ const ToolsPage = lazy(async () => {
   return { default: mod.ToolsPage }
 })
 
+const AccountsPage = lazy(async () => {
+  const mod = await import('./pages/AccountsPage')
+  return { default: mod.AccountsPage }
+})
+
 const DeviceConfigLayout = lazy(async () => {
   const mod = await import('./pages/DeviceConfigLayout')
   return { default: mod.DeviceConfigLayout }
@@ -162,6 +167,7 @@ function App() {
                     </Route>
                     <Route path="/skills" element={<SkillsPage />} />
                     <Route path="/tools" element={<ToolsPage />} />
+                    <Route path="/accounts" element={<AccountsPage />} />
                     <Route path="*" element={<PlaceholderPage />} />
                   </Route>
                 </Routes>

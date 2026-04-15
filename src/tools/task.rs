@@ -675,10 +675,10 @@ impl TaskTool {
     fn upsert_calendar_event(
         &self,
         provider: &str,
-        account_key: &str,
+        _account_key: &str,
         event: &CalendarEvent,
-        is_create: bool,
-        ctx: &mut dyn ToolContext,
+        _is_create: bool,
+        _ctx: &mut dyn ToolContext,
     ) -> Result<(CalendarEvent, String)> {
         if provider == CALENDAR_PROVIDER_LOCAL {
             self.calendar_store.upsert(event)?;
@@ -705,7 +705,7 @@ impl TaskTool {
             let resolved_account_key = service
                 .resolve_account_key_for_provider(
                     provider,
-                    (!account_key.trim().is_empty()).then_some(account_key),
+                    (!_account_key.trim().is_empty()).then_some(_account_key),
                 )?
                 .ok_or_else(|| {
                     Error::config(
@@ -716,13 +716,13 @@ impl TaskTool {
                         ),
                     )
                 })?;
-            let mut http = ToolContextHttpClient::new(ctx);
+            let mut http = ToolContextHttpClient::new(_ctx);
             let event = service.upsert(
                 Some(&mut http),
                 provider,
                 Some(resolved_account_key.as_str()),
                 event,
-                is_create,
+                _is_create,
             );
             return event.map(|event| (event, resolved_account_key));
         }
@@ -739,7 +739,7 @@ impl TaskTool {
     fn delete_calendar_link(
         &self,
         link: &TaskCalendarLink,
-        ctx: &mut dyn ToolContext,
+        _ctx: &mut dyn ToolContext,
     ) -> Result<()> {
         if link.is_empty() {
             return Ok(());
@@ -762,7 +762,7 @@ impl TaskTool {
                     ),
                 )
             })?;
-            let mut http = ToolContextHttpClient::new(ctx);
+            let mut http = ToolContextHttpClient::new(_ctx);
             let _ = service.delete(
                 Some(&mut http),
                 &link.provider,

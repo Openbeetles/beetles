@@ -147,6 +147,7 @@ For Linux SPI panels, Beetle prefers `gpio-cdev`, falls back to sysfs GPIO when 
 By default, the screen shows:
 
 - the current device state, such as booting, idle, busy, or fault
+- critical resource pressure as a fault/protect state instead of collapsing it into generic busy
 - current network information, such as hotspot address or LAN IP
 - a simple summary of enabled channels
 - a few basic runtime details

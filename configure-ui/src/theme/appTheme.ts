@@ -310,7 +310,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             borderRadius: R,
             boxShadow: 'none',
             minHeight: LAYOUT_TOKENS.buttonMinHeight,
-            transition: 'color var(--transition-duration) ease, background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, transform var(--transition-duration) var(--ease-emphasized)',
+            transition:
+              'color var(--transition-duration) ease, background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-emphasized), transform var(--transition-duration) var(--ease-emphasized), background-image var(--transition-duration) ease',
           },
           contained: {
             backgroundColor: 'var(--primary)',
@@ -318,12 +319,32 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 12%, transparent)',
             '&:hover': {
               backgroundColor: 'color-mix(in srgb, var(--primary) 92%, white)',
-              boxShadow: 'none',
             },
             '&:active': {
               backgroundColor: 'color-mix(in srgb, var(--primary) 85%, white)',
               borderTopColor: 'transparent',
+            },
+          },
+          /**
+           * 主色拟物填充：主题层一次生效（`os3dLanguage` 阴影栈 + 轻体积渐变）。
+           * 仅 `color=primary` 的 contained 挂载，避免与 secondary 等混用。
+           */
+          containedPrimary: {
+            boxShadow: 'var(--os3d-primary-button-stack)',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 11%, transparent) 0%, transparent 55%)',
+            '&:hover': {
+              boxShadow: 'var(--os3d-primary-button-stack-hover)',
+              transform: 'translateY(-1px)',
+            },
+            '&:active': {
+              boxShadow: 'var(--os3d-primary-button-stack-active)',
+              transform: 'translateY(0.5px)',
+            },
+            '&.Mui-disabled': {
               boxShadow: 'none',
+              transform: 'none',
+              backgroundImage: 'none',
             },
           },
           /** 否则 contained 会盖住 MUI 的 color=error，确认类危险操作无法显示红色 */
@@ -331,14 +352,24 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             backgroundColor: 'var(--semantic-danger)',
             color: 'var(--primary-fg)',
             borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 12%, transparent)',
+            boxShadow: 'var(--os3d-danger-button-stack)',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 10%, transparent) 0%, transparent 55%)',
             '&:hover': {
               backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 88%, black)',
-              boxShadow: 'none',
+              boxShadow: 'var(--os3d-danger-button-stack-hover)',
+              transform: 'translateY(-1px)',
             },
             '&:active': {
               backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 80%, black)',
               borderTopColor: 'transparent',
+              boxShadow: 'var(--os3d-danger-button-stack-active)',
+              transform: 'translateY(0.5px)',
+            },
+            '&.Mui-disabled': {
               boxShadow: 'none',
+              transform: 'none',
+              backgroundImage: 'none',
             },
           },
           outlined: {

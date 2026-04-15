@@ -47,8 +47,22 @@ pub struct OfficeAccountDraftRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeAccountRecordInput {
+    #[serde(default)]
+    pub account_key: String,
+    pub provider_kind: String,
+    #[serde(default)]
+    pub external_account_id: String,
+    #[serde(default)]
+    pub account_label: String,
+    pub identity_class: OfficeAccountIdentityClass,
+    #[serde(default)]
+    pub enabled_capabilities: Vec<OfficeCapability>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeAccountUpsertRequest {
-    pub account: OfficeAccount,
+    pub account: OfficeAccountRecordInput,
     #[serde(default)]
     pub set_defaults: Vec<OfficeCapability>,
     #[serde(default)]
@@ -68,7 +82,6 @@ pub struct OfficeCredentialDraftRequest {
 pub struct OfficeConfigAccountSummary {
     pub account_key: String,
     pub provider_kind: String,
-    pub provider_display_name: String,
     pub account_label: String,
     pub identity_class: OfficeAccountIdentityClass,
     #[serde(default)]
@@ -103,7 +116,6 @@ pub struct OfficeConfigFieldState {
 pub struct OfficeConfigAccountDetail {
     pub account: OfficeAccountAuthorityStatus,
     pub assessment: OfficeAccountAssessment,
-    pub provider_display_name: String,
     #[serde(default)]
     pub fields: Vec<OfficeConfigFieldState>,
 }
@@ -137,7 +149,6 @@ pub struct OfficeConfigCreateFieldSchema {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigProviderCatalogItem {
     pub provider_kind: String,
-    pub display_name: String,
     #[serde(default)]
     pub capabilities: Vec<OfficeCapability>,
     #[serde(default)]
@@ -478,7 +489,6 @@ impl OfficeConfigManagementService {
         Ok(OfficeConfigAccountDetail {
             account,
             assessment,
-            provider_display_name: provider_schema.display_name,
             fields,
         })
     }
@@ -556,18 +566,15 @@ impl OfficeConfigManagementService {
         &self,
         request: &OfficeAccountUpsertRequest,
     ) -> Result<OfficeConfigAccountDetail> {
-        let provider_schema =
-            office_provider_schema(&request.account.provider_kind).ok_or_else(|| {
-                Error::config(
-                    "office_config_save_account",
-                    format!(
-                        "unknown office provider '{}'",
-                        request.account.provider_kind
-                    ),
-                )
-            })?;
-        if request
-            .account
+        let accounts = self.load_accounts_segment()?;
+        let mut account = materialize_account_record_input(&accounts.registry, &request.account)?;
+        let provider_schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
+            Error::config(
+                "office_config_save_account",
+                format!("unknown office provider '{}'", account.provider_kind),
+            )
+        })?;
+        if account
             .enabled_capabilities
             .iter()
             .any(|capability| !provider_schema.capabilities.contains(capability))
@@ -581,13 +588,12 @@ impl OfficeConfigManagementService {
             ));
         }
         let segment = self.draft_accounts(&OfficeAccountDraftRequest {
-            account: request.account.clone(),
+            account: account.clone(),
             set_defaults: request.set_defaults.clone(),
             clear_defaults: request.clear_defaults.clone(),
             policy_patch: request.policy_patch.clone(),
         })?;
         let normalized_credential = if let Some(config) = request.config.as_ref() {
-            let mut account = request.account.clone();
             Some(self.prepare_account_config(&mut account, config, false)?)
         } else {
             None
@@ -596,7 +602,7 @@ impl OfficeConfigManagementService {
         if let Some(credential) = normalized_credential.as_ref() {
             self.credential_store.set(credential)?;
         }
-        self.account_detail(&request.account.account_key)
+        self.account_detail(&account.account_key)
     }
 
     pub fn save_account_config(
@@ -1013,7 +1019,6 @@ fn build_provider_catalog_item(schema: OfficeProviderSchema) -> OfficeConfigProv
         .collect::<Vec<_>>();
     OfficeConfigProviderCatalogItem {
         provider_kind: schema.provider_kind,
-        display_name: schema.display_name,
         capabilities: schema.capabilities,
         account_fields,
         config_fields,
@@ -1024,18 +1029,6 @@ fn default_account_create_fields(
     schema: &OfficeProviderSchema,
 ) -> Vec<OfficeConfigCreateFieldSchema> {
     vec![
-        OfficeConfigCreateFieldSchema {
-            key: "account_key".to_string(),
-            label: "Account key".to_string(),
-            description: "Stable account identifier used by config APIs.".to_string(),
-            value_kind: crate::office::OfficeProviderFieldValueKind::Identifier,
-            required: true,
-            secret: false,
-            multiple: false,
-            default_value: None,
-            default_values: Vec::new(),
-            options: Vec::new(),
-        },
         OfficeConfigCreateFieldSchema {
             key: "account_label".to_string(),
             label: "Account label".to_string(),
@@ -1094,6 +1087,99 @@ fn default_account_create_fields(
     ]
 }
 
+fn materialize_account_record_input(
+    registry: &crate::office::OfficeAccountRegistry,
+    input: &OfficeAccountRecordInput,
+) -> Result<OfficeAccount> {
+    let account_key = if input.account_key.trim().is_empty() {
+        generate_account_key(registry, input)
+    } else {
+        input.account_key.trim().to_string()
+    };
+    Ok(OfficeAccount {
+        account_key,
+        provider_kind: input.provider_kind.trim().to_string(),
+        external_account_id: input.external_account_id.trim().to_string(),
+        account_label: input.account_label.trim().to_string(),
+        identity_class: input.identity_class,
+        enabled_capabilities: input.enabled_capabilities.clone(),
+    })
+}
+
+fn generate_account_key(
+    registry: &crate::office::OfficeAccountRegistry,
+    input: &OfficeAccountRecordInput,
+) -> String {
+    let provider_slug = slugify_account_key_segment(&input.provider_kind, "provider");
+    let identity_slug =
+        slugify_account_key_segment(identity_class_slug(input.identity_class), "acct");
+    let seed_slug = slugify_account_key_segment(
+        if input.external_account_id.trim().is_empty() {
+            &input.account_label
+        } else {
+            &input.external_account_id
+        },
+        "",
+    );
+    let mut base = format!("{provider_slug}-{identity_slug}");
+    if !seed_slug.is_empty() {
+        base.push('-');
+        base.push_str(&seed_slug);
+    }
+    let max_len = crate::config::CONFIG_ACCOUNT_KEY_MAX_LEN;
+    let mut candidate = truncate_account_key_candidate(&base, max_len);
+    if registry.get(&candidate).is_none() {
+        return candidate;
+    }
+    for suffix in 2.. {
+        let suffix_text = format!("-{suffix}");
+        let keep_len = max_len.saturating_sub(suffix_text.len());
+        candidate = format!(
+            "{}{}",
+            truncate_account_key_candidate(&base, keep_len.max(1)),
+            suffix_text
+        );
+        if registry.get(&candidate).is_none() {
+            return candidate;
+        }
+    }
+    unreachable!("account key generation should always find a free suffix")
+}
+
+fn truncate_account_key_candidate(value: &str, max_len: usize) -> String {
+    value.chars().take(max_len).collect::<String>()
+}
+
+fn slugify_account_key_segment(value: &str, fallback: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_dash = false;
+    for ch in value.trim().chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() {
+            out.push(ch);
+            last_was_dash = false;
+        } else if !out.is_empty() && !last_was_dash {
+            out.push('-');
+            last_was_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn identity_class_slug(identity_class: OfficeAccountIdentityClass) -> &'static str {
+    match identity_class {
+        OfficeAccountIdentityClass::Work => "work",
+        OfficeAccountIdentityClass::Personal => "personal",
+        OfficeAccountIdentityClass::Family => "family",
+        OfficeAccountIdentityClass::Shared => "shared",
+        OfficeAccountIdentityClass::Other => "other",
+    }
+}
+
 fn build_create_field_from_provider_field(
     field: &OfficeProviderFieldSchema,
 ) -> OfficeConfigCreateFieldSchema {
@@ -1125,7 +1211,6 @@ fn build_account_summary(
     OfficeConfigAccountSummary {
         account_key: account.account_key.clone(),
         provider_kind: account.provider_kind.clone(),
-        provider_display_name: provider_display_name_for_kind(&account.provider_kind),
         account_label: account.account_label.clone(),
         identity_class: account.identity_class,
         enabled_capabilities: account.enabled_capabilities.clone(),
@@ -1246,12 +1331,6 @@ fn capability_display_name(capability: OfficeCapability) -> &'static str {
         OfficeCapability::Documents => "Documents",
         OfficeCapability::ContactsDirectory => "Contacts Directory",
     }
-}
-
-fn provider_display_name_for_kind(provider_kind: &str) -> String {
-    office_provider_schema(provider_kind)
-        .map(|schema| schema.display_name)
-        .unwrap_or_else(|| provider_kind.to_string())
 }
 
 #[cfg(test)]
@@ -1584,10 +1663,11 @@ mod tests {
             .expect("imap_smtp provider");
 
         assert!(
-            imap.account_fields
+            !imap
+                .account_fields
                 .iter()
-                .any(|field| field.key == "account_key" && field.required),
-            "provider catalog should expose account_key in account_fields"
+                .any(|field| field.key == "account_key"),
+            "provider catalog should not expose internal account_key in account_fields"
         );
         let enabled_capabilities = imap
             .account_fields
@@ -1628,7 +1708,35 @@ mod tests {
     }
 
     #[test]
-    fn account_summaries_filter_by_provider_kind_and_expose_display_name() {
+    fn save_account_upsert_generates_account_key_when_missing() {
+        let service = OfficeConfigManagementService::new(
+            Arc::new(MemoryConfigFileStore::new()),
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        );
+
+        let detail = service
+            .save_account_upsert(&OfficeAccountUpsertRequest {
+                account: OfficeAccountRecordInput {
+                    account_key: String::new(),
+                    provider_kind: "imap_smtp".to_string(),
+                    external_account_id: String::new(),
+                    account_label: "Primary mail".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Work,
+                    enabled_capabilities: vec![OfficeCapability::Mail],
+                },
+                set_defaults: vec![],
+                clear_defaults: vec![],
+                policy_patch: None,
+                config: None,
+            })
+            .expect("save account upsert");
+
+        assert_eq!(detail.account.account_key, "imap-smtp-work-primary-mail");
+    }
+
+    #[test]
+    fn account_summaries_filter_by_provider_kind() {
         let config_file_store = Arc::new(MemoryConfigFileStore::new());
         config::save_office_accounts_segment(
             config_file_store.as_ref(),
@@ -1670,7 +1778,6 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].account_key, "mail-feishu");
-        assert_eq!(items[0].provider_display_name, "Feishu Mail");
     }
 
     #[test]

@@ -10,6 +10,8 @@ export const OS_ICON_NAV: Record<string, string> = {
   "/device": "/icons/home_3d.png",
   "/ai-config": "/icons/bot_3d.png",
   "/channels-config": "/icons/chat_3d.png",
+  /** 账户管理（密码箱隐喻：Fluent Locked with key） */
+  "/accounts": "/icons/safe_3d.png",
   "/soul-user": "/icons/theme_3d.png",
   "/skills": "/icons/puzzle_3d.png",
   "/tools": "/icons/tools_3d.png",

@@ -25,7 +25,7 @@ assert_absent() {
   fi
 }
 
-assert_contains '4\) BUILD_TARGET="aarch64-unknown-linux-musl"' \
+assert_contains '5\) BUILD_TARGET="aarch64-unknown-linux-musl"' \
   "Linux aarch64 cross-build default must remain musl before native Linux overrides are applied"
 
 gnu_assignment_lines=$(rg -n 'BUILD_TARGET="aarch64-unknown-linux-gnu"' "$BUILD_SH" | cut -d: -f1 || true)
@@ -36,11 +36,17 @@ if [[ "$gnu_assignment_count" != "2" ]]; then
   exit 1
 fi
 
-assert_contains 'elif \[\[ \$PLATFORM_CHOICE -eq 4 \]\] && \[\[ "\$CURRENT_ARCH" == "aarch64" \|\| "\$CURRENT_ARCH" == "arm64" \]\]' \
-  "Linux native aarch64 path must explicitly switch option 4 to GNU"
+assert_contains 'elif \[\[ \$PLATFORM_CHOICE -eq 5 \]\] && \[\[ "\$CURRENT_ARCH" == "aarch64" \|\| "\$CURRENT_ARCH" == "arm64" \]\]' \
+  "Linux native aarch64 path must explicitly switch option 5 to GNU"
 assert_contains 'REMOTE_BUILD_TARGET_ENV="linux-aarch64"' \
   "remote aarch64 builds must still keep the dedicated GNU remote target contract"
 assert_contains 'BUILD_TARGET="aarch64-unknown-linux-gnu"' \
   "Linux native and remote aarch64 paths must keep the GNU target contract"
+assert_contains 'linux-full\)' \
+  "linux-full package profile branch must exist"
+assert_contains 'linux-full\)[[:space:]]*$' \
+  "linux-full package profile must be split out from generic voice+vision+sensor builds"
+assert_contains 'capability_sensor,capability_office' \
+  "linux-full must include capability_office so account-config APIs are compiled into Linux builds"
 
 echo "linux_aarch64_build_contract_test: ok"

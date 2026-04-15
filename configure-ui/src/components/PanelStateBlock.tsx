@@ -148,7 +148,7 @@ export interface PanelStateBlockProps {
 }
 
 /**
- * 区块内「空 / 警告 / 错误」统一版式：细描边卡 + 左侧语义线 + 3D 插画与标题层级。
+ * 区块内「空 / 警告 / 错误」统一版式：柔光体积 + 左侧语义线 + 3D 插画与标题层级。
  * Use for empty lists, connect-first, and inline danger (not page-level `InlineAlert`).
  */
 export function PanelStateBlock({
@@ -173,9 +173,13 @@ export function PanelStateBlock({
           : { py: 2.5 }),
         px: 2,
         borderRadius: "var(--radius-card)",
-        border: "1px solid var(--form-outline-rest)",
+        border: "none",
         borderLeft: `${LAYOUT_TOKENS.accentLineWidth}px solid ${TONE_BORDER[tone]}`,
         backgroundColor: "var(--input-idle-well)",
+        boxShadow: [
+          "0 6px 20px -8px color-mix(in srgb, var(--foreground) 8%, transparent)",
+          "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
+        ].join(", "),
         boxSizing: "border-box",
       }}
     >

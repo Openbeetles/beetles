@@ -74,13 +74,41 @@ export const DIALOG_FOOTER_GUTTER_WIDE_SX = {
 } as const
 
 /**
- * 固件 / 设备配置类面板：`--os3d-content-plate-stack` 实体板层次 + 描边（见 `os3dLanguage.ts`）。
+ * 弹窗内长表单滚动区：与同为 `var(--card)` 的表单项卡片区分的一层浅坑底，避免白底贴白底。
+ * Scroll region behind stacked CONFIG_PANEL blocks in dialogs (add-account, etc.).
+ */
+export const DIALOG_FORM_SCROLL_WELL_SX = {
+  flex: 1,
+  minHeight: 0,
+  overflow: "auto" as const,
+  width: "100%",
+  boxSizing: "border-box" as const,
+  px: { xs: 2, sm: 2.5 },
+  py: 2.5,
+  pb: 1.5,
+  bgcolor: "var(--form-group-well)",
+  borderRadius: "var(--radius-card)",
+  boxShadow: "var(--os3d-micro-well-stack)",
+} as const
+
+/** 与滚动坑底分离的底栏（主按钮区），回到卡片面亮度；无顶部分割线，靠底色区分。 */
+export const DIALOG_FORM_SUBMIT_BAR_SX = {
+  flexShrink: 0,
+  pt: 2.5,
+  px: { xs: 2, sm: 2.5 },
+  pb: 1,
+  bgcolor: "var(--card)",
+} as const
+
+/**
+ * 固件 / 设备配置类面板：与官网 OsPanel 一致，**边界靠 `--os3d-content-plate-stack` 多层光照**，无描边。
  */
 export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
-  border: "1px solid var(--form-outline-rest)",
+  border: "none",
   boxShadow: "var(--os3d-content-plate-stack)",
+  isolation: "isolate",
 } as const
 
 /**
@@ -89,8 +117,9 @@ export const CONFIG_PANEL_SX = {
 export const DASHBOARD_CARD_SURFACE_SX = {
   bgcolor: "var(--card)",
   borderRadius: "var(--radius-card)",
-  border: "1px solid var(--form-outline-rest)",
+  border: "none",
   boxShadow: "var(--os3d-content-plate-stack)",
+  isolation: "isolate",
   overflow: "hidden",
 } as const
 
@@ -127,9 +156,8 @@ export const DASHBOARD_CARD_HEADER_ROW_SX = {
   px: 2.5,
   py: 2,
   bgcolor: "color-mix(in srgb, var(--foreground) 2.5%, transparent)",
-  /** 顶栏与正文区层次分离（与 DeviceBanner `divider-row` 同阶） */
-  borderBottom: "var(--divider-row)",
-  /** 微型窗口标题栏上沿高光 */
+  /** 与正文区分界：内阴影代替 hairline border */
+  borderBottom: "none",
   boxShadow: "var(--os3d-dashboard-card-header-lip)",
 } as const
 

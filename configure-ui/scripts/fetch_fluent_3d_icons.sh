@@ -49,6 +49,8 @@ fetch "assets/Calendar/3D/calendar_3d.png" "calendar_3d.png"
 fetch "assets/Alarm%20clock/3D/alarm_clock_3d.png" "alarm_3d.png"
 fetch "assets/Envelope/3D/envelope_3d.png" "mail_3d.png"
 fetch "assets/Busts%20in%20silhouette/3D/busts_in_silhouette_3d.png" "contacts_3d.png"
+# 主导航「账户管理」：密码箱 / 凭据保管（与通讯录 capability 的 contacts_3d 区分）
+fetch "assets/Locked%20with%20key/3D/locked_with_key_3d.png" "safe_3d.png"
 fetch "assets/Microphone/3D/microphone_3d.png" "microphone_3d.png"
 fetch "assets/Speaker%20high%20volume/3D/speaker_high_volume_3d.png" "speaker_3d.png"
 fetch "assets/Camera/3D/camera_3d.png" "camera_3d.png"

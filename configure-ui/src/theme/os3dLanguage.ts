@@ -1,9 +1,8 @@
 import type { ThemeMode } from "../config/themeTokens";
 
 /**
- * Beetle OS「拟物 3D」单源：凹 / 凸 分层 — 大板与卡内槽用 **凹陷承托**，
- * 数字块、胶囊、区块图标用 **凸起贴件**（上沿高光 + 底侧柔影），避免全盘 inset。
- * 体积光仅用 **foreground / 中性黑** 混色，避免与品牌主色叠出「脏边」。
+ * Beetle OS「拟物 3D」单源：与官网 OsPanel 一致 — **实体板靠多层外扩漫反射 + 顶缘蜡光** 塑形，
+ * 不靠细描边；凹格用 inset 影。配色仅用 foreground / 中性黑混色。
  */
 
 export type Os3dIconVariant =
@@ -85,19 +84,22 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
         "drop-shadow(0 1px 2px color-mix(in srgb, var(--foreground) 4%, transparent))",
       ].join(" ");
 
-  /** 深色：环境影用一点 foreground 混色，避免死黑；浅色：全用混色柔边 */
+  /**
+   * 内容大板（Settings 左栏、仪表盘卡外壳）：远距体积光 + 中距承托 + 贴底接触 + 顶缘蜡光。
+   * Content plate: ambient halo + layered lift (beetle_site marketing OsPanel, neutral-only).
+   */
   const plateDark = [
+    "0 0 38px color-mix(in srgb, var(--foreground) 9%, transparent)",
+    "0 18px 50px -12px color-mix(in srgb, #000 34%, transparent)",
+    "0 6px 18px -4px color-mix(in srgb, #000 24%, transparent)",
     "inset 0 1px 0 color-mix(in srgb, var(--foreground) 7%, transparent)",
-    "0 16px 44px -12px color-mix(in srgb, var(--foreground) 14%, transparent)",
-    "0 6px 16px -4px color-mix(in srgb, #000 22%, transparent)",
-    "0 1px 0 color-mix(in srgb, var(--foreground) 4%, transparent)",
   ].join(", ");
 
   const plateLight = [
-    "inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)",
-    "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 3%, transparent)",
-    "0 14px 40px -14px color-mix(in srgb, var(--foreground) 9%, transparent)",
-    "0 4px 12px -2px color-mix(in srgb, var(--foreground) 5%, transparent)",
+    "0 0 32px color-mix(in srgb, var(--foreground) 5%, transparent)",
+    "0 16px 44px -14px color-mix(in srgb, var(--foreground) 10%, transparent)",
+    "0 5px 16px -4px color-mix(in srgb, var(--foreground) 6%, transparent)",
+    "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
   ].join(", ");
 
   return {
@@ -131,9 +133,13 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
 
     "--os3d-content-plate-stack": dark ? plateDark : plateLight,
 
-    /** 仪表盘卡顶栏：极淡的「蜡面」上缘 */
-    "--os3d-dashboard-card-header-lip":
+    /**
+     * 仪表盘卡顶栏：上缘蜡光 + 与正文分界用 **内阴影**（无 hairline border）。
+     */
+    "--os3d-dashboard-card-header-lip": [
       "inset 0 1px 0 color-mix(in srgb, var(--foreground) 3.5%, transparent)",
+      "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
+    ].join(", "),
 
     /**
      * 仪表盘卡正文相对标题栏：浅「屏坑」承托内容（标题栏略抬、正文略沉）。
@@ -206,7 +212,7 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
       "0 2px 9px -3px color-mix(in srgb, var(--foreground) 5%, transparent)",
     ].join(", "),
 
-    /** 卡内嵌套：凹影更浅、边更柔 */
+    /** 卡内嵌套：凹影更浅、边更柔（仅靠 inset，无 hairline） */
     "--os3d-inset-panel-stack": dark
       ? [
           "inset 0 3px 10px color-mix(in srgb, #000 18%, transparent)",
@@ -228,6 +234,81 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
       : [
           "inset 0 2px 4px color-mix(in srgb, var(--foreground) 7%, transparent)",
           "inset 0 1px 0 color-mix(in srgb, var(--foreground) 3%, transparent)",
+        ].join(", "),
+
+    /**
+     * 主色填充按钮（全站 `contained` + primary）：顶缘蜡光 + 色相贴合的外扩影；hover 略抬、active 内收。
+     * Primary filled button: wax lip + tinted lift stack; hover lifts, active presses.
+     */
+    "--os3d-primary-button-stack": dark
+      ? [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 14%, transparent)",
+          "0 4px 16px -4px color-mix(in srgb, #000 44%, transparent)",
+          "0 2px 6px -2px color-mix(in srgb, #000 30%, transparent)",
+        ].join(", ")
+      : [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 20%, transparent)",
+          "0 6px 20px -5px color-mix(in srgb, var(--primary) 30%, transparent)",
+          "0 2px 8px -2px color-mix(in srgb, var(--foreground) 9%, transparent)",
+        ].join(", "),
+
+    "--os3d-primary-button-stack-hover": dark
+      ? [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 20%, transparent)",
+          "0 7px 22px -4px color-mix(in srgb, #000 50%, transparent)",
+          "0 3px 9px -2px color-mix(in srgb, #000 34%, transparent)",
+        ].join(", ")
+      : [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 26%, transparent)",
+          "0 8px 24px -5px color-mix(in srgb, var(--primary) 34%, transparent)",
+          "0 3px 10px -2px color-mix(in srgb, var(--foreground) 11%, transparent)",
+        ].join(", "),
+
+    "--os3d-primary-button-stack-active": dark
+      ? [
+          "inset 0 2px 7px color-mix(in srgb, #000 38%, transparent)",
+          "inset 0 1px 0 color-mix(in srgb, #000 22%, transparent)",
+          "0 1px 3px -1px color-mix(in srgb, #000 25%, transparent)",
+        ].join(", ")
+      : [
+          "inset 0 2px 6px color-mix(in srgb, var(--primary) 45%, #000)",
+          "inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent)",
+        ].join(", "),
+
+    /** 危险色填充：与 chip-lift 同构，阴影色相跟 `--semantic-danger`。 */
+    "--os3d-danger-button-stack": dark
+      ? [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 12%, transparent)",
+          "0 4px 16px -4px color-mix(in srgb, #000 46%, transparent)",
+          "0 2px 6px -2px color-mix(in srgb, #000 32%, transparent)",
+        ].join(", ")
+      : [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 18%, transparent)",
+          "0 6px 20px -5px color-mix(in srgb, var(--semantic-danger) 34%, transparent)",
+          "0 2px 8px -2px color-mix(in srgb, var(--semantic-danger) 24%, transparent)",
+        ].join(", "),
+
+    "--os3d-danger-button-stack-hover": dark
+      ? [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 18%, transparent)",
+          "0 7px 22px -4px color-mix(in srgb, #000 52%, transparent)",
+          "0 3px 9px -2px color-mix(in srgb, #000 36%, transparent)",
+        ].join(", ")
+      : [
+          "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 24%, transparent)",
+          "0 8px 24px -5px color-mix(in srgb, var(--semantic-danger) 40%, transparent)",
+          "0 3px 10px -2px color-mix(in srgb, var(--semantic-danger) 28%, transparent)",
+        ].join(", "),
+
+    "--os3d-danger-button-stack-active": dark
+      ? [
+          "inset 0 2px 7px color-mix(in srgb, #000 40%, transparent)",
+          "inset 0 1px 0 color-mix(in srgb, #000 24%, transparent)",
+          "0 1px 3px -1px color-mix(in srgb, #000 26%, transparent)",
+        ].join(", ")
+      : [
+          "inset 0 2px 6px color-mix(in srgb, var(--semantic-danger) 48%, #000)",
+          "inset 0 1px 0 color-mix(in srgb, var(--foreground) 7%, transparent)",
         ].join(", "),
   };
 }

@@ -16,6 +16,13 @@ import type {
   ChannelsConfigSegment,
   SystemConfigSegment,
 } from '../types/appConfig'
+import type {
+  AccountCapability,
+  AccountConfigSaveRequest,
+  AccountListFilters,
+  AccountRevokeRequest,
+  AccountUpsertRequest,
+} from '../types/accountConfig'
 import type { SkillItem } from '../api/endpoints/skills'
 import type { DisplayConfig } from '../types/displayConfig'
 import type { HardwareSegment } from '../types/hardwareConfig'
@@ -44,6 +51,27 @@ export function useDeviceApi() {
           configApi.saveChannels(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveSystem: (body: SystemConfigSegment) =>
           configApi.saveSystem(baseUrl ?? '', (pairingCode ?? '').trim(), body),
+        accounts: {
+          getProviders: (capability?: AccountCapability) =>
+            configApi.getProviders(baseUrl ?? '', pairingCode ?? undefined, { capability }),
+          getCapabilities: () => configApi.getCapabilities(baseUrl ?? '', pairingCode ?? undefined),
+          getCapability: (capability: AccountCapability) =>
+            configApi.getCapability(baseUrl ?? '', pairingCode ?? undefined, capability),
+          list: (filters?: AccountListFilters) =>
+            configApi.getAccounts(baseUrl ?? '', pairingCode ?? undefined, filters),
+          create: (body: AccountUpsertRequest) =>
+            configApi.createAccount(baseUrl ?? '', (pairingCode ?? '').trim(), body),
+          get: (accountKey: string) =>
+            configApi.getAccount(baseUrl ?? '', pairingCode ?? undefined, accountKey),
+          saveConfig: (accountKey: string, body: AccountConfigSaveRequest) =>
+            configApi.saveAccountConfig(baseUrl ?? '', (pairingCode ?? '').trim(), accountKey, body),
+          probe: (accountKey: string) =>
+            configApi.probeAccount(baseUrl ?? '', (pairingCode ?? '').trim(), accountKey),
+          revoke: (accountKey: string, body?: AccountRevokeRequest) =>
+            configApi.revokeAccount(baseUrl ?? '', (pairingCode ?? '').trim(), accountKey, body),
+          delete: (accountKey: string) =>
+            configApi.deleteAccount(baseUrl ?? '', (pairingCode ?? '').trim(), accountKey),
+        },
       },
       display: {
         get: () => displayApi.getDisplayConfig(baseUrl ?? '', (pairingCode ?? '').trim()),

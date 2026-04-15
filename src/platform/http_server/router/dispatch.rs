@@ -1296,8 +1296,6 @@ fn dispatch_ota(
 mod tests {
     use super::dispatch;
     use crate::bus::new_inbound_channel;
-    use crate::config::{self, OfficeAccountsSegment};
-    use crate::office::{OfficeAccount, OfficeAccountIdentityClass, OfficeCapability};
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, HandlerContext,
     };
@@ -1305,7 +1303,23 @@ mod tests {
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, Mutex};
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    use crate::config::{self, OfficeAccountsSegment};
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    use crate::office::{OfficeAccount, OfficeAccountIdentityClass, OfficeCapability};
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    use std::sync::{MutexGuard, OnceLock};
 
     fn build_router_env() -> RouterEnv {
         let (inbound_tx, _inbound_rx, _inbound_depth) =
@@ -1518,10 +1532,9 @@ mod tests {
             "body={}",
             String::from_utf8_lossy(&response.body)
         );
-        assert_eq!(
-            parsed["items"].as_array().expect("items array")[0]["provider_display_name"],
-            "IMAP / SMTP"
-        );
+        assert!(parsed["items"].as_array().expect("items array")[0]
+            .get("provider_display_name")
+            .is_none());
     }
 
     #[cfg(all(
@@ -1572,7 +1585,7 @@ mod tests {
             String::from_utf8_lossy(&response.body)
         );
         assert_eq!(items[0]["account_key"], "mail-feishu");
-        assert_eq!(items[0]["provider_display_name"], "Feishu Mail");
+        assert!(items[0].get("provider_display_name").is_none());
     }
 
     #[cfg(all(
@@ -1595,8 +1608,9 @@ mod tests {
             .iter()
             .find(|item| item["provider_kind"] == "imap_smtp")
             .expect("imap_smtp provider");
+        assert!(imap.get("display_name").is_none());
         assert!(
-            imap["account_fields"]
+            !imap["account_fields"]
                 .as_array()
                 .expect("account_fields array")
                 .iter()
@@ -1714,7 +1728,6 @@ mod tests {
         let _guard = office_test_guard();
         let ctx = build_authed_ctx();
         let env = build_router_env();
-        let account_key = "test-http-mail-upsert";
 
         let response = dispatch(
             &ctx,
@@ -1723,7 +1736,6 @@ mod tests {
                 "/api/config/accounts",
                 serde_json::json!({
                     "account": {
-                        "account_key": account_key,
                         "provider_kind": "imap_smtp",
                         "external_account_id": "",
                         "account_label": "Upserted mail",
@@ -1738,7 +1750,10 @@ mod tests {
         assert_eq!(response.status, 200);
 
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
-        assert_eq!(parsed["account"]["account_key"], account_key);
+        assert_eq!(
+            parsed["account"]["account_key"],
+            "imap-smtp-work-upserted-mail"
+        );
         assert_eq!(parsed["account"]["selected_for_capabilities"][0], "mail");
     }
 
@@ -1751,7 +1766,6 @@ mod tests {
         let _guard = office_test_guard();
         let ctx = build_authed_ctx();
         let env = build_router_env();
-        let account_key = "test-http-mail-create-complete";
 
         let response = dispatch(
             &ctx,
@@ -1760,7 +1774,6 @@ mod tests {
                 "/api/config/accounts",
                 serde_json::json!({
                     "account": {
-                        "account_key": account_key,
                         "provider_kind": "imap_smtp",
                         "external_account_id": "",
                         "account_label": "Primary mail",
@@ -1787,6 +1800,11 @@ mod tests {
             String::from_utf8_lossy(&response.body)
         );
 
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let account_key = parsed["account"]["account_key"]
+            .as_str()
+            .expect("account_key string");
+        assert_eq!(account_key, "imap-smtp-work-primary-mail");
         let credential = ctx
             .platform
             .office_credential_store()
@@ -1902,10 +1920,9 @@ mod tests {
         assert_eq!(mail["selection_status"], "selected");
         assert_eq!(mail["selected_account_key"], "test-http-mail-capability");
         assert!(mail["accounts"].is_array());
-        assert_eq!(
-            mail["accounts"].as_array().expect("accounts array")[0]["provider_display_name"],
-            "IMAP / SMTP"
-        );
+        assert!(mail["accounts"].as_array().expect("accounts array")[0]
+            .get("provider_display_name")
+            .is_none());
     }
 
     #[cfg(all(

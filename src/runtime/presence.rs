@@ -69,13 +69,6 @@ pub struct PresenceSnapshot {
 
 impl PresenceSnapshot {
     pub fn display_projection(&self, network_hint: Option<&str>) -> PresenceDisplayProjection {
-        // Operator APIs still expose `fault` for critical resource pressure, but the display
-        // should not show a hard FAULT state for a transient admission squeeze.
-        let display_state = if self.state == PresenceState::Fault && self.critical_pressure {
-            DisplaySystemState::Busy
-        } else {
-            self.display_state
-        };
         let subtitle_override = match self.state {
             PresenceState::Booting | PresenceState::Recovery | PresenceState::Fault => {
                 Some(self.subtitle.clone())
@@ -96,7 +89,7 @@ impl PresenceSnapshot {
             | PresenceState::Speaking => None,
         };
         PresenceDisplayProjection {
-            state: display_state,
+            state: self.display_state,
             subtitle_override,
         }
     }
@@ -255,7 +248,11 @@ fn build_presence_copy(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_presence_copy, derive_presence_state, PresenceState};
+    use super::{
+        build_presence_copy, derive_presence_state, PresenceDisplayProjection, PresenceSnapshot,
+        PresenceState,
+    };
+    use crate::display::DisplaySystemState;
     use crate::orchestrator::state::{ChannelHealthSnapshot, ChannelsHealthSnapshot};
     use crate::orchestrator::{PressureLevel, ResourceSnapshot};
     use crate::runtime::{RuntimeMode, RuntimeModeSnapshot};
@@ -341,6 +338,32 @@ mod tests {
             total_failures: 0,
             total_successes: 0,
             healthy: true,
+        }
+    }
+
+    fn snapshot_with_state(
+        state: PresenceState,
+        display_state: DisplaySystemState,
+    ) -> PresenceSnapshot {
+        PresenceSnapshot {
+            state,
+            display_state,
+            headline: state.as_str().to_string(),
+            subtitle: "subtitle".to_string(),
+            rationale: "rationale".to_string(),
+            busy: false,
+            wifi_connected: true,
+            pairing_required: false,
+            audio_recording: false,
+            audio_playing: false,
+            critical_pressure: false,
+            display_sleep_candidate: false,
+            runtime_mode: runtime_mode(RuntimeMode::Normal),
+            soul_kernel: crate::runtime::SoulKernelStatus::default(),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            supervisor: None,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            release: None,
         }
     }
 
@@ -456,5 +479,19 @@ mod tests {
             true,
         );
         assert_eq!(state, PresenceState::Busy);
+    }
+
+    #[test]
+    fn critical_pressure_fault_keeps_fault_display_projection() {
+        let mut snapshot = snapshot_with_state(PresenceState::Fault, DisplaySystemState::Fault);
+        snapshot.critical_pressure = true;
+
+        assert_eq!(
+            snapshot.display_projection(Some("192.168.4.1")),
+            PresenceDisplayProjection {
+                state: DisplaySystemState::Fault,
+                subtitle_override: Some("subtitle".to_string()),
+            }
+        );
     }
 }

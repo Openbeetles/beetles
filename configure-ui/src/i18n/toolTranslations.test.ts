@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zhCN } from './locales/zh-CN.ts'
 import { enUS } from './locales/en-US.ts'
+import { localizeAccountProviderName } from './providerDisplay.ts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -68,6 +69,7 @@ const TOOL_CLASS_TO_NAME: Record<string, string> = {
   LuaProtocolFrameHelper: 'lua_protocol_frame_helper',
   LuaRegisterTableHelper: 'lua_register_table_helper',
   LuaMemoryQuery: 'lua_memory_query',
+  LuaStateMachineChecker: 'lua_state_machine_checker',
   LuaToolBridge: 'lua_tool_bridge',
 }
 
@@ -98,4 +100,46 @@ test('zh-CN covers every registered production tool key', () => {
 
 test('en-US covers every registered production tool key', () => {
   assert.deepEqual(missingToolKeys(enUS.translation.tools), [])
+})
+
+test('critical office-related tool labels stay aligned with backend semantics', () => {
+  assert.equal(zhCN.translation.tools.files, '浏览与读取文件')
+  assert.equal(enUS.translation.tools.files, 'Browse & read files')
+
+  assert.equal(zhCN.translation.tools.contacts_directory, '统一联系人与目录（邮件/日历）')
+  assert.equal(enUS.translation.tools.contacts_directory, 'Unified people directory (mail/calendar)')
+
+  assert.equal(zhCN.translation.tools.office_status, '办公账户与运行状态')
+  assert.equal(enUS.translation.tools.office_status, 'Office accounts & runtime status')
+})
+
+test('account provider labels are localized by provider kind with safe fallback', () => {
+  const resolveLocaleKey = (
+    locale: Record<string, unknown>,
+    key: string,
+    defaultValue?: string,
+  ): string => {
+    const resolved = key.split('.').reduce<unknown>((acc, part) => {
+      if (!acc || typeof acc !== 'object') return undefined
+      return (acc as Record<string, unknown>)[part]
+    }, locale)
+    return typeof resolved === 'string' ? resolved : (defaultValue ?? key)
+  }
+  const zhT = (key: string, options?: { defaultValue?: string }) =>
+    resolveLocaleKey(zhCN.translation as unknown as Record<string, unknown>, key, options?.defaultValue)
+  const enT = (key: string, options?: { defaultValue?: string }) =>
+    resolveLocaleKey(enUS.translation as unknown as Record<string, unknown>, key, options?.defaultValue)
+
+  assert.equal(
+    localizeAccountProviderName(zhT, 'wecom_documents'),
+    '企业微信文档',
+  )
+  assert.equal(
+    localizeAccountProviderName(enT, 'wecom_documents'),
+    'WeCom Documents',
+  )
+  assert.equal(
+    localizeAccountProviderName(zhT, 'unknown_provider'),
+    'unknown_provider',
+  )
 })

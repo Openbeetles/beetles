@@ -36,6 +36,7 @@ const PATH_TO_META: Record<string, { titleKey: string }> = {
   },
   "/skills": { titleKey: "skills.pageTitle" },
   "/tools": { titleKey: "tools.pageTitle" },
+  "/accounts": { titleKey: "accounts.pageTitle" },
 };
 
 function metaForPathname(pathname: string) {

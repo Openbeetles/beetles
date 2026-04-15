@@ -24,6 +24,11 @@ export const NAV_ITEMS: NavItem[] = [
     iconSrc: OS_ICON_NAV["/channels-config"],
   },
   {
+    path: "/accounts",
+    labelKey: "nav.accounts",
+    iconSrc: OS_ICON_NAV["/accounts"],
+  },
+  {
     path: "/soul-user",
     labelKey: "nav.soulUser",
     iconSrc: OS_ICON_NAV["/soul-user"],

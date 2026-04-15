@@ -47,6 +47,7 @@ Quick examples:
   TARGET=linux ./build.sh --package-profile linux-full
   TARGET=linux-armv7 ./build.sh
   TARGET=linux-aarch64 ./build.sh
+  ./scripts/create_linux_aarch64_build_docker.sh
   TARGET=esp ./build.sh
   TARGET=esp ./build.sh --package-profile voice
   TARGET=esp ./build.sh --flash
@@ -54,6 +55,7 @@ Quick examples:
 
 Notes:
   - On macOS building Linux musl, auto mode uses Docker only if the daemon is running; otherwise musl-cross (Homebrew).
+  - For option 5 beginner setup, run: ./scripts/create_linux_aarch64_build_docker.sh
   - Force local: BUILD_METHOD=local ./build.sh
   - Force Docker: BUILD_METHOD=docker ./build.sh
   - Force remote: BUILD_METHOD=remote ./build.sh
@@ -166,8 +168,11 @@ package_profile_features() {
     vision+sensor)
       printf '%s\n' '--no-default-features --features default_runtime,capability_vision,capability_sensor'
       ;;
-    voice+vision+sensor|linux-full)
+    voice+vision+sensor)
       printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor'
+      ;;
+    linux-full)
+      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor,capability_office'
       ;;
     *)
       echo "Error: unsupported package profile: $profile" >&2

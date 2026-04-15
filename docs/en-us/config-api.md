@@ -225,7 +225,6 @@ Example:
   - `count`
   - `items[]`
     - `provider_kind`
-    - `display_name`
     - `capabilities`
     - `account_fields[]`
       - `key`
@@ -264,7 +263,6 @@ Example:
     - `accounts[]`
       - `account_key`
       - `provider_kind`
-      - `provider_display_name`
       - `account_label`
       - `identity_class`
       - `enabled_capabilities`
@@ -294,7 +292,6 @@ Example:
   - `items[]`
     - `account_key`
     - `provider_kind`
-    - `provider_display_name`
     - `account_label`
     - `identity_class`
     - `enabled_capabilities`
@@ -308,10 +305,9 @@ Example:
 
 - **Auth**: activated + pairing code + CSRF
 - **Headers**: `Content-Type: application/json`
-- **Body**: one account upsert payload
+- **Body**: one account create or upsert payload
 - **Primary fields**:
   - `account`
-    - `account_key`
     - `provider_kind`
     - `external_account_id`
     - `account_label`
@@ -326,6 +322,9 @@ Example:
 - **Response**:
   - success: `200 OK`, returns refreshed account detail
   - validation failure: `400 Bad Request`
+- **Notes**:
+  - If `account.account_key` is omitted or empty, the server generates a stable account key automatically.
+  - The generated `account_key` is returned in the response body and becomes the path key for later detail, config, probe, revoke, and delete requests.
 
 ### GET /api/config/accounts/:account_key
 
@@ -336,7 +335,6 @@ Example:
 - **Body**:
   - `account`
   - `assessment`
-  - `provider_display_name`
   - `fields[]`
     - `key`
     - `label`

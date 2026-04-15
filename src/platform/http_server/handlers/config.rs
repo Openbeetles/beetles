@@ -12,7 +12,6 @@ use crate::office::{
     OfficeConfigManagementService, OfficeConfigProviderCatalogItem,
 };
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
-use serde::Deserialize;
 use serde_json::Value;
 #[cfg(all(
     feature = "capability_office",
@@ -124,7 +123,7 @@ struct ProviderCatalogListResponse {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct RevokeRequest {
     #[serde(default = "default_true")]
     clear_runtime_status: bool,

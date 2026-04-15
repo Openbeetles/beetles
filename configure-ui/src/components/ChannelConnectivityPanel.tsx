@@ -15,7 +15,7 @@ import { DASHBOARD_INSET_WELL_BG } from "../theme/panelStyles";
 /** 与 SystemStatusPanel 小节面板一致：中性底，不用 --surface 色块 */
 const SECTION_PANEL_SX = {
   borderRadius: "var(--radius-control)",
-  border: "1px solid var(--form-outline-rest)",
+  border: "none",
   bgcolor: "var(--card)",
   boxShadow: "var(--os3d-inset-panel-stack)",
 } as const;
@@ -23,7 +23,7 @@ const SECTION_PANEL_SX = {
 /** 与 SystemStatusPanel StatRow 微卡片一致 */
 const MICRO_CELL_SX = {
   borderRadius: "var(--radius-chip)",
-  border: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
+  border: "none",
   bgcolor: DASHBOARD_INSET_WELL_BG,
   boxShadow: "var(--os3d-chip-lift-stack)",
 } as const;

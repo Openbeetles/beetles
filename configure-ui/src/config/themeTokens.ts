@@ -230,8 +230,13 @@ export const BRAND_COLORS: Record<ThemeBrand, string> = {
 /** 设置里展示顺序：默认品牌 logo 放首位 */
 export const THEME_BRAND_KEYS: ThemeBrand[] = ['logo', 'blue', 'teal', 'firmware']
 
-/** 浅色模式页面画布：系统浅灰（非纯白），卡片 `card` 仍为白以保留层次 */
-const LIGHT_PAGE_BACKGROUND = '#eceef1'
+/**
+ * 浅色模式页面画布：浅青灰（非纯白、非暖灰），清爽耐看；`card` 仍为白以托内容。
+ */
+const LIGHT_PAGE_BACKGROUND = '#f1f5f9'
+
+/** 壳层 / 次级表面：比画布略亮、偏冷，仍属青灰白 */
+const LIGHT_SURFACE_COOL = '#f8fafc'
 
 const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
   light: {
@@ -239,9 +244,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
-      surface: '#f8f9fc',
+      surface: LIGHT_SURFACE_COOL,
       muted: '#64748b',
-      border: '#e8ecf2',
+      border: '#dbe4ec',
       primary: '#3b82f6',
       primarySoft: 'rgba(59, 130, 246, 0.06)',
       primaryFg: '#ffffff',
@@ -254,7 +259,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
-      borderSubtle: '#f4f6f9',
+      borderSubtle: '#edf2f6',
       shadowSubtle: 'none',
       shadowCardHover: 'none',
       badgeNew: '#ef4444',
@@ -263,9 +268,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
-      surface: '#f8f9fc',
+      surface: LIGHT_SURFACE_COOL,
       muted: '#64748b',
-      border: '#e8ecf2',
+      border: '#dbe4ec',
       primary: '#14b8a6',
       primarySoft: 'rgba(20, 184, 166, 0.06)',
       primaryFg: '#ffffff',
@@ -278,7 +283,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
-      borderSubtle: '#f4f6f9',
+      borderSubtle: '#edf2f6',
       shadowSubtle: 'none',
       shadowCardHover: 'none',
       badgeNew: '#ef4444',
@@ -311,9 +316,9 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
-      surface: '#f8f9fc',
+      surface: LIGHT_SURFACE_COOL,
       muted: '#64748b',
-      border: '#e8ecf2',
+      border: '#dbe4ec',
       primary: '#c43030',
       primarySoft: 'rgba(196, 48, 48, 0.06)',
       primaryFg: '#ffffff',
@@ -326,7 +331,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
-      borderSubtle: '#f4f6f9',
+      borderSubtle: '#edf2f6',
       shadowSubtle: 'none',
       shadowCardHover: 'none',
       badgeNew: '#ef4444',
