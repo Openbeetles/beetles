@@ -262,6 +262,17 @@ Example:
     - `ready`
     - `next_action`
     - `accounts[]`
+      - `account_key`
+      - `provider_kind`
+      - `provider_display_name`
+      - `account_label`
+      - `identity_class`
+      - `enabled_capabilities`
+      - `selected_for_capabilities`
+      - `readiness`
+      - `next_action`
+      - `missing_fields_count`
+      - `has_runtime_error`
 
 ### GET /api/config/capabilities/:capability
 
@@ -276,12 +287,14 @@ Example:
 - **Auth**: activated + pairing code
 - **Query parameters**:
   - `capability`: optional, `mail|calendar|documents|contacts_directory`
+  - `provider_kind`: optional, exact provider kind such as `imap_smtp` or `feishu_mail`
 - **Response**: `200 OK`
 - **Body**:
   - `count`
   - `items[]`
     - `account_key`
     - `provider_kind`
+    - `provider_display_name`
     - `account_label`
     - `identity_class`
     - `enabled_capabilities`

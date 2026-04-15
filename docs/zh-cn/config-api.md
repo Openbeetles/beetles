@@ -256,6 +256,17 @@
     - `ready`
     - `next_action`
     - `accounts[]`
+      - `account_key`
+      - `provider_kind`
+      - `provider_display_name`
+      - `account_label`
+      - `identity_class`
+      - `enabled_capabilities`
+      - `selected_for_capabilities`
+      - `readiness`
+      - `next_action`
+      - `missing_fields_count`
+      - `has_runtime_error`
 
 ### GET /api/config/capabilities/:capability
 
@@ -270,12 +281,14 @@
 - **鉴权**：已激活 + 配对码
 - **查询参数**：
   - `capability`：可选，`mail|calendar|documents|contacts_directory`
+  - `provider_kind`：可选，精确 provider kind，例如 `imap_smtp`、`feishu_mail`
 - **响应**：`200 OK`
 - **响应体**：
   - `count`
   - `items[]`
     - `account_key`
     - `provider_kind`
+    - `provider_display_name`
     - `account_label`
     - `identity_class`
     - `enabled_capabilities`

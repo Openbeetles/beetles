@@ -178,10 +178,11 @@ fn parse_capability(capability: Option<&str>) -> Result<Option<OfficeCapability>
 /// GET /api/config/accounts：返回账户配置摘要列表。
 pub fn get_accounts_body(
     ctx: &HandlerContext,
+    provider_kind: Option<&str>,
     capability: Option<&str>,
 ) -> Result<String, std::io::Error> {
     let items = office_config_service(ctx)
-        .account_summaries(parse_capability(capability)?)
+        .account_summaries(provider_kind, parse_capability(capability)?)
         .map_err(|e| to_io(e.to_string()))?;
     serde_json::to_string(&AccountSummaryListResponse {
         count: items.len(),

@@ -68,6 +68,7 @@ pub struct OfficeCredentialDraftRequest {
 pub struct OfficeConfigAccountSummary {
     pub account_key: String,
     pub provider_kind: String,
+    pub provider_display_name: String,
     pub account_label: String,
     pub identity_class: OfficeAccountIdentityClass,
     #[serde(default)]
@@ -308,6 +309,7 @@ impl OfficeConfigManagementService {
 
     pub fn account_summaries(
         &self,
+        provider_kind: Option<&str>,
         capability: Option<OfficeCapability>,
     ) -> Result<Vec<OfficeConfigAccountSummary>> {
         let accounts = self.load_accounts_segment()?;
@@ -323,6 +325,11 @@ impl OfficeConfigManagementService {
         let mut items = summary
             .accounts
             .into_iter()
+            .filter(|account| {
+                provider_kind
+                    .map(|value| account.provider_kind == value)
+                    .unwrap_or(true)
+            })
             .filter(|account| {
                 capability
                     .map(|value| account.enabled_capabilities.contains(&value))
@@ -1118,6 +1125,7 @@ fn build_account_summary(
     OfficeConfigAccountSummary {
         account_key: account.account_key.clone(),
         provider_kind: account.provider_kind.clone(),
+        provider_display_name: provider_display_name_for_kind(&account.provider_kind),
         account_label: account.account_label.clone(),
         identity_class: account.identity_class,
         enabled_capabilities: account.enabled_capabilities.clone(),
@@ -1238,6 +1246,12 @@ fn capability_display_name(capability: OfficeCapability) -> &'static str {
         OfficeCapability::Documents => "Documents",
         OfficeCapability::ContactsDirectory => "Contacts Directory",
     }
+}
+
+fn provider_display_name_for_kind(provider_kind: &str) -> String {
+    office_provider_schema(provider_kind)
+        .map(|schema| schema.display_name)
+        .unwrap_or_else(|| provider_kind.to_string())
 }
 
 #[cfg(test)]
@@ -1611,6 +1625,52 @@ mod tests {
                 .any(|field| field.key == "external_account_id"),
             "external_account_id should not be duplicated into provider config fields"
         );
+    }
+
+    #[test]
+    fn account_summaries_filter_by_provider_kind_and_expose_display_name() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-imap": {
+                            "account_key": "mail-imap",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "",
+                            "account_label": "IMAP",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        },
+                        "mail-feishu": {
+                            "account_key": "mail-feishu",
+                            "provider_kind": "feishu_mail",
+                            "external_account_id": "",
+                            "account_label": "Feishu",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let service = OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        );
+
+        let items = service
+            .account_summaries(Some("feishu_mail"), Some(OfficeCapability::Mail))
+            .expect("account summaries");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].account_key, "mail-feishu");
+        assert_eq!(items[0].provider_display_name, "Feishu Mail");
     }
 
     #[test]

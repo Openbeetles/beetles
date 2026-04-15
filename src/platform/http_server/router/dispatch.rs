@@ -234,8 +234,11 @@ fn dispatch_account_config(
             if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(Some(api_to_out(r)));
             }
-            match handlers::config::get_accounts_body(ctx, query_param_from_uri(uri, "capability"))
-            {
+            match handlers::config::get_accounts_body(
+                ctx,
+                query_param_from_uri(uri, "provider_kind"),
+                query_param_from_uri(uri, "capability"),
+            ) {
                 Ok(body) => Some(OutgoingResponse::json(
                     200,
                     "OK",
@@ -1429,6 +1432,20 @@ mod tests {
         .expect("save office credentials");
     }
 
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn seed_accounts(ctx: &HandlerContext, accounts: &[OfficeAccount]) {
+        let mut segment = OfficeAccountsSegment::default();
+        for account in accounts {
+            segment.registry.insert(account.clone());
+        }
+        let body = serde_json::to_string(&segment).expect("serialize accounts segment");
+        config::save_office_accounts_segment(ctx.config_file_store.as_ref(), &body)
+            .expect("save accounts");
+    }
+
     #[test]
     fn operator_maintenance_route_accepts_structured_runtime_request() {
         let (system_inbound_tx, system_inbound_rx, _system_inbound_depth) =
@@ -1501,6 +1518,61 @@ mod tests {
             "body={}",
             String::from_utf8_lossy(&response.body)
         );
+        assert_eq!(
+            parsed["items"].as_array().expect("items array")[0]["provider_display_name"],
+            "IMAP / SMTP"
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_get_supports_provider_kind_filter() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        seed_accounts(
+            &ctx,
+            &[
+                OfficeAccount {
+                    account_key: "mail-imap".to_string(),
+                    provider_kind: "imap_smtp".to_string(),
+                    external_account_id: String::new(),
+                    account_label: "IMAP".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Work,
+                    enabled_capabilities: vec![OfficeCapability::Mail],
+                },
+                OfficeAccount {
+                    account_key: "mail-feishu".to_string(),
+                    provider_kind: "feishu_mail".to_string(),
+                    external_account_id: String::new(),
+                    account_label: "Feishu".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Work,
+                    enabled_capabilities: vec![OfficeCapability::Mail],
+                },
+            ],
+        );
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_get("/api/config/accounts?provider_kind=feishu_mail"),
+        )
+        .expect("dispatch filtered accounts");
+        assert_eq!(response.status, 200);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let items = parsed["items"].as_array().expect("items array");
+        assert_eq!(
+            items.len(),
+            1,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+        assert_eq!(items[0]["account_key"], "mail-feishu");
+        assert_eq!(items[0]["provider_display_name"], "Feishu Mail");
     }
 
     #[cfg(all(
@@ -1830,6 +1902,10 @@ mod tests {
         assert_eq!(mail["selection_status"], "selected");
         assert_eq!(mail["selected_account_key"], "test-http-mail-capability");
         assert!(mail["accounts"].is_array());
+        assert_eq!(
+            mail["accounts"].as_array().expect("accounts array")[0]["provider_display_name"],
+            "IMAP / SMTP"
+        );
     }
 
     #[cfg(all(
