@@ -206,6 +206,16 @@ pub(crate) fn build_test_handler_context(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn default_test_handler_context_guard() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 pub mod capability_packages;
 pub mod channel_connectivity;
 pub mod config;

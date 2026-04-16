@@ -35,7 +35,7 @@ pub trait DocumentsProvider: Send + Sync {
     ) -> Result<Vec<DocumentsSearchHit>>;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct DocumentsProviderRegistry {
     providers: HashMap<&'static str, Arc<dyn DocumentsProvider>>,
 }

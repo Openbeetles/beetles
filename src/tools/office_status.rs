@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountAssessment, OfficeAuthoritySource, OfficeAuthoritySummary, OfficeCapability,
-    OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeProbeAdapter, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
@@ -46,6 +46,18 @@ impl OfficeStatusTool {
             authority,
             probe_supported_provider_kinds: provider_kinds.into_iter().collect(),
         }
+    }
+
+    pub fn with_probe_adapters(
+        authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+        probe_adapters: impl IntoIterator<Item = Arc<dyn OfficeProbeAdapter + Send + Sync>>,
+    ) -> Self {
+        Self::with_probe_supported_provider_kinds(
+            authority,
+            probe_adapters
+                .into_iter()
+                .map(|adapter| adapter.provider_kind().to_string()),
+        )
     }
 }
 

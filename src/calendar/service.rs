@@ -5,17 +5,16 @@ use crate::calendar::{
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime, OfficeResolveResult,
     OfficeService, SnapshotOfficeAuthoritySource,
 };
-use crate::util::current_unix_secs;
 use std::sync::Arc;
 
 pub struct CalendarService {
     local_store: Arc<dyn CalendarStore + Send + Sync>,
     credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
     providers: CalendarProviderRegistry,
-    office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    office_runtime: OfficeCapabilityRuntime,
 }
 
 impl CalendarService {
@@ -54,7 +53,13 @@ impl CalendarService {
             local_store,
             credential_store,
             providers,
-            office_authority,
+            office_runtime: OfficeCapabilityRuntime::new(
+                OfficeCapability::Calendar,
+                "calendar_provider",
+                "calendar",
+                "calendar_runtime",
+                office_authority,
+            ),
         }
     }
 
@@ -74,28 +79,11 @@ impl CalendarService {
         if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
             return Ok(provider.to_string());
         }
-        if let Some(office_service) = self.load_office_service()? {
-            if let OfficeResolveResult::Selected(selection) =
-                office_service.resolve(&OfficeResolveRequest {
-                    capability: OfficeCapability::Calendar,
-                    preferred_account_key: None,
-                    preferred_provider_kind: None,
-                    preferred_identity_class,
-                    historical_account_key: None,
-                })
-            {
-                let account_key = selection.account_key;
-                let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
-                    Error::config(
-                        "calendar_provider",
-                        format!(
-                            "office-selected calendar account '{}' has no configured credential",
-                            account_key
-                        ),
-                    )
-                })?;
-                return Ok(credential.provider);
-            }
+        if let Some(provider) = self
+            .office_runtime
+            .selected_provider_name(preferred_identity_class, self.credential_store.as_ref())?
+        {
+            return Ok(provider);
         }
         Ok(CALENDAR_PROVIDER_LOCAL.to_string())
     }
@@ -107,9 +95,7 @@ impl CalendarService {
     }
 
     pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        Ok(self
-            .load_office_service()?
-            .and_then(|service| service.default_account_key(OfficeCapability::Calendar)))
+        self.office_runtime.default_account_key()
     }
 
     pub fn office_resolve_hint(
@@ -126,25 +112,8 @@ impl CalendarService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Option<OfficeResolveResult>> {
-        if account_key.is_some_and(|value| !value.trim().is_empty()) {
-            return Ok(None);
-        }
-        let Some(office_service) = self.load_office_service()? else {
-            return Ok(None);
-        };
-        match office_service.resolve(&OfficeResolveRequest {
-            capability: OfficeCapability::Calendar,
-            preferred_account_key: None,
-            preferred_provider_kind: provider
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string),
-            preferred_identity_class,
-            historical_account_key: None,
-        }) {
-            OfficeResolveResult::Selected(_) => Ok(None),
-            other => Ok(Some(other)),
-        }
+        self.office_runtime
+            .resolve_hint(provider, account_key, preferred_identity_class)
     }
 
     pub fn resolve_account_key_for_provider(
@@ -190,43 +159,19 @@ impl CalendarService {
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        let Some(service) = self.load_office_service()? else {
-            return Ok(Vec::new());
-        };
-        let calendar_accounts = service
-            .accounts_for_capability(OfficeCapability::Calendar)
-            .into_iter()
-            .map(|account| account.account_key)
-            .collect::<std::collections::BTreeSet<_>>();
-        Ok(service
-            .list_runtime_statuses()?
-            .into_iter()
-            .filter(|status| calendar_accounts.contains(&status.account_key))
-            .collect())
+        self.office_runtime.runtime_statuses()
     }
 
     pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
-        let Some(service) = self.load_office_service()? else {
-            return Ok(Vec::new());
-        };
-        service.assess_capability_accounts(OfficeCapability::Calendar, |provider_kind| {
-            self.providers.get(provider_kind).is_some()
-        })
+        self.office_runtime
+            .account_assessments(|provider_kind| self.providers.get(provider_kind).is_some())
     }
 
     pub fn office_identity_class_for_account(
         &self,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeAccountIdentityClass>> {
-        let Some(account_key) = account_key.map(str::trim).filter(|value| !value.is_empty()) else {
-            return Ok(None);
-        };
-        let Some(service) = self.load_office_service()? else {
-            return Ok(None);
-        };
-        Ok(service
-            .account(account_key)
-            .map(|account| account.identity_class))
+        self.office_runtime.identity_class_for_account(account_key)
     }
 
     pub fn provider_supports(&self, provider: &str, op: CalendarOperation) -> bool {
@@ -474,77 +419,12 @@ impl CalendarService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<String> {
-        if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
-            return Ok(account_key.to_string());
-        }
-        if let Some(office_service) = self.load_office_service()? {
-            match office_service.resolve(&OfficeResolveRequest {
-                capability: OfficeCapability::Calendar,
-                preferred_account_key: None,
-                preferred_provider_kind: Some(provider.to_string()),
-                preferred_identity_class,
-                historical_account_key: None,
-            }) {
-                OfficeResolveResult::Selected(selection) => {
-                    let account_key = selection.account_key;
-                    let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
-                        Error::config(
-                            "calendar_provider",
-                            format!(
-                                "office-selected calendar account '{}' has no configured credential",
-                                account_key
-                            ),
-                        )
-                    })?;
-                    if credential.provider == provider {
-                        return Ok(account_key);
-                    }
-                }
-                OfficeResolveResult::Ambiguous(ambiguity) => {
-                    let candidate_accounts = ambiguity
-                        .candidate_accounts
-                        .iter()
-                        .map(|candidate| {
-                            format!("{} ({})", candidate.account_key, candidate.account_label)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(Error::config(
-                        "calendar_provider",
-                        format!(
-                            "provider '{}' has multiple configured accounts; candidate accounts: {}",
-                            provider, candidate_accounts
-                        ),
-                    ));
-                }
-                OfficeResolveResult::Missing(_) => {}
-            }
-        }
-        let mut keys = self
-            .credential_store
-            .find_account_keys_by_provider(provider)?;
-        keys.sort();
-        match keys.len() {
-            0 => Err(Error::config(
-                "calendar_provider",
-                format!("provider '{}' has no configured credential", provider),
-            )),
-            1 => Ok(keys.remove(0)),
-            _ => Err(Error::config(
-                "calendar_provider",
-                format!(
-                    "provider '{}' has multiple configured accounts; account_key is required",
-                    provider
-                ),
-            )),
-        }
-    }
-
-    fn load_office_service(&self) -> Result<Option<OfficeService>> {
-        self.office_authority
-            .as_ref()
-            .map(|authority| authority.load())
-            .transpose()
+        self.office_runtime.resolve_account_key(
+            provider,
+            account_key,
+            preferred_identity_class,
+            self.credential_store.as_ref(),
+        )
     }
 
     fn record_runtime_activity(
@@ -553,50 +433,8 @@ impl CalendarService {
         activity_kind: &'static str,
         error: Option<&Error>,
     ) {
-        let Some(office_service) = self.load_office_service().unwrap_or_else(|load_error| {
-            log::warn!(
-                "[calendar_runtime] failed to load office authority for {}: {}",
-                account_key,
-                load_error
-            );
-            None
-        }) else {
-            return;
-        };
-        let now = current_unix_secs();
-        let mut status = match office_service.runtime_status(account_key) {
-            Ok(Some(status)) => status,
-            Ok(None) => OfficeAccountRuntimeStatus {
-                account_key: account_key.to_string(),
-                ..OfficeAccountRuntimeStatus::default()
-            },
-            Err(load_error) => {
-                log::warn!(
-                    "[calendar_runtime] failed to load runtime status for {}: {}",
-                    account_key,
-                    load_error
-                );
-                return;
-            }
-        };
-        status.account_key = account_key.to_string();
-        status.last_activity_kind = activity_kind.to_string();
-        status.last_activity_ok = error.is_none();
-        status.last_activity_at_unix_secs = now;
-        status.updated_at = now;
-        if let Some(error) = error {
-            status.last_error = error.to_string();
-        } else {
-            status.last_error.clear();
-            status.probe_ok = true;
-        }
-        if let Err(store_error) = office_service.set_runtime_status(&status) {
-            log::warn!(
-                "[calendar_runtime] failed to persist runtime status for {}: {}",
-                account_key,
-                store_error
-            );
-        }
+        self.office_runtime
+            .record_runtime_activity(account_key, activity_kind, error);
     }
 }
 

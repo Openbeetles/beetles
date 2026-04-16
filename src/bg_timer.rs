@@ -294,6 +294,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 fn build_reminder_calendar_service(ctx: &BgTimerContext) -> crate::calendar::CalendarService {
+    let topology = crate::office::build_default_office_integration_topology();
     let office_authority = std::sync::Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
         std::sync::Arc::new(crate::config::PlatformConfigFileStore(
             std::sync::Arc::clone(&ctx.platform),
@@ -309,7 +310,7 @@ fn build_reminder_calendar_service(ctx: &BgTimerContext) -> crate::calendar::Cal
     crate::calendar::CalendarService::with_office_authority(
         ctx.platform.calendar_store(),
         credential_store,
-        crate::calendar::build_default_office_calendar_provider_registry(),
+        topology.calendar_providers(),
         Some(office_authority),
     )
 }

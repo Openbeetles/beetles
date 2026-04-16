@@ -6,6 +6,11 @@ mod assessment;
 #[cfg(feature = "capability_office")]
 mod authority_source;
 mod binding;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+mod capability_runtime;
 #[cfg(feature = "capability_office")]
 mod config_management;
 mod credentials;
@@ -14,6 +19,11 @@ mod credentials;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 mod google_api;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+mod integration_topology;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -46,6 +56,11 @@ pub use authority_source::{
     OfficeAuthoritySource, ReloadingOfficeAuthoritySource, SnapshotOfficeAuthoritySource,
 };
 pub use binding::OfficeCapabilityBinding;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub(crate) use capability_runtime::OfficeCapabilityRuntime;
 #[cfg(feature = "capability_office")]
 pub use config_management::{
     OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeAccountUpsertRequest,
@@ -70,6 +85,11 @@ pub use google_api::{
     GoogleApiListEnvelope, GOOGLE_CALENDAR_DEFAULT_BASE_URL, GOOGLE_DRIVE_DEFAULT_BASE_URL,
     GOOGLE_GMAIL_DEFAULT_BASE_URL, GOOGLE_PEOPLE_DEFAULT_BASE_URL,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub(crate) use integration_topology::build_default_office_integration_topology;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

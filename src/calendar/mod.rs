@@ -62,19 +62,7 @@ pub const MAX_CALENDAR_REMOTE_ID_CHARS: usize = 128;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub fn build_default_office_calendar_provider_registry() -> CalendarProviderRegistry {
-    let mut providers = CalendarProviderRegistry::new();
-    providers.register(std::sync::Arc::new(providers::caldav::CalDavProvider));
-    providers.register(std::sync::Arc::new(
-        providers::feishu::FeishuCalendarProvider,
-    ));
-    providers.register(std::sync::Arc::new(
-        providers::microsoft365::Microsoft365CalendarProvider,
-    ));
-    providers.register(std::sync::Arc::new(
-        providers::google::GoogleCalendarProvider,
-    ));
-    providers.register(std::sync::Arc::new(providers::wecom::WecomCalendarProvider));
-    providers
+    crate::office::build_default_office_integration_topology().calendar_providers()
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -1017,7 +1017,7 @@ mod tests {
         OfficeService,
     };
     use crate::platform::ResponseBody;
-    use crate::tools::{ToolContext, ToolExecutionFailureKind};
+    use crate::tools::ToolContext;
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};

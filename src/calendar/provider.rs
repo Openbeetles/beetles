@@ -99,7 +99,7 @@ pub trait CalendarProvider: Send + Sync {
     ) -> Result<bool>;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CalendarProviderRegistry {
     providers: HashMap<&'static str, Arc<dyn CalendarProvider>>,
 }

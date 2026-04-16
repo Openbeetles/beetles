@@ -607,7 +607,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
@@ -1413,9 +1412,6 @@ mod tests {
     }
 
     fn memory_status_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        crate::platform::http_server::handlers::default_test_handler_context_guard()
     }
 }

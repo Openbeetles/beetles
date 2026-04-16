@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 ))]
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime, OfficeResolveResult,
     OfficeService, SnapshotOfficeAuthoritySource,
 };
 use std::cmp::Reverse;
@@ -35,7 +35,7 @@ struct RemoteContactsDirectoryRuntime {
     credential_store:
         Arc<dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync>,
     providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
-    office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    office_runtime: OfficeCapabilityRuntime,
 }
 
 impl ContactsDirectoryService {
@@ -87,7 +87,13 @@ impl ContactsDirectoryService {
             remote: Some(RemoteContactsDirectoryRuntime {
                 credential_store,
                 providers,
-                office_authority,
+                office_runtime: OfficeCapabilityRuntime::new(
+                    OfficeCapability::ContactsDirectory,
+                    "contacts_directory_lookup",
+                    "contacts",
+                    "contacts_runtime",
+                    Some(office_authority),
+                ),
             }),
         }
     }
@@ -344,9 +350,10 @@ impl ContactsDirectoryService {
     }
 
     pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        Ok(self
-            .load_office_service()?
-            .and_then(|service| service.default_account_key(OfficeCapability::ContactsDirectory)))
+        match self.remote.as_ref() {
+            Some(remote) => remote.office_runtime.default_account_key(),
+            None => Ok(None),
+        }
     }
 
     pub fn office_resolve_hint(
@@ -363,52 +370,30 @@ impl ContactsDirectoryService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Option<OfficeResolveResult>> {
-        if account_key.is_some_and(|value| !value.trim().is_empty()) {
-            return Ok(None);
-        }
-        let Some(service) = self.load_office_service()? else {
-            return Ok(None);
-        };
-        match service.resolve(&OfficeResolveRequest {
-            capability: OfficeCapability::ContactsDirectory,
-            preferred_account_key: None,
-            preferred_provider_kind: provider
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string),
-            preferred_identity_class,
-            historical_account_key: None,
-        }) {
-            OfficeResolveResult::Selected(_) => Ok(None),
-            other => Ok(Some(other)),
+        match self.remote.as_ref() {
+            Some(remote) => {
+                remote
+                    .office_runtime
+                    .resolve_hint(provider, account_key, preferred_identity_class)
+            }
+            None => Ok(None),
         }
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        let Some(service) = self.load_office_service()? else {
-            return Ok(Vec::new());
-        };
-        let accounts = service
-            .accounts_for_capability(OfficeCapability::ContactsDirectory)
-            .into_iter()
-            .map(|account| account.account_key)
-            .collect::<std::collections::BTreeSet<_>>();
-        Ok(service
-            .list_runtime_statuses()?
-            .into_iter()
-            .filter(|status| accounts.contains(&status.account_key))
-            .collect())
+        match self.remote.as_ref() {
+            Some(remote) => remote.office_runtime.runtime_statuses(),
+            None => Ok(Vec::new()),
+        }
     }
 
     pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
-        let Some(service) = self.load_office_service()? else {
-            return Ok(Vec::new());
-        };
-        service.assess_capability_accounts(OfficeCapability::ContactsDirectory, |provider_kind| {
-            self.provider_names()
-                .iter()
-                .any(|name| name == &provider_kind)
-        })
+        match self.remote.as_ref() {
+            Some(remote) => remote
+                .office_runtime
+                .account_assessments(|provider_kind| remote.providers.get(provider_kind).is_some()),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn remote_lookup_hits(
@@ -470,31 +455,15 @@ impl ContactsDirectoryService {
         let Some(remote) = self.remote.as_ref() else {
             return Ok(None);
         };
-        if let Some(office_service) = self.load_office_service()? {
-            if let OfficeResolveResult::Selected(selection) =
-                office_service.resolve(&OfficeResolveRequest {
-                    capability: OfficeCapability::ContactsDirectory,
-                    preferred_account_key: None,
-                    preferred_provider_kind: None,
-                    preferred_identity_class,
-                    historical_account_key: None,
-                })
-            {
-                let account_key = selection.account_key;
-                let credential = remote.credential_store.get(&account_key)?.ok_or_else(|| {
-                    Error::config(
-                        "contacts_directory_lookup",
-                        format!(
-                            "office-selected contacts account '{}' has no configured credential",
-                            account_key
-                        ),
-                    )
-                })?;
-                return Ok(Some(ContactsLookupRoute {
-                    provider: credential.provider,
-                    account_key,
-                }));
-            }
+        if let Some(route) = remote.office_runtime.selected_route(
+            None,
+            preferred_identity_class,
+            remote.credential_store.as_ref(),
+        )? {
+            return Ok(Some(ContactsLookupRoute {
+                provider: route.provider,
+                account_key: route.account_key,
+            }));
         }
         let mut statuses = remote.credential_store.list_statuses()?;
         statuses.sort_by(|left, right| {
@@ -554,80 +523,15 @@ impl ContactsDirectoryService {
                     "provider or account_key is required for explicit remote lookup",
                 )
             })?;
-        if let Some(service) = self.load_office_service()? {
-            match service.resolve(&OfficeResolveRequest {
-                capability: OfficeCapability::ContactsDirectory,
-                preferred_account_key: None,
-                preferred_provider_kind: Some(provider.to_string()),
+        Ok(ContactsLookupRoute {
+            provider: provider.to_string(),
+            account_key: remote.office_runtime.resolve_account_key(
+                provider,
+                None,
                 preferred_identity_class,
-                historical_account_key: None,
-            }) {
-                OfficeResolveResult::Selected(selection) => {
-                    let account_key = selection.account_key;
-                    let credential = remote.credential_store.get(&account_key)?.ok_or_else(|| {
-                        Error::config(
-                            "contacts_directory_lookup",
-                            format!(
-                                "office-selected contacts account '{}' has no configured credential",
-                                account_key
-                            ),
-                        )
-                    })?;
-                    if credential.provider == provider {
-                        return Ok(ContactsLookupRoute {
-                            provider: provider.to_string(),
-                            account_key,
-                        });
-                    }
-                }
-                OfficeResolveResult::Ambiguous(ambiguity) => {
-                    let candidate_accounts = ambiguity
-                        .candidate_accounts
-                        .iter()
-                        .map(|candidate| {
-                            format!("{} ({})", candidate.account_key, candidate.account_label)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(Error::config(
-                        "contacts_directory_lookup",
-                        format!(
-                            "provider '{}' has multiple configured accounts; candidate accounts: {}",
-                            provider, candidate_accounts
-                        ),
-                    ));
-                }
-                OfficeResolveResult::Missing(_) => {}
-            }
-        }
-        let mut keys = remote
-            .credential_store
-            .find_account_keys_by_provider(provider)?;
-        keys.sort();
-        match keys.len() {
-            0 => Err(Error::config(
-                "contacts_directory_lookup",
-                format!("provider '{}' has no configured credential", provider),
-            )),
-            1 => Ok(ContactsLookupRoute {
-                provider: provider.to_string(),
-                account_key: keys.remove(0),
-            }),
-            _ => Err(Error::config(
-                "contacts_directory_lookup",
-                format!(
-                    "provider '{}' has multiple configured accounts; account_key is required",
-                    provider
-                ),
-            )),
-        }
-    }
-
-    fn load_office_service(&self) -> Result<Option<OfficeService>> {
-        self.remote
-            .as_ref()
-            .map(|remote| remote.office_authority.load())
-            .transpose()
+                remote.credential_store.as_ref(),
+            )?,
+        })
     }
 
     fn record_runtime_activity(
@@ -636,49 +540,10 @@ impl ContactsDirectoryService {
         activity_kind: &'static str,
         error: Option<&Error>,
     ) {
-        let Some(office_service) = self.load_office_service().unwrap_or_else(|load_error| {
-            log::warn!(
-                "[contacts_runtime] failed to load office authority for {}: {}",
-                account_key,
-                load_error
-            );
-            None
-        }) else {
-            return;
-        };
-        let now = crate::util::current_unix_secs();
-        let mut status = match office_service.runtime_status(account_key) {
-            Ok(Some(status)) => status,
-            Ok(None) => OfficeAccountRuntimeStatus {
-                account_key: account_key.to_string(),
-                ..OfficeAccountRuntimeStatus::default()
-            },
-            Err(load_error) => {
-                log::warn!(
-                    "[contacts_runtime] failed to load runtime status for {}: {}",
-                    account_key,
-                    load_error
-                );
-                return;
-            }
-        };
-        status.account_key = account_key.to_string();
-        status.last_activity_kind = activity_kind.to_string();
-        status.last_activity_ok = error.is_none();
-        status.last_activity_at_unix_secs = now;
-        status.updated_at = now;
-        if let Some(error) = error {
-            status.last_error = error.to_string();
-        } else {
-            status.last_error.clear();
-            status.probe_ok = true;
-        }
-        if let Err(store_error) = office_service.set_runtime_status(&status) {
-            log::warn!(
-                "[contacts_runtime] failed to persist runtime status for {}: {}",
-                account_key,
-                store_error
-            );
+        if let Some(remote) = self.remote.as_ref() {
+            remote
+                .office_runtime
+                .record_runtime_activity(account_key, activity_kind, error);
         }
     }
 }

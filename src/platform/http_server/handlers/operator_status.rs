@@ -22,6 +22,7 @@ mod tests {
 
     #[test]
     fn body_keeps_operator_status_contract_fields() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         let ctx = build_test_context();
 
         let payload = body(&ctx).unwrap();
@@ -151,6 +152,7 @@ mod tests {
 
     #[test]
     fn body_keeps_os_closure_consistent_with_presence_and_runtime_mode() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         let ctx = build_test_context();
 
         let payload = body(&ctx).unwrap();

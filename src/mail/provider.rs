@@ -46,7 +46,7 @@ pub trait MailProvider: Send + Sync {
     ) -> Result<MailMessageSummary>;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MailProviderRegistry {
     providers: HashMap<&'static str, Arc<dyn MailProvider>>,
 }

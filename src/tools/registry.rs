@@ -833,6 +833,7 @@ fn register_office_tools(
     _config: &AppConfig,
     platform: &Arc<dyn crate::Platform>,
 ) {
+    let topology = crate::office::build_default_office_integration_topology();
     let contacts_directory_store: Arc<
         dyn crate::contacts_directory::ContactsDirectoryStore + Send + Sync,
     > = Arc::new(
@@ -843,7 +844,7 @@ fn register_office_tools(
         platform.office_credential_store(),
         platform.office_runtime_status_store(),
     )
-    .with_default_probe_adapters();
+    .with_probe_adapters(topology.probe_adapters());
     let office_authority = Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
         Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
         platform.office_credential_store(),
@@ -876,72 +877,22 @@ fn register_office_tools(
             office_authority.clone(),
         ),
     );
-    let mut mail_providers = crate::mail::MailProviderRegistry::new();
-    mail_providers.register(Arc::new(
-        crate::mail::providers::imap_smtp::ImapSmtpProvider,
-    ));
-    mail_providers.register(Arc::new(crate::mail::providers::feishu::FeishuMailProvider));
-    mail_providers.register(Arc::new(crate::mail::providers::wecom::WecomMailProvider));
-    mail_providers.register(Arc::new(
-        crate::mail::providers::microsoft365::Microsoft365MailProvider,
-    ));
-    mail_providers.register(Arc::new(crate::mail::providers::google::GoogleMailProvider));
-    let mut documents_providers = crate::documents::DocumentsProviderRegistry::new();
-    documents_providers.register(Arc::new(
-        crate::documents::providers::webdav::WebDavProvider,
-    ));
-    documents_providers.register(Arc::new(
-        crate::documents::providers::feishu::FeishuDocumentsProvider,
-    ));
-    documents_providers.register(Arc::new(
-        crate::documents::providers::wecom::WecomDocumentsProvider,
-    ));
-    documents_providers.register(Arc::new(
-        crate::documents::providers::microsoft365::Microsoft365DocumentsProvider,
-    ));
-    documents_providers.register(Arc::new(
-        crate::documents::providers::google::GoogleDocumentsProvider,
-    ));
-    let calendar_providers = crate::calendar::build_default_office_calendar_provider_registry();
-    let mut contacts_directory_providers =
-        crate::contacts_directory::ContactsDirectoryProviderRegistry::new();
-    contacts_directory_providers.register(Arc::new(
-        crate::contacts_directory::providers::feishu::FeishuContactsDirectoryProvider,
-    ));
-    contacts_directory_providers.register(Arc::new(
-        crate::contacts_directory::providers::wecom::WecomContactsDirectoryProvider,
-    ));
-    contacts_directory_providers.register(Arc::new(
-        crate::contacts_directory::providers::microsoft365::Microsoft365ContactsDirectoryProvider,
-    ));
-    contacts_directory_providers.register(Arc::new(
-        crate::contacts_directory::providers::google::GoogleContactsDirectoryProvider,
-    ));
-    let task_calendar_providers =
-        crate::calendar::build_default_office_calendar_provider_registry();
-    let reminder_calendar_providers =
-        crate::calendar::build_default_office_calendar_provider_registry();
-    let calendar_contacts_service =
+    let mail_providers = topology.mail_providers();
+    let documents_providers = topology.documents_providers();
+    let calendar_providers = topology.calendar_providers();
+    let task_calendar_providers = topology.calendar_providers();
+    let reminder_calendar_providers = topology.calendar_providers();
+    let make_contacts_service = || {
         crate::contacts_directory::ContactsDirectoryService::with_office_authority(
             Arc::clone(&contacts_directory_store),
             Arc::clone(&contacts_directory_credential_store),
-            contacts_directory_providers.clone(),
+            topology.contacts_directory_providers(),
             office_authority.clone(),
-        );
-    let documents_contacts_service =
-        crate::contacts_directory::ContactsDirectoryService::with_office_authority(
-            Arc::clone(&contacts_directory_store),
-            Arc::clone(&contacts_directory_credential_store),
-            contacts_directory_providers.clone(),
-            office_authority.clone(),
-        );
-    let mail_contacts_service =
-        crate::contacts_directory::ContactsDirectoryService::with_office_authority(
-            Arc::clone(&contacts_directory_store),
-            Arc::clone(&contacts_directory_credential_store),
-            contacts_directory_providers.clone(),
-            office_authority.clone(),
-        );
+        )
+    };
+    let calendar_contacts_service = make_contacts_service();
+    let documents_contacts_service = make_contacts_service();
+    let mail_contacts_service = make_contacts_service();
 
     registry.register(Box::new(
         super::CalendarTool::with_office_authority_and_contacts_service(
@@ -976,7 +927,7 @@ fn register_office_tools(
         super::ContactsDirectoryTool::with_office_authority(
             Arc::clone(&contacts_directory_store),
             Arc::clone(&contacts_directory_credential_store),
-            contacts_directory_providers,
+            topology.contacts_directory_providers(),
             office_authority.clone(),
         ),
     ));
@@ -991,34 +942,10 @@ fn register_office_tools(
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));
-    registry.register(Box::new(
-        super::OfficeStatusTool::with_probe_supported_provider_kinds(
-            office_authority,
-            [
-                "imap_smtp",
-                "feishu_mail",
-                "wecom_mail",
-                "microsoft365_mail",
-                "google_mail",
-                "webdav",
-                "feishu_documents",
-                "wecom_documents",
-                "microsoft365_documents",
-                "google_documents",
-                "caldav",
-                "feishu_calendar",
-                "wecom_calendar",
-                "microsoft365_calendar",
-                "google_calendar",
-                "feishu_contacts_directory",
-                "wecom_contacts_directory",
-                "microsoft365_contacts_directory",
-                "google_contacts_directory",
-            ]
-            .into_iter()
-            .map(str::to_string),
-        ),
-    ));
+    registry.register(Box::new(super::OfficeStatusTool::with_probe_adapters(
+        office_authority,
+        topology.probe_adapters(),
+    )));
 }
 
 #[cold]

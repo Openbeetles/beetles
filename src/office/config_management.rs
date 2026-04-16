@@ -247,7 +247,9 @@ impl OfficeConfigManagementService {
     }
 
     pub fn with_default_probe_adapters(self) -> Self {
-        self.with_probe_adapters(default_office_probe_adapters())
+        self.with_probe_adapters(
+            crate::office::build_default_office_integration_topology().probe_adapters(),
+        )
     }
 
     pub fn inspect(&self) -> Result<OfficeConfigSnapshot> {
@@ -1285,42 +1287,6 @@ fn apply_config_field_value(
                 .insert(schema.key.clone(), value.to_string());
         }
     }
-}
-
-fn default_office_probe_adapters() -> Vec<Arc<dyn OfficeProbeAdapter + Send + Sync>> {
-    vec![
-        Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
-        Arc::new(crate::mail::providers::feishu::FeishuMailOfficeProbeAdapter),
-        Arc::new(crate::mail::providers::wecom::WecomMailOfficeProbeAdapter),
-        Arc::new(crate::mail::providers::microsoft365::Microsoft365MailOfficeProbeAdapter),
-        Arc::new(crate::mail::providers::google::GoogleMailOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
-        Arc::new(crate::documents::providers::wecom::WecomDocumentsOfficeProbeAdapter),
-        Arc::new(
-            crate::documents::providers::microsoft365::Microsoft365DocumentsOfficeProbeAdapter,
-        ),
-        Arc::new(crate::documents::providers::google::GoogleDocumentsOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
-        Arc::new(crate::calendar::providers::wecom::WecomCalendarOfficeProbeAdapter),
-        Arc::new(
-            crate::calendar::providers::microsoft365::Microsoft365CalendarOfficeProbeAdapter,
-        ),
-        Arc::new(crate::calendar::providers::google::GoogleCalendarOfficeProbeAdapter),
-        Arc::new(
-            crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
-        ),
-        Arc::new(
-            crate::contacts_directory::providers::wecom::WecomContactsDirectoryOfficeProbeAdapter,
-        ),
-        Arc::new(
-            crate::contacts_directory::providers::microsoft365::Microsoft365ContactsDirectoryOfficeProbeAdapter,
-        ),
-        Arc::new(
-            crate::contacts_directory::providers::google::GoogleContactsDirectoryOfficeProbeAdapter,
-        ),
-    ]
 }
 
 fn apply_policy_patch(policy: &mut OfficeSelectionPolicy, patch: &OfficePolicyPatch) {
