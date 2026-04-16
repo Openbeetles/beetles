@@ -22,10 +22,7 @@ use super::final_reply::finalize_user_visible_reply;
 use super::reply_surface::ReplySurface;
 use super::request_plan::AgentRequestPlan;
 use super::request_semantics::RequestSemantics;
-use super::soul_feedback::{
-    build_turn_soul_feedback_ledger, compile_soul_feedback_projection,
-    render_soul_feedback_projection_block, SoulFeedbackProjection, SoulFeedbackProjectionInput,
-};
+use super::soul_feedback::{build_turn_soul_feedback_ledger, SoulFeedbackProjection};
 use super::strategy::{
     empty_final_answer_followup, final_answer_followup, repeated_answer_followup, AgentRunStrategy,
     SuccessfulToolRoundSummary,
@@ -6091,6 +6088,7 @@ mod tests {
             used_surface_finalization: false,
             used_final_answer_recovery: true,
             task_execution_used: false,
+            soul_feedback_projection: None,
             pressure: crate::orchestrator::PressureLevel::Cautious,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
                 current_mode: crate::runtime::RuntimeMode::Normal,

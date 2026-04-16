@@ -1,7 +1,8 @@
 //! Deterministic soul-feedback projection for the active turn.
 //! 当前回合灵魂反哺投影：把灵魂治理结果明确投影到主回复、主动性、长期策略三条主线。
 
-use super::{SubjectState, TurnDeliberationGate};
+use crate::agent::deliberation::TurnDeliberationGate;
+use crate::agent::subject_state::SubjectState;
 use crate::memory::{
     AutonomyStrategy, OuterVoice, PersonaPriorityAdjudication, PersonalityRuntimeGovernanceGate,
     RelationshipConstitution, SelfAuthoredCore, TurnSoulFeedbackLedger, TurnSoulInitiativeLedger,
@@ -86,43 +87,43 @@ pub(crate) fn compile_soul_feedback_projection(
         identity_anchor: input
             .subject_state
             .map(|state| state.identity_anchor.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .or_else(|| {
                 input
                     .self_authored_core
                     .map(|core| core.identity_anchor.as_str())
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value: &&str| !value.trim().is_empty())
             })
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         response_mode: input
             .subject_state
             .map(|state| state.response_mode.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .or_else(|| {
                 input
                     .self_authored_core
                     .map(|core| core.default_response_mode.as_str())
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value: &&str| !value.trim().is_empty())
             })
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         relationship_posture: input
             .subject_state
             .map(|state| state.relationship_posture.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .or_else(|| {
                 input
                     .self_authored_core
                     .map(|core| core.default_relationship_posture.as_str())
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value: &&str| !value.trim().is_empty())
             })
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         expression_mode: input
             .outer_voice
             .map(|voice| voice.expression_mode.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         signal_layers: reply_layers,
@@ -152,18 +153,18 @@ pub(crate) fn compile_soul_feedback_projection(
         governance_mode: input
             .subject_state
             .map(|state| state.governance_mode.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         initiative_posture: input
             .subject_state
             .map(|state| state.initiative_posture.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .or_else(|| {
                 input
                     .self_authored_core
                     .map(|core| core.default_initiative_posture.as_str())
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value: &&str| !value.trim().is_empty())
             })
             .map(normalize_feedback_text)
             .unwrap_or_default(),
@@ -190,13 +191,13 @@ pub(crate) fn compile_soul_feedback_projection(
         current_mode: input
             .autonomy_strategy
             .map(|strategy| strategy.current_mode.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         next_focus: input
             .autonomy_strategy
             .map(|strategy| strategy.next_focus.as_str())
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value: &&str| !value.trim().is_empty())
             .map(normalize_feedback_text)
             .unwrap_or_default(),
         idle_enabled: input
@@ -350,7 +351,7 @@ fn fallback_dash(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::TurnDeliberationClass;
+    use crate::memory::TurnDeliberationClass;
 
     #[test]
     fn compile_soul_feedback_projection_captures_all_three_chains() {
