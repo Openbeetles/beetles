@@ -22,8 +22,8 @@ const chromeBackdrop = {
 export const SHELL_CHROME_SURFACE_SX = {
   backgroundColor: "color-mix(in srgb, var(--surface) 88%, transparent)",
   backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 42%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 2.5%, transparent) 0%, transparent 100%)",
+    "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 46%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 2%, transparent) 0%, transparent 100%)",
   ].join(", "),
   ...chromeBackdrop,
 } as const;
@@ -31,13 +31,13 @@ export const SHELL_CHROME_SURFACE_SX = {
 /** 顶栏：与主内容区分的哑光条 + OS3D 上沿高光（`--os3d-chrome-titlebar-stack`） */
 export const SHELL_TITLEBAR_CHROME_SX = {
   ...SHELL_CHROME_SURFACE_SX,
-  backgroundColor: "color-mix(in srgb, var(--surface) 90%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--surface) 86%, transparent)",
   boxShadow: "var(--os3d-chrome-titlebar-stack)",
 } as const;
 
 /** 任务栏：贴底哑光条 + 台面承托浅影（`--os3d-chrome-taskbar-stack`） */
 export const SHELL_TASKBAR_CHROME_SX = {
   ...SHELL_CHROME_SURFACE_SX,
-  backgroundColor: "color-mix(in srgb, var(--surface) 92%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--surface) 94%, transparent)",
   boxShadow: "var(--os3d-chrome-taskbar-stack)",
 } as const;

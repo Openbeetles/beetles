@@ -13,7 +13,7 @@ export function PageHeader({ title }: PageHeaderProps) {
   return (
     <Box
       sx={{
-        py: 0.5,
+        py: 0.25,
         flex: 1,
         minWidth: 0,
         position: 'relative',
@@ -23,11 +23,11 @@ export function PageHeader({ title }: PageHeaderProps) {
         component="h1"
         sx={{
           fontFamily: 'var(--font-sans)',
-          fontSize: 'var(--font-size-body-lg)',
+          fontSize: 'var(--font-size-body)',
           fontWeight: 600,
-          letterSpacing: '-0.02em',
+          letterSpacing: '-0.015em',
           lineHeight: 'var(--line-height-snug)',
-          color: 'var(--foreground)',
+          color: 'var(--text-primary)',
           margin: 0,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
@@ -38,19 +38,6 @@ export function PageHeader({ title }: PageHeaderProps) {
       >
         {title}
       </Typography>
-      <Box
-        aria-hidden
-        sx={{
-          mt: 0.75,
-          width: 32,
-          height: 3,
-          borderRadius: 'var(--radius-full)',
-          background:
-            'linear-gradient(90deg, color-mix(in srgb, var(--primary) 34%, transparent), color-mix(in srgb, var(--primary) 8%, transparent))',
-          boxShadow:
-            'inset 0 1px 0 color-mix(in srgb, #fff 34%, transparent), 0 2px 6px -4px color-mix(in srgb, var(--primary) 22%, transparent)',
-        }}
-      />
     </Box>
   )
 }

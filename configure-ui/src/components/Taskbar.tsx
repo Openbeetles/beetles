@@ -37,25 +37,7 @@ const START_MENU_NAV_ITEMS = NAV_ITEMS.filter(
 const START_MENU_GAP_PX = 18;
 const DOCK_MAGNIFY_SCALE = [1.26, 1.14, 1.06];
 const DOCK_MAGNIFY_LIFT_PX = [14, 7, 2];
-
-/**
- * 12 列栅格占列数（Metro 式大小不一）；未列出新路由时默认 4 列。
- * Column spans for 12-col grid; default 4 for unlisted routes.
- */
-const START_MENU_TILE_SPAN_BY_PATH: Partial<Record<string, number>> = {
-  "/ai-config": 8,
-  "/channels-config": 4,
-  "/soul-user": 3,
-  "/skills": 3,
-  "/tools": 3,
-  "/device-config": 3,
-  "/system-logs": 6,
-  "/system-config": 6,
-};
-
-function startMenuTileColSpan(path: string): number {
-  return START_MENU_TILE_SPAN_BY_PATH[path] ?? 4;
-}
+const START_MENU_TILE_MIN_HEIGHT = 112;
 
 function getDockMotion(index: number, hoveredIndex: number | null) {
   if (hoveredIndex === null) {
@@ -315,7 +297,7 @@ export function Taskbar() {
             elevation: 0,
             sx: {
               width: "min(480px, 100vw - 32px)",
-              maxHeight: "min(72vh, 560px)",
+              maxHeight: "min(72vh, 540px)",
               position: "relative",
               display: "flex",
               flexDirection: "column",
@@ -327,9 +309,9 @@ export function Taskbar() {
               backgroundColor:
                 "color-mix(in srgb, var(--card) 95%, transparent)",
               backgroundImage: [
-                "linear-gradient(180deg, color-mix(in srgb, #fff 24%, transparent) 0%, transparent 28%)",
-                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 60%, transparent) 0%, transparent 52%)",
-                "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 5%, transparent) 0%, transparent 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 26%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 46%, transparent) 0%, transparent 48%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 3.5%, transparent) 0%, transparent 100%)",
               ].join(", "),
               backdropFilter: "saturate(1.12) blur(var(--shell-chrome-blur))",
               WebkitBackdropFilter:
@@ -351,16 +333,16 @@ export function Taskbar() {
               "&::after": {
                 content: '""',
                 position: "absolute",
-                left: 32,
-                right: 32,
-                bottom: 10,
-                height: 20,
+                left: 40,
+                right: 40,
+                bottom: 12,
+                height: 16,
                 borderRadius: "9999px",
                 pointerEvents: "none",
                 background:
-                  "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 10%, transparent), transparent)",
-                filter: "blur(10px)",
-                opacity: 0.78,
+                  "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 8%, transparent), transparent)",
+                filter: "blur(12px)",
+                opacity: 0.62,
               },
               "@media (prefers-reduced-motion: reduce)": {
                 backdropFilter: "none",
@@ -393,9 +375,9 @@ export function Taskbar() {
               py: 1.5,
               borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
               background:
-                "linear-gradient(180deg, color-mix(in srgb, #fff 16%, var(--surface)) 0%, color-mix(in srgb, var(--surface) 72%, var(--card)) 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 12%, var(--surface)) 0%, color-mix(in srgb, var(--surface) 58%, var(--card)) 100%)",
               boxShadow:
-                "inset 0 1px 0 color-mix(in srgb, #fff 54%, transparent)",
+                "inset 0 1px 0 color-mix(in srgb, #fff 42%, transparent)",
             }}
           >
             <Stack
@@ -427,8 +409,7 @@ export function Taskbar() {
                     fontFamily: "var(--font-sans)",
                     fontWeight: 700,
                     letterSpacing: "-0.02em",
-                    textTransform: "uppercase",
-                    fontSize: "var(--font-size-h4)",
+                    fontSize: "var(--font-size-body-lg)",
                     lineHeight: 1.2,
                   }}
                 >
@@ -448,9 +429,11 @@ export function Taskbar() {
                         p: 0.5,
                         borderRadius: "var(--radius-control)",
                         color: "var(--semantic-danger)",
+                        border: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+                        backgroundColor: "color-mix(in srgb, var(--card) 60%, transparent)",
                         "&:hover:not(:disabled)": {
                           backgroundColor:
-                            "color-mix(in srgb, var(--semantic-danger) 12%, transparent)",
+                            "color-mix(in srgb, var(--semantic-danger) 8%, var(--card))",
                         },
                         "&:disabled": { opacity: 0.55 },
                       }}
@@ -520,15 +503,15 @@ export function Taskbar() {
                 borderLeftColor: deviceConnected
                   ? "var(--semantic-success)"
                   : "var(--semantic-danger)",
-                boxShadow: "var(--os3d-content-plate-stack)",
+                boxShadow: "var(--os3d-chip-lift-stack)",
                 transition:
                   "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), box-shadow var(--transition-duration) var(--ease-emphasized)",
                 "&:hover": {
                   backgroundColor: deviceConnected
                     ? "color-mix(in srgb, var(--semantic-success) 10%, var(--card))"
                     : "color-mix(in srgb, var(--semantic-danger) 10%, var(--card))",
-                  transform: "translateY(-1px)",
-                  boxShadow: "var(--os3d-chip-lift-stack)",
+                  transform: "translateY(-0.5px)",
+                  boxShadow: "var(--os3d-pedestal-lift-stack)",
                 },
                 "&:active": {
                   transform: "translateY(0)",
@@ -609,14 +592,13 @@ export function Taskbar() {
               sx={{
                 display: "grid",
                 gridTemplateColumns: {
-                  xs: "1fr",
-                  sm: "repeat(12, minmax(0, 1fr))",
+                  xs: "repeat(2, minmax(0, 1fr))",
+                  sm: "repeat(3, minmax(0, 1fr))",
                 },
-                gap: 1,
+                gap: 1.25,
               }}
             >
-              {START_MENU_NAV_ITEMS.map(({ path, labelKey, iconSrc }, index) => {
-                const colSpan = startMenuTileColSpan(path);
+              {START_MENU_NAV_ITEMS.map(({ path, labelKey, iconSrc }) => {
                 const active =
                   path === "/device-config"
                     ? pathname === "/device-config" ||
@@ -650,13 +632,8 @@ export function Taskbar() {
                     navBlocker.attemptNavigate(path);
                   }
                 };
-
-                const idleBg =
-                  index % 2 === 0
-                    ? "var(--card)"
-                    : "color-mix(in srgb, var(--foreground) 3.5%, var(--card))";
-                const activeBg =
-                  "color-mix(in srgb, var(--primary) 12%, var(--card))";
+                const idleBg = "color-mix(in srgb, var(--card) 84%, var(--surface))";
+                const activeBg = "color-mix(in srgb, var(--primary) 10%, var(--card))";
 
                 return (
                   <Box
@@ -673,38 +650,37 @@ export function Taskbar() {
                     aria-current={active && allowNav ? "page" : undefined}
                     onClick={handleNavClick}
                     sx={{
-                      gridColumn: { xs: "1 / -1", sm: `span ${colSpan}` },
-                      minHeight: {
-                        xs: 80,
-                        sm: colSpan >= 6 ? 96 : colSpan >= 4 ? 88 : 84,
-                      },
-                      borderRadius: "var(--radius-chip)",
+                      minHeight: START_MENU_TILE_MIN_HEIGHT,
+                      borderRadius: "var(--radius-card)",
                       border: "1px solid",
                       borderColor:
                         active && allowNav
-                          ? "color-mix(in srgb, var(--primary) 42%, transparent)"
-                          : "color-mix(in srgb, var(--border) 25%, transparent)",
-                      p: 1.5,
+                          ? "color-mix(in srgb, var(--primary) 28%, transparent)"
+                          : "color-mix(in srgb, var(--border) 16%, transparent)",
+                      p: 1.75,
                       display: "flex",
                       flexDirection: "column",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      gap: 1,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      textAlign: "center",
+                      gap: 1.25,
                       textDecoration: "none",
                       color: "inherit",
                       backgroundColor: active && allowNav ? activeBg : idleBg,
                       cursor: allowNav ? "pointer" : "default",
                       opacity: allowNav ? 1 : 0.72,
-                      boxShadow: "var(--os3d-content-plate-stack)",
+                      boxShadow: active && allowNav
+                        ? "var(--os3d-chip-lift-stack)"
+                        : "var(--os3d-pedestal-lift-stack)",
                       transition:
                         "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-emphasized)",
                       "&:hover": allowNav
                         ? {
                             backgroundColor:
                               active && allowNav
-                                ? "color-mix(in srgb, var(--primary) 16%, var(--card))"
-                                : "color-mix(in srgb, var(--foreground) 6%, var(--card))",
-                            transform: "translateY(-1px)",
+                                ? "color-mix(in srgb, var(--primary) 12%, var(--card))"
+                                : "color-mix(in srgb, var(--foreground) 4%, var(--card))",
+                            transform: "translateY(-0.5px)",
                             boxShadow: "var(--os3d-chip-lift-stack)",
                           }
                         : {},
@@ -721,12 +697,12 @@ export function Taskbar() {
                         color:
                           active && allowNav
                             ? "var(--primary)"
-                            : "var(--foreground)", // 取消 mute 柔化，图标自身有色彩
+                            : "var(--foreground)",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 48,
-                        height: 48,
+                        width: 54,
+                        height: 54,
                         "& svg, & img": {
                           width: "100%",
                           height: "100%",
@@ -740,7 +716,8 @@ export function Taskbar() {
                       variant="caption"
                       sx={{
                         fontWeight: active ? 700 : 600,
-                        lineHeight: 1.25,
+                        lineHeight: 1.3,
+                        fontSize: "var(--font-size-body-sm)",
                         display: "-webkit-box",
                         WebkitLineClamp: 2,
                         WebkitBoxOrient: "vertical",
