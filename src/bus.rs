@@ -12,7 +12,7 @@ pub use crate::util::{truncate_content_to_max, truncate_to_byte_len};
 
 /// 总线消息。入队前需校验 `content.len() <= MAX_CONTENT_LEN`。可序列化供 pending_retry 持久化。
 /// channel/chat_id 用 Arc<str> 减少 clone 开销。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PcMsg {
     #[serde(
         serialize_with = "serialize_arc_str",

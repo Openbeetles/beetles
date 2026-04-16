@@ -1,6 +1,6 @@
 use super::*;
+use crate::agent::{upsert_detached_work_job, DetachedJobKind, DetachedWorkKey, DetachedWorkStore};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 
 fn workflow_kind_for_self_runtime_trigger(
     trigger: SelfRuntimeTrigger,
@@ -93,7 +93,8 @@ fn self_runtime_post_reply_no_trigger_reason(
 }
 
 pub fn enqueue_self_runtime_post_reply(
-    system_inbound_tx: &SystemInboundTx,
+    _system_inbound_tx: &SystemInboundTx,
+    detached_work_store: &dyn DetachedWorkStore,
     self_continuity_store: &dyn SelfContinuityStore,
     autonomy_strategy_store: &dyn AutonomyStrategyStore,
     self_authored_core_store: &dyn SelfAuthoredCoreStore,
@@ -135,7 +136,7 @@ pub fn enqueue_self_runtime_post_reply(
         return false;
     }
     schedule_self_runtime_job(
-        system_inbound_tx,
+        detached_work_store,
         chat_id,
         SelfRuntimeJobPayload {
             trigger: SelfRuntimeTrigger::PostReply,
@@ -174,17 +175,22 @@ pub(super) fn should_enqueue_self_runtime_post_reply_with_state(
     .is_none()
 }
 
-pub fn enqueue_self_runtime_idle_tick(system_inbound_tx: &SystemInboundTx, chat_id: &str) -> bool {
-    enqueue_self_runtime_idle_tick_for_relation(system_inbound_tx, chat_id, "self_runtime_idle")
+pub fn enqueue_self_runtime_idle_tick(
+    _system_inbound_tx: &SystemInboundTx,
+    detached_work_store: &dyn DetachedWorkStore,
+    chat_id: &str,
+) -> bool {
+    enqueue_self_runtime_idle_tick_for_relation(detached_work_store, chat_id, "self_runtime_idle")
 }
 
 pub fn enqueue_self_runtime_operator_request(
-    system_inbound_tx: &SystemInboundTx,
+    _system_inbound_tx: &SystemInboundTx,
+    detached_work_store: &dyn DetachedWorkStore,
     chat_id: &str,
     source_channel: &str,
 ) -> bool {
     enqueue_self_runtime_job_now(
-        system_inbound_tx,
+        detached_work_store,
         chat_id,
         SelfRuntimeJobPayload {
             trigger: SelfRuntimeTrigger::OperatorRequested,
@@ -199,12 +205,12 @@ pub fn enqueue_self_runtime_operator_request(
 }
 
 fn enqueue_self_runtime_idle_tick_for_relation(
-    system_inbound_tx: &SystemInboundTx,
+    detached_work_store: &dyn DetachedWorkStore,
     chat_id: &str,
     source_channel: &str,
 ) -> bool {
     schedule_self_runtime_job(
-        system_inbound_tx,
+        detached_work_store,
         chat_id,
         SelfRuntimeJobPayload {
             trigger: SelfRuntimeTrigger::IdleTick,
@@ -220,71 +226,60 @@ fn enqueue_self_runtime_idle_tick_for_relation(
 }
 
 fn schedule_self_runtime_job(
-    system_inbound_tx: &SystemInboundTx,
+    detached_work_store: &dyn DetachedWorkStore,
     chat_id: &str,
     payload: SelfRuntimeJobPayload,
     delay_ms: u64,
 ) -> bool {
-    let system_inbound_tx = system_inbound_tx.clone();
     let chat_id = chat_id.to_string();
-    let audit_chat_id = chat_id.clone();
     let audit_channel = payload.source_channel.clone();
     let trigger = payload.trigger;
-    let delayed_chat_id = chat_id.clone();
-    let scheduled = crate::runtime::schedule_delayed_task(
-        Instant::now() + Duration::from_millis(delay_ms),
-        Box::new(move || {
-            if let Some(reason) = self_runtime_enqueue_block_reason(payload.trigger) {
-                log::debug!(
-                    "[self_runtime] skip delayed enqueue because {} chat_id={}",
-                    reason,
-                    delayed_chat_id
-                );
-                append_self_runtime_workflow_audit(
-                    payload.trigger,
-                    crate::runtime::WorkflowDisposition::Suppress,
-                    reason,
-                    crate::runtime::WorkflowEffect::Noop,
-                    Some(delayed_chat_id.as_str()),
-                    Some(payload.source_channel.as_str()),
-                );
-                return;
-            }
-            let _ = enqueue_self_runtime_job_now(&system_inbound_tx, &delayed_chat_id, payload);
-        }),
-    );
-    if !scheduled {
-        log::debug!(
-            "[self_runtime] delayed queue full, skip schedule chat_id={}",
-            chat_id
-        );
-        append_self_runtime_workflow_audit(
-            trigger,
-            crate::runtime::WorkflowDisposition::ExecuteFailed,
-            "self_runtime_schedule_failed",
-            crate::runtime::WorkflowEffect::Noop,
-            Some(audit_chat_id.as_str()),
-            Some(audit_channel.as_str()),
-        );
-    } else {
-        append_self_runtime_workflow_audit(
-            trigger,
-            crate::runtime::WorkflowDisposition::DeferUntil,
-            "self_runtime_scheduled",
-            crate::runtime::WorkflowEffect::EnqueueSystemJob,
-            Some(audit_chat_id.as_str()),
-            Some(audit_channel.as_str()),
-        );
+    let (key, job) = match build_detached_self_runtime_job(&chat_id, &payload) {
+        Some(built) => built,
+        None => return false,
+    };
+    match upsert_detached_work_job(
+        detached_work_store,
+        key,
+        &job,
+        delay_ms,
+        "self_runtime_scheduled",
+    ) {
+        Ok(outcome) => {
+            append_self_runtime_workflow_audit(
+                trigger,
+                crate::runtime::WorkflowDisposition::DeferUntil,
+                if outcome.changed {
+                    "self_runtime_scheduled"
+                } else {
+                    "self_runtime_merged"
+                },
+                crate::runtime::WorkflowEffect::EnqueueSystemJob,
+                Some(chat_id.as_str()),
+                Some(audit_channel.as_str()),
+            );
+            true
+        }
+        Err(error) => {
+            log::warn!("[self_runtime] detached schedule failed: {}", error);
+            append_self_runtime_workflow_audit(
+                trigger,
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "self_runtime_schedule_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                Some(chat_id.as_str()),
+                Some(audit_channel.as_str()),
+            );
+            false
+        }
     }
-    scheduled
 }
 
-fn enqueue_self_runtime_job_now(
-    system_inbound_tx: &SystemInboundTx,
+fn build_detached_self_runtime_job(
     chat_id: &str,
-    payload: SelfRuntimeJobPayload,
-) -> bool {
-    let body = match serde_json::to_string(&payload) {
+    payload: &SelfRuntimeJobPayload,
+) -> Option<(DetachedWorkKey, PcMsg)> {
+    let body = match serde_json::to_string(payload) {
         Ok(body) => body,
         Err(error) => {
             log::warn!(
@@ -300,7 +295,7 @@ fn enqueue_self_runtime_job_now(
                 Some(chat_id),
                 Some(payload.source_channel.as_str()),
             );
-            return false;
+            return None;
         }
     };
     let job = match PcMsg::new_system(SELF_RUNTIME_CHANNEL, chat_id, body) {
@@ -319,38 +314,43 @@ fn enqueue_self_runtime_job_now(
                 Some(chat_id),
                 Some(payload.source_channel.as_str()),
             );
-            return false;
+            return None;
         }
     };
-    match system_inbound_tx.try_send(job) {
-        Ok(()) => {
+    let key = DetachedWorkKey::new(
+        detached_owner_channel(chat_id, payload.source_channel.as_str()),
+        chat_id,
+        detached_job_kind_for_trigger(payload.trigger),
+    );
+    Some((key, job))
+}
+
+fn enqueue_self_runtime_job_now(
+    detached_work_store: &dyn DetachedWorkStore,
+    chat_id: &str,
+    payload: SelfRuntimeJobPayload,
+) -> bool {
+    let Some((key, job)) = build_detached_self_runtime_job(chat_id, &payload) else {
+        return false;
+    };
+    match upsert_detached_work_job(detached_work_store, key, &job, 0, "self_runtime_enqueued") {
+        Ok(outcome) => {
             append_self_runtime_workflow_audit(
                 payload.trigger,
                 crate::runtime::WorkflowDisposition::ExecuteNow,
-                "self_runtime_enqueued",
+                if outcome.changed {
+                    "self_runtime_enqueued"
+                } else {
+                    "self_runtime_merged"
+                },
                 crate::runtime::WorkflowEffect::EnqueueSystemJob,
                 Some(chat_id),
                 Some(payload.source_channel.as_str()),
             );
             true
         }
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            log::debug!(
-                "[self_runtime] skip enqueue because system queue is full chat_id={}",
-                chat_id
-            );
-            append_self_runtime_workflow_audit(
-                payload.trigger,
-                crate::runtime::WorkflowDisposition::ExecuteFailed,
-                "self_runtime_queue_full",
-                crate::runtime::WorkflowEffect::Noop,
-                Some(chat_id),
-                Some(payload.source_channel.as_str()),
-            );
-            false
-        }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            log::warn!("[self_runtime] enqueue failed: system queue disconnected");
+        Err(error) => {
+            log::warn!("[self_runtime] enqueue failed: {}", error);
             append_self_runtime_workflow_audit(
                 payload.trigger,
                 crate::runtime::WorkflowDisposition::ExecuteFailed,
@@ -364,26 +364,9 @@ fn enqueue_self_runtime_job_now(
     }
 }
 
-fn self_runtime_enqueue_block_reason(trigger: SelfRuntimeTrigger) -> Option<&'static str> {
-    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if !runtime_mode.action_budget.allow_idle_self_runtime {
-        return Some(
-            runtime_mode
-                .mode_block_reason()
-                .unwrap_or("runtime_mode_blocked"),
-        );
-    }
-    if let Some(reason) = idle_self_runtime_scheduler_block_reason() {
-        return Some(reason);
-    }
-    if matches!(trigger, SelfRuntimeTrigger::IdleTick) {
-        return idle_self_runtime_block_reason();
-    }
-    None
-}
-
 pub fn self_runtime_tick(
-    system_inbound_tx: &SystemInboundTx,
+    _system_inbound_tx: &SystemInboundTx,
+    detached_work_store: &dyn DetachedWorkStore,
     session_store: &dyn SessionStore,
     self_continuity_store: &dyn SelfContinuityStore,
     autonomy_strategy_store: &dyn AutonomyStrategyStore,
@@ -563,7 +546,7 @@ pub fn self_runtime_tick(
                 now_secs,
             );
             if enqueue_self_runtime_idle_tick_for_relation(
-                system_inbound_tx,
+                detached_work_store,
                 &target.chat_id,
                 &target.channel,
             ) {
@@ -608,7 +591,7 @@ pub fn self_runtime_tick(
             "self_runtime_idle"
         };
         if enqueue_self_runtime_idle_tick_for_relation(
-            system_inbound_tx,
+            detached_work_store,
             &chat_id,
             fallback_channel,
         ) {
@@ -649,21 +632,6 @@ pub(super) fn idle_self_runtime_due(
     uptime_secs >= idle_interval_secs
 }
 
-fn idle_self_runtime_scheduler_block_reason() -> Option<&'static str> {
-    let snap = crate::orchestrator::snapshot();
-    if snap.active_agent_tasks > 0 {
-        Some("agent_plane_busy")
-    } else if cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
-        && snap.active_wss_count > 0
-    {
-        Some("external_wss_active")
-    } else if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
-        Some("message_queues_busy")
-    } else {
-        None
-    }
-}
-
 pub(super) fn idle_memory_hygiene_budget_allows_run() -> bool {
     let snap = crate::orchestrator::snapshot();
     let wss_budget_available =
@@ -684,10 +652,6 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
                 .unwrap_or("runtime_mode_blocked"),
         );
     }
-    if let Some(reason) = idle_self_runtime_scheduler_block_reason() {
-        return Some(reason);
-    }
-
     let pressure = crate::orchestrator::refresh_heap_if_stale();
     let snap = crate::orchestrator::snapshot();
     let min_internal = if snap.heap_free_spiram > 0 {
@@ -720,12 +684,33 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
                 .unwrap_or("runtime_mode_blocked"),
         );
     }
-    idle_self_runtime_scheduler_block_reason()
+    None
+}
+
+fn detached_job_kind_for_trigger(trigger: SelfRuntimeTrigger) -> DetachedJobKind {
+    match trigger {
+        SelfRuntimeTrigger::PostReply => DetachedJobKind::SelfRuntimePostReply,
+        SelfRuntimeTrigger::IdleTick => DetachedJobKind::SelfRuntimeIdleTick,
+        SelfRuntimeTrigger::OperatorRequested => DetachedJobKind::OperatorMaintenance,
+    }
+}
+
+fn detached_owner_channel(chat_id: &str, source_channel: &str) -> String {
+    let channel = source_channel.trim();
+    if channel.is_empty() {
+        format!("self_runtime:{}", chat_id.trim())
+    } else {
+        channel.to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{
+        DetachedJobKind, DetachedWorkKey, DetachedWorkRecord, DetachedWorkState, DetachedWorkStore,
+        DetachedWorkUpsertOutcome,
+    };
     use crate::bus::new_inbound_channel;
     use crate::error::Result;
     use crate::memory::{
@@ -735,6 +720,7 @@ mod tests {
         SessionMessage, SessionStore,
     };
     use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -747,6 +733,144 @@ mod tests {
         let guard = crate::runtime::delayed_task::delayed_task_test_guard();
         crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
         guard
+    }
+
+    #[derive(Default)]
+    struct MemoryDetachedWorkStore {
+        entries: Mutex<HashMap<String, DetachedWorkRecord>>,
+    }
+
+    impl DetachedWorkStore for MemoryDetachedWorkStore {
+        fn get(&self, key: &DetachedWorkKey) -> Result<Option<DetachedWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key.storage_key())
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<DetachedWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn upsert(
+            &self,
+            key: &DetachedWorkKey,
+            job: &PcMsg,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<DetachedWorkUpsertOutcome> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let storage_key = key.storage_key();
+            let next = match entries.get(&storage_key) {
+                Some(current)
+                    if current.job == *job
+                        && current.wake_at_ms == wake_at_ms
+                        && current.last_reason == reason
+                        && current.state == DetachedWorkState::Pending =>
+                {
+                    return Ok(DetachedWorkUpsertOutcome {
+                        changed: false,
+                        record: current.clone(),
+                    });
+                }
+                Some(current) => DetachedWorkRecord {
+                    key: key.clone(),
+                    job: job.clone(),
+                    state: DetachedWorkState::Pending,
+                    wake_at_ms,
+                    revision: current.revision.saturating_add(1),
+                    last_reason: reason.to_string(),
+                    updated_at_ms: 1,
+                },
+                None => DetachedWorkRecord {
+                    key: key.clone(),
+                    job: job.clone(),
+                    state: DetachedWorkState::Pending,
+                    wake_at_ms,
+                    revision: 1,
+                    last_reason: reason.to_string(),
+                    updated_at_ms: 1,
+                },
+            };
+            entries.insert(storage_key, next.clone());
+            Ok(DetachedWorkUpsertOutcome {
+                changed: true,
+                record: next,
+            })
+        }
+
+        fn mark_queued(&self, key: &DetachedWorkKey, revision: u64) -> Result<bool> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(false);
+            };
+            if record.revision != revision || record.state != DetachedWorkState::Pending {
+                return Ok(false);
+            }
+            record.state = DetachedWorkState::Queued;
+            Ok(true)
+        }
+
+        fn claim_running(
+            &self,
+            key: &DetachedWorkKey,
+            revision: u64,
+        ) -> Result<Option<DetachedWorkRecord>> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision
+                || !matches!(
+                    record.state,
+                    DetachedWorkState::Pending | DetachedWorkState::Queued
+                )
+            {
+                return Ok(None);
+            }
+            record.state = DetachedWorkState::Running;
+            Ok(Some(record.clone()))
+        }
+
+        fn reschedule(
+            &self,
+            key: &DetachedWorkKey,
+            revision: u64,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<Option<DetachedWorkRecord>> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision {
+                return Ok(None);
+            }
+            record.revision = record.revision.saturating_add(1);
+            record.state = DetachedWorkState::Pending;
+            record.wake_at_ms = wake_at_ms;
+            record.last_reason = reason.to_string();
+            Ok(Some(record.clone()))
+        }
+
+        fn finish(&self, key: &DetachedWorkKey, revision: u64) -> Result<()> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if entries
+                .get(&key.storage_key())
+                .is_some_and(|record| record.revision == revision)
+            {
+                entries.remove(&key.storage_key());
+            }
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -889,6 +1013,7 @@ mod tests {
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
         let session_store = CountingSessionStore::default();
         let now_secs = 10_000;
         let continuity = SelfContinuity {
@@ -910,6 +1035,7 @@ mod tests {
 
         self_runtime_tick(
             &system_inbound_tx,
+            &detached_work_store,
             &session_store,
             &self_continuity_store,
             &autonomy_strategy_store,
@@ -942,6 +1068,7 @@ mod tests {
         crate::state::set_voice_exclusive_active(true);
 
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
         let session_store = CountingSessionStore::default();
         let now_secs = 10_000;
         let continuity = SelfContinuity {
@@ -963,6 +1090,7 @@ mod tests {
 
         self_runtime_tick(
             &system_inbound_tx,
+            &detached_work_store,
             &session_store,
             &self_continuity_store,
             &autonomy_strategy_store,
@@ -995,9 +1123,11 @@ mod tests {
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
 
         let scheduled = enqueue_self_runtime_post_reply(
             &system_inbound_tx,
+            &detached_work_store,
             &StubSelfContinuityStore::default(),
             &StubAutonomyStrategyStore::default(),
             &StubSelfAuthoredCoreStore,
@@ -1011,6 +1141,16 @@ mod tests {
         );
 
         assert!(scheduled);
+        let key = DetachedWorkKey::new(
+            "qq_channel",
+            "chat-a",
+            DetachedJobKind::SelfRuntimePostReply,
+        );
+        let stored = detached_work_store
+            .get(&key)
+            .expect("load detached work")
+            .expect("stored record");
+        assert_eq!(stored.state, DetachedWorkState::Pending);
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.deferred, 1);
         assert_eq!(
@@ -1025,10 +1165,10 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
 
         let enqueued = enqueue_self_runtime_job_now(
-            &system_inbound_tx,
+            &detached_work_store,
             "chat-a",
             SelfRuntimeJobPayload {
                 trigger: SelfRuntimeTrigger::IdleTick,
@@ -1042,10 +1182,14 @@ mod tests {
         );
 
         assert!(enqueued);
-        let job = system_inbound_rx
-            .try_recv()
-            .expect("self runtime job should enqueue");
-        assert_eq!(job.chat_id.as_ref(), "chat-a");
+        let key =
+            DetachedWorkKey::new("qq_channel", "chat-a", DetachedJobKind::SelfRuntimeIdleTick);
+        let stored = detached_work_store
+            .get(&key)
+            .expect("load detached work")
+            .expect("stored record");
+        assert_eq!(stored.job.chat_id.as_ref(), "chat-a");
+        assert_eq!(stored.state, DetachedWorkState::Pending);
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.executed, 1);
         assert_eq!(

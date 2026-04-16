@@ -24,6 +24,7 @@ fn append_post_reply_workflow_audit(
 }
 
 pub(super) fn enqueue_post_reply_maintenance_job(
+    detached_work_store: &dyn crate::agent::DetachedWorkStore,
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
     reply_content: &str,
@@ -35,6 +36,7 @@ pub(super) fn enqueue_post_reply_maintenance_job(
     reuse_outcome: crate::skills::RuntimeSkillReuseOutcome,
     reuse_outcome_note: &str,
 ) -> bool {
+    let _ = system_inbound_tx;
     let payload = PostReplyMaintenanceJobPayload::from_turn(
         msg,
         reply_content,
@@ -64,136 +66,65 @@ pub(super) fn enqueue_post_reply_maintenance_job(
             return false;
         }
     };
-    let system_inbound_tx = system_inbound_tx.clone();
-    let chat_id = msg.chat_id.to_string();
-    let source_channel = msg.channel.to_string();
-    let scheduled = crate::runtime::schedule_delayed_task(
-        Instant::now() + Duration::from_millis(POST_REPLY_MAINTENANCE_DELAY_MS),
-        Box::new(move || {
-            if let Some(reason) = super::background_enqueue_block_reason() {
-                log::debug!(
-                    "[agent_memory] skip delayed maintenance enqueue because {} chat_id={}",
-                    reason,
-                    chat_id
-                );
-                append_post_reply_workflow_audit(
-                    crate::runtime::WorkflowDisposition::Suppress,
-                    reason,
-                    crate::runtime::WorkflowEffect::Noop,
-                    source_channel.as_str(),
-                    chat_id.as_str(),
-                );
-                return;
-            }
-            let job = match PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, &chat_id, body) {
-                Ok(job) => job,
-                Err(error) => {
-                    log::warn!(
-                        "[agent_memory] maintenance job build failed chat_id={}: {}",
-                        chat_id,
-                        error
-                    );
-                    append_post_reply_workflow_audit(
-                        crate::runtime::WorkflowDisposition::ExecuteFailed,
-                        "post_reply_maintenance_build_failed",
-                        crate::runtime::WorkflowEffect::Noop,
-                        source_channel.as_str(),
-                        chat_id.as_str(),
-                    );
-                    return;
-                }
-            };
-            match system_inbound_tx.try_send(job) {
-                Ok(()) => {
-                    append_post_reply_workflow_audit(
-                        crate::runtime::WorkflowDisposition::ExecuteNow,
-                        "post_reply_maintenance_enqueued",
-                        crate::runtime::WorkflowEffect::EnqueueSystemJob,
-                        source_channel.as_str(),
-                        chat_id.as_str(),
-                    );
-                }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    log::debug!(
-                        "[agent_memory] skip maintenance enqueue because system queue is full chat_id={}",
-                        chat_id
-                    );
-                    append_post_reply_workflow_audit(
-                        crate::runtime::WorkflowDisposition::ExecuteFailed,
-                        "post_reply_maintenance_queue_full",
-                        crate::runtime::WorkflowEffect::Noop,
-                        source_channel.as_str(),
-                        chat_id.as_str(),
-                    );
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    log::warn!(
-                        "[agent_memory] maintenance enqueue failed: system queue disconnected"
-                    );
-                    append_post_reply_workflow_audit(
-                        crate::runtime::WorkflowDisposition::ExecuteFailed,
-                        "post_reply_maintenance_queue_disconnected",
-                        crate::runtime::WorkflowEffect::Noop,
-                        source_channel.as_str(),
-                        chat_id.as_str(),
-                    );
-                }
-            }
-        }),
-    );
-    if !scheduled {
-        log::debug!(
-            "[agent_memory] delayed queue full, skip maintenance schedule chat_id={}",
-            msg.chat_id
-        );
-        append_post_reply_workflow_audit(
-            crate::runtime::WorkflowDisposition::ExecuteFailed,
-            "post_reply_maintenance_schedule_failed",
-            crate::runtime::WorkflowEffect::Noop,
-            msg.channel.as_ref(),
-            msg.chat_id.as_ref(),
-        );
-    } else {
-        append_post_reply_workflow_audit(
-            crate::runtime::WorkflowDisposition::DeferUntil,
-            "post_reply_maintenance_scheduled",
-            crate::runtime::WorkflowEffect::EnqueueSystemJob,
-            msg.channel.as_ref(),
-            msg.chat_id.as_ref(),
-        );
-    }
-    scheduled
-}
-
-pub(super) fn maybe_yield_background_job_to_pending_user(
-    background_msg: PcMsg,
-    user_inbound_rx: &UserInboundRx,
-    system_inbound_tx: &SystemInboundTx,
-) -> PcMsg {
-    match user_inbound_rx.try_recv() {
-        Ok(user_msg) => {
-            let mut background_msg = background_msg;
-            background_msg.enqueue_ts_ms = super::now_unix_ms();
-            match system_inbound_tx.try_send(background_msg) {
-                Ok(()) => {
-                    log::debug!(
-                        "[agent] yielded background job to pending user chat_id={}",
-                        user_msg.chat_id
-                    );
-                }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    log::warn!("[agent] background yield requeue dropped: system queue full");
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    log::warn!(
-                        "[agent] background yield requeue failed: system queue disconnected"
-                    );
-                }
-            }
-            user_msg
+    let job = match PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, msg.chat_id.as_ref(), body) {
+        Ok(job) => job,
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] maintenance job build failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "post_reply_maintenance_build_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
+            return false;
         }
-        Err(std::sync::mpsc::TryRecvError::Empty)
-        | Err(std::sync::mpsc::TryRecvError::Disconnected) => background_msg,
+    };
+    let key = crate::agent::DetachedWorkKey::new(
+        msg.channel.as_ref(),
+        msg.chat_id.as_ref(),
+        crate::agent::DetachedJobKind::PostReplyMaintenance,
+    );
+    match crate::agent::upsert_detached_work_job(
+        detached_work_store,
+        key,
+        &job,
+        POST_REPLY_MAINTENANCE_DELAY_MS,
+        "post_reply_maintenance_scheduled",
+    ) {
+        Ok(outcome) => {
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::DeferUntil,
+                if outcome.changed {
+                    "post_reply_maintenance_scheduled"
+                } else {
+                    "post_reply_maintenance_merged"
+                },
+                crate::runtime::WorkflowEffect::EnqueueSystemJob,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
+            true
+        }
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] maintenance detached upsert failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "post_reply_maintenance_schedule_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
+            false
+        }
     }
 }
 
@@ -299,7 +230,7 @@ fn run_post_reply_maintenance_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
-    system_inbound_tx: &SystemInboundTx,
+    _system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
 ) {
     let payload: PostReplyMaintenanceJobPayload = match serde_json::from_str(&msg.content) {
@@ -353,20 +284,22 @@ fn run_post_reply_maintenance_job(
             now_secs: payload.now_secs,
         },
         || match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
-            Ok(job) => match system_inbound_tx.try_send(job) {
-                Ok(()) => true,
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    log::debug!(
-                        "[agent_memory] skip refresh enqueue because system queue is full chat_id={}",
-                        msg.chat_id
-                    );
-                    false
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    log::warn!("[agent_memory] refresh enqueue failed: system queue disconnected");
-                    false
-                }
-            },
+            Ok(job) => crate::agent::upsert_detached_work_job(
+                config.runtime.detached_work_store.as_ref(),
+                crate::agent::DetachedWorkKey::new(
+                    "memory_refresh",
+                    msg.chat_id.as_ref(),
+                    crate::agent::DetachedJobKind::LongTermMemoryRefresh,
+                ),
+                &job,
+                0,
+                "long_term_memory_refresh_enqueued",
+            )
+            .map(|_| true)
+            .unwrap_or_else(|error| {
+                log::warn!("[agent_memory] refresh detached enqueue failed: {}", error);
+                false
+            }),
             Err(error) => {
                 log::warn!("[agent_memory] refresh job build failed: {}", error);
                 false
@@ -429,7 +362,7 @@ fn run_self_runtime_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
-    system_inbound_tx: &SystemInboundTx,
+    _system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
 ) {
     let payload: crate::memory::SelfRuntimeJobPayload = match serde_json::from_str(&msg.content) {
@@ -539,20 +472,25 @@ fn run_self_runtime_job(
         );
         if decision.request_factual_refresh {
             match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
-                Ok(job) => match system_inbound_tx.try_send(job) {
-                    Ok(()) => {}
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        log::debug!(
-                            "[self_runtime] skip factual refresh enqueue because system queue is full chat_id={}",
-                            msg.chat_id
-                        );
-                    }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Ok(job) => {
+                    let _ = crate::agent::upsert_detached_work_job(
+                        config.runtime.detached_work_store.as_ref(),
+                        crate::agent::DetachedWorkKey::new(
+                            "memory_refresh",
+                            msg.chat_id.as_ref(),
+                            crate::agent::DetachedJobKind::LongTermMemoryRefresh,
+                        ),
+                        &job,
+                        0,
+                        "self_runtime_factual_refresh_enqueued",
+                    )
+                    .map_err(|error| {
                         log::warn!(
-                            "[self_runtime] factual refresh enqueue failed: system queue disconnected"
+                            "[self_runtime] factual refresh detached enqueue failed: {}",
+                            error
                         );
-                    }
-                },
+                    });
+                }
                 Err(error) => {
                     log::warn!("[self_runtime] factual refresh job build failed: {}", error);
                 }
@@ -856,6 +794,7 @@ fn run_operator_maintenance_job(
             };
             if crate::memory::enqueue_self_runtime_operator_request(
                 system_inbound_tx,
+                config.runtime.detached_work_store.as_ref(),
                 chat_id.as_str(),
                 source_channel.as_str(),
             ) {
@@ -991,6 +930,253 @@ pub(super) fn try_run_lane_background_job(
     false
 }
 
+fn detached_workflow_identity(
+    kind: crate::agent::DetachedJobKind,
+) -> (
+    crate::runtime::WorkflowKind,
+    crate::runtime::WorkflowTrigger,
+) {
+    match kind {
+        crate::agent::DetachedJobKind::LongTermMemoryRefresh => (
+            crate::runtime::WorkflowKind::LongTermMemoryRefresh,
+            crate::runtime::WorkflowTrigger::PostReply,
+        ),
+        crate::agent::DetachedJobKind::PostReplyMaintenance => (
+            crate::runtime::WorkflowKind::PostReplyMaintenance,
+            crate::runtime::WorkflowTrigger::PostReply,
+        ),
+        crate::agent::DetachedJobKind::IdleMemoryForge => (
+            crate::runtime::WorkflowKind::IdleMemoryForge,
+            crate::runtime::WorkflowTrigger::CronTick,
+        ),
+        crate::agent::DetachedJobKind::SelfRuntimePostReply => (
+            crate::runtime::WorkflowKind::SelfRuntimePostReply,
+            crate::runtime::WorkflowTrigger::PostReply,
+        ),
+        crate::agent::DetachedJobKind::SelfRuntimeIdleTick => (
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
+            crate::runtime::WorkflowTrigger::CronTick,
+        ),
+        crate::agent::DetachedJobKind::OperatorMaintenance => (
+            crate::runtime::WorkflowKind::OperatorMaintenance,
+            crate::runtime::WorkflowTrigger::OperatorRequested,
+        ),
+    }
+}
+
+fn detached_work_defer_delay_ms(
+    kind: crate::agent::DetachedJobKind,
+    reason: &str,
+    explicit_delay_ms: Option<u64>,
+) -> u64 {
+    explicit_delay_ms.unwrap_or_else(|| match reason {
+        "external_wss_active" if kind == crate::agent::DetachedJobKind::SelfRuntimeIdleTick => {
+            super::IDLE_SELF_RUNTIME_RETRY_DELAY_MS
+        }
+        _ => super::BACKGROUND_DEFER_DELAY_MS,
+    })
+}
+
+fn append_detached_work_defer_audit(key: &crate::agent::DetachedWorkKey, reason: &str) {
+    let (workflow, trigger) = detached_workflow_identity(key.kind);
+    super::append_background_defer_workflow_audit(
+        key.owner_channel.as_str(),
+        key.owner_chat_id.as_str(),
+        trigger,
+        workflow,
+        reason,
+    );
+}
+
+fn detached_work_defer_reason(
+    config: &AgentLoopConfig,
+    key: &crate::agent::DetachedWorkKey,
+) -> Result<Option<(&'static str, Option<u64>)>> {
+    if matches!(
+        key.kind,
+        crate::agent::DetachedJobKind::PostReplyMaintenance
+            | crate::agent::DetachedJobKind::SelfRuntimePostReply
+    ) {
+        if let Some(delay_ms) = super::post_reply_quiet_delay_ms() {
+            return Ok(Some(("post_reply_quiet_window", Some(delay_ms))));
+        }
+    }
+    let live = crate::agent::live_foreground_state_for_chat(
+        config.runtime.active_work_store.as_ref(),
+        key.owner_chat_id.as_str(),
+    )?;
+    Ok(
+        match crate::agent::classify_background_job_disposition(key.kind, live) {
+            crate::agent::BackgroundDisposition::RunNow => None,
+            crate::agent::BackgroundDisposition::Defer(reason) => Some((reason, None)),
+        },
+    )
+}
+
+fn reschedule_detached_work(
+    store: &dyn crate::agent::DetachedWorkStore,
+    key: &crate::agent::DetachedWorkKey,
+    revision: u64,
+    reason: &str,
+    delay_ms: u64,
+) {
+    let wake_at_ms = crate::agent::current_unix_ms().saturating_add(delay_ms);
+    match store.reschedule(key, revision, wake_at_ms, reason) {
+        Ok(Some(_)) => append_detached_work_defer_audit(key, reason),
+        Ok(None) => {}
+        Err(error) => {
+            log::warn!(
+                "[agent] detached work reschedule failed channel={} chat_id={} kind={:?}: {}",
+                key.owner_channel,
+                key.owner_chat_id,
+                key.kind,
+                error
+            );
+        }
+    }
+}
+
+fn run_detached_background_work_wake(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
+    wake_msg: &PcMsg,
+) {
+    let wake: crate::agent::DetachedWorkWake = match serde_json::from_str(&wake_msg.content) {
+        Ok(wake) => wake,
+        Err(error) => {
+            log::warn!(
+                "[agent] detached wake decode failed chat_id={}: {}",
+                wake_msg.chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_periodic_maintenance {
+        let reason = runtime_mode
+            .mode_block_reason()
+            .unwrap_or("runtime_mode_blocked");
+        reschedule_detached_work(
+            config.runtime.detached_work_store.as_ref(),
+            &wake.key,
+            wake.revision,
+            reason,
+            super::BACKGROUND_DEFER_DELAY_MS,
+        );
+        return;
+    }
+    let record = match config.runtime.detached_work_store.get(&wake.key) {
+        Ok(Some(record)) => record,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!(
+                "[agent] detached wake load failed channel={} chat_id={} kind={:?}: {}",
+                wake.key.owner_channel,
+                wake.key.owner_chat_id,
+                wake.key.kind,
+                error
+            );
+            return;
+        }
+    };
+    if record.revision != wake.revision {
+        return;
+    }
+    match detached_work_defer_reason(config, &wake.key) {
+        Ok(Some((reason, explicit_delay_ms))) => {
+            reschedule_detached_work(
+                config.runtime.detached_work_store.as_ref(),
+                &wake.key,
+                wake.revision,
+                reason,
+                detached_work_defer_delay_ms(wake.key.kind, reason, explicit_delay_ms),
+            );
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log::warn!(
+                "[agent] detached foreground gate failed channel={} chat_id={} kind={:?}: {}",
+                wake.key.owner_channel,
+                wake.key.owner_chat_id,
+                wake.key.kind,
+                error
+            );
+            reschedule_detached_work(
+                config.runtime.detached_work_store.as_ref(),
+                &wake.key,
+                wake.revision,
+                "foreground_state_unavailable",
+                super::BACKGROUND_DEFER_DELAY_MS,
+            );
+            return;
+        }
+    }
+    if wake.key.kind.needs_llm() {
+        match crate::orchestrator::can_call_llm_pub() {
+            crate::orchestrator::admission::LlmDecision::Proceed => {}
+            crate::orchestrator::admission::LlmDecision::RetryLater { delay_ms } => {
+                reschedule_detached_work(
+                    config.runtime.detached_work_store.as_ref(),
+                    &wake.key,
+                    wake.revision,
+                    "llm_retry_later",
+                    delay_ms,
+                );
+                return;
+            }
+            crate::orchestrator::admission::LlmDecision::Degrade { reason } => {
+                reschedule_detached_work(
+                    config.runtime.detached_work_store.as_ref(),
+                    &wake.key,
+                    wake.revision,
+                    reason,
+                    super::BACKGROUND_DEFER_DELAY_MS,
+                );
+                return;
+            }
+        }
+    }
+    let record = match config
+        .runtime
+        .detached_work_store
+        .claim_running(&wake.key, wake.revision)
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!(
+                "[agent] detached work claim failed channel={} chat_id={} kind={:?}: {}",
+                wake.key.owner_channel,
+                wake.key.owner_chat_id,
+                wake.key.kind,
+                error
+            );
+            return;
+        }
+    };
+    let _agent_task_guard = crate::orchestrator::begin_agent_task();
+    let _maintenance_scope = crate::runtime::BackgroundMaintenanceGuard::enter();
+    let _ = try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &record.job);
+    if let Err(error) = config
+        .runtime
+        .detached_work_store
+        .finish(&wake.key, wake.revision)
+    {
+        log::warn!(
+            "[agent] detached work finish failed channel={} chat_id={} kind={:?}: {}",
+            wake.key.owner_channel,
+            wake.key.owner_chat_id,
+            wake.key.kind,
+            error
+        );
+    }
+    metrics::record_system_message_done(false);
+}
+
 #[cold]
 #[inline(never)]
 pub(super) fn run_background_job_with_accounting(
@@ -1003,38 +1189,18 @@ pub(super) fn run_background_job_with_accounting(
     loc: UiLocale,
     msg: PcMsg,
 ) {
-    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if !runtime_mode.action_budget.allow_periodic_maintenance {
-        super::requeue_background_job_with_delay(msg, system_inbound_tx, 500);
+    if super::is_detached_work_wake(&msg) {
+        run_detached_background_work_wake(http, worker_llm, config, system_inbound_tx, &msg);
         return;
     }
-    if let Some((reason, delay_ms)) = super::should_defer_background_job(&msg) {
-        log::debug!(
-            "[agent] defer background job channel={} chat_id={} because {}",
-            msg.channel,
-            msg.chat_id,
-            reason
-        );
-        super::requeue_background_job_with_delay(msg, system_inbound_tx, delay_ms);
-        return;
-    }
-
-    let msg = match super::handle_llm_gate(
-        msg,
-        loc,
-        user_inbound_tx,
-        system_inbound_tx,
-        outbound_tx,
-        config,
+    if let Ok(true) = super::adopt_background_job_as_detached(
+        config.runtime.detached_work_store.as_ref(),
+        &msg,
+        "background_job_re_adopted",
     ) {
-        GateResult::Proceed(msg) => msg,
-        GateResult::Skipped => return,
-    };
-
-    let _agent_task_guard = crate::orchestrator::begin_agent_task();
-    let _maintenance_scope = crate::runtime::BackgroundMaintenanceGuard::enter();
-    let _ = try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &msg);
-    metrics::record_system_message_done(false);
+        return;
+    }
+    let _ = (user_inbound_tx, outbound_tx, loc);
 }
 
 #[cold]

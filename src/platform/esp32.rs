@@ -10,11 +10,12 @@ use crate::platform::{
     spiffs::{
         spiffs_usage, CachedSkillMetaStore, CachedSkillStorage, SpiffsActiveWorkStore,
         SpiffsAutonomyStrategyStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
-        SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore,
-        SpiffsOfficeRuntimeStatusStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
-        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
+        SpiffsCoreRevisionLedgerStore, SpiffsDetachedWorkStore, SpiffsExecutionStateStore,
+        SpiffsImportantMessageStore, SpiffsInnerLifeStore,
+        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+        SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore,
+        SpiffsOuterVoiceStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
+        SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
         SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
         SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
         SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
@@ -79,6 +80,7 @@ pub struct Esp32Platform {
     task_execution_ledger_store: Arc<SpiffsTaskExecutionLedgerStore>,
     task_learning_store: Arc<SpiffsTaskLearningStore>,
     active_work_store: Arc<SpiffsActiveWorkStore>,
+    detached_work_store: Arc<SpiffsDetachedWorkStore>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
@@ -188,6 +190,7 @@ impl Esp32Platform {
             task_execution_ledger_store: Arc::new(SpiffsTaskExecutionLedgerStore::new()),
             task_learning_store: Arc::new(SpiffsTaskLearningStore::new()),
             active_work_store: Arc::new(SpiffsActiveWorkStore::new()),
+            detached_work_store: Arc::new(SpiffsDetachedWorkStore::new()),
             execution_state_store,
             self_model_store,
             self_authored_core_store,
@@ -374,6 +377,10 @@ impl Platform for Esp32Platform {
 
     fn active_work_store(&self) -> Arc<dyn crate::agent::ActiveWorkStore + Send + Sync> {
         Arc::clone(&self.active_work_store) as Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>
+    }
+    fn detached_work_store(&self) -> Arc<dyn crate::agent::DetachedWorkStore + Send + Sync> {
+        Arc::clone(&self.detached_work_store)
+            as Arc<dyn crate::agent::DetachedWorkStore + Send + Sync>
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {

@@ -1,16 +1,25 @@
 //! Formal foreground active-work contract for the current chat.
 //! 对当前会话前台主工作面的正式合同。
 
+use crate::bus::PcMsg;
 use crate::error::Result;
 use crate::memory::{
     render_execution_state_block, should_resume_active_execution_state, ExecutionState,
     ExecutionStatus,
 };
+use crate::orchestrator::snapshot as orchestrator_snapshot;
+use crate::runtime::system_work::{
+    CHANNEL_IDLE_MEMORY_FORGE, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE,
+    CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
+};
 use crate::task_execution::{current_or_next_step, TaskRunRecord, TaskRunStatus};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::HashMap;
 
 pub const REL_PATH_ACTIVE_WORKS: &str = "memory/active_works.json";
+pub const REL_PATH_DETACHED_WORKS: &str = "memory/detached_works.json";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +121,152 @@ pub trait ActiveWorkStore: Send + Sync {
     fn clear(&self, chat_id: &str) -> Result<()>;
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DetachedJobKind {
+    LongTermMemoryRefresh,
+    PostReplyMaintenance,
+    IdleMemoryForge,
+    SelfRuntimePostReply,
+    SelfRuntimeIdleTick,
+    OperatorMaintenance,
+}
+
+impl DetachedJobKind {
+    pub const fn storage_key_fragment(self) -> &'static str {
+        match self {
+            Self::LongTermMemoryRefresh => "long_term_memory_refresh",
+            Self::PostReplyMaintenance => "post_reply_maintenance",
+            Self::IdleMemoryForge => "idle_memory_forge",
+            Self::SelfRuntimePostReply => "self_runtime_post_reply",
+            Self::SelfRuntimeIdleTick => "self_runtime_idle_tick",
+            Self::OperatorMaintenance => "operator_maintenance",
+        }
+    }
+
+    pub fn needs_llm(self) -> bool {
+        matches!(
+            self,
+            Self::LongTermMemoryRefresh
+                | Self::PostReplyMaintenance
+                | Self::SelfRuntimePostReply
+                | Self::SelfRuntimeIdleTick
+        )
+    }
+
+    pub fn channel(self) -> &'static str {
+        match self {
+            Self::LongTermMemoryRefresh => CHANNEL_LONG_TERM_MEMORY_REFRESH,
+            Self::PostReplyMaintenance => CHANNEL_POST_REPLY_MAINTENANCE,
+            Self::IdleMemoryForge => CHANNEL_IDLE_MEMORY_FORGE,
+            Self::SelfRuntimePostReply | Self::SelfRuntimeIdleTick => CHANNEL_SELF_RUNTIME,
+            Self::OperatorMaintenance => CHANNEL_OPERATOR_MAINTENANCE,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct DetachedWorkKey {
+    pub owner_channel: String,
+    pub owner_chat_id: String,
+    pub kind: DetachedJobKind,
+}
+
+impl DetachedWorkKey {
+    pub fn new(
+        owner_channel: impl Into<String>,
+        owner_chat_id: impl Into<String>,
+        kind: DetachedJobKind,
+    ) -> Self {
+        Self {
+            owner_channel: owner_channel.into().trim().to_string(),
+            owner_chat_id: owner_chat_id.into().trim().to_string(),
+            kind,
+        }
+    }
+
+    pub fn storage_key(&self) -> String {
+        format!(
+            "{}\u{1f}|{}\u{1f}|{}",
+            self.owner_channel,
+            self.owner_chat_id,
+            self.kind.storage_key_fragment()
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DetachedWorkState {
+    Pending,
+    Queued,
+    Running,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetachedWorkRecord {
+    pub key: DetachedWorkKey,
+    pub job: PcMsg,
+    pub state: DetachedWorkState,
+    pub wake_at_ms: u64,
+    pub revision: u64,
+    #[serde(default)]
+    pub last_reason: String,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveForegroundState {
+    pub has_foreground_work: bool,
+    pub inbound_depth: u32,
+    pub outbound_depth: u32,
+    pub active_wss_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundDisposition {
+    RunNow,
+    Defer(&'static str),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetachedWorkWake {
+    pub key: DetachedWorkKey,
+    pub revision: u64,
+}
+
+pub trait DetachedWorkStore: Send + Sync {
+    fn get(&self, key: &DetachedWorkKey) -> Result<Option<DetachedWorkRecord>>;
+    fn list(&self) -> Result<Vec<DetachedWorkRecord>>;
+    fn upsert(
+        &self,
+        key: &DetachedWorkKey,
+        job: &PcMsg,
+        wake_at_ms: u64,
+        reason: &str,
+    ) -> Result<DetachedWorkUpsertOutcome>;
+    fn mark_queued(&self, key: &DetachedWorkKey, revision: u64) -> Result<bool>;
+    fn claim_running(
+        &self,
+        key: &DetachedWorkKey,
+        revision: u64,
+    ) -> Result<Option<DetachedWorkRecord>>;
+    fn reschedule(
+        &self,
+        key: &DetachedWorkKey,
+        revision: u64,
+        wake_at_ms: u64,
+        reason: &str,
+    ) -> Result<Option<DetachedWorkRecord>>;
+    fn finish(&self, key: &DetachedWorkKey, revision: u64) -> Result<()>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetachedWorkUpsertOutcome {
+    pub changed: bool,
+    pub record: DetachedWorkRecord,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ActiveWorkSyncInput<'a> {
     pub(crate) chat_id: &'a str,
@@ -206,6 +361,91 @@ fn should_keep_interactive_action_work(
     )
 }
 
+pub fn live_foreground_state_for_chat(
+    store: &dyn ActiveWorkStore,
+    chat_id: &str,
+) -> Result<LiveForegroundState> {
+    let has_foreground_work = store
+        .get(chat_id)?
+        .is_some_and(|record| record.is_meaningful());
+    let snap = orchestrator_snapshot();
+    Ok(LiveForegroundState {
+        has_foreground_work,
+        inbound_depth: snap.inbound_depth,
+        outbound_depth: snap.outbound_depth,
+        active_wss_count: snap.active_wss_count,
+    })
+}
+
+pub fn idle_self_runtime_scheduler_block_reason_with_live_state(
+    live: LiveForegroundState,
+) -> Option<&'static str> {
+    if live.has_foreground_work {
+        Some("foreground_work_active")
+    } else if cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
+        && live.active_wss_count > 0
+    {
+        Some("external_wss_active")
+    } else if live.inbound_depth > 0 || live.outbound_depth > 0 {
+        Some("message_queues_busy")
+    } else {
+        None
+    }
+}
+
+pub fn classify_background_job_disposition(
+    kind: DetachedJobKind,
+    live: LiveForegroundState,
+) -> BackgroundDisposition {
+    let reason = match kind {
+        DetachedJobKind::SelfRuntimeIdleTick => {
+            idle_self_runtime_scheduler_block_reason_with_live_state(live)
+        }
+        _ if live.has_foreground_work => Some("foreground_work_active"),
+        _ if live.inbound_depth > 0 || live.outbound_depth > 0 => Some("message_queues_busy"),
+        _ => None,
+    };
+    match reason {
+        Some(reason) => BackgroundDisposition::Defer(reason),
+        None => BackgroundDisposition::RunNow,
+    }
+}
+
+pub fn upsert_detached_work_job(
+    store: &dyn DetachedWorkStore,
+    key: DetachedWorkKey,
+    job: &PcMsg,
+    delay_ms: u64,
+    reason: &str,
+) -> Result<DetachedWorkUpsertOutcome> {
+    let wake_at_ms = current_unix_ms().saturating_add(delay_ms);
+    store.upsert(&key, job, wake_at_ms, reason)
+}
+
+pub fn due_detached_work_records(
+    store: &dyn DetachedWorkStore,
+    now_ms: u64,
+    limit: usize,
+) -> Result<Vec<DetachedWorkRecord>> {
+    let mut records = store
+        .list()?
+        .into_iter()
+        .filter(|record| record.state == DetachedWorkState::Pending && record.wake_at_ms <= now_ms)
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| (record.wake_at_ms, record.updated_at_ms));
+    if records.len() > limit {
+        records.truncate(limit);
+    }
+    Ok(records)
+}
+
+pub fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
 fn task_run_status_to_execution_status(status: TaskRunStatus) -> ExecutionStatus {
     match status {
         TaskRunStatus::Planning | TaskRunStatus::Running => ExecutionStatus::Active,
@@ -225,7 +465,6 @@ mod tests {
         RequestSemantics, ResumeRelation,
     };
     use crate::task_execution::{TaskPlan, TaskRun, TaskRunStatus, TaskStep, TaskStepStatus};
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -256,6 +495,145 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(chat_id);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryDetachedWorkStore {
+        inner: Mutex<HashMap<String, DetachedWorkRecord>>,
+    }
+
+    impl DetachedWorkStore for MemoryDetachedWorkStore {
+        fn get(&self, key: &DetachedWorkKey) -> Result<Option<DetachedWorkRecord>> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key.storage_key())
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<DetachedWorkRecord>> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn upsert(
+            &self,
+            key: &DetachedWorkKey,
+            job: &PcMsg,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<DetachedWorkUpsertOutcome> {
+            let now_ms = 100;
+            let storage_key = key.storage_key();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let next = match inner.get(&storage_key) {
+                Some(current)
+                    if current.job == *job
+                        && current.wake_at_ms == wake_at_ms
+                        && current.last_reason == reason
+                        && current.state == DetachedWorkState::Pending =>
+                {
+                    return Ok(DetachedWorkUpsertOutcome {
+                        changed: false,
+                        record: current.clone(),
+                    });
+                }
+                Some(current) => DetachedWorkRecord {
+                    key: key.clone(),
+                    job: job.clone(),
+                    state: DetachedWorkState::Pending,
+                    wake_at_ms,
+                    revision: current.revision.saturating_add(1),
+                    last_reason: reason.to_string(),
+                    updated_at_ms: now_ms,
+                },
+                None => DetachedWorkRecord {
+                    key: key.clone(),
+                    job: job.clone(),
+                    state: DetachedWorkState::Pending,
+                    wake_at_ms,
+                    revision: 1,
+                    last_reason: reason.to_string(),
+                    updated_at_ms: now_ms,
+                },
+            };
+            inner.insert(storage_key, next.clone());
+            Ok(DetachedWorkUpsertOutcome {
+                changed: true,
+                record: next,
+            })
+        }
+
+        fn mark_queued(&self, key: &DetachedWorkKey, revision: u64) -> Result<bool> {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = inner.get_mut(&key.storage_key()) else {
+                return Ok(false);
+            };
+            if record.revision != revision || record.state != DetachedWorkState::Pending {
+                return Ok(false);
+            }
+            record.state = DetachedWorkState::Queued;
+            Ok(true)
+        }
+
+        fn claim_running(
+            &self,
+            key: &DetachedWorkKey,
+            revision: u64,
+        ) -> Result<Option<DetachedWorkRecord>> {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = inner.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision
+                || !matches!(
+                    record.state,
+                    DetachedWorkState::Pending | DetachedWorkState::Queued
+                )
+            {
+                return Ok(None);
+            }
+            record.state = DetachedWorkState::Running;
+            Ok(Some(record.clone()))
+        }
+
+        fn reschedule(
+            &self,
+            key: &DetachedWorkKey,
+            revision: u64,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<Option<DetachedWorkRecord>> {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = inner.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision {
+                return Ok(None);
+            }
+            record.revision = record.revision.saturating_add(1);
+            record.state = DetachedWorkState::Pending;
+            record.wake_at_ms = wake_at_ms;
+            record.last_reason = reason.to_string();
+            Ok(Some(record.clone()))
+        }
+
+        fn finish(&self, key: &DetachedWorkKey, revision: u64) -> Result<()> {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if inner
+                .get(&key.storage_key())
+                .is_some_and(|record| record.revision == revision)
+            {
+                inner.remove(&key.storage_key());
+            }
             Ok(())
         }
     }
@@ -433,5 +811,41 @@ mod tests {
         )
         .expect("sync");
         assert!(store.get("chat-1").expect("get").is_none());
+    }
+
+    #[test]
+    fn personality_governance_job_is_deferred_not_dropped_when_user_turn_is_waiting() {
+        let disposition = classify_background_job_disposition(
+            DetachedJobKind::SelfRuntimeIdleTick,
+            LiveForegroundState {
+                has_foreground_work: true,
+                inbound_depth: 1,
+                outbound_depth: 0,
+                active_wss_count: 0,
+            },
+        );
+        assert_eq!(
+            disposition,
+            BackgroundDisposition::Defer("foreground_work_active")
+        );
+    }
+
+    #[test]
+    fn duplicate_self_runtime_idle_tick_collapses_into_one_detached_work_item() {
+        let store = MemoryDetachedWorkStore::default();
+        let key =
+            DetachedWorkKey::new("qq_channel", "chat-1", DetachedJobKind::SelfRuntimeIdleTick);
+        let job = PcMsg::new_system(CHANNEL_SELF_RUNTIME, "chat-1", "{}").expect("job");
+
+        let first = store
+            .upsert(&key, &job, 100, "idle_tick")
+            .expect("first upsert");
+        let second = store
+            .upsert(&key, &job, 100, "idle_tick")
+            .expect("second upsert");
+
+        assert!(first.changed);
+        assert!(!second.changed);
+        assert_eq!(store.list().expect("list").len(), 1);
     }
 }

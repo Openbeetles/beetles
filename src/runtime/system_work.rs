@@ -7,6 +7,7 @@ pub const CHANNEL_HEARTBEAT: &str = "heartbeat";
 pub const CHANNEL_CRON: &str = "cron";
 pub const CHANNEL_IDLE_MEMORY_FORGE: &str = "_idle_memory_forge";
 pub const CHANNEL_LONG_TERM_MEMORY_REFRESH: &str = "_memory_refresh";
+pub const CHANNEL_DETACHED_WORK_WAKE: &str = "_detached_work_wake";
 pub const CHANNEL_OPERATOR_MAINTENANCE: &str = "_operator_maintenance";
 pub const CHANNEL_POST_REPLY_MAINTENANCE: &str = "_post_reply_maintenance";
 pub const CHANNEL_SELF_RUNTIME: &str = "_self_runtime";
@@ -56,7 +57,8 @@ pub fn classify_system_work(channel: &str, ingress: IngressKind) -> SystemWorkCl
         CHANNEL_POST_REPLY_MAINTENANCE
         | CHANNEL_SELF_RUNTIME
         | CHANNEL_OPERATOR_MAINTENANCE
-        | CHANNEL_IDLE_MEMORY_FORGE => SystemWorkClass::Maintenance,
+        | CHANNEL_IDLE_MEMORY_FORGE
+        | CHANNEL_DETACHED_WORK_WAKE => SystemWorkClass::Maintenance,
         _ => SystemWorkClass::SystemInteractive,
     }
 }
@@ -101,6 +103,10 @@ mod tests {
         );
         assert_eq!(
             classify_system_work(CHANNEL_POST_REPLY_MAINTENANCE, IngressKind::System),
+            SystemWorkClass::Maintenance
+        );
+        assert_eq!(
+            classify_system_work(CHANNEL_DETACHED_WORK_WAKE, IngressKind::System),
             SystemWorkClass::Maintenance
         );
         assert_eq!(

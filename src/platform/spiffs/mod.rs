@@ -51,6 +51,7 @@ pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
     let rel_str = rel.to_string_lossy();
     match rel_str.as_ref() {
         crate::agent::REL_PATH_ACTIVE_WORKS => PathBuf::from("m/aw.json"),
+        crate::agent::REL_PATH_DETACHED_WORKS => PathBuf::from("m/dw.json"),
         crate::memory::REL_PATH_EXECUTION_STATES => PathBuf::from("m/es.json"),
         crate::memory::REL_PATH_IMPORTANT_MESSAGE => PathBuf::from("m/im.json"),
         crate::memory::REL_PATH_SESSION_SUMMARIES => PathBuf::from("m/ss.json"),
@@ -396,6 +397,7 @@ pub(crate) mod cached_json;
 pub mod calendar_store;
 pub mod continuity_capsule;
 pub mod core_revision_ledger;
+pub mod detached_work;
 pub mod execution_state;
 pub mod important_message;
 pub mod inner_life;
@@ -431,6 +433,7 @@ pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
 pub use calendar_store::SpiffsCalendarStore;
 pub use continuity_capsule::SpiffsContinuityCapsuleStore;
 pub use core_revision_ledger::SpiffsCoreRevisionLedgerStore;
+pub use detached_work::SpiffsDetachedWorkStore;
 pub use execution_state::SpiffsExecutionStateStore;
 pub use important_message::SpiffsImportantMessageStore;
 pub use inner_life::SpiffsInnerLifeStore;

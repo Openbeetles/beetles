@@ -207,6 +207,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
 
                     crate::memory::self_runtime_tick(
                         &ctx.system_inbound_tx,
+                        ctx.platform.detached_work_store().as_ref(),
                         ctx.session_store.as_ref(),
                         ctx.self_continuity_store.as_ref(),
                         ctx.autonomy_strategy_store.as_ref(),

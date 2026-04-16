@@ -544,6 +544,7 @@ pub(super) fn complete_turn(
 
     if delivered
         && !super::background_jobs::enqueue_post_reply_maintenance_job(
+            config.runtime.detached_work_store.as_ref(),
             system_inbound_tx,
             &msg,
             &reply_content,
@@ -564,6 +565,7 @@ pub(super) fn complete_turn(
     let self_runtime_post_reply_enqueued = delivered
         && crate::memory::enqueue_self_runtime_post_reply(
             system_inbound_tx,
+            config.runtime.detached_work_store.as_ref(),
             config.runtime.self_continuity_store.as_ref(),
             config.runtime.autonomy_strategy_store.as_ref(),
             config.runtime.self_authored_core_store.as_ref(),

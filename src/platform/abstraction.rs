@@ -617,6 +617,7 @@ pub trait Platform: Send + Sync {
     fn task_execution_ledger_store(&self) -> Arc<dyn TaskExecutionLedgerStore + Send + Sync>;
     fn task_learning_store(&self) -> Arc<dyn TaskLearningStore + Send + Sync>;
     fn active_work_store(&self) -> Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>;
+    fn detached_work_store(&self) -> Arc<dyn crate::agent::DetachedWorkStore + Send + Sync>;
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync>;
     fn self_model_store(&self) -> Arc<dyn SelfModelStore + Send + Sync>;
     fn self_authored_core_store(&self) -> Arc<dyn SelfAuthoredCoreStore + Send + Sync>;

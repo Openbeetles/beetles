@@ -73,7 +73,7 @@ use crate::memory::{
 use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
 use crate::runtime::system_work::{
-    classify_system_work, CHANNEL_CRON, CHANNEL_IDLE_MEMORY_FORGE,
+    classify_system_work, CHANNEL_CRON, CHANNEL_DETACHED_WORK_WAKE, CHANNEL_IDLE_MEMORY_FORGE,
     CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE, CHANNEL_POST_REPLY_MAINTENANCE,
     CHANNEL_SELF_RUNTIME,
 };
@@ -105,9 +105,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use self::background_jobs::{
-    maybe_yield_background_job_to_pending_user, run_background_job_with_accounting,
-};
+use self::background_jobs::run_background_job_with_accounting;
 use self::delivery_handoff::deliver_turn;
 use self::driver::{
     prepare_system_with_suffix, recv_next_agent_msg, resolve_end_turn_followup,
@@ -229,27 +227,13 @@ fn is_lane_background_job(msg: &PcMsg) -> bool {
         || is_operator_maintenance_job(msg)
 }
 
-fn background_enqueue_block_reason() -> Option<&'static str> {
-    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if !runtime_mode.action_budget.allow_periodic_maintenance {
-        return Some(
-            runtime_mode
-                .mode_block_reason()
-                .unwrap_or("runtime_mode_blocked"),
-        );
-    }
-    let snap = crate::orchestrator::snapshot();
-    if snap.active_agent_tasks > 0 || snap.inbound_depth > 0 || snap.outbound_depth > 0 {
-        Some("message_queues_busy")
-    } else {
-        None
-    }
-}
-
+const BACKGROUND_DEFER_DELAY_MS: u64 = 1_000;
+const DETACHED_WAKE_RETRY_DELAY_MS: u64 = 250;
 const IDLE_SELF_RUNTIME_RETRY_DELAY_MS: u64 = 5_000;
 
 fn append_background_defer_workflow_audit(
-    msg: &PcMsg,
+    channel: &str,
+    chat_id: &str,
     trigger: crate::runtime::WorkflowTrigger,
     workflow: crate::runtime::WorkflowKind,
     rationale: &str,
@@ -264,102 +248,181 @@ fn append_background_defer_workflow_audit(
             rationale,
             crate::util::current_unix_secs(),
         )
-        .with_target(None, Some(msg.channel.as_ref()), Some(msg.chat_id.as_ref())),
+        .with_target(None, Some(channel), Some(chat_id)),
     );
 }
 
-fn should_defer_background_job(msg: &PcMsg) -> Option<(&'static str, u64)> {
-    let post_reply_quiet_delay_ms = || {
-        crate::runtime::system_work::post_reply_quiet_window_remaining_ms(
-            crate::util::current_unix_secs(),
-            crate::metrics::snapshot().last_active_epoch_secs,
-        )
-    };
-    if is_post_reply_maintenance_job(msg) {
-        if let Some(delay_ms) = post_reply_quiet_delay_ms() {
-            append_background_defer_workflow_audit(
-                msg,
-                crate::runtime::WorkflowTrigger::PostReply,
-                crate::runtime::WorkflowKind::PostReplyMaintenance,
-                "post_reply_quiet_window",
-            );
-            return Some(("post_reply_quiet_window", delay_ms));
-        }
-        return None;
-    }
-    if is_operator_maintenance_job(msg) {
-        append_background_defer_workflow_audit(
-            msg,
-            crate::runtime::WorkflowTrigger::OperatorRequested,
-            crate::runtime::WorkflowKind::OperatorMaintenance,
-            "message_queues_busy",
-        );
-        return Some(("message_queues_busy", 1_000));
-    }
-    if is_idle_memory_forge_job(msg) {
-        append_background_defer_workflow_audit(
-            msg,
-            crate::runtime::WorkflowTrigger::CronTick,
-            crate::runtime::WorkflowKind::IdleMemoryForge,
-            "message_queues_busy",
-        );
-        return Some(("message_queues_busy", 1_000));
-    }
-    if !is_self_runtime_job(msg) {
-        return None;
-    }
-    let payload: crate::memory::SelfRuntimeJobPayload = serde_json::from_str(&msg.content).ok()?;
-    if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply {
-        return post_reply_quiet_delay_ms().map(|delay_ms| {
-            append_background_defer_workflow_audit(
-                msg,
-                crate::runtime::WorkflowTrigger::PostReply,
-                crate::runtime::WorkflowKind::SelfRuntimePostReply,
-                "post_reply_quiet_window",
-            );
-            ("post_reply_quiet_window", delay_ms)
-        });
-    }
-    if payload.trigger != crate::memory::SelfRuntimeTrigger::IdleTick {
-        return None;
-    }
-    let snap = crate::orchestrator::snapshot();
-    if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) && snap.active_wss_count > 0 {
-        append_background_defer_workflow_audit(
-            msg,
-            crate::runtime::WorkflowTrigger::CronTick,
-            crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
-            "external_wss_active",
-        );
-        return Some(("external_wss_active", IDLE_SELF_RUNTIME_RETRY_DELAY_MS));
-    }
-    if snap.inbound_depth > 0 || snap.outbound_depth > 0 {
-        append_background_defer_workflow_audit(
-            msg,
-            crate::runtime::WorkflowTrigger::CronTick,
-            crate::runtime::WorkflowKind::SelfRuntimeIdleTick,
-            "message_queues_busy",
-        );
-        return Some(("message_queues_busy", 1_000));
-    }
-    None
+fn post_reply_quiet_delay_ms() -> Option<u64> {
+    crate::runtime::system_work::post_reply_quiet_window_remaining_ms(
+        crate::util::current_unix_secs(),
+        crate::metrics::snapshot().last_active_epoch_secs,
+    )
 }
 
-fn requeue_background_job_with_delay(
-    msg: PcMsg,
+fn is_detached_work_wake(msg: &PcMsg) -> bool {
+    msg.ingress == IngressKind::System && msg.channel.as_ref() == CHANNEL_DETACHED_WORK_WAKE
+}
+
+fn detached_work_key_for_msg(msg: &PcMsg) -> Option<crate::agent::DetachedWorkKey> {
+    let chat_id = msg.chat_id.as_ref();
+    match msg.channel.as_ref() {
+        CHANNEL_LONG_TERM_MEMORY_REFRESH => Some(crate::agent::DetachedWorkKey::new(
+            "memory_refresh",
+            chat_id,
+            crate::agent::DetachedJobKind::LongTermMemoryRefresh,
+        )),
+        CHANNEL_POST_REPLY_MAINTENANCE => {
+            let payload: PostReplyMaintenanceJobPayload =
+                serde_json::from_str(&msg.content).ok()?;
+            let owner_channel = if payload.source_channel.trim().is_empty() {
+                "post_reply_maintenance".to_string()
+            } else {
+                payload.source_channel
+            };
+            Some(crate::agent::DetachedWorkKey::new(
+                owner_channel,
+                chat_id,
+                crate::agent::DetachedJobKind::PostReplyMaintenance,
+            ))
+        }
+        CHANNEL_IDLE_MEMORY_FORGE => {
+            let owner_channel = serde_json::from_str::<serde_json::Value>(&msg.content)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("source_channel")
+                        .and_then(|field| field.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_else(|| "idle_memory_forge".to_string());
+            Some(crate::agent::DetachedWorkKey::new(
+                owner_channel,
+                chat_id,
+                crate::agent::DetachedJobKind::IdleMemoryForge,
+            ))
+        }
+        CHANNEL_SELF_RUNTIME => {
+            let payload: crate::memory::SelfRuntimeJobPayload =
+                serde_json::from_str(&msg.content).ok()?;
+            let owner_channel = if payload.source_channel.trim().is_empty() {
+                format!("self_runtime:{chat_id}")
+            } else {
+                payload.source_channel
+            };
+            Some(crate::agent::DetachedWorkKey::new(
+                owner_channel,
+                chat_id,
+                match payload.trigger {
+                    crate::memory::SelfRuntimeTrigger::PostReply => {
+                        crate::agent::DetachedJobKind::SelfRuntimePostReply
+                    }
+                    crate::memory::SelfRuntimeTrigger::IdleTick => {
+                        crate::agent::DetachedJobKind::SelfRuntimeIdleTick
+                    }
+                    crate::memory::SelfRuntimeTrigger::OperatorRequested => {
+                        crate::agent::DetachedJobKind::OperatorMaintenance
+                    }
+                },
+            ))
+        }
+        CHANNEL_OPERATOR_MAINTENANCE => {
+            let request: crate::runtime::OperatorMaintenanceRequest =
+                serde_json::from_str(&msg.content).ok()?;
+            let owner_channel = request
+                .channel
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("operator_maintenance");
+            Some(crate::agent::DetachedWorkKey::new(
+                owner_channel,
+                request.queue_chat_id(),
+                crate::agent::DetachedJobKind::OperatorMaintenance,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn adopt_background_job_as_detached(
+    store: &dyn crate::agent::DetachedWorkStore,
+    msg: &PcMsg,
+    reason: &str,
+) -> Result<bool> {
+    let Some(key) = detached_work_key_for_msg(msg) else {
+        return Ok(false);
+    };
+    crate::agent::upsert_detached_work_job(store, key, msg, 0, reason).map(|_| true)
+}
+
+fn wake_due_detached_background_work(
+    store: &dyn crate::agent::DetachedWorkStore,
     system_inbound_tx: &SystemInboundTx,
-    delay_ms: u64,
+    limit: usize,
 ) {
-    let delayed_tx = system_inbound_tx.clone();
-    let mut delayed_msg = msg;
-    delayed_msg.enqueue_ts_ms = now_unix_ms();
-    if !crate::runtime::schedule_delayed_task(
-        Instant::now() + Duration::from_millis(delay_ms),
-        Box::new(move || {
-            let _ = delayed_tx.try_send(delayed_msg);
-        }),
-    ) {
-        log::debug!("[agent] delayed background job requeue skipped: delayed queue full");
+    let now_ms = crate::agent::current_unix_ms();
+    let due_records = match crate::agent::due_detached_work_records(store, now_ms, limit) {
+        Ok(records) => records,
+        Err(error) => {
+            log::warn!("[agent] detached wake scan failed: {}", error);
+            return;
+        }
+    };
+    for record in due_records {
+        match store.mark_queued(&record.key, record.revision) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                log::warn!(
+                    "[agent] detached wake queue mark failed chat_id={} kind={:?}: {}",
+                    record.key.owner_chat_id,
+                    record.key.kind,
+                    error
+                );
+                continue;
+            }
+        }
+        let wake = crate::agent::DetachedWorkWake {
+            key: record.key.clone(),
+            revision: record.revision,
+        };
+        let body = match serde_json::to_string(&wake) {
+            Ok(body) => body,
+            Err(error) => {
+                log::warn!("[agent] detached wake serialize failed: {}", error);
+                let _ = store.reschedule(
+                    &record.key,
+                    record.revision,
+                    now_ms.saturating_add(DETACHED_WAKE_RETRY_DELAY_MS),
+                    "detached_wake_serialize_failed",
+                );
+                continue;
+            }
+        };
+        let wake_msg =
+            match PcMsg::new_system(CHANNEL_DETACHED_WORK_WAKE, &record.key.owner_chat_id, body) {
+                Ok(msg) => msg,
+                Err(error) => {
+                    log::warn!("[agent] detached wake build failed: {}", error);
+                    let _ = store.reschedule(
+                        &record.key,
+                        record.revision,
+                        now_ms.saturating_add(DETACHED_WAKE_RETRY_DELAY_MS),
+                        "detached_wake_build_failed",
+                    );
+                    continue;
+                }
+            };
+        if system_inbound_tx.try_send(wake_msg).is_err() {
+            let _ = store.reschedule(
+                &record.key,
+                record.revision,
+                now_ms.saturating_add(DETACHED_WAKE_RETRY_DELAY_MS),
+                "detached_wake_enqueue_failed",
+            );
+        }
     }
 }
 
@@ -1672,6 +1735,11 @@ fn run_agent_loop_main(
 
     let recv_timeout = Duration::from_secs(INBOUND_RECV_TIMEOUT_SECS);
     loop {
+        wake_due_detached_background_work(
+            config.runtime.detached_work_store.as_ref(),
+            &system_inbound_tx,
+            2,
+        );
         let prefer_system_once = consecutive_user_msgs >= MAX_CONSECUTIVE_USER_MSGS;
         let mut before_poll = || {
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1702,12 +1770,27 @@ fn run_agent_loop_main(
             }
             AgentRecvStatus::Disconnected => break,
         };
-        if msg.ingress == IngressKind::System && is_lane_background_job(&msg) {
-            msg = maybe_yield_background_job_to_pending_user(
-                msg,
-                &user_inbound_rx,
-                &system_inbound_tx,
-            );
+        if msg.ingress == IngressKind::System
+            && is_lane_background_job(&msg)
+            && !is_detached_work_wake(&msg)
+        {
+            match adopt_background_job_as_detached(
+                config.runtime.detached_work_store.as_ref(),
+                &msg,
+                "background_job_adopted",
+            ) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[agent] failed to adopt background job channel={} chat_id={}: {}",
+                        msg.channel,
+                        msg.chat_id,
+                        error
+                    );
+                    continue;
+                }
+            }
         }
         if msg.ingress == IngressKind::System {
             consecutive_user_msgs = 0;
@@ -1926,6 +2009,7 @@ mod tests {
         ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
         ResumeRelation,
     };
+    use crate::agent::DetachedWorkStore;
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
     use crate::memory::{
@@ -1938,7 +2022,6 @@ mod tests {
         SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
-    use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -1960,21 +2043,52 @@ mod tests {
     }
 
     #[test]
-    fn post_reply_maintenance_defers_inside_quiet_window() {
-        let _guard = crate::runtime::workflow_audit_test_guard();
-        reset_workflow_audit_for_tests();
-        metrics::record_message_out();
-        let msg = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", "{}")
+    fn post_reply_maintenance_jobs_adopt_into_detached_work_queue() {
+        let store = StubDetachedWorkStore::default();
+        let payload = serde_json::json!({
+            "ingress": IngressKind::User,
+            "source_channel": "qq_channel",
+            "user_content": "查看系统状态",
+            "reply_content": "正在检查",
+            "tool_calls": 0,
+            "external_content_used": false,
+            "now_secs": 42
+        })
+        .to_string();
+        let msg = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", payload)
             .expect("build maintenance message");
-        let (reason, delay_ms) =
-            should_defer_background_job(&msg).expect("post-reply maintenance should defer");
-        assert_eq!(reason, "post_reply_quiet_window");
-        assert!(delay_ms > 0);
-        let audit = workflow_audit_snapshot(4);
-        assert_eq!(audit.summary.deferred, 1);
+
+        assert!(
+            adopt_background_job_as_detached(&store, &msg, "background_job_adopted")
+                .expect("adopt")
+        );
+
+        let key = crate::agent::DetachedWorkKey::new(
+            "qq_channel",
+            "chat-1",
+            crate::agent::DetachedJobKind::PostReplyMaintenance,
+        );
+        let stored = store
+            .get(&key)
+            .expect("load detached work")
+            .expect("stored record");
+        assert_eq!(stored.state, crate::agent::DetachedWorkState::Pending);
+
+        let (system_inbound_tx, system_inbound_rx, _) = crate::bus::new_inbound_channel(4);
+        wake_due_detached_background_work(&store, &system_inbound_tx, 1);
+
+        let wake_msg = system_inbound_rx.try_recv().expect("wake enqueued");
+        assert_eq!(wake_msg.channel.as_ref(), CHANNEL_DETACHED_WORK_WAKE);
+        let wake: crate::agent::DetachedWorkWake =
+            serde_json::from_str(&wake_msg.content).expect("decode wake");
+        assert_eq!(wake.key, key);
         assert_eq!(
-            audit.recent_records[0].workflow,
-            crate::runtime::WorkflowKind::PostReplyMaintenance
+            store
+                .get(&key)
+                .expect("reload detached work")
+                .expect("queued record")
+                .state,
+            crate::agent::DetachedWorkState::Queued
         );
     }
 
@@ -2186,6 +2300,150 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(chat_id);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubDetachedWorkStore {
+        entries: Mutex<HashMap<String, crate::agent::DetachedWorkRecord>>,
+    }
+
+    impl crate::agent::DetachedWorkStore for StubDetachedWorkStore {
+        fn get(
+            &self,
+            key: &crate::agent::DetachedWorkKey,
+        ) -> Result<Option<crate::agent::DetachedWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key.storage_key())
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<crate::agent::DetachedWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn upsert(
+            &self,
+            key: &crate::agent::DetachedWorkKey,
+            job: &PcMsg,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<crate::agent::DetachedWorkUpsertOutcome> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let storage_key = key.storage_key();
+            let next = match entries.get(&storage_key) {
+                Some(current)
+                    if current.job == *job
+                        && current.wake_at_ms == wake_at_ms
+                        && current.last_reason == reason
+                        && current.state == crate::agent::DetachedWorkState::Pending =>
+                {
+                    return Ok(crate::agent::DetachedWorkUpsertOutcome {
+                        changed: false,
+                        record: current.clone(),
+                    });
+                }
+                Some(current) => crate::agent::DetachedWorkRecord {
+                    key: key.clone(),
+                    job: job.clone(),
+                    state: crate::agent::DetachedWorkState::Pending,
+                    wake_at_ms,
+                    revision: current.revision.saturating_add(1),
+                    last_reason: reason.to_string(),
+                    updated_at_ms: 1,
+                },
+                None => crate::agent::DetachedWorkRecord {
+                    key: key.clone(),
+                    job: job.clone(),
+                    state: crate::agent::DetachedWorkState::Pending,
+                    wake_at_ms,
+                    revision: 1,
+                    last_reason: reason.to_string(),
+                    updated_at_ms: 1,
+                },
+            };
+            entries.insert(storage_key, next.clone());
+            Ok(crate::agent::DetachedWorkUpsertOutcome {
+                changed: true,
+                record: next,
+            })
+        }
+
+        fn mark_queued(&self, key: &crate::agent::DetachedWorkKey, revision: u64) -> Result<bool> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(false);
+            };
+            if record.revision != revision
+                || record.state != crate::agent::DetachedWorkState::Pending
+            {
+                return Ok(false);
+            }
+            record.state = crate::agent::DetachedWorkState::Queued;
+            Ok(true)
+        }
+
+        fn claim_running(
+            &self,
+            key: &crate::agent::DetachedWorkKey,
+            revision: u64,
+        ) -> Result<Option<crate::agent::DetachedWorkRecord>> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision
+                || !matches!(
+                    record.state,
+                    crate::agent::DetachedWorkState::Pending
+                        | crate::agent::DetachedWorkState::Queued
+                )
+            {
+                return Ok(None);
+            }
+            record.state = crate::agent::DetachedWorkState::Running;
+            Ok(Some(record.clone()))
+        }
+
+        fn reschedule(
+            &self,
+            key: &crate::agent::DetachedWorkKey,
+            revision: u64,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<Option<crate::agent::DetachedWorkRecord>> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision {
+                return Ok(None);
+            }
+            record.revision = record.revision.saturating_add(1);
+            record.state = crate::agent::DetachedWorkState::Pending;
+            record.wake_at_ms = wake_at_ms;
+            record.last_reason = reason.to_string();
+            Ok(Some(record.clone()))
+        }
+
+        fn finish(&self, key: &crate::agent::DetachedWorkKey, revision: u64) -> Result<()> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if entries
+                .get(&key.storage_key())
+                .is_some_and(|record| record.revision == revision)
+            {
+                entries.remove(&key.storage_key());
+            }
             Ok(())
         }
     }
@@ -3127,6 +3385,7 @@ mod tests {
                 task_execution_ledger_store: Arc::new(StubTaskExecutionLedgerStore),
                 task_learning_store: Arc::new(StubTaskLearningStore),
                 active_work_store: Arc::new(StubActiveWorkStore::default()),
+                detached_work_store: Arc::new(StubDetachedWorkStore::default()),
                 execution_state_store: Arc::new(StubExecutionStateStore::default()),
                 self_model_store: Arc::new(StubSelfModelStore),
                 self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),
