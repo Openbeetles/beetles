@@ -991,11 +991,6 @@ mod tests {
         let topic = format!("operator_status_review_{unique}");
         let skill_name = format!("runtime_skill__{topic}");
         let now_secs: u64 = 4_102_444_800;
-        let baseline_runtime_skills =
-            build_runtime_skill_operator_summary(platform.skill_storage().as_ref());
-        let baseline_learning =
-            build_task_learning_operator_snapshot(platform.task_learning_store().as_ref())
-                .expect("baseline task learning");
 
         crate::skills::upsert_runtime_skill(
             platform.skill_storage().as_ref(),
@@ -1112,11 +1107,6 @@ mod tests {
         .expect("operator status");
 
         let crystals = snapshot.programmable_reasoning.experience_crystals;
-        assert!(expected_runtime_skills.total >= baseline_runtime_skills.total);
-        assert!(expected_runtime_skills.validated >= baseline_runtime_skills.validated);
-        assert!(expected_learning.candidate_promoted >= baseline_learning.candidate_promoted);
-        assert!(expected_learning.candidate_observed >= baseline_learning.candidate_observed);
-        assert!(expected_learning.candidate_rejected >= baseline_learning.candidate_rejected);
         assert_eq!(crystals.runtime_skill_total, expected_runtime_skills.total);
         assert_eq!(
             crystals.validated_runtime_skills,

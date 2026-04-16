@@ -3,9 +3,10 @@
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, DocumentsEntry, DocumentsOperation, DocumentsProvider,
-    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
-    DocumentsSearchQuery,
+    decode_searchable_document_text, documents_search_match_kind, documents_search_match_score,
+    DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
+    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
+    DOCUMENTS_SEARCH_MATCH_PATH,
 };
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
@@ -117,7 +118,7 @@ impl DocumentsProvider for WebDavProvider {
                     if path_hit {
                         hits.push(DocumentsSearchHit {
                             entry: entry.clone(),
-                            match_kind: "path".to_string(),
+                            match_kind: DOCUMENTS_SEARCH_MATCH_PATH.to_string(),
                             snippet: None,
                             warning: None,
                         });
@@ -147,16 +148,12 @@ impl DocumentsProvider for WebDavProvider {
                         Some("content not searched because the file is too large".to_string());
                 }
 
-                if path_hit || content_match.is_some() {
+                if let Some(match_kind) =
+                    documents_search_match_kind(path_hit, content_match.is_some())
+                {
                     hits.push(DocumentsSearchHit {
                         entry: entry.clone(),
-                        match_kind: match (path_hit, content_match.is_some()) {
-                            (true, true) => "path+content",
-                            (true, false) => "path",
-                            (false, true) => "content",
-                            (false, false) => unreachable!(),
-                        }
-                        .to_string(),
+                        match_kind: match_kind.to_string(),
                         snippet: content_match,
                         warning,
                     });
@@ -169,8 +166,8 @@ impl DocumentsProvider for WebDavProvider {
         }
 
         hits.sort_by(|left, right| {
-            search_score(&right.match_kind)
-                .cmp(&search_score(&left.match_kind))
+            documents_search_match_score(&right.match_kind)
+                .cmp(&documents_search_match_score(&left.match_kind))
                 .then_with(|| left.entry.path.cmp(&right.entry.path))
         });
         if hits.len() > query.limit {
@@ -513,14 +510,6 @@ fn file_name_from_path(path: &str) -> String {
 fn local_name(name: &[u8]) -> &str {
     let raw = std::str::from_utf8(name).unwrap_or_default();
     raw.rsplit(':').next().unwrap_or(raw)
-}
-
-fn search_score(match_kind: &str) -> u8 {
-    match match_kind {
-        "path+content" => 3,
-        "path" => 2,
-        _ => 1,
-    }
 }
 
 #[derive(Clone, Debug, Default)]

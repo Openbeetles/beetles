@@ -3,7 +3,8 @@
 
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_searchable_document_text,
-    detect_document_kind,
+    detect_document_kind, documents_search_match_kind, documents_search_match_score,
+    DOCUMENTS_SEARCH_MATCH_PATH,
 };
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::sanitize_state_file_read;
@@ -209,7 +210,7 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
             json!({
                 "path": path,
                 "kind": kind,
-                "match": "path",
+                "match": DOCUMENTS_SEARCH_MATCH_PATH,
                 "snippet": Value::Null,
                 "warning": "path matched but content was not inspected because the file is too large",
                 "raw_bytes": raw.len(),
@@ -223,7 +224,7 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
             json!({
                 "path": path,
                 "kind": kind,
-                "match": "path",
+                "match": DOCUMENTS_SEARCH_MATCH_PATH,
                 "snippet": Value::Null,
                 "warning": "path matched but the file content is not readable text",
                 "raw_bytes": raw.len(),
@@ -233,21 +234,8 @@ fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Opt
     };
 
     let content_hit = contains_query_text(&text, query, case_sensitive);
-    if !path_hit && !content_hit {
-        return None;
-    }
-
-    let match_kind = match (path_hit, content_hit) {
-        (true, true) => "path+content",
-        (true, false) => "path",
-        (false, true) => "content",
-        (false, false) => unreachable!(),
-    };
-    let score = match match_kind {
-        "path+content" => 3,
-        "path" => 2,
-        _ => 1,
-    };
+    let match_kind = documents_search_match_kind(path_hit, content_hit)?;
+    let score = documents_search_match_score(match_kind);
     let snippet = if content_hit {
         Value::String(build_search_snippet(&text, query, case_sensitive))
     } else {

@@ -3,9 +3,9 @@
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, DocumentsEntry, DocumentsOperation, DocumentsProvider,
-    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
-    DocumentsSearchQuery,
+    decode_searchable_document_text, documents_search_match_kind, DocumentsEntry,
+    DocumentsOperation, DocumentsProvider, DocumentsProviderCredential, DocumentsQuery,
+    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
 };
 use crate::error::{Error, Result};
 use crate::office::{
@@ -123,16 +123,10 @@ impl DocumentsProvider for Microsoft365DocumentsProvider {
             } else if !item.is_dir() {
                 warning = Some("content not searched because the file is too large".to_string());
             }
-            if path_hit || content_hit {
+            if let Some(match_kind) = documents_search_match_kind(path_hit, content_hit) {
                 hits.push(DocumentsSearchHit {
                     entry,
-                    match_kind: match (path_hit, content_hit) {
-                        (true, true) => "path+content",
-                        (true, false) => "path",
-                        (false, true) => "content",
-                        (false, false) => unreachable!(),
-                    }
-                    .to_string(),
+                    match_kind: match_kind.to_string(),
                     snippet,
                     warning,
                 });

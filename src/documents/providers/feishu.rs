@@ -2,9 +2,10 @@
 
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
-    build_search_snippet, contains_query_text, DocumentsEntry, DocumentsOperation,
-    DocumentsProvider, DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult,
-    DocumentsSearchHit, DocumentsSearchQuery, EMPTY_DOCUMENT_WARNING,
+    build_search_snippet, contains_query_text, documents_search_match_kind,
+    documents_search_match_score, DocumentsEntry, DocumentsOperation, DocumentsProvider,
+    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
+    DocumentsSearchQuery, DOCUMENTS_SEARCH_MATCH_PATH, EMPTY_DOCUMENT_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
@@ -114,7 +115,7 @@ impl DocumentsProvider for FeishuDocumentsProvider {
                     if path_hit {
                         hits.push(DocumentsSearchHit {
                             entry: entry.clone(),
-                            match_kind: "path".to_string(),
+                            match_kind: DOCUMENTS_SEARCH_MATCH_PATH.to_string(),
                             snippet: None,
                             warning: None,
                         });
@@ -148,16 +149,12 @@ impl DocumentsProvider for FeishuDocumentsProvider {
                     }
                 }
 
-                if path_hit || content_match.is_some() {
+                if let Some(match_kind) =
+                    documents_search_match_kind(path_hit, content_match.is_some())
+                {
                     hits.push(DocumentsSearchHit {
                         entry: entry.clone(),
-                        match_kind: match (path_hit, content_match.is_some()) {
-                            (true, true) => "path+content",
-                            (true, false) => "path",
-                            (false, true) => "content",
-                            (false, false) => unreachable!(),
-                        }
-                        .to_string(),
+                        match_kind: match_kind.to_string(),
                         snippet: content_match,
                         warning,
                     });
@@ -170,8 +167,8 @@ impl DocumentsProvider for FeishuDocumentsProvider {
         }
 
         hits.sort_by(|left, right| {
-            search_score(&right.match_kind)
-                .cmp(&search_score(&left.match_kind))
+            documents_search_match_score(&right.match_kind)
+                .cmp(&documents_search_match_score(&left.match_kind))
                 .then_with(|| left.entry.path.cmp(&right.entry.path))
         });
         if hits.len() > query.limit {
@@ -623,15 +620,6 @@ fn parse_size_bytes(value: Option<&serde_json::Value>) -> Option<u64> {
         Some(serde_json::Value::Number(number)) => number.as_u64(),
         Some(serde_json::Value::String(text)) => text.parse::<u64>().ok(),
         _ => None,
-    }
-}
-
-fn search_score(kind: &str) -> u8 {
-    match kind {
-        "path+content" => 3,
-        "path" => 2,
-        "content" => 1,
-        _ => 0,
     }
 }
 

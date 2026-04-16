@@ -129,3 +129,64 @@ pub struct DocumentsSearchHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
+
+pub const DOCUMENTS_SEARCH_MATCH_PATH: &str = "path";
+pub const DOCUMENTS_SEARCH_MATCH_CONTENT: &str = "content";
+pub const DOCUMENTS_SEARCH_MATCH_PATH_AND_CONTENT: &str = "path+content";
+
+pub fn documents_search_match_kind(path_hit: bool, content_hit: bool) -> Option<&'static str> {
+    match (path_hit, content_hit) {
+        (true, true) => Some(DOCUMENTS_SEARCH_MATCH_PATH_AND_CONTENT),
+        (true, false) => Some(DOCUMENTS_SEARCH_MATCH_PATH),
+        (false, true) => Some(DOCUMENTS_SEARCH_MATCH_CONTENT),
+        (false, false) => None,
+    }
+}
+
+pub fn documents_search_match_score(match_kind: &str) -> u8 {
+    match match_kind {
+        DOCUMENTS_SEARCH_MATCH_PATH_AND_CONTENT => 3,
+        DOCUMENTS_SEARCH_MATCH_PATH => 2,
+        DOCUMENTS_SEARCH_MATCH_CONTENT => 1,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        documents_search_match_kind, documents_search_match_score, DOCUMENTS_SEARCH_MATCH_CONTENT,
+        DOCUMENTS_SEARCH_MATCH_PATH, DOCUMENTS_SEARCH_MATCH_PATH_AND_CONTENT,
+    };
+
+    #[test]
+    fn documents_search_match_kind_covers_all_hit_shapes() {
+        assert_eq!(documents_search_match_kind(false, false), None);
+        assert_eq!(
+            documents_search_match_kind(true, false),
+            Some(DOCUMENTS_SEARCH_MATCH_PATH)
+        );
+        assert_eq!(
+            documents_search_match_kind(false, true),
+            Some(DOCUMENTS_SEARCH_MATCH_CONTENT)
+        );
+        assert_eq!(
+            documents_search_match_kind(true, true),
+            Some(DOCUMENTS_SEARCH_MATCH_PATH_AND_CONTENT)
+        );
+    }
+
+    #[test]
+    fn documents_search_match_score_is_consistent_with_match_specificity() {
+        assert_eq!(
+            documents_search_match_score(DOCUMENTS_SEARCH_MATCH_PATH_AND_CONTENT),
+            3
+        );
+        assert_eq!(documents_search_match_score(DOCUMENTS_SEARCH_MATCH_PATH), 2);
+        assert_eq!(
+            documents_search_match_score(DOCUMENTS_SEARCH_MATCH_CONTENT),
+            1
+        );
+        assert_eq!(documents_search_match_score("unknown"), 0);
+    }
+}
