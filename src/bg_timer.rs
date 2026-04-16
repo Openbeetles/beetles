@@ -36,6 +36,7 @@ pub fn notify_deadline_changed() {
 
 fn wait_until_or_notified(deadline: Instant) {
     let (lock, cv) = wake_state();
+    let mut observed_generation = *lock.lock().unwrap_or_else(|e| e.into_inner());
     loop {
         let now = Instant::now();
         if deadline <= now {
@@ -45,9 +46,16 @@ fn wait_until_or_notified(deadline: Instant) {
             .saturating_duration_since(now)
             .min(Duration::from_secs(WAIT_WDT_FEED_SLICE_SECS));
         let generation = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = cv
+        if *generation != observed_generation {
+            return;
+        }
+        let (generation, _) = cv
             .wait_timeout(generation, timeout)
             .unwrap_or_else(|e| e.into_inner());
+        if *generation != observed_generation {
+            return;
+        }
+        observed_generation = *generation;
         crate::platform::task_wdt::feed_current_task();
     }
 }
@@ -251,4 +259,24 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
         HEARTBEAT_INTERVAL_SECS,
         CRON_INTERVAL_SECS
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_until_or_notified_returns_early_after_notify() {
+        let handle = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(30));
+            notify_deadline_changed();
+        });
+        let started = Instant::now();
+        wait_until_or_notified(Instant::now() + Duration::from_millis(250));
+        handle.join().expect("notify join");
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "wait should wake on notify instead of waiting for the original deadline"
+        );
+    }
 }
