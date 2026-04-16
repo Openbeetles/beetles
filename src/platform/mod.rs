@@ -68,10 +68,10 @@ pub use response_body::ResponseBody;
 pub use sntp::init_sntp;
 pub use spiffs::{
     default_skill_storage_arc, init_spiffs, spiffs_usage, CachedSkillMetaStore,
-    SpiffsCalendarStore, SpiffsContinuityCapsuleStore, SpiffsLongTermMemoryExtractionStateStore,
-    SpiffsLongTermMemoryStore, SpiffsMemoryStore, SpiffsMentalPrivacyStore,
-    SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore, SpiffsSessionStore,
-    SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskArtifactStore,
+    SpiffsActiveWorkStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
+    SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
+    SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore,
+    SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage, SpiffsTaskArtifactStore,
     SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore, SpiffsTaskRunStore, SpiffsTaskStore,
     SpiffsTurnLedgerStore,
 };

@@ -14,13 +14,13 @@ use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
     spiffs::{
-        spiffs_usage, CachedSkillMetaStore, CachedSkillStorage, SpiffsAutonomyStrategyStore,
-        SpiffsCalendarStore, SpiffsContinuityCapsuleStore, SpiffsCoreRevisionLedgerStore,
-        SpiffsExecutionStateStore, SpiffsImportantMessageStore, SpiffsInnerLifeStore,
-        SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore,
-        SpiffsOuterVoiceStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
-        SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
+        spiffs_usage, CachedSkillMetaStore, CachedSkillStorage, SpiffsActiveWorkStore,
+        SpiffsAutonomyStrategyStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
+        SpiffsCoreRevisionLedgerStore, SpiffsExecutionStateStore, SpiffsImportantMessageStore,
+        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
+        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore,
+        SpiffsOfficeRuntimeStatusStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
         SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
         SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
         SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
@@ -80,6 +80,7 @@ pub struct LinuxPlatform {
     task_artifact_store: Arc<SpiffsTaskArtifactStore>,
     task_execution_ledger_store: Arc<SpiffsTaskExecutionLedgerStore>,
     task_learning_store: Arc<SpiffsTaskLearningStore>,
+    active_work_store: Arc<SpiffsActiveWorkStore>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
@@ -187,6 +188,7 @@ impl LinuxPlatform {
             task_artifact_store: Arc::new(SpiffsTaskArtifactStore::new()),
             task_execution_ledger_store: Arc::new(SpiffsTaskExecutionLedgerStore::new()),
             task_learning_store: Arc::new(SpiffsTaskLearningStore::new()),
+            active_work_store: Arc::new(SpiffsActiveWorkStore::new()),
             execution_state_store,
             self_model_store,
             self_authored_core_store,
@@ -376,6 +378,10 @@ impl Platform for LinuxPlatform {
 
     fn task_learning_store(&self) -> Arc<dyn TaskLearningStore + Send + Sync> {
         Arc::clone(&self.task_learning_store) as Arc<dyn TaskLearningStore + Send + Sync>
+    }
+
+    fn active_work_store(&self) -> Arc<dyn crate::agent::ActiveWorkStore + Send + Sync> {
+        Arc::clone(&self.active_work_store) as Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {

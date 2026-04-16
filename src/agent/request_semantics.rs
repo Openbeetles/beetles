@@ -1,6 +1,7 @@
 //! Typed request semantics carried through agent telemetry/governance.
 //! 预回合请求语义编译结果：为后续 routing / governance / telemetry 提供正式输入。
 
+use super::active_work::{render_active_work_block, ActiveWorkKind, ActiveWorkRecord};
 use super::strategy::AgentRunStrategy;
 use crate::bus::{IngressKind, PcMsg};
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
@@ -22,7 +23,7 @@ const REQUEST_SEMANTICS_PROBE_SYSTEM_PROMPT: &str = concat!(
     "Allowed action_family: conversation, action_request, active_action.\n",
     "Allowed resume_relation: independent_turn, resume_active_action, confirm_active_action, supply_active_action_input, deny_or_cancel_active_action, switch_to_new_request.\n",
     "Use action_request only when the user is asking the agent to carry out or continue a concrete external/system/workspace action, not merely answer a question.\n",
-    "Use active_action only when there is an active execution state and the current turn is still part of that same action.\n",
+    "Use active_action only when there is active foreground work and the current turn is still part of that same action.\n",
     "Use confirm_active_action when the user is confirming or approving the active action without adding material new facts.\n",
     "Use supply_active_action_input when the user is providing concrete missing input, credentials, parameters, or values needed to continue the active action.\n",
     "Use deny_or_cancel_active_action when the user is explicitly stopping, rejecting, or cancelling the currently active action instead of continuing it.\n",
@@ -93,7 +94,7 @@ pub(crate) enum ResumeRelation {
 pub(crate) struct RequestSemanticsCompileInput<'a> {
     pub(crate) msg: &'a PcMsg,
     pub(crate) has_tools: bool,
-    pub(crate) has_active_task_run: bool,
+    pub(crate) active_work: Option<&'a ActiveWorkRecord>,
     pub(crate) active_execution_state: Option<&'a ExecutionState>,
 }
 
@@ -129,7 +130,10 @@ impl RequestSemantics {
         } else {
             100
         };
-        if input.has_active_task_run {
+        if let Some(active_work) = input
+            .active_work
+            .filter(|record| record.should_resume(&input.msg.content))
+        {
             semantics.request_kind = RequestKind::General;
             semantics.evidence_need = if input.has_tools {
                 EvidenceNeed::HostTool
@@ -141,12 +145,23 @@ impl RequestSemantics {
             } else {
                 ExecutionPreference::AnswerDirect
             };
-            semantics.action_family = ActionFamily::TaskExecution;
-            semantics.resume_relation = ResumeRelation::ResumeActiveTaskRun;
-            semantics.confidence = 100;
-        } else if input.active_execution_state.is_some_and(|state| {
-            crate::memory::should_resume_active_execution_state(state, &input.msg.content)
-        }) {
+            match active_work.kind {
+                ActiveWorkKind::InteractiveAction => {
+                    semantics.action_family = ActionFamily::ActiveAction;
+                    semantics.resume_relation = ResumeRelation::ResumeActiveAction;
+                    semantics.confidence = 75;
+                }
+                ActiveWorkKind::TaskExecution => {
+                    semantics.action_family = ActionFamily::TaskExecution;
+                    semantics.resume_relation = ResumeRelation::ResumeActiveTaskRun;
+                    semantics.confidence = 100;
+                }
+            }
+        } else if input.active_work.is_none()
+            && input.active_execution_state.is_some_and(|state| {
+                crate::memory::should_resume_active_execution_state(state, &input.msg.content)
+            })
+        {
             semantics.request_kind = RequestKind::General;
             semantics.evidence_need = if input.has_tools {
                 EvidenceNeed::HostTool
@@ -204,7 +219,6 @@ fn should_run_request_semantics_probe(
         && input.has_tools
         && input.msg.ingress == IngressKind::User
         && !input.msg.is_group
-        && !input.has_active_task_run
         && matches!(
             (deterministic.action_family, deterministic.resume_relation),
             (ActionFamily::Conversation, ResumeRelation::IndependentTurn)
@@ -228,6 +242,13 @@ fn probe_request_semantics(
             input.msg.channel, input.msg.chat_id
         ),
     );
+    if let Some(active_work_block) = input
+        .active_work
+        .and_then(|record| render_active_work_block(record, 360))
+    {
+        content.push_str(&active_work_block);
+        content.push_str("\n\n");
+    }
     if let Some(state_block) = input
         .active_execution_state
         .and_then(|state| render_execution_state_block(state, 320))
@@ -359,7 +380,7 @@ mod tests {
         let semantics = RequestSemantics::compile_for_turn(RequestSemanticsCompileInput {
             msg: &msg,
             has_tools: true,
-            has_active_task_run: false,
+            active_work: None,
             active_execution_state: None,
         });
 
@@ -376,12 +397,22 @@ mod tests {
     }
 
     #[test]
-    fn compiler_marks_active_task_run_as_resume_relation() {
-        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续配置", false).expect("message");
+    fn compiler_marks_active_task_execution_work_as_resume_relation() {
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
+        let active_work = ActiveWorkRecord {
+            kind: ActiveWorkKind::TaskExecution,
+            title: "QQ 邮箱配置".to_string(),
+            state: ExecutionState {
+                goal: "配置 QQ 邮箱账户".to_string(),
+                next_action: "补认证信息并继续配置".to_string(),
+                updated_at: 7,
+                ..ExecutionState::default()
+            },
+        };
         let semantics = RequestSemantics::compile_for_turn(RequestSemanticsCompileInput {
             msg: &msg,
             has_tools: true,
-            has_active_task_run: true,
+            active_work: Some(&active_work),
             active_execution_state: None,
         });
 
@@ -404,7 +435,7 @@ mod tests {
         let semantics = RequestSemantics::compile_for_turn(RequestSemanticsCompileInput {
             msg: &msg,
             has_tools: true,
-            has_active_task_run: false,
+            active_work: None,
             active_execution_state: None,
         });
 
@@ -426,7 +457,7 @@ mod tests {
         let semantics = RequestSemantics::compile_for_turn(RequestSemanticsCompileInput {
             msg: &msg,
             has_tools: true,
-            has_active_task_run: false,
+            active_work: None,
             active_execution_state: Some(&state),
         });
 
@@ -441,6 +472,39 @@ mod tests {
             ExecutionPreference::ToolFirst
         );
         assert_eq!(semantics.confidence, 75);
+    }
+
+    #[test]
+    fn compiler_does_not_fall_back_to_execution_state_when_active_work_is_present_but_mismatched() {
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "查看当前系统状态", false).expect("message");
+        let active_work = ActiveWorkRecord {
+            kind: ActiveWorkKind::TaskExecution,
+            title: "QQ 邮箱配置".to_string(),
+            state: ExecutionState {
+                status: crate::memory::ExecutionStatus::Active,
+                goal: "配置 QQ 邮箱账户".to_string(),
+                next_action: "补认证信息并继续配置".to_string(),
+                updated_at: 7,
+                ..ExecutionState::default()
+            },
+        };
+        let stale_state = ExecutionState {
+            status: crate::memory::ExecutionStatus::Active,
+            goal: "配置 QQ 邮箱账户".to_string(),
+            next_action: "补认证信息并继续配置".to_string(),
+            updated_at: 7,
+            ..ExecutionState::default()
+        };
+        let semantics = RequestSemantics::compile_for_turn(RequestSemanticsCompileInput {
+            msg: &msg,
+            has_tools: true,
+            active_work: Some(&active_work),
+            active_execution_state: Some(&stale_state),
+        });
+
+        assert_eq!(semantics.action_family, ActionFamily::Conversation);
+        assert_eq!(semantics.resume_relation, ResumeRelation::IndependentTurn);
     }
 
     #[test]

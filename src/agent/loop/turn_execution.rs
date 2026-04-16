@@ -72,6 +72,13 @@ pub(super) fn execute_turn(
     )
     .ok()
     .flatten();
+    let active_work = crate::agent::load_active_work_for_chat(
+        config.runtime.active_work_store.as_ref(),
+        active_run.as_ref(),
+        &msg.chat_id,
+    )
+    .ok()
+    .flatten();
     let active_execution_state = config
         .runtime
         .execution_state_store
@@ -88,7 +95,7 @@ pub(super) fn execute_turn(
             super::super::request_semantics::RequestSemanticsCompileInput {
                 msg,
                 has_tools,
-                has_active_task_run: active_run.is_some(),
+                active_work: active_work.as_ref(),
                 active_execution_state: active_execution_state.as_ref(),
             },
         );

@@ -25,6 +25,7 @@ pub struct RuntimeServices {
     pub task_execution_ledger_store:
         Arc<dyn crate::task_execution::TaskExecutionLedgerStore + Send + Sync>,
     pub task_learning_store: Arc<dyn crate::task_execution::TaskLearningStore + Send + Sync>,
+    pub active_work_store: Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>,
     pub execution_state_store: Arc<dyn crate::memory::ExecutionStateStore + Send + Sync>,
     pub self_model_store: Arc<dyn crate::memory::SelfModelStore + Send + Sync>,
     pub self_authored_core_store: Arc<dyn crate::memory::SelfAuthoredCoreStore + Send + Sync>,
@@ -72,6 +73,7 @@ impl RuntimeServices {
             task_artifact_store: platform.task_artifact_store(),
             task_execution_ledger_store: platform.task_execution_ledger_store(),
             task_learning_store: platform.task_learning_store(),
+            active_work_store: platform.active_work_store(),
             execution_state_store: platform.execution_state_store(),
             self_model_store: platform.self_model_store(),
             self_authored_core_store: platform.self_authored_core_store(),

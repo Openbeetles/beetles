@@ -431,14 +431,14 @@ pub(super) fn complete_turn(
             .important_message_store
             .set_important_offset_from_end(&msg.chat_id, 1);
     }
-    if delivered
+    let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
         && matches!(
             request_semantics.resume_relation,
             crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
                 | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
-        )
-    {
+        );
+    if clear_execution_state {
         if let Err(error) = config.runtime.execution_state_store.clear(&msg.chat_id) {
             log::warn!(
                 "[agent_execution_state] clear failed chat_id={}: {}",
@@ -447,7 +447,7 @@ pub(super) fn complete_turn(
             );
         }
     }
-    if delivered
+    let should_seed_execution_state = delivered
         && msg.ingress == IngressKind::User
         && request_semantics.disclosure_surface
             != crate::agent::request_semantics::DisclosureSurface::Private
@@ -463,8 +463,9 @@ pub(super) fn complete_turn(
             || turn_observation
                 .as_ref()
                 .and_then(|observation| observation.blocker.as_ref())
-                .is_some())
-    {
+                .is_some());
+    let mut seeded_execution_state = None;
+    if should_seed_execution_state {
         if let Err(error) = crate::memory::seed_execution_state_from_turn(
             config.runtime.execution_state_store.as_ref(),
             crate::memory::ProvisionalExecutionStateInput {
@@ -480,6 +481,37 @@ pub(super) fn complete_turn(
         ) {
             log::warn!(
                 "[agent_execution_state] provisional seed failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+        }
+        seeded_execution_state = config
+            .runtime
+            .execution_state_store
+            .get(&msg.chat_id)
+            .ok()
+            .flatten();
+    }
+    if delivered && msg.ingress == IngressKind::User {
+        let active_task_run = active_task_run_for_chat(
+            config.runtime.task_run_store.as_ref(),
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+        )
+        .ok()
+        .flatten();
+        if let Err(error) = crate::agent::sync_active_work_after_turn(
+            config.runtime.active_work_store.as_ref(),
+            crate::agent::ActiveWorkSyncInput {
+                chat_id: &msg.chat_id,
+                request_semantics,
+                reply_surface,
+                active_task_run: active_task_run.as_ref(),
+                execution_state: seeded_execution_state.as_ref(),
+            },
+        ) {
+            log::warn!(
+                "[agent_active_work] sync failed chat_id={}: {}",
                 msg.chat_id,
                 error
             );

@@ -2159,6 +2159,38 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct StubActiveWorkStore {
+        entries: Mutex<HashMap<String, crate::agent::ActiveWorkRecord>>,
+    }
+
+    impl crate::agent::ActiveWorkStore for StubActiveWorkStore {
+        fn get(&self, chat_id: &str) -> Result<Option<crate::agent::ActiveWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned())
+        }
+
+        fn set(&self, chat_id: &str, record: &crate::agent::ActiveWorkRecord) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), record.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubSelfModelStore;
 
     impl SelfModelStore for StubSelfModelStore {
@@ -3094,6 +3126,7 @@ mod tests {
                 task_artifact_store: Arc::new(StubTaskArtifactStore),
                 task_execution_ledger_store: Arc::new(StubTaskExecutionLedgerStore),
                 task_learning_store: Arc::new(StubTaskLearningStore),
+                active_work_store: Arc::new(StubActiveWorkStore::default()),
                 execution_state_store: Arc::new(StubExecutionStateStore::default()),
                 self_model_store: Arc::new(StubSelfModelStore),
                 self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),

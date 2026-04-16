@@ -50,6 +50,7 @@ fn fnv1a64_hash(s: &str) -> u64 {
 pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
     let rel_str = rel.to_string_lossy();
     match rel_str.as_ref() {
+        crate::agent::REL_PATH_ACTIVE_WORKS => PathBuf::from("m/aw.json"),
         crate::memory::REL_PATH_EXECUTION_STATES => PathBuf::from("m/es.json"),
         crate::memory::REL_PATH_IMPORTANT_MESSAGE => PathBuf::from("m/im.json"),
         crate::memory::REL_PATH_SESSION_SUMMARIES => PathBuf::from("m/ss.json"),
@@ -389,6 +390,7 @@ pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
 
 // --- 子模块与对外类型 ---
 
+pub mod active_work;
 pub mod autonomy_strategy;
 pub(crate) mod cached_json;
 pub mod calendar_store;
@@ -424,6 +426,7 @@ pub mod turn_ledger;
 pub mod world_sense;
 pub use turn_ledger::SpiffsTurnLedgerStore;
 
+pub use active_work::SpiffsActiveWorkStore;
 pub use autonomy_strategy::SpiffsAutonomyStrategyStore;
 pub use calendar_store::SpiffsCalendarStore;
 pub use continuity_capsule::SpiffsContinuityCapsuleStore;
@@ -462,6 +465,7 @@ pub use world_sense::SpiffsWorldSenseStore;
 #[cfg(test)]
 mod tests {
     use super::esp_storage_rel_path;
+    use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
         REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES, REL_PATH_CORE_REVISION_LEDGERS,
         REL_PATH_IMPORTANT_MESSAGE, REL_PATH_LONG_TERM_EXTRACTION_STATES,
@@ -489,6 +493,7 @@ mod tests {
     #[test]
     fn esp_storage_rel_path_aliases_known_long_internal_paths() {
         let cases = [
+            (REL_PATH_ACTIVE_WORKS, "m/aw.json"),
             (REL_PATH_AUTONOMY_STRATEGIES, "m/as.json"),
             (REL_PATH_CONTINUITY_CAPSULES, "m/cc.json"),
             (REL_PATH_CORE_REVISION_LEDGERS, "m/crl.json"),
