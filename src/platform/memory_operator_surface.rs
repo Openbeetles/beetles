@@ -277,9 +277,7 @@ pub fn build_memory_operator_surface_with_capabilities(
         latest_turn_soul_feedback,
     ) = build_policy_view(platform, now_secs, personality_targets.first())?;
     let forge_summary =
-        crate::load_idle_memory_forge_operator_summary(platform.state_fs().as_ref())
-            .ok()
-            .flatten()
+        crate::load_idle_memory_forge_operator_summary(platform.state_fs().as_ref())?
             .unwrap_or_default();
     let topology_entry = relationship_topology.as_ref().and_then(|topology| {
         policy_target.as_ref().and_then(|target| {

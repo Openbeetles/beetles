@@ -1,5 +1,7 @@
 use super::*;
 
+const STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX: &str = "\n\n## Structured finalization correction\nThe previous structured finalization reply collapsed to empty after internal-artifact stripping. Do not output JSON, markdown fences, tool evidence tags, XML-like blocks, or system markers. Write a plain, non-empty, user-facing answer grounded only in the completed tool results already present in this conversation.";
+
 pub(super) struct ExecutedTurn {
     pub(super) outcome: WorkerOutcome,
     pub(super) telemetry: WorkerRunTelemetry,
@@ -25,6 +27,12 @@ fn action_progress_kind_for_regular_tool_round(
         ActionFamily::ActiveAction => Some(crate::agent::delivery::TaskActionProgressKind::Resumed),
         ActionFamily::Conversation | ActionFamily::TaskExecution => None,
     }
+}
+
+fn surface_finalization_collapses_after_cleanup(strategy: AgentRunStrategy, content: &str) -> bool {
+    finalize_user_visible_reply(strategy, content)
+        .trim()
+        .is_empty()
 }
 
 /// 完整 context + worker LLM + ReAct 循环，返回执行结果与 telemetry。
@@ -306,7 +314,7 @@ pub(super) fn execute_turn(
                     );
                 }
                 used_surface_finalization = true;
-                final_content = run_surface_finalization_round(
+                let structured_reply = run_surface_finalization_round(
                     worker_llm,
                     &mut tool_ctx,
                     &system,
@@ -318,6 +326,32 @@ pub(super) fn execute_turn(
                     &mut latency,
                     &mut system_scratch,
                 )?;
+                if surface_finalization_collapses_after_cleanup(config.strategy, &structured_reply)
+                {
+                    log::warn!(
+                        "[reply_surface] structured finalization collapsed after cleanup surface={} channel={} chat_id={}",
+                        reply_surface.as_str(),
+                        msg.channel,
+                        msg.chat_id
+                    );
+                    used_final_answer_recovery = true;
+                    let mut recovery_suffix =
+                        recovery_suffix_for_gate(&deliberation_gate).to_string();
+                    recovery_suffix.push_str(STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX);
+                    final_content = run_final_answer_recovery_round(
+                        worker_llm,
+                        &mut tool_ctx,
+                        &system,
+                        &messages,
+                        structured_reply.as_str(),
+                        recovery_suffix.as_str(),
+                        config.llm_stream,
+                        &mut latency,
+                        &mut system_scratch,
+                    )?;
+                } else {
+                    final_content = structured_reply;
+                }
                 break;
             }
             if let Some(followup) = empty_final_answer_followup(
@@ -498,7 +532,7 @@ pub(super) fn execute_turn(
     if final_content.trim().is_empty() && any_tool_used && delivered_current_chat_reply.is_none() {
         if reply_surface.requires_structured_finalization_after_tool_success() {
             used_surface_finalization = true;
-            final_content = run_surface_finalization_round(
+            let structured_reply = run_surface_finalization_round(
                 worker_llm,
                 &mut tool_ctx,
                 &system,
@@ -510,6 +544,30 @@ pub(super) fn execute_turn(
                 &mut latency,
                 &mut system_scratch,
             )?;
+            if surface_finalization_collapses_after_cleanup(config.strategy, &structured_reply) {
+                log::warn!(
+                    "[reply_surface] structured finalization collapsed after cleanup surface={} channel={} chat_id={}",
+                    reply_surface.as_str(),
+                    msg.channel,
+                    msg.chat_id
+                );
+                used_final_answer_recovery = true;
+                let mut recovery_suffix = recovery_suffix_for_gate(&deliberation_gate).to_string();
+                recovery_suffix.push_str(STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX);
+                final_content = run_final_answer_recovery_round(
+                    worker_llm,
+                    &mut tool_ctx,
+                    &system,
+                    &messages,
+                    structured_reply.as_str(),
+                    recovery_suffix.as_str(),
+                    config.llm_stream,
+                    &mut latency,
+                    &mut system_scratch,
+                )?;
+            } else {
+                final_content = structured_reply;
+            }
         } else {
             used_final_answer_recovery = true;
             final_content = run_final_answer_recovery_round(

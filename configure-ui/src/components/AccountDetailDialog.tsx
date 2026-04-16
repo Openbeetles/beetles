@@ -13,19 +13,29 @@ import CloseRounded from "@mui/icons-material/CloseRounded";
 import {
   PanelStateBlock,
   PanelStateLoading,
+  SaveFeedback,
   SectionLoadingSkeleton,
 } from "./form";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Os3dIcon } from "./Os3dIcon";
 import { OS_ICON_NAV } from "../config/osIcons";
 import { useDeviceApi } from "../hooks/useDeviceApi";
+import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { localizeAccountProviderName } from "../i18n/providerDisplay";
+import {
+  localizeProviderField,
+  localizeProviderFieldLabel,
+} from "../i18n/providerFields";
 import type { AccountDetail } from "../types/accountConfig";
 import { CONFIG_PANEL_SX, TEXT_BODY_TERTIARY_SX } from "../theme/panelStyles";
 import {
   AccountCreateForm,
   type AccountCapabilityFilter,
 } from "./AccountCreateForm";
+import { ProviderFieldInput } from "./ProviderFieldInput";
+import { errorMessage, withTimeout } from "../util/withTimeout";
+
+const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface AccountDetailDialogProps {
   open: boolean;
@@ -59,18 +69,47 @@ export function AccountDetailDialog({
   const [probeBusy, setProbeBusy] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [clearSecretKeys, setClearSecretKeys] = useState<Record<string, boolean>>({});
+  const saveFeedback = useSaveFeedback(t);
+  const {
+    status: saveStatus,
+    error: saveError,
+    begin: beginSaveFeedback,
+    fail: failSaveFeedback,
+    finishFromResult: finishSaveFeedbackFromResult,
+    dismiss: dismissSaveFeedback,
+  } = saveFeedback;
 
   const dialogVisible = open && (mode === "create" || accountKey != null);
+  const localizedDetailFields = detail?.fields.map((field) =>
+    localizeProviderField(t, field),
+  ) ?? [];
 
   const load = useCallback(async () => {
     if (!ready || !accountKey) return;
     setLoading(true);
     setError("");
-    const res = await api.config.accounts.get(accountKey);
-    if (res.ok && res.data) {
-      setDetail(res.data);
-    } else {
-      setError(res.error ?? t("accounts.detailLoadFailed"));
+    try {
+      const res = await withTimeout(
+        api.config.accounts.get(accountKey),
+        ACCOUNT_REQUEST_TIMEOUT_MS,
+        t("accounts.requestTimedOut"),
+      );
+      if (res.ok && res.data) {
+        setDetail(res.data);
+        const nextValues: Record<string, string> = {};
+        for (const field of res.data.fields) {
+          nextValues[field.key] = field.current_value ?? "";
+        }
+        setFieldValues(nextValues);
+        setClearSecretKeys({});
+      } else {
+        setError(res.error ?? t("accounts.detailLoadFailed"));
+        setDetail(null);
+      }
+    } catch (error) {
+      setError(errorMessage(error, t("accounts.detailLoadFailed")));
       setDetail(null);
     }
     setLoading(false);
@@ -83,13 +122,16 @@ export function AccountDetailDialog({
           setDetail(null);
           setError("");
           setProbeMsg(null);
+          setFieldValues({});
+          setClearSecretKeys({});
+          dismissSaveFeedback();
         });
       }
       return;
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect -- opening detail must immediately kick off account fetch
     void load();
-  }, [open, mode, accountKey, load]);
+  }, [open, mode, accountKey, load, dismissSaveFeedback]);
 
   const handleProbe = async () => {
     if (!hasPairing || !accountKey) {
@@ -98,27 +140,116 @@ export function AccountDetailDialog({
     }
     setProbeBusy(true);
     setProbeMsg(null);
-    const res = await api.config.accounts.probe(accountKey);
-    setProbeBusy(false);
-    if (res.ok && res.data) {
-      setProbeMsg(`${res.data.disposition}: ${res.data.reason}`.trim());
-      void load();
-    } else {
-      setProbeMsg(res.error ?? t("accounts.probeFailed"));
+    try {
+      const res = await withTimeout(
+        api.config.accounts.probe(accountKey),
+        ACCOUNT_REQUEST_TIMEOUT_MS,
+        t("accounts.requestTimedOut"),
+      );
+      setProbeBusy(false);
+      if (res.ok && res.data) {
+        setProbeMsg(`${res.data.disposition}: ${res.data.reason}`.trim());
+        void load();
+      } else {
+        setProbeMsg(res.error ?? t("accounts.probeFailed"));
+      }
+    } catch (error) {
+      setProbeBusy(false);
+      setProbeMsg(errorMessage(error, t("accounts.probeFailed")));
     }
   };
 
   const handleDelete = async () => {
     if (!hasPairing || !accountKey) return;
     setDeleteBusy(true);
-    const res = await api.config.accounts.delete(accountKey);
-    setDeleteBusy(false);
-    setDeleteOpen(false);
-    if (res.ok) {
-      onDeleted?.();
-      onClose();
-    } else {
-      setError(res.error ?? t("accounts.deleteFailed"));
+    try {
+      const res = await withTimeout(
+        api.config.accounts.delete(accountKey),
+        ACCOUNT_REQUEST_TIMEOUT_MS,
+        t("accounts.requestTimedOut"),
+      );
+      setDeleteBusy(false);
+      setDeleteOpen(false);
+      if (res.ok) {
+        onDeleted?.();
+        onClose();
+      } else {
+        setError(res.error ?? t("accounts.deleteFailed"));
+      }
+    } catch (error) {
+      setDeleteBusy(false);
+      setDeleteOpen(false);
+      setError(errorMessage(error, t("accounts.deleteFailed")));
+    }
+  };
+
+  const handleSaveConfig = async () => {
+    if (!hasPairing || !accountKey || !detail) return;
+    const invalid = localizedDetailFields.filter(
+      (field) =>
+        field.required &&
+        !clearSecretKeys[field.key] &&
+        !(fieldValues[field.key] ?? "").trim() &&
+        !(field.secret && field.configured),
+    );
+    if (invalid.length > 0) {
+      setError(
+        t("accounts.createRequiredFields", {
+          fields: invalid
+            .map((field) => localizeProviderFieldLabel(t, field.key, field.label))
+            .join(", "),
+        }),
+      );
+      return;
+    }
+    const fields: Record<string, string> = {};
+    const clear_fields: string[] = [];
+    for (const field of detail.fields) {
+      const raw = (fieldValues[field.key] ?? "").trim();
+      if (clearSecretKeys[field.key]) {
+        clear_fields.push(field.key);
+        continue;
+      }
+      if (raw) {
+        fields[field.key] = raw;
+        continue;
+      }
+      if (field.secret) {
+        continue;
+      }
+      if (field.configured && (field.current_value ?? "").trim()) {
+        clear_fields.push(field.key);
+      }
+    }
+
+    beginSaveFeedback();
+    setError("");
+    try {
+      const res = await withTimeout(
+        api.config.accounts.saveConfig(accountKey, {
+          fields,
+          clear_fields,
+        }),
+        ACCOUNT_REQUEST_TIMEOUT_MS,
+        t("accounts.requestTimedOut"),
+      );
+      finishSaveFeedbackFromResult(res);
+      if (res.ok && res.data) {
+        setDetail(res.data);
+        const nextValues: Record<string, string> = {};
+        for (const field of res.data.fields) {
+          nextValues[field.key] = field.current_value ?? "";
+        }
+        setFieldValues(nextValues);
+        setClearSecretKeys({});
+        setProbeMsg(null);
+      } else if (!res.ok) {
+        setError(res.error ?? t("accounts.saveConfigFailed"));
+      }
+    } catch (error) {
+      const message = errorMessage(error, t("accounts.saveConfigFailed"));
+      failSaveFeedback(message);
+      setError(message);
     }
   };
 
@@ -286,7 +417,18 @@ export function AccountDetailDialog({
                       {asmt.missing_fields.length > 0 ? (
                         <Typography variant="body2" sx={{ mt: 1.5 }}>
                           {t("accounts.missingFields")}:{" "}
-                          {asmt.missing_fields.join(", ")}
+                          {asmt.missing_fields
+                            .map((fieldKey) => {
+                              const matchingField = localizedDetailFields.find(
+                                (field) => field.key === fieldKey,
+                              );
+                              return localizeProviderFieldLabel(
+                                t,
+                                fieldKey,
+                                matchingField?.label ?? fieldKey,
+                              );
+                            })
+                            .join(", ")}
                         </Typography>
                       ) : null}
                     </Box>
@@ -297,6 +439,90 @@ export function AccountDetailDialog({
                       {probeMsg}
                     </Typography>
                   ) : null}
+
+                  <Box sx={{ ...CONFIG_PANEL_SX, p: 2 }}>
+                    <Typography
+                      variant="subtitle2"
+                      color="text.secondary"
+                      gutterBottom
+                    >
+                      {t("accounts.providerFields")}
+                    </Typography>
+                    <Stack spacing={3}>
+                      {localizedDetailFields.map((field) => (
+                        <Box key={field.key}>
+                          <ProviderFieldInput
+                            field={field}
+                            value={fieldValues[field.key] ?? ""}
+                            onChange={(nextValue) => {
+                              setFieldValues((prev) => ({
+                                ...prev,
+                                [field.key]: nextValue,
+                              }));
+                              setClearSecretKeys((prev) => {
+                                if (!prev[field.key]) return prev;
+                                const next = { ...prev };
+                                delete next[field.key];
+                                return next;
+                              });
+                            }}
+                          />
+                          {field.secret && field.configured ? (
+                            <Stack
+                              direction="row"
+                              alignItems="center"
+                              justifyContent="space-between"
+                              gap={1}
+                              sx={{ mt: 1 }}
+                            >
+                              <Typography variant="caption" color="text.secondary">
+                                {clearSecretKeys[field.key]
+                                  ? t("accounts.clearStoredSecretPending")
+                                  : t("accounts.keepExistingSecret")}
+                              </Typography>
+                              <Button
+                                size="small"
+                                variant="text"
+                                onClick={() =>
+                                  setClearSecretKeys((prev) => ({
+                                    ...prev,
+                                    [field.key]: !prev[field.key],
+                                  }))
+                                }
+                              >
+                                {t("accounts.clearStoredSecret")}
+                              </Button>
+                            </Stack>
+                          ) : null}
+                        </Box>
+                      ))}
+                      <Stack direction="row" flexWrap="wrap" gap={1}>
+                        <Button
+                          variant="contained"
+                          disabled={!hasPairing || saveStatus === "saving"}
+                          onClick={() => void handleSaveConfig()}
+                        >
+                          {saveStatus === "saving"
+                            ? t("common.saving")
+                            : t("common.save")}
+                        </Button>
+                      </Stack>
+                      {saveStatus === "ok" ? (
+                        <SaveFeedback
+                          status="ok"
+                          message={t("common.saveOk")}
+                          onDismiss={dismissSaveFeedback}
+                        />
+                      ) : null}
+                      {saveStatus === "fail" && saveError ? (
+                        <SaveFeedback
+                          status="fail"
+                          message={saveError}
+                          onDismiss={dismissSaveFeedback}
+                        />
+                      ) : null}
+                    </Stack>
+                  </Box>
 
                   <Stack direction="row" flexWrap="wrap" gap={1}>
                     <Button

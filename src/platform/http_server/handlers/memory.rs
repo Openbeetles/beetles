@@ -607,6 +607,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
@@ -653,6 +654,7 @@ mod tests {
 
     #[test]
     fn memory_status_api_returns_structured_operator_snapshot() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let payload = body(&ctx, "/api/memory/status").unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
@@ -685,7 +687,35 @@ mod tests {
     }
 
     #[test]
+    fn memory_status_api_surfaces_idle_forge_latest_decode_errors() {
+        let _guard = memory_status_test_guard();
+        let ctx = build_test_context();
+        let rel_path = "memory/idle_forge/latest.json";
+        let previous = ctx.platform.state_fs().read(rel_path).unwrap();
+        ctx.platform
+            .state_fs()
+            .write(rel_path, br#"{"not":"valid""#)
+            .unwrap();
+
+        let result = body(&ctx, "/api/memory/status");
+
+        match previous {
+            Some(bytes) => ctx.platform.state_fs().write(rel_path, &bytes).unwrap(),
+            None => ctx.platform.state_fs().remove(rel_path).unwrap(),
+        }
+
+        let error = result.expect_err("corrupt idle forge summary must fail memory status");
+        assert!(
+            error
+                .to_string()
+                .contains("idle_memory_forge_latest_decode"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn memory_status_api_supports_targeted_inspection() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let unique = unique_suffix();
         let chat_id = format!("memory-status-chat-{unique}");
@@ -1019,6 +1049,7 @@ mod tests {
 
     #[test]
     fn memory_status_api_includes_learning_summary_and_metrics() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let unique = unique_suffix();
         let now_secs: u64 = 4_102_444_800;
@@ -1120,6 +1151,7 @@ mod tests {
 
     #[test]
     fn build_test_context_uses_isolated_runtime_skill_storage() {
+        let _guard = memory_status_test_guard();
         let ctx_a = build_test_context();
         let ctx_b = build_test_context();
         let unique = unique_suffix();
@@ -1142,6 +1174,7 @@ mod tests {
 
     #[test]
     fn memory_status_api_includes_continuity_capsule_summary() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let now_secs = crate::util::current_unix_secs();
         ctx.platform
@@ -1204,6 +1237,7 @@ mod tests {
 
     #[test]
     fn memory_status_api_regression_keeps_optional_inspection_boundary() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let unique = unique_suffix();
         let chat_id = format!("memory-status-boundary-{unique}");
@@ -1254,6 +1288,7 @@ mod tests {
 
     #[test]
     fn parse_request_skips_default_channel_when_chat_id_is_absent() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         {
             let mut config = ctx.cached_config.write().unwrap_or_else(|e| e.into_inner());
@@ -1268,6 +1303,7 @@ mod tests {
 
     #[test]
     fn parse_request_keeps_target_channel_unset_without_deep() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         {
             let mut config = ctx.cached_config.write().unwrap_or_else(|e| e.into_inner());
@@ -1283,6 +1319,7 @@ mod tests {
 
     #[test]
     fn parse_request_defaults_target_channel_when_deep_inspection_is_enabled() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         {
             let mut config = ctx.cached_config.write().unwrap_or_else(|e| e.into_inner());
@@ -1298,6 +1335,7 @@ mod tests {
 
     #[test]
     fn embedded_memory_status_requires_explicit_operator_window_for_deep_inspection() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let unique = unique_suffix();
         let chat_id = format!("memory-status-embedded-{unique}");
@@ -1322,6 +1360,7 @@ mod tests {
 
     #[test]
     fn legacy_profile_param_no_longer_overrides_memory_system_kind() {
+        let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let unique = unique_suffix();
         let chat_id = format!("memory-status-legacy-profile-{unique}");
@@ -1371,5 +1410,12 @@ mod tests {
             .unwrap()
             .as_nanos();
         format!("{:x}", nanos % 0xffff_ffff)
+    }
+
+    fn memory_status_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 }

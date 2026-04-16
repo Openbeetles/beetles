@@ -1,9 +1,15 @@
 use crate::config::OfficeAccountsSegment;
 use crate::error::{Error, Result};
+use crate::mail::{
+    OFFICE_METADATA_MAIL_FROM_ADDRESS, OFFICE_METADATA_MAIL_IMAP_HOST,
+    OFFICE_METADATA_MAIL_IMAP_PORT, OFFICE_METADATA_MAIL_IMAP_TLS, OFFICE_METADATA_MAIL_SMTP_HOST,
+    OFFICE_METADATA_MAIL_SMTP_PORT, OFFICE_METADATA_MAIL_SMTP_TLS, OFFICE_METADATA_MAIL_USERNAME,
+};
 use crate::office::{
-    OfficeAccountDraftRequest, OfficeCapability, OfficeConfigAssessment,
-    OfficeConfigManagementService, OfficeCredentialDraftRequest, OfficeCredentialsSegment,
-    OfficeProviderSchema, OfficeResolveRequest,
+    OfficeAccount, OfficeAccountDraftRequest, OfficeAccountIdentityClass, OfficeCapability,
+    OfficeConfigAssessment, OfficeConfigManagementService, OfficeCredential,
+    OfficeCredentialDraftRequest, OfficeCredentialsSegment, OfficeProviderSchema,
+    OfficeResolveRequest,
 };
 use crate::tools::{
     office_args::parse_identity_class_value, parse_tool_args, serialize_tool_output, Tool,
@@ -11,7 +17,8 @@ use crate::tools::{
     ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
 pub struct OfficeConfigTool {
     service: OfficeConfigManagementService,
@@ -158,8 +165,7 @@ impl Tool for OfficeConfigTool {
                 )
             }
             "draft_accounts" => {
-                let request: OfficeAccountDraftRequest = serde_json::from_value(Value::Object(obj))
-                    .map_err(|error| Error::config("tool_office_config", error.to_string()))?;
+                let request = parse_account_draft_request(&obj)?;
                 serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
@@ -170,9 +176,7 @@ impl Tool for OfficeConfigTool {
                 )
             }
             "draft_credentials" => {
-                let request: OfficeCredentialDraftRequest =
-                    serde_json::from_value(Value::Object(obj))
-                        .map_err(|error| Error::config("tool_office_config", error.to_string()))?;
+                let request = parse_credential_draft_request(&obj)?;
                 serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
@@ -360,6 +364,395 @@ fn parse_capability_value(value: &Value) -> Result<OfficeCapability> {
             "tool_office_config",
             format!("unsupported capability '{}'", raw),
         )),
+    }
+}
+
+fn parse_account_draft_request(obj: &Map<String, Value>) -> Result<OfficeAccountDraftRequest> {
+    match serde_json::from_value::<OfficeAccountDraftRequest>(Value::Object(obj.clone())) {
+        Ok(request) => apply_tool_facing_account_aliases(request, obj),
+        Err(_) => normalize_tool_facing_account_draft_request(obj),
+    }
+}
+
+fn normalize_tool_facing_account_draft_request(
+    obj: &Map<String, Value>,
+) -> Result<OfficeAccountDraftRequest> {
+    let account_obj = obj
+        .get("account")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::config("tool_office_config", "missing account"))?;
+    let capability_hint = obj
+        .get("capability")
+        .map(parse_capability_value)
+        .transpose()?;
+    let account_key = required_string(account_obj, "account_key")?;
+    let provider_kind =
+        normalize_office_provider_kind(required_string(account_obj, "provider_kind")?);
+    let external_account_id = preferred_string(
+        account_obj,
+        &["external_account_id", "email", "account_id", "username"],
+    )
+    .unwrap_or_default();
+    let account_label = preferred_string(account_obj, &["account_label", "display_name", "label"])
+        .unwrap_or_default();
+    let identity_class = account_obj
+        .get("identity_class")
+        .map(|value| parse_identity_class_value(value, "identity_class", "tool_office_config"))
+        .transpose()?
+        .unwrap_or(OfficeAccountIdentityClass::Other);
+    let enabled_capabilities = parse_capability_list_with_hint(
+        account_obj,
+        &["enabled_capabilities", "capabilities"],
+        capability_hint,
+    )?;
+    Ok(OfficeAccountDraftRequest {
+        account: OfficeAccount {
+            account_key,
+            provider_kind,
+            external_account_id,
+            account_label,
+            identity_class,
+            enabled_capabilities,
+        },
+        set_defaults: parse_capability_array(obj, "set_defaults")?,
+        clear_defaults: parse_capability_array(obj, "clear_defaults")?,
+        policy_patch: obj
+            .get("policy_patch")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| Error::config("tool_office_config", error.to_string()))?,
+    })
+}
+
+fn parse_credential_draft_request(
+    obj: &Map<String, Value>,
+) -> Result<OfficeCredentialDraftRequest> {
+    match serde_json::from_value::<OfficeCredentialDraftRequest>(Value::Object(obj.clone())) {
+        Ok(request) => apply_tool_facing_credential_aliases(request, obj),
+        Err(_) => normalize_tool_facing_credential_draft_request(obj),
+    }
+}
+
+fn apply_tool_facing_account_aliases(
+    mut request: OfficeAccountDraftRequest,
+    obj: &Map<String, Value>,
+) -> Result<OfficeAccountDraftRequest> {
+    let Some(account_obj) = obj.get("account").and_then(Value::as_object) else {
+        return Ok(request);
+    };
+    if request.account.external_account_id.trim().is_empty() {
+        request.account.external_account_id = preferred_string(
+            account_obj,
+            &["external_account_id", "email", "account_id", "username"],
+        )
+        .unwrap_or_default();
+    }
+    if request.account.account_label.trim().is_empty() {
+        request.account.account_label =
+            preferred_string(account_obj, &["account_label", "display_name", "label"])
+                .unwrap_or_default();
+    }
+    request.account.provider_kind =
+        normalize_office_provider_kind(request.account.provider_kind.clone());
+    if request.account.enabled_capabilities.is_empty() {
+        request.account.enabled_capabilities = parse_capability_list_with_hint(
+            account_obj,
+            &["enabled_capabilities", "capabilities"],
+            obj.get("capability")
+                .map(parse_capability_value)
+                .transpose()?,
+        )?;
+    }
+    Ok(request)
+}
+
+fn apply_tool_facing_credential_aliases(
+    mut request: OfficeCredentialDraftRequest,
+    obj: &Map<String, Value>,
+) -> Result<OfficeCredentialDraftRequest> {
+    let Some(credential_obj) = obj.get("credential").and_then(Value::as_object) else {
+        return Ok(request);
+    };
+    if request.credential.access_token.trim().is_empty() {
+        request.credential.access_token =
+            preferred_string(credential_obj, &["access_token", "password"]).unwrap_or_default();
+    }
+    if request.credential.refresh_token.trim().is_empty() {
+        request.credential.refresh_token =
+            optional_string(credential_obj, "refresh_token").unwrap_or_default();
+    }
+    if request.credential.token_endpoint.trim().is_empty() {
+        request.credential.token_endpoint =
+            optional_string(credential_obj, "token_endpoint").unwrap_or_default();
+    }
+    if request.credential.expires_at_unix_secs == 0 {
+        request.credential.expires_at_unix_secs =
+            optional_u64(credential_obj, "expires_at_unix_secs")?.unwrap_or_default();
+    }
+    if request.credential.updated_at == 0 {
+        request.credential.updated_at =
+            optional_u64(credential_obj, "updated_at")?.unwrap_or_default();
+    }
+    insert_metadata_alias(
+        &mut request.credential.metadata,
+        credential_obj,
+        OFFICE_METADATA_MAIL_USERNAME,
+        &["mail_username", "email", "username"],
+    );
+    insert_metadata_alias(
+        &mut request.credential.metadata,
+        credential_obj,
+        OFFICE_METADATA_MAIL_FROM_ADDRESS,
+        &["mail_from_address", "email", "from_address"],
+    );
+    insert_metadata_value(
+        &mut request.credential.metadata,
+        OFFICE_METADATA_MAIL_IMAP_HOST,
+        optional_string(credential_obj, "imap_host"),
+    );
+    insert_metadata_u64(
+        &mut request.credential.metadata,
+        OFFICE_METADATA_MAIL_IMAP_PORT,
+        optional_u64(credential_obj, "imap_port")?,
+    );
+    insert_metadata_bool(
+        &mut request.credential.metadata,
+        OFFICE_METADATA_MAIL_IMAP_TLS,
+        optional_bool(credential_obj, "imap_tls")?,
+    );
+    insert_metadata_value(
+        &mut request.credential.metadata,
+        OFFICE_METADATA_MAIL_SMTP_HOST,
+        optional_string(credential_obj, "smtp_host"),
+    );
+    insert_metadata_u64(
+        &mut request.credential.metadata,
+        OFFICE_METADATA_MAIL_SMTP_PORT,
+        optional_u64(credential_obj, "smtp_port")?,
+    );
+    insert_metadata_bool(
+        &mut request.credential.metadata,
+        OFFICE_METADATA_MAIL_SMTP_TLS,
+        optional_bool(credential_obj, "smtp_tls")?,
+    );
+    Ok(request)
+}
+
+fn normalize_tool_facing_credential_draft_request(
+    obj: &Map<String, Value>,
+) -> Result<OfficeCredentialDraftRequest> {
+    let credential_obj = obj
+        .get("credential")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::config("tool_office_config", "missing credential"))?;
+    let account_key = required_string(credential_obj, "account_key")?;
+    let access_token =
+        preferred_string(credential_obj, &["access_token", "password"]).unwrap_or_default();
+    let refresh_token = optional_string(credential_obj, "refresh_token").unwrap_or_default();
+    let token_endpoint = optional_string(credential_obj, "token_endpoint").unwrap_or_default();
+    let expires_at_unix_secs =
+        optional_u64(credential_obj, "expires_at_unix_secs")?.unwrap_or_default();
+    let updated_at = optional_u64(credential_obj, "updated_at")?.unwrap_or_default();
+    let mut metadata = credential_obj
+        .get("metadata")
+        .cloned()
+        .map(serde_json::from_value::<BTreeMap<String, String>>)
+        .transpose()
+        .map_err(|error| Error::config("tool_office_config", error.to_string()))?
+        .unwrap_or_default();
+    insert_metadata_alias(
+        &mut metadata,
+        credential_obj,
+        OFFICE_METADATA_MAIL_USERNAME,
+        &["mail_username", "email", "username"],
+    );
+    insert_metadata_alias(
+        &mut metadata,
+        credential_obj,
+        OFFICE_METADATA_MAIL_FROM_ADDRESS,
+        &["mail_from_address", "email", "from_address"],
+    );
+    insert_metadata_value(
+        &mut metadata,
+        OFFICE_METADATA_MAIL_IMAP_HOST,
+        optional_string(credential_obj, "imap_host"),
+    );
+    insert_metadata_u64(
+        &mut metadata,
+        OFFICE_METADATA_MAIL_IMAP_PORT,
+        optional_u64(credential_obj, "imap_port")?,
+    );
+    insert_metadata_bool(
+        &mut metadata,
+        OFFICE_METADATA_MAIL_IMAP_TLS,
+        optional_bool(credential_obj, "imap_tls")?,
+    );
+    insert_metadata_value(
+        &mut metadata,
+        OFFICE_METADATA_MAIL_SMTP_HOST,
+        optional_string(credential_obj, "smtp_host"),
+    );
+    insert_metadata_u64(
+        &mut metadata,
+        OFFICE_METADATA_MAIL_SMTP_PORT,
+        optional_u64(credential_obj, "smtp_port")?,
+    );
+    insert_metadata_bool(
+        &mut metadata,
+        OFFICE_METADATA_MAIL_SMTP_TLS,
+        optional_bool(credential_obj, "smtp_tls")?,
+    );
+    Ok(OfficeCredentialDraftRequest {
+        credential: OfficeCredential {
+            account_key,
+            access_token,
+            refresh_token,
+            token_endpoint,
+            expires_at_unix_secs,
+            updated_at,
+            metadata,
+        },
+    })
+}
+
+fn parse_capability_array(obj: &Map<String, Value>, field: &str) -> Result<Vec<OfficeCapability>> {
+    obj.get(field)
+        .map(|value| parse_capability_values(value, field))
+        .transpose()
+        .map(|value| value.unwrap_or_default())
+}
+
+fn parse_capability_list_with_hint(
+    obj: &Map<String, Value>,
+    fields: &[&str],
+    hint: Option<OfficeCapability>,
+) -> Result<Vec<OfficeCapability>> {
+    for field in fields {
+        if let Some(value) = obj.get(*field) {
+            return parse_capability_values(value, field);
+        }
+    }
+    Ok(hint.map(|value| vec![value]).unwrap_or_default())
+}
+
+fn parse_capability_values(value: &Value, field: &str) -> Result<Vec<OfficeCapability>> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| Error::config("tool_office_config", format!("{field} must be an array")))?;
+    items
+        .iter()
+        .map(parse_capability_value)
+        .collect::<Result<Vec<_>>>()
+}
+
+fn required_string(obj: &Map<String, Value>, field: &str) -> Result<String> {
+    optional_string(obj, field)
+        .ok_or_else(|| Error::config("tool_office_config", format!("missing {field}")))
+}
+
+fn preferred_string(obj: &Map<String, Value>, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| optional_string(obj, field))
+}
+
+fn optional_string(obj: &Map<String, Value>, field: &str) -> Option<String> {
+    obj.get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn optional_u64(obj: &Map<String, Value>, field: &str) -> Result<Option<u64>> {
+    match obj.get(field) {
+        None => Ok(None),
+        Some(Value::Number(number)) => number.as_u64().map(Some).ok_or_else(|| {
+            Error::config(
+                "tool_office_config",
+                format!("{field} must be a non-negative integer"),
+            )
+        }),
+        Some(Value::String(raw)) => raw.trim().parse::<u64>().map(Some).map_err(|_| {
+            Error::config(
+                "tool_office_config",
+                format!("{field} must be a non-negative integer"),
+            )
+        }),
+        Some(_) => Err(Error::config(
+            "tool_office_config",
+            format!("{field} must be an integer"),
+        )),
+    }
+}
+
+fn optional_bool(obj: &Map<String, Value>, field: &str) -> Result<Option<bool>> {
+    match obj.get(field) {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(Value::String(raw)) => match raw.trim() {
+            "true" => Ok(Some(true)),
+            "false" => Ok(Some(false)),
+            _ => Err(Error::config(
+                "tool_office_config",
+                format!("{field} must be true or false"),
+            )),
+        },
+        Some(_) => Err(Error::config(
+            "tool_office_config",
+            format!("{field} must be a boolean"),
+        )),
+    }
+}
+
+fn insert_metadata_alias(
+    metadata: &mut BTreeMap<String, String>,
+    obj: &Map<String, Value>,
+    metadata_key: &str,
+    aliases: &[&str],
+) {
+    if metadata.contains_key(metadata_key) {
+        return;
+    }
+    if let Some(value) = preferred_string(obj, aliases) {
+        metadata.insert(metadata_key.to_string(), value);
+    }
+}
+
+fn insert_metadata_value(
+    metadata: &mut BTreeMap<String, String>,
+    key: &str,
+    value: Option<String>,
+) {
+    if metadata.contains_key(key) {
+        return;
+    }
+    if let Some(value) = value {
+        metadata.insert(key.to_string(), value);
+    }
+}
+
+fn insert_metadata_u64(metadata: &mut BTreeMap<String, String>, key: &str, value: Option<u64>) {
+    if metadata.contains_key(key) {
+        return;
+    }
+    if let Some(value) = value {
+        metadata.insert(key.to_string(), value.to_string());
+    }
+}
+
+fn insert_metadata_bool(metadata: &mut BTreeMap<String, String>, key: &str, value: Option<bool>) {
+    if metadata.contains_key(key) {
+        return;
+    }
+    if let Some(value) = value {
+        metadata.insert(key.to_string(), value.to_string());
+    }
+}
+
+fn normalize_office_provider_kind(raw: String) -> String {
+    match raw.trim() {
+        "qq" => "imap_smtp".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -580,6 +973,108 @@ mod tests {
             payload["payload"]["binding"]["capability_defaults"]["mail"],
             "mail-work"
         );
+    }
+
+    #[test]
+    fn draft_accounts_accepts_tool_facing_mail_account_shape() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"draft_accounts",
+                "capability":"mail",
+                "account":{
+                    "account_key":"qq_675778650",
+                    "display_name":"QQ邮箱",
+                    "email":"675778650@qq.com",
+                    "provider_kind":"qq",
+                    "capabilities":["mail"]
+                },
+                "set_defaults":["mail"]
+            }"#,
+                &mut ctx,
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let account = &payload["payload"]["registry"]["accounts"]["qq_675778650"];
+        assert_eq!(account["provider_kind"], "imap_smtp");
+        assert_eq!(account["account_label"], "QQ邮箱");
+        assert_eq!(account["external_account_id"], "675778650@qq.com");
+        assert_eq!(account["identity_class"], "other");
+        assert_eq!(account["enabled_capabilities"][0], "mail");
+    }
+
+    #[test]
+    fn draft_credentials_accepts_tool_facing_imap_smtp_shape_after_account_commit() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let account_payload = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"draft_accounts",
+                "capability":"mail",
+                "account":{
+                    "account_key":"qq_675778650",
+                    "display_name":"QQ邮箱",
+                    "email":"675778650@qq.com",
+                    "provider_kind":"imap_smtp",
+                    "capabilities":["mail"]
+                }
+            }"#,
+                &mut ctx,
+            )
+            .unwrap();
+        let account_payload: Value = serde_json::from_str(&account_payload).unwrap();
+        fixture
+            .tool
+            .execute(
+                &json!({
+                    "op":"commit_accounts",
+                    "segment": account_payload["payload"].clone(),
+                    "confirm": true
+                })
+                .to_string(),
+                &mut ctx,
+            )
+            .unwrap();
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"draft_credentials",
+                "credential":{
+                    "account_key":"qq_675778650",
+                    "password":"hqvqcibpdvqgbdba",
+                    "email":"675778650@qq.com",
+                    "imap_host":"imap.qq.com",
+                    "imap_port":993,
+                    "smtp_host":"smtp.qq.com",
+                    "smtp_port":465,
+                    "imap_tls":true,
+                    "smtp_tls":true
+                }
+            }"#,
+                &mut ctx,
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let credential = &payload["payload"]["items"][0];
+        assert_eq!(credential["account_key"], "qq_675778650");
+        assert_eq!(credential["access_token"], "hqvqcibpdvqgbdba");
+        assert_eq!(credential["metadata"]["mail_username"], "675778650@qq.com");
+        assert_eq!(
+            credential["metadata"]["mail_from_address"],
+            "675778650@qq.com"
+        );
+        assert_eq!(credential["metadata"]["mail_imap_host"], "imap.qq.com");
+        assert_eq!(credential["metadata"]["mail_imap_port"], "993");
+        assert_eq!(credential["metadata"]["mail_smtp_host"], "smtp.qq.com");
+        assert_eq!(credential["metadata"]["mail_smtp_port"], "465");
+        assert_eq!(credential["metadata"]["mail_imap_tls"], "true");
+        assert_eq!(credential["metadata"]["mail_smtp_tls"], "true");
     }
 
     #[test]

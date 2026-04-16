@@ -31,6 +31,14 @@ import {
   SectionLoadingSkeleton,
 } from "./form";
 import { localizeAccountProviderName } from "../i18n/providerDisplay";
+import {
+  localizeProviderField,
+  localizeProviderFieldLabel,
+} from "../i18n/providerFields";
+import { ProviderFieldInput } from "./ProviderFieldInput";
+import { errorMessage, withTimeout } from "../util/withTimeout";
+
+const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
 
 const IDENTITY_ORDER: AccountIdentityClass[] = [
   "work",
@@ -72,12 +80,21 @@ export function AccountCreateForm({
     setCatalogError("");
     const cap =
       capabilityFilter === "all" ? undefined : capabilityFilter;
-    const res = await api.config.accounts.getProviders(cap);
-    if (res.ok && res.data) {
-      setCatalog(res.data.items);
-    } else {
+    try {
+      const res = await withTimeout(
+        api.config.accounts.getProviders(cap),
+        ACCOUNT_REQUEST_TIMEOUT_MS,
+        t("accounts.requestTimedOut"),
+      );
+      if (res.ok && res.data) {
+        setCatalog(res.data.items);
+      } else {
+        setCatalog([]);
+        setCatalogError(res.error ?? t("accounts.providersLoadFailed"));
+      }
+    } catch (error) {
       setCatalog([]);
-      setCatalogError(res.error ?? t("accounts.providersLoadFailed"));
+      setCatalogError(errorMessage(error, t("accounts.providersLoadFailed")));
     }
     setCatalogLoading(false);
   }, [api.config.accounts, capabilityFilter, ready, t]);
@@ -91,7 +108,7 @@ export function AccountCreateForm({
     () => catalog.find((p) => p.provider_kind === providerKind) ?? null,
     [catalog, providerKind],
   );
-  const providerInputFields = useMemo(
+  const providerAccountFields = useMemo(
     () =>
       selectedProvider?.account_fields.filter(
         (field) =>
@@ -100,6 +117,22 @@ export function AccountCreateForm({
           field.key !== "enabled_capabilities",
       ) ?? [],
     [selectedProvider],
+  );
+  const providerConfigFields = useMemo(
+    () => selectedProvider?.config_fields ?? [],
+    [selectedProvider],
+  );
+  const localizedProviderAccountFields = useMemo(
+    () => providerAccountFields.map((field) => localizeProviderField(t, field)),
+    [providerAccountFields, t],
+  );
+  const localizedProviderConfigFields = useMemo(
+    () => providerConfigFields.map((field) => localizeProviderField(t, field)),
+    [providerConfigFields, t],
+  );
+  const localizedProviderInputFields = useMemo(
+    () => [...localizedProviderAccountFields, ...localizedProviderConfigFields],
+    [localizedProviderAccountFields, localizedProviderConfigFields],
   );
 
   useEffect(() => {
@@ -124,17 +157,21 @@ export function AccountCreateForm({
       return;
     }
     const next: Record<string, string> = {};
-    for (const f of providerInputFields) {
+    for (const f of providerAccountFields) {
       if (f.default_value) next[f.key] = f.default_value;
       else if (f.default_values?.length)
         next[f.key] = f.default_values.join("\n");
+      else next[f.key] = "";
+    }
+    for (const f of providerConfigFields) {
+      if (f.default_value) next[f.key] = f.default_value;
       else next[f.key] = "";
     }
     queueMicrotask(() => {
       setEnabledCaps([...selectedProvider.capabilities]);
       setFieldValues(next);
     });
-  }, [providerInputFields, selectedProvider]);
+  }, [providerAccountFields, providerConfigFields, selectedProvider]);
 
   const toggleCap = (c: AccountCapability) => {
     setEnabledCaps((prev) =>
@@ -148,13 +185,15 @@ export function AccountCreateForm({
       setCreateError(t("accounts.createCapabilityRequired"));
       return;
     }
-    const invalid = providerInputFields.filter(
+    const invalid = localizedProviderInputFields.filter(
       (f) => f.required && !(fieldValues[f.key] ?? "").trim(),
     );
     if (invalid.length > 0) {
       setCreateError(
         t("accounts.createRequiredFields", {
-          fields: invalid.map((f) => f.label).join(", "),
+          fields: invalid
+            .map((f) => localizeProviderFieldLabel(t, f.key, f.label))
+            .join(", "),
         }),
       );
       return;
@@ -162,12 +201,14 @@ export function AccountCreateForm({
 
     let externalAccountId: string | undefined;
     const configFields: Record<string, string> = {};
-    for (const f of providerInputFields) {
+    for (const f of providerAccountFields) {
       const raw = (fieldValues[f.key] ?? "").trim();
       if (f.key === "external_account_id") {
         if (raw) externalAccountId = raw;
-        continue;
       }
+    }
+    for (const f of providerConfigFields) {
+      const raw = (fieldValues[f.key] ?? "").trim();
       if (raw) configFields[f.key] = raw;
     }
 
@@ -186,12 +227,21 @@ export function AccountCreateForm({
 
     setCreateBusy(true);
     setCreateError("");
-    const res = await api.config.accounts.create(body);
-    setCreateBusy(false);
-    if (res.ok && res.data) {
-      onCreated(res.data.account.account_key);
-    } else {
-      setCreateError(res.error ?? t("accounts.createFailed"));
+    try {
+      const res = await withTimeout(
+        api.config.accounts.create(body),
+        ACCOUNT_REQUEST_TIMEOUT_MS,
+        t("accounts.requestTimedOut"),
+      );
+      setCreateBusy(false);
+      if (res.ok && res.data) {
+        onCreated(res.data.account.account_key);
+      } else {
+        setCreateError(res.error ?? t("accounts.createFailed"));
+      }
+    } catch (error) {
+      setCreateBusy(false);
+      setCreateError(errorMessage(error, t("accounts.createFailed")));
     }
   };
 
@@ -336,7 +386,7 @@ export function AccountCreateForm({
         </Typography>
       </Box>
 
-      {providerInputFields.length > 0 ? (
+      {localizedProviderInputFields.length > 0 ? (
         <Box sx={{ ...CONFIG_PANEL_SX, p: PANEL_SECTION_PADDING }}>
           <Typography
             variant="subtitle2"
@@ -346,34 +396,32 @@ export function AccountCreateForm({
             {t("accounts.providerFields")}
           </Typography>
           <Stack spacing={3}>
-            {providerInputFields.map((f) => {
-              const secret =
-                f.secret || f.value_kind === "secret";
-              const multiline = f.multiple;
-              return (
-                <TextField
-                  key={f.key}
-                  required={f.required}
-                  fullWidth
-                  type={secret ? "password" : "text"}
-                  label={f.label}
-                  value={fieldValues[f.key] ?? ""}
-                  onChange={(e) =>
-                    setFieldValues((prev) => ({
-                      ...prev,
-                      [f.key]: e.target.value,
-                    }))
-                  }
-                  helperText={f.description || undefined}
-                  multiline={multiline}
-                  minRows={multiline ? 3 : undefined}
-                  inputProps={{
-                    autoComplete: secret ? "new-password" : "off",
-                    spellCheck: false,
-                  }}
-                />
-              );
-            })}
+            {localizedProviderAccountFields.map((field) => (
+              <ProviderFieldInput
+                key={field.key}
+                field={field}
+                value={fieldValues[field.key] ?? ""}
+                onChange={(nextValue) =>
+                  setFieldValues((prev) => ({
+                    ...prev,
+                    [field.key]: nextValue,
+                  }))
+                }
+              />
+            ))}
+            {localizedProviderConfigFields.map((field) => (
+              <ProviderFieldInput
+                key={field.key}
+                field={field}
+                value={fieldValues[field.key] ?? ""}
+                onChange={(nextValue) =>
+                  setFieldValues((prev) => ({
+                    ...prev,
+                    [field.key]: nextValue,
+                  }))
+                }
+              />
+            ))}
           </Stack>
         </Box>
       ) : null}

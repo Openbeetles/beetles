@@ -5659,6 +5659,76 @@ mod tests {
     }
 
     #[test]
+    fn execute_turn_public_runtime_surface_recovers_when_structured_finalization_washes_empty() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: r#"{"request_kind":"ops_observability","evidence_need":"public_runtime","disclosure_surface":"public","execution_preference":"tool_first","action_family":"conversation","confidence":96}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "我先整理一下当前状态。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"public_runtime","reply":"<surface_evidence surface=\"public_runtime\" authority=\"public_runtime_host\">\nboard_info: ok\n</surface_evidence>"}"#.to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-finalization-empty-recovery",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let delivered = match outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        assert_eq!(
+            delivered,
+            "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
+        );
+        assert!(telemetry.used_surface_finalization);
+        assert!(telemetry.used_final_answer_recovery);
+        assert_eq!(telemetry.reply_surface, ReplySurface::PublicRuntime);
+    }
+
+    #[test]
     fn execute_turn_office_account_ambiguity_uses_final_recovery_for_minimal_confirmation() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {

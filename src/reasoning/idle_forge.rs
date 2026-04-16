@@ -240,13 +240,23 @@ pub(crate) fn enqueue_idle_memory_forge_tick(
         );
         return;
     }
-    if let Ok(Some(summary)) = load_idle_memory_forge_operator_summary(state_fs) {
-        if summary.last_run_at > 0
-            && now_secs.saturating_sub(summary.last_run_at) < IDLE_MEMORY_FORGE_DEFAULT_CADENCE_SECS
-        {
+    match idle_memory_forge_due_from_latest_summary(state_fs, now_secs) {
+        Ok(true) => {}
+        Ok(false) => {
             append_idle_memory_forge_workflow_audit(
                 crate::runtime::WorkflowDisposition::NoTrigger,
                 "idle_memory_forge_not_due",
+                crate::runtime::WorkflowEffect::Noop,
+                Some(chat_id),
+                Some(source_channel),
+            );
+            return;
+        }
+        Err(error) => {
+            log::warn!("[idle_memory_forge] latest summary unavailable: {error}");
+            append_idle_memory_forge_workflow_audit(
+                crate::runtime::WorkflowDisposition::NoTrigger,
+                "idle_memory_forge_latest_invalid",
                 crate::runtime::WorkflowEffect::Noop,
                 Some(chat_id),
                 Some(source_channel),
@@ -406,6 +416,21 @@ pub fn load_idle_memory_forge_operator_summary(
     let summary = serde_json::from_slice(&encoded)
         .map_err(|error| Error::config("idle_memory_forge_latest_decode", error.to_string()))?;
     Ok(Some(summary))
+}
+
+fn idle_memory_forge_due_from_latest_summary(
+    state_fs: &dyn StateFs,
+    now_secs: u64,
+) -> Result<bool> {
+    let Some(summary) = load_idle_memory_forge_operator_summary(state_fs)? else {
+        return Ok(true);
+    };
+    if summary.last_run_at > 0
+        && now_secs.saturating_sub(summary.last_run_at) < IDLE_MEMORY_FORGE_DEFAULT_CADENCE_SECS
+    {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn normalize_run_ledger(run: &IdleMemoryForgeRunLedger) -> IdleMemoryForgeRunLedger {
@@ -1542,6 +1567,19 @@ mod tests {
             .iter()
             .flat_map(|batch| batch.result.distillation_candidates.iter())
             .all(|candidate| candidate.requires_adjudication));
+    }
+
+    #[test]
+    fn idle_forge_due_from_latest_summary_returns_error_for_corrupt_latest_file() {
+        let fs = MemoryStateFs::default();
+        fs.write(REL_PATH_IDLE_MEMORY_FORGE_LATEST, br#"{"bad":"json""#)
+            .unwrap();
+        let error =
+            idle_memory_forge_due_from_latest_summary(&fs, crate::util::current_unix_secs())
+                .expect_err("corrupt latest summary must not be treated as missing");
+        assert!(error
+            .to_string()
+            .contains("idle_memory_forge_latest_decode"));
     }
 
     fn sample_run_ledger() -> IdleMemoryForgeRunLedger {
