@@ -8,10 +8,11 @@ use crate::memory::{
     LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySourceScope,
     LongTermMemorySourceType, LongTermMemoryStore, MemoryStore, SharedMemoryWriteSource,
 };
-use crate::skills::{
-    runtime_skill_name_for_topic, write_governed_runtime_skills, RuntimeSkillWrite,
-    RuntimeSkillWriteSource,
+use crate::reasoning::{
+    adjudicate_skill_crystal_candidate, promote_skill_crystal_candidates,
+    ExperienceCrystalDisposition, SkillCrystalCandidate,
 };
+use crate::skills::is_runtime_skill_name;
 use crate::util::{epoch_to_ymdhms, truncate_content_to_max};
 #[cfg(target_os = "linux")]
 use rusqlite::{params, Connection, OptionalExtension};
@@ -36,7 +37,6 @@ pub const REL_DIR_TASK_LEARNING: &str = "memory/task_learning";
 const MAX_TASK_LEARNING_RECORDS_PER_CHAT: usize = 64;
 const MAX_TASK_LEARNING_HITS: usize = 6;
 const MIN_TASK_RECALL_BLOCK_LEN: usize = 180;
-const PROCEDURE_PROMOTION_MIN_DISTINCT_RUNS: usize = 2;
 #[cfg(target_os = "linux")]
 const REL_PATH_TASK_LEARNING_INDEX: &str = "memory/task_learning_index.sqlite3";
 #[cfg(target_os = "linux")]
@@ -585,72 +585,102 @@ pub fn run_task_learning_maintenance(
                 }
                 TaskLearningKind::ReusableProcedure => {
                     let distinct_runs = count_distinct_procedure_runs(&all_chat_records, &record);
-                    if distinct_runs >= PROCEDURE_PROMOTION_MIN_DISTINCT_RUNS {
-                        let write = build_runtime_skill_write(&record, &archive_citation);
-                        let write_outcome = write_governed_runtime_skills(
-                            ctx.skill_storage,
-                            std::slice::from_ref(&write),
-                            RuntimeSkillWriteSource::TaskLearning,
-                        )?;
-                        if write_outcome.accepted > 0 {
-                            outcome.runtime_skill_promotions = outcome
-                                .runtime_skill_promotions
-                                .saturating_add(write_outcome.changed.max(1));
-                            record.route = TaskLearningRoute::RuntimeSkill;
-                            record.route_detail = format!(
-                                "promoted after {} distinct successful task runs",
-                                distinct_runs
-                            );
+                    let crystal_candidate =
+                        build_skill_crystal_candidate(&record, &archive_citation);
+                    let existing_runtime_skill_names = ctx
+                        .skill_storage
+                        .list_names()?
+                        .into_iter()
+                        .filter(|name| is_runtime_skill_name(name))
+                        .collect::<Vec<_>>();
+                    let adjudication = adjudicate_skill_crystal_candidate(
+                        &crystal_candidate,
+                        distinct_runs,
+                        &existing_runtime_skill_names,
+                    );
+                    match adjudication.disposition {
+                        ExperienceCrystalDisposition::Promote => {
+                            let write_outcome = promote_skill_crystal_candidates(
+                                ctx.skill_storage,
+                                std::slice::from_ref(&crystal_candidate),
+                                Some(&record.source_chat_id),
+                                record.observed_at,
+                            )?;
+                            if write_outcome.accepted > 0 {
+                                outcome.runtime_skill_promotions = outcome
+                                    .runtime_skill_promotions
+                                    .saturating_add(write_outcome.changed.max(1));
+                                record.route = TaskLearningRoute::RuntimeSkill;
+                                record.route_detail = if let Some(target) =
+                                    adjudication.merge_target_name.as_deref()
+                                {
+                                    format!("{}; merge_target={}", adjudication.detail, target)
+                                } else {
+                                    adjudication.detail.clone()
+                                };
+                                set_task_learning_candidate_state(
+                                    &mut record,
+                                    TaskLearningCandidateState::Promoted,
+                                    input.now_secs,
+                                    None,
+                                );
+                                promoted_topics.insert(normalize_learning_match_key(
+                                    &record.topic,
+                                    &record.summary,
+                                ));
+                            } else {
+                                let failure_reason = write_outcome
+                                    .reports
+                                    .first()
+                                    .map(|report| report.reason.label().to_string())
+                                    .unwrap_or_else(|| {
+                                        "runtime_skill_governance_rejected".to_string()
+                                    });
+                                record.route = TaskLearningRoute::ArchivedEvidence;
+                                record.route_detail = write_outcome
+                                    .reports
+                                    .first()
+                                    .map(|report| {
+                                        format!(
+                                            "experience crystal promotion was approved, but runtime-skill governance rejected the write ({})",
+                                            report.reason.label()
+                                        )
+                                    })
+                                    .unwrap_or_else(|| {
+                                        "experience crystal promotion was approved, but runtime-skill governance rejected the write".to_string()
+                                    });
+                                set_task_learning_candidate_state(
+                                    &mut record,
+                                    TaskLearningCandidateState::Rejected,
+                                    input.now_secs,
+                                    Some(failure_reason),
+                                );
+                                outcome.archived_records =
+                                    outcome.archived_records.saturating_add(1);
+                            }
+                        }
+                        ExperienceCrystalDisposition::Observe => {
+                            record.route = TaskLearningRoute::ArchivedEvidence;
+                            record.route_detail = adjudication.detail.clone();
                             set_task_learning_candidate_state(
                                 &mut record,
-                                TaskLearningCandidateState::Promoted,
+                                TaskLearningCandidateState::Observed,
                                 input.now_secs,
                                 None,
                             );
-                            promoted_topics.insert(normalize_learning_match_key(
-                                &record.topic,
-                                &record.summary,
-                            ));
-                        } else {
-                            let failure_reason = write_outcome
-                                .reports
-                                .first()
-                                .map(|report| report.reason.label().to_string())
-                                .unwrap_or_else(|| "runtime_skill_governance_rejected".to_string());
+                            outcome.archived_records = outcome.archived_records.saturating_add(1);
+                        }
+                        ExperienceCrystalDisposition::Reject => {
                             record.route = TaskLearningRoute::ArchivedEvidence;
-                            record.route_detail = write_outcome
-                                .reports
-                                .first()
-                                .map(|report| {
-                                    format!(
-                                        "archived as procedural evidence after runtime-skill governance rejected promotion ({})",
-                                        report.reason.label()
-                                    )
-                                })
-                                .unwrap_or_else(|| {
-                                    "archived as procedural evidence after runtime-skill governance rejected promotion".to_string()
-                                });
+                            record.route_detail = adjudication.detail.clone();
                             set_task_learning_candidate_state(
                                 &mut record,
                                 TaskLearningCandidateState::Rejected,
                                 input.now_secs,
-                                Some(failure_reason),
+                                Some(adjudication.reason_code.clone()),
                             );
                             outcome.archived_records = outcome.archived_records.saturating_add(1);
                         }
-                    } else {
-                        record.route = TaskLearningRoute::ArchivedEvidence;
-                        record.route_detail = format!(
-                            "archived as procedural evidence; waiting for repeated success ({}/{})",
-                            distinct_runs, PROCEDURE_PROMOTION_MIN_DISTINCT_RUNS
-                        );
-                        set_task_learning_candidate_state(
-                            &mut record,
-                            TaskLearningCandidateState::Observed,
-                            input.now_secs,
-                            None,
-                        );
-                        outcome.archived_records = outcome.archived_records.saturating_add(1);
                     }
                 }
                 TaskLearningKind::EvidenceOnly => {
@@ -1649,23 +1679,42 @@ fn build_task_learning_factual_draft(
     }
 }
 
-fn build_runtime_skill_write(
+fn build_skill_crystal_candidate(
     record: &TaskLearningRecord,
     archive_citation: &str,
-) -> RuntimeSkillWrite {
-    RuntimeSkillWrite {
-        name: runtime_skill_name_for_topic(&record.topic),
+) -> SkillCrystalCandidate {
+    let reusable_macro = record
+        .content
+        .lines()
+        .map(str::trim)
+        .map(|line| {
+            line.trim_start_matches(|ch: char| {
+                ch.is_ascii_digit() || matches!(ch, '.' | ')' | '-' | '*' | ' ')
+            })
+            .trim()
+            .to_string()
+        })
+        .filter(|line| !line.is_empty())
+        .take(8)
+        .collect::<Vec<_>>();
+    let mut evidence_refs = record
+        .source_artifact_ids
+        .iter()
+        .map(|artifact_id| format!("task_artifact:{artifact_id}"))
+        .collect::<Vec<_>>();
+    if !archive_citation.trim().is_empty() {
+        evidence_refs.push(archive_citation.to_string());
+    }
+    SkillCrystalCandidate {
         topic: record.topic.clone(),
         title: record.topic.replace('_', " "),
         summary: record.summary.clone(),
-        content: record.content.clone(),
-        citations: if archive_citation.trim().is_empty() {
-            Vec::new()
-        } else {
-            vec![archive_citation.to_string()]
-        },
-        source_chat_id: Some(record.source_chat_id.clone()),
-        observed_at: record.observed_at,
+        reusable_macro,
+        evidence_refs,
+        success_score: 80,
+        reuse_score: 80,
+        promotion_readiness: 80,
+        requires_adjudication: true,
     }
 }
 
@@ -1958,6 +2007,7 @@ mod tests {
         LongTermMemoryStore, MemoryStore,
     };
     use crate::platform::SkillStorage;
+    use crate::skills::{build_runtime_skill_recall_block, runtime_skill_name_for_topic};
     use crate::task_execution::{TaskArtifactRecord, TaskRun, TaskRunStore};
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -2675,6 +2725,15 @@ mod tests {
         assert!(skill_names
             .iter()
             .any(|name| name == &runtime_skill_name_for_topic("apply_release_patch")));
+        let recall_block = build_runtime_skill_recall_block(
+            &skill_storage,
+            "Need the release patch flow again",
+            Some("chat-1"),
+            now_secs.saturating_add(120),
+            420,
+        )
+        .expect("runtime skill recall block should exist after promotion");
+        assert!(recall_block.contains("release patch"));
 
         let note_names = memory_store.list_daily_note_names(8).expect("note names");
         assert_eq!(note_names.len(), 1);
@@ -2755,7 +2814,8 @@ mod tests {
         );
         assert!(procedure
             .route_detail
-            .contains("runtime-skill governance rejected"));
+            .contains("experience crystal adjudication rejected"));
+        assert_eq!(procedure.last_failure_reason, "weak_procedure");
         assert!(skill_storage.list_names().unwrap().is_empty());
     }
 

@@ -99,6 +99,7 @@ pub fn programmable_reasoning_operator_snapshot() -> ProgrammableReasoningOperat
         proposal_kinds: programmable_reasoning_proposal_kinds(),
         experience_crystals: build_experience_crystal_operator_summary(
             &RuntimeSkillOperatorSummary::default(),
+            None,
         ),
         usage_analytics: ProgrammableReasoningUsageAnalytics::default(),
         timeline: ProgrammableReasoningTimeline::default(),

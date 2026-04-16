@@ -261,8 +261,10 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
     )
     .map_err(std::io::Error::other)?;
     let runtime_skill_learning = build_runtime_skill_operator_summary(ctx.skill_storage.as_ref());
-    let experience_crystals =
-        crate::build_experience_crystal_operator_summary(&runtime_skill_learning);
+    let experience_crystals = crate::build_experience_crystal_operator_summary(
+        &runtime_skill_learning,
+        Some(&task_execution.learning),
+    );
     let learning = MemoryLearningStatus {
         task_candidates: task_execution.learning.clone(),
         runtime_skills: runtime_skill_learning.clone(),
@@ -1088,6 +1090,18 @@ mod tests {
         assert_eq!(
             parsed["learning"]["metrics"]["garbage_collectable_experience_crystals"],
             parsed["learning"]["experience_crystals"]["garbage_collectable"]
+        );
+        assert_eq!(
+            parsed["learning"]["experience_crystals"]["promoted_candidates"],
+            parsed["learning"]["task_candidates"]["candidate_promoted"]
+        );
+        assert_eq!(
+            parsed["learning"]["experience_crystals"]["pending_candidates"],
+            parsed["learning"]["task_candidates"]["candidate_observed"]
+        );
+        assert_eq!(
+            parsed["learning"]["experience_crystals"]["rejected_candidates"],
+            parsed["learning"]["task_candidates"]["candidate_rejected"]
         );
         assert!(
             parsed["learning"]["task_candidates"]["candidate_promoted"]

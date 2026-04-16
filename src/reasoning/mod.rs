@@ -27,8 +27,9 @@ pub use engineering_distillation::{
     EngineeringDistillationAssetKind, EngineeringDistillationResult,
 };
 pub use experience_crystal::{
-    build_experience_crystal_operator_summary, promote_skill_crystal_candidates,
-    skill_crystal_candidate_to_runtime_skill_write, validate_skill_crystal_result,
+    adjudicate_skill_crystal_candidate, build_experience_crystal_operator_summary,
+    promote_skill_crystal_candidates, skill_crystal_candidate_to_runtime_skill_write,
+    validate_skill_crystal_result, ExperienceCrystalAdjudication, ExperienceCrystalDisposition,
     ExperienceCrystalOperatorSummary, SkillCrystalCandidate, SkillCrystalResult,
 };
 pub(crate) use idle_forge::{enqueue_idle_memory_forge_tick, run_idle_memory_forge_background_job};

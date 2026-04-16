@@ -672,7 +672,7 @@ impl RemindAtTool {
     fn delete_calendar_link(
         &self,
         link: &ReminderCalendarLink,
-        ctx: &mut dyn ToolContext,
+        _ctx: &mut dyn ToolContext,
     ) -> Result<()> {
         if link.is_empty() {
             return Ok(());
@@ -697,7 +697,7 @@ impl RemindAtTool {
                     ),
                 )
             })?;
-            let mut http = ToolContextHttpClient::new(ctx);
+            let mut http = ToolContextHttpClient::new(_ctx);
             return service
                 .delete(
                     Some(&mut http),
@@ -970,7 +970,7 @@ mod tests {
         OfficeService,
     };
     use crate::platform::ResponseBody;
-    use crate::tools::{ToolContext, ToolExecutionFailureKind};
+    use crate::tools::ToolContext;
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};

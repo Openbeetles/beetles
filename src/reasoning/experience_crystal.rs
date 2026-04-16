@@ -6,6 +6,7 @@ use crate::skills::{
     runtime_skill_name_for_topic, write_governed_runtime_skills, RuntimeSkillOperatorSummary,
     RuntimeSkillWrite, RuntimeSkillWriteOutcome, RuntimeSkillWriteSource,
 };
+use crate::task_execution::TaskLearningOperatorSnapshot;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,6 +23,9 @@ const EXPERIENCE_CRYSTAL_MAX_MACRO_STEP_CHARS: usize = 180;
 const EXPERIENCE_CRYSTAL_MAX_EVIDENCE_REFS: usize = 8;
 const EXPERIENCE_CRYSTAL_MAX_EVIDENCE_REF_CHARS: usize = 120;
 const EXPERIENCE_CRYSTAL_PROMOTION_MIN_SCORE: u8 = 60;
+const EXPERIENCE_CRYSTAL_MIN_SUCCESS_SCORE: u8 = 50;
+const EXPERIENCE_CRYSTAL_MIN_REUSE_SCORE: u8 = 50;
+const EXPERIENCE_CRYSTAL_PROMOTION_MIN_DISTINCT_RUNS: usize = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillCrystalCandidate {
@@ -46,12 +50,33 @@ pub struct SkillCrystalResult {
     pub skill_crystal_candidates: Vec<SkillCrystalCandidate>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExperienceCrystalDisposition {
+    Observe,
+    Promote,
+    Reject,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExperienceCrystalAdjudication {
+    pub disposition: ExperienceCrystalDisposition,
+    pub reason_code: String,
+    pub detail: String,
+    pub distinct_success_runs: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_target_name: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ExperienceCrystalOperatorSummary {
     pub runtime_skill_total: usize,
     pub validated_runtime_skills: usize,
     pub revision_pending: usize,
     pub garbage_collectable: usize,
+    pub pending_candidates: usize,
+    pub promoted_candidates: usize,
+    pub rejected_candidates: usize,
 }
 
 pub fn validate_skill_crystal_result(value: Value) -> Result<SkillCrystalResult> {
@@ -114,8 +139,96 @@ pub fn promote_skill_crystal_candidates(
     )
 }
 
+pub fn adjudicate_skill_crystal_candidate(
+    candidate: &SkillCrystalCandidate,
+    distinct_success_runs: usize,
+    existing_runtime_skill_names: &[String],
+) -> ExperienceCrystalAdjudication {
+    let normalized = match normalize_skill_crystal_candidate(candidate.clone()) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            let message = error.to_string();
+            let reason_code = if message.contains("reusable_macro requires at least") {
+                "weak_procedure"
+            } else if message.contains("require adjudication") {
+                "missing_adjudication"
+            } else if message.contains("topic, title, and summary") {
+                "incomplete_candidate"
+            } else {
+                "invalid_candidate"
+            };
+            return ExperienceCrystalAdjudication {
+                disposition: ExperienceCrystalDisposition::Reject,
+                reason_code: reason_code.to_string(),
+                detail: format!(
+                    "experience crystal adjudication rejected promotion ({reason_code}): {message}"
+                ),
+                distinct_success_runs,
+                merge_target_name: None,
+            };
+        }
+    };
+
+    if normalized.evidence_refs.is_empty() {
+        return ExperienceCrystalAdjudication {
+            disposition: ExperienceCrystalDisposition::Reject,
+            reason_code: "missing_evidence".to_string(),
+            detail: "experience crystal adjudication rejected promotion (missing_evidence)"
+                .to_string(),
+            distinct_success_runs,
+            merge_target_name: None,
+        };
+    }
+
+    if distinct_success_runs < EXPERIENCE_CRYSTAL_PROMOTION_MIN_DISTINCT_RUNS {
+        return ExperienceCrystalAdjudication {
+            disposition: ExperienceCrystalDisposition::Observe,
+            reason_code: "waiting_for_repeated_success".to_string(),
+            detail: format!(
+                "experience crystal is waiting for repeated success ({}/{}) before promotion",
+                distinct_success_runs, EXPERIENCE_CRYSTAL_PROMOTION_MIN_DISTINCT_RUNS
+            ),
+            distinct_success_runs,
+            merge_target_name: None,
+        };
+    }
+
+    if normalized.success_score < EXPERIENCE_CRYSTAL_MIN_SUCCESS_SCORE
+        || normalized.reuse_score < EXPERIENCE_CRYSTAL_MIN_REUSE_SCORE
+        || normalized.promotion_readiness < EXPERIENCE_CRYSTAL_PROMOTION_MIN_SCORE
+    {
+        return ExperienceCrystalAdjudication {
+            disposition: ExperienceCrystalDisposition::Observe,
+            reason_code: "insufficient_readiness".to_string(),
+            detail:
+                "experience crystal remains observed until reuse and readiness signals strengthen"
+                    .to_string(),
+            distinct_success_runs,
+            merge_target_name: None,
+        };
+    }
+
+    let canonical_name = runtime_skill_name_for_topic(&normalized.topic);
+    let merge_target_name = existing_runtime_skill_names
+        .iter()
+        .find(|name| name.as_str() == canonical_name)
+        .cloned();
+
+    ExperienceCrystalAdjudication {
+        disposition: ExperienceCrystalDisposition::Promote,
+        reason_code: "promoted".to_string(),
+        detail: format!(
+            "experience crystal promotion approved after {} distinct successful runs",
+            distinct_success_runs
+        ),
+        distinct_success_runs,
+        merge_target_name,
+    }
+}
+
 pub fn build_experience_crystal_operator_summary(
     runtime_skills: &RuntimeSkillOperatorSummary,
+    task_learning: Option<&TaskLearningOperatorSnapshot>,
 ) -> ExperienceCrystalOperatorSummary {
     ExperienceCrystalOperatorSummary {
         runtime_skill_total: runtime_skills.total,
@@ -124,6 +237,15 @@ pub fn build_experience_crystal_operator_summary(
         garbage_collectable: runtime_skills
             .stale
             .saturating_add(runtime_skills.low_value),
+        pending_candidates: task_learning
+            .map(|snapshot| snapshot.candidate_observed)
+            .unwrap_or_default(),
+        promoted_candidates: task_learning
+            .map(|snapshot| snapshot.candidate_promoted)
+            .unwrap_or_default(),
+        rejected_candidates: task_learning
+            .map(|snapshot| snapshot.candidate_rejected)
+            .unwrap_or_default(),
     }
 }
 
@@ -250,6 +372,7 @@ mod tests {
         build_runtime_skill_operator_summary, retrieve_runtime_skill_hits,
         write_governed_runtime_skills, RuntimeSkillWriteSource,
     };
+    use crate::task_execution::TaskLearningOperatorSnapshot;
     use crate::{Error, Result, SkillStorage};
     use serde_json::json;
     use std::collections::HashMap;
@@ -400,8 +523,110 @@ mod tests {
         .expect("runtime skill write should succeed");
 
         let runtime_skills = build_runtime_skill_operator_summary(&storage);
-        let summary = build_experience_crystal_operator_summary(&runtime_skills);
+        let summary = build_experience_crystal_operator_summary(
+            &runtime_skills,
+            Some(&TaskLearningOperatorSnapshot {
+                candidate_observed: 2,
+                candidate_promoted: 1,
+                candidate_rejected: 3,
+                ..TaskLearningOperatorSnapshot::default()
+            }),
+        );
         assert_eq!(summary.runtime_skill_total, 1);
         assert_eq!(summary.garbage_collectable, 0);
+        assert_eq!(summary.pending_candidates, 2);
+        assert_eq!(summary.promoted_candidates, 1);
+        assert_eq!(summary.rejected_candidates, 3);
+    }
+
+    #[test]
+    fn crystal_adjudication_observes_until_repeated_success() {
+        let candidate = SkillCrystalCandidate {
+            topic: "release_patch_flow".to_string(),
+            title: "Release patch flow".to_string(),
+            summary: "Stabilized patch-and-verify method.".to_string(),
+            reusable_macro: vec![
+                "Inspect the release diff and identify rollback guards.".to_string(),
+                "Apply the patch with rollback protection.".to_string(),
+                "Verify logs and service health before exit.".to_string(),
+            ],
+            evidence_refs: vec!["trace:req-1".to_string()],
+            success_score: 98,
+            reuse_score: 94,
+            promotion_readiness: 96,
+            requires_adjudication: true,
+        };
+
+        let adjudication = adjudicate_skill_crystal_candidate(&candidate, 1, &[]);
+
+        assert_eq!(
+            adjudication.disposition,
+            ExperienceCrystalDisposition::Observe
+        );
+        assert_eq!(adjudication.distinct_success_runs, 1);
+        assert_eq!(adjudication.merge_target_name, None);
+        assert!(adjudication.detail.contains("waiting for repeated success"));
+    }
+
+    #[test]
+    fn crystal_adjudication_rejects_weak_non_generalizable_procedure() {
+        let candidate = SkillCrystalCandidate {
+            topic: "owner_timezone".to_string(),
+            title: "Owner timezone".to_string(),
+            summary: "Single factual note with no reusable method.".to_string(),
+            reusable_macro: vec!["Owner timezone is Asia/Shanghai.".to_string()],
+            evidence_refs: vec!["trace:req-1".to_string()],
+            success_score: 99,
+            reuse_score: 99,
+            promotion_readiness: 99,
+            requires_adjudication: true,
+        };
+
+        let adjudication = adjudicate_skill_crystal_candidate(&candidate, 3, &[]);
+
+        assert_eq!(
+            adjudication.disposition,
+            ExperienceCrystalDisposition::Reject
+        );
+        assert_eq!(adjudication.reason_code, "weak_procedure");
+        assert!(adjudication.detail.contains("weak_procedure"));
+    }
+
+    #[test]
+    fn crystal_adjudication_promotes_and_targets_existing_runtime_skill() {
+        let candidate = SkillCrystalCandidate {
+            topic: "release_patch_flow".to_string(),
+            title: "Release patch flow".to_string(),
+            summary: "Stabilized patch-and-verify method.".to_string(),
+            reusable_macro: vec![
+                "Inspect the release diff and identify rollback guards.".to_string(),
+                "Apply the patch with rollback protection.".to_string(),
+                "Verify logs and service health before exit.".to_string(),
+            ],
+            evidence_refs: vec![
+                "trace:req-1".to_string(),
+                "daily_note:2026-04-16-task-tr001.md".to_string(),
+            ],
+            success_score: 98,
+            reuse_score: 94,
+            promotion_readiness: 96,
+            requires_adjudication: true,
+        };
+
+        let adjudication = adjudicate_skill_crystal_candidate(
+            &candidate,
+            3,
+            &[runtime_skill_name_for_topic("release_patch_flow")],
+        );
+
+        assert_eq!(
+            adjudication.disposition,
+            ExperienceCrystalDisposition::Promote
+        );
+        assert_eq!(adjudication.distinct_success_runs, 3);
+        assert_eq!(
+            adjudication.merge_target_name.as_deref(),
+            Some("runtime_skill__release_patch_flow")
+        );
     }
 }
