@@ -1094,7 +1094,7 @@ fn materialize_account_record_input(
     input: &OfficeAccountRecordInput,
 ) -> Result<OfficeAccount> {
     let account_key = if input.account_key.trim().is_empty() {
-        generate_account_key(registry, input)
+        generate_account_key(registry, input)?
     } else {
         input.account_key.trim().to_string()
     };
@@ -1111,7 +1111,15 @@ fn materialize_account_record_input(
 fn generate_account_key(
     registry: &crate::office::OfficeAccountRegistry,
     input: &OfficeAccountRecordInput,
-) -> String {
+) -> Result<String> {
+    generate_account_key_with_limit(registry, input, crate::config::CONFIG_ACCOUNT_KEY_MAX_LEN)
+}
+
+fn generate_account_key_with_limit(
+    registry: &crate::office::OfficeAccountRegistry,
+    input: &OfficeAccountRecordInput,
+    max_len: usize,
+) -> Result<String> {
     let provider_slug = slugify_account_key_segment(&input.provider_kind, "provider");
     let identity_slug =
         slugify_account_key_segment(identity_class_slug(input.identity_class), "acct");
@@ -1128,13 +1136,21 @@ fn generate_account_key(
         base.push('-');
         base.push_str(&seed_slug);
     }
-    let max_len = crate::config::CONFIG_ACCOUNT_KEY_MAX_LEN;
     let mut candidate = truncate_account_key_candidate(&base, max_len);
     if registry.get(&candidate).is_none() {
-        return candidate;
+        return Ok(candidate);
     }
-    for suffix in 2.. {
+    for suffix in 2..=usize::MAX {
         let suffix_text = format!("-{suffix}");
+        if suffix_text.len() >= max_len {
+            return Err(Error::config(
+                "office_account_key_generate",
+                format!(
+                    "could not generate unique account key within max length {} for provider '{}'",
+                    max_len, input.provider_kind
+                ),
+            ));
+        }
         let keep_len = max_len.saturating_sub(suffix_text.len());
         candidate = format!(
             "{}{}",
@@ -1142,10 +1158,16 @@ fn generate_account_key(
             suffix_text
         );
         if registry.get(&candidate).is_none() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    unreachable!("account key generation should always find a free suffix")
+    Err(Error::config(
+        "office_account_key_generate",
+        format!(
+            "could not generate unique account key within max length {} for provider '{}'",
+            max_len, input.provider_kind
+        ),
+    ))
 }
 
 fn truncate_account_key_candidate(value: &str, max_len: usize) -> String {
@@ -2113,5 +2135,31 @@ mod tests {
         assert_eq!(assessment.next_action, OfficeConfigNextAction::Probe);
         assert!(assessment.missing_fields.is_empty());
         assert!(assessment.probe_supported);
+    }
+
+    #[test]
+    fn generate_account_key_returns_error_when_suffix_cannot_fit_within_max_len() {
+        let mut registry = crate::office::OfficeAccountRegistry::default();
+        registry.insert(OfficeAccount {
+            account_key: "p".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: String::new(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        let input = OfficeAccountRecordInput {
+            account_key: String::new(),
+            provider_kind: "p".to_string(),
+            external_account_id: String::new(),
+            account_label: String::new(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        };
+
+        let error =
+            generate_account_key_with_limit(&registry, &input, 1).expect_err("fit error expected");
+
+        assert_eq!(error.stage(), "office_account_key_generate");
     }
 }

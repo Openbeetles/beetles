@@ -24,6 +24,17 @@ fn terminal_progress_kind_for_status(
     }
 }
 
+fn normalize_task_execution_route(
+    route: TaskExecutionRoute,
+    has_active_run: bool,
+) -> TaskExecutionRoute {
+    if route == TaskExecutionRoute::ResumeRun && !has_active_run {
+        TaskExecutionRoute::StartRun
+    } else {
+        route
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn try_run_task_execution(
     worker_llm: &(dyn LlmClient + Send + Sync),
@@ -105,9 +116,8 @@ pub(super) fn try_run_task_execution(
     if planner_decision.route == TaskExecutionRoute::DirectReply {
         return Ok(None);
     }
-    if planner_decision.route == TaskExecutionRoute::ResumeRun && active_run.is_none() {
-        planner_decision.route = TaskExecutionRoute::StartRun;
-    }
+    planner_decision.route =
+        normalize_task_execution_route(planner_decision.route, active_run.is_some());
     delivery.emit_task_action_progress(match planner_decision.route {
         TaskExecutionRoute::ResumeRun => crate::agent::delivery::TaskActionProgressKind::Resumed,
         TaskExecutionRoute::StartRun | TaskExecutionRoute::DirectReply => {
@@ -118,7 +128,12 @@ pub(super) fn try_run_task_execution(
     let now_secs = crate::util::current_unix_secs();
     let mut record = match planner_decision.route {
         TaskExecutionRoute::ResumeRun => {
-            let mut record = active_run.clone().unwrap_or_else(|| unreachable!());
+            let mut record = active_run.clone().ok_or_else(|| {
+                crate::Error::config(
+                    "task_execution_resume",
+                    "planner requested resume_run without an active run",
+                )
+            })?;
             record.run.status = TaskRunStatus::Planning;
             record.run.updated_at = now_secs;
             if !planner_decision.title.is_empty() {
@@ -708,4 +723,21 @@ pub(super) fn try_run_task_execution(
             persona_priority_adjudication,
         },
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_task_execution_route_downgrades_resume_without_active_run() {
+        assert_eq!(
+            normalize_task_execution_route(TaskExecutionRoute::ResumeRun, false),
+            TaskExecutionRoute::StartRun
+        );
+        assert_eq!(
+            normalize_task_execution_route(TaskExecutionRoute::ResumeRun, true),
+            TaskExecutionRoute::ResumeRun
+        );
+    }
 }

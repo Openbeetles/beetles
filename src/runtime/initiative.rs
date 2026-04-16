@@ -326,7 +326,13 @@ fn decide_initiative(
         return decision;
     }
     let Some(target) = target else {
-        unreachable!("pre_signal_gate_decision must handle missing initiative target");
+        return InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "no_active_relation_target",
+            suppression_reason: Some(InitiativeSuppressionReason::NoTargetRelation),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        };
     };
     let Some(signal) = signal else {
         return InitiativeDecision {
@@ -946,6 +952,27 @@ mod tests {
         assert_eq!(
             decision.suppression_reason,
             Some(InitiativeSuppressionReason::RuntimeModeBlocked)
+        );
+    }
+
+    #[test]
+    fn decide_initiative_without_target_holds_instead_of_panicking() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        reset_initiative_runtime_for_tests();
+        let decision = decide_initiative(
+            None,
+            PresenceState::Idle,
+            runtime_mode(),
+            &resource(),
+            Some(&signal()),
+            true,
+            20_000,
+        );
+
+        assert_eq!(decision.action, InitiativeAction::Hold);
+        assert_eq!(
+            decision.suppression_reason,
+            Some(InitiativeSuppressionReason::NoTargetRelation)
         );
     }
 
