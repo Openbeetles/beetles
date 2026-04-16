@@ -279,7 +279,7 @@
 - **鉴权**：已激活 + 配对码
 - **查询参数**：
   - `capability`：可选，`mail|calendar|documents|contacts_directory`
-- `provider_kind`：可选，精确 provider kind，例如 `imap_smtp`、`feishu_mail`、`microsoft365_mail`
+- `provider_kind`：可选，精确 provider kind，例如 `imap_smtp`、`feishu_mail`、`microsoft365_mail`、`google_mail`
 - **响应**：`200 OK`
 - **响应体**：
   - `count`

@@ -149,9 +149,15 @@ fn collect_missing_fields(
             );
         }
         "microsoft365_mail"
+        | "google_mail"
         | "microsoft365_calendar"
+        | "google_calendar"
         | "microsoft365_documents"
+        | "google_documents"
         | "microsoft365_contacts_directory" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+        }
+        "google_contacts_directory" => {
             push_missing_if_blank(&mut missing, "access_token", access_token);
         }
         "webdav" => {

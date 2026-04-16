@@ -1271,18 +1271,21 @@ fn default_office_probe_adapters() -> Vec<Arc<dyn OfficeProbeAdapter + Send + Sy
         Arc::new(crate::mail::providers::feishu::FeishuMailOfficeProbeAdapter),
         Arc::new(crate::mail::providers::wecom::WecomMailOfficeProbeAdapter),
         Arc::new(crate::mail::providers::microsoft365::Microsoft365MailOfficeProbeAdapter),
+        Arc::new(crate::mail::providers::google::GoogleMailOfficeProbeAdapter),
         Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
         Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
         Arc::new(crate::documents::providers::wecom::WecomDocumentsOfficeProbeAdapter),
         Arc::new(
             crate::documents::providers::microsoft365::Microsoft365DocumentsOfficeProbeAdapter,
         ),
+        Arc::new(crate::documents::providers::google::GoogleDocumentsOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::wecom::WecomCalendarOfficeProbeAdapter),
         Arc::new(
             crate::calendar::providers::microsoft365::Microsoft365CalendarOfficeProbeAdapter,
         ),
+        Arc::new(crate::calendar::providers::google::GoogleCalendarOfficeProbeAdapter),
         Arc::new(
             crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
         ),
@@ -1291,6 +1294,9 @@ fn default_office_probe_adapters() -> Vec<Arc<dyn OfficeProbeAdapter + Send + Sy
         ),
         Arc::new(
             crate::contacts_directory::providers::microsoft365::Microsoft365ContactsDirectoryOfficeProbeAdapter,
+        ),
+        Arc::new(
+            crate::contacts_directory::providers::google::GoogleContactsDirectoryOfficeProbeAdapter,
         ),
     ]
 }
@@ -1720,7 +1726,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_catalog_includes_microsoft365_office_providers() {
+    fn provider_catalog_includes_international_office_providers() {
         let service = OfficeConfigManagementService::new(
             Arc::new(MemoryConfigFileStore::new()),
             Arc::new(MemoryCredentialStore::default()),
@@ -1737,6 +1743,10 @@ mod tests {
             "microsoft365_calendar",
             "microsoft365_documents",
             "microsoft365_contacts_directory",
+            "google_mail",
+            "google_calendar",
+            "google_documents",
+            "google_contacts_directory",
         ] {
             assert!(
                 provider_kinds.iter().any(|item| item == provider_kind),

@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
-    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    normalize_google_api_base_url, normalize_microsoft_graph_base_url, OfficeAuthoritySource,
+    OfficeCapability, OfficeCredential, OfficeService, SnapshotOfficeAuthoritySource,
+    GOOGLE_PEOPLE_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -56,6 +57,9 @@ impl ContactsDirectoryProviderCredential {
                     && !self.base_url.trim().is_empty()
             }
             "microsoft365_contacts_directory" => {
+                !self.secret.trim().is_empty() && !self.base_url.trim().is_empty()
+            }
+            "google_contacts_directory" => {
                 !self.secret.trim().is_empty() && !self.base_url.trim().is_empty()
             }
             _ => {
@@ -151,6 +155,24 @@ pub(crate) fn contacts_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<ContactsDirectoryProviderCredential> {
+    if account.provider_kind == "google_contacts_directory" {
+        let base_url = normalize_google_api_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_CONTACTS_BASE_URL)
+                .unwrap_or(GOOGLE_PEOPLE_DEFAULT_BASE_URL),
+            GOOGLE_PEOPLE_DEFAULT_BASE_URL,
+        );
+        return Ok(ContactsDirectoryProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            app_id: String::new(),
+            base_url,
+            secret: credential.access_token,
+        });
+    }
+
     if account.provider_kind == "microsoft365_contacts_directory" {
         let base_url = normalize_microsoft_graph_base_url(
             credential
@@ -319,5 +341,32 @@ mod tests {
         assert_eq!(adapted.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
         assert_eq!(adapted.app_id, "");
         assert_eq!(adapted.secret, "graph-token");
+    }
+
+    #[test]
+    fn contacts_credential_from_office_maps_google_contacts_metadata() {
+        let account = OfficeAccount {
+            account_key: "contacts-google".to_string(),
+            provider_kind: "google_contacts_directory".to_string(),
+            external_account_id: "alice@gmail.com".to_string(),
+            account_label: "Google Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        };
+        let credential = OfficeCredential {
+            account_key: "contacts-google".to_string(),
+            access_token: "google-people-token".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 1,
+            metadata: std::collections::BTreeMap::new(),
+        };
+
+        let adapted = contacts_credential_from_office(account, credential).expect("adapted");
+        assert_eq!(adapted.provider, "google_contacts_directory");
+        assert_eq!(adapted.base_url, GOOGLE_PEOPLE_DEFAULT_BASE_URL);
+        assert_eq!(adapted.app_id, "");
+        assert_eq!(adapted.secret, "google-people-token");
     }
 }

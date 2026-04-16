@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
-    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    normalize_google_api_base_url, normalize_microsoft_graph_base_url, OfficeAuthoritySource,
+    OfficeCapability, OfficeCredential, OfficeService, SnapshotOfficeAuthoritySource,
+    GOOGLE_CALENDAR_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
     OFFICE_METADATA_CALENDAR_ID,
 };
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ pub const OFFICE_METADATA_CALENDAR_ROOT_PATH: &str = "calendar_root_path";
 pub const OFFICE_METADATA_CALENDAR_APP_ID: &str = "calendar_app_id";
 pub const OFFICE_METADATA_CALENDAR_CORP_ID: &str = "calendar_corp_id";
 pub const FEISHU_CALENDAR_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
+pub const GOOGLE_DEFAULT_CALENDAR_ID: &str = "primary";
 pub const MICROSOFT365_DEFAULT_CALENDAR_ID: &str = "primary";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,6 +94,11 @@ impl CalendarProviderCredential {
                     && !self.calendar_id.trim().is_empty()
             }
             "microsoft365_calendar" => {
+                !self.access_token.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+                    && !self.calendar_id.trim().is_empty()
+            }
+            "google_calendar" => {
                 !self.access_token.trim().is_empty()
                     && !self.base_url.trim().is_empty()
                     && !self.calendar_id.trim().is_empty()
@@ -272,10 +279,36 @@ pub(crate) fn calendar_credential_from_office(
         .metadata_value(OFFICE_METADATA_CALENDAR_ID)
         .unwrap_or(if account.provider_kind == "microsoft365_calendar" {
             MICROSOFT365_DEFAULT_CALENDAR_ID
+        } else if account.provider_kind == "google_calendar" {
+            GOOGLE_DEFAULT_CALENDAR_ID
         } else {
             ""
         })
         .to_string();
+    if account.provider_kind == "google_calendar" {
+        let base_url = normalize_google_api_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL)
+                .unwrap_or(GOOGLE_CALENDAR_DEFAULT_BASE_URL),
+            GOOGLE_CALENDAR_DEFAULT_BASE_URL,
+        );
+        return CalendarProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            calendar_id,
+            username: String::new(),
+            app_id: String::new(),
+            base_url,
+            root_path: String::new(),
+            access_token: credential.access_token,
+            refresh_token: credential.refresh_token,
+            token_endpoint: credential.token_endpoint,
+            expires_at_unix_secs: credential.expires_at_unix_secs,
+            updated_at: credential.updated_at,
+        };
+    }
     if account.provider_kind == "microsoft365_calendar" {
         let base_url = normalize_microsoft_graph_base_url(
             credential
@@ -522,6 +555,34 @@ mod tests {
         assert_eq!(credential.provider, "microsoft365_calendar");
         assert_eq!(credential.calendar_id, MICROSOFT365_DEFAULT_CALENDAR_ID);
         assert_eq!(credential.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
+        assert_eq!(credential.app_id, "");
+    }
+
+    #[test]
+    fn calendar_credential_from_office_maps_google_calendar_metadata() {
+        let credential = calendar_credential_from_office(
+            OfficeAccount {
+                account_key: "calendar-google".to_string(),
+                provider_kind: "google_calendar".to_string(),
+                external_account_id: "alice@gmail.com".to_string(),
+                account_label: "Google Calendar".to_string(),
+                identity_class: OfficeAccountIdentityClass::Personal,
+                enabled_capabilities: vec![OfficeCapability::Calendar],
+            },
+            OfficeCredential {
+                account_key: "calendar-google".to_string(),
+                access_token: "google-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
+                expires_at_unix_secs: 0,
+                updated_at: 42,
+                metadata: std::collections::BTreeMap::new(),
+            },
+        );
+
+        assert_eq!(credential.provider, "google_calendar");
+        assert_eq!(credential.calendar_id, GOOGLE_DEFAULT_CALENDAR_ID);
+        assert_eq!(credential.base_url, GOOGLE_CALENDAR_DEFAULT_BASE_URL);
         assert_eq!(credential.app_id, "");
     }
 }

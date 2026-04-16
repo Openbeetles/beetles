@@ -858,6 +858,7 @@ fn calendar_provider_hint_from_lookup_hit(hit: &ContactsDirectoryLookupHit) -> O
         Some("feishu_contacts_directory") => Some("feishu_calendar".to_string()),
         Some("wecom_contacts_directory") => Some("wecom_calendar".to_string()),
         Some("microsoft365_contacts_directory") => Some("microsoft365_calendar".to_string()),
+        Some("google_contacts_directory") => Some("google_calendar".to_string()),
         _ => None,
     }
 }

@@ -285,7 +285,7 @@ Example:
 - **Auth**: activated + pairing code
 - **Query parameters**:
   - `capability`: optional, `mail|calendar|documents|contacts_directory`
-  - `provider_kind`: optional, exact provider kind such as `imap_smtp`, `feishu_mail`, or `microsoft365_mail`
+  - `provider_kind`: optional, exact provider kind such as `imap_smtp`, `feishu_mail`, `microsoft365_mail`, or `google_mail`
 - **Response**: `200 OK`
 - **Body**:
   - `count`

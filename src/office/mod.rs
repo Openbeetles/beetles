@@ -13,6 +13,11 @@ mod credentials;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+mod google_api;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod microsoft_graph;
 mod policy;
 #[cfg(feature = "capability_office")]
@@ -54,6 +59,16 @@ pub use config_management::{
 pub use credentials::{
     OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore, OfficeCredentialsSegment,
     OFFICE_METADATA_CALENDAR_ID, REL_PATH_OFFICE_CREDENTIALS,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use google_api::{
+    build_google_api_url, normalize_google_api_base_url, parse_google_api_json,
+    request_google_api_empty_ureq, request_google_api_json_ureq, GoogleApiErrorEnvelope,
+    GoogleApiListEnvelope, GOOGLE_CALENDAR_DEFAULT_BASE_URL, GOOGLE_DRIVE_DEFAULT_BASE_URL,
+    GOOGLE_GMAIL_DEFAULT_BASE_URL, GOOGLE_PEOPLE_DEFAULT_BASE_URL,
 };
 #[cfg(all(
     feature = "capability_office",

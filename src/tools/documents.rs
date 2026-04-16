@@ -662,6 +662,7 @@ fn documents_provider_hint_from_lookup_hit(hit: &ContactsDirectoryLookupHit) -> 
         Some("feishu_contacts_directory") => Some("feishu_documents".to_string()),
         Some("wecom_contacts_directory") => Some("wecom_documents".to_string()),
         Some("microsoft365_contacts_directory") => Some("microsoft365_documents".to_string()),
+        Some("google_contacts_directory") => Some("google_documents".to_string()),
         _ => None,
     }
 }

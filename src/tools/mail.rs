@@ -1126,6 +1126,7 @@ fn mail_provider_hint_from_contact_resolution(
         Some("feishu_contacts_directory") => Some("feishu_mail".to_string()),
         Some("wecom_contacts_directory") => Some("wecom_mail".to_string()),
         Some("microsoft365_contacts_directory") => Some("microsoft365_mail".to_string()),
+        Some("google_contacts_directory") => Some("google_mail".to_string()),
         _ => None,
     }
 }

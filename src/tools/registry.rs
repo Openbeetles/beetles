@@ -885,6 +885,7 @@ fn register_office_tools(
     mail_providers.register(Arc::new(
         crate::mail::providers::microsoft365::Microsoft365MailProvider,
     ));
+    mail_providers.register(Arc::new(crate::mail::providers::google::GoogleMailProvider));
     let mut documents_providers = crate::documents::DocumentsProviderRegistry::new();
     documents_providers.register(Arc::new(
         crate::documents::providers::webdav::WebDavProvider,
@@ -898,6 +899,9 @@ fn register_office_tools(
     documents_providers.register(Arc::new(
         crate::documents::providers::microsoft365::Microsoft365DocumentsProvider,
     ));
+    documents_providers.register(Arc::new(
+        crate::documents::providers::google::GoogleDocumentsProvider,
+    ));
     let calendar_providers = crate::calendar::build_default_office_calendar_provider_registry();
     let mut contacts_directory_providers =
         crate::contacts_directory::ContactsDirectoryProviderRegistry::new();
@@ -909,6 +913,9 @@ fn register_office_tools(
     ));
     contacts_directory_providers.register(Arc::new(
         crate::contacts_directory::providers::microsoft365::Microsoft365ContactsDirectoryProvider,
+    ));
+    contacts_directory_providers.register(Arc::new(
+        crate::contacts_directory::providers::google::GoogleContactsDirectoryProvider,
     ));
     let task_calendar_providers =
         crate::calendar::build_default_office_calendar_provider_registry();
@@ -992,17 +999,21 @@ fn register_office_tools(
                 "feishu_mail",
                 "wecom_mail",
                 "microsoft365_mail",
+                "google_mail",
                 "webdav",
                 "feishu_documents",
                 "wecom_documents",
                 "microsoft365_documents",
+                "google_documents",
                 "caldav",
                 "feishu_calendar",
                 "wecom_calendar",
                 "microsoft365_calendar",
+                "google_calendar",
                 "feishu_contacts_directory",
                 "wecom_contacts_directory",
                 "microsoft365_contacts_directory",
+                "google_contacts_directory",
             ]
             .into_iter()
             .map(str::to_string),

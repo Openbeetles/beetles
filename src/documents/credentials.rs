@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
-    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    normalize_google_api_base_url, normalize_microsoft_graph_base_url, OfficeAuthoritySource,
+    OfficeCapability, OfficeCredential, OfficeService, SnapshotOfficeAuthoritySource,
+    GOOGLE_DRIVE_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -76,6 +77,11 @@ impl DocumentsProviderCredential {
                     && !self.base_url.trim().is_empty()
             }
             "microsoft365_documents" => {
+                !self.secret.trim().is_empty()
+                    && !self.root_path.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+            }
+            "google_documents" => {
                 !self.secret.trim().is_empty()
                     && !self.root_path.trim().is_empty()
                     && !self.base_url.trim().is_empty()
@@ -172,6 +178,37 @@ pub(crate) fn documents_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<DocumentsProviderCredential> {
+    if account.provider_kind == "google_documents" {
+        let base_url = normalize_google_api_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL)
+                .unwrap_or(GOOGLE_DRIVE_DEFAULT_BASE_URL),
+            GOOGLE_DRIVE_DEFAULT_BASE_URL,
+        );
+        let root_path = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_ROOT_PATH)
+            .unwrap_or("/")
+            .trim()
+            .to_string();
+        let drive_id = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_DRIVE_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        return Ok(DocumentsProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            username: String::new(),
+            secret: credential.access_token,
+            app_id: String::new(),
+            space_id: drive_id,
+            base_url,
+            root_path,
+        });
+    }
+
     if account.provider_kind == "microsoft365_documents" {
         let base_url = normalize_microsoft_graph_base_url(
             credential
@@ -612,5 +649,31 @@ mod tests {
         assert_eq!(adapted.space_id, "drive-123");
         assert_eq!(adapted.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
         assert_eq!(adapted.root_path, "/Shared");
+    }
+
+    #[test]
+    fn office_backed_store_adapts_google_documents_metadata() {
+        let account = OfficeAccount {
+            account_key: "docs-google".to_string(),
+            provider_kind: "google_documents".to_string(),
+            external_account_id: "alice@gmail.com".to_string(),
+            account_label: "Google Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        };
+        let credential = OfficeCredential {
+            account_key: "docs-google".to_string(),
+            access_token: "google-drive-token".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 1,
+            metadata: std::collections::BTreeMap::new(),
+        };
+
+        let adapted = documents_credential_from_office(account, credential).expect("adapted");
+        assert_eq!(adapted.provider, "google_documents");
+        assert_eq!(adapted.base_url, GOOGLE_DRIVE_DEFAULT_BASE_URL);
+        assert_eq!(adapted.root_path, "/");
     }
 }
