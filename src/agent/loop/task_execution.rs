@@ -703,6 +703,7 @@ pub(super) fn try_run_task_execution(
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state,
+            soul_feedback_projection: None,
             mental_privacy_adjudication,
             persona_priority_adjudication,
         },

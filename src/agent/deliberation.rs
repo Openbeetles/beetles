@@ -1,5 +1,8 @@
 use crate::bus::IngressKind;
-use crate::memory::{RecallSelectionReport, TurnDeliberationClass, TurnObservationLedger};
+use crate::memory::{
+    PersonalityRuntimeGovernanceGate, RecallSelectionReport, TurnDeliberationClass,
+    TurnObservationLedger,
+};
 use crate::orchestrator::PressureLevel;
 use crate::runtime::{RuntimeMode, RuntimeModeSnapshot};
 use crate::util::truncate_content_to_max;
@@ -38,6 +41,7 @@ pub(crate) struct TurnDeliberationInput<'a> {
     pub(crate) archive_report: &'a RecallSelectionReport,
     pub(crate) runtime_skill_report: &'a RecallSelectionReport,
     pub(crate) task_recall_report: Option<&'a RecallSelectionReport>,
+    pub(crate) personality_governance_gate: Option<&'a PersonalityRuntimeGovernanceGate>,
 }
 
 pub(crate) fn compile_turn_deliberation_gate(
@@ -52,6 +56,12 @@ pub(crate) fn compile_turn_deliberation_gate(
             input.runtime_mode.current_mode.as_str(),
             input.pressure
         ));
+    }
+    let soul_governance_conservative = input
+        .personality_governance_gate
+        .is_some_and(|gate| gate.conservative_reply);
+    if soul_governance_conservative {
+        rationale.push("soul_governance_conservative".to_string());
     }
     let prior_blocker = input
         .recent_observation
@@ -101,8 +111,12 @@ pub(crate) fn compile_turn_deliberation_gate(
 
     TurnDeliberationGate {
         class,
-        compact_reply: runtime_restricted || class == TurnDeliberationClass::FastInteractive,
-        prefer_explicit_blocker: runtime_restricted || prior_blocker,
+        compact_reply: runtime_restricted
+            || soul_governance_conservative
+            || class == TurnDeliberationClass::FastInteractive,
+        prefer_explicit_blocker: runtime_restricted
+            || soul_governance_conservative
+            || prior_blocker,
         rationale,
     }
 }
@@ -328,6 +342,7 @@ mod tests {
             archive_report: &report(1),
             runtime_skill_report: &report(0),
             task_recall_report: Some(&report(1)),
+            personality_governance_gate: None,
         });
 
         assert_eq!(gate.class, TurnDeliberationClass::HardReasoning);
@@ -351,10 +366,45 @@ mod tests {
             archive_report: &report(0),
             runtime_skill_report: &report(0),
             task_recall_report: None,
+            personality_governance_gate: None,
         });
 
         assert_eq!(gate.class, TurnDeliberationClass::Standard);
         assert!(gate.compact_reply);
         assert!(gate.prefer_explicit_blocker);
+    }
+
+    #[test]
+    fn compile_turn_deliberation_gate_respects_soul_governance_conservative_mode() {
+        let gate = compile_turn_deliberation_gate(TurnDeliberationInput {
+            strategy: AgentRunStrategy::LinuxEnhanced,
+            ingress: IngressKind::User,
+            is_group: false,
+            user_content: "继续处理",
+            has_tools: true,
+            pressure: PressureLevel::Normal,
+            runtime_mode: runtime_mode(RuntimeMode::Normal),
+            recent_observation: None,
+            execution_state_text: None,
+            shared_factual_report: &report(0),
+            continuity_capsule_report: &report(0),
+            archive_report: &report(0),
+            runtime_skill_report: &report(0),
+            task_recall_report: None,
+            personality_governance_gate: Some(&PersonalityRuntimeGovernanceGate {
+                conservative_reply: true,
+                allow_dynamic_persona_priority: false,
+                allow_upward_distillation: false,
+                reason_summary: "board review due".to_string(),
+                ..PersonalityRuntimeGovernanceGate::default()
+            }),
+        });
+
+        assert!(gate.compact_reply);
+        assert!(gate.prefer_explicit_blocker);
+        assert!(gate
+            .rationale
+            .iter()
+            .any(|reason| reason == "soul_governance_conservative"));
     }
 }

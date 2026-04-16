@@ -23,6 +23,7 @@ pub struct PromptMemoryContext {
     pub active_task_context_text: Option<String>,
     pub governed_memory_evidence_text: Option<String>,
     pub background_governance_text: Option<String>,
+    pub inward_growth_text: Option<String>,
     pub personality_governance_gate_text: Option<String>,
     pub summary_text: Option<String>,
     pub message_summary_text: Option<String>,
@@ -49,6 +50,7 @@ pub struct PromptMemoryContext {
     pub relationship_constitution_text: Option<String>,
     pub persona_priority_text: Option<String>,
     pub self_continuity: Option<super::SelfContinuity>,
+    pub autonomy_strategy: Option<super::AutonomyStrategy>,
     pub outer_voice: Option<super::OuterVoice>,
     pub self_model_text: Option<String>,
     pub autonomy_strategy_text: Option<String>,
@@ -138,14 +140,16 @@ impl PromptMemoryContext {
             self.world_snapshot_text.as_deref(),
             self.world_sense_text.as_deref(),
             self.self_state_text.as_deref(),
-            self.self_model_text.as_deref(),
             self.autonomy_strategy_text.as_deref(),
             self.outer_voice_text.as_deref(),
+            self.mental_privacy_text.as_deref(),
+        ]);
+        self.inward_growth_text = compose_prompt_projection_body(&[
+            self.self_model_text.as_deref(),
             self.inner_life_text.as_deref(),
             self.self_continuity_text.as_deref(),
             self.private_workspace_text.as_deref(),
             self.private_garden_text.as_deref(),
-            self.mental_privacy_text.as_deref(),
         ]);
     }
 
@@ -154,6 +158,7 @@ impl PromptMemoryContext {
         self.active_task_context_text = None;
         self.governed_memory_evidence_text = None;
         self.background_governance_text = None;
+        self.inward_growth_text = None;
     }
 }
 
@@ -277,6 +282,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         active_task_context_text: None,
         governed_memory_evidence_text: None,
         background_governance_text: None,
+        inward_growth_text: None,
         personality_governance_gate_text: None,
         summary_text: session.summary_text,
         message_summary_text,
@@ -303,6 +309,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         relationship_constitution_text: constitutional.relationship_constitution_text,
         persona_priority_text: None,
         self_continuity: constitutional.self_continuity.map(|value| *value),
+        autonomy_strategy: constitutional.autonomy_strategy.map(|value| *value),
         outer_voice: constitutional.outer_voice.map(|value| *value),
         self_model_text: private_projection.self_model_text,
         autonomy_strategy_text: private_projection.autonomy_strategy_text,
@@ -376,6 +383,7 @@ mod tests {
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
+            inward_growth_text: None,
             personality_governance_gate_text: None,
             summary_text: Some("summary".to_string()),
             message_summary_text: Some("message-summary".to_string()),
@@ -402,6 +410,7 @@ mod tests {
             relationship_constitution_text: None,
             persona_priority_text: None,
             self_continuity: None,
+            autonomy_strategy: None,
             outer_voice: None,
             self_model_text: Some("self-model".to_string()),
             autonomy_strategy_text: None,
@@ -431,6 +440,7 @@ mod tests {
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
+            inward_growth_text: None,
             personality_governance_gate_text: Some("gate".to_string()),
             summary_text: None,
             message_summary_text: None,
@@ -457,6 +467,7 @@ mod tests {
             relationship_constitution_text: Some("constitution".to_string()),
             persona_priority_text: Some("priority".to_string()),
             self_continuity: None,
+            autonomy_strategy: None,
             outer_voice: None,
             self_model_text: None,
             autonomy_strategy_text: None,
@@ -625,6 +636,7 @@ mod tests {
         assert!(context.private_workspace_text.is_none());
         assert!(context.private_garden_text.is_none());
         assert!(context.background_governance_text.is_none());
+        assert!(context.inward_growth_text.is_none());
     }
 
     #[test]
@@ -2293,6 +2305,31 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Relationship Portfolio"));
+        assert!(!context
+            .background_governance_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Private Garden"));
+        assert!(!context
+            .background_governance_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Workspace"));
+        assert!(context
+            .inward_growth_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Private Garden"));
+        assert!(context
+            .inward_growth_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Workspace"));
+        assert!(context
+            .inward_growth_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("## Inner Life"));
         assert!(context.mental_privacy_adjudication_text.is_none());
         assert!(context
             .runtime_skill_text
@@ -2620,6 +2657,16 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Outer Voice"));
+        assert!(!context
+            .background_governance_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("内在工作区"));
+        assert!(context
+            .inward_growth_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("内在工作区"));
         assert!(context.private_garden_text.is_none());
         assert_eq!(context.recent_messages.len(), 2);
         assert!(memory_store

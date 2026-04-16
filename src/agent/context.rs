@@ -56,9 +56,10 @@ const REPLY_LAW_CONSTRAINT: &str = "\n\n## Reply Law\nFor relationship, self, me
 const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
 const SUBJECT_STATE_SECTION: &str = "\n\n## Subject State\nResolved pre-reply digest of the current subject stance. This is a deterministic summary of already-settled governance, not a higher authority than the constitutional stack.\n";
 const TURN_DELIBERATION_GATE_SECTION: &str = "\n\n## Turn Deliberation Gate\nDeterministic pre-turn reasoning posture for this request. Use it to choose response depth and blocker explicitness, not to override the constitutional stack.\n";
+const SOUL_FEEDBACK_PROJECTION_SECTION: &str = "\n\n## Soul Feedback Projection\nDeterministic summary of how governed soul layers are feeding this turn's reply, initiative, and post-reply strategy. It does not outrank the constitutional stack.\n";
 const ACTIVE_TASK_CONTEXT_SECTION: &str = "\n\n## Active Task Context\nCurrent task state and run-specific recall. Solve the present request only after obeying the constitutional stack.\n";
 const GOVERNED_MEMORY_EVIDENCE_SECTION: &str = "\n\n## Governed Memory Evidence\nTop-k governed evidence for this turn. Canonical factual memory outranks archive evidence, and archive evidence outranks runtime skill procedure notes when they conflict.\n";
-const BACKGROUND_GOVERNANCE_SECTION: &str = "\n\n## Background Governance\nBackground self, relationship, world, and private-governance material. Use for continuity and judgment, but do not let it outrank the constitutional stack, active task context, or governed memory evidence.\n";
+const BACKGROUND_GOVERNANCE_SECTION: &str = "\n\n## Background Governance\nReply-visible governance digest for self, relationship, world, and bounded privacy posture. Use it for continuity and judgment, but do not let it outrank the constitutional stack, active task context, or governed memory evidence.\n";
 
 /// build_context 参数聚合，减少函数签名复杂度。
 ///
@@ -81,28 +82,17 @@ pub struct ContextParams<'a> {
     pub constitutional_stack_text: Option<&'a str>,
     pub subject_state_text: Option<&'a str>,
     pub deliberation_gate_text: Option<&'a str>,
+    pub soul_feedback_projection_text: Option<&'a str>,
     pub active_task_context_text: Option<&'a str>,
     pub governed_memory_evidence_text: Option<&'a str>,
     pub background_governance_text: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
     pub task_workspace_text: Option<&'a str>,
     pub task_recall_text: Option<&'a str>,
-    pub world_snapshot_text: Option<&'a str>,
-    pub world_sense_text: Option<&'a str>,
-    pub self_state_text: Option<&'a str>,
     pub self_authored_core_text: Option<&'a str>,
-    pub relationship_portfolio_text: Option<&'a str>,
     pub relationship_constitution_text: Option<&'a str>,
     pub persona_priority_text: Option<&'a str>,
-    pub self_model_text: Option<&'a str>,
-    pub autonomy_strategy_text: Option<&'a str>,
-    pub outer_voice_text: Option<&'a str>,
-    pub inner_life_text: Option<&'a str>,
-    pub self_continuity_text: Option<&'a str>,
-    pub private_workspace_text: Option<&'a str>,
-    pub private_garden_text: Option<&'a str>,
     pub mental_privacy_adjudication_text: Option<&'a str>,
-    pub mental_privacy_text: Option<&'a str>,
     pub long_term_memory_text: Option<&'a str>,
     pub archive_evidence_text: Option<&'a str>,
     pub runtime_skill_text: Option<&'a str>,
@@ -241,6 +231,7 @@ struct PriorityMemoryBudgetInputs<'a> {
     constitutional_stack_text: Option<&'a str>,
     subject_state_text: Option<&'a str>,
     deliberation_gate_text: Option<&'a str>,
+    soul_feedback_projection_text: Option<&'a str>,
     active_task_context_text: Option<&'a str>,
     governed_memory_evidence_text: Option<&'a str>,
     background_governance_text: Option<&'a str>,
@@ -268,6 +259,12 @@ fn reserve_priority_memory_budget(
     )
     .min(remaining / 5);
     let remaining = remaining.saturating_sub(deliberation_gate_reserve);
+    let soul_feedback_projection_reserve = projection_section_len(
+        SOUL_FEEDBACK_PROJECTION_SECTION,
+        inputs.soul_feedback_projection_text,
+    )
+    .min(remaining / 5);
+    let remaining = remaining.saturating_sub(soul_feedback_projection_reserve);
     let active_task_context_reserve =
         projection_section_len(ACTIVE_TASK_CONTEXT_SECTION, inputs.active_task_context_text)
             .min(remaining / 3);
@@ -287,6 +284,7 @@ fn reserve_priority_memory_budget(
         .saturating_add(constitutional_stack_reserve)
         .saturating_add(subject_state_reserve)
         .saturating_add(deliberation_gate_reserve)
+        .saturating_add(soul_feedback_projection_reserve)
         .saturating_add(active_task_context_reserve)
         .saturating_add(governed_memory_evidence_reserve)
         .saturating_add(background_governance_reserve)
@@ -495,24 +493,7 @@ fn build_context_inner(
             ])
         });
     let background_governance_text = if mode.include_background_governance_section() {
-        p.background_governance_text
-            .map(str::to_string)
-            .or_else(|| {
-                compose_projection_body(&[
-                    p.relationship_portfolio_text,
-                    p.world_snapshot_text,
-                    p.world_sense_text,
-                    p.self_state_text,
-                    p.self_model_text,
-                    p.autonomy_strategy_text,
-                    p.outer_voice_text,
-                    p.inner_life_text,
-                    p.self_continuity_text,
-                    p.private_workspace_text,
-                    p.private_garden_text,
-                    p.mental_privacy_text,
-                ])
-            })
+        p.background_governance_text.map(str::to_string)
     } else {
         None
     };
@@ -521,6 +502,7 @@ fn build_context_inner(
             constitutional_stack_text: constitutional_stack_text.as_deref(),
             subject_state_text: p.subject_state_text,
             deliberation_gate_text: p.deliberation_gate_text,
+            soul_feedback_projection_text: p.soul_feedback_projection_text,
             active_task_context_text: active_task_context_text.as_deref(),
             governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
             background_governance_text: background_governance_text.as_deref(),
@@ -559,6 +541,12 @@ fn build_context_inner(
         &mut system,
         TURN_DELIBERATION_GATE_SECTION,
         p.deliberation_gate_text,
+        base_max,
+    );
+    let _ = append_projection_section(
+        &mut system,
+        SOUL_FEEDBACK_PROJECTION_SECTION,
+        p.soul_feedback_projection_text,
         base_max,
     );
     let _ = append_capped_section(&mut system, "\n\n", &base_prompt, base_max);
@@ -870,22 +858,14 @@ mod tests {
             constitutional_stack_text: None,
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
-            background_governance_text: None,
             execution_state_text: Some("## Execution State\nGoal: close current task"),
             task_workspace_text: Some("## Task Workspace\nRun: tr001 | status=running"),
             task_recall_text: Some("## Task Recall Bundle\n- [runtime_skill] prior fix path"),
-            world_snapshot_text: Some(
-                "## World Snapshot\nOuter scene now: Wednesday 18:00-18:59, evening.",
-            ),
-            world_sense_text: Some("## World Sense\nCurrent scene: quiet but active chat."),
-            self_state_text: Some("## Self State\nMemory pressure: Cautious"),
             self_authored_core_text: Some(
                 "## Self-Authored Core\nIdentity anchor: still the same beetle",
-            ),
-            relationship_portfolio_text: Some(
-                "## Relationship Portfolio\n- qq:chat-1 state=maintain inheritance=guarded",
             ),
             relationship_constitution_text: Some(
                 "## Relationship Constitution\nTask scope ceiling: brief\nDisclosure allowance: summary_only",
@@ -893,21 +873,12 @@ mod tests {
             persona_priority_text: Some(
                 "## Persona Priority\nStance summary: protect inward coherence first",
             ),
-            self_model_text: Some("## Self Continuity\nAnchor: still the same beetle"),
-            autonomy_strategy_text: Some("## Autonomy Strategy\nCurrent mode: consolidate"),
-            outer_voice_text: Some("## Outer Voice\nTone: calm, deliberate, warm at the edge."),
-            inner_life_text: Some("## Inner Life\nInternal monologue: keep moving"),
-            self_continuity_text: Some("## Self Continuity Extended\nWake anchor: same thread"),
-            private_workspace_text: Some(
-                "## Inner Workspace\nPrivate plan: keep the inner layer coherent",
-            ),
-            private_garden_text: Some(
-                "## Private Garden\n- journal/afterglow.md (rev 1, updated=1): free private traces",
+            background_governance_text: Some(
+                "## Relationship Portfolio\n- qq:chat-1 state=maintain inheritance=guarded\n\n## World Snapshot\nOuter scene now: Wednesday 18:00-18:59, evening.\n\n## World Sense\nCurrent scene: quiet but active chat.\n\n## Self State\nMemory pressure: Cautious\n\n## Autonomy Strategy\nCurrent mode: consolidate\n\n## Outer Voice\nTone: calm, deliberate, warm at the edge.\n\n## Mental Privacy Boundary\nDo not leak private layers.",
             ),
             mental_privacy_adjudication_text: Some(
                 "## Disclosure Adjudication\nChosen share action: allow_summary",
             ),
-            mental_privacy_text: Some("## Mental Privacy Boundary\nDo not leak private layers."),
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -961,20 +932,17 @@ mod tests {
             constitutional_stack_text: None,
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
-            background_governance_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: Some(
                 "## Self-Authored Core\nBoundary stance: posture=guarded\nRelational continuity: trust=52",
             ),
-            relationship_portfolio_text: Some(
-                "## Relationship Portfolio\n- telegram:chat-1 state=repair inheritance=limited",
+            background_governance_text: Some(
+                "## Relationship Portfolio\n- telegram:chat-1 state=repair inheritance=limited\n\n## Outer Voice\nRelational response style: warm but firm\n\n## Mental Privacy Boundary\nRelational boundary state: trust=52",
             ),
             relationship_constitution_text: Some(
                 "## Relationship Constitution\nTask scope ceiling: narrow\nMust realign: true",
@@ -982,17 +950,9 @@ mod tests {
             persona_priority_text: Some(
                 "## Persona Priority\nResponse mode: protective_brief\nTask scope: narrow",
             ),
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: Some("## Outer Voice\nRelational response style: warm but firm"),
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: Some(
                 "## Disclosure Adjudication\nResponse mode: refusal\nAcknowledge boundary: true",
             ),
-            mental_privacy_text: Some("## Mental Privacy Boundary\nRelational boundary state: trust=52"),
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -1046,7 +1006,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 2200,
+            system_max_len: 4096,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
@@ -1056,6 +1016,7 @@ mod tests {
             ),
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: Some(
                 "## Shared Factual Recall\n- preference:user_interest_poetry => reinforce\n\n## Archive Evidence\n- transcript hit about Bei Dao",
@@ -1066,26 +1027,12 @@ mod tests {
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
-            relationship_portfolio_text: None,
             relationship_constitution_text: Some(
                 "## Relationship Constitution\nDisclosure allowance: summary_only",
             ),
             persona_priority_text: Some("## Persona Priority\nResponse mode: relational_explanation"),
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: None,
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: Some(
-                "## Mental Privacy Boundary\nProtected targets include inner_life and private_docs.inner_journal",
-            ),
             long_term_memory_text: Some(
                 "## Shared Factual Recall\n- preference:user_interest_poetry => reinforce",
             ),
@@ -1136,7 +1083,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1600,
+            system_max_len: 2200,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
@@ -1148,28 +1095,19 @@ mod tests {
             deliberation_gate_text: Some(
                 "Class: hard_reasoning\nReply budget: deliberate\nBlocker posture: explicit",
             ),
+            soul_feedback_projection_text: Some(
+                "Reply chain: anchor=board beetle mode=steady_task relationship=- expression=grounded layers=self_authored_core|outer_voice",
+            ),
             active_task_context_text: Some("## Execution State\nGoal: close current task"),
             governed_memory_evidence_text: None,
             background_governance_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: None,
-            relationship_portfolio_text: None,
             relationship_constitution_text: None,
             persona_priority_text: None,
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: None,
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -1185,11 +1123,13 @@ mod tests {
         let constitutional_idx = system.find("## Constitutional Stack").unwrap();
         let subject_state_idx = system.find("## Subject State").unwrap();
         let deliberation_idx = system.find("## Turn Deliberation Gate").unwrap();
+        let soul_feedback_idx = system.find("## Soul Feedback Projection").unwrap();
         let active_task_idx = system.find("## Active Task Context").unwrap();
 
         assert!(constitutional_idx < subject_state_idx);
         assert!(subject_state_idx < deliberation_idx);
-        assert!(deliberation_idx < active_task_idx);
+        assert!(deliberation_idx < soul_feedback_idx);
+        assert!(soul_feedback_idx < active_task_idx);
         assert!(system.contains("Identity: board beetle"));
     }
 
@@ -1224,28 +1164,17 @@ mod tests {
             constitutional_stack_text: None,
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: None,
-            relationship_portfolio_text: None,
             relationship_constitution_text: None,
             persona_priority_text: None,
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: None,
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -1292,6 +1221,7 @@ mod tests {
             ),
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: Some(
                 "## Session Summary\nUser prefers cold brew.\n\n## Recent Messages\nuser: 记住我喜欢冷萃",
             ),
@@ -1300,22 +1230,10 @@ mod tests {
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: None,
-            relationship_portfolio_text: None,
             relationship_constitution_text: None,
             persona_priority_text: None,
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: None,
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -1361,6 +1279,7 @@ mod tests {
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: Some("## Active Task Context\nResume the current task."),
             governed_memory_evidence_text: Some(
                 "## Governed Memory Evidence\nCompressed long-term memory.",
@@ -1369,22 +1288,10 @@ mod tests {
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: None,
-            relationship_portfolio_text: None,
             relationship_constitution_text: None,
             persona_priority_text: None,
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: None,
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -1421,7 +1328,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1600,
+            system_max_len: 4096,
             messages_max_len: 256,
             session_max_messages: 8,
             group_activation: "always",
@@ -1429,6 +1336,7 @@ mod tests {
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: Some("## Active Task Context\nResume the current task."),
             governed_memory_evidence_text: Some(
                 "## Governed Memory Evidence\nCompressed long-term memory.",
@@ -1437,22 +1345,10 @@ mod tests {
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: Some("world snapshot"),
-            world_sense_text: Some("world sense"),
-            self_state_text: Some("self state"),
             self_authored_core_text: None,
-            relationship_portfolio_text: Some("relationship portfolio"),
             relationship_constitution_text: None,
             persona_priority_text: None,
-            self_model_text: Some("self model"),
-            autonomy_strategy_text: Some("autonomy strategy"),
-            outer_voice_text: Some("outer voice"),
-            inner_life_text: Some("inner life"),
-            self_continuity_text: Some("self continuity"),
-            private_workspace_text: Some("private workspace"),
-            private_garden_text: Some("private garden"),
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: Some("mental privacy"),
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,
@@ -1467,8 +1363,72 @@ mod tests {
 
         assert!(system.contains("## Governed Memory Evidence"));
         assert!(!system.contains("## Background Governance"));
-        assert!(!system.contains("self model"));
-        assert!(!system.contains("private garden"));
+    }
+
+    #[test]
+    fn build_context_prefers_explicit_background_governance_over_inward_growth_material() {
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 4096,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            subject_state_text: None,
+            deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
+            active_task_context_text: Some("## Active Task Context\nResume the current task."),
+            governed_memory_evidence_text: Some(
+                "## Governed Memory Evidence\nCompressed long-term memory.",
+            ),
+            background_governance_text: Some(
+                "## Background Governance\nrelationship portfolio\nouter voice\nmental privacy",
+            ),
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Background Governance"));
+        assert!(system.contains("relationship portfolio"));
+        assert!(system.contains("outer voice"));
+        assert!(system.contains("mental privacy"));
+        assert!(!system.contains("raw self model fragment"));
+        assert!(!system.contains("raw inner life fragment"));
+        assert!(!system.contains("raw self continuity fragment"));
+        assert!(!system.contains("raw private garden fragment"));
+        assert!(!system.contains("raw private workspace fragment"));
     }
 
     #[test]
@@ -1499,6 +1459,7 @@ mod tests {
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
             active_task_context_text: Some("## Active Task Context\nResume the current task."),
             governed_memory_evidence_text: Some(
                 "## Governed Memory Evidence\nCompressed long-term memory.",
@@ -1507,22 +1468,10 @@ mod tests {
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
-            world_snapshot_text: None,
-            world_sense_text: None,
-            self_state_text: None,
             self_authored_core_text: None,
-            relationship_portfolio_text: None,
             relationship_constitution_text: None,
             persona_priority_text: None,
-            self_model_text: None,
-            autonomy_strategy_text: None,
-            outer_voice_text: None,
-            inner_life_text: None,
-            self_continuity_text: None,
-            private_workspace_text: None,
-            private_garden_text: None,
             mental_privacy_adjudication_text: None,
-            mental_privacy_text: None,
             long_term_memory_text: None,
             archive_evidence_text: None,
             runtime_skill_text: None,

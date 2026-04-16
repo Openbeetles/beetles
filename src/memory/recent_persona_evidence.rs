@@ -45,19 +45,77 @@ pub struct RecentPersonaEvidence {
 }
 
 impl RecentPersonaEvidence {
+    /// Any repeated signal that may help the current turn stay behaviorally continuous.
+    /// This includes promotable growth signals and non-promotable operational traces.
+    pub fn execution_continuity_signal_count(&self) -> usize {
+        [
+            !self.repeated_priority_order.is_empty(),
+            !self.repeated_response_mode.trim().is_empty(),
+            !self.repeated_task_scope.trim().is_empty(),
+            !self.repeated_initiative_posture.trim().is_empty(),
+            !self.repeated_relationship_posture.trim().is_empty(),
+            !self.repeated_reply_scope.trim().is_empty(),
+            !self.repeated_disclosure_action.trim().is_empty(),
+            !self.pressure_pattern.trim().is_empty(),
+            !self.tool_usage_pattern.trim().is_empty(),
+        ]
+        .into_iter()
+        .filter(|value| *value)
+        .count()
+    }
+
+    pub fn has_execution_continuity_signals(&self) -> bool {
+        self.execution_continuity_signal_count() > 0
+    }
+
+    /// Operational traces may stabilize current-turn execution, but they are not by themselves
+    /// sufficient evidence for board-level or upward personality promotion.
+    pub fn operational_trace_signal_count(&self) -> usize {
+        [
+            !self.repeated_response_mode.trim().is_empty(),
+            !self.repeated_task_scope.trim().is_empty(),
+            !self.repeated_initiative_posture.trim().is_empty(),
+            !self.repeated_reply_scope.trim().is_empty(),
+            !self.pressure_pattern.trim().is_empty(),
+            !self.tool_usage_pattern.trim().is_empty(),
+        ]
+        .into_iter()
+        .filter(|value| *value)
+        .count()
+    }
+
+    pub fn has_operational_trace_signals(&self) -> bool {
+        self.operational_trace_signal_count() > 0
+    }
+
     pub fn is_meaningful(&self) -> bool {
         self.sampled_turns > 0
             || self.meaningful_turns > 0
-            || !self.repeated_priority_order.is_empty()
-            || !self.repeated_response_mode.trim().is_empty()
-            || !self.repeated_task_scope.trim().is_empty()
-            || !self.repeated_initiative_posture.trim().is_empty()
-            || !self.repeated_relationship_posture.trim().is_empty()
-            || !self.repeated_reply_scope.trim().is_empty()
-            || !self.repeated_disclosure_action.trim().is_empty()
-            || !self.pressure_pattern.trim().is_empty()
-            || !self.tool_usage_pattern.trim().is_empty()
+            || self.has_execution_continuity_signals()
             || !self.volatility_flags.is_empty()
+    }
+
+    pub fn promotable_growth_signal_count(&self) -> usize {
+        [
+            !self.repeated_priority_order.is_empty(),
+            !self.repeated_relationship_posture.trim().is_empty(),
+            !self.repeated_disclosure_action.trim().is_empty(),
+        ]
+        .into_iter()
+        .filter(|value| *value)
+        .count()
+    }
+
+    pub fn has_promotable_growth_signals(&self) -> bool {
+        self.promotable_growth_signal_count() > 0
+    }
+
+    pub fn promotable_growth_updated_at(&self) -> u64 {
+        if self.has_promotable_growth_signals() {
+            self.updated_at
+        } else {
+            0
+        }
     }
 }
 
@@ -180,6 +238,11 @@ pub fn render_recent_persona_evidence_block(
         "Derived from {} meaningful recent user turns. This is evidence, not automatic personality promotion.",
         evidence.meaningful_turns
     );
+    if evidence.has_promotable_growth_signals() {
+        out.push_str(
+            "Promotable growth signals below may support upward distillation, but only after constitutional review.\n",
+        );
+    }
     if !evidence.repeated_priority_order.is_empty() {
         let _ = writeln!(
             out,
@@ -227,6 +290,11 @@ pub fn render_recent_persona_evidence_block(
             out,
             "Repeated disclosure action: {}",
             evidence.repeated_disclosure_action.trim()
+        );
+    }
+    if evidence.has_operational_trace_signals() {
+        out.push_str(
+            "Operational traces below are supportive context only; they are not sufficient grounds for personality promotion by themselves.\n",
         );
     }
     if !evidence.pressure_pattern.trim().is_empty() {
@@ -510,6 +578,40 @@ mod tests {
         let block = render_recent_persona_evidence_block(&evidence, 480).unwrap();
         assert!(block.contains("Recent Persona Evidence"));
         assert!(block.contains("evidence, not automatic personality promotion"));
+        assert!(block.contains("Operational traces below are supportive context only"));
+    }
+
+    #[test]
+    fn promotable_growth_signals_ignore_operational_only_patterns() {
+        let operational_only = RecentPersonaEvidence {
+            meaningful_turns: 6,
+            repeated_response_mode: "protective_brief".to_string(),
+            repeated_task_scope: "narrow".to_string(),
+            repeated_initiative_posture: "answer directly".to_string(),
+            pressure_pattern: "cautious=4".to_string(),
+            tool_usage_pattern: "tool_calls=4".to_string(),
+            updated_at: 42,
+            ..RecentPersonaEvidence::default()
+        };
+        assert_eq!(operational_only.execution_continuity_signal_count(), 5);
+        assert!(operational_only.has_execution_continuity_signals());
+        assert_eq!(operational_only.operational_trace_signal_count(), 5);
+        assert!(operational_only.has_operational_trace_signals());
+        assert_eq!(operational_only.promotable_growth_signal_count(), 0);
+        assert!(!operational_only.has_promotable_growth_signals());
+        assert_eq!(operational_only.promotable_growth_updated_at(), 0);
+
+        let growth_supported = RecentPersonaEvidence {
+            repeated_priority_order: vec!["self_authored_core".to_string()],
+            repeated_relationship_posture: "warm but bounded".to_string(),
+            updated_at: 77,
+            ..RecentPersonaEvidence::default()
+        };
+        assert_eq!(growth_supported.execution_continuity_signal_count(), 2);
+        assert_eq!(growth_supported.operational_trace_signal_count(), 0);
+        assert_eq!(growth_supported.promotable_growth_signal_count(), 2);
+        assert!(growth_supported.has_promotable_growth_signals());
+        assert_eq!(growth_supported.promotable_growth_updated_at(), 77);
     }
 
     struct FastPathStore {

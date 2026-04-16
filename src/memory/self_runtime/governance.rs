@@ -171,7 +171,7 @@ fn build_persona_distillation_snapshot_from_layers(
         .map(|strategy| strategy.updated_at)
         .unwrap_or(0);
     let recent_persona_evidence_at = recent_persona_evidence
-        .map(|evidence| evidence.updated_at)
+        .map(|evidence| evidence.promotable_growth_updated_at())
         .unwrap_or(0);
     PersonaDistillationSnapshot {
         private_material_at: inner_life_at.max(private_docs_at).max(private_garden_at),
@@ -191,7 +191,8 @@ fn build_persona_distillation_snapshot_from_layers(
         has_inner_life: inner_life.is_some(),
         has_world_sense: world_sense.is_some(),
         has_autonomy_strategy: autonomy_strategy.is_some(),
-        has_recent_persona_evidence: recent_persona_evidence.is_some(),
+        has_recent_persona_evidence: recent_persona_evidence
+            .is_some_and(|evidence| evidence.has_promotable_growth_signals()),
     }
 }
 
@@ -1212,5 +1213,60 @@ fn default_factual_refresh_intent(
             summary
         ),
         None => format!("shared factual plane needs {} review", action.label()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distillation_snapshot_ignores_operational_only_recent_persona_evidence() {
+        let operational_only = crate::memory::RecentPersonaEvidence {
+            repeated_response_mode: "protective_brief".to_string(),
+            repeated_task_scope: "narrow".to_string(),
+            repeated_initiative_posture: "answer directly".to_string(),
+            pressure_pattern: "cautious=4".to_string(),
+            tool_usage_pattern: "tool_calls=4".to_string(),
+            updated_at: 88,
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+        let snapshot = build_persona_distillation_snapshot_from_layers(
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&operational_only),
+        );
+        assert_eq!(snapshot.recent_persona_evidence_at, 0);
+        assert!(!snapshot.has_recent_persona_evidence);
+
+        let promotable = crate::memory::RecentPersonaEvidence {
+            repeated_priority_order: vec!["self_authored_core".to_string()],
+            repeated_relationship_posture: "warm but bounded".to_string(),
+            updated_at: 144,
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+        let snapshot = build_persona_distillation_snapshot_from_layers(
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&promotable),
+        );
+        assert_eq!(snapshot.recent_persona_evidence_at, 144);
+        assert!(snapshot.has_recent_persona_evidence);
     }
 }

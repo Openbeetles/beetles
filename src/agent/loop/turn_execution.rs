@@ -123,6 +123,7 @@ pub(super) fn execute_turn(
     let PreparedWorkerConversation {
         mut runtime_carry,
         subject_state,
+        soul_feedback_projection,
         system,
         mut messages,
         mut system_scratch,
@@ -567,6 +568,7 @@ pub(super) fn execute_turn(
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
             task_learning_selected_ids: runtime_carry.task_recall_selected_ids,
             subject_state: subject_state.map(|value| *value),
+            soul_feedback_projection: soul_feedback_projection.map(|value| *value),
             mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),
             persona_priority_adjudication: persona_priority_adjudication.map(|value| *value),
         },

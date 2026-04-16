@@ -51,12 +51,49 @@ pub struct MemoryOperatorRecallTrace {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct MemoryOperatorSurfaceSummary {
+    pub program_memory_view: MemoryOperatorProgramMemoryView,
+    pub soul_governance_view: MemoryOperatorSoulGovernanceView,
     pub inspect: MemoryOperatorInspectView,
     pub trace: MemoryOperatorTraceView,
     pub diff: MemoryOperatorDiffView,
     pub repair: MemoryOperatorRepairView,
     pub forge: MemoryOperatorForgeView,
     pub policy_view: MemoryOperatorPolicyView,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MemoryOperatorProgramMemoryView {
+    pub memory_system_kind: String,
+    pub runtime_skill_count: usize,
+    pub long_term_count: usize,
+    pub continuity_capsule_count: usize,
+    pub continuity_snapshot_supported: bool,
+    pub saved_snapshot_count: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MemoryOperatorSoulGovernanceView {
+    pub board_revision: u64,
+    pub board_review_due: bool,
+    pub board_conservative_mode: bool,
+    pub recent_persona_evidence_updated_at: u64,
+    pub recent_persona_execution_signal_count: usize,
+    pub recent_persona_promotable_signal_count: usize,
+    pub recent_persona_operational_signal_count: usize,
+    pub latest_turn_reply_feedback_applied: bool,
+    pub latest_turn_initiative_feedback_applied: bool,
+    pub latest_turn_strategy_feedback_applied: bool,
+    pub latest_turn_strategy_post_reply_enqueued: bool,
+    pub latest_turn_reply_summary: String,
+    pub latest_turn_initiative_summary: String,
+    pub latest_turn_strategy_summary: String,
+    pub self_model_updated_at: u64,
+    pub self_authored_core_updated_at: u64,
+    pub self_continuity_updated_at: u64,
+    pub relationship_constitution_updated_at: u64,
+    pub relationship_needs_runtime_attention: bool,
+    pub runtime_governance_repair_needed: bool,
+    pub runtime_governance_primary_action: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -154,6 +191,15 @@ pub struct MemoryOperatorRelationshipTarget {
     pub reason: String,
 }
 
+type MemoryOperatorPolicyViewBundle = (
+    Option<MemoryOperatorRelationshipTarget>,
+    PersonalityGovernanceInspection,
+    PersonalityRuntimeGovernanceGate,
+    Option<crate::memory::RelationshipConstitution>,
+    Option<crate::memory::RecentPersonaEvidence>,
+    Option<crate::memory::TurnSoulFeedbackLedger>,
+);
+
 pub fn build_memory_operator_surface(
     platform: &dyn Platform,
     tool_registry: Option<&ToolRegistry>,
@@ -222,8 +268,14 @@ pub fn build_memory_operator_surface_with_capabilities(
         OPERATOR_SURFACE_ACTIVE_WINDOW_SECS,
         OPERATOR_SURFACE_TARGET_LIMIT,
     );
-    let (policy_target, personality_governance, runtime_governance_gate, relationship_constitution) =
-        build_policy_view(platform, now_secs, personality_targets.first())?;
+    let (
+        policy_target,
+        personality_governance,
+        runtime_governance_gate,
+        relationship_constitution,
+        recent_persona_evidence,
+        latest_turn_soul_feedback,
+    ) = build_policy_view(platform, now_secs, personality_targets.first())?;
     let forge_summary =
         crate::load_idle_memory_forge_operator_summary(platform.state_fs().as_ref())
             .ok()
@@ -269,6 +321,88 @@ pub fn build_memory_operator_surface_with_capabilities(
         });
 
     Ok(MemoryOperatorSurfaceSummary {
+        program_memory_view: MemoryOperatorProgramMemoryView {
+            memory_system_kind: memory_system_kind.as_str().to_string(),
+            runtime_skill_count,
+            long_term_count,
+            continuity_capsule_count,
+            continuity_snapshot_supported,
+            saved_snapshot_count,
+        },
+        soul_governance_view: MemoryOperatorSoulGovernanceView {
+            board_revision: self_authored_core
+                .as_ref()
+                .map(|core| core.revision)
+                .unwrap_or(0),
+            board_review_due: personality_governance.core_revision_governance.review_due,
+            board_conservative_mode: personality_governance
+                .core_revision_governance
+                .conservative_mode,
+            recent_persona_evidence_updated_at: recent_persona_evidence
+                .as_ref()
+                .map(|value| value.updated_at)
+                .unwrap_or(0),
+            recent_persona_execution_signal_count: recent_persona_evidence
+                .as_ref()
+                .map(|value| value.execution_continuity_signal_count())
+                .unwrap_or(0),
+            recent_persona_promotable_signal_count: recent_persona_evidence
+                .as_ref()
+                .map(|value| value.promotable_growth_signal_count())
+                .unwrap_or(0),
+            recent_persona_operational_signal_count: recent_persona_evidence
+                .as_ref()
+                .map(|value| value.operational_trace_signal_count())
+                .unwrap_or(0),
+            latest_turn_reply_feedback_applied: latest_turn_soul_feedback
+                .as_ref()
+                .is_some_and(|value| value.reply.applied),
+            latest_turn_initiative_feedback_applied: latest_turn_soul_feedback
+                .as_ref()
+                .is_some_and(|value| value.initiative.applied),
+            latest_turn_strategy_feedback_applied: latest_turn_soul_feedback
+                .as_ref()
+                .is_some_and(|value| value.strategy.applied),
+            latest_turn_strategy_post_reply_enqueued: latest_turn_soul_feedback
+                .as_ref()
+                .is_some_and(|value| value.strategy.post_reply_self_runtime_enqueued),
+            latest_turn_reply_summary: latest_turn_soul_feedback
+                .as_ref()
+                .map(|value| value.reply.summary.clone())
+                .unwrap_or_default(),
+            latest_turn_initiative_summary: latest_turn_soul_feedback
+                .as_ref()
+                .map(|value| value.initiative.summary.clone())
+                .unwrap_or_default(),
+            latest_turn_strategy_summary: latest_turn_soul_feedback
+                .as_ref()
+                .map(|value| value.strategy.summary.clone())
+                .unwrap_or_default(),
+            self_model_updated_at: self_model
+                .as_ref()
+                .map(|value| value.updated_at)
+                .unwrap_or(0),
+            self_authored_core_updated_at: self_authored_core
+                .as_ref()
+                .map(|value| value.updated_at)
+                .unwrap_or(0),
+            self_continuity_updated_at: self_continuity
+                .as_ref()
+                .map(|value| value.updated_at)
+                .unwrap_or(0),
+            relationship_constitution_updated_at: relationship_constitution
+                .as_ref()
+                .map(|value| value.updated_at)
+                .unwrap_or(0),
+            relationship_needs_runtime_attention: topology_entry
+                .is_some_and(|entry| entry.needs_runtime_attention()),
+            runtime_governance_repair_needed: personality_governance.repair_plan.repair_needed,
+            runtime_governance_primary_action: personality_governance
+                .repair_plan
+                .primary_action
+                .label()
+                .to_string(),
+        },
         inspect: MemoryOperatorInspectView {
             subject_id: subject_id.to_string(),
             memory_system_kind: memory_system_kind.as_str().to_string(),
@@ -379,6 +513,32 @@ pub fn build_memory_operator_surface_with_capabilities(
 
 pub fn render_memory_operator_surface_text(surface: &MemoryOperatorSurfaceSummary) -> String {
     let mut out = String::new();
+    out.push_str(&format!(
+        "  memory_operator_program_memory: kind={} runtime_skills={} long_term={} continuity_capsules={} snapshots_supported={} saved_snapshots={}\n",
+        surface.program_memory_view.memory_system_kind,
+        surface.program_memory_view.runtime_skill_count,
+        surface.program_memory_view.long_term_count,
+        surface.program_memory_view.continuity_capsule_count,
+        surface.program_memory_view.continuity_snapshot_supported,
+        surface.program_memory_view.saved_snapshot_count,
+    ));
+    out.push_str(&format!(
+        "  memory_operator_soul_governance: board_revision={} review_due={} conservative_mode={} recent_persona_at={} execution_signals={} promotable_signals={} operational_signals={} latest_reply_feedback={} latest_initiative_feedback={} latest_strategy_feedback={} latest_post_reply_runtime={} relationship_attention={} repair_needed={} primary_action={}\n",
+        surface.soul_governance_view.board_revision,
+        surface.soul_governance_view.board_review_due,
+        surface.soul_governance_view.board_conservative_mode,
+        surface.soul_governance_view.recent_persona_evidence_updated_at,
+        surface.soul_governance_view.recent_persona_execution_signal_count,
+        surface.soul_governance_view.recent_persona_promotable_signal_count,
+        surface.soul_governance_view.recent_persona_operational_signal_count,
+        surface.soul_governance_view.latest_turn_reply_feedback_applied,
+        surface.soul_governance_view.latest_turn_initiative_feedback_applied,
+        surface.soul_governance_view.latest_turn_strategy_feedback_applied,
+        surface.soul_governance_view.latest_turn_strategy_post_reply_enqueued,
+        surface.soul_governance_view.relationship_needs_runtime_attention,
+        surface.soul_governance_view.runtime_governance_repair_needed,
+        surface.soul_governance_view.runtime_governance_primary_action,
+    ));
     if let Some(target) = surface.inspect.active_relationship_target.as_ref() {
         out.push_str(&format!(
             "  memory_operator_active_relation: {}:{} ({})\n",
@@ -419,16 +579,11 @@ fn build_policy_view(
     platform: &dyn Platform,
     now_secs: u64,
     target: Option<&crate::memory::RelationshipSelectionTarget>,
-) -> crate::error::Result<(
-    Option<MemoryOperatorRelationshipTarget>,
-    PersonalityGovernanceInspection,
-    PersonalityRuntimeGovernanceGate,
-    Option<crate::memory::RelationshipConstitution>,
-)> {
+) -> crate::error::Result<MemoryOperatorPolicyViewBundle> {
     let Some(target) = target else {
         let inspection = PersonalityGovernanceInspection::default();
         let gate = derive_personality_runtime_governance_gate_from_inspection(&inspection);
-        return Ok((None, inspection, gate, None));
+        return Ok((None, inspection, gate, None, None, None));
     };
     let self_authored_core = platform
         .self_authored_core_store()
@@ -445,6 +600,10 @@ fn build_policy_view(
     let recent_persona_evidence = platform
         .turn_ledger_store()
         .recent_persona_evidence(target.chat_id.as_str())?;
+    let latest_turn_soul_feedback = platform
+        .turn_ledger_store()
+        .get(target.scope_id.as_str())?
+        .and_then(|ledger| ledger.soul_feedback);
     let inspection = inspect_personality_governance(PersonalityGovernanceInspectionInput {
         channel: target.channel.as_str(),
         chat_id: target.chat_id.as_str(),
@@ -461,7 +620,57 @@ fn build_policy_view(
         inspection,
         gate,
         relationship_constitution,
+        recent_persona_evidence,
+        latest_turn_soul_feedback,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_memory_operator_surface_text_exposes_split_program_and_soul_views() {
+        let text = render_memory_operator_surface_text(&MemoryOperatorSurfaceSummary {
+            program_memory_view: MemoryOperatorProgramMemoryView {
+                memory_system_kind: "linux_full".to_string(),
+                runtime_skill_count: 3,
+                long_term_count: 8,
+                continuity_capsule_count: 5,
+                continuity_snapshot_supported: true,
+                saved_snapshot_count: 2,
+            },
+            soul_governance_view: MemoryOperatorSoulGovernanceView {
+                board_revision: 7,
+                board_review_due: true,
+                board_conservative_mode: true,
+                recent_persona_evidence_updated_at: 88,
+                recent_persona_execution_signal_count: 5,
+                recent_persona_promotable_signal_count: 2,
+                recent_persona_operational_signal_count: 3,
+                latest_turn_reply_feedback_applied: true,
+                latest_turn_initiative_feedback_applied: true,
+                latest_turn_strategy_feedback_applied: true,
+                latest_turn_strategy_post_reply_enqueued: true,
+                relationship_needs_runtime_attention: true,
+                runtime_governance_repair_needed: true,
+                runtime_governance_primary_action: "repair_self_authored_core".to_string(),
+                ..MemoryOperatorSoulGovernanceView::default()
+            },
+            ..MemoryOperatorSurfaceSummary::default()
+        });
+
+        assert!(text.contains("memory_operator_program_memory: kind=linux_full"));
+        assert!(text.contains("runtime_skills=3"));
+        assert!(text.contains("memory_operator_soul_governance: board_revision=7"));
+        assert!(text.contains("execution_signals=5"));
+        assert!(text.contains("promotable_signals=2"));
+        assert!(text.contains("latest_reply_feedback=true"));
+        assert!(text.contains("latest_initiative_feedback=true"));
+        assert!(text.contains("latest_strategy_feedback=true"));
+        assert!(text.contains("latest_post_reply_runtime=true"));
+        assert!(text.contains("primary_action=repair_self_authored_core"));
+    }
 }
 
 fn convert_relationship_target(

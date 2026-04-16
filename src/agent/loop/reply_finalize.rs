@@ -26,6 +26,7 @@ pub(super) struct FinalizedTurn {
     pub(super) runtime_skill_selected_ids: Vec<String>,
     pub(super) task_learning_selected_ids: Vec<String>,
     pub(super) subject_state: Option<SubjectState>,
+    pub(super) soul_feedback_projection: Option<SoulFeedbackProjection>,
     pub(super) mental_privacy_adjudication:
         Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     pub(super) persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
@@ -165,6 +166,7 @@ pub(super) fn finalize_turn(
         runtime_skill_selected_ids,
         task_learning_selected_ids,
         subject_state,
+        soul_feedback_projection,
         mental_privacy_adjudication,
         persona_priority_adjudication,
     } = telemetry;
@@ -306,6 +308,7 @@ pub(super) fn finalize_turn(
         runtime_skill_selected_ids,
         task_learning_selected_ids,
         subject_state,
+        soul_feedback_projection,
         mental_privacy_adjudication,
         persona_priority_adjudication,
     })
@@ -356,6 +359,7 @@ pub(super) fn complete_turn(
         runtime_skill_selected_ids,
         task_learning_selected_ids,
         subject_state,
+        mut soul_feedback_projection,
         mental_privacy_adjudication,
         persona_priority_adjudication,
         ..
@@ -516,8 +520,8 @@ pub(super) fn complete_turn(
             msg.chat_id
         );
     }
-    if delivered
-        && !crate::memory::enqueue_self_runtime_post_reply(
+    let self_runtime_post_reply_enqueued = delivered
+        && crate::memory::enqueue_self_runtime_post_reply(
             system_inbound_tx,
             config.self_continuity_store.as_ref(),
             config.autonomy_strategy_store.as_ref(),
@@ -529,12 +533,29 @@ pub(super) fn complete_turn(
             &reply_content,
             worker_latency.tool_calls,
             external_content_used,
-        )
-    {
+        );
+    if delivered && !self_runtime_post_reply_enqueued {
         log::debug!(
             "[self_runtime] post-reply job skipped chat_id={}",
             msg.chat_id
         );
+    }
+    if let Some(projection) = soul_feedback_projection.as_mut() {
+        projection.strategy.post_reply_self_runtime_enqueued = self_runtime_post_reply_enqueued;
+        if self_runtime_post_reply_enqueued {
+            projection.strategy.applied = true;
+            if !projection
+                .strategy
+                .signal_layers
+                .iter()
+                .any(|layer| layer == "self_runtime_scheduler")
+            {
+                projection
+                    .strategy
+                    .signal_layers
+                    .push("self_runtime_scheduler".to_string());
+            }
+        }
     }
 
     let total_ms = msg_start.elapsed().as_millis();
@@ -602,6 +623,19 @@ pub(super) fn complete_turn(
             .ok()
             .flatten()
             .and_then(|ledger| ledger.persona)
+    };
+    turn_ledger.soul_feedback = if msg.ingress == IngressKind::User {
+        soul_feedback_projection
+            .as_ref()
+            .and_then(build_turn_soul_feedback_ledger)
+    } else {
+        let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
+        config
+            .turn_ledger_store
+            .get(&relationship_id)
+            .ok()
+            .flatten()
+            .and_then(|ledger| ledger.soul_feedback)
     };
     super::turn_finalize::persist_turn_ledger(
         config.turn_ledger_store.as_ref(),

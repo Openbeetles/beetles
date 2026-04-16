@@ -1,4 +1,6 @@
 //! Current-turn persona priority adjudication for main replies.
+//! Recent persona evidence may stabilize current-turn execution behavior, but that does not give
+//! it promotion authority into board-level personality state.
 
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
@@ -335,12 +337,14 @@ fn persistent_stance_summary(
         ])
     })
     .or_else(|| {
-        evidence.and_then(|evidence| {
-            choose_first_non_empty(&[
-                Some(evidence.repeated_relationship_posture.as_str()),
-                Some(evidence.repeated_initiative_posture.as_str()),
-            ])
-        })
+        evidence
+            .filter(|evidence| evidence.has_execution_continuity_signals())
+            .and_then(|evidence| {
+                choose_first_non_empty(&[
+                    Some(evidence.repeated_relationship_posture.as_str()),
+                    Some(evidence.repeated_initiative_posture.as_str()),
+                ])
+            })
     })
     .unwrap_or_default()
     .to_string()
@@ -358,9 +362,12 @@ fn persistent_response_mode(runtime: PersonaPriorityRuntimeState<'_>) -> String 
             })
         })
         .or_else(|| {
-            runtime.recent_persona_evidence.and_then(|evidence| {
-                choose_first_non_empty(&[Some(evidence.repeated_response_mode.as_str())])
-            })
+            runtime
+                .recent_persona_evidence
+                .filter(|evidence| evidence.has_execution_continuity_signals())
+                .and_then(|evidence| {
+                    choose_first_non_empty(&[Some(evidence.repeated_response_mode.as_str())])
+                })
         })
         .unwrap_or_default()
         .to_string()
@@ -378,6 +385,7 @@ fn persistent_task_scope(runtime: PersonaPriorityRuntimeState<'_>) -> String {
         .or_else(|| {
             runtime
                 .recent_persona_evidence
+                .filter(|evidence| evidence.has_execution_continuity_signals())
                 .and_then(|evidence| parse_task_scope_from_posture(&evidence.repeated_task_scope))
         })
         .unwrap_or_default();
@@ -399,9 +407,12 @@ fn persistent_initiative_posture(runtime: PersonaPriorityRuntimeState<'_>) -> St
             choose_first_non_empty(&[Some(evidence.default_initiative_posture.as_str())])
         })
         .or_else(|| {
-            runtime.recent_persona_evidence.and_then(|evidence| {
-                choose_first_non_empty(&[Some(evidence.repeated_initiative_posture.as_str())])
-            })
+            runtime
+                .recent_persona_evidence
+                .filter(|evidence| evidence.has_execution_continuity_signals())
+                .and_then(|evidence| {
+                    choose_first_non_empty(&[Some(evidence.repeated_initiative_posture.as_str())])
+                })
         })
         .unwrap_or(match runtime.pressure {
             PressureLevel::Normal => "",
@@ -423,9 +434,12 @@ fn persistent_relationship_posture(runtime: PersonaPriorityRuntimeState<'_>) -> 
             })
         })
         .or_else(|| {
-            runtime.recent_persona_evidence.and_then(|evidence| {
-                choose_first_non_empty(&[Some(evidence.repeated_relationship_posture.as_str())])
-            })
+            runtime
+                .recent_persona_evidence
+                .filter(|evidence| evidence.has_execution_continuity_signals())
+                .and_then(|evidence| {
+                    choose_first_non_empty(&[Some(evidence.repeated_relationship_posture.as_str())])
+                })
         })
         .unwrap_or_default()
         .to_string()
@@ -1001,6 +1015,30 @@ mod tests {
         assert_eq!(adjudication.priority_order, core.priority_constitution);
         assert_eq!(adjudication.response_mode, "steady_task");
         assert_eq!(adjudication.relationship_posture, "warm but self-possessed");
+    }
+
+    #[test]
+    fn persistent_priority_can_still_use_operational_traces_for_execution_continuity() {
+        let evidence = RecentPersonaEvidence {
+            repeated_response_mode: "protective_brief".to_string(),
+            repeated_task_scope: "narrow".to_string(),
+            repeated_initiative_posture: "answer directly".to_string(),
+            pressure_pattern: "cautious=3".to_string(),
+            tool_usage_pattern: "tool_calls=2".to_string(),
+            ..RecentPersonaEvidence::default()
+        };
+        let adjudication =
+            build_persistent_persona_priority_adjudication(PersonaPriorityRuntimeState {
+                pressure: PressureLevel::Normal,
+                system_budget: 4096,
+                self_authored_core: None,
+                core_revision_governance: None,
+                disclosure_adjudication: None,
+                recent_persona_evidence: Some(&evidence),
+            });
+        assert_eq!(adjudication.response_mode, "protective_brief");
+        assert_eq!(adjudication.task_scope, "narrow");
+        assert_eq!(adjudication.initiative_posture, "answer directly");
     }
 
     #[test]

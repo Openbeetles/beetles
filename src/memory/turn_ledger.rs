@@ -259,6 +259,108 @@ impl TurnSubjectStateLedger {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSoulReplyLedger {
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub identity_anchor: String,
+    #[serde(default)]
+    pub response_mode: String,
+    #[serde(default)]
+    pub relationship_posture: String,
+    #[serde(default)]
+    pub expression_mode: String,
+}
+
+impl TurnSoulReplyLedger {
+    pub fn is_meaningful(&self) -> bool {
+        self.applied
+            || !self.summary.trim().is_empty()
+            || !self.identity_anchor.trim().is_empty()
+            || !self.response_mode.trim().is_empty()
+            || !self.relationship_posture.trim().is_empty()
+            || !self.expression_mode.trim().is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSoulInitiativeLedger {
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub governance_mode: String,
+    #[serde(default)]
+    pub initiative_posture: String,
+    #[serde(default)]
+    pub compact_reply: bool,
+    #[serde(default)]
+    pub explicit_blocker: bool,
+}
+
+impl TurnSoulInitiativeLedger {
+    pub fn is_meaningful(&self) -> bool {
+        self.applied
+            || !self.summary.trim().is_empty()
+            || !self.governance_mode.trim().is_empty()
+            || !self.initiative_posture.trim().is_empty()
+            || self.compact_reply
+            || self.explicit_blocker
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSoulStrategyLedger {
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub current_mode: String,
+    #[serde(default)]
+    pub next_focus: String,
+    #[serde(default)]
+    pub idle_enabled: bool,
+    #[serde(default)]
+    pub idle_interval_secs: u64,
+    #[serde(default)]
+    pub post_reply_self_runtime_enqueued: bool,
+}
+
+impl TurnSoulStrategyLedger {
+    pub fn is_meaningful(&self) -> bool {
+        self.applied
+            || !self.summary.trim().is_empty()
+            || !self.current_mode.trim().is_empty()
+            || !self.next_focus.trim().is_empty()
+            || self.idle_enabled
+            || self.idle_interval_secs > 0
+            || self.post_reply_self_runtime_enqueued
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSoulFeedbackLedger {
+    #[serde(default)]
+    pub reply: TurnSoulReplyLedger,
+    #[serde(default)]
+    pub initiative: TurnSoulInitiativeLedger,
+    #[serde(default)]
+    pub strategy: TurnSoulStrategyLedger,
+}
+
+impl TurnSoulFeedbackLedger {
+    pub fn is_meaningful(&self) -> bool {
+        self.reply.is_meaningful()
+            || self.initiative.is_meaningful()
+            || self.strategy.is_meaningful()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnPersonaLedger {
     #[serde(default)]
     pub disclosure: Option<TurnPersonaDisclosureLedger>,
@@ -398,6 +500,8 @@ pub struct TurnLedger {
     pub observation: Option<TurnObservationLedger>,
     #[serde(default)]
     pub persona: Option<TurnPersonaLedger>,
+    #[serde(default)]
+    pub soul_feedback: Option<TurnSoulFeedbackLedger>,
 }
 
 pub trait TurnLedgerStore: Send + Sync {

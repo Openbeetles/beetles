@@ -64,6 +64,55 @@ pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) ->
             gate.allow_upward_distillation.to_string(),
         ),
         DiagnosisEvidence::new(
+            "recent_persona_execution_signal_count",
+            surface
+                .soul_governance_view
+                .recent_persona_execution_signal_count
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "recent_persona_promotable_signal_count",
+            surface
+                .soul_governance_view
+                .recent_persona_promotable_signal_count
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "recent_persona_operational_signal_count",
+            surface
+                .soul_governance_view
+                .recent_persona_operational_signal_count
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "latest_turn_reply_feedback_applied",
+            surface
+                .soul_governance_view
+                .latest_turn_reply_feedback_applied
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "latest_turn_initiative_feedback_applied",
+            surface
+                .soul_governance_view
+                .latest_turn_initiative_feedback_applied
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "latest_turn_strategy_feedback_applied",
+            surface
+                .soul_governance_view
+                .latest_turn_strategy_feedback_applied
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "latest_turn_strategy_post_reply_enqueued",
+            surface
+                .soul_governance_view
+                .latest_turn_strategy_post_reply_enqueued
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
             "forge_attack_findings",
             surface.forge.attack_findings.to_string(),
         ),
@@ -143,6 +192,67 @@ pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) ->
         ));
     }
 
+    if surface
+        .soul_governance_view
+        .recent_persona_execution_signal_count
+        > 0
+        && surface
+            .soul_governance_view
+            .recent_persona_promotable_signal_count
+            == 0
+    {
+        findings.push(DiagnosisFinding::observed(
+            "recent persona evidence currently stabilizes execution behavior without constituting promotable growth",
+        ));
+    }
+
+    if surface
+        .soul_governance_view
+        .recent_persona_promotable_signal_count
+        > 0
+        && !gate.allow_upward_distillation
+    {
+        findings.push(DiagnosisFinding::correlated(
+            "promotable soul-growth signals are present but currently held behind runtime governance",
+        ));
+        suspected_root_causes.push(DiagnosisRootCause::new(
+            "promotable_growth_waiting_for_governance_clearance",
+            "recent multi-turn growth signals exist, but runtime governance is intentionally holding upward distillation until review or repair conditions settle",
+            DiagnosisConfidence::Medium,
+        ));
+        recommended_next_steps.push(DiagnosisAction::new(
+            "inspect_soul_growth_promotion_gate",
+            "inspect whether promotable growth signals are waiting on constitutional review, observation windows, or governance repairs",
+        ));
+    }
+
+    if surface
+        .soul_governance_view
+        .latest_turn_reply_feedback_applied
+        || surface
+            .soul_governance_view
+            .latest_turn_initiative_feedback_applied
+        || surface
+            .soul_governance_view
+            .latest_turn_strategy_feedback_applied
+    {
+        findings.push(DiagnosisFinding::observed(
+            "latest active turn already shows governed soul feedback on at least one mainline chain",
+        ));
+    } else if surface
+        .soul_governance_view
+        .recent_persona_promotable_signal_count
+        > 0
+    {
+        findings.push(DiagnosisFinding::correlated(
+            "promotable soul-growth signals exist, but the latest active turn does not yet show reply, initiative, or strategy feedback",
+        ));
+        recommended_next_steps.push(DiagnosisAction::new(
+            "inspect_soul_feedback_projection",
+            "inspect whether the current-turn reply, initiative, and post-reply strategy chains are consuming settled soul governance outputs",
+        ));
+    }
+
     if surface.inspect.long_term_count == 0
         && surface.inspect.continuity_capsule_count == 0
         && surface.inspect.runtime_skill_count == 0
@@ -183,6 +293,8 @@ pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) ->
         "inspect_personality_governance".to_string(),
         "inspect_runtime_governance_gate".to_string(),
         "inspect_memory_forge".to_string(),
+        "inspect_soul_growth_promotion_gate".to_string(),
+        "inspect_soul_feedback_projection".to_string(),
     ];
     if surface.inspect.continuity_snapshot_supported {
         safe_actions_available.push("inspect_continuity_snapshot".to_string());
@@ -222,7 +334,8 @@ mod tests {
     };
     use crate::platform::memory_operator_surface::{
         MemoryOperatorDiffView, MemoryOperatorForgeView, MemoryOperatorInspectView,
-        MemoryOperatorPolicyView, MemoryOperatorRepairView, MemoryOperatorSurfaceSummary,
+        MemoryOperatorPolicyView, MemoryOperatorRepairView, MemoryOperatorSoulGovernanceView,
+        MemoryOperatorSurfaceSummary,
     };
 
     #[test]
@@ -309,5 +422,79 @@ mod tests {
             .iter()
             .any(|cause| cause.code == "sparse_persistent_memory"));
         assert!(!diagnosis.degraded_by.is_empty());
+    }
+
+    #[test]
+    fn memory_runtime_diagnosis_reports_promotable_growth_waiting_for_clearance() {
+        let diagnosis = build_memory_runtime_diagnosis(&MemoryOperatorSurfaceSummary {
+            soul_governance_view: MemoryOperatorSoulGovernanceView {
+                recent_persona_execution_signal_count: 4,
+                recent_persona_promotable_signal_count: 2,
+                recent_persona_operational_signal_count: 2,
+                ..MemoryOperatorSoulGovernanceView::default()
+            },
+            policy_view: MemoryOperatorPolicyView {
+                personality_governance: PersonalityGovernanceInspection::default(),
+                runtime_governance_gate: PersonalityRuntimeGovernanceGate {
+                    conservative_reply: true,
+                    allow_dynamic_persona_priority: false,
+                    allow_upward_distillation: false,
+                    ..PersonalityRuntimeGovernanceGate::default()
+                },
+                ..MemoryOperatorPolicyView::default()
+            },
+            ..MemoryOperatorSurfaceSummary::default()
+        });
+
+        assert!(diagnosis
+            .suspected_root_causes
+            .iter()
+            .any(|cause| cause.code == "promotable_growth_waiting_for_governance_clearance"));
+        assert!(diagnosis
+            .recommended_next_steps
+            .iter()
+            .any(|step| step.code == "inspect_soul_growth_promotion_gate"));
+    }
+
+    #[test]
+    fn memory_runtime_diagnosis_marks_execution_only_persona_evidence_as_non_promotional() {
+        let diagnosis = build_memory_runtime_diagnosis(&MemoryOperatorSurfaceSummary {
+            soul_governance_view: MemoryOperatorSoulGovernanceView {
+                recent_persona_execution_signal_count: 5,
+                recent_persona_promotable_signal_count: 0,
+                recent_persona_operational_signal_count: 5,
+                ..MemoryOperatorSoulGovernanceView::default()
+            },
+            ..MemoryOperatorSurfaceSummary::default()
+        });
+
+        assert!(diagnosis.findings.iter().any(|finding| finding
+            .message
+            .contains("stabilizes execution behavior without constituting promotable growth")));
+    }
+
+    #[test]
+    fn memory_runtime_diagnosis_reports_latest_turn_soul_feedback_as_observed() {
+        let diagnosis = build_memory_runtime_diagnosis(&MemoryOperatorSurfaceSummary {
+            soul_governance_view: MemoryOperatorSoulGovernanceView {
+                recent_persona_execution_signal_count: 4,
+                recent_persona_promotable_signal_count: 1,
+                recent_persona_operational_signal_count: 2,
+                latest_turn_reply_feedback_applied: true,
+                latest_turn_initiative_feedback_applied: true,
+                latest_turn_strategy_feedback_applied: true,
+                latest_turn_strategy_post_reply_enqueued: true,
+                ..MemoryOperatorSoulGovernanceView::default()
+            },
+            ..MemoryOperatorSurfaceSummary::default()
+        });
+
+        assert!(diagnosis.findings.iter().any(|finding| finding
+            .message
+            .contains("latest active turn already shows governed soul feedback")));
+        assert!(!diagnosis
+            .recommended_next_steps
+            .iter()
+            .any(|step| step.code == "inspect_soul_feedback_projection"));
     }
 }

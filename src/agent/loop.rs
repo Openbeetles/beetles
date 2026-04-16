@@ -22,6 +22,10 @@ use super::final_reply::finalize_user_visible_reply;
 use super::reply_surface::ReplySurface;
 use super::request_plan::AgentRequestPlan;
 use super::request_semantics::RequestSemantics;
+use super::soul_feedback::{
+    build_turn_soul_feedback_ledger, compile_soul_feedback_projection,
+    render_soul_feedback_projection_block, SoulFeedbackProjection, SoulFeedbackProjectionInput,
+};
 use super::strategy::{
     empty_final_answer_followup, final_answer_followup, repeated_answer_followup, AgentRunStrategy,
     SuccessfulToolRoundSummary,
@@ -462,6 +466,7 @@ struct WorkerRunTelemetry {
     runtime_skill_selected_ids: Vec<String>,
     task_learning_selected_ids: Vec<String>,
     subject_state: Option<SubjectState>,
+    soul_feedback_projection: Option<SoulFeedbackProjection>,
     mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
@@ -525,6 +530,7 @@ fn build_turn_observation_ledger(
 struct PreparedWorkerConversation {
     runtime_carry: Box<PromptRuntimeCarry>,
     subject_state: Option<Box<SubjectState>>,
+    soul_feedback_projection: Option<Box<SoulFeedbackProjection>>,
     system: String,
     messages: Vec<Message>,
     system_scratch: String,
@@ -4211,6 +4217,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4308,6 +4315,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4376,6 +4384,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4441,6 +4450,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4521,6 +4531,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4575,6 +4586,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4623,6 +4635,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4685,6 +4698,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -4743,6 +4757,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -5428,6 +5443,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };
@@ -5541,6 +5557,7 @@ mod tests {
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
             subject_state: None,
+            soul_feedback_projection: None,
             mental_privacy_adjudication: None,
             persona_priority_adjudication: None,
         };

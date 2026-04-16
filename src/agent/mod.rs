@@ -9,6 +9,7 @@ mod r#loop;
 mod reply_surface;
 mod request_plan;
 mod request_semantics;
+mod soul_feedback;
 mod strategy;
 mod subject_state;
 mod tool_outcome;

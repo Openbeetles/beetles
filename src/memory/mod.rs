@@ -395,6 +395,7 @@ pub use turn_ledger::{
     TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger,
     TurnObservationLedger, TurnPersonaDisclosureLedger, TurnPersonaLedger,
     TurnPersonaPressureLevel, TurnPersonaPriorityLedger, TurnPersonaReviewLedger,
+    TurnSoulFeedbackLedger, TurnSoulInitiativeLedger, TurnSoulReplyLedger, TurnSoulStrategyLedger,
     TurnSubjectStateLedger, TurnToolPathLedger, REL_PATH_TURN_LEDGERS,
     REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
 };

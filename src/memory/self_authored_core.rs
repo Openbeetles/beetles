@@ -23,7 +23,7 @@ use super::{
     SelfAuthoredCoreStore, SelfContinuity, SelfModel, WorldSense,
 };
 
-pub const SELF_AUTHORED_CORE_SYSTEM_PROMPT: &str = "You maintain the assistant's persistent self-authored core for the whole board-level subject, not one chat. Return JSON only with fields board_scope_decision, rationale, evidence_summary, counterevidence, proposed_actions. board_scope_decision must be revise_board, relation_local, or no_change. proposed_actions must be an array of compact action objects. Allowed action kinds are revise_identity_anchor, add_non_negotiables, remove_non_negotiables, revise_priority_constitution, revise_default_response_mode, revise_default_task_scope, revise_default_initiative_posture, revise_default_relationship_posture, revise_boundary_doctrine, revise_truth_doctrine, revise_self_preservation_doctrine, revise_repair_doctrine, revise_change_protocol. This is a constitutional revision pass, not a free rewrite. Propose only stable board-level changes that deserve cross-chat carry-forward. Use self_model, self_continuity, boundary state, relationship portfolio, relationship topology, and recent multi-turn persona evidence as grounding. Treat recent persona evidence as evidence, never automatic promotion authority. A quarantined, cooled-down, or otherwise isolated relation must not directly rewrite the board-level core. If the latest material should stay relation-local, set board_scope_decision=relation_local. If no constitutional change is warranted, set board_scope_decision=no_change. Do not copy transcripts, raw tool payloads, long quotes, or private documents.";
+pub const SELF_AUTHORED_CORE_SYSTEM_PROMPT: &str = "You maintain the assistant's persistent self-authored core for the whole board-level subject, not one chat. Return JSON only with fields board_scope_decision, rationale, evidence_summary, counterevidence, proposed_actions. board_scope_decision must be revise_board, relation_local, or no_change. proposed_actions must be an array of compact action objects. Allowed action kinds are revise_identity_anchor, add_non_negotiables, remove_non_negotiables, revise_priority_constitution, revise_default_response_mode, revise_default_task_scope, revise_default_initiative_posture, revise_default_relationship_posture, revise_boundary_doctrine, revise_truth_doctrine, revise_self_preservation_doctrine, revise_repair_doctrine, revise_change_protocol. This is a constitutional revision pass, not a free rewrite. Propose only stable board-level changes that deserve cross-chat carry-forward. Use self_model, self_continuity, boundary state, relationship portfolio, relationship topology, and recent multi-turn persona evidence as grounding. Treat recent persona evidence as evidence, never automatic promotion authority. Operational traces such as task scope, response mode, pressure, tool usage, or reply scope are not sufficient constitutional revision grounds by themselves. A quarantined, cooled-down, or otherwise isolated relation must not directly rewrite the board-level core. If the latest material should stay relation-local, set board_scope_decision=relation_local. If no constitutional change is warranted, set board_scope_decision=no_change. Do not copy transcripts, raw tool payloads, long quotes, or private documents.";
 
 const SELF_AUTHORED_CORE_TEXT_MAX_CHARS: usize = 220;
 const SELF_AUTHORED_CORE_SHORT_TEXT_MAX_CHARS: usize = 140;
@@ -1204,16 +1204,16 @@ fn build_recent_persona_evidence_summary(evidence: &RecentPersonaEvidence) -> Ve
             evidence.repeated_priority_order.join(" > ")
         ));
     }
-    if !evidence.repeated_task_scope.trim().is_empty() {
-        summary.push(format!(
-            "task_scope={}",
-            evidence.repeated_task_scope.trim()
-        ));
-    }
     if !evidence.repeated_relationship_posture.trim().is_empty() {
         summary.push(format!(
             "relationship={}",
             evidence.repeated_relationship_posture.trim()
+        ));
+    }
+    if !evidence.repeated_disclosure_action.trim().is_empty() {
+        summary.push(format!(
+            "boundary={}",
+            evidence.repeated_disclosure_action.trim()
         ));
     }
     normalize_short_list(summary, 3, SELF_AUTHORED_CORE_TEXT_MAX_CHARS)
@@ -1820,18 +1820,7 @@ fn evaluate_self_authored_core_revision_gate(
 }
 
 fn stable_signal_count(evidence: &RecentPersonaEvidence) -> usize {
-    [
-        !evidence.repeated_priority_order.is_empty(),
-        !evidence.repeated_response_mode.trim().is_empty(),
-        !evidence.repeated_task_scope.trim().is_empty(),
-        !evidence.repeated_initiative_posture.trim().is_empty(),
-        !evidence.repeated_relationship_posture.trim().is_empty(),
-        !evidence.repeated_reply_scope.trim().is_empty(),
-        !evidence.repeated_disclosure_action.trim().is_empty(),
-    ]
-    .into_iter()
-    .filter(|value| *value)
-    .count()
+    evidence.promotable_growth_signal_count()
 }
 
 fn upstream_core_input_updated_at(
@@ -1863,7 +1852,7 @@ fn upstream_core_input_updated_at(
                 .map(|topology| topology.updated_at)
                 .unwrap_or(0),
         )
-        .max(recent_persona_evidence.updated_at)
+        .max(recent_persona_evidence.promotable_growth_updated_at())
 }
 
 fn compute_revision_stability_score(
@@ -2464,6 +2453,70 @@ mod tests {
         );
         assert!(!gate.allowed);
         assert_eq!(gate.reason, "insufficient_meaningful_turns");
+    }
+
+    #[test]
+    fn revision_gate_rejects_operational_only_recent_persona_evidence() {
+        let gate = evaluate_self_authored_core_revision_gate(
+            Some(&SelfAuthoredCore {
+                revision: 1,
+                identity_anchor: "board self".to_string(),
+                updated_at: 50,
+                ..SelfAuthoredCore::default()
+            }),
+            Some(&SelfModel {
+                continuity_anchor: "same self".to_string(),
+                updated_at: 60,
+                ..SelfModel::default()
+            }),
+            Some(&SelfContinuity {
+                wake_anchor: "same wake".to_string(),
+                updated_at: 60,
+                ..SelfContinuity::default()
+            }),
+            None,
+            Some(&RelationshipPortfolio {
+                entries: vec![RelationshipPortfolioEntry {
+                    scope_id: "rel:qq:c1".to_string(),
+                    channel: "qq".to_string(),
+                    chat_id: "c1".to_string(),
+                    governance_state: RelationshipGovernanceState::Maintain,
+                    inheritance_mode: RelationshipInheritanceMode::Guarded,
+                    priority_score: 220,
+                    reason: "maintain".to_string(),
+                    source_updated_at: 60,
+                    last_active_at: 60,
+                    needs_runtime_attention: true,
+                    last_selected_at: 0,
+                    next_review_at: 0,
+                }],
+                updated_at: 60,
+            }),
+            "rel:qq:c1",
+            Some(&RecentPersonaEvidence {
+                meaningful_turns: 8,
+                repeated_response_mode: "protective_brief".to_string(),
+                repeated_task_scope: "narrow".to_string(),
+                repeated_initiative_posture: "answer directly".to_string(),
+                pressure_pattern: "cautious=6".to_string(),
+                tool_usage_pattern: "tool_calls=5".to_string(),
+                updated_at: 60,
+                ..RecentPersonaEvidence::default()
+            }),
+            Some(&RelationshipTopology {
+                entries: vec![RelationshipTopologyEntry {
+                    scope_id: "rel:qq:c1".to_string(),
+                    channel: "qq".to_string(),
+                    chat_id: "c1".to_string(),
+                    last_user_turn_at: 60,
+                    ..RelationshipTopologyEntry::default()
+                }],
+                updated_at: 60,
+            }),
+            &CoreRevisionGovernanceDigest::default(),
+        );
+        assert!(!gate.allowed);
+        assert_eq!(gate.reason, "insufficient_stable_persona_signals");
     }
 
     #[test]

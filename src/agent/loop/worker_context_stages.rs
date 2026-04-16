@@ -34,6 +34,7 @@ pub(super) struct PreparePromptStage {
 pub(super) struct PrepareGovernanceStage {
     pub subject_state: Option<SubjectState>,
     pub deliberation_gate: TurnDeliberationGate,
+    pub soul_feedback_projection: Option<crate::agent::soul_feedback::SoulFeedbackProjection>,
     pub mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     pub persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
@@ -640,12 +641,32 @@ pub(super) fn enrich_prepare_governance(
         archive_report: &prompt_stage.prompt_memory.archive_recall_report,
         runtime_skill_report: &prompt_stage.prompt_memory.runtime_skill_recall_report,
         task_recall_report: prompt_stage.prompt_memory.task_recall_report.as_ref(),
+        personality_governance_gate: Some(&personality_governance_gate),
     });
+    let soul_feedback_projection = crate::agent::soul_feedback::compile_soul_feedback_projection(
+        crate::agent::soul_feedback::SoulFeedbackProjectionInput {
+            self_authored_core: prompt_stage.prompt_memory.self_authored_core.as_ref(),
+            relationship_constitution: prompt_stage
+                .prompt_memory
+                .relationship_constitution
+                .as_ref(),
+            persona_priority: persona_priority_adjudication
+                .as_ref()
+                .or(Some(&persistent_persona_priority)),
+            outer_voice: prompt_stage.prompt_memory.outer_voice.as_ref(),
+            autonomy_strategy: prompt_stage.prompt_memory.autonomy_strategy.as_ref(),
+            subject_state: subject_state.as_ref(),
+            deliberation_gate: &deliberation_gate,
+            personality_governance_gate: Some(&personality_governance_gate),
+            post_reply_self_runtime_enqueued: false,
+        },
+    );
     prompt_stage.prompt_memory.refresh_reply_projection_groups();
 
     session.governance = Some(PrepareGovernanceStage {
         subject_state,
         deliberation_gate,
+        soul_feedback_projection,
         mental_privacy_adjudication: primer.mental_privacy_adjudication,
         persona_priority_adjudication,
     });
@@ -691,6 +712,12 @@ pub(super) fn finalize_prepare_context<'a>(
         .and_then(|state| render_subject_state_block(state, 360));
     let deliberation_gate_text =
         render_turn_deliberation_gate_block(&governance_stage.deliberation_gate, 360);
+    let soul_feedback_projection_text = governance_stage
+        .soul_feedback_projection
+        .as_ref()
+        .and_then(|projection| {
+            crate::agent::soul_feedback::render_soul_feedback_projection_block(projection, 420)
+        });
     let (mut system, messages) = build_context(&crate::agent::ContextParams {
         msg,
         memory_system_kind: config.memory_system_kind,
@@ -707,28 +734,17 @@ pub(super) fn finalize_prepare_context<'a>(
         constitutional_stack_text: prompt_memory.constitutional_stack_text.as_deref(),
         subject_state_text: subject_state_text.as_deref(),
         deliberation_gate_text: deliberation_gate_text.as_deref(),
+        soul_feedback_projection_text: soul_feedback_projection_text.as_deref(),
         active_task_context_text: prompt_memory.active_task_context_text.as_deref(),
         governed_memory_evidence_text: prompt_memory.governed_memory_evidence_text.as_deref(),
         background_governance_text: prompt_memory.background_governance_text.as_deref(),
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
         task_workspace_text: prompt_memory.task_workspace_text.as_deref(),
         task_recall_text: prompt_memory.task_recall_text.as_deref(),
-        world_snapshot_text: prompt_memory.world_snapshot_text.as_deref(),
-        world_sense_text: prompt_memory.world_sense_text.as_deref(),
-        self_state_text: prompt_memory.self_state_text.as_deref(),
         self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
-        relationship_portfolio_text: prompt_memory.relationship_portfolio_text.as_deref(),
         relationship_constitution_text: prompt_memory.relationship_constitution_text.as_deref(),
         persona_priority_text: prompt_memory.persona_priority_text.as_deref(),
-        self_model_text: prompt_memory.self_model_text.as_deref(),
-        autonomy_strategy_text: prompt_memory.autonomy_strategy_text.as_deref(),
-        outer_voice_text: prompt_memory.outer_voice_text.as_deref(),
-        inner_life_text: prompt_memory.inner_life_text.as_deref(),
-        self_continuity_text: prompt_memory.self_continuity_text.as_deref(),
-        private_workspace_text: prompt_memory.private_workspace_text.as_deref(),
-        private_garden_text: prompt_memory.private_garden_text.as_deref(),
         mental_privacy_adjudication_text: prompt_memory.mental_privacy_adjudication_text.as_deref(),
-        mental_privacy_text: prompt_memory.mental_privacy_text.as_deref(),
         long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
         archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
         runtime_skill_text: prompt_memory.runtime_skill_text.as_deref(),
@@ -764,6 +780,7 @@ pub(super) fn finalize_prepare_context<'a>(
     Ok(PreparedWorkerConversation {
         runtime_carry,
         subject_state: governance_stage.subject_state.map(Box::new),
+        soul_feedback_projection: governance_stage.soul_feedback_projection.map(Box::new),
         system,
         messages,
         system_scratch,

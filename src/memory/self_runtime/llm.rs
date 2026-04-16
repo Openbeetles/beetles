@@ -1,5 +1,27 @@
 use super::*;
 
+fn compose_self_runtime_grounding_body(parts: &[Option<&str>]) -> Option<String> {
+    let mut out = String::new();
+    for part in parts.iter().flatten() {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(trimmed);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn append_self_runtime_grounding_section(out: &mut String, title: &str, parts: &[Option<&str>]) {
+    let Some(body) = compose_self_runtime_grounding_body(parts) else {
+        return;
+    };
+    let _ = writeln!(out, "\n{}\n{}\n", title, body);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decide_self_runtime(
     http: &mut dyn LlmHttpClient,
@@ -72,24 +94,22 @@ pub(super) fn decide_self_runtime(
             )
         );
     }
-    if let Some(summary_text) = summary_text.filter(|s| !s.trim().is_empty()) {
-        let summary = truncate_content_to_max(summary_text.trim(), policy.grounding_max_len);
-        let _ = writeln!(input, "Summary: {}", scrub_credentials(summary.as_ref()));
-    }
-    if let Some(block) = execution_state.and_then(|state| {
+    let summary_line = summary_text
+        .filter(|s| !s.trim().is_empty())
+        .map(|summary_text| {
+            let summary = truncate_content_to_max(summary_text.trim(), policy.grounding_max_len);
+            format!("Summary: {}", scrub_credentials(summary.as_ref()))
+        });
+    let execution_state_block = execution_state.and_then(|state| {
         render_execution_state_block(
             state,
             policy
                 .grounding_max_len
                 .min(memory_policy(profile).execution_state.render_max_len),
         )
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = factual_snapshot.block.as_deref() {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = build_archive_evidence_block(
+    });
+    let factual_snapshot_block = factual_snapshot.block.clone();
+    let archive_evidence_block = build_archive_evidence_block(
         session_store,
         memory_store,
         turn_ledger_store,
@@ -97,16 +117,12 @@ pub(super) fn decide_self_runtime(
         query_hint,
         policy.grounding_max_len,
         profile,
-    ) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = render_world_snapshot_block(
+    );
+    let world_snapshot_block = render_world_snapshot_block(
         world_snapshot,
         memory_policy(profile).world_sense.snapshot_max_len,
-    ) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(self_state_text) = render_self_state_block(
+    );
+    let self_state_block = render_self_state_block(
         &build_self_state(
             self_model,
             private_docs,
@@ -118,10 +134,8 @@ pub(super) fn decide_self_runtime(
             profile,
         ),
         memory_policy(profile).self_state.render_max_len,
-    ) {
-        let _ = writeln!(input, "\n{}\n", self_state_text);
-    }
-    if let Some(block) = self_authored_core
+    );
+    let self_authored_core_block = self_authored_core
         .and_then(|core| render_persistent_self_authored_core_block(core, policy.grounding_max_len))
         .or_else(|| {
             render_self_authored_core_block(
@@ -130,33 +144,29 @@ pub(super) fn decide_self_runtime(
                 mental_privacy_state,
                 policy.grounding_max_len,
             )
-        })
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = core_revision_ledger.and_then(|ledger| {
+        });
+    let core_revision_governance_block = core_revision_ledger.and_then(|ledger| {
         render_core_revision_governance_block(
             ledger,
             core_revision_governance,
             payload.now_secs,
             policy.grounding_max_len,
         )
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if core_revision_governance.review_due || core_revision_governance.conservative_mode {
-        let _ = writeln!(
-            input,
-            "Constitution governance: review_due={} conservative_mode={} pressure={} repeated_rejections={} corrections={} contradictions={}",
-            core_revision_governance.review_due,
-            core_revision_governance.conservative_mode,
-            core_revision_governance.pressure_summary(),
-            core_revision_governance.repeated_rejected_direction_count,
-            core_revision_governance.recent_correction_count,
-            core_revision_governance.contradiction_count
-        );
-    }
-    if let Some(block) = render_internal_memory_topology_block(
+    });
+    let constitution_governance_line = (core_revision_governance.review_due
+        || core_revision_governance.conservative_mode)
+        .then(|| {
+            format!(
+                "Constitution governance: review_due={} conservative_mode={} pressure={} repeated_rejections={} corrections={} contradictions={}",
+                core_revision_governance.review_due,
+                core_revision_governance.conservative_mode,
+                core_revision_governance.pressure_summary(),
+                core_revision_governance.repeated_rejected_direction_count,
+                core_revision_governance.recent_correction_count,
+                core_revision_governance.contradiction_count
+            )
+        });
+    let internal_memory_topology_block = render_internal_memory_topology_block(
         self_model,
         private_docs,
         private_garden_docs,
@@ -164,52 +174,36 @@ pub(super) fn decide_self_runtime(
         profile,
         InternalMemoryLayerFocus::Router,
         policy.grounding_max_len,
-    ) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = relationship_portfolio.and_then(|portfolio| {
+    );
+    let relationship_portfolio_block = relationship_portfolio.and_then(|portfolio| {
         render_relationship_portfolio_block(
             portfolio,
             payload.now_secs,
             Some(current_relationship_scope_id),
             policy.grounding_max_len,
         )
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = relationship_topology.and_then(|topology| {
+    });
+    let relationship_topology_block = relationship_topology.and_then(|topology| {
         render_relationship_topology_block(
             topology,
             payload.now_secs,
             Some(current_relationship_scope_id),
             policy.grounding_max_len,
         )
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = relationship_constitution.and_then(|constitution| {
+    });
+    let relationship_constitution_block = relationship_constitution.and_then(|constitution| {
         render_relationship_constitution_block(constitution, policy.grounding_max_len)
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = world_sense
-        .and_then(|world_sense| render_world_sense_block(world_sense, policy.grounding_max_len))
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = autonomy_strategy
-        .and_then(|strategy| render_autonomy_strategy_block(strategy, policy.grounding_max_len))
-    {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = render_private_memory_boundary_block(
+    });
+    let world_sense_block = world_sense
+        .and_then(|world_sense| render_world_sense_block(world_sense, policy.grounding_max_len));
+    let autonomy_strategy_block = autonomy_strategy
+        .and_then(|strategy| render_autonomy_strategy_block(strategy, policy.grounding_max_len));
+    let private_memory_boundary_block = render_private_memory_boundary_block(
         "self_runtime",
         "governing private inward writes while keeping objective facts in the shared plane",
         policy.grounding_max_len,
-    ) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = render_mental_privacy_boundary_block(
+    );
+    let mental_privacy_boundary_block = render_mental_privacy_boundary_block(
         mental_privacy_state,
         &crate::memory::collect_private_targets(
             self_model,
@@ -219,30 +213,54 @@ pub(super) fn decide_self_runtime(
             private_garden_docs,
         ),
         policy.grounding_max_len,
-    ) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if let Some(block) = recent_persona_evidence.and_then(|evidence| {
+    );
+    let recent_persona_evidence_block = recent_persona_evidence.and_then(|evidence| {
         render_recent_persona_evidence_block(evidence, policy.grounding_max_len)
-    }) {
-        let _ = writeln!(input, "\n{}\n", block);
-    }
-    if boundary_signal.is_active() {
-        let _ = writeln!(
-            input,
-            "\nBoundary flush signal: {}",
-            boundary_signal.human_summary()
-        );
-    }
-    if let Some(summary) = factual_snapshot.refresh_summary() {
-        let _ = writeln!(input, "Shared factual reconcile summary: {}", summary);
-    }
-    if payload.external_content_used {
-        let _ = writeln!(
-            input,
-            "Latest turn used external content/tools that may have changed what deserves inward organization."
-        );
-    }
+    });
+    let boundary_flush_line = boundary_signal
+        .is_active()
+        .then(|| format!("Boundary flush signal: {}", boundary_signal.human_summary()));
+    let factual_refresh_summary_line = factual_snapshot
+        .refresh_summary()
+        .map(|summary| format!("Shared factual reconcile summary: {}", summary));
+    let external_content_line = payload.external_content_used.then_some(
+        "Latest turn used external content/tools that may have changed what deserves inward organization."
+            .to_string(),
+    );
+
+    append_self_runtime_grounding_section(
+        &mut input,
+        "## Program Memory Grounding",
+        &[
+            summary_line.as_deref(),
+            execution_state_block.as_deref(),
+            factual_snapshot_block.as_deref(),
+            archive_evidence_block.as_deref(),
+            world_snapshot_block.as_deref(),
+        ],
+    );
+    append_self_runtime_grounding_section(
+        &mut input,
+        "## Soul Growth Grounding",
+        &[
+            self_state_block.as_deref(),
+            self_authored_core_block.as_deref(),
+            core_revision_governance_block.as_deref(),
+            constitution_governance_line.as_deref(),
+            internal_memory_topology_block.as_deref(),
+            relationship_portfolio_block.as_deref(),
+            relationship_topology_block.as_deref(),
+            relationship_constitution_block.as_deref(),
+            world_sense_block.as_deref(),
+            autonomy_strategy_block.as_deref(),
+            private_memory_boundary_block.as_deref(),
+            mental_privacy_boundary_block.as_deref(),
+            recent_persona_evidence_block.as_deref(),
+            boundary_flush_line.as_deref(),
+            factual_refresh_summary_line.as_deref(),
+            external_content_line.as_deref(),
+        ],
+    );
     input.push_str("Source ids you may reference for upward distillation: inner_life, private_docs, private_garden, self_model, self_authored_core, self_continuity, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, relationship_constitution, recent_transcript.\n");
     input.push_str("Recent transcript:\n");
     for message in recent {
@@ -338,5 +356,42 @@ fn parse_shared_factual_reconcile_action(value: &str) -> SharedFactualReconcileA
         "conflict" => SharedFactualReconcileAction::Conflict,
         "stale" => SharedFactualReconcileAction::Stale,
         _ => SharedFactualReconcileAction::Hold,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grounding_sections_keep_program_memory_and_soul_growth_separate() {
+        let mut input = String::new();
+        append_self_runtime_grounding_section(
+            &mut input,
+            "## Program Memory Grounding",
+            &[
+                Some("Summary: continue current task"),
+                Some("## Execution State\nGoal: close loop"),
+                Some("## Shared Factual Recall\n- owner_timezone => Asia/Shanghai"),
+            ],
+        );
+        append_self_runtime_grounding_section(
+            &mut input,
+            "## Soul Growth Grounding",
+            &[
+                Some("## Self State\nCurrent mode: deliberate"),
+                Some("## Recent Persona Evidence\n- pressure pattern: steady"),
+                Some("## Mental Privacy Boundary\nKeep private garden inward"),
+            ],
+        );
+
+        let program_idx = input.find("## Program Memory Grounding").unwrap();
+        let soul_idx = input.find("## Soul Growth Grounding").unwrap();
+        assert!(program_idx < soul_idx);
+        assert!(input.contains("Summary: continue current task"));
+        assert!(input.contains("## Execution State\nGoal: close loop"));
+        assert!(input.contains("## Self State\nCurrent mode: deliberate"));
+        let soul_slice = &input[soul_idx..];
+        assert!(!soul_slice.contains("Summary: continue current task"));
     }
 }
