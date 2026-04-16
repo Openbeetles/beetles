@@ -1,5 +1,4 @@
 use crate::office::OfficeProbeAdapter;
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -43,15 +42,6 @@ impl OfficeIntegrationTopology {
 
     pub(crate) fn probe_adapters(&self) -> Vec<Arc<dyn OfficeProbeAdapter + Send + Sync>> {
         self.probe_adapters.clone()
-    }
-
-    pub(crate) fn probe_supported_provider_kinds(&self) -> Vec<String> {
-        self.probe_adapters
-            .iter()
-            .map(|adapter| adapter.provider_kind().to_string())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
     }
 
     fn register_mail(
@@ -208,8 +198,9 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         let probe_supported = topology
-            .probe_supported_provider_kinds()
+            .probe_adapters()
             .into_iter()
+            .map(|adapter| adapter.provider_kind().to_string())
             .collect::<BTreeSet<_>>();
 
         assert_eq!(probe_supported, registered);
