@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 pub use credentials::{
     CalendarProviderCredential, CalendarProviderCredentialStatus, CalendarProviderCredentialStore,
     OfficeBackedCalendarProviderCredentialStore, FEISHU_CALENDAR_DEFAULT_BASE_URL,
-    OFFICE_METADATA_CALENDAR_APP_ID, OFFICE_METADATA_CALENDAR_CORP_ID,
+    MICROSOFT365_DEFAULT_CALENDAR_ID, OFFICE_METADATA_CALENDAR_APP_ID,
+    OFFICE_METADATA_CALENDAR_CORP_ID,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -65,6 +66,9 @@ pub fn build_default_office_calendar_provider_registry() -> CalendarProviderRegi
     providers.register(std::sync::Arc::new(providers::caldav::CalDavProvider));
     providers.register(std::sync::Arc::new(
         providers::feishu::FeishuCalendarProvider,
+    ));
+    providers.register(std::sync::Arc::new(
+        providers::microsoft365::Microsoft365CalendarProvider,
     ));
     providers.register(std::sync::Arc::new(providers::wecom::WecomCalendarProvider));
     providers

@@ -3,4 +3,6 @@ pub mod feishu;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod imap_smtp;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod microsoft365;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod wecom;

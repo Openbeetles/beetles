@@ -148,6 +148,12 @@ fn collect_missing_fields(
                 metadata_value(OFFICE_METADATA_MAIL_CORP_ID),
             );
         }
+        "microsoft365_mail"
+        | "microsoft365_calendar"
+        | "microsoft365_documents"
+        | "microsoft365_contacts_directory" => {
+            push_missing_if_blank(&mut missing, "access_token", access_token);
+        }
         "webdav" => {
             push_missing_if_blank(&mut missing, "access_token", access_token);
             if external_account_id.is_empty()
@@ -483,6 +489,57 @@ mod tests {
         assert!(assessment
             .missing_fields
             .contains(&"contacts_corp_id".to_string()));
+    }
+
+    #[test]
+    fn assess_office_account_marks_microsoft_mail_missing_access_token() {
+        let account = OfficeAccount {
+            account_key: "mail-ms".to_string(),
+            provider_kind: "microsoft365_mail".to_string(),
+            external_account_id: String::new(),
+            account_label: "Microsoft Mail".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        };
+        let credential = OfficeCredential {
+            account_key: "mail-ms".to_string(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 0,
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let assessment = assess_office_account(&account, Some(&credential), None, true);
+        assert_eq!(
+            assessment.readiness,
+            OfficeConfigReadiness::NeedsCredentialInput
+        );
+        assert_eq!(assessment.missing_fields, vec!["access_token".to_string()]);
+    }
+
+    #[test]
+    fn assess_office_account_accepts_microsoft_calendar_with_token_only() {
+        let account = OfficeAccount {
+            account_key: "calendar-ms".to_string(),
+            provider_kind: "microsoft365_calendar".to_string(),
+            external_account_id: String::new(),
+            account_label: "Microsoft Calendar".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Calendar],
+        };
+        let credential = OfficeCredential {
+            account_key: "calendar-ms".to_string(),
+            access_token: "token".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 0,
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let assessment = assess_office_account(&account, Some(&credential), None, true);
+        assert!(assessment.missing_fields.is_empty());
+        assert_eq!(assessment.readiness, OfficeConfigReadiness::ReadyForProbe);
     }
 
     #[test]

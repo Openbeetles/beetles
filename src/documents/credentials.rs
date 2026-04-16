@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAuthoritySource, OfficeCapability, OfficeCredential, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
+    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -12,6 +12,7 @@ pub const OFFICE_METADATA_DOCUMENTS_ROOT_PATH: &str = "documents_root_path";
 pub const OFFICE_METADATA_DOCUMENTS_APP_ID: &str = "documents_app_id";
 pub const OFFICE_METADATA_DOCUMENTS_CORP_ID: &str = "documents_corp_id";
 pub const OFFICE_METADATA_DOCUMENTS_SPACE_ID: &str = "documents_space_id";
+pub const OFFICE_METADATA_DOCUMENTS_DRIVE_ID: &str = "documents_drive_id";
 pub const FEISHU_DOCUMENTS_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +72,11 @@ impl DocumentsProviderCredential {
                 !self.app_id.trim().is_empty()
                     && !self.secret.trim().is_empty()
                     && !self.space_id.trim().is_empty()
+                    && !self.root_path.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+            }
+            "microsoft365_documents" => {
+                !self.secret.trim().is_empty()
                     && !self.root_path.trim().is_empty()
                     && !self.base_url.trim().is_empty()
             }
@@ -166,6 +172,36 @@ pub(crate) fn documents_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<DocumentsProviderCredential> {
+    if account.provider_kind == "microsoft365_documents" {
+        let base_url = normalize_microsoft_graph_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_DOCUMENTS_BASE_URL)
+                .unwrap_or(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+        );
+        let root_path = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_ROOT_PATH)
+            .unwrap_or("/")
+            .trim()
+            .to_string();
+        let drive_id = credential
+            .metadata_value(OFFICE_METADATA_DOCUMENTS_DRIVE_ID)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        return Ok(DocumentsProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            username: String::new(),
+            secret: credential.access_token,
+            app_id: String::new(),
+            space_id: drive_id,
+            base_url,
+            root_path,
+        });
+    }
+
     if account.provider_kind == "feishu_documents" {
         let app_id = credential
             .metadata_value(OFFICE_METADATA_DOCUMENTS_APP_ID)
@@ -538,5 +574,43 @@ mod tests {
             serde_json::to_value(&credential).expect("serialize")["space_id"],
             "space-1"
         );
+    }
+
+    #[test]
+    fn office_backed_store_adapts_microsoft_documents_metadata() {
+        let account = OfficeAccount {
+            account_key: "docs-ms".to_string(),
+            provider_kind: "microsoft365_documents".to_string(),
+            external_account_id: "alice@contoso.com".to_string(),
+            account_label: "Microsoft Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        };
+        let credential = OfficeCredential {
+            account_key: "docs-ms".to_string(),
+            access_token: "graph-token".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 1,
+            metadata: [
+                (
+                    OFFICE_METADATA_DOCUMENTS_DRIVE_ID.to_string(),
+                    "drive-123".to_string(),
+                ),
+                (
+                    OFFICE_METADATA_DOCUMENTS_ROOT_PATH.to_string(),
+                    "/Shared".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let adapted = documents_credential_from_office(account, credential).expect("adapted");
+        assert_eq!(adapted.provider, "microsoft365_documents");
+        assert_eq!(adapted.space_id, "drive-123");
+        assert_eq!(adapted.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
+        assert_eq!(adapted.root_path, "/Shared");
     }
 }

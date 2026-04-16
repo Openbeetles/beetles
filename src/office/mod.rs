@@ -9,6 +9,11 @@ mod binding;
 #[cfg(feature = "capability_office")]
 mod config_management;
 mod credentials;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+mod microsoft_graph;
 mod policy;
 #[cfg(feature = "capability_office")]
 mod provider_schema;
@@ -49,6 +54,15 @@ pub use config_management::{
 pub use credentials::{
     OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore, OfficeCredentialsSegment,
     OFFICE_METADATA_CALENDAR_ID, REL_PATH_OFFICE_CREDENTIALS,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use microsoft_graph::{
+    build_microsoft_graph_url, normalize_microsoft_graph_base_url, parse_microsoft_graph_json,
+    request_microsoft_graph_empty_ureq, request_microsoft_graph_json_ureq,
+    MicrosoftGraphCollection, MicrosoftGraphErrorEnvelope, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 pub use policy::OfficeSelectionPolicy;
 #[cfg(feature = "capability_office")]

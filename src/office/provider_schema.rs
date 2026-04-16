@@ -1,6 +1,6 @@
 use crate::calendar::{
-    FEISHU_CALENDAR_DEFAULT_BASE_URL, OFFICE_METADATA_CALENDAR_APP_ID,
-    OFFICE_METADATA_CALENDAR_CORP_ID,
+    FEISHU_CALENDAR_DEFAULT_BASE_URL, MICROSOFT365_DEFAULT_CALENDAR_ID,
+    OFFICE_METADATA_CALENDAR_APP_ID, OFFICE_METADATA_CALENDAR_CORP_ID,
 };
 use crate::contacts_directory::{
     FEISHU_CONTACTS_DEFAULT_BASE_URL, OFFICE_METADATA_CONTACTS_APP_ID,
@@ -9,8 +9,8 @@ use crate::contacts_directory::{
 use crate::documents::{
     FEISHU_DOCUMENTS_DEFAULT_BASE_URL, OFFICE_METADATA_DOCUMENTS_APP_ID,
     OFFICE_METADATA_DOCUMENTS_BASE_URL, OFFICE_METADATA_DOCUMENTS_CORP_ID,
-    OFFICE_METADATA_DOCUMENTS_ROOT_PATH, OFFICE_METADATA_DOCUMENTS_SPACE_ID,
-    OFFICE_METADATA_DOCUMENTS_USERNAME,
+    OFFICE_METADATA_DOCUMENTS_DRIVE_ID, OFFICE_METADATA_DOCUMENTS_ROOT_PATH,
+    OFFICE_METADATA_DOCUMENTS_SPACE_ID, OFFICE_METADATA_DOCUMENTS_USERNAME,
 };
 use crate::mail::{
     DEFAULT_DRAFT_MAILBOX, DEFAULT_MAILBOX, OFFICE_METADATA_MAIL_BASE_URL,
@@ -22,7 +22,10 @@ use crate::mail::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{OfficeCapability, OFFICE_METADATA_CALENDAR_ID, WECOM_DEFAULT_BASE_URL};
+use super::{
+    OfficeCapability, MICROSOFT_GRAPH_DEFAULT_BASE_URL, OFFICE_METADATA_CALENDAR_ID,
+    WECOM_DEFAULT_BASE_URL,
+};
 
 const OFFICE_METADATA_CALENDAR_USERNAME_FIELD: &str = "calendar_username";
 const OFFICE_METADATA_CALENDAR_BASE_URL_FIELD: &str = "calendar_base_url";
@@ -101,14 +104,18 @@ fn all_provider_schemas() -> Vec<OfficeProviderSchema> {
         imap_smtp_schema(),
         feishu_mail_schema(),
         wecom_mail_schema(),
+        microsoft365_mail_schema(),
         caldav_schema(),
         feishu_calendar_schema(),
         wecom_calendar_schema(),
+        microsoft365_calendar_schema(),
         webdav_schema(),
         feishu_documents_schema(),
         wecom_documents_schema(),
+        microsoft365_documents_schema(),
         feishu_contacts_schema(),
         wecom_contacts_schema(),
+        microsoft365_contacts_schema(),
     ]
 }
 
@@ -329,6 +336,47 @@ fn wecom_mail_schema() -> OfficeProviderSchema {
     }
 }
 
+fn microsoft365_mail_schema() -> OfficeProviderSchema {
+    OfficeProviderSchema {
+        provider_kind: "microsoft365_mail".to_string(),
+        display_name: "Microsoft 365 Mail".to_string(),
+        capabilities: vec![OfficeCapability::Mail],
+        fields: vec![
+            access_token_field(),
+            refresh_token_field(),
+            token_endpoint_field(),
+            external_account_id_field(
+                "Mailbox account id",
+                "Optional mailbox identity. Leave empty to use the signed-in Microsoft account.",
+            ),
+            metadata_field(
+                OFFICE_METADATA_MAIL_BASE_URL,
+                "Microsoft Graph base URL",
+                "Optional API base URL override for Microsoft Graph mail.",
+                OfficeProviderFieldValueKind::Url,
+                false,
+                Some(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+            ),
+            metadata_field(
+                OFFICE_METADATA_MAIL_FROM_ADDRESS,
+                "From address",
+                "Optional override for the sender email address.",
+                OfficeProviderFieldValueKind::Email,
+                false,
+                None,
+            ),
+            metadata_field(
+                OFFICE_METADATA_MAIL_FROM_NAME,
+                "From name",
+                "Optional override for the sender display name.",
+                OfficeProviderFieldValueKind::Text,
+                false,
+                None,
+            ),
+        ],
+    }
+}
+
 fn caldav_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "caldav".to_string(),
@@ -452,6 +500,39 @@ fn wecom_calendar_schema() -> OfficeProviderSchema {
     }
 }
 
+fn microsoft365_calendar_schema() -> OfficeProviderSchema {
+    OfficeProviderSchema {
+        provider_kind: "microsoft365_calendar".to_string(),
+        display_name: "Microsoft 365 Calendar".to_string(),
+        capabilities: vec![OfficeCapability::Calendar],
+        fields: vec![
+            access_token_field(),
+            refresh_token_field(),
+            token_endpoint_field(),
+            external_account_id_field(
+                "Calendar account id",
+                "Optional calendar identity. Leave empty to use the signed-in Microsoft account.",
+            ),
+            metadata_field(
+                OFFICE_METADATA_CALENDAR_BASE_URL_FIELD,
+                "Microsoft Graph base URL",
+                "Optional API base URL override for Microsoft Graph calendar.",
+                OfficeProviderFieldValueKind::Url,
+                false,
+                Some(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+            ),
+            metadata_field(
+                OFFICE_METADATA_CALENDAR_ID,
+                "Calendar id",
+                "Optional Microsoft calendar id. Use the primary calendar if omitted.",
+                OfficeProviderFieldValueKind::Identifier,
+                false,
+                Some(MICROSOFT365_DEFAULT_CALENDAR_ID),
+            ),
+        ],
+    }
+}
+
 fn webdav_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "webdav".to_string(),
@@ -569,6 +650,47 @@ fn wecom_documents_schema() -> OfficeProviderSchema {
     }
 }
 
+fn microsoft365_documents_schema() -> OfficeProviderSchema {
+    OfficeProviderSchema {
+        provider_kind: "microsoft365_documents".to_string(),
+        display_name: "Microsoft 365 Documents".to_string(),
+        capabilities: vec![OfficeCapability::Documents],
+        fields: vec![
+            access_token_field(),
+            refresh_token_field(),
+            token_endpoint_field(),
+            external_account_id_field(
+                "Documents account id",
+                "Optional documents identity. Leave empty to use the signed-in Microsoft account.",
+            ),
+            metadata_field(
+                OFFICE_METADATA_DOCUMENTS_BASE_URL,
+                "Microsoft Graph base URL",
+                "Optional API base URL override for Microsoft Graph documents.",
+                OfficeProviderFieldValueKind::Url,
+                false,
+                Some(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+            ),
+            metadata_field(
+                OFFICE_METADATA_DOCUMENTS_DRIVE_ID,
+                "Drive id",
+                "Optional Microsoft drive id. Leave empty to use the signed-in user's default drive.",
+                OfficeProviderFieldValueKind::Identifier,
+                false,
+                None,
+            ),
+            metadata_field(
+                OFFICE_METADATA_DOCUMENTS_ROOT_PATH,
+                "Documents root path",
+                "Root folder path inside the selected Microsoft drive.",
+                OfficeProviderFieldValueKind::Path,
+                false,
+                Some("/"),
+            ),
+        ],
+    }
+}
+
 fn feishu_contacts_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "feishu_contacts_directory".to_string(),
@@ -618,6 +740,27 @@ fn wecom_contacts_schema() -> OfficeProviderSchema {
                 OfficeProviderFieldValueKind::Url,
                 false,
                 Some(WECOM_DEFAULT_BASE_URL),
+            ),
+        ],
+    }
+}
+
+fn microsoft365_contacts_schema() -> OfficeProviderSchema {
+    OfficeProviderSchema {
+        provider_kind: "microsoft365_contacts_directory".to_string(),
+        display_name: "Microsoft 365 People Directory".to_string(),
+        capabilities: vec![OfficeCapability::ContactsDirectory],
+        fields: vec![
+            access_token_field(),
+            refresh_token_field(),
+            token_endpoint_field(),
+            metadata_field(
+                OFFICE_METADATA_CONTACTS_BASE_URL,
+                "Microsoft Graph base URL",
+                "Optional API base URL override for Microsoft Graph people lookup.",
+                OfficeProviderFieldValueKind::Url,
+                false,
+                Some(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
             ),
         ],
     }

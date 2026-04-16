@@ -7,14 +7,18 @@ const ACCOUNT_PROVIDER_LABEL_KEYS: Record<string, string> = {
   imap_smtp: "accounts.providers.imap_smtp",
   feishu_mail: "accounts.providers.feishu_mail",
   wecom_mail: "accounts.providers.wecom_mail",
+  microsoft365_mail: "accounts.providers.microsoft365_mail",
   caldav: "accounts.providers.caldav",
   feishu_calendar: "accounts.providers.feishu_calendar",
   wecom_calendar: "accounts.providers.wecom_calendar",
+  microsoft365_calendar: "accounts.providers.microsoft365_calendar",
   webdav: "accounts.providers.webdav",
   feishu_documents: "accounts.providers.feishu_documents",
   wecom_documents: "accounts.providers.wecom_documents",
+  microsoft365_documents: "accounts.providers.microsoft365_documents",
   feishu_contacts_directory: "accounts.providers.feishu_contacts_directory",
   wecom_contacts_directory: "accounts.providers.wecom_contacts_directory",
+  microsoft365_contacts_directory: "accounts.providers.microsoft365_contacts_directory",
 };
 
 export function localizeAccountProviderName(

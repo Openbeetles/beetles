@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAuthoritySource, OfficeCapability, OfficeCredential, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
+    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -54,6 +54,9 @@ impl ContactsDirectoryProviderCredential {
                 !self.app_id.trim().is_empty()
                     && !self.secret.trim().is_empty()
                     && !self.base_url.trim().is_empty()
+            }
+            "microsoft365_contacts_directory" => {
+                !self.secret.trim().is_empty() && !self.base_url.trim().is_empty()
             }
             _ => {
                 !self.app_id.trim().is_empty()
@@ -148,6 +151,23 @@ pub(crate) fn contacts_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<ContactsDirectoryProviderCredential> {
+    if account.provider_kind == "microsoft365_contacts_directory" {
+        let base_url = normalize_microsoft_graph_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_CONTACTS_BASE_URL)
+                .unwrap_or(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+        );
+        return Ok(ContactsDirectoryProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            app_id: String::new(),
+            base_url,
+            secret: credential.access_token,
+        });
+    }
+
     if account.provider_kind == "wecom_contacts_directory" {
         let corp_id = credential
             .metadata_value(OFFICE_METADATA_CONTACTS_CORP_ID)
@@ -272,5 +292,32 @@ mod tests {
         assert_eq!(adapted.app_id, "wwcorp123");
         assert_eq!(adapted.base_url, crate::office::WECOM_DEFAULT_BASE_URL);
         assert_eq!(adapted.secret, "corp-secret");
+    }
+
+    #[test]
+    fn contacts_credential_from_office_maps_microsoft_contacts_metadata() {
+        let account = OfficeAccount {
+            account_key: "contacts-ms".to_string(),
+            provider_kind: "microsoft365_contacts_directory".to_string(),
+            external_account_id: "alice@contoso.com".to_string(),
+            account_label: "Microsoft Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        };
+        let credential = OfficeCredential {
+            account_key: "contacts-ms".to_string(),
+            access_token: "graph-token".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 1,
+            metadata: std::collections::BTreeMap::new(),
+        };
+
+        let adapted = contacts_credential_from_office(account, credential).expect("adapted");
+        assert_eq!(adapted.provider, "microsoft365_contacts_directory");
+        assert_eq!(adapted.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
+        assert_eq!(adapted.app_id, "");
+        assert_eq!(adapted.secret, "graph-token");
     }
 }

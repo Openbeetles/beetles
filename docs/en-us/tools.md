@@ -50,7 +50,7 @@ Keep three things in mind:
 
 - Uses the local calendar by default.
 - After you link external calendar accounts, the same tool can also list, create, update, and delete remote events.
-- External calendar accounts can now come from either CalDAV or Feishu Calendar.
+- External calendar accounts can now come from CalDAV, Feishu Calendar, or Microsoft 365 Calendar.
 - If more than one external calendar is linked, Beetle will first try to infer whether you mean a work or personal calendar. If it still is not confident, it will ask.
 - When you create or update a meeting around named people or teams, Beetle can reuse the shared people directory to decide which calendar side fits that context, instead of treating attendee lookup and calendar choice as separate tasks.
 - A Feishu calendar account is meant for direct team-calendar access, but you still keep using the same `calendar` tool for the actual event work.
@@ -74,13 +74,13 @@ Keep three things in mind:
 - `send`, `draft`, `reply`, and `forward` are explicit remote mutations, so Beetle will ask for clear confirmation before it performs them.
 - When sending mail, you can give direct email addresses or simply name the person and let Beetle look them up through the contacts directory. `reply` keeps the original sender as the base recipient and can still merge extra recipients.
 - `provider_status` shows whether each mail account is ready to use and whether it has recently had connection or send problems.
-- Mail accounts can now use generic `imap_smtp`, dedicated `feishu_mail`, or dedicated `wecom_mail`; all three follow the same mail tool contract.
+- Mail accounts can now use generic `imap_smtp`, dedicated `feishu_mail`, dedicated `wecom_mail`, or Microsoft 365 mail; all of them follow the same mail tool contract.
 - If `mail` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
 
 ### `documents`
 
 - `documents` is the external office document-library capability. It does not replace the local/public document-reading tools.
-- Documents accounts can now come from WebDAV, Feishu document libraries, or WeCom Wedrive libraries.
+- Documents accounts can now come from WebDAV, Feishu document libraries, WeCom Wedrive libraries, or Microsoft 365 document libraries.
 - Supported operations:
   - `provider_status`
   - `list`
@@ -105,7 +105,7 @@ Keep three things in mind:
   - `upsert`
   - `delete`
 - Use it to persist stable person data such as names, emails, aliases, organizations, and short notes.
-- If a Feishu or WeCom contacts directory is connected, `lookup` can supplement local contacts with remote directory matches.
+- If a Feishu, WeCom, or Microsoft 365 contacts directory is connected, `lookup` can supplement local contacts with remote directory matches.
 - If more than one directory is linked, Beetle will first try to infer whether you mean a work or personal directory, and ask only when that still is unclear.
 - `provider_status` shows which contacts-directory accounts are available, which one is the default, and whether each account is ready to use.
 - `mail send` and `draft` already consume this shared people lookup through recipient lookup fields. If a remote directory result clearly points to one office mail suite, Beetle can use that signal to narrow the sender side too.

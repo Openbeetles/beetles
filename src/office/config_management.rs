@@ -1270,17 +1270,27 @@ fn default_office_probe_adapters() -> Vec<Arc<dyn OfficeProbeAdapter + Send + Sy
         Arc::new(crate::mail::providers::imap_smtp::ImapSmtpOfficeProbeAdapter),
         Arc::new(crate::mail::providers::feishu::FeishuMailOfficeProbeAdapter),
         Arc::new(crate::mail::providers::wecom::WecomMailOfficeProbeAdapter),
+        Arc::new(crate::mail::providers::microsoft365::Microsoft365MailOfficeProbeAdapter),
         Arc::new(crate::documents::providers::webdav::WebDavOfficeProbeAdapter),
         Arc::new(crate::documents::providers::feishu::FeishuDocumentsOfficeProbeAdapter),
         Arc::new(crate::documents::providers::wecom::WecomDocumentsOfficeProbeAdapter),
+        Arc::new(
+            crate::documents::providers::microsoft365::Microsoft365DocumentsOfficeProbeAdapter,
+        ),
         Arc::new(crate::calendar::providers::caldav::CalDavOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::feishu::FeishuCalendarOfficeProbeAdapter),
         Arc::new(crate::calendar::providers::wecom::WecomCalendarOfficeProbeAdapter),
+        Arc::new(
+            crate::calendar::providers::microsoft365::Microsoft365CalendarOfficeProbeAdapter,
+        ),
         Arc::new(
             crate::contacts_directory::providers::feishu::FeishuContactsDirectoryOfficeProbeAdapter,
         ),
         Arc::new(
             crate::contacts_directory::providers::wecom::WecomContactsDirectoryOfficeProbeAdapter,
+        ),
+        Arc::new(
+            crate::contacts_directory::providers::microsoft365::Microsoft365ContactsDirectoryOfficeProbeAdapter,
         ),
     ]
 }
@@ -1707,6 +1717,32 @@ mod tests {
                 .any(|field| field.key == "external_account_id"),
             "external_account_id should not be duplicated into provider config fields"
         );
+    }
+
+    #[test]
+    fn provider_catalog_includes_microsoft365_office_providers() {
+        let service = OfficeConfigManagementService::new(
+            Arc::new(MemoryConfigFileStore::new()),
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        );
+
+        let providers = service.provider_catalog(None).expect("provider catalog");
+        let provider_kinds = providers
+            .into_iter()
+            .map(|item| item.provider_kind)
+            .collect::<Vec<_>>();
+        for provider_kind in [
+            "microsoft365_mail",
+            "microsoft365_calendar",
+            "microsoft365_documents",
+            "microsoft365_contacts_directory",
+        ] {
+            assert!(
+                provider_kinds.iter().any(|item| item == provider_kind),
+                "missing microsoft provider: {provider_kind}"
+            );
+        }
     }
 
     #[test]

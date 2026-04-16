@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
 use crate::mail::{DEFAULT_DRAFT_MAILBOX, DEFAULT_MAILBOX};
 use crate::office::{
-    OfficeAuthoritySource, OfficeCapability, OfficeCredential, OfficeService,
-    SnapshotOfficeAuthoritySource,
+    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
+    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -88,6 +88,9 @@ impl MailProviderCredential {
                 !self.secret.trim().is_empty()
                     && !self.corp_id.trim().is_empty()
                     && !self.base_url.trim().is_empty()
+            }
+            "microsoft365_mail" => {
+                !self.secret.trim().is_empty() && !self.base_url.trim().is_empty()
             }
             _ => {
                 !self.secret.trim().is_empty()
@@ -182,6 +185,44 @@ pub(crate) fn mail_credential_from_office(
     account: crate::office::OfficeAccount,
     credential: OfficeCredential,
 ) -> Result<MailProviderCredential> {
+    if account.provider_kind == "microsoft365_mail" {
+        let base_url = normalize_microsoft_graph_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_MAIL_BASE_URL)
+                .unwrap_or(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+        );
+        let from_address = credential
+            .metadata_value(OFFICE_METADATA_MAIL_FROM_ADDRESS)
+            .unwrap_or(account.external_account_id.as_str())
+            .trim()
+            .to_string();
+        let from_name = credential
+            .metadata_value(OFFICE_METADATA_MAIL_FROM_NAME)
+            .unwrap_or(account.account_label.as_str())
+            .trim()
+            .to_string();
+        return Ok(MailProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            username: String::new(),
+            corp_id: String::new(),
+            secret: credential.access_token,
+            base_url,
+            imap_host: String::new(),
+            imap_port: 0,
+            imap_mailbox: DEFAULT_MAILBOX.to_string(),
+            draft_mailbox: DEFAULT_DRAFT_MAILBOX.to_string(),
+            imap_tls: false,
+            smtp_host: String::new(),
+            smtp_port: 0,
+            smtp_tls: false,
+            from_address,
+            from_name,
+        });
+    }
+
     if account.provider_kind == "wecom_mail" {
         let corp_id = credential
             .metadata_value(OFFICE_METADATA_MAIL_CORP_ID)
@@ -504,5 +545,43 @@ mod tests {
         let store = OfficeBackedMailProviderCredentialStore::new(office);
 
         assert!(store.get("calendar-work").expect("lookup").is_none());
+    }
+
+    #[test]
+    fn office_backed_store_adapts_microsoft_mail_metadata() {
+        let account = OfficeAccount {
+            account_key: "mail-ms".to_string(),
+            provider_kind: "microsoft365_mail".to_string(),
+            external_account_id: "alice@contoso.com".to_string(),
+            account_label: "Microsoft Mail".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        };
+        let credential = OfficeCredential {
+            account_key: "mail-ms".to_string(),
+            access_token: "ms-access-token".to_string(),
+            refresh_token: String::new(),
+            token_endpoint: String::new(),
+            expires_at_unix_secs: 0,
+            updated_at: 10,
+            metadata: [
+                (
+                    OFFICE_METADATA_MAIL_BASE_URL.to_string(),
+                    "https://graph.microsoft.com/v1.0".to_string(),
+                ),
+                (
+                    OFFICE_METADATA_MAIL_FROM_NAME.to_string(),
+                    "Alice".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let adapted = mail_credential_from_office(account, credential).expect("adapted");
+        assert_eq!(adapted.provider, "microsoft365_mail");
+        assert_eq!(adapted.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
+        assert_eq!(adapted.from_address, "alice@contoso.com");
+        assert_eq!(adapted.from_name, "Alice");
     }
 }

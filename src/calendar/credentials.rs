@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAuthoritySource, OfficeCapability, OfficeCredential, OfficeService,
-    SnapshotOfficeAuthoritySource, OFFICE_METADATA_CALENDAR_ID,
+    normalize_microsoft_graph_base_url, OfficeAuthoritySource, OfficeCapability, OfficeCredential,
+    OfficeService, SnapshotOfficeAuthoritySource, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    OFFICE_METADATA_CALENDAR_ID,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,6 +14,7 @@ pub const OFFICE_METADATA_CALENDAR_ROOT_PATH: &str = "calendar_root_path";
 pub const OFFICE_METADATA_CALENDAR_APP_ID: &str = "calendar_app_id";
 pub const OFFICE_METADATA_CALENDAR_CORP_ID: &str = "calendar_corp_id";
 pub const FEISHU_CALENDAR_DEFAULT_BASE_URL: &str = "https://open.feishu.cn";
+pub const MICROSOFT365_DEFAULT_CALENDAR_ID: &str = "primary";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CalendarProviderCredential {
@@ -86,6 +88,11 @@ impl CalendarProviderCredential {
             "caldav" => !self.username.trim().is_empty() && !self.base_url.trim().is_empty(),
             "feishu_calendar" | "wecom_calendar" => {
                 !self.app_id.trim().is_empty()
+                    && !self.base_url.trim().is_empty()
+                    && !self.calendar_id.trim().is_empty()
+            }
+            "microsoft365_calendar" => {
+                !self.access_token.trim().is_empty()
                     && !self.base_url.trim().is_empty()
                     && !self.calendar_id.trim().is_empty()
             }
@@ -263,8 +270,35 @@ pub(crate) fn calendar_credential_from_office(
 ) -> CalendarProviderCredential {
     let calendar_id = credential
         .metadata_value(OFFICE_METADATA_CALENDAR_ID)
-        .unwrap_or_default()
+        .unwrap_or(if account.provider_kind == "microsoft365_calendar" {
+            MICROSOFT365_DEFAULT_CALENDAR_ID
+        } else {
+            ""
+        })
         .to_string();
+    if account.provider_kind == "microsoft365_calendar" {
+        let base_url = normalize_microsoft_graph_base_url(
+            credential
+                .metadata_value(OFFICE_METADATA_CALENDAR_BASE_URL)
+                .unwrap_or(MICROSOFT_GRAPH_DEFAULT_BASE_URL),
+        );
+        return CalendarProviderCredential {
+            account_key: credential.account_key,
+            provider: account.provider_kind,
+            account_id: account.external_account_id,
+            account_label: account.account_label,
+            calendar_id,
+            username: String::new(),
+            app_id: String::new(),
+            base_url,
+            root_path: String::new(),
+            access_token: credential.access_token,
+            refresh_token: credential.refresh_token,
+            token_endpoint: credential.token_endpoint,
+            expires_at_unix_secs: credential.expires_at_unix_secs,
+            updated_at: credential.updated_at,
+        };
+    }
     if matches!(
         account.provider_kind.as_str(),
         "feishu_calendar" | "wecom_calendar"
@@ -460,5 +494,34 @@ mod tests {
         assert_eq!(credential.app_id, "wwcorp123");
         assert_eq!(credential.base_url, crate::office::WECOM_DEFAULT_BASE_URL);
         assert_eq!(credential.username, "");
+    }
+
+    #[test]
+    fn calendar_credential_from_office_maps_microsoft_calendar_metadata() {
+        let credential = calendar_credential_from_office(
+            OfficeAccount {
+                account_key: "calendar-ms".to_string(),
+                provider_kind: "microsoft365_calendar".to_string(),
+                external_account_id: "alice@contoso.com".to_string(),
+                account_label: "Microsoft Calendar".to_string(),
+                identity_class: OfficeAccountIdentityClass::Work,
+                enabled_capabilities: vec![OfficeCapability::Calendar],
+            },
+            OfficeCredential {
+                account_key: "calendar-ms".to_string(),
+                access_token: "ms-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                token_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                    .to_string(),
+                expires_at_unix_secs: 0,
+                updated_at: 42,
+                metadata: std::collections::BTreeMap::new(),
+            },
+        );
+
+        assert_eq!(credential.provider, "microsoft365_calendar");
+        assert_eq!(credential.calendar_id, MICROSOFT365_DEFAULT_CALENDAR_ID);
+        assert_eq!(credential.base_url, MICROSOFT_GRAPH_DEFAULT_BASE_URL);
+        assert_eq!(credential.app_id, "");
     }
 }
