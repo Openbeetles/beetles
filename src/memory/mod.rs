@@ -564,12 +564,19 @@ pub trait ImportantMessageStore: Send + Sync {
     fn clear_important(&self, chat_id: &str) -> Result<()>;
 }
 
-/// 到点提醒存储。add 写入 (channel, chat_id, at_unix_secs, context)；pop_due(now) 移除并返回一条 at<=now 的条目。
-/// 条目数/context 长度上界见 constants::REMIND_AT_*。
+/// 到点提醒存储。持久条目带稳定 id 与可选 calendar link；pop_due(now) 移除并返回一条 at<=now 的提醒。
+/// 条目数/context 长度上界见 constants::REMIND_AT_*，字段规范见 `crate::reminder::ReminderItem`。
 pub trait RemindAtStore: Send + Sync {
-    fn add(&self, channel: &str, chat_id: &str, at_unix_secs: u64, context: &str) -> Result<()>;
+    fn get(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::reminder::ReminderItem>>;
+    fn upsert(&self, reminder: &crate::reminder::ReminderItem) -> Result<()>;
+    fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool>;
     /// 移除并返回一条 at <= now 的条目（任选其一）；无到点项返回 Ok(None)。
-    fn pop_due(&self, now_unix_secs: u64) -> Result<Option<(String, String, String)>>;
+    fn pop_due(&self, now_unix_secs: u64) -> Result<Option<crate::reminder::ReminderItem>>;
     /// 返回下一条提醒的最早触发时间；无待触发项则返回 Ok(None)。
     fn next_due_at(&self) -> Result<Option<u64>> {
         Ok(None)
@@ -581,7 +588,7 @@ pub trait RemindAtStore: Send + Sync {
         chat_id: &str,
         now_unix_secs: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, String)>>;
+    ) -> Result<Vec<crate::reminder::ReminderItem>>;
 }
 
 /// 情绪信号存储。本轮模型输出带 [SIGNAL:comfort] 时 set，下一轮 build_context 时 get_then_clear 注入 system 后清除。
@@ -779,6 +786,7 @@ pub fn build_system_prompt(
 /// 由 bg_timer 每 60s 调用一次。
 pub(crate) fn remind_tick(
     remind_store: &dyn RemindAtStore,
+    mut cleanup: impl FnMut(&crate::reminder::ReminderItem) -> Result<()>,
     inbound_tx: &crate::bus::SystemInboundTx,
     resolve_locale: &std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync>,
 ) {
@@ -786,13 +794,20 @@ pub(crate) fn remind_tick(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    while let Ok(Some((channel, chat_id, context))) = remind_store.pop_due(now) {
+    while let Ok(Some(reminder)) = remind_store.pop_due(now) {
+        if let Err(error) = cleanup(&reminder) {
+            log::warn!(
+                "[memory::remind_tick] linked calendar cleanup failed for reminder {}: {}",
+                reminder.id,
+                error
+            );
+        }
         let loc = resolve_locale();
         let prefix = crate::i18n::tr(crate::i18n::Message::RemindPrefix, loc);
-        let content = format!("{}{}", prefix, context);
+        let content = format!("{}{}", prefix, reminder.context);
         if let Ok(msg) = PcMsg::new_inbound_with_ingress(
-            channel,
-            chat_id,
+            reminder.channel,
+            reminder.chat_id,
             content,
             false,
             crate::bus::IngressKind::System,
@@ -805,6 +820,11 @@ pub(crate) fn remind_tick(
 #[cfg(test)]
 mod tests {
     use super::build_system_prompt;
+    use crate::bus::new_inbound_channel;
+    use crate::error::Result;
+    use crate::memory::RemindAtStore;
+    use crate::reminder::ReminderItem;
+    use std::sync::Mutex;
 
     #[test]
     fn build_system_prompt_respects_max_len() {
@@ -822,5 +842,77 @@ mod tests {
         assert!(out.starts_with("A"));
         assert!(out.contains("B"));
         assert!(out.contains("C"));
+    }
+
+    #[derive(Default)]
+    struct StubRemindAtStore {
+        next: Mutex<Option<ReminderItem>>,
+    }
+
+    impl RemindAtStore for StubRemindAtStore {
+        fn get(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<Option<ReminderItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _reminder: &ReminderItem) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<ReminderItem>> {
+            Ok(self.next.lock().expect("next lock").take())
+        }
+
+        fn list_upcoming(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _now_unix_secs: u64,
+            _limit: usize,
+        ) -> Result<Vec<ReminderItem>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn remind_tick_runs_cleanup_then_injects_message() {
+        let store = StubRemindAtStore {
+            next: Mutex::new(Some(ReminderItem {
+                id: "rem-1".to_string(),
+                channel: "qq_channel".to_string(),
+                chat_id: "chat-1".to_string(),
+                at_unix_secs: 1,
+                context: "喝水".to_string(),
+                ..ReminderItem::default()
+            })),
+        };
+        let cleaned = Mutex::new(Vec::new());
+        let (tx, rx, _) = new_inbound_channel(4);
+        let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            std::sync::Arc::new(|| crate::i18n::Locale::Zh);
+
+        super::remind_tick(
+            &store,
+            |reminder| {
+                cleaned
+                    .lock()
+                    .expect("cleaned lock")
+                    .push(reminder.id.clone());
+                Ok(())
+            },
+            &tx,
+            &resolve_locale,
+        );
+
+        assert_eq!(
+            cleaned.lock().expect("cleaned lock").as_slice(),
+            &["rem-1".to_string()]
+        );
+        let msg = rx.recv().expect("message");
+        assert!(msg.content.contains("喝水"));
+        assert_eq!(msg.ingress, crate::bus::IngressKind::System);
     }
 }

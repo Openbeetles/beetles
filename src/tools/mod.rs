@@ -103,6 +103,11 @@ pub mod network_scan;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+pub(crate) mod office_args;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod office_config;
 #[cfg(all(
     feature = "capability_office",

@@ -1850,17 +1850,24 @@ mod tests {
     struct StubRemindAtStore;
 
     impl crate::memory::RemindAtStore for StubRemindAtStore {
-        fn add(
+        fn get(
             &self,
             _channel: &str,
             _chat_id: &str,
-            _at_unix_secs: u64,
-            _context: &str,
-        ) -> Result<()> {
+            _id: &str,
+        ) -> Result<Option<crate::reminder::ReminderItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _reminder: &crate::reminder::ReminderItem) -> Result<()> {
             Ok(())
         }
 
-        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<(String, String, String)>> {
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<crate::reminder::ReminderItem>> {
             Ok(None)
         }
 
@@ -1870,7 +1877,7 @@ mod tests {
             _chat_id: &str,
             _now_unix_secs: u64,
             _limit: usize,
-        ) -> Result<Vec<(u64, String)>> {
+        ) -> Result<Vec<crate::reminder::ReminderItem>> {
             Ok(Vec::new())
         }
     }

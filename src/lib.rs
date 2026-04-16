@@ -75,6 +75,7 @@ pub mod mail;
 pub mod memory;
 pub mod platform;
 pub mod reasoning;
+pub mod reminder;
 pub mod state;
 pub mod task;
 pub mod task_execution;

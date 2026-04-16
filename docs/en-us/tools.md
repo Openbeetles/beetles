@@ -26,7 +26,7 @@ Keep three things in mind:
 | `office_status` | view office accounts, defaults, credential presence, and runtime status |
 | `files` | list or read files in device storage |
 | `file_edit` | patch an existing text file in device storage |
-| `remind_at` | create a reminder |
+| `remind_at` | manage reminders |
 | `remind_list` | list reminders in the current chat |
 | `board_info` | device model, uptime, WiFi, storage, and other basic device info |
 | `kv_store` | persistent key-value storage |
@@ -42,8 +42,8 @@ Keep three things in mind:
 ### `task`
 
 - `task` supports optional calendar sync.
-- It uses the local calendar by default. If office calendar accounts are already configured, you can also point a task at a remote calendar provider when creating or updating it.
-- If more than one remote calendar account is available for that provider, pass `calendar_account_key` explicitly or set a default office account first.
+- It uses the local calendar by default. If office calendars are already linked, Beetle can also sync a task into an external calendar.
+- If you have more than one external calendar, Beetle will first try to infer the right one from context. If that still is not clear, it will ask which calendar you mean instead of expecting you to know internal identifiers.
 - When a task is completed, the linked calendar item is closed with it. If you delete the task or clear calendar sync, the linked calendar item is removed as well.
 
 ### `calendar`
@@ -51,7 +51,8 @@ Keep three things in mind:
 - Uses the local calendar by default.
 - After you link external calendar accounts, the same tool can also list, create, update, and delete remote events.
 - External calendar accounts can now come from either CalDAV or Feishu Calendar.
-- If more than one external account is available, pass `account_key` explicitly or set a default office account first.
+- If more than one external calendar is linked, Beetle will first try to infer whether you mean a work or personal calendar. If it still is not confident, it will ask.
+- When you create or update a meeting around named people or teams, Beetle can reuse the shared people directory to decide which calendar side fits that context, instead of treating attendee lookup and calendar choice as separate tasks.
 - A Feishu calendar account is meant for direct team-calendar access, but you still keep using the same `calendar` tool for the actual event work.
 - `provider_status` shows which calendar accounts are available, which one is the default, and whether each account is ready, still needs setup, or recently failed.
 
@@ -67,10 +68,11 @@ Keep three things in mind:
   - `draft`
   - `reply`
   - `forward`
-- If a default mail account is configured, or only one mail account is available, you can omit `provider` / `account_key`.
+- If only one mailbox is linked, Beetle will just use it. If multiple mailboxes are linked, Beetle will first try to infer whether the action belongs to work or personal mail, and only ask when that still is ambiguous.
+- When you send mail or save a draft using someone found through a remote work contacts directory, Beetle uses that signal while choosing the sender mailbox too. If the directory already makes the right work mail suite clear, Beetle can jump straight there instead of falling back to the default mailbox and asking again.
 - `search` finds messages in a mailbox by keyword and returns ids you can pass straight into follow-up actions like `get`, `reply`, or `forward`.
-- `send`, `draft`, `reply`, and `forward` are explicit remote mutations and require `confirm=true`.
-- `send`, `draft`, and `forward` can use direct email arrays (`to` / `cc` / `bcc`) and contact-query arrays (`to_lookup` / `cc_lookup` / `bcc_lookup`) resolved through `contacts_directory`; `reply` keeps the original message sender as the base recipient and can still merge extra recipients.
+- `send`, `draft`, `reply`, and `forward` are explicit remote mutations, so Beetle will ask for clear confirmation before it performs them.
+- When sending mail, you can give direct email addresses or simply name the person and let Beetle look them up through the contacts directory. `reply` keeps the original sender as the base recipient and can still merge extra recipients.
 - `provider_status` shows whether each mail account is ready to use and whether it has recently had connection or send problems.
 - Mail accounts can now use generic `imap_smtp`, dedicated `feishu_mail`, or dedicated `wecom_mail`; all three follow the same mail tool contract.
 - If `mail` cannot run because an account is incomplete, credentials no longer work, or the latest connection failed, the result now explains that directly.
@@ -85,7 +87,8 @@ Keep three things in mind:
   - `read`
   - `summarize`
   - `search`
-- If a default documents account is configured, or only one documents account is available, you can omit `provider` / `account_key`.
+- If only one document space is linked, Beetle will just use it. If multiple spaces are linked, Beetle will first try to infer whether you mean a work or personal space, and ask only when that still is unclear.
+- When you ask for a person- or team-related workspace, Beetle can reuse the shared people and organization directory to narrow the right document space before it asks follow-up questions.
 - A Feishu documents account works well when you share one Feishu folder with Beetle; a WeCom documents account works the same way once you provide the Wedrive `space_id` plus the shared root folder id.
 - `provider_status` shows which document-library accounts are available, which one is the default, and whether each account is ready to use.
 - `summarize` turns a document into a short brief with key points, action items, and handoff content you can reuse in mail or task follow-up.
@@ -102,9 +105,18 @@ Keep three things in mind:
   - `upsert`
   - `delete`
 - Use it to persist stable person data such as names, emails, aliases, organizations, and short notes.
-- If a Feishu or WeCom contacts account is connected, `lookup` can supplement local contacts with directory matches; you can also pass `provider` / `account_key` to target a specific directory account.
+- If a Feishu or WeCom contacts directory is connected, `lookup` can supplement local contacts with remote directory matches.
+- If more than one directory is linked, Beetle will first try to infer whether you mean a work or personal directory, and ask only when that still is unclear.
 - `provider_status` shows which contacts-directory accounts are available, which one is the default, and whether each account is ready to use.
-- `mail send` already consumes this shared people lookup through `*_lookup` recipient fields; later calendar attendee routing should reuse the same layer instead of inventing a separate contact model.
+- `mail send` and `draft` already consume this shared people lookup through recipient lookup fields. If a remote directory result clearly points to one office mail suite, Beetle can use that signal to narrow the sender side too.
+- `calendar` can reuse the same shared people lookup when you schedule around named people or teams, so Beetle can narrow the right calendar from the same context.
+- `documents` can also reuse people or organization context from the shared directory when choosing between multiple linked document spaces.
+
+### `remind_at`
+
+- `remind_at` no longer only creates reminders; it can now inspect, update, and delete saved reminders too.
+- When a reminder is linked to a local calendar or a remote office calendar, changing or deleting the reminder also updates or removes the linked calendar event, so the two sides do not drift apart.
+- You can still use it as a plain reminder by simply saying “remind me tomorrow at 3pm…”; Beetle only syncs it into a calendar when you explicitly ask for calendar linkage.
 
 ### `office_config`
 
@@ -122,11 +134,11 @@ Keep three things in mind:
   - `commit_credentials`
   - `revoke`
   - `probe`
-- `provider_schema` is the backend truth source for provider onboarding. It returns the structured field contract for a specific `provider_kind`, or for every provider under one `capability`.
-- `draft_*` / `validate_*` work on structured drafts only and do not write state.
-- `draft_credentials` / `validate_credentials` / `commit_credentials` are now schema-driven: they trim credential values, apply provider defaults, reject metadata keys outside the provider contract, and block missing required fields before write.
-- `commit_*` and `revoke` are explicit write actions and require `confirm=true`.
-- `assess` and `office_status` now include `missing_field_details`, so callers do not need to guess raw metadata keys.
+- `provider_schema` helps you inspect what a service needs before you try to connect it.
+- `draft_*` / `validate_*` only prepare and check configuration drafts; they do not write device state.
+- Credential operations now clean and validate values before write, including filling defaults, blocking missing required items, and rejecting fields that do not belong to that provider.
+- `commit_*` and `revoke` are explicit write actions, so Beetle will ask for clear confirmation before it performs them.
+- `assess` and `office_status` are meant to tell you what is missing, what is wrong, and what to fix next, without expecting you to know internal field names.
 - `probe` reports only real status. Missing config, unsupported probe paths, or current unavailability are returned explicitly.
 
 ### `office_status`
@@ -134,7 +146,7 @@ Keep three things in mind:
 - Reads the unified office state instead of any one tool's private status.
 - Use it to inspect accounts, defaults, whether credentials exist, and the latest runtime status.
 - It now directly tells you whether each account is ready, missing sign-in info, needs a connection check, or recently failed.
-- Optional `capability` lets you scope the result to `calendar`, `mail`, `documents`, or `contacts_directory`.
+- You can also scope the result to one office area such as calendar, mail, documents, or contacts.
 
 ## Tools Behind `tools_network_extra`
 

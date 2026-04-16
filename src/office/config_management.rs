@@ -399,7 +399,9 @@ impl OfficeConfigManagementService {
             let resolve_result = office.resolve(&OfficeResolveRequest {
                 capability,
                 preferred_account_key: None,
+                preferred_provider_kind: None,
                 preferred_identity_class: None,
+                historical_account_key: None,
             });
             let default_account_key = default_by_capability.get(&capability).cloned().flatten();
             let (selection_status, selected_account_key, ready, next_action) = match resolve_result

@@ -4,6 +4,7 @@
 //! heartbeat / cron 维持固定周期；remind/task 根据最近 deadline 唤醒，避免固定 60s 粗轮询。
 
 use crate::bus::SystemInboundTx;
+use crate::config::AppConfig;
 use crate::cron::{CronTickState, SensorWatchContext};
 use crate::heartbeat::HeartbeatTickState;
 use crate::i18n::Locale;
@@ -86,6 +87,7 @@ pub struct BgTimerContext {
     pub system_inbound_tx: SystemInboundTx,
     pub resolve_locale: Arc<dyn Fn() -> Locale + Send + Sync>,
     pub platform: Arc<dyn crate::Platform>,
+    pub config: Arc<AppConfig>,
 
     // heartbeat
     pub version: &'static str,
@@ -117,6 +119,16 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
         Some(crate::util::SpawnCore::Core1),
         crate::util::HttpThreadRole::Background,
         move || {
+            #[cfg(all(
+                feature = "capability_office",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
+            let reminder_calendar_service = build_reminder_calendar_service(&ctx);
+            #[cfg(all(
+                feature = "capability_office",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
+            let mut reminder_calendar_http: Option<Box<dyn crate::PlatformHttpClient>> = None;
             let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
             let cron_interval = Duration::from_secs(CRON_INTERVAL_SECS);
             let mut heartbeat_state = HeartbeatTickState::new();
@@ -231,6 +243,22 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                 {
                     crate::memory::remind_tick(
                         ctx.remind_store.as_ref(),
+                        |reminder| {
+                            clear_due_reminder_calendar_link(
+                                reminder,
+                                &ctx,
+                                #[cfg(all(
+                                    feature = "capability_office",
+                                    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+                                ))]
+                                Some(&reminder_calendar_service),
+                                #[cfg(all(
+                                    feature = "capability_office",
+                                    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+                                ))]
+                                &mut reminder_calendar_http,
+                            )
+                        },
                         &ctx.system_inbound_tx,
                         &ctx.resolve_locale,
                     );
@@ -259,6 +287,151 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
         HEARTBEAT_INTERVAL_SECS,
         CRON_INTERVAL_SECS
     );
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn build_reminder_calendar_service(ctx: &BgTimerContext) -> crate::calendar::CalendarService {
+    let office_authority = std::sync::Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
+        std::sync::Arc::new(crate::config::PlatformConfigFileStore(
+            std::sync::Arc::clone(&ctx.platform),
+        )),
+        ctx.platform.office_credential_store(),
+        ctx.platform.office_runtime_status_store(),
+    ));
+    let credential_store = std::sync::Arc::new(
+        crate::calendar::OfficeBackedCalendarProviderCredentialStore::with_authority(
+            office_authority.clone(),
+        ),
+    );
+    crate::calendar::CalendarService::with_office_authority(
+        ctx.platform.calendar_store(),
+        credential_store,
+        crate::calendar::build_default_office_calendar_provider_registry(),
+        Some(office_authority),
+    )
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+struct PlatformCalendarHttpClient<'a> {
+    inner: &'a mut dyn crate::PlatformHttpClient,
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl crate::calendar::CalendarHttpClient for PlatformCalendarHttpClient<'_> {
+    fn get_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+        self.inner.get(url, headers)
+    }
+
+    fn post_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+        self.inner.post(url, headers, body)
+    }
+
+    fn patch_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+        self.inner.patch(url, headers, body)
+    }
+
+    fn put_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+        self.inner.put(url, headers, body)
+    }
+
+    fn delete_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+        self.inner.delete(url, headers)
+    }
+}
+
+fn clear_due_reminder_calendar_link(
+    reminder: &crate::reminder::ReminderItem,
+    ctx: &BgTimerContext,
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    calendar_service: Option<&crate::calendar::CalendarService>,
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    reminder_calendar_http: &mut Option<Box<dyn crate::PlatformHttpClient>>,
+) -> crate::Result<()> {
+    if reminder.calendar_event_id.trim().is_empty() {
+        return Ok(());
+    }
+    let provider = reminder.calendar_provider.trim();
+    if provider.is_empty() || provider == crate::calendar::CALENDAR_PROVIDER_LOCAL {
+        let _ = ctx
+            .platform
+            .calendar_store()
+            .delete(&reminder.calendar_event_id)?;
+        return Ok(());
+    }
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    {
+        let service = calendar_service.ok_or_else(|| {
+            crate::Error::config(
+                "bg_timer_reminder_calendar_cleanup",
+                format!("calendar provider '{provider}' unavailable for due reminder cleanup"),
+            )
+        })?;
+        if reminder_calendar_http.is_none() {
+            *reminder_calendar_http = Some(crate::network::create_http_client_with_config(
+                ctx.platform.as_ref(),
+                ctx.config.as_ref(),
+                crate::network::HttpClientClass::Background,
+            )?);
+        }
+        let http = reminder_calendar_http.as_deref_mut().ok_or_else(|| {
+            crate::Error::config("bg_timer_reminder_calendar_cleanup", "http unavailable")
+        })?;
+        let mut http = PlatformCalendarHttpClient { inner: http };
+        let _ = service.delete(
+            Some(&mut http),
+            provider,
+            (!reminder.calendar_account_key.trim().is_empty())
+                .then_some(reminder.calendar_account_key.as_str()),
+            &reminder.calendar_event_id,
+        )?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err(crate::Error::config(
+        "bg_timer_reminder_calendar_cleanup",
+        format!("calendar provider '{provider}' unavailable in this runtime"),
+    ))
 }
 
 #[cfg(test)]

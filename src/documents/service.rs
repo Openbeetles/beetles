@@ -5,9 +5,9 @@ use crate::documents::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
-    OfficeResolveRequest, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::util::current_unix_secs;
 use std::sync::Arc;
@@ -58,13 +58,28 @@ impl DocumentsService {
     }
 
     pub fn resolve_provider_name(&self, provider: Option<&str>) -> Result<String> {
+        self.resolve_provider_name_with_identity(provider, None)
+    }
+
+    pub fn resolve_provider_name_with_identity(
+        &self,
+        provider: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String> {
         if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
             return Ok(provider.to_string());
         }
         if let Some(office_service) = self.load_office_service()? {
-            if let Some(account_key) =
-                office_service.default_account_key(OfficeCapability::Documents)
+            if let OfficeResolveResult::Selected(selection) =
+                office_service.resolve(&OfficeResolveRequest {
+                    capability: OfficeCapability::Documents,
+                    preferred_account_key: None,
+                    preferred_provider_kind: None,
+                    preferred_identity_class,
+                    historical_account_key: None,
+                })
             {
+                let account_key = selection.account_key;
                 let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
                     Error::config(
                         "documents_provider",
@@ -112,33 +127,30 @@ impl DocumentsService {
         provider: Option<&str>,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeResolveResult>> {
+        self.office_resolve_hint_with_identity(provider, account_key, None)
+    }
+
+    pub fn office_resolve_hint_with_identity(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeResolveResult>> {
         if account_key.is_some_and(|value| !value.trim().is_empty()) {
             return Ok(None);
         }
         let Some(office_service) = self.load_office_service()? else {
             return Ok(None);
         };
-        let provider = provider.map(str::trim).filter(|value| !value.is_empty());
-        if let Some(provider) = provider {
-            let candidates = office_service
-                .accounts_for_capability(OfficeCapability::Documents)
-                .into_iter()
-                .filter(|account| account.provider_kind == provider)
-                .map(|account| OfficeResolveCandidate::from_account(&account))
-                .collect::<Vec<_>>();
-            if candidates.len() > 1 {
-                return Ok(Some(OfficeResolveResult::Ambiguous(
-                    OfficeResolveAmbiguity {
-                        reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
-                        candidate_accounts: candidates,
-                    },
-                )));
-            }
-        }
         match office_service.resolve(&OfficeResolveRequest {
             capability: OfficeCapability::Documents,
             preferred_account_key: None,
-            preferred_identity_class: None,
+            preferred_provider_kind: provider
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            preferred_identity_class,
+            historical_account_key: None,
         }) {
             OfficeResolveResult::Selected(_) => Ok(None),
             other => Ok(Some(other)),
@@ -170,14 +182,59 @@ impl DocumentsService {
         })
     }
 
+    pub fn office_identity_class_for_account(
+        &self,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeAccountIdentityClass>> {
+        let Some(account_key) = account_key.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(service) = self.load_office_service()? else {
+            return Ok(None);
+        };
+        Ok(service
+            .account(account_key)
+            .map(|account| account.identity_class))
+    }
+
+    pub fn provider_supports(&self, provider: &str, op: DocumentsOperation) -> bool {
+        self.providers
+            .get(provider)
+            .is_some_and(|provider_impl| provider_impl.supports(op))
+    }
+
+    pub fn provider_is_routable_for_op(
+        &self,
+        provider: &str,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        op: DocumentsOperation,
+    ) -> bool {
+        self.resolve_remote_with_identity(provider, None, preferred_identity_class, op)
+            .is_ok()
+    }
+
     pub fn list(
         &self,
         provider: &str,
         account_key: Option<&str>,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, DocumentsOperation::List)?;
+        self.list_with_identity(provider, account_key, None, query)
+    }
+
+    pub fn list_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: DocumentsQuery,
+    ) -> Result<Vec<DocumentsEntry>> {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            DocumentsOperation::List,
+        )?;
         let result = provider_impl.list_entries(&credential, query);
         self.record_runtime_activity(
             &credential.account_key,
@@ -194,8 +251,23 @@ impl DocumentsService {
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, DocumentsOperation::Read)?;
+        self.read_with_identity(provider, account_key, None, path, max_chars)
+    }
+
+    pub fn read_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        path: &str,
+        max_chars: usize,
+    ) -> Result<DocumentsReadResult> {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            DocumentsOperation::Read,
+        )?;
         let result = provider_impl.read_document(&credential, path, max_chars);
         self.record_runtime_activity(
             &credential.account_key,
@@ -211,8 +283,22 @@ impl DocumentsService {
         account_key: Option<&str>,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, DocumentsOperation::Search)?;
+        self.search_with_identity(provider, account_key, None, query)
+    }
+
+    pub fn search_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: DocumentsSearchQuery,
+    ) -> Result<Vec<DocumentsSearchHit>> {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            DocumentsOperation::Search,
+        )?;
         let result = provider_impl.search_documents(&credential, query);
         self.record_runtime_activity(
             &credential.account_key,
@@ -222,10 +308,11 @@ impl DocumentsService {
         result
     }
 
-    fn resolve_remote(
+    fn resolve_remote_with_identity(
         &self,
         provider: &str,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
         op: DocumentsOperation,
     ) -> Result<(Arc<dyn DocumentsProvider>, DocumentsProviderCredential)> {
         let provider_impl = self.providers.get(provider).ok_or_else(|| {
@@ -240,7 +327,11 @@ impl DocumentsService {
                 format!("provider '{}' does not support {:?}", provider, op),
             ));
         }
-        let account_key = self.resolve_account_key(provider, account_key)?;
+        let account_key = self.resolve_account_key_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+        )?;
         let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
             Error::config(
                 "documents_provider",
@@ -262,33 +353,39 @@ impl DocumentsService {
         Ok((provider_impl, credential))
     }
 
-    fn resolve_account_key(&self, provider: &str, account_key: Option<&str>) -> Result<String> {
+    fn resolve_account_key_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String> {
         if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
             return Ok(account_key.to_string());
         }
         if let Some(office_service) = self.load_office_service()? {
-            if let Some(account_key) = resolve_office_default_account_key(
-                &office_service,
-                self.credential_store.as_ref(),
-                provider,
-            )? {
-                return Ok(account_key);
-            }
-        }
-        let mut keys = self
-            .credential_store
-            .find_account_keys_by_provider(provider)?;
-        keys.sort();
-        match keys.len() {
-            0 => Err(Error::config(
-                "documents_provider",
-                format!("provider '{}' has no configured credential", provider),
-            )),
-            1 => Ok(keys.remove(0)),
-            _ => {
-                if let Some(OfficeResolveResult::Ambiguous(ambiguity)) =
-                    self.office_resolve_hint(Some(provider), None)?
-                {
+            match office_service.resolve(&OfficeResolveRequest {
+                capability: OfficeCapability::Documents,
+                preferred_account_key: None,
+                preferred_provider_kind: Some(provider.to_string()),
+                preferred_identity_class,
+                historical_account_key: None,
+            }) {
+                OfficeResolveResult::Selected(selection) => {
+                    let account_key = selection.account_key;
+                    let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
+                        Error::config(
+                            "documents_provider",
+                            format!(
+                                "office-selected documents account '{}' has no configured credential",
+                                account_key
+                            ),
+                        )
+                    })?;
+                    if credential.provider == provider {
+                        return Ok(account_key);
+                    }
+                }
+                OfficeResolveResult::Ambiguous(ambiguity) => {
                     let candidate_accounts = ambiguity
                         .candidate_accounts
                         .iter()
@@ -305,14 +402,26 @@ impl DocumentsService {
                         ),
                     ));
                 }
-                Err(Error::config(
-                    "documents_provider",
-                    format!(
-                        "provider '{}' has multiple configured accounts; account_key is required",
-                        provider
-                    ),
-                ))
+                OfficeResolveResult::Missing(_) => {}
             }
+        }
+        let mut keys = self
+            .credential_store
+            .find_account_keys_by_provider(provider)?;
+        keys.sort();
+        match keys.len() {
+            0 => Err(Error::config(
+                "documents_provider",
+                format!("provider '{}' has no configured credential", provider),
+            )),
+            1 => Ok(keys.remove(0)),
+            _ => Err(Error::config(
+                "documents_provider",
+                format!(
+                    "provider '{}' has multiple configured accounts; account_key is required",
+                    provider
+                ),
+            )),
         }
     }
 
@@ -373,30 +482,6 @@ impl DocumentsService {
                 store_error
             );
         }
-    }
-}
-
-fn resolve_office_default_account_key(
-    office_service: &OfficeService,
-    credential_store: &(dyn DocumentsProviderCredentialStore + Send + Sync),
-    provider: &str,
-) -> Result<Option<String>> {
-    let Some(account_key) = office_service.default_account_key(OfficeCapability::Documents) else {
-        return Ok(None);
-    };
-    let Some(credential) = credential_store.get(&account_key)? else {
-        return Err(Error::config(
-            "documents_provider",
-            format!(
-                "office-selected documents account '{}' has no configured credential",
-                account_key
-            ),
-        ));
-    };
-    if credential.provider == provider {
-        Ok(Some(account_key))
-    } else {
-        Ok(None)
     }
 }
 

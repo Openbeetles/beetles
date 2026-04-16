@@ -745,9 +745,10 @@ fn register_core_tools(
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     registry.register(Box::new(super::AnalyzeImageTool::new(config)));
-    registry.register(Box::new(super::RemindAtTool::new(Arc::clone(
-        remind_at_store,
-    ))));
+    registry.register(Box::new(super::RemindAtTool::with_local_calendar(
+        Arc::clone(remind_at_store),
+        platform.calendar_store(),
+    )));
     registry.register(Box::new(super::RemindListTool::new(Arc::clone(
         remind_at_store,
     ))));
@@ -891,14 +892,7 @@ fn register_office_tools(
     documents_providers.register(Arc::new(
         crate::documents::providers::wecom::WecomDocumentsProvider,
     ));
-    let mut calendar_providers = crate::calendar::CalendarProviderRegistry::new();
-    calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
-    calendar_providers.register(Arc::new(
-        crate::calendar::providers::feishu::FeishuCalendarProvider,
-    ));
-    calendar_providers.register(Arc::new(
-        crate::calendar::providers::wecom::WecomCalendarProvider,
-    ));
+    let calendar_providers = crate::calendar::build_default_office_calendar_provider_registry();
     let mut contacts_directory_providers =
         crate::contacts_directory::ContactsDirectoryProviderRegistry::new();
     contacts_directory_providers.register(Arc::new(
@@ -907,25 +901,51 @@ fn register_office_tools(
     contacts_directory_providers.register(Arc::new(
         crate::contacts_directory::providers::wecom::WecomContactsDirectoryProvider,
     ));
-    let mut task_calendar_providers = crate::calendar::CalendarProviderRegistry::new();
-    task_calendar_providers.register(Arc::new(crate::calendar::providers::caldav::CalDavProvider));
-    task_calendar_providers.register(Arc::new(
-        crate::calendar::providers::feishu::FeishuCalendarProvider,
-    ));
-    task_calendar_providers.register(Arc::new(
-        crate::calendar::providers::wecom::WecomCalendarProvider,
-    ));
+    let task_calendar_providers =
+        crate::calendar::build_default_office_calendar_provider_registry();
+    let reminder_calendar_providers =
+        crate::calendar::build_default_office_calendar_provider_registry();
+    let calendar_contacts_service =
+        crate::contacts_directory::ContactsDirectoryService::with_office_authority(
+            Arc::clone(&contacts_directory_store),
+            Arc::clone(&contacts_directory_credential_store),
+            contacts_directory_providers.clone(),
+            office_authority.clone(),
+        );
+    let documents_contacts_service =
+        crate::contacts_directory::ContactsDirectoryService::with_office_authority(
+            Arc::clone(&contacts_directory_store),
+            Arc::clone(&contacts_directory_credential_store),
+            contacts_directory_providers.clone(),
+            office_authority.clone(),
+        );
+    let mail_contacts_service =
+        crate::contacts_directory::ContactsDirectoryService::with_office_authority(
+            Arc::clone(&contacts_directory_store),
+            Arc::clone(&contacts_directory_credential_store),
+            contacts_directory_providers.clone(),
+            office_authority.clone(),
+        );
 
-    registry.register(Box::new(super::CalendarTool::with_office_authority(
-        platform.calendar_store(),
-        Arc::clone(&calendar_credential_store),
-        calendar_providers,
-        office_authority.clone(),
-    )));
+    registry.register(Box::new(
+        super::CalendarTool::with_office_authority_and_contacts_service(
+            platform.calendar_store(),
+            Arc::clone(&calendar_credential_store),
+            calendar_providers,
+            office_authority.clone(),
+            calendar_contacts_service,
+        ),
+    ));
     registry.register(Box::new(super::TaskTool::with_office_authority(
         platform.task_store(),
         platform.calendar_store(),
         task_calendar_providers,
+        office_authority.clone(),
+    )));
+    registry.register(Box::new(super::RemindAtTool::with_office_authority(
+        platform.remind_at_store(),
+        platform.calendar_store(),
+        reminder_calendar_providers,
         office_authority.clone(),
     )));
     registry.register(Box::new(
@@ -933,12 +953,7 @@ fn register_office_tools(
             Arc::clone(&mail_credential_store),
             mail_providers,
             office_authority.clone(),
-            crate::contacts_directory::ContactsDirectoryService::with_office_authority(
-                Arc::clone(&contacts_directory_store),
-                Arc::clone(&contacts_directory_credential_store),
-                contacts_directory_providers.clone(),
-                office_authority.clone(),
-            ),
+            mail_contacts_service,
         ),
     ));
     registry.register(Box::new(
@@ -949,11 +964,14 @@ fn register_office_tools(
             office_authority.clone(),
         ),
     ));
-    registry.register(Box::new(super::DocumentsTool::with_office_authority(
-        Arc::clone(&documents_credential_store),
-        documents_providers,
-        office_authority.clone(),
-    )));
+    registry.register(Box::new(
+        super::DocumentsTool::with_office_authority_and_contacts_service(
+            Arc::clone(&documents_credential_store),
+            documents_providers,
+            office_authority.clone(),
+            documents_contacts_service,
+        ),
+    ));
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));

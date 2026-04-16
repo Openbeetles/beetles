@@ -1,17 +1,21 @@
 //! Documents tool: office-routed document libraries backed by shared office authority.
 
+use crate::contacts_directory::{
+    ContactEntry, ContactsDirectoryLookupHit, ContactsDirectoryService, ContactsDirectoryStore,
+};
 use crate::documents::{
-    summarize_document_read_result, DocumentsEntry, DocumentsProviderCredentialStatus,
-    DocumentsProviderCredentialStore, DocumentsProviderRegistry, DocumentsQuery,
-    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery, DocumentsService,
-    DocumentsSummaryResult,
+    summarize_document_read_result, DocumentsEntry, DocumentsOperation,
+    DocumentsProviderCredentialStatus, DocumentsProviderCredentialStore, DocumentsProviderRegistry,
+    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
+    DocumentsService, DocumentsSummaryResult,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySource, OfficeCapability, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
@@ -29,6 +33,7 @@ const DEFAULT_SEARCH_MAX_READ_BYTES: usize = 256 * 1024;
 
 pub struct DocumentsTool {
     service: DocumentsService,
+    contacts_directory: Option<ContactsDirectoryService>,
 }
 
 #[derive(Serialize)]
@@ -52,6 +57,8 @@ struct DocumentsListResponse {
     provider: String,
     count: usize,
     items: Vec<DocumentsEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolved_contexts: Vec<DocumentsResolvedContext>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +66,8 @@ struct DocumentsReadResponse {
     op: &'static str,
     provider: String,
     document: DocumentsReadResult,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolved_contexts: Vec<DocumentsResolvedContext>,
 }
 
 #[derive(Serialize)]
@@ -66,6 +75,8 @@ struct DocumentsSummaryResponse {
     op: &'static str,
     provider: String,
     summary: DocumentsSummaryResult,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolved_contexts: Vec<DocumentsResolvedContext>,
 }
 
 #[derive(Serialize)]
@@ -74,18 +85,42 @@ struct DocumentsSearchResponse {
     provider: String,
     count: usize,
     hits: Vec<DocumentsSearchHit>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolved_contexts: Vec<DocumentsResolvedContext>,
+}
+
+#[derive(Serialize)]
+struct DocumentsResolvedContext {
+    query: String,
+    contact_id: String,
+    display_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    organization: String,
+    match_reason: String,
+    score: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_class: Option<String>,
 }
 
 impl DocumentsTool {
     pub fn new(credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>) -> Self {
-        Self::with_runtime(credential_store, DocumentsProviderRegistry::new(), None)
+        Self::with_runtime(
+            credential_store,
+            DocumentsProviderRegistry::new(),
+            None,
+            None,
+        )
     }
 
     pub fn with_providers(
         credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
         providers: DocumentsProviderRegistry,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, None)
+        Self::with_runtime(credential_store, providers, None, None)
     }
 
     pub fn with_office_service(
@@ -105,13 +140,42 @@ impl DocumentsTool {
         providers: DocumentsProviderRegistry,
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, Some(office_authority))
+        Self::with_runtime(credential_store, providers, Some(office_authority), None)
+    }
+
+    pub fn with_office_authority_and_contacts(
+        credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
+        providers: DocumentsProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+        contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
+    ) -> Self {
+        Self::with_runtime(
+            credential_store,
+            providers,
+            Some(office_authority),
+            Some(ContactsDirectoryService::new(contacts_store)),
+        )
+    }
+
+    pub fn with_office_authority_and_contacts_service(
+        credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
+        providers: DocumentsProviderRegistry,
+        office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+        contacts_directory: ContactsDirectoryService,
+    ) -> Self {
+        Self::with_runtime(
+            credential_store,
+            providers,
+            Some(office_authority),
+            Some(contacts_directory),
+        )
     }
 
     fn with_runtime(
         credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
         providers: DocumentsProviderRegistry,
         office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+        contacts_directory: Option<ContactsDirectoryService>,
     ) -> Self {
         Self {
             service: DocumentsService::with_office_authority(
@@ -119,6 +183,7 @@ impl DocumentsTool {
                 providers,
                 office_authority,
             ),
+            contacts_directory,
         }
     }
 
@@ -127,6 +192,7 @@ impl DocumentsTool {
         op: &str,
         provider: Option<&str>,
         account_key: Option<&str>,
+        preferred_identity_class: Option<crate::office::OfficeAccountIdentityClass>,
         error: &Error,
     ) -> Result<ToolExecutionOutcome> {
         build_office_operation_failure_outcome(OfficeOperationFailureInput {
@@ -136,7 +202,11 @@ impl DocumentsTool {
             account_key,
             capability: OfficeCapability::Documents,
             default_account_key: self.service.office_default_account_key()?,
-            resolve_hint: self.service.office_resolve_hint(provider, account_key)?,
+            resolve_hint: self.service.office_resolve_hint_with_identity(
+                provider,
+                account_key,
+                preferred_identity_class,
+            )?,
             account_assessments: self.service.office_account_assessments()?,
             error,
         })
@@ -144,6 +214,8 @@ impl DocumentsTool {
 
     fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_documents")?;
+        let preferred_identity_class =
+            parse_preferred_identity_class(&obj, "preferred_identity_class", "tool_documents")?;
         let op = obj
             .get("op")
             .and_then(Value::as_str)
@@ -173,23 +245,46 @@ impl DocumentsTool {
             "list" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
+                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                let derived_provider_hint =
+                    if requested_provider.is_none() && requested_account_key.is_none() {
+                        lookup_provider_hint.as_deref().filter(|provider_hint| {
+                            self.service.provider_is_routable_for_op(
+                                provider_hint,
+                                effective_identity_class,
+                                DocumentsOperation::List,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                let effective_provider_hint =
+                    requested_provider.as_deref().or(derived_provider_hint);
+                annotate_resolved_contexts_identity(
+                    &mut resolved_contexts,
+                    effective_identity_class,
+                );
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    effective_provider_hint,
+                    effective_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "list",
-                            requested_provider.as_deref(),
+                            effective_provider_hint,
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
                 };
-                let items = match self.service.list(
+                let items = match self.service.list_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     DocumentsQuery {
                         path: optional_str(&obj, "path"),
                         limit: parse_limit(obj.get("limit")),
@@ -201,6 +296,7 @@ impl DocumentsTool {
                             "list",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -212,29 +308,53 @@ impl DocumentsTool {
                         provider,
                         count: items.len(),
                         items,
+                        resolved_contexts,
                     },
                 )?))
             }
             "read" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
+                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                let derived_provider_hint =
+                    if requested_provider.is_none() && requested_account_key.is_none() {
+                        lookup_provider_hint.as_deref().filter(|provider_hint| {
+                            self.service.provider_is_routable_for_op(
+                                provider_hint,
+                                effective_identity_class,
+                                DocumentsOperation::Read,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                let effective_provider_hint =
+                    requested_provider.as_deref().or(derived_provider_hint);
+                annotate_resolved_contexts_identity(
+                    &mut resolved_contexts,
+                    effective_identity_class,
+                );
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    effective_provider_hint,
+                    effective_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "read",
-                            requested_provider.as_deref(),
+                            effective_provider_hint,
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
                 };
-                let document = match self.service.read(
+                let document = match self.service.read_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     required_str(&obj, "path")?,
                     parse_max_chars(obj.get("max_chars"))?,
                 ) {
@@ -244,6 +364,7 @@ impl DocumentsTool {
                             "read",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -254,29 +375,53 @@ impl DocumentsTool {
                         op: "read",
                         provider,
                         document,
+                        resolved_contexts,
                     },
                 )?))
             }
             "summarize" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
+                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                let derived_provider_hint =
+                    if requested_provider.is_none() && requested_account_key.is_none() {
+                        lookup_provider_hint.as_deref().filter(|provider_hint| {
+                            self.service.provider_is_routable_for_op(
+                                provider_hint,
+                                effective_identity_class,
+                                DocumentsOperation::Read,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                let effective_provider_hint =
+                    requested_provider.as_deref().or(derived_provider_hint);
+                annotate_resolved_contexts_identity(
+                    &mut resolved_contexts,
+                    effective_identity_class,
+                );
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    effective_provider_hint,
+                    effective_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "summarize",
-                            requested_provider.as_deref(),
+                            effective_provider_hint,
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
                 };
-                let document = match self.service.read(
+                let document = match self.service.read_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     required_str(&obj, "path")?,
                     parse_max_chars(obj.get("max_chars"))?,
                 ) {
@@ -286,6 +431,7 @@ impl DocumentsTool {
                             "summarize",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -300,29 +446,53 @@ impl DocumentsTool {
                         op: "summarize",
                         provider,
                         summary,
+                        resolved_contexts,
                     },
                 )?))
             }
             "search" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
+                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                let derived_provider_hint =
+                    if requested_provider.is_none() && requested_account_key.is_none() {
+                        lookup_provider_hint.as_deref().filter(|provider_hint| {
+                            self.service.provider_is_routable_for_op(
+                                provider_hint,
+                                effective_identity_class,
+                                DocumentsOperation::Search,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                let effective_provider_hint =
+                    requested_provider.as_deref().or(derived_provider_hint);
+                annotate_resolved_contexts_identity(
+                    &mut resolved_contexts,
+                    effective_identity_class,
+                );
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    effective_provider_hint,
+                    effective_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "search",
-                            requested_provider.as_deref(),
+                            effective_provider_hint,
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
                 };
-                let hits = match self.service.search(
+                let hits = match self.service.search_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     DocumentsSearchQuery {
                         path: optional_str(&obj, "path"),
                         query: required_str(&obj, "query")?.to_string(),
@@ -340,6 +510,7 @@ impl DocumentsTool {
                             "search",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -351,6 +522,7 @@ impl DocumentsTool {
                         provider,
                         count: hits.len(),
                         hits,
+                        resolved_contexts,
                     },
                 )?))
             }
@@ -360,7 +532,52 @@ impl DocumentsTool {
             )),
         }
     }
+
+    fn resolve_lookup_context(
+        &self,
+        obj: &serde_json::Map<String, Value>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<DocumentsLookupContext> {
+        let queries = parse_string_list(obj, "context_lookup", "tool_documents")?;
+        if queries.is_empty() {
+            return Ok((Vec::new(), None, None));
+        }
+        let Some(directory) = self.contacts_directory.as_ref() else {
+            return Err(Error::config(
+                "tool_documents",
+                "context_lookup requires contacts_directory support",
+            ));
+        };
+        let mut resolved = Vec::with_capacity(queries.len());
+        let mut identity_hints = Vec::with_capacity(queries.len());
+        let mut provider_hints = Vec::with_capacity(queries.len());
+        for query in queries {
+            let hit = directory.resolve_lookup_hit_with_route_and_identity(
+                &query,
+                None,
+                None,
+                preferred_identity_class,
+            )?;
+            identity_hints.push(
+                self.service
+                    .office_identity_class_for_account(hit.account_key.as_deref())?,
+            );
+            provider_hints.push(documents_provider_hint_from_lookup_hit(&hit));
+            resolved.push(documents_resolved_context(query, hit));
+        }
+        Ok((
+            resolved,
+            coalesce_identity_hints(identity_hints),
+            coalesce_provider_hints(provider_hints),
+        ))
+    }
 }
+
+type DocumentsLookupContext = (
+    Vec<DocumentsResolvedContext>,
+    Option<OfficeAccountIdentityClass>,
+    Option<String>,
+);
 
 impl Tool for DocumentsTool {
     fn name(&self) -> &'static str {
@@ -368,11 +585,11 @@ impl Tool for DocumentsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Access office document libraries through shared account authority. Ops: provider_status, list, read, summarize, search. Provider can be omitted when office documents defaults or a single configured provider make routing unambiguous."
+        "Access office document libraries through shared account authority. Ops: provider_status, list, read, summarize, search. Provider can be omitted when office documents defaults, identity hints, or people/team context make routing unambiguous."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|summarize|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"focus":{"type":"string","description":"Optional phrase to emphasize in summarize output."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read or summarize, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|summarize|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when office defaults, identity hints, or people/team context make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"preferred_identity_class":{"type":"string","description":"Optional identity class preference when routing through office authority: work|personal|family|shared|other."},"context_lookup":{"type":"array","items":{"type":"string"},"description":"Optional people or organization queries resolved through contacts_directory to guide documents routing."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"focus":{"type":"string","description":"Optional phrase to emphasize in summarize output."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read or summarize, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -417,6 +634,77 @@ impl Tool for DocumentsTool {
     }
 }
 
+fn documents_resolved_context(
+    query: String,
+    hit: ContactsDirectoryLookupHit,
+) -> DocumentsResolvedContext {
+    let ContactEntry {
+        id,
+        display_name,
+        organization,
+        ..
+    } = hit.contact;
+    DocumentsResolvedContext {
+        query,
+        contact_id: id,
+        display_name,
+        organization,
+        match_reason: hit.match_reason,
+        score: hit.score,
+        provider: hit.provider,
+        account_key: hit.account_key,
+        identity_class: None,
+    }
+}
+
+fn documents_provider_hint_from_lookup_hit(hit: &ContactsDirectoryLookupHit) -> Option<String> {
+    match hit.provider.as_deref() {
+        Some("feishu_contacts_directory") => Some("feishu_documents".to_string()),
+        Some("wecom_contacts_directory") => Some("wecom_documents".to_string()),
+        _ => None,
+    }
+}
+
+fn coalesce_identity_hints<I>(hints: I) -> Option<OfficeAccountIdentityClass>
+where
+    I: IntoIterator<Item = Option<OfficeAccountIdentityClass>>,
+{
+    let mut selected = None;
+    for hint in hints.into_iter().flatten() {
+        match selected {
+            Some(existing) if existing != hint => return None,
+            Some(_) => {}
+            None => selected = Some(hint),
+        }
+    }
+    selected
+}
+
+fn coalesce_provider_hints<I>(hints: I) -> Option<String>
+where
+    I: IntoIterator<Item = Option<String>>,
+{
+    let mut selected = None::<String>;
+    for hint in hints.into_iter().flatten() {
+        match selected.as_deref() {
+            Some(existing) if existing != hint => return None,
+            Some(_) => {}
+            None => selected = Some(hint),
+        }
+    }
+    selected
+}
+
+fn annotate_resolved_contexts_identity(
+    resolved_contexts: &mut [DocumentsResolvedContext],
+    identity_class: Option<OfficeAccountIdentityClass>,
+) {
+    let identity_class = identity_class.map(identity_class_label);
+    for item in resolved_contexts {
+        item.identity_class = identity_class.clone();
+    }
+}
+
 fn parse_provider(obj: &serde_json::Map<String, Value>) -> Option<String> {
     obj.get("provider")
         .and_then(Value::as_str)
@@ -448,6 +736,31 @@ fn optional_str(obj: &serde_json::Map<String, Value>, field: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_default()
         .to_string()
+}
+
+fn parse_string_list(
+    obj: &serde_json::Map<String, Value>,
+    field: &'static str,
+    stage: &'static str,
+) -> Result<Vec<String>> {
+    let Some(value) = obj.get(field) else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| Error::config(stage, format!("{} must be an array", field)))?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    Error::config(stage, format!("{} items must be non-empty strings", field))
+                })
+        })
+        .collect()
 }
 
 fn parse_limit(value: Option<&Value>) -> usize {
@@ -490,9 +803,26 @@ fn parse_max_read_bytes(value: Option<&Value>) -> Result<usize> {
     }
 }
 
+fn identity_class_label(identity_class: OfficeAccountIdentityClass) -> String {
+    match identity_class {
+        OfficeAccountIdentityClass::Work => "work",
+        OfficeAccountIdentityClass::Personal => "personal",
+        OfficeAccountIdentityClass::Family => "family",
+        OfficeAccountIdentityClass::Shared => "shared",
+        OfficeAccountIdentityClass::Other => "other",
+    }
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contacts_directory::{
+        ContactEntry, ContactsDirectoryProvider, ContactsDirectoryProviderCredential,
+        ContactsDirectoryProviderRegistry, ContactsDirectoryService,
+        OfficeBackedContactsDirectoryProviderCredentialStore, StateFsContactsDirectoryStore,
+        OFFICE_METADATA_CONTACTS_APP_ID,
+    };
     use crate::documents::{
         DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
         OfficeBackedDocumentsProviderCredentialStore,
@@ -500,8 +830,9 @@ mod tests {
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy,
+        OfficeSelectionPolicy, OfficeService, SnapshotOfficeAuthoritySource,
     };
+    use crate::platform::StateFs;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -652,6 +983,42 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MemoryStateFs {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl StateFs for MemoryStateFs {
+        fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(rel_path)
+                .cloned())
+        }
+
+        fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, rel_path: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(rel_path);
+            Ok(())
+        }
+
+        fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
     struct StubProvider;
 
     impl DocumentsProvider for StubProvider {
@@ -739,6 +1106,29 @@ mod tests {
                 snippet: Some(format!("match: {}", query.query)),
                 warning: None,
             }])
+        }
+    }
+
+    struct StubRemoteContactsProvider {
+        contacts: Vec<ContactEntry>,
+    }
+
+    impl ContactsDirectoryProvider for StubRemoteContactsProvider {
+        fn provider_name(&self) -> &'static str {
+            "feishu_contacts_directory"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Feishu Contacts Directory"
+        }
+
+        fn lookup_contacts(
+            &self,
+            _credential: &ContactsDirectoryProviderCredential,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<ContactEntry>> {
+            Ok(self.contacts.clone())
         }
     }
 
@@ -986,6 +1376,101 @@ mod tests {
     }
 
     #[test]
+    fn documents_tool_list_prefers_identity_class_over_default_account() {
+        let mut providers = DocumentsProviderRegistry::new();
+        providers.register(Arc::new(StubProvider));
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, account_label, external_account_id) in [
+            ("docs-work", "Work Docs", "work@example.com"),
+            ("docs-personal", "Personal Docs", "personal@example.com"),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    DocumentsProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: "webdav".to_string(),
+                        account_id: external_account_id.to_string(),
+                        account_label: account_label.to_string(),
+                        username: external_account_id.to_string(),
+                        secret: "secret".to_string(),
+                        app_id: String::new(),
+                        space_id: String::new(),
+                        base_url: "https://dav.example.com/root".to_string(),
+                        root_path: "/Workspace".to_string(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "docs-work".to_string(),
+            provider_kind: "webdav".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "docs-personal".to_string(),
+            provider_kind: "webdav".to_string(),
+            external_account_id: "personal@example.com".to_string(),
+            account_label: "Personal Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Documents, "docs-personal".to_string());
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for account_key in ["docs-work", "docs-personal"] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: [(
+                        crate::documents::OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                        "https://dav.example.com/root".to_string(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                })
+                .expect("seed office credential");
+        }
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let tool = DocumentsTool::with_office_service(
+            Arc::new(OfficeBackedDocumentsProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"list","provider":"webdav","preferred_identity_class":"work"}"#,
+                &mut ctx,
+            )
+            .expect("list documents via preferred identity");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["items"][0]["name"], "Work Docs");
+    }
+
+    #[test]
     fn documents_tool_list_returns_resolve_hint_when_accounts_are_ambiguous() {
         let mut providers = DocumentsProviderRegistry::new();
         providers.register(Arc::new(StubProvider));
@@ -1076,5 +1561,167 @@ mod tests {
             .as_str()
             .expect("error string")
             .contains("candidate accounts"));
+    }
+
+    #[test]
+    fn documents_tool_context_lookup_prefers_matching_documents_identity_over_default_account() {
+        let mut providers = DocumentsProviderRegistry::new();
+        providers.register(Arc::new(StubProvider));
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, account_label, external_account_id) in [
+            ("docs-work", "Work Docs", "work@example.com"),
+            ("docs-personal", "Personal Docs", "personal@example.com"),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    DocumentsProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: "webdav".to_string(),
+                        account_id: external_account_id.to_string(),
+                        account_label: account_label.to_string(),
+                        username: external_account_id.to_string(),
+                        secret: "secret".to_string(),
+                        app_id: String::new(),
+                        space_id: String::new(),
+                        base_url: "https://dav.example.com/root".to_string(),
+                        root_path: "/Workspace".to_string(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "docs-work".to_string(),
+            provider_kind: "webdav".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "docs-personal".to_string(),
+            provider_kind: "webdav".to_string(),
+            external_account_id: "personal@example.com".to_string(),
+            account_label: "Personal Docs".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::Documents],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        });
+
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Documents, "docs-personal".to_string());
+        binding.set_default_account(
+            OfficeCapability::ContactsDirectory,
+            "contacts-feishu".to_string(),
+        );
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for (account_key, access_token, metadata) in [
+            (
+                "docs-work",
+                "secret",
+                [(
+                    crate::documents::OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                    "https://dav.example.com/root".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "docs-personal",
+                "secret",
+                [(
+                    crate::documents::OFFICE_METADATA_DOCUMENTS_BASE_URL.to_string(),
+                    "https://dav.example.com/root".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "contacts-feishu",
+                "app-secret",
+                [(
+                    OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                    "cli_contacts".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        ] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: access_token.to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata,
+                })
+                .expect("seed office credential");
+        }
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut contacts_providers = ContactsDirectoryProviderRegistry::new();
+        contacts_providers.register(Arc::new(StubRemoteContactsProvider {
+            contacts: vec![ContactEntry {
+                id: "ou_beetle".to_string(),
+                display_name: "Beetle Team".to_string(),
+                emails: vec!["team@beetle.cn".to_string()],
+                aliases: vec!["甲壳虫团队".to_string()],
+                organization: "Beetle".to_string(),
+                notes: String::new(),
+                updated_at_unix_secs: 1,
+            }],
+        }));
+        let contacts_service = ContactsDirectoryService::with_office_service(
+            contacts_store,
+            contacts_credentials,
+            contacts_providers,
+            office_service.clone(),
+        );
+        let tool = DocumentsTool::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            contacts_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"list","context_lookup":["Beetle Team"]}"#,
+                &mut ctx,
+            )
+            .expect("list documents via remote contacts context");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["items"][0]["name"], "Work Docs");
+        assert_eq!(
+            payload["resolved_contexts"][0]["account_key"],
+            "contacts-feishu"
+        );
+        assert_eq!(payload["resolved_contexts"][0]["identity_class"], "work");
     }
 }

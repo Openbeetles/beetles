@@ -1,13 +1,14 @@
 use crate::config::OfficeAccountsSegment;
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountDraftRequest, OfficeAccountIdentityClass, OfficeCapability,
-    OfficeConfigAssessment, OfficeConfigManagementService, OfficeCredentialDraftRequest,
-    OfficeCredentialsSegment, OfficeProviderSchema, OfficeResolveRequest,
+    OfficeAccountDraftRequest, OfficeCapability, OfficeConfigAssessment,
+    OfficeConfigManagementService, OfficeCredentialDraftRequest, OfficeCredentialsSegment,
+    OfficeProviderSchema, OfficeResolveRequest,
 };
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    office_args::parse_identity_class_value, parse_tool_args, serialize_tool_output, Tool,
+    ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata,
+    ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -125,7 +126,13 @@ impl Tool for OfficeConfigTool {
                     })?)?;
                 let preferred_identity_class = obj
                     .get("preferred_identity_class")
-                    .map(parse_identity_class_value)
+                    .map(|value| {
+                        parse_identity_class_value(
+                            value,
+                            "preferred_identity_class",
+                            "tool_office_config",
+                        )
+                    })
                     .transpose()?;
                 serialize_tool_output(
                     "tool_office_config",
@@ -138,7 +145,14 @@ impl Tool for OfficeConfigTool {
                                 .get("preferred_account_key")
                                 .and_then(Value::as_str)
                                 .map(str::to_string),
+                            preferred_provider_kind: obj
+                                .get("provider_kind")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_string),
                             preferred_identity_class,
+                            historical_account_key: None,
                         })?,
                     },
                 )
@@ -345,26 +359,6 @@ fn parse_capability_value(value: &Value) -> Result<OfficeCapability> {
         _ => Err(Error::config(
             "tool_office_config",
             format!("unsupported capability '{}'", raw),
-        )),
-    }
-}
-
-fn parse_identity_class_value(value: &Value) -> Result<OfficeAccountIdentityClass> {
-    let raw = value.as_str().ok_or_else(|| {
-        Error::config(
-            "tool_office_config",
-            "preferred_identity_class must be a string",
-        )
-    })?;
-    match raw {
-        "work" => Ok(OfficeAccountIdentityClass::Work),
-        "personal" => Ok(OfficeAccountIdentityClass::Personal),
-        "family" => Ok(OfficeAccountIdentityClass::Family),
-        "shared" => Ok(OfficeAccountIdentityClass::Shared),
-        "other" => Ok(OfficeAccountIdentityClass::Other),
-        _ => Err(Error::config(
-            "tool_office_config",
-            format!("unsupported preferred_identity_class '{}'", raw),
         )),
     }
 }

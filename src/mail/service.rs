@@ -5,9 +5,9 @@ use crate::mail::{
     MailSearchQuery, MailSendRequest,
 };
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
-    OfficeResolveRequest, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::util::current_unix_secs;
 use std::sync::Arc;
@@ -58,11 +58,28 @@ impl MailService {
     }
 
     pub fn resolve_provider_name(&self, provider: Option<&str>) -> Result<String> {
+        self.resolve_provider_name_with_identity(provider, None)
+    }
+
+    pub fn resolve_provider_name_with_identity(
+        &self,
+        provider: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String> {
         if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
             return Ok(provider.to_string());
         }
         if let Some(office_service) = self.load_office_service()? {
-            if let Some(account_key) = office_service.default_account_key(OfficeCapability::Mail) {
+            if let OfficeResolveResult::Selected(selection) =
+                office_service.resolve(&OfficeResolveRequest {
+                    capability: OfficeCapability::Mail,
+                    preferred_account_key: None,
+                    preferred_provider_kind: None,
+                    preferred_identity_class,
+                    historical_account_key: None,
+                })
+            {
+                let account_key = selection.account_key;
                 let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
                     Error::config(
                         "mail_provider",
@@ -110,33 +127,30 @@ impl MailService {
         provider: Option<&str>,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeResolveResult>> {
+        self.office_resolve_hint_with_identity(provider, account_key, None)
+    }
+
+    pub fn office_resolve_hint_with_identity(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeResolveResult>> {
         if account_key.is_some_and(|value| !value.trim().is_empty()) {
             return Ok(None);
         }
         let Some(office_service) = self.load_office_service()? else {
             return Ok(None);
         };
-        let provider = provider.map(str::trim).filter(|value| !value.is_empty());
-        if let Some(provider) = provider {
-            let candidates = office_service
-                .accounts_for_capability(OfficeCapability::Mail)
-                .into_iter()
-                .filter(|account| account.provider_kind == provider)
-                .map(|account| OfficeResolveCandidate::from_account(&account))
-                .collect::<Vec<_>>();
-            if candidates.len() > 1 {
-                return Ok(Some(OfficeResolveResult::Ambiguous(
-                    OfficeResolveAmbiguity {
-                        reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
-                        candidate_accounts: candidates,
-                    },
-                )));
-            }
-        }
         match office_service.resolve(&OfficeResolveRequest {
             capability: OfficeCapability::Mail,
             preferred_account_key: None,
-            preferred_identity_class: None,
+            preferred_provider_kind: provider
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            preferred_identity_class,
+            historical_account_key: None,
         }) {
             OfficeResolveResult::Selected(_) => Ok(None),
             other => Ok(Some(other)),
@@ -178,10 +192,35 @@ impl MailService {
         })
     }
 
+    pub fn office_identity_class_for_account(
+        &self,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeAccountIdentityClass>> {
+        let Some(account_key) = account_key.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(service) = self.load_office_service()? else {
+            return Ok(None);
+        };
+        Ok(service
+            .account(account_key)
+            .map(|account| account.identity_class))
+    }
+
     pub fn provider_supports(&self, provider: &str, op: MailOperation) -> bool {
         self.providers
             .get(provider)
             .is_some_and(|provider_impl| provider_impl.supports(op))
+    }
+
+    pub fn provider_is_routable_for_ops(
+        &self,
+        provider: &str,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ops: &[MailOperation],
+    ) -> bool {
+        self.resolve_remote_for_ops(provider, None, preferred_identity_class, ops)
+            .is_ok()
     }
 
     pub fn list(
@@ -190,8 +229,22 @@ impl MailService {
         account_key: Option<&str>,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, MailOperation::List)?;
+        self.list_with_identity(provider, account_key, None, query)
+    }
+
+    pub fn list_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: MailQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            MailOperation::List,
+        )?;
         let result = provider_impl.list_messages(&credential, query);
         self.record_runtime_activity(&credential.account_key, "mail_list", result.as_ref().err());
         result
@@ -203,8 +256,22 @@ impl MailService {
         account_key: Option<&str>,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, MailOperation::Search)?;
+        self.search_with_identity(provider, account_key, None, query)
+    }
+
+    pub fn search_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: MailSearchQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            MailOperation::Search,
+        )?;
         let result = provider_impl.search_messages(&credential, query);
         self.record_runtime_activity(
             &credential.account_key,
@@ -220,8 +287,22 @@ impl MailService {
         account_key: Option<&str>,
         id: &str,
     ) -> Result<Option<MailMessage>> {
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, MailOperation::Get)?;
+        self.get_with_identity(provider, account_key, None, id)
+    }
+
+    pub fn get_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        id: &str,
+    ) -> Result<Option<MailMessage>> {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            MailOperation::Get,
+        )?;
         let result = provider_impl.get_message(&credential, id);
         self.record_runtime_activity(&credential.account_key, "mail_get", result.as_ref().err());
         result
@@ -233,9 +314,20 @@ impl MailService {
         account_key: Option<&str>,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
+        self.send_with_identity(provider, account_key, None, request)
+    }
+
+    pub fn send_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         self.execute_mutating_action(
             provider,
             account_key,
+            preferred_identity_class,
             &[MailOperation::Send],
             "mail_send",
             |provider_impl, credential| provider_impl.send_message(credential, request),
@@ -248,9 +340,20 @@ impl MailService {
         account_key: Option<&str>,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
+        self.draft_with_identity(provider, account_key, None, request)
+    }
+
+    pub fn draft_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         self.execute_mutating_action(
             provider,
             account_key,
+            preferred_identity_class,
             &[MailOperation::Draft],
             "mail_draft",
             |provider_impl, credential| provider_impl.draft_message(credential, request),
@@ -264,9 +367,21 @@ impl MailService {
         original_id: &str,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
+        self.reply_with_identity(provider, account_key, None, original_id, request)
+    }
+
+    pub fn reply_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        original_id: &str,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         self.execute_mutating_action(
             provider,
             account_key,
+            preferred_identity_class,
             &[MailOperation::Get, MailOperation::Send],
             "mail_reply",
             |provider_impl, credential| {
@@ -294,9 +409,21 @@ impl MailService {
         original_id: &str,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
+        self.forward_with_identity(provider, account_key, None, original_id, request)
+    }
+
+    pub fn forward_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        original_id: &str,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         self.execute_mutating_action(
             provider,
             account_key,
+            preferred_identity_class,
             &[MailOperation::Get, MailOperation::Send],
             "mail_forward",
             |provider_impl, credential| {
@@ -312,19 +439,21 @@ impl MailService {
         )
     }
 
-    fn resolve_remote(
+    fn resolve_remote_with_identity(
         &self,
         provider: &str,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
         op: MailOperation,
     ) -> Result<(Arc<dyn MailProvider>, MailProviderCredential)> {
-        self.resolve_remote_for_ops(provider, account_key, &[op])
+        self.resolve_remote_for_ops(provider, account_key, preferred_identity_class, &[op])
     }
 
     fn resolve_remote_for_ops(
         &self,
         provider: &str,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
         ops: &[MailOperation],
     ) -> Result<(Arc<dyn MailProvider>, MailProviderCredential)> {
         let provider_impl = self.providers.get(provider).ok_or_else(|| {
@@ -341,7 +470,11 @@ impl MailService {
                 ));
             }
         }
-        let account_key = self.resolve_account_key(provider, account_key)?;
+        let account_key = self.resolve_account_key_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+        )?;
         let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
             Error::config(
                 "mail_provider",
@@ -367,6 +500,7 @@ impl MailService {
         &self,
         provider: &str,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
         ops: &[MailOperation],
         activity_kind: &'static str,
         execute: F,
@@ -375,7 +509,7 @@ impl MailService {
         F: FnOnce(Arc<dyn MailProvider>, &MailProviderCredential) -> Result<MailMessageSummary>,
     {
         let (provider_impl, credential) =
-            self.resolve_remote_for_ops(provider, account_key, ops)?;
+            self.resolve_remote_for_ops(provider, account_key, preferred_identity_class, ops)?;
         let result = execute(provider_impl, &credential);
         self.record_runtime_activity(
             &credential.account_key,
@@ -437,33 +571,39 @@ impl MailService {
         }
     }
 
-    fn resolve_account_key(&self, provider: &str, account_key: Option<&str>) -> Result<String> {
+    fn resolve_account_key_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String> {
         if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
             return Ok(account_key.to_string());
         }
         if let Some(office_service) = self.load_office_service()? {
-            if let Some(account_key) = resolve_office_default_account_key(
-                &office_service,
-                self.credential_store.as_ref(),
-                provider,
-            )? {
-                return Ok(account_key);
-            }
-        }
-        let mut keys = self
-            .credential_store
-            .find_account_keys_by_provider(provider)?;
-        keys.sort();
-        match keys.len() {
-            0 => Err(Error::config(
-                "mail_provider",
-                format!("provider '{}' has no configured credential", provider),
-            )),
-            1 => Ok(keys.remove(0)),
-            _ => {
-                if let Some(OfficeResolveResult::Ambiguous(ambiguity)) =
-                    self.office_resolve_hint(Some(provider), None)?
-                {
+            match office_service.resolve(&OfficeResolveRequest {
+                capability: OfficeCapability::Mail,
+                preferred_account_key: None,
+                preferred_provider_kind: Some(provider.to_string()),
+                preferred_identity_class,
+                historical_account_key: None,
+            }) {
+                OfficeResolveResult::Selected(selection) => {
+                    let account_key = selection.account_key;
+                    let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
+                        Error::config(
+                            "mail_provider",
+                            format!(
+                                "office-selected mail account '{}' has no configured credential",
+                                account_key
+                            ),
+                        )
+                    })?;
+                    if credential.provider == provider {
+                        return Ok(account_key);
+                    }
+                }
+                OfficeResolveResult::Ambiguous(ambiguity) => {
                     let candidate_accounts = ambiguity
                         .candidate_accounts
                         .iter()
@@ -480,14 +620,26 @@ impl MailService {
                         ),
                     ));
                 }
-                Err(Error::config(
-                    "mail_provider",
-                    format!(
-                        "provider '{}' has multiple configured accounts; account_key is required",
-                        provider
-                    ),
-                ))
+                OfficeResolveResult::Missing(_) => {}
             }
+        }
+        let mut keys = self
+            .credential_store
+            .find_account_keys_by_provider(provider)?;
+        keys.sort();
+        match keys.len() {
+            0 => Err(Error::config(
+                "mail_provider",
+                format!("provider '{}' has no configured credential", provider),
+            )),
+            1 => Ok(keys.remove(0)),
+            _ => Err(Error::config(
+                "mail_provider",
+                format!(
+                    "provider '{}' has multiple configured accounts; account_key is required",
+                    provider
+                ),
+            )),
         }
     }
 
@@ -496,30 +648,6 @@ impl MailService {
             .as_ref()
             .map(|authority| authority.load())
             .transpose()
-    }
-}
-
-fn resolve_office_default_account_key(
-    office_service: &OfficeService,
-    credential_store: &(dyn MailProviderCredentialStore + Send + Sync),
-    provider: &str,
-) -> Result<Option<String>> {
-    let Some(account_key) = office_service.default_account_key(OfficeCapability::Mail) else {
-        return Ok(None);
-    };
-    let Some(credential) = credential_store.get(&account_key)? else {
-        return Err(Error::config(
-            "mail_provider",
-            format!(
-                "office-selected mail account '{}' has no configured credential",
-                account_key
-            ),
-        ));
-    };
-    if credential.provider == provider {
-        Ok(Some(account_key))
-    } else {
-        Ok(None)
     }
 }
 

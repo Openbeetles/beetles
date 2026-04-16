@@ -66,14 +66,28 @@ impl OfficeService {
     }
 
     pub fn resolve(&self, request: &OfficeResolveRequest) -> OfficeResolveResult {
-        OfficeResolver::resolve(&self.registry, &self.binding, &self.policy, request)
+        let mut request = request.clone();
+        if request.historical_account_key.is_none() {
+            request.historical_account_key =
+                self.historical_account_key_for_request(&request).unwrap_or_else(|error| {
+                    log::warn!(
+                        "[office_service] failed to derive historical account preference for {:?}: {}",
+                        request.capability,
+                        error
+                    );
+                    None
+                });
+        }
+        OfficeResolver::resolve(&self.registry, &self.binding, &self.policy, &request)
     }
 
     pub fn default_account_key(&self, capability: OfficeCapability) -> Option<String> {
         match self.resolve(&OfficeResolveRequest {
             capability,
             preferred_account_key: None,
+            preferred_provider_kind: None,
             preferred_identity_class: None,
+            historical_account_key: None,
         }) {
             OfficeResolveResult::Selected(selection) => Some(selection.account_key),
             OfficeResolveResult::Ambiguous(_) | OfficeResolveResult::Missing(_) => None,
@@ -258,6 +272,72 @@ impl OfficeService {
             defaults,
             accounts,
         })
+    }
+
+    fn historical_account_key_for_request(
+        &self,
+        request: &OfficeResolveRequest,
+    ) -> Result<Option<String>> {
+        if request
+            .preferred_account_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Ok(None);
+        }
+
+        let provider_filter = request
+            .preferred_provider_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let mut ranked = self
+            .accounts_for_capability(request.capability)
+            .into_iter()
+            .filter(|account| {
+                provider_filter.is_none_or(|provider| account.provider_kind == provider)
+                    && request
+                        .preferred_identity_class
+                        .is_none_or(|identity| account.identity_class == identity)
+            })
+            .filter_map(|account| {
+                let runtime_status = self.runtime_status(&account.account_key).ok().flatten()?;
+                if !runtime_status.last_activity_ok
+                    || runtime_status.last_activity_at_unix_secs == 0
+                    || !activity_kind_matches_capability(
+                        runtime_status.last_activity_kind.as_str(),
+                        request.capability,
+                    )
+                {
+                    return None;
+                }
+                Some((
+                    runtime_status.last_activity_at_unix_secs,
+                    account.account_key,
+                ))
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        let Some((best_at, best_account_key)) = ranked.first() else {
+            return Ok(None);
+        };
+        if ranked
+            .iter()
+            .skip(1)
+            .any(|(timestamp, _)| *timestamp == *best_at)
+        {
+            return Ok(None);
+        }
+        Ok(Some(best_account_key.clone()))
+    }
+}
+
+fn activity_kind_matches_capability(activity_kind: &str, capability: OfficeCapability) -> bool {
+    match capability {
+        OfficeCapability::Mail => activity_kind.starts_with("mail_"),
+        OfficeCapability::Calendar => activity_kind.starts_with("calendar_"),
+        OfficeCapability::Documents => activity_kind.starts_with("documents_"),
+        OfficeCapability::ContactsDirectory => activity_kind.starts_with("contacts_"),
     }
 }
 
@@ -464,6 +544,71 @@ mod tests {
         assert_eq!(
             service.default_account_key(OfficeCapability::Calendar),
             None
+        );
+    }
+
+    #[test]
+    fn resolve_prefers_historical_successful_activity_before_global_default() {
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(work_account());
+        registry.insert(personal_account());
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for account_key in ["calendar-work", "calendar-personal"] {
+            credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: BTreeMap::new(),
+                })
+                .expect("seed office credential");
+        }
+
+        let runtime_status_store = Arc::new(StubRuntimeStatusStore::default());
+        runtime_status_store
+            .set(&OfficeAccountRuntimeStatus {
+                account_key: "calendar-work".to_string(),
+                probe_ok: true,
+                last_error: String::new(),
+                last_probe_at_unix_secs: 10,
+                last_activity_kind: "calendar_create".to_string(),
+                last_activity_ok: true,
+                last_activity_at_unix_secs: 200,
+                updated_at: 200,
+            })
+            .expect("set work runtime status");
+        runtime_status_store
+            .set(&OfficeAccountRuntimeStatus {
+                account_key: "calendar-personal".to_string(),
+                probe_ok: true,
+                last_error: String::new(),
+                last_probe_at_unix_secs: 11,
+                last_activity_kind: "calendar_create".to_string(),
+                last_activity_ok: true,
+                last_activity_at_unix_secs: 100,
+                updated_at: 100,
+            })
+            .expect("set personal runtime status");
+
+        let service = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy {
+                global_default_account_key: "calendar-personal".to_string(),
+                ask_when_ambiguous: true,
+                preferred_identity_class: None,
+            },
+            credential_store,
+            runtime_status_store,
+        );
+
+        assert_eq!(
+            service.default_account_key(OfficeCapability::Calendar),
+            Some("calendar-work".to_string())
         );
     }
 }

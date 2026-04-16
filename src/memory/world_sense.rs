@@ -233,7 +233,7 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
         user_idle_secs,
         due_tasks,
         high_priority_tasks,
-        reminders.first().map(|(at, _)| *at).unwrap_or(0),
+        reminders.first().map(|item| item.at_unix_secs).unwrap_or(0),
         ctx.now_secs,
     )
     .to_string();
@@ -272,7 +272,7 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
         due_tasks,
         high_priority_tasks,
         upcoming_reminders: reminders.len(),
-        next_reminder_at: reminders.first().map(|(at, _)| *at).unwrap_or(0),
+        next_reminder_at: reminders.first().map(|item| item.at_unix_secs).unwrap_or(0),
         user_idle_secs,
         autonomy_idle_secs,
     }

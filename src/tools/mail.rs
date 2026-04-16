@@ -9,10 +9,11 @@ use crate::mail::{
     MailProviderRegistry, MailQuery, MailSearchQuery, MailSendRequest, MailService,
 };
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySource, OfficeCapability, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
@@ -102,6 +103,12 @@ struct MailResolvedContact {
     email: String,
     match_reason: String,
     score: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_class: Option<String>,
 }
 
 impl MailTool {
@@ -199,6 +206,7 @@ impl MailTool {
         op: &str,
         provider: Option<&str>,
         account_key: Option<&str>,
+        preferred_identity_class: Option<crate::office::OfficeAccountIdentityClass>,
         error: &Error,
     ) -> Result<ToolExecutionOutcome> {
         build_office_operation_failure_outcome(OfficeOperationFailureInput {
@@ -208,7 +216,11 @@ impl MailTool {
             account_key,
             capability: OfficeCapability::Mail,
             default_account_key: self.service.office_default_account_key()?,
-            resolve_hint: self.service.office_resolve_hint(provider, account_key)?,
+            resolve_hint: self.service.office_resolve_hint_with_identity(
+                provider,
+                account_key,
+                preferred_identity_class,
+            )?,
             account_assessments: self.service.office_account_assessments()?,
             error,
         })
@@ -220,6 +232,8 @@ impl MailTool {
             .get("op")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::config("tool_mail", "missing op"))?;
+        let preferred_identity_class =
+            parse_preferred_identity_class(&obj, "preferred_identity_class", "tool_mail")?;
         match op {
             "provider_status" => {
                 let registered_remote_providers = self
@@ -252,23 +266,25 @@ impl MailTool {
             "list" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    requested_provider.as_deref(),
+                    preferred_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "list",
                             requested_provider.as_deref(),
                             requested_account_key.as_deref(),
+                            preferred_identity_class,
                             &error,
                         )
                     }
                 };
-                let items = match self.service.list(
+                let items = match self.service.list_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    preferred_identity_class,
                     MailQuery {
                         mailbox: optional_str(&obj, "mailbox"),
                         unread_only: obj
@@ -289,6 +305,7 @@ impl MailTool {
                             "list",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            preferred_identity_class,
                             &error,
                         )
                     }
@@ -306,16 +323,17 @@ impl MailTool {
             "search" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    requested_provider.as_deref(),
+                    preferred_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "search",
                             requested_provider.as_deref(),
                             requested_account_key.as_deref(),
+                            preferred_identity_class,
                             &error,
                         )
                     }
@@ -324,9 +342,10 @@ impl MailTool {
                 if query.is_empty() {
                     return Err(Error::config("tool_mail", "query must not be empty"));
                 }
-                let items = match self.service.search(
+                let items = match self.service.search_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    preferred_identity_class,
                     MailSearchQuery {
                         mailbox: optional_str(&obj, "mailbox"),
                         query: query.clone(),
@@ -348,6 +367,7 @@ impl MailTool {
                             "search",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            preferred_identity_class,
                             &error,
                         )
                     }
@@ -366,37 +386,40 @@ impl MailTool {
             "get" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    requested_provider.as_deref(),
+                    preferred_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "get",
                             requested_provider.as_deref(),
                             requested_account_key.as_deref(),
+                            preferred_identity_class,
                             &error,
                         )
                     }
                 };
                 let id = required_str(&obj, "id")?;
-                let message =
-                    match self
-                        .service
-                        .get(&provider, requested_account_key.as_deref(), id)
-                    {
-                        Ok(Some(message)) => message,
-                        Ok(None) => return Err(Error::config("tool_mail", "message not found")),
-                        Err(error) => {
-                            return self.office_operation_failure(
-                                "get",
-                                Some(provider.as_str()),
-                                requested_account_key.as_deref(),
-                                &error,
-                            )
-                        }
-                    };
+                let message = match self.service.get_with_identity(
+                    &provider,
+                    requested_account_key.as_deref(),
+                    preferred_identity_class,
+                    id,
+                ) {
+                    Ok(Some(message)) => message,
+                    Ok(None) => return Err(Error::config("tool_mail", "message not found")),
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "get",
+                            Some(provider.as_str()),
+                            requested_account_key.as_deref(),
+                            preferred_identity_class,
+                            &error,
+                        )
+                    }
+                };
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_mail",
                     &MailGetResponse {
@@ -410,38 +433,58 @@ impl MailTool {
                 require_confirm(&obj, "send")?;
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
-                    Ok(provider) => provider,
-                    Err(error) => {
-                        return self.office_operation_failure(
-                            "send",
-                            requested_provider.as_deref(),
-                            requested_account_key.as_deref(),
-                            &error,
-                        )
-                    }
-                };
-                let (to_lookup, to_lookup_resolved) =
-                    self.resolve_recipient_queries(&obj, "to_lookup", "to")?;
-                let (cc_lookup, cc_lookup_resolved) =
-                    self.resolve_recipient_queries(&obj, "cc_lookup", "cc")?;
-                let (bcc_lookup, bcc_lookup_resolved) =
-                    self.resolve_recipient_queries(&obj, "bcc_lookup", "bcc")?;
-                let to = merge_recipients(parse_recipients(&obj, "to")?, to_lookup);
-                let cc = merge_recipients(parse_recipients(&obj, "cc")?, cc_lookup);
-                let bcc = merge_recipients(parse_recipients(&obj, "bcc")?, bcc_lookup);
+                let (
+                    to,
+                    cc,
+                    bcc,
+                    mut resolved_contacts,
+                    lookup_identity_hint,
+                    lookup_provider_hint,
+                ) = self.resolve_compose_recipients(&obj)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                let derived_provider_hint =
+                    if requested_provider.is_none() && requested_account_key.is_none() {
+                        lookup_provider_hint.as_deref().filter(|provider_hint| {
+                            self.service.provider_is_routable_for_ops(
+                                provider_hint,
+                                effective_identity_class,
+                                &[crate::mail::MailOperation::Send],
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                let effective_provider_hint =
+                    requested_provider.as_deref().or(derived_provider_hint);
+                annotate_resolved_contacts_identity(
+                    &mut resolved_contacts,
+                    effective_identity_class,
+                );
                 if to.is_empty() && cc.is_empty() && bcc.is_empty() {
                     return Err(Error::config(
                         "tool_mail",
                         "send requires at least one recipient in to, cc, bcc, or *_lookup",
                     ));
                 }
-                let message = match self.service.send(
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    effective_provider_hint,
+                    effective_identity_class,
+                ) {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "send",
+                            effective_provider_hint,
+                            requested_account_key.as_deref(),
+                            effective_identity_class,
+                            &error,
+                        )
+                    }
+                };
+                let message = match self.service.send_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     &MailSendRequest {
                         subject: required_str(&obj, "subject")?.to_string(),
                         text_body: required_str(&obj, "text_body")?.to_string(),
@@ -458,6 +501,7 @@ impl MailTool {
                             "send",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -469,16 +513,9 @@ impl MailTool {
                     &MailMutationResponse {
                         op: "send",
                         ok: true,
-                        provider,
+                        provider: message.provider.clone(),
                         message,
-                        resolved_contacts: [
-                            to_lookup_resolved,
-                            cc_lookup_resolved,
-                            bcc_lookup_resolved,
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect(),
+                        resolved_contacts,
                         office_runtime_status,
                     },
                 )?))
@@ -487,24 +524,52 @@ impl MailTool {
                 require_confirm(&obj, "draft")?;
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let (
+                    to,
+                    cc,
+                    bcc,
+                    mut resolved_contacts,
+                    lookup_identity_hint,
+                    lookup_provider_hint,
+                ) = self.resolve_compose_recipients(&obj)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                let derived_provider_hint =
+                    if requested_provider.is_none() && requested_account_key.is_none() {
+                        lookup_provider_hint.as_deref().filter(|provider_hint| {
+                            self.service.provider_is_routable_for_ops(
+                                provider_hint,
+                                effective_identity_class,
+                                &[crate::mail::MailOperation::Draft],
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                let effective_provider_hint =
+                    requested_provider.as_deref().or(derived_provider_hint);
+                annotate_resolved_contacts_identity(
+                    &mut resolved_contacts,
+                    effective_identity_class,
+                );
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    effective_provider_hint,
+                    effective_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "draft",
-                            requested_provider.as_deref(),
+                            effective_provider_hint,
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
                 };
-                let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
-                let message = match self.service.draft(
+                let message = match self.service.draft_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
                         text_body: optional_str(&obj, "text_body"),
@@ -521,6 +586,7 @@ impl MailTool {
                             "draft",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -532,7 +598,7 @@ impl MailTool {
                     &MailMutationResponse {
                         op: "draft",
                         ok: true,
-                        provider,
+                        provider: message.provider.clone(),
                         message,
                         resolved_contacts,
                         office_runtime_status,
@@ -543,24 +609,38 @@ impl MailTool {
                 require_confirm(&obj, "reply")?;
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
+                let (
+                    to,
+                    cc,
+                    bcc,
+                    mut resolved_contacts,
+                    lookup_identity_hint,
+                    _lookup_provider_hint,
+                ) = self.resolve_compose_recipients(&obj)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                annotate_resolved_contacts_identity(
+                    &mut resolved_contacts,
+                    effective_identity_class,
+                );
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    requested_provider.as_deref(),
+                    effective_identity_class,
+                ) {
                     Ok(provider) => provider,
                     Err(error) => {
                         return self.office_operation_failure(
                             "reply",
                             requested_provider.as_deref(),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
                 };
-                let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
-                let message = match self.service.reply(
+                let message = match self.service.reply_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     required_str(&obj, "id")?,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
@@ -578,6 +658,7 @@ impl MailTool {
                             "reply",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -589,7 +670,7 @@ impl MailTool {
                     &MailMutationResponse {
                         op: "reply",
                         ok: true,
-                        provider,
+                        provider: message.provider.clone(),
                         message,
                         resolved_contacts,
                         office_runtime_status,
@@ -600,30 +681,44 @@ impl MailTool {
                 require_confirm(&obj, "forward")?;
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let provider = match self
-                    .service
-                    .resolve_provider_name(requested_provider.as_deref())
-                {
-                    Ok(provider) => provider,
-                    Err(error) => {
-                        return self.office_operation_failure(
-                            "forward",
-                            requested_provider.as_deref(),
-                            requested_account_key.as_deref(),
-                            &error,
-                        )
-                    }
-                };
-                let (to, cc, bcc, resolved_contacts) = self.resolve_compose_recipients(&obj)?;
+                let (
+                    to,
+                    cc,
+                    bcc,
+                    mut resolved_contacts,
+                    lookup_identity_hint,
+                    _lookup_provider_hint,
+                ) = self.resolve_compose_recipients(&obj)?;
+                let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
+                annotate_resolved_contacts_identity(
+                    &mut resolved_contacts,
+                    effective_identity_class,
+                );
                 if to.is_empty() && cc.is_empty() && bcc.is_empty() {
                     return Err(Error::config(
                         "tool_mail",
                         "forward requires at least one recipient in to, cc, bcc, or *_lookup",
                     ));
                 }
-                let message = match self.service.forward(
+                let provider = match self.service.resolve_provider_name_with_identity(
+                    requested_provider.as_deref(),
+                    effective_identity_class,
+                ) {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return self.office_operation_failure(
+                            "forward",
+                            requested_provider.as_deref(),
+                            requested_account_key.as_deref(),
+                            effective_identity_class,
+                            &error,
+                        )
+                    }
+                };
+                let message = match self.service.forward_with_identity(
                     &provider,
                     requested_account_key.as_deref(),
+                    effective_identity_class,
                     required_str(&obj, "id")?,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
@@ -641,6 +736,7 @@ impl MailTool {
                             "forward",
                             Some(provider.as_str()),
                             requested_account_key.as_deref(),
+                            effective_identity_class,
                             &error,
                         )
                     }
@@ -652,7 +748,7 @@ impl MailTool {
                     &MailMutationResponse {
                         op: "forward",
                         ok: true,
-                        provider,
+                        provider: message.provider.clone(),
                         message,
                         resolved_contacts,
                         office_runtime_status,
@@ -744,6 +840,15 @@ type ComposeRecipients = (
     Vec<String>,
     Vec<String>,
     Vec<MailResolvedContact>,
+    Option<OfficeAccountIdentityClass>,
+    Option<String>,
+);
+
+type RecipientQueryResolution = (
+    Vec<String>,
+    Vec<MailResolvedContact>,
+    Option<OfficeAccountIdentityClass>,
+    Option<String>,
 );
 
 impl MailTool {
@@ -751,11 +856,11 @@ impl MailTool {
         &self,
         obj: &serde_json::Map<String, Value>,
     ) -> Result<ComposeRecipients> {
-        let (to_lookup, to_lookup_resolved) =
+        let (to_lookup, to_lookup_resolved, to_identity_hint, to_provider_hint) =
             self.resolve_recipient_queries(obj, "to_lookup", "to")?;
-        let (cc_lookup, cc_lookup_resolved) =
+        let (cc_lookup, cc_lookup_resolved, cc_identity_hint, cc_provider_hint) =
             self.resolve_recipient_queries(obj, "cc_lookup", "cc")?;
-        let (bcc_lookup, bcc_lookup_resolved) =
+        let (bcc_lookup, bcc_lookup_resolved, bcc_identity_hint, bcc_provider_hint) =
             self.resolve_recipient_queries(obj, "bcc_lookup", "bcc")?;
         Ok((
             merge_recipients(parse_recipients(obj, "to")?, to_lookup),
@@ -765,6 +870,8 @@ impl MailTool {
                 .into_iter()
                 .flatten()
                 .collect(),
+            coalesce_identity_hints([to_identity_hint, cc_identity_hint, bcc_identity_hint]),
+            coalesce_provider_hints([to_provider_hint, cc_provider_hint, bcc_provider_hint]),
         ))
     }
 
@@ -773,10 +880,10 @@ impl MailTool {
         obj: &serde_json::Map<String, Value>,
         field: &str,
         surface: &'static str,
-    ) -> Result<(Vec<String>, Vec<MailResolvedContact>)> {
+    ) -> Result<RecipientQueryResolution> {
         let queries = parse_recipients(obj, field)?;
         if queries.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), None, None));
         }
         let Some(directory) = self.contacts_directory.as_ref() else {
             return Err(Error::config(
@@ -786,12 +893,24 @@ impl MailTool {
         };
         let mut emails = Vec::with_capacity(queries.len());
         let mut resolved = Vec::with_capacity(queries.len());
+        let mut identity_hints = Vec::with_capacity(queries.len());
+        let mut provider_hints = Vec::with_capacity(queries.len());
         for query in queries {
             let resolution = directory.resolve_primary_email(&query)?;
+            identity_hints.push(
+                self.service
+                    .office_identity_class_for_account(resolution.account_key.as_deref())?,
+            );
+            provider_hints.push(mail_provider_hint_from_contact_resolution(&resolution));
             emails.push(resolution.email.clone());
             resolved.push(mail_resolved_contact(surface, resolution));
         }
-        Ok((emails, resolved))
+        Ok((
+            emails,
+            resolved,
+            coalesce_identity_hints(identity_hints),
+            coalesce_provider_hints(provider_hints),
+        ))
     }
 }
 
@@ -945,15 +1064,90 @@ fn mail_resolved_contact(
     field: &'static str,
     resolution: ContactsDirectoryEmailResolution,
 ) -> MailResolvedContact {
+    let ContactsDirectoryEmailResolution {
+        query,
+        contact_id,
+        display_name,
+        email,
+        match_reason,
+        score,
+        provider,
+        account_key,
+        ..
+    } = resolution;
     MailResolvedContact {
         field,
-        query: resolution.query,
-        contact_id: resolution.contact_id,
-        display_name: resolution.display_name,
-        email: resolution.email,
-        match_reason: resolution.match_reason,
-        score: resolution.score,
+        query,
+        contact_id,
+        display_name,
+        email,
+        match_reason,
+        score,
+        provider,
+        account_key,
+        identity_class: None,
     }
+}
+
+fn coalesce_identity_hints<I>(hints: I) -> Option<OfficeAccountIdentityClass>
+where
+    I: IntoIterator<Item = Option<OfficeAccountIdentityClass>>,
+{
+    let mut selected = None;
+    for hint in hints.into_iter().flatten() {
+        match selected {
+            Some(existing) if existing != hint => return None,
+            Some(_) => {}
+            None => selected = Some(hint),
+        }
+    }
+    selected
+}
+
+fn coalesce_provider_hints<I>(hints: I) -> Option<String>
+where
+    I: IntoIterator<Item = Option<String>>,
+{
+    let mut selected = None::<String>;
+    for hint in hints.into_iter().flatten() {
+        match selected.as_deref() {
+            Some(existing) if existing != hint => return None,
+            Some(_) => {}
+            None => selected = Some(hint),
+        }
+    }
+    selected
+}
+
+fn mail_provider_hint_from_contact_resolution(
+    resolution: &ContactsDirectoryEmailResolution,
+) -> Option<String> {
+    match resolution.provider.as_deref() {
+        Some("feishu_contacts_directory") => Some("feishu_mail".to_string()),
+        Some("wecom_contacts_directory") => Some("wecom_mail".to_string()),
+        _ => None,
+    }
+}
+
+fn annotate_resolved_contacts_identity(
+    resolved_contacts: &mut [MailResolvedContact],
+    identity_class: Option<OfficeAccountIdentityClass>,
+) {
+    let identity_class = identity_class.map(identity_class_label);
+    for item in resolved_contacts {
+        item.identity_class = identity_class.clone();
+    }
+}
+
+fn identity_class_label(identity_class: OfficeAccountIdentityClass) -> String {
+    match identity_class {
+        OfficeAccountIdentityClass::Work => "work",
+        OfficeAccountIdentityClass::Personal => "personal",
+        OfficeAccountIdentityClass::Family => "family",
+        OfficeAccountIdentityClass::Shared => "shared",
+        OfficeAccountIdentityClass::Other => "other",
+    }
+    .to_string()
 }
 
 fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()> {
@@ -1197,19 +1391,31 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
     struct StubProvider {
+        provider_name: &'static str,
+        display_name: &'static str,
         sent_requests: Mutex<Vec<MailSendRequest>>,
         drafted_requests: Mutex<Vec<MailSendRequest>>,
     }
 
+    impl Default for StubProvider {
+        fn default() -> Self {
+            Self {
+                provider_name: "imap_smtp",
+                display_name: "IMAP/SMTP",
+                sent_requests: Mutex::new(Vec::new()),
+                drafted_requests: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
     impl MailProvider for StubProvider {
         fn provider_name(&self) -> &'static str {
-            "imap_smtp"
+            self.provider_name
         }
 
         fn display_name(&self) -> &'static str {
-            "IMAP/SMTP"
+            self.display_name
         }
 
         fn supports(&self, _op: MailOperation) -> bool {
@@ -1680,6 +1886,116 @@ mod tests {
     }
 
     #[test]
+    fn mail_tool_list_prefers_identity_class_over_default_account() {
+        let provider = Arc::new(StubProvider::default());
+        let mut providers = MailProviderRegistry::new();
+        providers.register(provider);
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, label, account_id) in [
+            ("mail-work", "Work", "work@example.com"),
+            ("mail-personal", "Personal", "personal@example.com"),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    MailProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: "imap_smtp".to_string(),
+                        account_id: account_id.to_string(),
+                        account_label: label.to_string(),
+                        username: account_id.to_string(),
+                        corp_id: String::new(),
+                        secret: "secret".to_string(),
+                        base_url: String::new(),
+                        imap_host: "imap.example.com".to_string(),
+                        imap_port: 993,
+                        imap_mailbox: "INBOX".to_string(),
+                        draft_mailbox: "Drafts".to_string(),
+                        imap_tls: true,
+                        smtp_host: "smtp.example.com".to_string(),
+                        smtp_port: 465,
+                        smtp_tls: true,
+                        from_address: account_id.to_string(),
+                        from_name: label.to_string(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "mail-personal".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "personal@example.com".to_string(),
+            account_label: "Personal".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Mail, "mail-personal".to_string());
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for account_key in ["mail-work", "mail-personal"] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: [
+                        (
+                            crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                            "imap.example.com".to_string(),
+                        ),
+                        (
+                            crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                            "smtp.example.com".to_string(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })
+                .expect("seed office credential");
+        }
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            Arc::new(StubRuntimeStatusStore::default()),
+        );
+        let tool = MailTool::with_office_service(
+            Arc::new(OfficeBackedMailProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"list","provider":"imap_smtp","preferred_identity_class":"work"}"#,
+                &mut ctx,
+            )
+            .expect("list mail via preferred identity");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["items"][0]["account_key"], "mail-work");
+    }
+
+    #[test]
     fn mail_tool_get_returns_message_body() {
         let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
@@ -1956,6 +2272,628 @@ mod tests {
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(payload["message"]["to"][0], "alice@beetle.cn");
         assert_eq!(payload["resolved_contacts"][0]["contact_id"], "ou_alice");
+    }
+
+    #[test]
+    fn mail_tool_send_remote_work_contact_prefers_matching_mail_identity_over_default_account() {
+        let provider = Arc::new(StubProvider::default());
+        let mut providers = MailProviderRegistry::new();
+        providers.register(provider.clone());
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, account_label, account_id) in [
+            ("mail-work", "Work", "work@example.com"),
+            ("mail-personal", "Personal", "personal@example.com"),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    MailProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: "imap_smtp".to_string(),
+                        account_id: account_id.to_string(),
+                        account_label: account_label.to_string(),
+                        username: account_id.to_string(),
+                        corp_id: String::new(),
+                        secret: "secret".to_string(),
+                        base_url: String::new(),
+                        imap_host: "imap.example.com".to_string(),
+                        imap_port: 993,
+                        imap_mailbox: "INBOX".to_string(),
+                        draft_mailbox: "Drafts".to_string(),
+                        imap_tls: true,
+                        smtp_host: "smtp.example.com".to_string(),
+                        smtp_port: 465,
+                        smtp_tls: true,
+                        from_address: account_id.to_string(),
+                        from_name: account_label.to_string(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "mail-personal".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "personal@example.com".to_string(),
+            account_label: "Personal".to_string(),
+            identity_class: OfficeAccountIdentityClass::Personal,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        });
+
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Mail, "mail-personal".to_string());
+        binding.set_default_account(
+            OfficeCapability::ContactsDirectory,
+            "contacts-feishu".to_string(),
+        );
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for (account_key, access_token, metadata) in [
+            (
+                "mail-work",
+                "secret",
+                [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "mail-personal",
+                "secret",
+                [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "personal@example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "contacts-feishu",
+                "app-secret",
+                [(
+                    OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                    "cli_contacts".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        ] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: access_token.to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata,
+                })
+                .expect("seed office credential");
+        }
+        let runtime_store = Arc::new(StubRuntimeStatusStore::default());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            runtime_store,
+        );
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut contacts_providers = ContactsDirectoryProviderRegistry::new();
+        contacts_providers.register(Arc::new(StubRemoteContactsProvider {
+            contacts: vec![ContactEntry {
+                id: "ou_alice".to_string(),
+                display_name: "Alice Zhang".to_string(),
+                emails: vec!["alice@beetle.cn".to_string()],
+                aliases: vec!["阿丽丝".to_string()],
+                organization: "Beetle".to_string(),
+                notes: String::new(),
+                updated_at_unix_secs: 1,
+            }],
+        }));
+        let contacts_service = ContactsDirectoryService::with_office_service(
+            contacts_store,
+            contacts_credentials,
+            contacts_providers,
+            office_service.clone(),
+        );
+        let tool = MailTool::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            contacts_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"send","subject":"Hello","text_body":"Need sync","to_lookup":["Alice Zhang"],"confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("send via remote contacts directory with work hint");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["message"]["account_key"], "mail-work");
+        assert_eq!(payload["message"]["from"], "work@example.com");
+        assert_eq!(
+            payload["resolved_contacts"][0]["account_key"],
+            "contacts-feishu"
+        );
+        assert_eq!(payload["resolved_contacts"][0]["identity_class"], "work");
+    }
+
+    #[test]
+    fn mail_tool_send_remote_contact_prefers_matching_mail_provider_over_default_work_provider() {
+        let imap_provider = Arc::new(StubProvider::default());
+        let feishu_provider = Arc::new(StubProvider {
+            provider_name: "feishu_mail",
+            display_name: "Feishu Mail",
+            ..StubProvider::default()
+        });
+        let mut providers = MailProviderRegistry::new();
+        providers.register(imap_provider);
+        providers.register(feishu_provider.clone());
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, provider_name, account_label, account_id) in [
+            (
+                "mail-work-imap",
+                "imap_smtp",
+                "Work IMAP",
+                "work@example.com",
+            ),
+            (
+                "mail-work-feishu",
+                "feishu_mail",
+                "Work Feishu",
+                "work@feishu.cn",
+            ),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    MailProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: provider_name.to_string(),
+                        account_id: account_id.to_string(),
+                        account_label: account_label.to_string(),
+                        username: account_id.to_string(),
+                        corp_id: String::new(),
+                        secret: "secret".to_string(),
+                        base_url: String::new(),
+                        imap_host: "imap.example.com".to_string(),
+                        imap_port: 993,
+                        imap_mailbox: "INBOX".to_string(),
+                        draft_mailbox: "Drafts".to_string(),
+                        imap_tls: true,
+                        smtp_host: "smtp.example.com".to_string(),
+                        smtp_port: 465,
+                        smtp_tls: true,
+                        from_address: account_id.to_string(),
+                        from_name: account_label.to_string(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work-imap".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work IMAP".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "mail-work-feishu".to_string(),
+            provider_kind: "feishu_mail".to_string(),
+            external_account_id: "work@feishu.cn".to_string(),
+            account_label: "Work Feishu".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        });
+
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(OfficeCapability::Mail, "mail-work-imap".to_string());
+        binding.set_default_account(
+            OfficeCapability::ContactsDirectory,
+            "contacts-feishu".to_string(),
+        );
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for (account_key, access_token, metadata) in [
+            (
+                "mail-work-imap",
+                "secret",
+                [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "mail-work-feishu",
+                "secret",
+                [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@feishu.cn".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.feishu.cn".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.feishu.cn".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "contacts-feishu",
+                "app-secret",
+                [(
+                    OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                    "cli_contacts".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        ] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: access_token.to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata,
+                })
+                .expect("seed office credential");
+        }
+        let runtime_store = Arc::new(StubRuntimeStatusStore::default());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            runtime_store,
+        );
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut contacts_providers = ContactsDirectoryProviderRegistry::new();
+        contacts_providers.register(Arc::new(StubRemoteContactsProvider {
+            contacts: vec![ContactEntry {
+                id: "ou_alice".to_string(),
+                display_name: "Alice Zhang".to_string(),
+                emails: vec!["alice@beetle.cn".to_string()],
+                aliases: vec!["阿丽丝".to_string()],
+                organization: "Beetle".to_string(),
+                notes: String::new(),
+                updated_at_unix_secs: 1,
+            }],
+        }));
+        let contacts_service = ContactsDirectoryService::with_office_service(
+            contacts_store,
+            contacts_credentials,
+            contacts_providers,
+            office_service.clone(),
+        );
+        let tool = MailTool::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            contacts_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"send","subject":"Hello","text_body":"Need sync","to_lookup":["Alice Zhang"],"confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("send via remote contacts directory with provider hint");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+
+        assert_eq!(payload["provider"], "feishu_mail");
+        assert_eq!(payload["message"]["account_key"], "mail-work-feishu");
+        assert_eq!(payload["message"]["provider"], "feishu_mail");
+        assert_eq!(payload["message"]["from"], "work@feishu.cn");
+        assert_eq!(
+            payload["resolved_contacts"][0]["provider"],
+            "feishu_contacts_directory"
+        );
+        assert_eq!(
+            payload["resolved_contacts"][0]["account_key"],
+            "contacts-feishu"
+        );
+        assert_eq!(payload["resolved_contacts"][0]["identity_class"], "work");
+
+        let sent_requests = feishu_provider
+            .sent_requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(sent_requests.len(), 1);
+        assert_eq!(sent_requests[0].to, vec!["alice@beetle.cn".to_string()]);
+    }
+
+    #[test]
+    fn mail_tool_send_remote_contact_provider_hint_resolves_without_mail_default_binding() {
+        let imap_provider = Arc::new(StubProvider::default());
+        let feishu_provider = Arc::new(StubProvider {
+            provider_name: "feishu_mail",
+            display_name: "Feishu Mail",
+            ..StubProvider::default()
+        });
+        let mut providers = MailProviderRegistry::new();
+        providers.register(imap_provider);
+        providers.register(feishu_provider.clone());
+
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, provider_name, account_label, account_id) in [
+            (
+                "mail-work-imap",
+                "imap_smtp",
+                "Work IMAP",
+                "work@example.com",
+            ),
+            (
+                "mail-work-feishu",
+                "feishu_mail",
+                "Work Feishu",
+                "work@feishu.cn",
+            ),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    MailProviderCredential {
+                        account_key: account_key.to_string(),
+                        provider: provider_name.to_string(),
+                        account_id: account_id.to_string(),
+                        account_label: account_label.to_string(),
+                        username: account_id.to_string(),
+                        corp_id: String::new(),
+                        secret: "secret".to_string(),
+                        base_url: String::new(),
+                        imap_host: "imap.example.com".to_string(),
+                        imap_port: 993,
+                        imap_mailbox: "INBOX".to_string(),
+                        draft_mailbox: "Drafts".to_string(),
+                        imap_tls: true,
+                        smtp_host: "smtp.example.com".to_string(),
+                        smtp_port: 465,
+                        smtp_tls: true,
+                        from_address: account_id.to_string(),
+                        from_name: account_label.to_string(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work-imap".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work IMAP".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "mail-work-feishu".to_string(),
+            provider_kind: "feishu_mail".to_string(),
+            external_account_id: "work@feishu.cn".to_string(),
+            account_label: "Work Feishu".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        registry.insert(OfficeAccount {
+            account_key: "contacts-feishu".to_string(),
+            provider_kind: "feishu_contacts_directory".to_string(),
+            external_account_id: String::new(),
+            account_label: "Feishu Contacts".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+        });
+
+        let mut binding = OfficeCapabilityBinding::default();
+        binding.set_default_account(
+            OfficeCapability::ContactsDirectory,
+            "contacts-feishu".to_string(),
+        );
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for (account_key, access_token, metadata) in [
+            (
+                "mail-work-imap",
+                "secret",
+                [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "mail-work-feishu",
+                "secret",
+                [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_USERNAME.to_string(),
+                        "work@feishu.cn".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.feishu.cn".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.feishu.cn".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                "contacts-feishu",
+                "app-secret",
+                [(
+                    OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                    "cli_contacts".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        ] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: access_token.to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata,
+                })
+                .expect("seed office credential");
+        }
+        let runtime_store = Arc::new(StubRuntimeStatusStore::default());
+        let office_service = OfficeService::new(
+            registry,
+            binding,
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            runtime_store,
+        );
+        let contacts_store = Arc::new(StateFsContactsDirectoryStore::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut contacts_providers = ContactsDirectoryProviderRegistry::new();
+        contacts_providers.register(Arc::new(StubRemoteContactsProvider {
+            contacts: vec![ContactEntry {
+                id: "ou_alice".to_string(),
+                display_name: "Alice Zhang".to_string(),
+                emails: vec!["alice@beetle.cn".to_string()],
+                aliases: vec!["阿丽丝".to_string()],
+                organization: "Beetle".to_string(),
+                notes: String::new(),
+                updated_at_unix_secs: 1,
+            }],
+        }));
+        let contacts_service = ContactsDirectoryService::with_office_service(
+            contacts_store,
+            contacts_credentials,
+            contacts_providers,
+            office_service.clone(),
+        );
+        let tool = MailTool::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            contacts_service,
+        );
+
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(
+                r#"{"op":"send","subject":"Hello","text_body":"Need sync","to_lookup":["Alice Zhang"],"confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("send via remote contacts directory without mail default");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+
+        assert_eq!(payload["provider"], "feishu_mail");
+        assert_eq!(payload["message"]["account_key"], "mail-work-feishu");
+        assert_eq!(payload["message"]["provider"], "feishu_mail");
+        assert_eq!(payload["message"]["from"], "work@feishu.cn");
     }
 
     #[test]

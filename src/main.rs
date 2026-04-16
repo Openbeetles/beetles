@@ -2540,6 +2540,7 @@ fn start_support_planes(
         system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
         resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
         platform: Arc::clone(&assembly.platform),
+        config: Arc::clone(&assembly.config),
         version: VERSION,
         read_heartbeat: Box::new(|| beetle::platform::read_heartbeat_file().unwrap_or_default()),
         user_inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),

@@ -4,9 +4,9 @@ use crate::calendar::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
-    OfficeResolveRequest, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::util::current_unix_secs;
 use std::sync::Arc;
@@ -62,6 +62,44 @@ impl CalendarService {
         self.providers.names()
     }
 
+    pub fn resolve_provider_name(&self, provider: Option<&str>) -> Result<String> {
+        self.resolve_provider_name_with_identity(provider, None)
+    }
+
+    pub fn resolve_provider_name_with_identity(
+        &self,
+        provider: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String> {
+        if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
+            return Ok(provider.to_string());
+        }
+        if let Some(office_service) = self.load_office_service()? {
+            if let OfficeResolveResult::Selected(selection) =
+                office_service.resolve(&OfficeResolveRequest {
+                    capability: OfficeCapability::Calendar,
+                    preferred_account_key: None,
+                    preferred_provider_kind: None,
+                    preferred_identity_class,
+                    historical_account_key: None,
+                })
+            {
+                let account_key = selection.account_key;
+                let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
+                    Error::config(
+                        "calendar_provider",
+                        format!(
+                            "office-selected calendar account '{}' has no configured credential",
+                            account_key
+                        ),
+                    )
+                })?;
+                return Ok(credential.provider);
+            }
+        }
+        Ok(CALENDAR_PROVIDER_LOCAL.to_string())
+    }
+
     pub fn list_provider_statuses(
         &self,
     ) -> Result<Vec<crate::calendar::CalendarProviderCredentialStatus>> {
@@ -79,33 +117,30 @@ impl CalendarService {
         provider: Option<&str>,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeResolveResult>> {
+        self.office_resolve_hint_with_identity(provider, account_key, None)
+    }
+
+    pub fn office_resolve_hint_with_identity(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeResolveResult>> {
         if account_key.is_some_and(|value| !value.trim().is_empty()) {
             return Ok(None);
         }
         let Some(office_service) = self.load_office_service()? else {
             return Ok(None);
         };
-        let provider = provider.map(str::trim).filter(|value| !value.is_empty());
-        if let Some(provider) = provider {
-            let candidates = office_service
-                .accounts_for_capability(OfficeCapability::Calendar)
-                .into_iter()
-                .filter(|account| account.provider_kind == provider)
-                .map(|account| OfficeResolveCandidate::from_account(&account))
-                .collect::<Vec<_>>();
-            if candidates.len() > 1 {
-                return Ok(Some(OfficeResolveResult::Ambiguous(
-                    OfficeResolveAmbiguity {
-                        reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
-                        candidate_accounts: candidates,
-                    },
-                )));
-            }
-        }
         match office_service.resolve(&OfficeResolveRequest {
             capability: OfficeCapability::Calendar,
             preferred_account_key: None,
-            preferred_identity_class: None,
+            preferred_provider_kind: provider
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            preferred_identity_class,
+            historical_account_key: None,
         }) {
             OfficeResolveResult::Selected(_) => Ok(None),
             other => Ok(Some(other)),
@@ -117,10 +152,41 @@ impl CalendarService {
         provider: &str,
         account_key: Option<&str>,
     ) -> Result<Option<String>> {
+        self.resolve_account_key_for_provider_with_identity(provider, account_key, None)
+    }
+
+    pub fn resolve_account_key_for_provider_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<String>> {
         if is_local_provider(provider) {
             return Ok(None);
         }
-        self.resolve_account_key(provider, account_key).map(Some)
+        self.resolve_account_key_with_identity(provider, account_key, preferred_identity_class)
+            .map(Some)
+    }
+
+    pub fn default_calendar_id_for_provider_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<String>> {
+        let Some(account_key) = self.resolve_account_key_for_provider_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .credential_store
+            .get(&account_key)?
+            .map(|credential| credential.calendar_id)
+            .filter(|calendar_id| !calendar_id.trim().is_empty()))
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
@@ -148,6 +214,43 @@ impl CalendarService {
         })
     }
 
+    pub fn office_identity_class_for_account(
+        &self,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeAccountIdentityClass>> {
+        let Some(account_key) = account_key.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(service) = self.load_office_service()? else {
+            return Ok(None);
+        };
+        Ok(service
+            .account(account_key)
+            .map(|account| account.identity_class))
+    }
+
+    pub fn provider_supports(&self, provider: &str, op: CalendarOperation) -> bool {
+        if is_local_provider(provider) {
+            return true;
+        }
+        self.providers
+            .get(provider)
+            .is_some_and(|provider_impl| provider_impl.supports(op))
+    }
+
+    pub fn provider_is_routable_for_op(
+        &self,
+        provider: &str,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        op: CalendarOperation,
+    ) -> bool {
+        if is_local_provider(provider) {
+            return true;
+        }
+        self.resolve_remote_with_identity(provider, None, preferred_identity_class, op)
+            .is_ok()
+    }
+
     pub fn list(
         &self,
         http: Option<&mut dyn CalendarHttpClient>,
@@ -155,11 +258,26 @@ impl CalendarService {
         account_key: Option<&str>,
         query: CalendarQuery,
     ) -> Result<Vec<CalendarEvent>> {
+        self.list_with_identity(http, provider, account_key, None, query)
+    }
+
+    pub fn list_with_identity(
+        &self,
+        http: Option<&mut dyn CalendarHttpClient>,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: CalendarQuery,
+    ) -> Result<Vec<CalendarEvent>> {
         if is_local_provider(provider) {
             return self.local_store.list(query);
         }
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, CalendarOperation::List)?;
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            CalendarOperation::List,
+        )?;
         let http = require_http(provider, http)?;
         let result = provider_impl.list_events(http, &credential, query);
         self.record_runtime_activity(
@@ -177,11 +295,26 @@ impl CalendarService {
         account_key: Option<&str>,
         id: &str,
     ) -> Result<Option<CalendarEvent>> {
+        self.get_with_identity(http, provider, account_key, None, id)
+    }
+
+    pub fn get_with_identity(
+        &self,
+        http: Option<&mut dyn CalendarHttpClient>,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        id: &str,
+    ) -> Result<Option<CalendarEvent>> {
         if is_local_provider(provider) {
             return self.local_store.get(id);
         }
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, CalendarOperation::Get)?;
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            CalendarOperation::Get,
+        )?;
         let http = require_http(provider, http)?;
         let result = provider_impl.get_event(http, &credential, id);
         self.record_runtime_activity(
@@ -200,6 +333,18 @@ impl CalendarService {
         event: &CalendarEvent,
         is_create: bool,
     ) -> Result<CalendarEvent> {
+        self.upsert_with_identity(http, provider, account_key, None, event, is_create)
+    }
+
+    pub fn upsert_with_identity(
+        &self,
+        http: Option<&mut dyn CalendarHttpClient>,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        event: &CalendarEvent,
+        is_create: bool,
+    ) -> Result<CalendarEvent> {
         if is_local_provider(provider) {
             self.local_store.upsert(event)?;
             return self
@@ -212,7 +357,8 @@ impl CalendarService {
         } else {
             CalendarOperation::Update
         };
-        let (provider_impl, credential) = self.resolve_remote(provider, account_key, op)?;
+        let (provider_impl, credential) =
+            self.resolve_remote_with_identity(provider, account_key, preferred_identity_class, op)?;
         let http = require_http(provider, http)?;
         let result = if is_create {
             provider_impl.create_event(http, &credential, event)
@@ -238,11 +384,26 @@ impl CalendarService {
         account_key: Option<&str>,
         id: &str,
     ) -> Result<bool> {
+        self.delete_with_identity(http, provider, account_key, None, id)
+    }
+
+    pub fn delete_with_identity(
+        &self,
+        http: Option<&mut dyn CalendarHttpClient>,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        id: &str,
+    ) -> Result<bool> {
         if is_local_provider(provider) {
             return self.local_store.delete(id);
         }
-        let (provider_impl, credential) =
-            self.resolve_remote(provider, account_key, CalendarOperation::Delete)?;
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+            CalendarOperation::Delete,
+        )?;
         let http = require_http(provider, http)?;
         let result = provider_impl.delete_event(http, &credential, id);
         self.record_runtime_activity(
@@ -253,10 +414,11 @@ impl CalendarService {
         result
     }
 
-    fn resolve_remote(
+    fn resolve_remote_with_identity(
         &self,
         provider: &str,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
         op: CalendarOperation,
     ) -> Result<(
         std::sync::Arc<dyn crate::calendar::CalendarProvider>,
@@ -274,7 +436,11 @@ impl CalendarService {
                 format!("provider '{}' does not support {:?}", provider, op),
             ));
         }
-        let account_key = self.resolve_account_key(provider, account_key)?;
+        let account_key = self.resolve_account_key_with_identity(
+            provider,
+            account_key,
+            preferred_identity_class,
+        )?;
         let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
             Error::config(
                 "calendar_provider",
@@ -302,33 +468,39 @@ impl CalendarService {
         Ok((provider_impl, credential))
     }
 
-    fn resolve_account_key(&self, provider: &str, account_key: Option<&str>) -> Result<String> {
+    fn resolve_account_key_with_identity(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String> {
         if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
             return Ok(account_key.to_string());
         }
         if let Some(office_service) = self.load_office_service()? {
-            if let Some(account_key) = resolve_office_default_account_key(
-                &office_service,
-                self.credential_store.as_ref(),
-                provider,
-            )? {
-                return Ok(account_key);
-            }
-        }
-        let mut keys = self
-            .credential_store
-            .find_account_keys_by_provider(provider)?;
-        keys.sort();
-        match keys.len() {
-            0 => Err(Error::config(
-                "calendar_provider",
-                format!("provider '{}' has no configured credential", provider),
-            )),
-            1 => Ok(keys.remove(0)),
-            _ => {
-                if let Some(OfficeResolveResult::Ambiguous(ambiguity)) =
-                    self.office_resolve_hint(Some(provider), None)?
-                {
+            match office_service.resolve(&OfficeResolveRequest {
+                capability: OfficeCapability::Calendar,
+                preferred_account_key: None,
+                preferred_provider_kind: Some(provider.to_string()),
+                preferred_identity_class,
+                historical_account_key: None,
+            }) {
+                OfficeResolveResult::Selected(selection) => {
+                    let account_key = selection.account_key;
+                    let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
+                        Error::config(
+                            "calendar_provider",
+                            format!(
+                                "office-selected calendar account '{}' has no configured credential",
+                                account_key
+                            ),
+                        )
+                    })?;
+                    if credential.provider == provider {
+                        return Ok(account_key);
+                    }
+                }
+                OfficeResolveResult::Ambiguous(ambiguity) => {
                     let candidate_accounts = ambiguity
                         .candidate_accounts
                         .iter()
@@ -345,14 +517,26 @@ impl CalendarService {
                         ),
                     ));
                 }
-                Err(Error::config(
-                    "calendar_provider",
-                    format!(
-                        "provider '{}' has multiple configured accounts; account_key is required",
-                        provider
-                    ),
-                ))
+                OfficeResolveResult::Missing(_) => {}
             }
+        }
+        let mut keys = self
+            .credential_store
+            .find_account_keys_by_provider(provider)?;
+        keys.sort();
+        match keys.len() {
+            0 => Err(Error::config(
+                "calendar_provider",
+                format!("provider '{}' has no configured credential", provider),
+            )),
+            1 => Ok(keys.remove(0)),
+            _ => Err(Error::config(
+                "calendar_provider",
+                format!(
+                    "provider '{}' has multiple configured accounts; account_key is required",
+                    provider
+                ),
+            )),
         }
     }
 
@@ -413,30 +597,6 @@ impl CalendarService {
                 store_error
             );
         }
-    }
-}
-
-fn resolve_office_default_account_key(
-    office_service: &OfficeService,
-    credential_store: &(dyn CalendarProviderCredentialStore + Send + Sync),
-    provider: &str,
-) -> Result<Option<String>> {
-    let Some(account_key) = office_service.default_account_key(OfficeCapability::Calendar) else {
-        return Ok(None);
-    };
-    let Some(credential) = credential_store.get(&account_key)? else {
-        return Err(Error::config(
-            "calendar_provider",
-            format!(
-                "office-selected calendar account '{}' has no configured credential",
-                account_key
-            ),
-        ));
-    };
-    if credential.provider == provider {
-        Ok(Some(account_key))
-    } else {
-        Ok(None)
     }
 }
 

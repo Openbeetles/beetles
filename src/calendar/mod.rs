@@ -56,6 +56,20 @@ pub const MAX_CALENDAR_PROVIDER_CHARS: usize = 32;
 pub const MAX_CALENDAR_CALENDAR_ID_CHARS: usize = 64;
 pub const MAX_CALENDAR_REMOTE_ID_CHARS: usize = 128;
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub fn build_default_office_calendar_provider_registry() -> CalendarProviderRegistry {
+    let mut providers = CalendarProviderRegistry::new();
+    providers.register(std::sync::Arc::new(providers::caldav::CalDavProvider));
+    providers.register(std::sync::Arc::new(
+        providers::feishu::FeishuCalendarProvider,
+    ));
+    providers.register(std::sync::Arc::new(providers::wecom::WecomCalendarProvider));
+    providers
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CalendarEventStatus {

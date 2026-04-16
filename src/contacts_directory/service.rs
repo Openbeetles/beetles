@@ -9,9 +9,9 @@ use crate::error::{Error, Result};
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
-    OfficeResolveRequest, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
+    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeService, SnapshotOfficeAuthoritySource,
 };
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
@@ -132,6 +132,52 @@ impl ContactsDirectoryService {
         self.resolve_primary_email_with_route(query, None, None)
     }
 
+    pub fn resolve_lookup_hit(&self, query: &str) -> Result<ContactsDirectoryLookupHit> {
+        self.resolve_lookup_hit_with_route_and_identity(query, None, None, None)
+    }
+
+    pub fn resolve_lookup_hit_with_route(
+        &self,
+        query: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+    ) -> Result<ContactsDirectoryLookupHit> {
+        self.resolve_lookup_hit_with_route_and_identity(query, provider, account_key, None)
+    }
+
+    pub fn resolve_lookup_hit_with_route_and_identity(
+        &self,
+        query: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<ContactsDirectoryLookupHit> {
+        let mut hits = self.lookup_with_route_and_identity(
+            query,
+            Some(5),
+            provider,
+            account_key,
+            preferred_identity_class,
+        )?;
+        if hits.is_empty() {
+            return Err(Error::config(
+                "contacts_directory_lookup",
+                format!("no contact matches query '{query}'"),
+            ));
+        }
+        let best = hits.remove(0);
+        if hits
+            .first()
+            .is_some_and(|candidate| candidate.score == best.score)
+        {
+            return Err(Error::config(
+                "contacts_directory_lookup",
+                format!("contact query '{query}' is ambiguous"),
+            ));
+        }
+        Ok(best)
+    }
+
     pub fn upsert(&self, mut contact: ContactEntry) -> Result<ContactsDirectoryUpsertResult> {
         let existing = self.local_store.list()?;
         let existing_ids = existing
@@ -183,6 +229,17 @@ impl ContactsDirectoryService {
         provider: Option<&str>,
         account_key: Option<&str>,
     ) -> Result<Vec<ContactsDirectoryLookupHit>> {
+        self.lookup_with_route_and_identity(query, limit, provider, account_key, None)
+    }
+
+    pub fn lookup_with_route_and_identity(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Vec<ContactsDirectoryLookupHit>> {
         let query = normalize_match_key(query);
         if query.is_empty() {
             return Err(Error::config(
@@ -203,7 +260,13 @@ impl ContactsDirectoryService {
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         {
-            hits.extend(self.remote_lookup_hits(&query, limit, provider, account_key)?);
+            hits.extend(self.remote_lookup_hits(
+                &query,
+                limit,
+                provider,
+                account_key,
+                preferred_identity_class,
+            )?);
         }
         hits.sort_by_key(|hit| {
             (
@@ -223,25 +286,26 @@ impl ContactsDirectoryService {
         provider: Option<&str>,
         account_key: Option<&str>,
     ) -> Result<ContactsDirectoryEmailResolution> {
-        let mut hits = self
-            .lookup_with_route(query, Some(5), provider, account_key)?
-            .into_iter()
-            .filter(|hit| !hit.contact.emails.is_empty())
-            .collect::<Vec<_>>();
-        if hits.is_empty() {
+        self.resolve_primary_email_with_route_and_identity(query, provider, account_key, None)
+    }
+
+    pub fn resolve_primary_email_with_route_and_identity(
+        &self,
+        query: &str,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<ContactsDirectoryEmailResolution> {
+        let best = self.resolve_lookup_hit_with_route_and_identity(
+            query,
+            provider,
+            account_key,
+            preferred_identity_class,
+        )?;
+        if best.contact.emails.is_empty() {
             return Err(Error::config(
                 "contacts_directory_email_resolve",
                 format!("no contact with email matches query '{query}'"),
-            ));
-        }
-        let best = hits.remove(0);
-        if hits
-            .first()
-            .is_some_and(|candidate| candidate.score == best.score)
-        {
-            return Err(Error::config(
-                "contacts_directory_email_resolve",
-                format!("contact query '{query}' is ambiguous"),
             ));
         }
         Ok(ContactsDirectoryEmailResolution {
@@ -290,33 +354,30 @@ impl ContactsDirectoryService {
         provider: Option<&str>,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeResolveResult>> {
+        self.office_resolve_hint_with_identity(provider, account_key, None)
+    }
+
+    pub fn office_resolve_hint_with_identity(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeResolveResult>> {
         if account_key.is_some_and(|value| !value.trim().is_empty()) {
             return Ok(None);
         }
         let Some(service) = self.load_office_service()? else {
             return Ok(None);
         };
-        let provider = provider.map(str::trim).filter(|value| !value.is_empty());
-        if let Some(provider) = provider {
-            let candidates = service
-                .accounts_for_capability(OfficeCapability::ContactsDirectory)
-                .into_iter()
-                .filter(|account| account.provider_kind == provider)
-                .map(|account| OfficeResolveCandidate::from_account(&account))
-                .collect::<Vec<_>>();
-            if candidates.len() > 1 {
-                return Ok(Some(OfficeResolveResult::Ambiguous(
-                    OfficeResolveAmbiguity {
-                        reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
-                        candidate_accounts: candidates,
-                    },
-                )));
-            }
-        }
         match service.resolve(&OfficeResolveRequest {
             capability: OfficeCapability::ContactsDirectory,
             preferred_account_key: None,
-            preferred_identity_class: None,
+            preferred_provider_kind: provider
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            preferred_identity_class,
+            historical_account_key: None,
         }) {
             OfficeResolveResult::Selected(_) => Ok(None),
             other => Ok(Some(other)),
@@ -356,14 +417,15 @@ impl ContactsDirectoryService {
         limit: usize,
         provider: Option<&str>,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Vec<ContactsDirectoryLookupHit>> {
         let Some(remote) = self.remote.as_ref() else {
             return Ok(Vec::new());
         };
         let route = if provider.is_some() || account_key.is_some() {
-            self.resolve_remote_route(provider, account_key)?
+            self.resolve_remote_route(provider, account_key, preferred_identity_class)?
         } else {
-            match self.resolve_default_remote_route()? {
+            match self.resolve_default_remote_route(preferred_identity_class)? {
                 Some(route) => route,
                 None => return Ok(Vec::new()),
             }
@@ -401,14 +463,24 @@ impl ContactsDirectoryService {
             .collect())
     }
 
-    fn resolve_default_remote_route(&self) -> Result<Option<ContactsLookupRoute>> {
+    fn resolve_default_remote_route(
+        &self,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<ContactsLookupRoute>> {
         let Some(remote) = self.remote.as_ref() else {
             return Ok(None);
         };
         if let Some(office_service) = self.load_office_service()? {
-            if let Some(account_key) =
-                office_service.default_account_key(OfficeCapability::ContactsDirectory)
+            if let OfficeResolveResult::Selected(selection) =
+                office_service.resolve(&OfficeResolveRequest {
+                    capability: OfficeCapability::ContactsDirectory,
+                    preferred_account_key: None,
+                    preferred_provider_kind: None,
+                    preferred_identity_class,
+                    historical_account_key: None,
+                })
             {
+                let account_key = selection.account_key;
                 let credential = remote.credential_store.get(&account_key)?.ok_or_else(|| {
                     Error::config(
                         "contacts_directory_lookup",
@@ -444,6 +516,7 @@ impl ContactsDirectoryService {
         &self,
         provider: Option<&str>,
         account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<ContactsLookupRoute> {
         let Some(remote) = self.remote.as_ref() else {
             return Err(Error::config(
@@ -481,23 +554,33 @@ impl ContactsDirectoryService {
                     "provider or account_key is required for explicit remote lookup",
                 )
             })?;
-        let mut keys = remote
-            .credential_store
-            .find_account_keys_by_provider(provider)?;
-        keys.sort();
-        match keys.len() {
-            0 => Err(Error::config(
-                "contacts_directory_lookup",
-                format!("provider '{}' has no configured credential", provider),
-            )),
-            1 => Ok(ContactsLookupRoute {
-                provider: provider.to_string(),
-                account_key: keys.remove(0),
-            }),
-            _ => {
-                if let Some(OfficeResolveResult::Ambiguous(ambiguity)) =
-                    self.office_resolve_hint(Some(provider), None)?
-                {
+        if let Some(service) = self.load_office_service()? {
+            match service.resolve(&OfficeResolveRequest {
+                capability: OfficeCapability::ContactsDirectory,
+                preferred_account_key: None,
+                preferred_provider_kind: Some(provider.to_string()),
+                preferred_identity_class,
+                historical_account_key: None,
+            }) {
+                OfficeResolveResult::Selected(selection) => {
+                    let account_key = selection.account_key;
+                    let credential = remote.credential_store.get(&account_key)?.ok_or_else(|| {
+                        Error::config(
+                            "contacts_directory_lookup",
+                            format!(
+                                "office-selected contacts account '{}' has no configured credential",
+                                account_key
+                            ),
+                        )
+                    })?;
+                    if credential.provider == provider {
+                        return Ok(ContactsLookupRoute {
+                            provider: provider.to_string(),
+                            account_key,
+                        });
+                    }
+                }
+                OfficeResolveResult::Ambiguous(ambiguity) => {
                     let candidate_accounts = ambiguity
                         .candidate_accounts
                         .iter()
@@ -514,14 +597,29 @@ impl ContactsDirectoryService {
                         ),
                     ));
                 }
-                Err(Error::config(
-                    "contacts_directory_lookup",
-                    format!(
-                        "provider '{}' has multiple configured accounts; account_key is required",
-                        provider
-                    ),
-                ))
+                OfficeResolveResult::Missing(_) => {}
             }
+        }
+        let mut keys = remote
+            .credential_store
+            .find_account_keys_by_provider(provider)?;
+        keys.sort();
+        match keys.len() {
+            0 => Err(Error::config(
+                "contacts_directory_lookup",
+                format!("provider '{}' has no configured credential", provider),
+            )),
+            1 => Ok(ContactsLookupRoute {
+                provider: provider.to_string(),
+                account_key: keys.remove(0),
+            }),
+            _ => Err(Error::config(
+                "contacts_directory_lookup",
+                format!(
+                    "provider '{}' has multiple configured accounts; account_key is required",
+                    provider
+                ),
+            )),
         }
     }
 
