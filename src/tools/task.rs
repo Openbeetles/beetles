@@ -206,6 +206,119 @@ impl TaskTool {
             calendar_service: Some(calendar_service),
         }
     }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn upsert_remote_calendar_event(
+        &self,
+        provider: &str,
+        account_key: &str,
+        event: &CalendarEvent,
+        is_create: bool,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<(CalendarEvent, String)> {
+        let service = self.calendar_service.as_ref().ok_or_else(|| {
+            Error::config(
+                "tool_task",
+                format!(
+                    "calendar provider '{}' is unavailable in this runtime",
+                    provider
+                ),
+            )
+        })?;
+        let resolved_account_key = service
+            .resolve_account_key_for_provider(
+                provider,
+                (!account_key.trim().is_empty()).then_some(account_key),
+            )?
+            .ok_or_else(|| {
+                Error::config(
+                    "tool_task",
+                    format!(
+                        "calendar provider '{}' is unavailable in this runtime",
+                        provider
+                    ),
+                )
+            })?;
+        let mut http = ToolContextHttpClient::new(ctx);
+        let event = service.upsert(
+            Some(&mut http),
+            provider,
+            Some(resolved_account_key.as_str()),
+            event,
+            is_create,
+        )?;
+        Ok((event, resolved_account_key))
+    }
+
+    #[cfg(not(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )))]
+    fn upsert_remote_calendar_event(
+        &self,
+        provider: &str,
+        _account_key: &str,
+        _event: &CalendarEvent,
+        _is_create: bool,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<(CalendarEvent, String)> {
+        Err(Error::config(
+            "tool_task",
+            format!(
+                "calendar provider '{}' is unavailable in this runtime",
+                provider
+            ),
+        ))
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn delete_remote_calendar_link(
+        &self,
+        link: &TaskCalendarLink,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<()> {
+        let service = self.calendar_service.as_ref().ok_or_else(|| {
+            Error::config(
+                "tool_task",
+                format!(
+                    "calendar provider '{}' is unavailable in this runtime",
+                    link.provider
+                ),
+            )
+        })?;
+        let mut http = ToolContextHttpClient::new(ctx);
+        let _ = service.delete(
+            Some(&mut http),
+            &link.provider,
+            (!link.account_key.is_empty()).then_some(link.account_key.as_str()),
+            &link.event_id,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(not(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )))]
+    fn delete_remote_calendar_link(
+        &self,
+        link: &TaskCalendarLink,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<()> {
+        Err(Error::config(
+            "tool_task",
+            format!(
+                "calendar provider '{}' is unavailable in this runtime",
+                link.provider
+            ),
+        ))
+    }
 }
 
 impl Tool for TaskTool {
@@ -689,52 +802,7 @@ impl TaskTool {
                 .ok_or_else(|| Error::config("tool_task", "calendar event missing after upsert"));
             return event.map(|event| (event, String::new()));
         }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            let service = self.calendar_service.as_ref().ok_or_else(|| {
-                Error::config(
-                    "tool_task",
-                    format!(
-                        "calendar provider '{}' is unavailable in this runtime",
-                        provider
-                    ),
-                )
-            })?;
-            let resolved_account_key = service
-                .resolve_account_key_for_provider(
-                    provider,
-                    (!_account_key.trim().is_empty()).then_some(_account_key),
-                )?
-                .ok_or_else(|| {
-                    Error::config(
-                        "tool_task",
-                        format!(
-                            "calendar provider '{}' is unavailable in this runtime",
-                            provider
-                        ),
-                    )
-                })?;
-            let mut http = ToolContextHttpClient::new(_ctx);
-            let event = service.upsert(
-                Some(&mut http),
-                provider,
-                Some(resolved_account_key.as_str()),
-                event,
-                _is_create,
-            );
-            return event.map(|event| (event, resolved_account_key));
-        }
-        #[allow(unreachable_code)]
-        Err(Error::config(
-            "tool_task",
-            format!(
-                "calendar provider '{}' is unavailable in this runtime",
-                provider
-            ),
-        ))
+        self.upsert_remote_calendar_event(provider, _account_key, event, _is_create, _ctx)
     }
 
     fn delete_calendar_link(
@@ -749,37 +817,7 @@ impl TaskTool {
             let _ = self.calendar_store.delete(&link.event_id)?;
             return Ok(());
         }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            let service = self.calendar_service.as_ref().ok_or_else(|| {
-                Error::config(
-                    "tool_task",
-                    format!(
-                        "calendar provider '{}' is unavailable in this runtime",
-                        link.provider
-                    ),
-                )
-            })?;
-            let mut http = ToolContextHttpClient::new(_ctx);
-            let _ = service.delete(
-                Some(&mut http),
-                &link.provider,
-                (!link.account_key.is_empty()).then_some(link.account_key.as_str()),
-                &link.event_id,
-            )?;
-            return Ok(());
-        }
-        #[allow(unreachable_code)]
-        Err(Error::config(
-            "tool_task",
-            format!(
-                "calendar provider '{}' is unavailable in this runtime",
-                link.provider
-            ),
-        ))
+        self.delete_remote_calendar_link(link, _ctx)
     }
 
     fn clear_calendar_link(&self, task: &mut TaskItem) {

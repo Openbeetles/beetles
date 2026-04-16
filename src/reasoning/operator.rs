@@ -12,6 +12,7 @@ use crate::reasoning::proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposalKind,
 };
 use crate::skills::RuntimeSkillOperatorSummary;
+use crate::task_execution::TaskLearningOperatorSnapshot;
 use serde::Serialize;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -90,22 +91,58 @@ pub struct ProgrammableReasoningSystemInfoSummary {
     pub proposal_only_persistence: bool,
 }
 
-pub fn programmable_reasoning_operator_snapshot() -> ProgrammableReasoningOperatorSnapshot {
+fn programmable_reasoning_stage_label(stage: ProgrammableReasoningStage) -> &'static str {
+    match stage {
+        ProgrammableReasoningStage::ConstitutionOnly => "constitution_only",
+        ProgrammableReasoningStage::TaskScriptingBaseline => "task_scripting_baseline",
+        ProgrammableReasoningStage::MemoryQueryPlane => "memory_query_plane",
+        ProgrammableReasoningStage::IdleMemoryForge => "idle_memory_forge",
+        ProgrammableReasoningStage::MemoryAttackDistillation => "memory_attack_distillation",
+        ProgrammableReasoningStage::CapabilityBridgeExpansion => "capability_bridge_expansion",
+        ProgrammableReasoningStage::ExperienceCrystal => "experience_crystal",
+        ProgrammableReasoningStage::EngineeringSynthesis => "engineering_synthesis",
+    }
+}
+
+pub fn summarize_programmable_reasoning_operator(
+    snapshot: &ProgrammableReasoningOperatorSnapshot,
+) -> String {
+    format!(
+        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | recent_attempts={} attention={}",
+        programmable_reasoning_stage_label(snapshot.stage),
+        snapshot.runtime_contract.execution_backend,
+        snapshot.runtime_contract.execution_enabled,
+        snapshot.experience_crystals.runtime_skill_total,
+        snapshot.experience_crystals.validated_runtime_skills,
+        snapshot.experience_crystals.pending_candidates,
+        snapshot.experience_crystals.promoted_candidates,
+        snapshot.experience_crystals.rejected_candidates,
+        snapshot.usage_analytics.recent_total_attempts,
+        snapshot.maintenance_digest.attention_event_count,
+    )
+}
+
+pub fn programmable_reasoning_operator_snapshot(
+    runtime_skills: &RuntimeSkillOperatorSummary,
+    task_learning: Option<&TaskLearningOperatorSnapshot>,
+) -> ProgrammableReasoningOperatorSnapshot {
     let runtime_contract = programmable_reasoning_runtime_contract();
-    ProgrammableReasoningOperatorSnapshot {
+    let mut snapshot = ProgrammableReasoningOperatorSnapshot {
         stage: runtime_contract.stage,
         runtime_contract: runtime_contract.clone(),
         capabilities: programmable_reasoning_capability_taxonomy(),
         proposal_kinds: programmable_reasoning_proposal_kinds(),
         experience_crystals: build_experience_crystal_operator_summary(
-            &RuntimeSkillOperatorSummary::default(),
-            None,
+            runtime_skills,
+            task_learning,
         ),
         usage_analytics: ProgrammableReasoningUsageAnalytics::default(),
         timeline: ProgrammableReasoningTimeline::default(),
         maintenance_digest: ProgrammableReasoningMaintenanceDigest::default(),
-        operator_summary: "engineering_synthesis: programmable reasoning can now distill engineering references into structured datasheet assets without adding a second execution plane".to_string(),
-    }
+        operator_summary: String::new(),
+    };
+    snapshot.operator_summary = summarize_programmable_reasoning_operator(&snapshot);
+    snapshot
 }
 
 pub fn programmable_reasoning_system_info_summary() -> ProgrammableReasoningSystemInfoSummary {
@@ -125,7 +162,8 @@ mod tests {
 
     #[test]
     fn operator_snapshot_reports_p7_contract() {
-        let snapshot = programmable_reasoning_operator_snapshot();
+        let snapshot =
+            programmable_reasoning_operator_snapshot(&RuntimeSkillOperatorSummary::default(), None);
         assert_eq!(
             snapshot.stage,
             ProgrammableReasoningStage::EngineeringSynthesis
@@ -140,6 +178,10 @@ mod tests {
         assert!(snapshot.usage_analytics.tool_counts.is_empty());
         assert!(snapshot.timeline.recent_events.is_empty());
         assert!(snapshot.maintenance_digest.status.is_empty());
+        assert!(snapshot
+            .operator_summary
+            .contains("engineering_synthesis |"));
+        assert!(snapshot.operator_summary.contains("recent_attempts=0"));
     }
 
     #[test]

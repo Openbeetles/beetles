@@ -12,7 +12,10 @@ use crate::platform::memory_operator_surface::{
     build_memory_operator_surface_with_capabilities, render_memory_operator_surface_text,
     MemoryOperatorSurfaceSummary,
 };
+use crate::reasoning::summarize_programmable_reasoning_operator;
 use crate::runtime;
+use crate::skills::build_runtime_skill_operator_summary;
+use crate::task_execution::build_task_learning_operator_snapshot;
 use crate::tools::{ToolExecutionGovernanceState, ToolRegistry};
 use crate::util::current_unix_secs;
 use crate::Platform;
@@ -170,13 +173,22 @@ pub fn build_operator_status(
         build_voice_path_diagnosis_from_runtime(input.platform, input.config);
     let runtime_mode = presence.runtime_mode;
     let soul_kernel = presence.soul_kernel.clone();
-    let mut programmable_reasoning = crate::programmable_reasoning_operator_snapshot();
+    let runtime_skill_summary =
+        build_runtime_skill_operator_summary(input.platform.skill_storage().as_ref());
+    let task_learning_snapshot =
+        build_task_learning_operator_snapshot(input.platform.task_learning_store().as_ref())?;
+    let mut programmable_reasoning = crate::programmable_reasoning_operator_snapshot(
+        &runtime_skill_summary,
+        Some(&task_learning_snapshot),
+    );
     programmable_reasoning.usage_analytics = programmable_reasoning_usage;
     programmable_reasoning.timeline = programmable_reasoning_timeline;
     programmable_reasoning.maintenance_digest = build_programmable_reasoning_maintenance_digest(
         &programmable_reasoning.usage_analytics,
         &programmable_reasoning.timeline,
     );
+    programmable_reasoning.operator_summary =
+        summarize_programmable_reasoning_operator(&programmable_reasoning);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let supervisor = presence.supervisor.clone();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -966,6 +978,177 @@ mod tests {
         assert!(digest
             .headline
             .contains("4 recent attempts, 3 need attention"));
+    }
+
+    #[test]
+    fn build_operator_status_exposes_real_experience_crystal_counts_and_summary() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let tool_registry = crate::tools::ToolRegistry::new();
+        let unique = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        let topic = format!("operator_status_review_{unique}");
+        let skill_name = format!("runtime_skill__{topic}");
+        let now_secs: u64 = 4_102_444_800;
+        let baseline_runtime_skills =
+            build_runtime_skill_operator_summary(platform.skill_storage().as_ref());
+        let baseline_learning =
+            build_task_learning_operator_snapshot(platform.task_learning_store().as_ref())
+                .expect("baseline task learning");
+
+        crate::skills::upsert_runtime_skill(
+            platform.skill_storage().as_ref(),
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "Operator status review".to_string(),
+                summary: "Validated operator status review procedure.".to_string(),
+                content: "1. inspect operator\n2. compare state\n3. verify".to_string(),
+                citations: Vec::new(),
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: now_secs.saturating_sub(60),
+            },
+        )
+        .expect("write runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            platform.skill_storage().as_ref(),
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            now_secs,
+            "final_answer",
+        )
+        .expect("record runtime skill outcome");
+
+        platform
+            .task_learning_store()
+            .upsert(&crate::task_execution::TaskLearningRecord {
+                learning_id: format!("learning-promoted-{unique}"),
+                source_channel: "telegram".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                run_id: format!("run-promoted-{unique}"),
+                step_id: "s01".to_string(),
+                kind: crate::task_execution::TaskLearningKind::ReusableProcedure,
+                route: crate::task_execution::TaskLearningRoute::RuntimeSkill,
+                run_status: crate::task_execution::TaskRunStatus::Completed,
+                topic: topic.clone(),
+                summary: "Promoted operator procedure.".to_string(),
+                content: "Inspect, compare, verify.".to_string(),
+                memory_kind: None,
+                review_summary: "Reusable".to_string(),
+                source_artifact_ids: Vec::new(),
+                provenance: "operator status test".to_string(),
+                archive_note_name: String::new(),
+                route_detail: "promoted".to_string(),
+                candidate_state: Some(crate::task_execution::TaskLearningCandidateState::Promoted),
+                candidate_state_updated_at: now_secs,
+                last_failure_reason: String::new(),
+                observed_at: now_secs,
+            })
+            .expect("write promoted learning record");
+        platform
+            .task_learning_store()
+            .upsert(&crate::task_execution::TaskLearningRecord {
+                learning_id: format!("learning-observed-{unique}"),
+                source_channel: "telegram".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                run_id: format!("run-observed-{unique}"),
+                step_id: "s02".to_string(),
+                kind: crate::task_execution::TaskLearningKind::ReusableProcedure,
+                route: crate::task_execution::TaskLearningRoute::Pending,
+                run_status: crate::task_execution::TaskRunStatus::Completed,
+                topic: format!("{topic}_observed"),
+                summary: "Observed operator procedure.".to_string(),
+                content: "Observe candidate.".to_string(),
+                memory_kind: None,
+                review_summary: "Observe".to_string(),
+                source_artifact_ids: Vec::new(),
+                provenance: "operator status test".to_string(),
+                archive_note_name: String::new(),
+                route_detail: "observed".to_string(),
+                candidate_state: Some(crate::task_execution::TaskLearningCandidateState::Observed),
+                candidate_state_updated_at: now_secs,
+                last_failure_reason: String::new(),
+                observed_at: now_secs.saturating_sub(1),
+            })
+            .expect("write observed learning record");
+        platform
+            .task_learning_store()
+            .upsert(&crate::task_execution::TaskLearningRecord {
+                learning_id: format!("learning-rejected-{unique}"),
+                source_channel: "telegram".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                run_id: format!("run-rejected-{unique}"),
+                step_id: "s03".to_string(),
+                kind: crate::task_execution::TaskLearningKind::ReusableProcedure,
+                route: crate::task_execution::TaskLearningRoute::Pending,
+                run_status: crate::task_execution::TaskRunStatus::Completed,
+                topic: format!("{topic}_rejected"),
+                summary: "Rejected operator procedure.".to_string(),
+                content: "Reject candidate.".to_string(),
+                memory_kind: None,
+                review_summary: "Reject".to_string(),
+                source_artifact_ids: Vec::new(),
+                provenance: "operator status test".to_string(),
+                archive_note_name: String::new(),
+                route_detail: "rejected".to_string(),
+                candidate_state: Some(crate::task_execution::TaskLearningCandidateState::Rejected),
+                candidate_state_updated_at: now_secs,
+                last_failure_reason: "weak procedure".to_string(),
+                observed_at: now_secs.saturating_sub(2),
+            })
+            .expect("write rejected learning record");
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        })
+        .expect("operator status");
+
+        let crystals = snapshot.programmable_reasoning.experience_crystals;
+        assert_eq!(
+            crystals.runtime_skill_total,
+            baseline_runtime_skills.total.saturating_add(1)
+        );
+        assert_eq!(
+            crystals.validated_runtime_skills,
+            baseline_runtime_skills.validated.saturating_add(1)
+        );
+        assert_eq!(
+            crystals.promoted_candidates,
+            baseline_learning.candidate_promoted.saturating_add(1)
+        );
+        assert_eq!(
+            crystals.pending_candidates,
+            baseline_learning.candidate_observed.saturating_add(1)
+        );
+        assert_eq!(
+            crystals.rejected_candidates,
+            baseline_learning.candidate_rejected.saturating_add(1)
+        );
+        assert!(snapshot
+            .programmable_reasoning
+            .operator_summary
+            .contains(&format!(
+                "runtime_skills={} validated={}",
+                crystals.runtime_skill_total, crystals.validated_runtime_skills
+            )));
+        assert!(snapshot
+            .programmable_reasoning
+            .operator_summary
+            .contains(&format!(
+                "pending_crystals={} promoted_crystals={} rejected_crystals={}",
+                crystals.pending_candidates,
+                crystals.promoted_candidates,
+                crystals.rejected_candidates
+            )));
     }
 
     fn reasoning_shape(tool_name: &str) -> ToolExecutionShape {

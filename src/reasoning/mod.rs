@@ -59,10 +59,10 @@ pub use memory_query::{
 };
 pub use operator::{
     programmable_reasoning_operator_snapshot, programmable_reasoning_system_info_summary,
-    ProgrammableReasoningMaintenanceDigest, ProgrammableReasoningOperatorSnapshot,
-    ProgrammableReasoningSystemInfoSummary, ProgrammableReasoningTimeline,
-    ProgrammableReasoningTimelineEvent, ProgrammableReasoningToolUsageSummary,
-    ProgrammableReasoningUsageAnalytics,
+    summarize_programmable_reasoning_operator, ProgrammableReasoningMaintenanceDigest,
+    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningSystemInfoSummary,
+    ProgrammableReasoningTimeline, ProgrammableReasoningTimelineEvent,
+    ProgrammableReasoningToolUsageSummary, ProgrammableReasoningUsageAnalytics,
 };
 pub use proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposal,

@@ -200,6 +200,119 @@ impl RemindAtTool {
         })
     }
 
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn upsert_remote_calendar_link(
+        &self,
+        reminder: &mut ReminderItem,
+        provider: &str,
+        event: &CalendarEvent,
+        previous_link: &ReminderCalendarLink,
+        link_changed: bool,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<()> {
+        let service = self.calendar_service.as_ref().ok_or_else(|| {
+            Error::config(
+                "remind_at",
+                format!("calendar provider '{provider}' is unavailable in this runtime"),
+            )
+        })?;
+        let resolved_account_key = service
+            .resolve_account_key_for_provider(
+                provider,
+                (!reminder.calendar_account_key.trim().is_empty())
+                    .then_some(reminder.calendar_account_key.as_str()),
+            )?
+            .ok_or_else(|| {
+                Error::config(
+                    "remind_at",
+                    format!("calendar provider '{provider}' is unavailable in this runtime"),
+                )
+            })?;
+        let mut http = ToolContextHttpClient::new(ctx);
+        let stored = service.upsert(
+            Some(&mut http),
+            provider,
+            Some(resolved_account_key.as_str()),
+            event,
+            previous_link.is_empty() || link_changed,
+        )?;
+        reminder.calendar_event_id = stored.id;
+        reminder.calendar_provider = stored.provider;
+        reminder.calendar_account_key = resolved_account_key;
+        reminder.calendar_calendar_id = stored.calendar_id;
+        reminder.calendar_remote_id = stored.remote_id;
+        Ok(())
+    }
+
+    #[cfg(not(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )))]
+    fn upsert_remote_calendar_link(
+        &self,
+        _reminder: &mut ReminderItem,
+        provider: &str,
+        _event: &CalendarEvent,
+        _previous_link: &ReminderCalendarLink,
+        _link_changed: bool,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<()> {
+        Err(Error::config(
+            "remind_at",
+            format!("calendar provider '{provider}' is unavailable in this runtime"),
+        ))
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn delete_remote_calendar_link(
+        &self,
+        link: &ReminderCalendarLink,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<()> {
+        let service = self.calendar_service.as_ref().ok_or_else(|| {
+            Error::config(
+                "remind_at",
+                format!(
+                    "calendar provider '{}' is unavailable in this runtime",
+                    link.provider
+                ),
+            )
+        })?;
+        let mut http = ToolContextHttpClient::new(ctx);
+        service
+            .delete(
+                Some(&mut http),
+                &link.provider,
+                (!link.account_key.is_empty()).then_some(link.account_key.as_str()),
+                &link.event_id,
+            )
+            .map(|_| ())
+    }
+
+    #[cfg(not(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )))]
+    fn delete_remote_calendar_link(
+        &self,
+        link: &ReminderCalendarLink,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<()> {
+        Err(Error::config(
+            "remind_at",
+            format!(
+                "calendar provider '{}' is unavailable in this runtime",
+                link.provider
+            ),
+        ))
+    }
+
     fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let channel = ctx
             .current_channel()
@@ -624,49 +737,14 @@ impl RemindAtTool {
             reminder.calendar_remote_id = stored.remote_id;
             return Ok(());
         }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            let service = self.calendar_service.as_ref().ok_or_else(|| {
-                Error::config(
-                    "remind_at",
-                    format!("calendar provider '{provider}' is unavailable in this runtime"),
-                )
-            })?;
-            let resolved_account_key = service
-                .resolve_account_key_for_provider(
-                    provider.as_str(),
-                    (!reminder.calendar_account_key.trim().is_empty())
-                        .then_some(reminder.calendar_account_key.as_str()),
-                )?
-                .ok_or_else(|| {
-                    Error::config(
-                        "remind_at",
-                        format!("calendar provider '{provider}' is unavailable in this runtime"),
-                    )
-                })?;
-            let mut http = ToolContextHttpClient::new(ctx);
-            let stored = service.upsert(
-                Some(&mut http),
-                provider.as_str(),
-                Some(resolved_account_key.as_str()),
-                &event,
-                previous_link.is_empty() || link_changed,
-            )?;
-            reminder.calendar_event_id = stored.id;
-            reminder.calendar_provider = stored.provider;
-            reminder.calendar_account_key = resolved_account_key;
-            reminder.calendar_calendar_id = stored.calendar_id;
-            reminder.calendar_remote_id = stored.remote_id;
-            return Ok(());
-        }
-        #[allow(unreachable_code)]
-        Err(Error::config(
-            "remind_at",
-            format!("calendar provider '{provider}' is unavailable in this runtime"),
-        ))
+        self.upsert_remote_calendar_link(
+            reminder,
+            provider.as_str(),
+            &event,
+            &previous_link,
+            link_changed,
+            ctx,
+        )
     }
 
     fn delete_calendar_link(
@@ -683,38 +761,7 @@ impl RemindAtTool {
             }
             return Ok(());
         }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            let service = self.calendar_service.as_ref().ok_or_else(|| {
-                Error::config(
-                    "remind_at",
-                    format!(
-                        "calendar provider '{}' is unavailable in this runtime",
-                        link.provider
-                    ),
-                )
-            })?;
-            let mut http = ToolContextHttpClient::new(_ctx);
-            return service
-                .delete(
-                    Some(&mut http),
-                    &link.provider,
-                    (!link.account_key.is_empty()).then_some(link.account_key.as_str()),
-                    &link.event_id,
-                )
-                .map(|_| ());
-        }
-        #[allow(unreachable_code)]
-        Err(Error::config(
-            "remind_at",
-            format!(
-                "calendar provider '{}' is unavailable in this runtime",
-                link.provider
-            ),
-        ))
+        self.delete_remote_calendar_link(link, _ctx)
     }
 
     fn clear_calendar_link(&self, reminder: &mut ReminderItem) {
@@ -970,7 +1017,7 @@ mod tests {
         OfficeService,
     };
     use crate::platform::ResponseBody;
-    use crate::tools::ToolContext;
+    use crate::tools::{ToolContext, ToolExecutionFailureKind};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
