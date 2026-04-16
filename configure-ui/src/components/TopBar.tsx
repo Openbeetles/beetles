@@ -14,6 +14,14 @@ import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
 import { OS_ICON_SHELL } from "../config/osIcons";
 import { Os3dIcon } from "./Os3dIcon";
 
+function isMacTauriWindow(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "__TAURI_INTERNALS__" in window &&
+    /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+  );
+}
+
 const PATH_TO_META: Record<string, { titleKey: string }> = {
   "/device": { titleKey: "device.pageTitle" },
   "/device-config": {
@@ -60,6 +68,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
   const navBlocker = useContext(NavBlockerContext);
   const location = useLocation();
   const [brandIconHovered, setBrandIconHovered] = useState(false);
+  const macTauriWindow = isMacTauriWindow();
 
   const pathname = location.pathname;
   const meta = metaForPathname(pathname);
@@ -94,18 +103,20 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
       component="header"
       sx={{
         flexShrink: 0,
-        minHeight: TOP_BAR_MIN_HEIGHT,
+        minHeight: macTauriWindow ? TOP_BAR_MIN_HEIGHT + 28 : TOP_BAR_MIN_HEIGHT,
         display: "flex",
         alignItems: "stretch",
         justifyContent: "space-between",
         pl: { xs: 2, sm: 3 },
         pr: 0,
+        pt: macTauriWindow ? 3.5 : 0,
         position: "relative",
         ...SHELL_TITLEBAR_CHROME_SX,
         /** 与主内容区分；不外投阴影，符合扁平壳层约定 */
         borderBottom: "1px solid var(--border-subtle)",
         gap: 0,
       }}
+      data-tauri-drag-region={macTauriWindow ? "" : undefined}
     >
       <Stack
         direction="row"
@@ -157,7 +168,11 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
             />
           </IconButton>
         </Tooltip>
-        <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
+        <Stack
+          spacing={0.25}
+          sx={{ minWidth: 0, flex: 1 }}
+          data-tauri-drag-region={macTauriWindow ? "" : undefined}
+        >
           <PageHeader title={title} />
           <ShellBreadcrumb />
         </Stack>

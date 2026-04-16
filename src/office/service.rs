@@ -76,7 +76,7 @@ impl OfficeService {
             preferred_identity_class: None,
         }) {
             OfficeResolveResult::Selected(selection) => Some(selection.account_key),
-            OfficeResolveResult::Ambiguous | OfficeResolveResult::Missing => None,
+            OfficeResolveResult::Ambiguous(_) | OfficeResolveResult::Missing(_) => None,
         }
     }
 

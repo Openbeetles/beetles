@@ -111,6 +111,8 @@ More detail: see the parent repo’s docs, especially `docs/en-us/configuration.
 
 - Node.js 20+  
 - npm
+- Rust toolchain (`rustup`, `cargo`)
+- Tauri desktop prerequisites for your OS: <https://v2.tauri.app/start/prerequisites/>
 
 ### Commands
 
@@ -121,6 +123,8 @@ More detail: see the parent repo’s docs, especially `docs/en-us/configuration.
 | `npm run build`  | TypeScript + Vite build    |
 | `npm run lint`   | Run ESLint                 |
 | `npm run preview`| Preview production build   |
+| `npm run tauri dev` | Run the same UI in a Tauri desktop shell |
+| `npm run tauri build` | Build the desktop shell package |
 
 ### Local development
 
@@ -131,6 +135,25 @@ npm run dev
 ```
 
 During local development, open the page in a browser that can reach the target Beetle device.
+
+### Desktop shell
+
+`configure-ui` now also ships with a minimal Tauri desktop shell under `src-tauri/`.
+The shell does **not** add or remove product features. It only wraps the existing React/Vite UI as a desktop app, so all current device URL, pairing code, config, and API flows stay unchanged.
+
+```bash
+cd configure-ui
+npm ci
+npm run tauri dev
+```
+
+For production packaging:
+
+```bash
+cd configure-ui
+npm ci
+npm run tauri build
+```
 
 ### Design and style
 

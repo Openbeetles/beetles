@@ -433,13 +433,13 @@ impl OfficeConfigManagementService {
                         next_action,
                     )
                 }
-                OfficeResolveResult::Ambiguous => (
+                OfficeResolveResult::Ambiguous(_) => (
                     OfficeConfigCapabilitySelectionStatus::Ambiguous,
                     None,
                     false,
                     OfficeConfigCapabilityNextAction::SelectDefaultAccount,
                 ),
-                OfficeResolveResult::Missing => (
+                OfficeResolveResult::Missing(_) => (
                     OfficeConfigCapabilitySelectionStatus::Missing,
                     None,
                     false,

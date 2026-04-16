@@ -15,14 +15,56 @@ pub struct OfficeResolveRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeResolveSelection {
     pub account_key: String,
+    pub selection_reason: OfficeResolveSelectionReason,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeResolveCandidate {
+    pub account_key: String,
+    pub provider_kind: String,
+    pub account_label: String,
+    pub identity_class: OfficeAccountIdentityClass,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum OfficeResolveSelectionReason {
+    ExplicitAccountKey,
+    CapabilityDefault,
+    GlobalDefault,
+    PreferredIdentityClass,
+    SoleCandidate,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeResolveAmbiguityReason {
+    MultipleMatchingAccounts,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeResolveAmbiguity {
+    pub reason: OfficeResolveAmbiguityReason,
+    pub candidate_accounts: Vec<OfficeResolveCandidate>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeResolveMissingReason {
+    NoMatchingAccounts,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeResolveMissing {
+    pub reason: OfficeResolveMissingReason,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum OfficeResolveResult {
     Selected(OfficeResolveSelection),
-    Ambiguous,
-    Missing,
+    Ambiguous(OfficeResolveAmbiguity),
+    Missing(OfficeResolveMissing),
 }
 
 pub struct OfficeResolver;
@@ -38,6 +80,7 @@ impl OfficeResolver {
             if account_supports_capability(registry, account_key, request.capability) {
                 return OfficeResolveResult::Selected(OfficeResolveSelection {
                     account_key: account_key.to_string(),
+                    selection_reason: OfficeResolveSelectionReason::ExplicitAccountKey,
                 });
             }
         }
@@ -46,6 +89,7 @@ impl OfficeResolver {
             if account_supports_capability(registry, account_key, request.capability) {
                 return OfficeResolveResult::Selected(OfficeResolveSelection {
                     account_key: account_key.to_string(),
+                    selection_reason: OfficeResolveSelectionReason::CapabilityDefault,
                 });
             }
         }
@@ -59,6 +103,7 @@ impl OfficeResolver {
         {
             return OfficeResolveResult::Selected(OfficeResolveSelection {
                 account_key: policy.global_default_account_key.clone(),
+                selection_reason: OfficeResolveSelectionReason::GlobalDefault,
             });
         }
 
@@ -75,6 +120,7 @@ impl OfficeResolver {
             if matching.len() == 1 {
                 return OfficeResolveResult::Selected(OfficeResolveSelection {
                     account_key: matching[0].account_key.clone(),
+                    selection_reason: OfficeResolveSelectionReason::PreferredIdentityClass,
                 });
             }
             if !matching.is_empty() {
@@ -82,11 +128,31 @@ impl OfficeResolver {
             }
         }
         match candidates.len() {
-            0 => OfficeResolveResult::Missing,
+            0 => OfficeResolveResult::Missing(OfficeResolveMissing {
+                reason: OfficeResolveMissingReason::NoMatchingAccounts,
+            }),
             1 => OfficeResolveResult::Selected(OfficeResolveSelection {
                 account_key: candidates[0].account_key.clone(),
+                selection_reason: OfficeResolveSelectionReason::SoleCandidate,
             }),
-            _ => OfficeResolveResult::Ambiguous,
+            _ => OfficeResolveResult::Ambiguous(OfficeResolveAmbiguity {
+                reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
+                candidate_accounts: candidates
+                    .into_iter()
+                    .map(OfficeResolveCandidate::from_account)
+                    .collect(),
+            }),
+        }
+    }
+}
+
+impl OfficeResolveCandidate {
+    pub fn from_account(account: &crate::office::OfficeAccount) -> Self {
+        Self {
+            account_key: account.account_key.clone(),
+            provider_kind: account.provider_kind.clone(),
+            account_label: account.account_label.clone(),
+            identity_class: account.identity_class,
         }
     }
 }
@@ -150,7 +216,8 @@ mod tests {
         assert_eq!(
             result,
             OfficeResolveResult::Selected(OfficeResolveSelection {
-                account_key: "mail-personal".to_string()
+                account_key: "mail-personal".to_string(),
+                selection_reason: OfficeResolveSelectionReason::ExplicitAccountKey,
             })
         );
     }
@@ -190,7 +257,8 @@ mod tests {
         assert_eq!(
             result,
             OfficeResolveResult::Selected(OfficeResolveSelection {
-                account_key: "calendar-work".to_string()
+                account_key: "calendar-work".to_string(),
+                selection_reason: OfficeResolveSelectionReason::CapabilityDefault,
             })
         );
     }
@@ -223,7 +291,8 @@ mod tests {
         assert_eq!(
             result,
             OfficeResolveResult::Selected(OfficeResolveSelection {
-                account_key: "mail-work".to_string()
+                account_key: "mail-work".to_string(),
+                selection_reason: OfficeResolveSelectionReason::PreferredIdentityClass,
             })
         );
     }
@@ -253,6 +322,25 @@ mod tests {
                 preferred_identity_class: None,
             },
         );
-        assert_eq!(result, OfficeResolveResult::Ambiguous);
+        assert_eq!(
+            result,
+            OfficeResolveResult::Ambiguous(OfficeResolveAmbiguity {
+                reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
+                candidate_accounts: vec![
+                    OfficeResolveCandidate {
+                        account_key: "docs-shared-a".to_string(),
+                        provider_kind: "webdav".to_string(),
+                        account_label: "docs-shared-a".to_string(),
+                        identity_class: OfficeAccountIdentityClass::Shared,
+                    },
+                    OfficeResolveCandidate {
+                        account_key: "docs-shared-b".to_string(),
+                        provider_kind: "webdav".to_string(),
+                        account_label: "docs-shared-b".to_string(),
+                        identity_class: OfficeAccountIdentityClass::Shared,
+                    },
+                ],
+            })
+        );
     }
 }

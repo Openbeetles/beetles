@@ -111,6 +111,8 @@
 
 - Node.js 20+  
 - npm
+- Rust 工具链（`rustup`、`cargo`）
+- 当前系统对应的 Tauri 桌面依赖：<https://v2.tauri.app/start/prerequisites/>
 
 ### 命令
 
@@ -121,6 +123,8 @@
 | `npm run build`  | TypeScript + Vite 构建 |
 | `npm run lint`   | 运行 ESLint        |
 | `npm run preview`| 预览生产构建       |
+| `npm run tauri dev` | 用 Tauri 桌面壳运行同一套 UI |
+| `npm run tauri build` | 构建桌面壳安装包 |
 
 ### 本地开发
 
@@ -131,6 +135,25 @@ npm run dev
 ```
 
 本地开发时，请在能访问目标 Beetle 设备的浏览器中打开页面。
+
+### 桌面壳
+
+`configure-ui` 现在额外提供了一个最小化的 Tauri 桌面壳，代码位于 `src-tauri/`。
+这个桌面壳**不会**改变现有产品功能，只是把当前 React/Vite 配置页原样包装成桌面应用；设备地址、配对码、配置读写和现有 API 流程都保持不变。
+
+```bash
+cd configure-ui
+npm ci
+npm run tauri dev
+```
+
+如需打包桌面版：
+
+```bash
+cd configure-ui
+npm ci
+npm run tauri build
+```
 
 ### 设计与样式
 

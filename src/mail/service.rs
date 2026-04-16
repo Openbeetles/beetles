@@ -6,7 +6,8 @@ use crate::mail::{
 };
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
+    OfficeResolveRequest, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::util::current_unix_secs;
 use std::sync::Arc;
@@ -102,6 +103,44 @@ impl MailService {
         Ok(self
             .load_office_service()?
             .and_then(|service| service.default_account_key(OfficeCapability::Mail)))
+    }
+
+    pub fn office_resolve_hint(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeResolveResult>> {
+        if account_key.is_some_and(|value| !value.trim().is_empty()) {
+            return Ok(None);
+        }
+        let Some(office_service) = self.load_office_service()? else {
+            return Ok(None);
+        };
+        let provider = provider.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(provider) = provider {
+            let candidates = office_service
+                .accounts_for_capability(OfficeCapability::Mail)
+                .into_iter()
+                .filter(|account| account.provider_kind == provider)
+                .map(|account| OfficeResolveCandidate::from_account(&account))
+                .collect::<Vec<_>>();
+            if candidates.len() > 1 {
+                return Ok(Some(OfficeResolveResult::Ambiguous(
+                    OfficeResolveAmbiguity {
+                        reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
+                        candidate_accounts: candidates,
+                    },
+                )));
+            }
+        }
+        match office_service.resolve(&OfficeResolveRequest {
+            capability: OfficeCapability::Mail,
+            preferred_account_key: None,
+            preferred_identity_class: None,
+        }) {
+            OfficeResolveResult::Selected(_) => Ok(None),
+            other => Ok(Some(other)),
+        }
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
@@ -421,13 +460,34 @@ impl MailService {
                 format!("provider '{}' has no configured credential", provider),
             )),
             1 => Ok(keys.remove(0)),
-            _ => Err(Error::config(
-                "mail_provider",
-                format!(
-                    "provider '{}' has multiple configured accounts; account_key is required",
-                    provider
-                ),
-            )),
+            _ => {
+                if let Some(OfficeResolveResult::Ambiguous(ambiguity)) =
+                    self.office_resolve_hint(Some(provider), None)?
+                {
+                    let candidate_accounts = ambiguity
+                        .candidate_accounts
+                        .iter()
+                        .map(|candidate| {
+                            format!("{} ({})", candidate.account_key, candidate.account_label)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(Error::config(
+                        "mail_provider",
+                        format!(
+                            "provider '{}' has multiple configured accounts; candidate accounts: {}",
+                            provider, candidate_accounts
+                        ),
+                    ));
+                }
+                Err(Error::config(
+                    "mail_provider",
+                    format!(
+                        "provider '{}' has multiple configured accounts; account_key is required",
+                        provider
+                    ),
+                ))
+            }
         }
     }
 
@@ -881,6 +941,94 @@ mod tests {
             .resolve_provider_name(None)
             .expect("resolve provider name");
         assert_eq!(provider, "imap_smtp");
+    }
+
+    #[test]
+    fn mail_service_reports_ambiguous_office_accounts_with_candidate_labels() {
+        let credential_store = Arc::new(StubCredentialStore::default());
+        for (account_key, account_id) in [
+            ("mail-work", "work@example.com"),
+            ("mail-personal", "personal@example.com"),
+        ] {
+            credential_store
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    account_key.to_string(),
+                    OfficeCredential {
+                        account_key: account_key.to_string(),
+                        access_token: "secret".to_string(),
+                        refresh_token: String::new(),
+                        token_endpoint: String::new(),
+                        expires_at_unix_secs: 0,
+                        updated_at: 1,
+                        metadata: [
+                            ("mail_username".to_string(), account_id.to_string()),
+                            ("mail_from_address".to_string(), account_id.to_string()),
+                            ("mail_imap_host".to_string(), "imap.example.com".to_string()),
+                            ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                );
+        }
+
+        let mut registry = OfficeAccountRegistry::new();
+        for (account_key, label, account_id, identity_class) in [
+            (
+                "mail-work",
+                "Work",
+                "work@example.com",
+                OfficeAccountIdentityClass::Work,
+            ),
+            (
+                "mail-personal",
+                "Personal",
+                "personal@example.com",
+                OfficeAccountIdentityClass::Personal,
+            ),
+        ] {
+            registry.insert(OfficeAccount {
+                account_key: account_key.to_string(),
+                provider_kind: "imap_smtp".to_string(),
+                external_account_id: account_id.to_string(),
+                account_label: label.to_string(),
+                identity_class,
+                enabled_capabilities: vec![OfficeCapability::Mail],
+            });
+        }
+
+        let office = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy::default(),
+            credential_store.clone(),
+            Arc::new(StubRuntimeStatusStore::default()),
+        );
+        let mail_credentials: Arc<dyn MailProviderCredentialStore + Send + Sync> =
+            Arc::new(OfficeBackedMailProviderCredentialStore::new(office.clone()));
+        let mut providers = MailProviderRegistry::new();
+        providers.register(Arc::new(StubProvider::default()));
+        let service = MailService::with_office_service(mail_credentials, providers, Some(office));
+
+        let error = service
+            .list(
+                "imap_smtp",
+                None,
+                MailQuery {
+                    mailbox: "INBOX".to_string(),
+                    unread_only: false,
+                    received_after_unix_secs: None,
+                    limit: 10,
+                },
+            )
+            .expect_err("ambiguous office accounts should fail");
+        let message = error.to_string();
+        assert!(message.contains("multiple configured accounts"));
+        assert!(message.contains("mail-work"));
+        assert!(message.contains("mail-personal"));
     }
 
     #[test]

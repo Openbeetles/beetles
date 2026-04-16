@@ -409,23 +409,6 @@
 }
 ```
 
-## 原始配置段接口
-
-### GET /api/config/office_credentials
-
-- **鉴权**：已激活 + 配对码
-- **响应**：`200 OK`
-- **响应体**：`OfficeCredentialsSegment`
-
-### POST /api/config/office_credentials
-
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：完整 `OfficeCredentialsSegment`
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 校验失败：`400 Bad Request`
-
 ### GET /api/config/hardware
 
 - **鉴权**：已激活

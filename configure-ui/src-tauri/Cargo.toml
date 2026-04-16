@@ -1,0 +1,16 @@
+[package]
+name = "beetle-configure-ui-desktop"
+version = "0.0.0"
+description = "Desktop shell for Beetle Configure UI"
+authors = ["Beetle"]
+edition = "2021"
+
+[lib]
+name = "beetle_configure_ui_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

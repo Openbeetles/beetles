@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::office::{OfficeAccountAssessment, OfficeCapability};
+use crate::office::{OfficeAccountAssessment, OfficeCapability, OfficeResolveResult};
 use crate::tools::{
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     serialize_tool_output, ToolExecutionFailureKind, ToolExecutionOutcome,
@@ -25,6 +25,8 @@ struct OfficeOperationAssessmentHint {
     capability: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     default_account_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolve_hint: Option<OfficeResolveResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -38,6 +40,7 @@ pub(crate) struct OfficeOperationFailureInput<'a> {
     pub(crate) account_key: Option<&'a str>,
     pub(crate) capability: OfficeCapability,
     pub(crate) default_account_key: Option<String>,
+    pub(crate) resolve_hint: Option<OfficeResolveResult>,
     pub(crate) account_assessments: Vec<OfficeAccountAssessment>,
     pub(crate) error: &'a Error,
 }
@@ -67,6 +70,7 @@ pub(crate) fn build_office_operation_failure_outcome(
         office_assessment: OfficeOperationAssessmentHint {
             capability: office_capability_label(input.capability).to_string(),
             default_account_key: input.default_account_key,
+            resolve_hint: input.resolve_hint,
             account_diagnostics: build_account_diagnostics(&relevant_assessments),
             account_assessments: relevant_assessments,
         },

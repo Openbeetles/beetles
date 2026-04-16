@@ -643,7 +643,9 @@ mod tests {
             .execute(r#"{"op":"resolve_account","capability":"mail"}"#, &mut ctx)
             .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(payload["payload"]["selected"]["account_key"], "mail-work");
+        assert_eq!(payload["payload"]["status"], "selected");
+        assert_eq!(payload["payload"]["account_key"], "mail-work");
+        assert_eq!(payload["payload"]["selection_reason"], "capability_default");
     }
 
     #[test]

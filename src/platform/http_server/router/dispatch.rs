@@ -590,36 +590,6 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("GET", "/api/config/office_credentials") => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(r));
-            }
-            let body = handlers::config::get_office_credentials_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
-        }
-        #[cfg(all(
-            feature = "capability_office",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("POST", "/api/config/office_credentials") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_office_credentials(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
         ("GET", "/api/config/hardware") => {
             if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
@@ -1535,6 +1505,44 @@ mod tests {
         assert!(parsed["items"].as_array().expect("items array")[0]
             .get("provider_display_name")
             .is_none());
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_office_credentials_route_is_not_publicly_exposed() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let get_response = dispatch(&ctx, &env, authed_get("/api/config/office_credentials"))
+            .expect("dispatch legacy credentials get");
+        assert_eq!(
+            get_response.status,
+            404,
+            "body={}",
+            String::from_utf8_lossy(&get_response.body)
+        );
+
+        let post_response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                "/api/config/office_credentials",
+                serde_json::json!({
+                    "credentials": []
+                }),
+            ),
+        )
+        .expect("dispatch legacy credentials post");
+        assert_eq!(
+            post_response.status,
+            404,
+            "body={}",
+            String::from_utf8_lossy(&post_response.body)
+        );
     }
 
     #[cfg(all(

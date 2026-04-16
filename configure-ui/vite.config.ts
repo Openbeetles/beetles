@@ -1,12 +1,37 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
-// GitHub Pages 部署时通过 VITE_BASE_PATH 设置 base（如 /beetle/），本地开发默认 /
+const host = process.env.TAURI_DEV_HOST
+const tauriTarget = process.env.TAURI_ENV_PLATFORM
+  ? process.env.TAURI_ENV_PLATFORM === 'windows'
+    ? 'chrome105'
+    : 'safari13'
+  : undefined
+
 export default defineConfig({
+  clearScreen: false,
   plugins: [react()],
   base: process.env.VITE_BASE_PATH ?? '/',
+  server: {
+    port: 5173,
+    strictPort: true,
+    host: host || false,
+    hmr: host
+      ? {
+          protocol: 'ws',
+          host,
+          port: 1421,
+        }
+      : undefined,
+    watch: {
+      ignored: ['**/src-tauri/**'],
+    },
+  },
+  envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: {
+    target: tauriTarget,
+    minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
+    sourcemap: !!process.env.TAURI_ENV_DEBUG,
     /**
      * 技能富编辑器已拆成独立懒加载链；将警戒线校准到该受控 vendor 块之上，
      * 继续拦截更大的异常回归，同时避免 500 kB 默认阈值对按需编辑器资源误报。

@@ -58,7 +58,9 @@ pub use provider_schema::{
 };
 #[cfg(feature = "capability_office")]
 pub use resolver::{
-    OfficeResolveRequest, OfficeResolveResult, OfficeResolveSelection, OfficeResolver,
+    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
+    OfficeResolveMissing, OfficeResolveMissingReason, OfficeResolveRequest, OfficeResolveResult,
+    OfficeResolveSelection, OfficeResolveSelectionReason, OfficeResolver,
 };
 #[cfg(feature = "capability_office")]
 pub use service::{

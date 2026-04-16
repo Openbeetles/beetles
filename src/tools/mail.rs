@@ -208,6 +208,7 @@ impl MailTool {
             account_key,
             capability: OfficeCapability::Mail,
             default_account_key: self.service.office_default_account_key()?,
+            resolve_hint: self.service.office_resolve_hint(provider, account_key)?,
             account_assessments: self.service.office_account_assessments()?,
             error,
         })
@@ -1536,6 +1537,77 @@ mod tests {
         )
     }
 
+    fn build_office_backed_tool_with_ambiguous_accounts() -> MailTool {
+        let provider = Arc::new(StubProvider::default());
+        let mut providers = MailProviderRegistry::new();
+        providers.register(provider);
+
+        let mut registry = OfficeAccountRegistry::new();
+        for (account_key, account_label, external_account_id, identity_class) in [
+            (
+                "mail-work",
+                "Work",
+                "work@example.com",
+                OfficeAccountIdentityClass::Work,
+            ),
+            (
+                "mail-personal",
+                "Personal",
+                "personal@example.com",
+                OfficeAccountIdentityClass::Personal,
+            ),
+        ] {
+            registry.insert(OfficeAccount {
+                account_key: account_key.to_string(),
+                provider_kind: "imap_smtp".to_string(),
+                external_account_id: external_account_id.to_string(),
+                account_label: account_label.to_string(),
+                identity_class,
+                enabled_capabilities: vec![OfficeCapability::Mail],
+            });
+        }
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for account_key in ["mail-work", "mail-personal"] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: [
+                        (
+                            crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                            "imap.example.com".to_string(),
+                        ),
+                        (
+                            crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                            "smtp.example.com".to_string(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })
+                .expect("seed office credential");
+        }
+        let office_service = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            Arc::new(StubRuntimeStatusStore::default()),
+        );
+
+        MailTool::with_office_service(
+            Arc::new(OfficeBackedMailProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        )
+    }
+
     #[test]
     fn mail_tool_provider_status_reports_defaults_and_runtime() {
         let (tool, _provider, _runtime_store) = build_tool();
@@ -2083,5 +2155,42 @@ mod tests {
             .as_str()
             .expect("error string")
             .contains("no configured credential"));
+    }
+
+    #[test]
+    fn mail_tool_list_returns_structured_office_failure_when_mail_accounts_are_ambiguous() {
+        let tool = build_office_backed_tool_with_ambiguous_accounts();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list","provider":"imap_smtp"}"#, &mut ctx)
+            .expect("structured failure outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
+        );
+
+        let payload: Value =
+            serde_json::from_str(&outcome.content).expect("valid failure response json");
+        assert_eq!(payload["op"], "list");
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["failure_kind"], "capability");
+        assert_eq!(payload["office_assessment"]["capability"], "mail");
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["status"],
+            "ambiguous"
+        );
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["candidate_accounts"][0]["account_key"],
+            "mail-personal"
+        );
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["candidate_accounts"][1]["account_key"],
+            "mail-work"
+        );
+        assert!(payload["error"]
+            .as_str()
+            .expect("error string")
+            .contains("multiple configured accounts"));
     }
 }

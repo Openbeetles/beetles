@@ -415,23 +415,6 @@ Example:
 }
 ```
 
-## Raw config segment endpoints
-
-### GET /api/config/office_credentials
-
-- **Auth**: activated + pairing code
-- **Response**: `200 OK`
-- **Body**: `OfficeCredentialsSegment`
-
-### POST /api/config/office_credentials
-
-- **Auth**: activated + pairing code + CSRF
-- **Headers**: `Content-Type: application/json`
-- **Body**: full `OfficeCredentialsSegment`
-- **Response**:
-  - success: `200 OK`, `{"ok": true}`
-  - validation failure: `400 Bad Request`
-
 ### GET /api/config/hardware
 
 - **Auth**: activated

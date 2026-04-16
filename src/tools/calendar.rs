@@ -168,6 +168,7 @@ impl CalendarTool {
             account_key,
             capability: OfficeCapability::Calendar,
             default_account_key: self.service.office_default_account_key()?,
+            resolve_hint: None,
             account_assessments: self.service.office_account_assessments()?,
             error,
         })

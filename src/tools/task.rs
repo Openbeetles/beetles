@@ -578,6 +578,7 @@ impl TaskTool {
                 account_key,
                 capability: OfficeCapability::Calendar,
                 default_account_key: calendar_service.office_default_account_key()?,
+                resolve_hint: None,
                 account_assessments: calendar_service.office_account_assessments()?,
                 error,
             })
