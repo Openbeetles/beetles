@@ -7,20 +7,12 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { BeetleIcon } from "./BeetleIcon";
 import { PageHeader } from "./PageHeader";
-import { ShellBreadcrumb } from "./ShellChromeTrail";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
 import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
 import { OS_ICON_SHELL } from "../config/osIcons";
 import { Os3dIcon } from "./Os3dIcon";
-
-function isMacTauriWindow(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    "__TAURI_INTERNALS__" in window &&
-    /Mac|iPhone|iPad|iPod/.test(navigator.platform)
-  );
-}
+import { isMacTauriWindow } from "../runtime/desktopEnvironment";
 
 const PATH_TO_META: Record<string, { titleKey: string }> = {
   "/device": { titleKey: "device.pageTitle" },
@@ -168,14 +160,12 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
             />
           </IconButton>
         </Tooltip>
-        <Stack
-          spacing={0.25}
-          sx={{ minWidth: 0, flex: 1 }}
+        <Box
+          sx={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center" }}
           data-tauri-drag-region={macTauriWindow ? "" : undefined}
         >
           <PageHeader title={title} />
-          <ShellBreadcrumb />
-        </Stack>
+        </Box>
       </Stack>
       <Stack
         direction="row"

@@ -33,6 +33,106 @@ jobs:
           V=$(grep '^version' Cargo.toml | head -1 | sed -n 's/^version = "\([^"]*\)".*/\1/p')
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
+  build-configure-ui-desktop:
+    name: Build Configure UI desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    needs: read-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+            artifact: configure-ui-desktop-macos
+          - name: windows
+            os: windows-latest
+            artifact: configure-ui-desktop-windows
+          - name: linux
+            os: ubuntu-22.04
+            artifact: configure-ui-desktop-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: configure-ui/package-lock.json
+
+      - name: Verify configure-ui version matches release version
+        shell: bash
+        run: |
+          UI_VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('configure-ui/package.json','utf8')).version)")
+          if [ "$UI_VERSION" != "${{ needs.read-version.outputs.version }}" ]; then
+            echo "configure-ui/package.json version $UI_VERSION must match release version ${{ needs.read-version.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux desktop prerequisites
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        working-directory: configure-ui
+        run: npm ci
+
+      - name: Check Tauri version sync
+        working-directory: configure-ui
+        run: npm run tauri:sync-version:check
+
+      - name: Build desktop bundles
+        working-directory: configure-ui
+        run: npm run tauri build
+
+      - name: Collect desktop artifacts (macOS)
+        if: matrix.name == 'macos'
+        shell: bash
+        run: |
+          mkdir -p _desktop_release
+          find configure-ui/src-tauri/target/release/bundle -type f -name '*.dmg' -exec cp {} _desktop_release/ \;
+          APP_PATH=$(find configure-ui/src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' | head -1)
+          if [ -n "$APP_PATH" ]; then
+            APP_NAME=$(basename "$APP_PATH")
+            tar -C "$(dirname "$APP_PATH")" -czf "_desktop_release/${APP_NAME}.tar.gz" "$APP_NAME"
+          fi
+          ls -la _desktop_release
+
+      - name: Collect desktop artifacts (Linux)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          mkdir -p _desktop_release
+          find configure-ui/src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp {} _desktop_release/ \;
+          ls -la _desktop_release
+
+      - name: Collect desktop artifacts (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path _desktop_release | Out-Null
+          Get-ChildItem -Path configure-ui/src-tauri/target/release/bundle -Recurse -File -Include *.msi,*.exe | ForEach-Object {
+            Copy-Item $_.FullName -Destination _desktop_release
+          }
+          Get-ChildItem _desktop_release
+
+      - name: Upload desktop artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: _desktop_release
+          if-no-files-found: error
+
   build-esp:
     name: Build ESP32-S3 (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -107,7 +207,7 @@ jobs:
 
   release:
     name: Package and publish
-    needs: [read-version, build-esp, build-linux-musl]
+    needs: [read-version, build-configure-ui-desktop, build-esp, build-linux-musl]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,6 +254,24 @@ jobs:
           name: linux-riscv64
           path: _artifacts/linux-riscv64
 
+      - name: Download Configure UI desktop macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: configure-ui-desktop-macos
+          path: _artifacts/configure-ui-desktop-macos
+
+      - name: Download Configure UI desktop Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: configure-ui-desktop-windows
+          path: _artifacts/configure-ui-desktop-windows
+
+      - name: Download Configure UI desktop Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: configure-ui-desktop-linux
+          path: _artifacts/configure-ui-desktop-linux
+
       - name: chmod +x downloaded binaries
         run: chmod +x _artifacts/esp-default/beetle _artifacts/esp-cli-ota/beetle _artifacts/linux-armv7/beetle _artifacts/linux-riscv64/beetle
 
@@ -172,6 +290,13 @@ jobs:
             --riscv64 _artifacts/linux-riscv64/beetle \
             --output-dir _release
 
+      - name: Collect Configure UI desktop release artifacts
+        run: |
+          find _artifacts/configure-ui-desktop-macos -maxdepth 1 -type f -exec cp {} _release/ \;
+          find _artifacts/configure-ui-desktop-windows -maxdepth 1 -type f -exec cp {} _release/ \;
+          find _artifacts/configure-ui-desktop-linux -maxdepth 1 -type f -exec cp {} _release/ \;
+          ls -la _release
+
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --locked
 
@@ -188,13 +313,15 @@ jobs:
       - name: SHA256SUMS
         working-directory: _release
         run: |
-          sha256sum beetle-* > SHA256SUMS
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Attest release artifacts (binaries, tarballs, SBOM; not SHA256SUMS)
+      - name: Attest release artifacts (binaries, tarballs, desktop bundles, SBOM; not SHA256SUMS)
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: ${{ github.workspace }}/_release/beetle-*
+          subject-path: |
+            ${{ github.workspace }}/_release/beetle-*
+            ${{ github.workspace }}/_release/Beetle*
 
       - name: Upload release bundle (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'

@@ -159,6 +159,7 @@ npm run tauri build
 
 - 界面与样式约定（Token 化、布局、禁止硬编码色值等）见 **docs/DESIGN.md**。
 - 新增或修改 UI 时请遵守其中的设计约束。
+- 桌面壳基座、版本同步与 CI/发布约定见 **docs/DESKTOP_SHELL.md**。
 
 ### 发布
 

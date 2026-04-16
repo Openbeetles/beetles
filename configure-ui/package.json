@@ -1,13 +1,17 @@
 {
   "name": "beetle-configure-ui",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test:desktop-base": "node --test scripts/sync-tauri-version.test.mjs",
+    "tauri:sync-version": "node scripts/sync-tauri-version.mjs",
+    "tauri:sync-version:check": "node scripts/sync-tauri-version.mjs --check",
+    "pretauri": "npm run tauri:sync-version",
     "tauri": "tauri"
   },
   "dependencies": {

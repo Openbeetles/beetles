@@ -159,6 +159,7 @@ npm run tauri build
 
 - UI and style rules (tokens, layout, no hardcoded colors): **docs/DESIGN.md**.
 - Follow the design constraints when adding or changing UI.
+- Desktop shell baseline, versioning, and CI/release notes: **docs/DESKTOP_SHELL.md**.
 
 ### Deployment
 

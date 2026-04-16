@@ -1,6 +1,6 @@
 [package]
 name = "beetle-configure-ui-desktop"
-version = "0.0.0"
+version = "0.1.0"
 description = "Desktop shell for Beetle Configure UI"
 authors = ["Beetle"]
 edition = "2021"
@@ -14,3 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
