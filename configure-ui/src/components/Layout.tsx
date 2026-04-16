@@ -34,7 +34,13 @@ interface LayoutProps {
   onOpenSettings?: () => void;
 }
 
-function MainSurface({ children }: { children: ReactNode }) {
+function MainSurface({
+  children,
+  immersive = false,
+}: {
+  children: ReactNode;
+  immersive?: boolean;
+}) {
   return (
     <Box
       component="main"
@@ -51,8 +57,6 @@ function MainSurface({ children }: { children: ReactNode }) {
         /** 水平不设 padding：内层与 `MAIN_CONTENT_INNER_SX` / 顶栏 pl 对齐 */
         px: 0,
         width: "100%",
-        /** 与顶栏接缝处内凹高光，强化「桌面工作区」层次 */
-        boxShadow: "var(--shell-main-inset-top)",
       }}
     >
       <Box
@@ -60,6 +64,7 @@ function MainSurface({ children }: { children: ReactNode }) {
           position: "relative",
           zIndex: 1,
           ...MAIN_CONTENT_INNER_SX,
+          py: immersive ? 0 : { xs: 1.5, sm: 2 },
           alignItems: "stretch",
           alignSelf: "stretch",
           flex: "1 1 0",
@@ -147,6 +152,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   }, [restartPhase, showToast, t]);
 
   const showUnsavedDialog = dirty && pendingPath != null;
+  const useImmersiveMainSurface = location.pathname === "/device";
 
   const handleUnsavedConfirm = useCallback(() => {
     setDirty(false);
@@ -215,10 +221,11 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     px: 2,
     py: 1.5,
     borderRadius: "var(--radius-card)",
-    border: "1px solid var(--form-outline-rest)",
+    border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
     backgroundColor: "var(--card)",
-    boxShadow:
-      "0 8px 32px color-mix(in srgb, var(--foreground) 10%, transparent)",
+    backgroundImage:
+      "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 40%)",
+    boxShadow: "var(--os3d-content-plate-stack)",
   };
 
   return (
@@ -302,33 +309,15 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             sx={{
               position: "relative",
               zIndex: 10,
-              boxShadow:
-                "0 4px 20px color-mix(in srgb, var(--foreground) 5%, transparent)",
+              boxShadow: "none",
             }}
           >
             <TopBar onOpenSettings={onOpenSettings} />
             <DeviceBanner />
           </Box>
-          {/** 与 main 平级的占位条：上下呼吸感；主区内滚动仍占满 main（见 panelStyles / MainSurface flex 链） */}
-          <Box
-            aria-hidden
-            sx={(theme) => ({
-              flexShrink: 0,
-              height: theme.spacing(5),
-              minHeight: theme.spacing(5),
-            })}
-          />
-          <MainSurface>
+          <MainSurface immersive={useImmersiveMainSurface}>
             <ShellPageTransition />
           </MainSurface>
-          <Box
-            aria-hidden
-            sx={(theme) => ({
-              flexShrink: 0,
-              height: theme.spacing(6),
-              minHeight: theme.spacing(6),
-            })}
-          />
           <Taskbar />
         </Box>
       </Box>

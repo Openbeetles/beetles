@@ -1,11 +1,11 @@
 /**
- * 壳层磨砂：半透明 + backdrop blur，无背景渐变（扁平哑光）。
- * 立体层次由 `:root` 的 `--os3d-chrome-*-stack`（上沿 inset 高光 + 任务栏弱上影）提供，与 `os3dLanguage.ts` 一致。
+ * 壳层磨砂：半透明实体板，而不是网页玻璃卡。
+ * 高光、接触影、轻微材料渐变都由统一 token 驱动，读起来更像桌面 OS chrome。
  */
 
 /** 略提饱和，磨砂更「奶」、少数码感；不在此混品牌色，避免与中性 3D 阴影串色 */
 const CHROME_BLUR =
-  "saturate(1.04) blur(var(--shell-chrome-blur))";
+  "saturate(1.08) blur(var(--shell-chrome-blur))";
 
 const chromeBackdrop = {
   backdropFilter: CHROME_BLUR,
@@ -20,21 +20,24 @@ const chromeBackdrop = {
 
 /** 通用壳层底（侧栏遗留场景、默认回退） */
 export const SHELL_CHROME_SURFACE_SX = {
-  backgroundColor: "color-mix(in srgb, var(--surface) 82%, transparent)",
-  backgroundImage: "none",
+  backgroundColor: "color-mix(in srgb, var(--surface) 88%, transparent)",
+  backgroundImage: [
+    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 42%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 2.5%, transparent) 0%, transparent 100%)",
+  ].join(", "),
   ...chromeBackdrop,
 } as const;
 
 /** 顶栏：与主内容区分的哑光条 + OS3D 上沿高光（`--os3d-chrome-titlebar-stack`） */
 export const SHELL_TITLEBAR_CHROME_SX = {
   ...SHELL_CHROME_SURFACE_SX,
-  backgroundColor: "color-mix(in srgb, var(--surface) 80%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--surface) 90%, transparent)",
   boxShadow: "var(--os3d-chrome-titlebar-stack)",
 } as const;
 
 /** 任务栏：贴底哑光条 + 台面承托浅影（`--os3d-chrome-taskbar-stack`） */
 export const SHELL_TASKBAR_CHROME_SX = {
   ...SHELL_CHROME_SURFACE_SX,
-  backgroundColor: "color-mix(in srgb, var(--surface) 83%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--surface) 92%, transparent)",
   boxShadow: "var(--os3d-chrome-taskbar-stack)",
 } as const;

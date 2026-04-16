@@ -1,5 +1,6 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
   type MouseEvent,
   useContext,
   useEffect,
@@ -33,6 +34,9 @@ import { SHELL_TASKBAR_CHROME_SX } from "../theme/shellChromeSurface";
 const START_MENU_NAV_ITEMS = NAV_ITEMS.filter(
   (item) => item.path !== "/device",
 );
+const START_MENU_GAP_PX = 18;
+const DOCK_MAGNIFY_SCALE = [1.26, 1.14, 1.06];
+const DOCK_MAGNIFY_LIFT_PX = [14, 7, 2];
 
 /**
  * 12 列栅格占列数（Metro 式大小不一）；未列出新路由时默认 4 列。
@@ -51,6 +55,23 @@ const START_MENU_TILE_SPAN_BY_PATH: Partial<Record<string, number>> = {
 
 function startMenuTileColSpan(path: string): number {
   return START_MENU_TILE_SPAN_BY_PATH[path] ?? 4;
+}
+
+function getDockMotion(index: number, hoveredIndex: number | null) {
+  if (hoveredIndex === null) {
+    return { scale: 1, translateY: 0, zIndex: 1 };
+  }
+
+  const distance = Math.abs(index - hoveredIndex);
+  if (distance >= DOCK_MAGNIFY_SCALE.length) {
+    return { scale: 1, translateY: 0, zIndex: 1 };
+  }
+
+  return {
+    scale: DOCK_MAGNIFY_SCALE[distance],
+    translateY: DOCK_MAGNIFY_LIFT_PX[distance],
+    zIndex: DOCK_MAGNIFY_SCALE.length - distance + 1,
+  };
 }
 
 function getNavBlockedMessageKey(reason: DeviceHintReason): string {
@@ -107,7 +128,11 @@ export function Taskbar() {
   const { showToast } = useToast();
   const lastNavBlockToastRef = useRef<{ key: string; at: number } | null>(null);
   const [startAnchor, setStartAnchor] = useState<HTMLElement | null>(null);
+  const [taskbarAnchorEl, setTaskbarAnchorEl] = useState<HTMLDivElement | null>(
+    null,
+  );
   const [startHovered, setStartHovered] = useState(false);
+  const [dockHoveredIndex, setDockHoveredIndex] = useState<number | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const startMenuPanelRef = useRef<HTMLDivElement | null>(null);
@@ -141,6 +166,10 @@ export function Taskbar() {
   const handleStartClick = (e: MouseEvent<HTMLElement>) => {
     setStartAnchor(startOpen ? null : e.currentTarget);
   };
+
+  const handleTaskbarRef = useCallback((node: HTMLDivElement | null) => {
+    setTaskbarAnchorEl(node);
+  }, []);
 
   useEffect(() => {
     if (!startOpen) return;
@@ -192,18 +221,21 @@ export function Taskbar() {
     <Box
       component="nav"
       aria-label={t("nav.taskbar")}
+      ref={handleTaskbarRef}
       sx={{
         flexShrink: 0,
         height: TASKBAR_HEIGHT,
         minHeight: TASKBAR_HEIGHT,
         display: "flex",
-        alignItems: "center",
+        alignItems: "stretch",
+        justifyContent: "space-between",
         px: { xs: 1.5, sm: 2 },
         gap: { xs: 1, sm: 1.25 },
         ...SHELL_TASKBAR_CHROME_SX,
         borderTop: "1px solid var(--border-subtle)",
         position: "relative",
         zIndex: 2,
+        overflow: "visible",
       }}
     >
       <Tooltip title={t("nav.startMenu")} placement="top">
@@ -217,6 +249,7 @@ export function Taskbar() {
           aria-haspopup="menu"
           aria-label={t("nav.startMenu")}
           sx={{
+            alignSelf: "center",
             flexShrink: 0,
             width: 44,
             height: 44,
@@ -228,19 +261,21 @@ export function Taskbar() {
             display: "grid",
             placeItems: "center",
             border:
-              "1px solid color-mix(in srgb, var(--primary) 38%, transparent)",
+              "1px solid color-mix(in srgb, var(--border) 20%, transparent)",
             backgroundColor:
-              "color-mix(in srgb, var(--primary) 12%, var(--card))",
+              startOpen
+                ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
+                : "color-mix(in srgb, var(--card) 84%, transparent)",
             boxShadow: startOpen
-              ? "0 0 0 2px color-mix(in srgb, var(--primary) 35%, transparent)"
-              : "none",
+              ? "var(--os3d-chip-lift-stack)"
+              : "var(--os3d-pedestal-lift-stack)",
             transition:
               "background-color var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, transform var(--transition-duration) var(--ease-emphasized), box-shadow var(--transition-duration) var(--ease-emphasized)",
             "&:hover": {
               backgroundColor:
-                "color-mix(in srgb, var(--primary) 18%, var(--card))",
+                "color-mix(in srgb, var(--primary) 12%, var(--card))",
               borderColor:
-                "color-mix(in srgb, var(--primary) 48%, transparent)",
+                "color-mix(in srgb, var(--primary) 28%, var(--border))",
               transform: "translateY(-1px)",
             },
             "&:active": {
@@ -269,10 +304,10 @@ export function Taskbar() {
 
       <Popover
         open={startOpen}
-        anchorEl={startAnchor}
+        anchorEl={taskbarAnchorEl}
         onClose={closeStart}
-        anchorOrigin={{ vertical: "top", horizontal: "center" }}
-        transformOrigin={{ vertical: "bottom", horizontal: "center" }}
+        anchorOrigin={{ vertical: "top", horizontal: "left" }}
+        transformOrigin={{ vertical: "bottom", horizontal: "left" }}
         /** 默认 16 会在贴边时把纸面往里推；与视口左缘对齐时需关闭 */
         marginThreshold={8}
         slotProps={{
@@ -281,29 +316,60 @@ export function Taskbar() {
             sx: {
               width: "min(480px, 100vw - 32px)",
               maxHeight: "min(72vh, 560px)",
+              position: "relative",
               display: "flex",
               flexDirection: "column",
               overflow: "hidden",
               borderRadius: "var(--radius-card)",
               border:
-                "1px solid color-mix(in srgb, var(--border) 15%, transparent)",
-              boxShadow:
-                "0 16px 40px -10px color-mix(in srgb, var(--foreground) 20%, transparent), 0 0 0 1px color-mix(in srgb, var(--border) 10%, transparent)",
+                "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+              boxShadow: "var(--os3d-start-panel-stack)",
               backgroundColor:
-                "color-mix(in srgb, var(--card) 88%, transparent)",
+                "color-mix(in srgb, var(--card) 95%, transparent)",
               backgroundImage: [
-                "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 5%, transparent) 0%, transparent 36%)",
-                "linear-gradient(0deg, color-mix(in srgb, var(--foreground) 3%, transparent) 0%, transparent 28%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 24%, transparent) 0%, transparent 28%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 60%, transparent) 0%, transparent 52%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 5%, transparent) 0%, transparent 100%)",
               ].join(", "),
               backdropFilter: "saturate(1.12) blur(var(--shell-chrome-blur))",
               WebkitBackdropFilter:
                 "saturate(1.12) blur(var(--shell-chrome-blur))",
-              mb: 0.5,
+              // Anchor to the taskbar instead of the start button so the menu
+              // sits above the dock like a native start panel.
+              ml: { xs: 1.5, sm: 2 },
+              // MUI Popover's Grow transition owns `transform`, so use layout
+              // offset here; this keeps the air gap working in both web and Tauri.
+              mt: `-${START_MENU_GAP_PX}px`,
+              "&::before": {
+                content: '""',
+                position: "absolute",
+                inset: 0,
+                pointerEvents: "none",
+                backgroundImage:
+                  "linear-gradient(180deg, color-mix(in srgb, #fff 20%, transparent) 0%, transparent 18%, transparent 82%, color-mix(in srgb, var(--foreground) 4%, transparent) 100%)",
+              },
+              "&::after": {
+                content: '""',
+                position: "absolute",
+                left: 32,
+                right: 32,
+                bottom: 10,
+                height: 20,
+                borderRadius: "9999px",
+                pointerEvents: "none",
+                background:
+                  "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 10%, transparent), transparent)",
+                filter: "blur(10px)",
+                opacity: 0.78,
+              },
               "@media (prefers-reduced-motion: reduce)": {
                 backdropFilter: "none",
                 WebkitBackdropFilter: "none",
                 backgroundColor: "var(--card)",
                 backgroundImage: "none",
+                "&::before, &::after": {
+                  display: "none",
+                },
               },
             },
           },
@@ -325,11 +391,11 @@ export function Taskbar() {
               flexShrink: 0,
               px: PANEL_SECTION_PADDING,
               py: 1.5,
-              borderBottom: "1px solid var(--border-subtle)",
+              borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
               background:
-                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 82%, var(--card)) 0%, color-mix(in srgb, var(--surface) 58%, var(--card)) 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 16%, var(--surface)) 0%, color-mix(in srgb, var(--surface) 72%, var(--card)) 100%)",
               boxShadow:
-                "inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent)",
+                "inset 0 1px 0 color-mix(in srgb, #fff 54%, transparent)",
             }}
           >
             <Stack
@@ -436,8 +502,8 @@ export function Taskbar() {
               aria-label={t("device.pageTitle")}
               sx={{
                 width: "100%",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: 0,
+                border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+                borderRadius: "var(--radius-card)",
                 cursor: "pointer",
                 font: "inherit",
                 textAlign: "left",
@@ -448,21 +514,24 @@ export function Taskbar() {
                 alignItems: "center",
                 gap: 1.25,
                 backgroundColor: deviceConnected
-                  ? "color-mix(in srgb, var(--semantic-success) 9%, var(--card))"
-                  : "color-mix(in srgb, var(--semantic-danger) 9%, var(--card))",
+                  ? "color-mix(in srgb, var(--semantic-success) 8%, var(--card))"
+                  : "color-mix(in srgb, var(--semantic-danger) 8%, var(--card))",
                 borderLeftWidth: "var(--accent-line-width)",
                 borderLeftColor: deviceConnected
                   ? "var(--semantic-success)"
                   : "var(--semantic-danger)",
+                boxShadow: "var(--os3d-content-plate-stack)",
                 transition:
-                  "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized)",
+                  "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), box-shadow var(--transition-duration) var(--ease-emphasized)",
                 "&:hover": {
                   backgroundColor: deviceConnected
-                    ? "color-mix(in srgb, var(--semantic-success) 14%, var(--card))"
-                    : "color-mix(in srgb, var(--semantic-danger) 14%, var(--card))",
+                    ? "color-mix(in srgb, var(--semantic-success) 10%, var(--card))"
+                    : "color-mix(in srgb, var(--semantic-danger) 10%, var(--card))",
+                  transform: "translateY(-1px)",
+                  boxShadow: "var(--os3d-chip-lift-stack)",
                 },
                 "&:active": {
-                  transform: "scale(0.992)",
+                  transform: "translateY(0)",
                 },
                 "@media (prefers-reduced-motion: reduce)": {
                   "&:active": { transform: "none" },
@@ -626,15 +695,17 @@ export function Taskbar() {
                       backgroundColor: active && allowNav ? activeBg : idleBg,
                       cursor: allowNav ? "pointer" : "default",
                       opacity: allowNav ? 1 : 0.72,
+                      boxShadow: "var(--os3d-content-plate-stack)",
                       transition:
-                        "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease",
+                        "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-emphasized)",
                       "&:hover": allowNav
                         ? {
                             backgroundColor:
                               active && allowNav
                                 ? "color-mix(in srgb, var(--primary) 16%, var(--card))"
                                 : "color-mix(in srgb, var(--foreground) 6%, var(--card))",
-                            transform: "translateY(-2px)",
+                            transform: "translateY(-1px)",
+                            boxShadow: "var(--os3d-chip-lift-stack)",
                           }
                         : {},
                       "&:active": allowNav
@@ -663,7 +734,7 @@ export function Taskbar() {
                         },
                       }}
                     >
-                        <Os3dIcon src={iconSrc} variant="tile" />
+                      <Os3dIcon src={iconSrc} variant="tile" />
                     </Box>
                     <Typography
                       variant="caption"
@@ -711,139 +782,170 @@ export function Taskbar() {
         confirmColor="primary"
       />
 
-      <Stack
-        direction="row"
-        alignItems="center"
-        spacing={1.25}
+      <Box
         sx={{
-          flex: 1,
-          minWidth: 0,
-          justifyContent: "center",
-          overflowX: "auto",
-          overflowY: "hidden",
-          py: 0.5,
-          /** 超窄屏不铺 9 枚快捷方式，避免挤作一团；用「开始」菜单导航 */
+          position: "absolute",
+          left: { sm: 92, md: 104 },
+          right: { sm: 136, md: 220 },
+          top: 0,
+          bottom: 0,
           display: { xs: "none", sm: "flex" },
-          px: { sm: 1, md: 2 },
-          scrollbarWidth: "thin",
-          scrollPaddingInline: { sm: 8, md: 12 },
-          "&::-webkit-scrollbar": { height: 6 },
+          justifyContent: "center",
+          alignItems: "center",
+          overflow: "visible",
+          pointerEvents: "none",
+          zIndex: 4,
         }}
       >
-        {NAV_ITEMS.map(({ path, labelKey, iconSrc }) => {
-          const active =
-            path === "/device-config"
-              ? pathname === "/device-config" ||
-                pathname.startsWith("/device-config/")
-              : path === "/soul-user"
-                ? pathname === "/soul-user" ||
-                  pathname.startsWith("/soul-user/")
-                : pathname === path;
-          const allowNav = canNavigate(path);
-          const handlePinClick = (e: MouseEvent<HTMLElement>) => {
-            if (!allowNav) {
-              e.preventDefault();
-              const key = deviceHintReason ?? "unknown";
-              const now = Date.now();
-              const prev = lastNavBlockToastRef.current;
-              if (
-                prev?.key === key &&
-                now - prev.at < NAV_BLOCK_TOAST_COOLDOWN_MS
-              ) {
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={1.75}
+          onMouseLeave={() => setDockHoveredIndex(null)}
+          sx={{
+            width: "fit-content",
+            maxWidth: "100%",
+            overflow: "visible",
+            px: { sm: 1, md: 2 },
+            pointerEvents: "auto",
+          }}
+        >
+          {NAV_ITEMS.map(({ path, labelKey, iconSrc }, index) => {
+            const active =
+              path === "/device-config"
+                ? pathname === "/device-config" ||
+                  pathname.startsWith("/device-config/")
+                : path === "/soul-user"
+                  ? pathname === "/soul-user" ||
+                    pathname.startsWith("/soul-user/")
+                  : pathname === path;
+            const allowNav = canNavigate(path);
+            const handlePinClick = (e: MouseEvent<HTMLElement>) => {
+              if (!allowNav) {
+                e.preventDefault();
+                const key = deviceHintReason ?? "unknown";
+                const now = Date.now();
+                const prev = lastNavBlockToastRef.current;
+                if (
+                  prev?.key === key &&
+                  now - prev.at < NAV_BLOCK_TOAST_COOLDOWN_MS
+                ) {
+                  return;
+                }
+                lastNavBlockToastRef.current = { key, at: now };
+                showToast(t(getNavBlockedMessageKey(deviceHintReason)), {
+                  variant: "warning",
+                });
                 return;
               }
-              lastNavBlockToastRef.current = { key, at: now };
-              showToast(t(getNavBlockedMessageKey(deviceHintReason)), {
-                variant: "warning",
-              });
-              return;
-            }
-            if (navBlocker?.attemptNavigate) {
-              e.preventDefault();
-              navBlocker.attemptNavigate(path);
-            }
-          };
-
-          const button = (
-            <IconButton
-              component={
-                allowNav && !navBlocker?.attemptNavigate ? Link : "button"
+              if (navBlocker?.attemptNavigate) {
+                e.preventDefault();
+                navBlocker.attemptNavigate(path);
               }
-              to={allowNav && !navBlocker?.attemptNavigate ? path : undefined}
-              size="small"
-              onClick={handlePinClick}
-              aria-label={t(labelKey)}
-              aria-current={active ? "page" : undefined}
-              sx={{
-                flexShrink: 0,
-                width: 48, // 放大到 48x48，更符合 macOS Dock 图标的默认尺寸感
-                height: 48,
-                borderRadius: "var(--radius-card)",
-                color: active ? "var(--primary)" : "var(--foreground)", // 图标默认全彩，不用 muted 降低存在感
-                position: "relative",
-                border: "1px solid transparent",
-                backgroundColor:
-                  active && allowNav
-                    ? "color-mix(in srgb, var(--primary) 15%, transparent)"
-                    : "transparent",
-                transition:
-                  "background-color 0.2s ease, border-color 0.2s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease",
-                boxShadow:
-                  active && allowNav
-                    ? "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent), 0 4px 8px color-mix(in srgb, var(--primary) 20%, transparent)" // 选中时带立体投影
-                    : "none",
-                "&:hover": {
-                  backgroundColor: allowNav
-                    ? "color-mix(in srgb, var(--foreground) 6%, transparent)"
-                    : "transparent",
-                  transform: allowNav ? "scale(1.15) translateY(-4px)" : "none", // 类似 macOS Hover 放大的动效
-                  zIndex: 10,
-                },
-                "&:active": {
-                  transform: "scale(0.95)",
-                },
-                "& svg, & img": {
-                  width: "36px",
-                  height: "36px",
-                },
-                "@media (prefers-reduced-motion: reduce)": {
-                  "&:hover": { transform: "none" },
-                },
-              }}
-            >
-              <Os3dIcon src={iconSrc} variant="dock" />
-              {active && allowNav ? (
-                <Box
-                  aria-hidden
-                  sx={{
-                    position: "absolute",
-                    bottom: -6, // 小圆点在图标外下方
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    width: 4,
-                    height: 4,
-                    borderRadius: "50%",
-                    backgroundColor: "var(--primary)",
-                    boxShadow: "0 0 4px var(--primary)",
-                  }}
-                />
-              ) : null}
-            </IconButton>
-          );
+            };
+            const dockMotion = getDockMotion(index, dockHoveredIndex);
+            const dockTransform = allowNav
+              ? `translateY(-${dockMotion.translateY}px) scale(${dockMotion.scale})`
+              : "none";
 
-          return (
-            <Tooltip key={path} title={t(labelKey)} placement="top">
-              {button}
-            </Tooltip>
-          );
-        })}
-      </Stack>
+            const button = (
+              <IconButton
+                component={
+                  allowNav && !navBlocker?.attemptNavigate ? Link : "button"
+                }
+                to={allowNav && !navBlocker?.attemptNavigate ? path : undefined}
+                size="small"
+                onClick={handlePinClick}
+                onMouseEnter={() => setDockHoveredIndex(index)}
+                onFocus={() => setDockHoveredIndex(index)}
+                onBlur={() =>
+                  setDockHoveredIndex((current) =>
+                    current === index ? null : current,
+                  )
+                }
+                aria-label={t(labelKey)}
+                aria-current={active ? "page" : undefined}
+                sx={{
+                  flexShrink: 0,
+                  width: 48,
+                  height: 48,
+                  borderRadius: "var(--radius-card)",
+                  color: active ? "var(--primary)" : "var(--foreground)",
+                  position: "relative",
+                  border:
+                    "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
+                  backgroundColor:
+                    active && allowNav
+                      ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
+                      : "color-mix(in srgb, var(--card) 68%, transparent)",
+                  transition:
+                    "background-color 0.2s ease, border-color 0.2s ease, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease",
+                  boxShadow:
+                    active && allowNav
+                      ? "var(--os3d-chip-lift-stack)"
+                      : "var(--os3d-pedestal-lift-stack)",
+                  transform: dockTransform,
+                  zIndex: dockMotion.zIndex,
+                  transformOrigin: "center bottom",
+                  "&:hover": {
+                    backgroundColor: allowNav
+                      ? "color-mix(in srgb, var(--card) 82%, transparent)"
+                      : "transparent",
+                    borderColor: allowNav
+                      ? "color-mix(in srgb, var(--primary) 26%, var(--border))"
+                      : undefined,
+                    boxShadow: allowNav
+                      ? "var(--os3d-chip-lift-stack)"
+                      : undefined,
+                  },
+                  "&:active": {
+                    transform: allowNav ? "translateY(0) scale(0.98)" : "none",
+                  },
+                  "& svg, & img": {
+                    width: "36px",
+                    height: "36px",
+                  },
+                  "@media (prefers-reduced-motion: reduce)": {
+                    transform: "none",
+                    "&:hover": { transform: "none" },
+                  },
+                }}
+              >
+                <Os3dIcon src={iconSrc} variant="dock" />
+                {active && allowNav ? (
+                  <Box
+                    aria-hidden
+                    sx={{
+                      position: "absolute",
+                      bottom: -6,
+                      left: "50%",
+                      transform: "translateX(-50%)",
+                      width: 4,
+                      height: 4,
+                      borderRadius: "50%",
+                      backgroundColor: "var(--primary)",
+                      boxShadow: "0 0 4px var(--primary)",
+                    }}
+                  />
+                ) : null}
+              </IconButton>
+            );
+
+            return (
+              <Tooltip key={path} title={t(labelKey)} placement="top">
+                {button}
+              </Tooltip>
+            );
+          })}
+        </Stack>
+      </Box>
 
       <Stack
         direction="row"
         alignItems="center"
         spacing={0.75}
         sx={{
+          alignSelf: "center",
           flexShrink: 0,
           pl: 0.5,
           maxWidth: { xs: 120, sm: 200 },
@@ -873,6 +975,7 @@ export function Taskbar() {
             aria-label={t("device.pageTitle")}
             sx={{
               border: "1px solid var(--border-subtle)",
+              boxShadow: "var(--os3d-pedestal-lift-stack)",
               borderRadius: "var(--radius-chip)",
               px: 1,
               py: 0.5,

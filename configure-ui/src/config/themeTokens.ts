@@ -233,10 +233,10 @@ export const THEME_BRAND_KEYS: ThemeBrand[] = ['logo', 'blue', 'teal', 'firmware
 /**
  * 浅色模式页面画布：浅青灰（非纯白、非暖灰），清爽耐看；`card` 仍为白以托内容。
  */
-const LIGHT_PAGE_BACKGROUND = '#f1f5f9'
+const LIGHT_PAGE_BACKGROUND = '#e8eef5'
 
 /** 壳层 / 次级表面：比画布略亮、偏冷，仍属青灰白 */
-const LIGHT_SURFACE_COOL = '#f8fafc'
+const LIGHT_SURFACE_COOL = '#f6f9fd'
 
 const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
   light: {
@@ -252,16 +252,18 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       primaryFg: '#ffffff',
       accent: '#60a5fa',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
-      overlay: 'rgba(255, 255, 255, 0.92)',
-      appBarGlass: 'rgba(255, 255, 255, 0.72)',
+      overlay: 'rgba(255, 255, 255, 0.94)',
+      appBarGlass: 'rgba(250, 252, 255, 0.82)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#edf2f6',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
+      shadowCardHover:
+        '0 26px 52px -30px color-mix(in srgb, var(--foreground) 20%, transparent)',
       badgeNew: '#ef4444',
     },
     teal: {
@@ -276,16 +278,18 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       primaryFg: '#ffffff',
       accent: '#2dd4bf',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
-      overlay: 'rgba(255, 255, 255, 0.92)',
-      appBarGlass: 'rgba(255, 255, 255, 0.72)',
+      overlay: 'rgba(255, 255, 255, 0.94)',
+      appBarGlass: 'rgba(248, 252, 252, 0.82)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#edf2f6',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
+      shadowCardHover:
+        '0 26px 52px -30px color-mix(in srgb, var(--foreground) 20%, transparent)',
       badgeNew: '#ef4444',
     },
     logo: {
@@ -300,16 +304,18 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       primaryFg: '#ffffff',
       accent: '#0891b2',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
-      overlay: 'rgba(255, 255, 255, 0.92)',
-      appBarGlass: 'rgba(255, 255, 255, 0.72)',
+      overlay: 'rgba(255, 255, 255, 0.94)',
+      appBarGlass: 'rgba(251, 249, 255, 0.82)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#f5f3fb',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
+      shadowCardHover:
+        '0 26px 52px -30px color-mix(in srgb, var(--foreground) 20%, transparent)',
       badgeNew: '#ef4444',
     },
     firmware: {
@@ -324,16 +330,18 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       primaryFg: '#ffffff',
       accent: '#dc6b6b',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
-      overlay: 'rgba(255, 255, 255, 0.92)',
-      appBarGlass: 'rgba(255, 255, 255, 0.72)',
+      overlay: 'rgba(255, 255, 255, 0.94)',
+      appBarGlass: 'rgba(251, 250, 250, 0.82)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#64748b',
       borderSubtle: '#edf2f6',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
+      shadowCardHover:
+        '0 26px 52px -30px color-mix(in srgb, var(--foreground) 20%, transparent)',
       badgeNew: '#ef4444',
     },
   },
@@ -358,8 +366,10 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 18px 40px -26px color-mix(in srgb, #000 38%, transparent)',
+      shadowCardHover:
+        '0 24px 52px -22px color-mix(in srgb, #000 42%, transparent)',
       badgeNew: '#f87171',
     },
     teal: {
@@ -382,8 +392,10 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 18px 40px -26px color-mix(in srgb, #000 38%, transparent)',
+      shadowCardHover:
+        '0 24px 52px -22px color-mix(in srgb, #000 42%, transparent)',
       badgeNew: '#f87171',
     },
     logo: {
@@ -406,8 +418,10 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#221830',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 18px 40px -26px color-mix(in srgb, #000 40%, transparent)',
+      shadowCardHover:
+        '0 24px 52px -22px color-mix(in srgb, #000 44%, transparent)',
       badgeNew: '#f87171',
     },
     firmware: {
@@ -430,8 +444,10 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       transitionDurationEmphasized: '220ms',
       foregroundSoft: '#94a3b8',
       borderSubtle: '#1a1e26',
-      shadowSubtle: 'none',
-      shadowCardHover: 'none',
+      shadowSubtle:
+        '0 18px 40px -26px color-mix(in srgb, #000 38%, transparent)',
+      shadowCardHover:
+        '0 24px 52px -22px color-mix(in srgb, #000 42%, transparent)',
       badgeNew: '#f87171',
     },
   },

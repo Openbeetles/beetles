@@ -42,12 +42,13 @@ export function PageHeader({ title }: PageHeaderProps) {
         aria-hidden
         sx={{
           mt: 0.75,
-          width: 36,
+          width: 32,
           height: 3,
           borderRadius: 'var(--radius-full)',
-          background: `linear-gradient(90deg, color-mix(in srgb, var(--primary) 52%, transparent), color-mix(in srgb, var(--primary) 12%, transparent))`,
+          background:
+            'linear-gradient(90deg, color-mix(in srgb, var(--primary) 34%, transparent), color-mix(in srgb, var(--primary) 8%, transparent))',
           boxShadow:
-            '0 0 18px color-mix(in srgb, var(--primary) 14%, transparent), inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 18%, transparent)',
+            'inset 0 1px 0 color-mix(in srgb, #fff 34%, transparent), 0 2px 6px -4px color-mix(in srgb, var(--primary) 22%, transparent)',
         }}
       />
     </Box>

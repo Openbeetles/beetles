@@ -271,6 +271,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
           body: {
             backgroundColor: 'var(--background)',
+            backgroundImage: [
+              'radial-gradient(circle at top, color-mix(in srgb, #fff 26%, transparent) 0%, transparent 38%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--surface) 46%, var(--background)) 0%, var(--background) 30%, color-mix(in srgb, var(--background) 96%, var(--foreground)) 100%)',
+            ].join(', '),
+            backgroundAttachment: 'fixed',
             color: 'var(--foreground)',
             WebkitFontSmoothing: 'antialiased',
             MozOsxFontSmoothing: 'grayscale',
@@ -316,12 +321,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           contained: {
             backgroundColor: 'var(--primary)',
             color: 'var(--primary-fg)',
-            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 12%, transparent)',
+            border: 'none',
+            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 10%, transparent)',
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 92%, white)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 94%, white)',
             },
             '&:active': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 85%, white)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 88%, white)',
               borderTopColor: 'transparent',
             },
           },
@@ -332,14 +338,14 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           containedPrimary: {
             boxShadow: 'var(--os3d-primary-button-stack)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 11%, transparent) 0%, transparent 55%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 16%, transparent) 0%, color-mix(in srgb, var(--primary-fg) 5%, transparent) 42%, transparent 76%)',
             '&:hover': {
               boxShadow: 'var(--os3d-primary-button-stack-hover)',
-              transform: 'translateY(-1px)',
+              transform: 'translateY(-0.5px)',
             },
             '&:active': {
               boxShadow: 'var(--os3d-primary-button-stack-active)',
-              transform: 'translateY(0.5px)',
+              transform: 'translateY(0.25px)',
             },
             '&.Mui-disabled': {
               boxShadow: 'none',
@@ -351,20 +357,20 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           containedError: {
             backgroundColor: 'var(--semantic-danger)',
             color: 'var(--primary-fg)',
-            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 12%, transparent)',
+            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 9%, transparent)',
             boxShadow: 'var(--os3d-danger-button-stack)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 10%, transparent) 0%, transparent 55%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 14%, transparent) 0%, color-mix(in srgb, var(--primary-fg) 5%, transparent) 42%, transparent 76%)',
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 88%, black)',
+              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 90%, black)',
               boxShadow: 'var(--os3d-danger-button-stack-hover)',
-              transform: 'translateY(-1px)',
+              transform: 'translateY(-0.5px)',
             },
             '&:active': {
-              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 80%, black)',
+              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 84%, black)',
               borderTopColor: 'transparent',
               boxShadow: 'var(--os3d-danger-button-stack-active)',
-              transform: 'translateY(0.5px)',
+              transform: 'translateY(0.25px)',
             },
             '&.Mui-disabled': {
               boxShadow: 'none',
@@ -373,11 +379,15 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             },
           },
           outlined: {
+            backgroundColor: 'color-mix(in srgb, var(--card) 82%, transparent)',
             borderColor: 'color-mix(in srgb, var(--primary) 20%, var(--border))',
+            boxShadow: 'var(--os3d-pedestal-lift-stack)',
             '&:hover': {
               borderColor: 'color-mix(in srgb, var(--primary) 38%, var(--border))',
               backgroundColor: 'color-mix(in srgb, var(--primary) 5%, transparent)',
+              transform: 'translateY(-1px)',
             },
+            '&:active': { transform: 'translateY(0)' },
           },
           text: {
             color: 'var(--muted)',
@@ -415,7 +425,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             boxShadow: 'none',
             border: 'none',
-            backgroundImage: 'none',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 58%)',
           },
         },
       },
@@ -423,9 +434,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R_CARD,
-            border: '1px solid var(--form-outline-rest)',
+            border: '1px solid color-mix(in srgb, var(--border) 16%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 54%)',
           },
         },
       },
@@ -477,10 +490,12 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           root: {
             borderRadius: R,
             backgroundColor: 'var(--input-idle-well)',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 72%)',
             /** 静止：输入沉在浅槽；聚焦：略抬起，与凹底形成对照 */
             boxShadow: 'var(--os3d-micro-well-stack)',
             transition:
-              'background-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth)',
+              'background-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-out-smooth), background-image var(--transition-duration) ease',
             '& .MuiOutlinedInput-notchedOutline': {
               borderColor: 'var(--outlined-border-rest)',
               transition: 'border-color var(--transition-duration-emphasized) var(--ease-emphasized), border-width var(--transition-duration) ease',
@@ -494,9 +509,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             },
             '&.Mui-focused': {
               backgroundColor: 'var(--card)',
+              backgroundImage:
+                'linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, transparent 68%)',
               boxShadow: 'var(--os3d-pedestal-lift-stack)',
               '& .MuiOutlinedInput-notchedOutline': {
-                borderColor: 'color-mix(in srgb, var(--primary) 38%, var(--border))',
+                borderColor: 'color-mix(in srgb, var(--primary) 30%, var(--border))',
                 borderWidth: 1,
               },
             },
@@ -531,11 +548,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             transition: 'background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, color var(--transition-duration) ease',
           },
           outlined: {
-            borderColor: 'color-mix(in srgb, var(--border) 28%, transparent)',
+            borderColor: 'color-mix(in srgb, var(--border) 22%, transparent)',
             boxShadow: 'var(--os3d-chip-lift-stack)',
             '&:hover': {
               backgroundColor: 'color-mix(in srgb, var(--primary) 4%, transparent)',
-              borderColor: 'color-mix(in srgb, var(--border) 40%, transparent)',
+              borderColor: 'color-mix(in srgb, var(--border) 34%, transparent)',
               color: 'var(--primary)',
             },
           },
@@ -551,7 +568,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
               backgroundColor: 'color-mix(in srgb, var(--primary) 6%, transparent)',
               color: 'var(--primary)',
             },
-            '&:active': { transform: 'scale(0.96)' },
+            '&:active': { transform: 'translateY(1px)' },
             '&:focus-visible': {
               outline: 'var(--focus-ring-width) solid var(--primary)',
               outlineOffset: 'var(--focus-ring-offset)',
@@ -731,10 +748,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           paper: {
             marginTop: 1,
             borderRadius: R_CARD,
-            border: '1px solid var(--form-outline-rest)',
-            boxShadow: 'none',
-            backgroundColor: 'var(--card)',
-            backgroundImage: 'none',
+            border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
+            boxShadow: 'var(--os3d-content-plate-stack)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 96%, transparent)',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 40%)',
             paddingTop: 8,
             paddingBottom: 8,
           },
@@ -744,10 +762,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           paper: {
             borderRadius: R_CARD,
-            border: '1px solid var(--form-outline-rest)',
+            border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
-            backgroundColor: 'var(--card)',
-            backgroundImage: 'none',
+            backgroundColor: 'color-mix(in srgb, var(--card) 94%, transparent)',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 40%)',
           },
         },
       },
@@ -755,10 +774,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           paper: {
             borderRadius: R_CARD,
-            border: '1px solid var(--form-outline-rest)',
+            border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
-            backgroundImage: 'none',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 44%)',
           },
         },
       },
@@ -855,7 +875,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             boxShadow: 'var(--os3d-micro-well-stack)',
           },
           grouped: {
-            border: '1px solid color-mix(in srgb, var(--border) 22%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--border) 16%, transparent)',
             borderRadius: 'var(--radius-control) !important',
             textTransform: 'none',
             fontWeight: 600,

@@ -830,146 +830,160 @@ export function DevicePage() {
     <Box
       sx={{
         width: "100%",
-        maxWidth: 480,
-        mx: "auto",
-        mt: { xs: 4, md: 8 },
-        ...DASHBOARD_CARD_SURFACE_SX,
-        p: { xs: 3, md: 5 },
-        position: "relative",
+        minHeight: "100%",
         display: "flex",
-        flexDirection: "column",
-        gap: 4,
+        alignItems: "center",
+        justifyContent: "center",
+        px: { xs: 0, sm: 1 },
+        boxSizing: "border-box",
       }}
     >
-      <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
-        <Box
-          sx={{
-            width: "88px",
-            height: "88px",
-            mx: "auto",
-            mb: 3,
-            borderRadius: "var(--radius-card)",
-            bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            lineHeight: 0,
-            color: "var(--primary)",
-            boxShadow: [
-              "var(--os3d-pedestal-lift-stack)",
-              "0 14px 28px color-mix(in srgb, var(--primary) 10%, transparent)",
-            ].join(", "),
-          }}
-        >
-          {/* BeetleIcon 尺寸由 width/height 控制，勿用 fontSize；与容器约 82% 留白，避免过小 */}
-          <BeetleIcon
-            motion="idle"
-            sx={{
-              width: "72px",
-              height: "72px",
-              flexShrink: 0,
-              display: "block",
-            }}
-          />
-        </Box>
-        <Typography
-          variant="h4"
-          sx={{
-            fontFamily: "var(--font-brand)",
-            fontWeight: 800,
-            letterSpacing: "-0.02em",
-            mb: 1.5,
-          }}
-        >
-          {(() => {
-            const full = t("app.name");
-            const head = full.replace(/\s*OS\s*$/i, "").trim();
-            return (
-              <>
-                {head}{" "}
-                <Box component="span" sx={{ color: "var(--primary)" }}>
-                  OS
-                </Box>
-              </>
-            );
-          })()}
-        </Typography>
-      </Box>
-
       <Box
         sx={{
+          width: "100%",
+          maxWidth: 480,
+          mx: "auto",
+          ...DASHBOARD_CARD_SURFACE_SX,
+          p: { xs: 3, md: 5 },
           position: "relative",
-          zIndex: 1,
           display: "flex",
-        flexDirection: "column",
-        gap: LAYOUT_TOKENS.spacingFormFields,
-      }}
-    >
-        <TextField
-          label={t("device.baseUrlLabel")}
-          placeholder={t("device.baseUrlPlaceholder")}
-          value={urlInput}
-          onChange={(e) => setUrlInput(e.target.value)}
-          variant="outlined"
-          fullWidth
-          slotProps={{
-            htmlInput: { style: { fontFamily: "var(--font-mono)" } },
-          }}
-        />
-        <TextField
-          label={t("device.pairingCodeLabel")}
-          placeholder={t("device.pairingCodePlaceholder")}
-          value={codeInput}
-          type={pairingCodeReveal.type}
-          onChange={(e) => setCodeInput(e.target.value)}
-          variant="outlined"
-          fullWidth
-          slotProps={{
-            htmlInput: {
-              maxLength: 6,
-              style: { fontFamily: "var(--font-mono)", letterSpacing: "0.2em" },
-              ...pairingCodeReveal.inputProps,
-            },
-          }}
-        />
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
+          <Box
+            sx={{
+              width: "88px",
+              height: "88px",
+              mx: "auto",
+              mb: 3,
+              borderRadius: "var(--radius-card)",
+              bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 0,
+              color: "var(--primary)",
+              boxShadow: [
+                "var(--os3d-pedestal-lift-stack)",
+                "0 14px 28px color-mix(in srgb, var(--primary) 10%, transparent)",
+              ].join(", "),
+            }}
+          >
+            {/* BeetleIcon 尺寸由 width/height 控制，勿用 fontSize；与容器约 82% 留白，避免过小 */}
+            <BeetleIcon
+              motion="idle"
+              sx={{
+                width: "72px",
+                height: "72px",
+                flexShrink: 0,
+                display: "block",
+              }}
+            />
+          </Box>
+          <Typography
+            variant="h4"
+            sx={{
+              fontFamily: "var(--font-brand)",
+              fontWeight: 800,
+              letterSpacing: "-0.02em",
+              mb: 1.5,
+            }}
+          >
+            {(() => {
+              const full = t("app.name");
+              const head = full.replace(/\s*OS\s*$/i, "").trim();
+              return (
+                <>
+                  {head}{" "}
+                  <Box component="span" sx={{ color: "var(--primary)" }}>
+                    OS
+                  </Box>
+                </>
+              );
+            })()}
+          </Typography>
+        </Box>
+
         <Box
           sx={{
+            position: "relative",
+            zIndex: 1,
             display: "flex",
-            gap: LAYOUT_TOKENS.spacingTitleToContent,
-            mt: 1,
+            flexDirection: "column",
+            gap: LAYOUT_TOKENS.spacingFormFields,
           }}
         >
-          <Button
-            variant="contained"
-            onClick={handleSave}
-            fullWidth
-            size="large"
-            sx={{
-              borderRadius: "var(--radius-full)",
-              fontWeight: 600,
-              boxShadow: "none",
-              py: 1.25,
-              "&:hover": { boxShadow: "none" },
-            }}
-          >
-            {t("device.save")}
-          </Button>
-          <Button
+          <TextField
+            label={t("device.baseUrlLabel")}
+            placeholder={t("device.baseUrlPlaceholder")}
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
             variant="outlined"
-            onClick={handleProbe}
-            disabled={probeStatus === "checking"}
             fullWidth
-            size="large"
+            slotProps={{
+              htmlInput: { style: { fontFamily: "var(--font-mono)" } },
+            }}
+          />
+          <TextField
+            label={t("device.pairingCodeLabel")}
+            placeholder={t("device.pairingCodePlaceholder")}
+            value={codeInput}
+            type={pairingCodeReveal.type}
+            onChange={(e) => setCodeInput(e.target.value)}
+            variant="outlined"
+            fullWidth
+            slotProps={{
+              htmlInput: {
+                maxLength: 6,
+                style: {
+                  fontFamily: "var(--font-mono)",
+                  letterSpacing: "0.2em",
+                },
+                ...pairingCodeReveal.inputProps,
+              },
+            }}
+          />
+          <Box
             sx={{
-              borderRadius: "var(--radius-full)",
-              fontWeight: 600,
-              py: 1.25,
+              display: "flex",
+              gap: LAYOUT_TOKENS.spacingTitleToContent,
+              mt: 1,
             }}
           >
-            {probeStatus === "checking"
-              ? t("device.probing")
-              : t("device.probe")}
-          </Button>
+            <Button
+              variant="contained"
+              onClick={handleSave}
+              fullWidth
+              size="large"
+              sx={{
+                borderRadius: "var(--radius-full)",
+                fontWeight: 600,
+                boxShadow: "none",
+                py: 1.25,
+                "&:hover": { boxShadow: "none" },
+              }}
+            >
+              {t("device.save")}
+            </Button>
+            <Button
+              variant="outlined"
+              onClick={handleProbe}
+              disabled={probeStatus === "checking"}
+              fullWidth
+              size="large"
+              sx={{
+                borderRadius: "var(--radius-full)",
+                fontWeight: 600,
+                py: 1.25,
+              }}
+            >
+              {probeStatus === "checking"
+                ? t("device.probing")
+                : t("device.probe")}
+            </Button>
+          </Box>
         </Box>
       </Box>
     </Box>
@@ -981,6 +995,8 @@ export function DevicePage() {
       sx={{
         ...PAGE_SCROLL_CANVAS_SX,
         gap: DASHBOARD_HOME_GRID_GAP,
+        py: { xs: 2, sm: 2.5, lg: 3 },
+        boxSizing: "border-box",
       }}
     >
       {!deviceConnected ? (

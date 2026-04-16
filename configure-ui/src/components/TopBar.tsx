@@ -82,11 +82,13 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
     borderRadius: 0,
     border: "none",
     color: "var(--foreground-soft)",
+    backgroundColor: "transparent",
     transition:
-      "background-color var(--transition-duration) var(--ease-out-smooth), color var(--transition-duration) var(--ease-out-smooth)",
+      "background-color var(--transition-duration) var(--ease-out-smooth), color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-emphasized)",
     "&:hover:not(:disabled)": {
-      backgroundColor: "color-mix(in srgb, var(--foreground) 8%, transparent)",
+      backgroundColor: "color-mix(in srgb, var(--card) 72%, transparent)",
       color: "var(--foreground)",
+      boxShadow: "var(--os3d-pedestal-lift-stack)",
     },
   } as const;
 
@@ -104,8 +106,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
         pt: macTauriWindow ? 3.5 : 0,
         position: "relative",
         ...SHELL_TITLEBAR_CHROME_SX,
-        /** 与主内容区分；不外投阴影，符合扁平壳层约定 */
-        borderBottom: "1px solid var(--border-subtle)",
+        borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
         gap: 0,
       }}
       data-tauri-drag-region={macTauriWindow ? "" : undefined}
@@ -128,17 +129,17 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
               /** 与 `PageHeader` 标题字阶、右侧 caption 按钮视觉重量对齐 */
               p: 0.625,
               borderRadius: "var(--radius-control)",
-              border: "1px solid var(--border-subtle)",
+              border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
               backgroundColor:
-                "color-mix(in srgb, var(--surface) 65%, var(--card))",
-              boxShadow:
-                "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)",
+                "color-mix(in srgb, var(--card) 78%, var(--surface))",
+              boxShadow: "var(--os3d-pedestal-lift-stack)",
               transition:
                 "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized)",
               "&:hover": {
                 backgroundColor:
-                  "color-mix(in srgb, var(--foreground) 7%, transparent)",
-                transform: "translateY(-0.5px)",
+                  "color-mix(in srgb, var(--card) 86%, var(--surface))",
+                boxShadow: "var(--os3d-chip-lift-stack)",
+                transform: "translateY(-1px)",
               },
               "&:active": {
                 transform: "translateY(0)",
@@ -172,7 +173,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
         alignItems="stretch"
         sx={{
           flexShrink: 0,
-          borderLeft: "1px solid var(--border-subtle)",
+          borderLeft: "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
         }}
       >
         {onOpenSettings && (
