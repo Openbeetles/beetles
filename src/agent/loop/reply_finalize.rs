@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::final_reply::reply_has_concrete_anchor;
 use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
+use crate::memory::EmotionSignalStore;
 
 pub(super) struct FinalizedTurn {
     pub(super) delivery: DeliveryReport,
@@ -275,7 +276,10 @@ pub(super) fn finalize_turn(
             &[AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT],
         );
         if signal_comfort {
-            let _ = config.emotion_signal_store.set(&msg.chat_id, "comfort");
+            let _ = config
+                .runtime
+                .emotion_signal_store
+                .set(&msg.chat_id, "comfort");
         }
         reply_content = truncate_content_to_max(&reply_content, MAX_CONTENT_LEN).into_owned();
     }
@@ -401,9 +405,13 @@ pub(super) fn complete_turn(
                 content: reply_content.clone(),
             },
         ];
-        config.session_store.append_batch(&msg.chat_id, &entries)
+        config
+            .runtime
+            .session_store
+            .append_batch(&msg.chat_id, &entries)
     } else {
         config
+            .runtime
             .session_store
             .append(&msg.chat_id, "user", &msg.content)
     };
@@ -419,6 +427,7 @@ pub(super) fn complete_turn(
 
     if delivered && mark_important {
         let _ = config
+            .runtime
             .important_message_store
             .set_important_offset_from_end(&msg.chat_id, 1);
     }
@@ -430,7 +439,7 @@ pub(super) fn complete_turn(
                 | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
         )
     {
-        if let Err(error) = config.execution_state_store.clear(&msg.chat_id) {
+        if let Err(error) = config.runtime.execution_state_store.clear(&msg.chat_id) {
             log::warn!(
                 "[agent_execution_state] clear failed chat_id={}: {}",
                 msg.chat_id,
@@ -457,7 +466,7 @@ pub(super) fn complete_turn(
                 .is_some())
     {
         if let Err(error) = crate::memory::seed_execution_state_from_turn(
-            config.execution_state_store.as_ref(),
+            config.runtime.execution_state_store.as_ref(),
             crate::memory::ProvisionalExecutionStateInput {
                 chat_id: &msg.chat_id,
                 ingress: msg.ingress,
@@ -523,10 +532,10 @@ pub(super) fn complete_turn(
     let self_runtime_post_reply_enqueued = delivered
         && crate::memory::enqueue_self_runtime_post_reply(
             system_inbound_tx,
-            config.self_continuity_store.as_ref(),
-            config.autonomy_strategy_store.as_ref(),
-            config.self_authored_core_store.as_ref(),
-            config.memory_system_kind.memory_profile(),
+            config.runtime.self_continuity_store.as_ref(),
+            config.runtime.autonomy_strategy_store.as_ref(),
+            config.runtime.self_authored_core_store.as_ref(),
+            config.runtime.memory_system_kind.memory_profile(),
             msg.chat_id.as_ref(),
             msg.channel.as_ref(),
             &msg.content,
@@ -597,6 +606,7 @@ pub(super) fn complete_turn(
     } else {
         let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
         config
+            .runtime
             .turn_ledger_store
             .get(&relationship_id)
             .ok()
@@ -618,6 +628,7 @@ pub(super) fn complete_turn(
     } else {
         let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
         config
+            .runtime
             .turn_ledger_store
             .get(&relationship_id)
             .ok()
@@ -631,6 +642,7 @@ pub(super) fn complete_turn(
     } else {
         let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
         config
+            .runtime
             .turn_ledger_store
             .get(&relationship_id)
             .ok()
@@ -638,7 +650,7 @@ pub(super) fn complete_turn(
             .and_then(|ledger| ledger.soul_feedback)
     };
     super::turn_finalize::persist_turn_ledger(
-        config.turn_ledger_store.as_ref(),
+        config.runtime.turn_ledger_store.as_ref(),
         &crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
         &turn_ledger,
         "finish",

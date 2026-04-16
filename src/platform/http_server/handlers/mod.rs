@@ -160,19 +160,8 @@ pub(crate) fn build_test_handler_context(
         Arc::clone(&skill_storage),
         8192,
     ));
-    let (tool_registry, _) = crate::build_default_registry(
-        &config,
-        crate::DefaultRegistryDeps {
-            platform: Arc::clone(&platform),
-            remind_at_store: platform.remind_at_store(),
-            session_store: platform.session_store(),
-            memory_store: platform.memory_store(),
-            long_term_memory_store: platform.long_term_memory_store(),
-            turn_ledger_store: platform.turn_ledger_store(),
-            private_garden_store: platform.private_garden_store(),
-            config_store: Arc::clone(&config_store),
-        },
-    );
+    let runtime_services = crate::RuntimeServices::from_platform(Arc::clone(&platform));
+    let (tool_registry, _) = crate::build_default_registry(&config, &runtime_services);
     let channel_capability_registry =
         Arc::new(crate::build_channel_capability_registry(&config, false));
 

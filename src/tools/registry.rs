@@ -674,38 +674,21 @@ fn last_record_for_tool<'a>(
 
 /// 构建包含所有内置工具的注册表。`platform` 用于 `board_info` 等依赖平台能力的工具。
 /// Returns `(registry, Option<baidu_token_cache>)` — the cache is shared with voice_session.
-pub struct DefaultRegistryDeps {
-    pub platform: Arc<dyn crate::Platform>,
-    pub remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
-    pub session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
-    pub memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
-    pub long_term_memory_store: Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
-    pub turn_ledger_store: Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
-    pub private_garden_store: Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
-    pub config_store: Arc<dyn crate::platform::ConfigStore + Send + Sync>,
-}
-
 #[cold]
 #[inline(never)]
 fn register_core_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
-    platform: &Arc<dyn crate::Platform>,
-    config_store: &Arc<dyn crate::platform::ConfigStore + Send + Sync>,
+    services: &crate::RuntimeServices,
     tool_execution_governance: &Arc<ToolExecutionGovernance>,
-    remind_at_store: &Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
-    session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
-    memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
-    long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
-    turn_ledger_store: &Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
-    private_garden_store: &Arc<dyn crate::memory::PrivateGardenStore + Send + Sync>,
 ) {
+    let platform = &services.platform;
     registry.register(Box::new(super::GetTimeTool));
     registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
     registry.register(Box::new(super::TaskTool::new(
-        platform.task_store(),
-        platform.calendar_store(),
+        Arc::clone(&services.task_store),
+        Arc::clone(&services.calendar_store),
     )));
     registry.register(Box::new(super::FilesTool::new(platform.state_fs())));
     registry.register(Box::new(super::FileEditTool::new(platform.state_fs())));
@@ -746,11 +729,11 @@ fn register_core_tools(
     ))]
     registry.register(Box::new(super::AnalyzeImageTool::new(config)));
     registry.register(Box::new(super::RemindAtTool::with_local_calendar(
-        Arc::clone(remind_at_store),
-        platform.calendar_store(),
+        Arc::clone(&services.remind_at_store),
+        Arc::clone(&services.calendar_store),
     )));
     registry.register(Box::new(super::RemindListTool::new(Arc::clone(
-        remind_at_store,
+        &services.remind_at_store,
     ))));
     registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(platform))));
     registry.register(Box::new(super::DiagnoseDeliveryTool::new(
@@ -762,46 +745,46 @@ fn register_core_tools(
     )));
     registry.register(Box::new(super::DiagnoseNetworkPathTool::new(
         Arc::clone(platform),
-        Arc::clone(config_store),
+        Arc::clone(&services.config_store),
     )));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
     registry.register(Box::new(super::PrivateGardenTool::new(Arc::clone(
-        private_garden_store,
+        &services.private_garden_store,
     ))));
     registry.register(Box::new(super::FactualMemoryTool::new(Arc::clone(
-        long_term_memory_store,
+        &services.long_term_memory_store,
     ))));
     registry.register(Box::new(super::MemorySearchTool::new(
-        Arc::clone(session_store),
-        Arc::clone(memory_store),
-        Arc::clone(turn_ledger_store),
+        Arc::clone(&services.session_store),
+        Arc::clone(&services.memory_store),
+        Arc::clone(&services.turn_ledger_store),
     )));
     registry.register(Box::new(super::MemoryGetTool::new(
-        Arc::clone(session_store),
-        Arc::clone(memory_store),
-        Arc::clone(turn_ledger_store),
+        Arc::clone(&services.session_store),
+        Arc::clone(&services.memory_store),
+        Arc::clone(&services.turn_ledger_store),
     )));
     registry.register(Box::new(super::ContinuitySnapshotTool::new(
         platform.state_fs(),
-        Arc::clone(session_store),
-        Arc::clone(memory_store),
-        platform.long_term_memory_store(),
-        platform.continuity_capsule_store(),
-        platform.session_summary_store(),
-        platform.execution_state_store(),
-        platform.self_model_store(),
-        platform.self_authored_core_store(),
-        platform.core_revision_ledger_store(),
-        platform.self_continuity_store(),
-        Arc::clone(turn_ledger_store),
-        platform.relationship_constitution_store(),
-        platform.relationship_portfolio_store(),
-        platform.relationship_topology_store(),
-        platform.task_run_store(),
-        platform.task_artifact_store(),
-        platform.task_execution_ledger_store(),
-        platform.task_learning_store(),
-        platform.skill_storage(),
+        Arc::clone(&services.session_store),
+        Arc::clone(&services.memory_store),
+        Arc::clone(&services.long_term_memory_store),
+        Arc::clone(&services.continuity_capsule_store),
+        Arc::clone(&services.session_summary_store),
+        Arc::clone(&services.execution_state_store),
+        Arc::clone(&services.self_model_store),
+        Arc::clone(&services.self_authored_core_store),
+        Arc::clone(&services.core_revision_ledger_store),
+        Arc::clone(&services.self_continuity_store),
+        Arc::clone(&services.turn_ledger_store),
+        Arc::clone(&services.relationship_constitution_store),
+        Arc::clone(&services.relationship_portfolio_store),
+        Arc::clone(&services.relationship_topology_store),
+        Arc::clone(&services.task_run_store),
+        Arc::clone(&services.task_artifact_store),
+        Arc::clone(&services.task_execution_ledger_store),
+        Arc::clone(&services.task_learning_store),
+        Arc::clone(&services.skill_storage),
         Arc::clone(tool_execution_governance),
     )));
     let continuity_snapshot_supported = registry.get("continuity_snapshot").is_some();
@@ -811,7 +794,7 @@ fn register_core_tools(
     )));
     registry.register(Box::new(super::DiagnoseVoicePathTool::new(
         Arc::clone(platform),
-        Arc::clone(config_store),
+        Arc::clone(&services.config_store),
     )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
@@ -831,8 +814,9 @@ fn register_core_tools(
 fn register_office_tools(
     registry: &mut ToolRegistry,
     _config: &AppConfig,
-    platform: &Arc<dyn crate::Platform>,
+    services: &crate::RuntimeServices,
 ) {
+    let platform = &services.platform;
     let topology = crate::office::build_default_office_integration_topology();
     let contacts_directory_store: Arc<
         dyn crate::contacts_directory::ContactsDirectoryStore + Send + Sync,
@@ -841,14 +825,14 @@ fn register_office_tools(
     );
     let office_config_service = crate::office::OfficeConfigManagementService::new(
         Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
-        platform.office_credential_store(),
-        platform.office_runtime_status_store(),
+        Arc::clone(&services.office_credential_store),
+        Arc::clone(&services.office_runtime_status_store),
     )
     .with_probe_adapters(topology.probe_adapters());
     let office_authority = Arc::new(crate::office::ReloadingOfficeAuthoritySource::new(
         Arc::new(crate::config::PlatformConfigFileStore(Arc::clone(platform))),
-        platform.office_credential_store(),
-        platform.office_runtime_status_store(),
+        Arc::clone(&services.office_credential_store),
+        Arc::clone(&services.office_runtime_status_store),
     ));
     let calendar_credential_store: Arc<
         dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync,
@@ -896,7 +880,7 @@ fn register_office_tools(
 
     registry.register(Box::new(
         super::CalendarTool::with_office_authority_and_contacts_service(
-            platform.calendar_store(),
+            Arc::clone(&services.calendar_store),
             Arc::clone(&calendar_credential_store),
             calendar_providers,
             office_authority.clone(),
@@ -904,14 +888,14 @@ fn register_office_tools(
         ),
     ));
     registry.register(Box::new(super::TaskTool::with_office_authority(
-        platform.task_store(),
-        platform.calendar_store(),
+        Arc::clone(&services.task_store),
+        Arc::clone(&services.calendar_store),
         task_calendar_providers,
         office_authority.clone(),
     )));
     registry.register(Box::new(super::RemindAtTool::with_office_authority(
-        platform.remind_at_store(),
-        platform.calendar_store(),
+        Arc::clone(&services.remind_at_store),
+        Arc::clone(&services.calendar_store),
         reminder_calendar_providers,
         office_authority.clone(),
     )));
@@ -954,18 +938,15 @@ fn register_extended_runtime_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
     device_capability_registry: &crate::DeviceCapabilityRegistry,
-    platform: &Arc<dyn crate::Platform>,
+    services: &crate::RuntimeServices,
     tool_execution_governance: &Arc<ToolExecutionGovernance>,
-    memory_store: &Arc<dyn crate::memory::MemoryStore + Send + Sync>,
-    long_term_memory_store: &Arc<dyn crate::memory::LongTermMemoryStore + Send + Sync>,
-    session_store: &Arc<dyn crate::memory::SessionStore + Send + Sync>,
-    config_store: &Arc<dyn crate::platform::ConfigStore + Send + Sync>,
 ) {
+    let platform = &services.platform;
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::MemoryManageTool::new(
-        Arc::clone(memory_store),
-        Arc::clone(long_term_memory_store),
-        platform.skill_storage(),
+        Arc::clone(&services.memory_store),
+        Arc::clone(&services.long_term_memory_store),
+        Arc::clone(&services.skill_storage),
     )));
     #[cfg(all(
         feature = "tools_network_extra",
@@ -974,7 +955,7 @@ fn register_extended_runtime_tools(
     registry.register(Box::new(super::HttpRequestTool));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::SessionManageTool::new(Arc::clone(
-        session_store,
+        &services.session_store,
     ))));
     registry.register(Box::new(super::FileWriteTool::new(platform.state_fs())));
     #[cfg(feature = "tools_diagnostics")]
@@ -984,11 +965,11 @@ fn register_extended_runtime_tools(
     )));
     #[cfg(feature = "tools_diagnostics")]
     registry.register(Box::new(super::CronManageTool::new(Arc::clone(
-        memory_store,
+        &services.memory_store,
     ))));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::ProxyConfigTool::new(Arc::clone(
-        config_store,
+        &services.config_store,
     ))));
     #[cfg(feature = "tools_network_extra")]
     registry.register(Box::new(super::ModelConfigTool::new(Arc::clone(platform))));
@@ -997,7 +978,7 @@ fn register_extended_runtime_tools(
     #[cfg(feature = "tools_diagnostics")]
     if device_capability_registry.is_mounted(crate::DEVICE_CAPABILITY_SENSOR) {
         registry.register(Box::new(super::SensorWatchTool::new(
-            Arc::clone(memory_store),
+            Arc::clone(&services.memory_store),
             config.hardware_devices.clone(),
             config.i2c_sensors.clone(),
         )));
@@ -1024,8 +1005,9 @@ fn register_audio_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
     device_capability_registry: &crate::DeviceCapabilityRegistry,
-    platform: &Arc<dyn crate::Platform>,
+    services: &crate::RuntimeServices,
 ) -> Option<Arc<crate::audio::baidu_token::BaiduTokenCache>> {
+    let platform = &services.platform;
     if !device_capability_registry.is_mounted(crate::DEVICE_CAPABILITY_VOICE) {
         return None;
     }
@@ -1101,69 +1083,40 @@ fn register_host_only_tools(
 
 pub fn build_default_registry(
     config: &AppConfig,
-    deps: DefaultRegistryDeps,
+    services: &crate::RuntimeServices,
 ) -> (
     ToolRegistry,
     Option<Arc<crate::audio::baidu_token::BaiduTokenCache>>,
 ) {
-    let DefaultRegistryDeps {
-        platform,
-        remind_at_store,
-        session_store,
-        memory_store,
-        long_term_memory_store,
-        turn_ledger_store,
-        private_garden_store,
-        config_store,
-    } = deps;
     let device_capability_registry =
-        crate::build_device_capability_registry(config, platform.as_ref());
-    let tool_execution_governance = Arc::new(ToolExecutionGovernance::new(platform.state_fs()));
+        crate::build_device_capability_registry(config, services.platform.as_ref());
+    let tool_execution_governance =
+        Arc::new(ToolExecutionGovernance::new(services.platform.state_fs()));
     let mut registry =
         ToolRegistry::new().with_execution_governance(Arc::clone(&tool_execution_governance));
-    register_core_tools(
-        &mut registry,
-        config,
-        &platform,
-        &config_store,
-        &tool_execution_governance,
-        &remind_at_store,
-        &session_store,
-        &memory_store,
-        &long_term_memory_store,
-        &turn_ledger_store,
-        &private_garden_store,
-    );
+    register_core_tools(&mut registry, config, services, &tool_execution_governance);
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
-    register_office_tools(&mut registry, config, &platform);
+    register_office_tools(&mut registry, config, services);
     register_extended_runtime_tools(
         &mut registry,
         config,
         &device_capability_registry,
-        &platform,
+        services,
         &tool_execution_governance,
-        &memory_store,
-        &long_term_memory_store,
-        &session_store,
-        &config_store,
     );
-    let shared_baidu_token = register_audio_tools(
-        &mut registry,
-        config,
-        &device_capability_registry,
-        &platform,
-    );
+    let shared_baidu_token =
+        register_audio_tools(&mut registry, config, &device_capability_registry, services);
     #[cfg(all(
         not(any(target_arch = "xtensa", target_arch = "riscv32")),
         target_os = "linux"
     ))]
     register_host_only_tools(
         &mut registry,
-        &long_term_memory_store,
-        &platform.continuity_capsule_store(),
+        &services.long_term_memory_store,
+        &services.continuity_capsule_store,
     );
     #[cfg(all(
         not(any(target_arch = "xtensa", target_arch = "riscv32")),
@@ -1596,6 +1549,16 @@ mod tests {
     fn default_registry_registers_diagnose_memory_runtime_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         assert!(ctx.tool_registry.get("diagnose_memory_runtime").is_some());
+    }
+
+    #[test]
+    fn default_registry_builds_from_runtime_services() {
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn crate::Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let services = crate::RuntimeServices::from_platform(platform);
+        let (registry, _) = build_default_registry(&config, &services);
+
+        assert!(registry.get("get_time").is_some());
     }
 
     #[test]

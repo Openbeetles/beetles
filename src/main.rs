@@ -81,82 +81,6 @@ struct TelegramTypingNotifier {
     token: String,
 }
 
-struct RuntimeStores {
-    memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
-    long_term_memory_store: Arc<dyn beetle::memory::LongTermMemoryStore + Send + Sync>,
-    continuity_capsule_store: Arc<dyn beetle::memory::ContinuityCapsuleStore + Send + Sync>,
-    long_term_memory_extraction_state_store:
-        Arc<dyn beetle::memory::LongTermMemoryExtractionStateStore + Send + Sync>,
-    session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
-    pending_retry_store: Arc<dyn beetle::memory::PendingRetryStore + Send + Sync>,
-    task_store: Arc<dyn beetle::task::TaskStore + Send + Sync>,
-    task_run_store: Arc<dyn beetle::task_execution::TaskRunStore + Send + Sync>,
-    task_artifact_store: Arc<dyn beetle::task_execution::TaskArtifactStore + Send + Sync>,
-    task_execution_ledger_store:
-        Arc<dyn beetle::task_execution::TaskExecutionLedgerStore + Send + Sync>,
-    task_learning_store: Arc<dyn beetle::task_execution::TaskLearningStore + Send + Sync>,
-    execution_state_store: Arc<dyn beetle::memory::ExecutionStateStore + Send + Sync>,
-    self_model_store: Arc<dyn beetle::memory::SelfModelStore + Send + Sync>,
-    self_authored_core_store: Arc<dyn beetle::memory::SelfAuthoredCoreStore + Send + Sync>,
-    core_revision_ledger_store: Arc<dyn beetle::memory::CoreRevisionLedgerStore + Send + Sync>,
-    relationship_constitution_store:
-        Arc<dyn beetle::memory::RelationshipConstitutionStore + Send + Sync>,
-    relationship_portfolio_store: Arc<dyn beetle::memory::RelationshipPortfolioStore + Send + Sync>,
-    world_sense_store: Arc<dyn beetle::memory::WorldSenseStore + Send + Sync>,
-    autonomy_strategy_store: Arc<dyn beetle::memory::AutonomyStrategyStore + Send + Sync>,
-    outer_voice_store: Arc<dyn beetle::memory::OuterVoiceStore + Send + Sync>,
-    inner_life_store: Arc<dyn beetle::memory::InnerLifeStore + Send + Sync>,
-    self_continuity_store: Arc<dyn beetle::memory::SelfContinuityStore + Send + Sync>,
-    relationship_topology_store: Arc<dyn beetle::memory::RelationshipTopologyStore + Send + Sync>,
-    private_doc_store: Arc<dyn beetle::memory::PrivateDocStore + Send + Sync>,
-    private_garden_store: Arc<dyn beetle::memory::PrivateGardenStore + Send + Sync>,
-    mental_privacy_store: Arc<dyn beetle::memory::MentalPrivacyStore + Send + Sync>,
-    important_message_store: Arc<dyn beetle::memory::ImportantMessageStore + Send + Sync>,
-    remind_at_store: Arc<dyn beetle::memory::RemindAtStore + Send + Sync>,
-    session_summary_store: Arc<dyn beetle::memory::SessionSummaryStore + Send + Sync>,
-    turn_ledger_store: Arc<dyn beetle::memory::TurnLedgerStore + Send + Sync>,
-    emotion_signal_store: Arc<beetle::memory::MemoryEmotionSignalStore>,
-}
-
-impl RuntimeStores {
-    fn collect(platform: &Arc<dyn Platform>) -> Self {
-        Self {
-            memory_store: platform.memory_store(),
-            long_term_memory_store: platform.long_term_memory_store(),
-            continuity_capsule_store: platform.continuity_capsule_store(),
-            long_term_memory_extraction_state_store: platform
-                .long_term_memory_extraction_state_store(),
-            session_store: platform.session_store(),
-            pending_retry_store: platform.pending_retry_store(),
-            task_store: platform.task_store(),
-            task_run_store: platform.task_run_store(),
-            task_artifact_store: platform.task_artifact_store(),
-            task_execution_ledger_store: platform.task_execution_ledger_store(),
-            task_learning_store: platform.task_learning_store(),
-            execution_state_store: platform.execution_state_store(),
-            self_model_store: platform.self_model_store(),
-            self_authored_core_store: platform.self_authored_core_store(),
-            core_revision_ledger_store: platform.core_revision_ledger_store(),
-            relationship_constitution_store: platform.relationship_constitution_store(),
-            relationship_portfolio_store: platform.relationship_portfolio_store(),
-            world_sense_store: platform.world_sense_store(),
-            autonomy_strategy_store: platform.autonomy_strategy_store(),
-            outer_voice_store: platform.outer_voice_store(),
-            inner_life_store: platform.inner_life_store(),
-            self_continuity_store: platform.self_continuity_store(),
-            relationship_topology_store: platform.relationship_topology_store(),
-            private_doc_store: platform.private_doc_store(),
-            private_garden_store: platform.private_garden_store(),
-            mental_privacy_store: platform.mental_privacy_store(),
-            important_message_store: platform.important_message_store(),
-            remind_at_store: platform.remind_at_store(),
-            session_summary_store: platform.session_summary_store(),
-            turn_ledger_store: platform.turn_ledger_store(),
-            emotion_signal_store: Arc::new(beetle::memory::MemoryEmotionSignalStore::new()),
-        }
-    }
-}
-
 struct RuntimeBus {
     user_inbound_tx: beetle::bus::InboundTx,
     user_inbound_rx: Option<beetle::bus::InboundRx>,
@@ -189,14 +113,10 @@ impl RuntimeBus {
 }
 
 struct PreparedRuntimeAssembly {
-    platform: Arc<dyn Platform>,
+    runtime: beetle::RuntimeServices,
     config: Arc<AppConfig>,
-    config_store: Arc<dyn beetle::ConfigStore + Send + Sync>,
-    memory_system_kind: beetle::memory::MemorySystemKind,
     resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync>,
-    skill_storage: Arc<dyn beetle::SkillStorage + Send + Sync>,
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
-    stores: RuntimeStores,
     bus: RuntimeBus,
     qq_msg_id_cache: beetle::channels::QqMsgIdCache,
     qq_token_cache: beetle::channels::SharedQqTokenCache,
@@ -1703,19 +1623,8 @@ fn handle_config_command(platform: &Arc<dyn Platform>, action: beetle::commands:
 fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Option<&str>) {
     beetle::platform::refresh_runtime_state();
     let config = beetle::bootstrap::load_config(platform);
-    let (tool_registry, _) = beetle::tools::build_default_registry(
-        &config,
-        beetle::tools::DefaultRegistryDeps {
-            platform: Arc::clone(platform),
-            remind_at_store: platform.remind_at_store(),
-            session_store: platform.session_store(),
-            memory_store: platform.memory_store(),
-            long_term_memory_store: platform.long_term_memory_store(),
-            turn_ledger_store: platform.turn_ledger_store(),
-            private_garden_store: platform.private_garden_store(),
-            config_store: platform.config_store(),
-        },
-    );
+    let runtime_services = beetle::RuntimeServices::from_platform(Arc::clone(platform));
+    let (tool_registry, _) = beetle::tools::build_default_registry(&config, &runtime_services);
     let operator_status = beetle::platform::operator_status::build_operator_status(
         beetle::platform::operator_status::OperatorStatusInput {
             config: &config,
@@ -2316,14 +2225,14 @@ fn prepare_runtime_assembly(
     config: Arc<AppConfig>,
     wifi_init_ok: bool,
 ) -> Option<PreparedRuntimeAssembly> {
-    let config_store = platform.config_store();
-    let memory_system_kind = platform.memory_system_kind();
+    let runtime = beetle::RuntimeServices::from_platform(Arc::clone(&platform));
+    let config_store = Arc::clone(&runtime.config_store);
     let resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync> = Arc::new({
         let cs = Arc::clone(&config_store);
         move || beetle::i18n::Locale::from_storage(&beetle::config::get_locale(cs.as_ref()))
     });
-    let skill_storage = platform.skill_storage();
-    let skill_meta_store = platform.skill_meta_store();
+    let skill_storage = Arc::clone(&runtime.skill_storage);
+    let skill_meta_store = Arc::clone(&runtime.skill_meta_store);
     let skill_prompt_cache = Arc::new(beetle::skills::SkillPromptCache::new(
         Arc::clone(&skill_meta_store),
         Arc::clone(&skill_storage),
@@ -2331,9 +2240,8 @@ fn prepare_runtime_assembly(
     ));
     let _ = skill_prompt_cache.refresh();
 
-    let stores = RuntimeStores::collect(&platform);
-    app_runtime_support::ensure_storage_ready(stores.memory_store.as_ref());
-    app_runtime_support::log_runtime_store_lengths(&stores);
+    app_runtime_support::ensure_storage_ready(runtime.memory_store.as_ref());
+    app_runtime_support::log_runtime_store_lengths(&runtime);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("boot_memory_reads");
     beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_after_boot_memory_reads");
@@ -2345,7 +2253,7 @@ fn prepare_runtime_assembly(
         DEFAULT_CAPACITY
     );
     app_runtime_support::bootstrap_pending_retry_into_inbound(
-        stores.pending_retry_store.as_ref(),
+        runtime.pending_retry_store.as_ref(),
         &bus.user_inbound_tx,
         &bus.system_inbound_tx,
     );
@@ -2353,19 +2261,7 @@ fn prepare_runtime_assembly(
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
     let qq_token_cache = beetle::channels::new_shared_qq_token_cache();
     #[allow(unused_variables)]
-    let (mut registry, baidu_token_cache) = beetle::build_default_registry(
-        &config,
-        beetle::DefaultRegistryDeps {
-            platform: Arc::clone(&platform),
-            remind_at_store: Arc::clone(&stores.remind_at_store),
-            session_store: Arc::clone(&stores.session_store),
-            memory_store: Arc::clone(&stores.memory_store),
-            long_term_memory_store: Arc::clone(&stores.long_term_memory_store),
-            turn_ledger_store: Arc::clone(&stores.turn_ledger_store),
-            private_garden_store: Arc::clone(&stores.private_garden_store),
-            config_store: platform.config_store(),
-        },
-    );
+    let (mut registry, baidu_token_cache) = beetle::build_default_registry(&config, &runtime);
 
     beetle::bootstrap::init_audio_if_enabled(&platform, &config);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -2426,7 +2322,7 @@ fn prepare_runtime_assembly(
         Arc::clone(&config),
     ));
 
-    if !app_runtime_support::startup_self_check(stores.memory_store.as_ref()) {
+    if !app_runtime_support::startup_self_check(runtime.memory_store.as_ref()) {
         log::error!(
             "[{}] startup self-check failed: storage not readable (get_memory and get_soul both failed)",
             TAG
@@ -2466,14 +2362,10 @@ fn prepare_runtime_assembly(
     }
 
     Some(PreparedRuntimeAssembly {
-        platform,
+        runtime,
         config,
-        config_store,
-        memory_system_kind,
         resolve_locale_ui,
-        skill_storage,
         skill_prompt_cache,
-        stores,
         bus,
         qq_msg_id_cache,
         qq_token_cache,
@@ -2497,13 +2389,13 @@ fn start_support_planes(
     {
         let shared_runtime_config = Arc::new(RwLock::new((*assembly.config).clone()));
         spawn_http_config_server(HttpServerSpawnContext {
-            platform: Arc::clone(&assembly.platform),
+            platform: Arc::clone(&assembly.runtime.platform),
             tool_registry: Arc::clone(&assembly.registry),
             channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
             inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
             outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
-            memory_store: Arc::clone(&assembly.stores.memory_store),
-            session_store: Arc::clone(&assembly.stores.session_store),
+            memory_store: Arc::clone(&assembly.runtime.memory_store),
+            session_store: Arc::clone(&assembly.runtime.session_store),
             system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
             skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
             inbound_tx: assembly.bus.user_inbound_tx.clone(),
@@ -2539,31 +2431,31 @@ fn start_support_planes(
     beetle::bg_timer::run_bg_timer(beetle::bg_timer::BgTimerContext {
         system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
         resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
-        platform: Arc::clone(&assembly.platform),
+        platform: Arc::clone(&assembly.runtime.platform),
         config: Arc::clone(&assembly.config),
         version: VERSION,
         read_heartbeat: Box::new(|| beetle::platform::read_heartbeat_file().unwrap_or_default()),
         user_inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
         system_inbound_depth: Arc::clone(&assembly.bus.system_inbound_depth),
         outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
-        session_store: Arc::clone(&assembly.stores.session_store),
-        memory_system_kind: assembly.memory_system_kind,
-        autonomy_strategy_store: Arc::clone(&assembly.stores.autonomy_strategy_store),
-        self_authored_core_store: Arc::clone(&assembly.stores.self_authored_core_store),
-        self_continuity_store: Arc::clone(&assembly.stores.self_continuity_store),
-        relationship_portfolio_store: Arc::clone(&assembly.stores.relationship_portfolio_store),
-        relationship_topology_store: Arc::clone(&assembly.stores.relationship_topology_store),
-        memory_store: Some(Arc::clone(&assembly.stores.memory_store)),
+        session_store: Arc::clone(&assembly.runtime.session_store),
+        memory_system_kind: assembly.runtime.memory_system_kind,
+        autonomy_strategy_store: Arc::clone(&assembly.runtime.autonomy_strategy_store),
+        self_authored_core_store: Arc::clone(&assembly.runtime.self_authored_core_store),
+        self_continuity_store: Arc::clone(&assembly.runtime.self_continuity_store),
+        relationship_portfolio_store: Arc::clone(&assembly.runtime.relationship_portfolio_store),
+        relationship_topology_store: Arc::clone(&assembly.runtime.relationship_topology_store),
+        memory_store: Some(Arc::clone(&assembly.runtime.memory_store)),
         sensor_watch: assembly
             .device_capability_registry
             .is_mounted(beetle::DEVICE_CAPABILITY_SENSOR)
             .then(|| beetle::cron::SensorWatchContext {
-                platform: Arc::clone(&assembly.platform),
+                platform: Arc::clone(&assembly.runtime.platform),
                 devices: assembly.config.hardware_devices.clone(),
                 i2c_sensors: assembly.config.i2c_sensors.clone(),
             }),
-        remind_store: Arc::clone(&assembly.stores.remind_at_store),
-        task_store: Arc::clone(&assembly.stores.task_store),
+        remind_store: Arc::clone(&assembly.runtime.remind_at_store),
+        task_store: Arc::clone(&assembly.runtime.task_store),
     });
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("bg_timer_started");
@@ -2576,8 +2468,8 @@ fn start_support_planes(
     beetle::orchestrator::log_startup_memory_checkpoint("orchestrator_initialized");
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if assembly.platform.display_available() {
-        let display_platform = Arc::clone(&assembly.platform);
+    if assembly.runtime.platform.display_available() {
+        let display_platform = Arc::clone(&assembly.runtime.platform);
         let display_config = Arc::clone(&assembly.config);
         let plan = thread_plan("display");
         let _ = beetle::util::spawn_guarded_with_profile_handle(
@@ -2602,8 +2494,9 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         &assembly.qq_token_cache,
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if assembly.platform.display_available() {
+    if assembly.runtime.platform.display_available() {
         let _ = assembly
+            .runtime
             .platform
             .display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
     }
@@ -2621,7 +2514,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
 
     let started_voice_session = if assembly.communication_plane.start_voice_session {
         spawn_voice_session_if_ready(
-            &assembly.platform,
+            &assembly.runtime.platform,
             &assembly.network_governor,
             &assembly.config,
             assembly.baidu_token_cache.as_ref(),
@@ -2646,7 +2539,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
             let id = c.app_id.clone();
             let sec = c.app_secret.clone();
             let allowed = parse_allowed_chat_ids(&assembly.config.feishu_allowed_chat_ids);
-            let pending = Arc::clone(&assembly.stores.pending_retry_store);
+            let pending = Arc::clone(&assembly.runtime.pending_retry_store);
             let http_factory = assembly
                 .network_governor
                 .http_factory(HttpClientClass::Background);
@@ -2684,7 +2577,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                     let qq_sec = c.app_secret.clone();
                     let qq_cache_ws = Arc::clone(&assembly.qq_msg_id_cache);
                     let qq_token_cache_ws = assembly.qq_token_cache.clone();
-                    let qq_pending = Arc::clone(&assembly.stores.pending_retry_store);
+                    let qq_pending = Arc::clone(&assembly.runtime.pending_retry_store);
                     let http_factory = assembly
                         .network_governor
                         .http_factory(HttpClientClass::Background);
@@ -2745,11 +2638,11 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         let tg_group_activation = assembly.config.tg_group_activation.clone();
         let tg_inbound_tx = assembly.bus.user_inbound_tx.clone();
         let tg_outbound_tx = assembly.bus.outbound_tx.clone();
-        let tg_session_store = Arc::clone(&assembly.stores.session_store);
-        let tg_pending = Arc::clone(&assembly.stores.pending_retry_store);
+        let tg_session_store = Arc::clone(&assembly.runtime.session_store);
+        let tg_pending = Arc::clone(&assembly.runtime.pending_retry_store);
         let tg_inbound_depth = Arc::clone(&assembly.bus.user_inbound_depth);
         let tg_outbound_depth = Arc::clone(&assembly.bus.outbound_depth);
-        let tg_config_store = Arc::clone(&assembly.config_store);
+        let tg_config_store = Arc::clone(&assembly.runtime.config_store);
         let tg_resolve_locale = Arc::clone(&assembly.resolve_locale_ui);
         let http_factory = assembly
             .network_governor
@@ -2780,7 +2673,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     }
 
     if let Some(ref bus_cfg) = assembly.config.i2c_bus {
-        if let Err(error) = assembly.platform.init_i2c(bus_cfg) {
+        if let Err(error) = assembly.runtime.platform.init_i2c(bus_cfg) {
             log::warn!(
                 "[{}] I2C bus init failed (devices will be unavailable): {}",
                 TAG,
@@ -2811,8 +2704,9 @@ fn start_agent_plane(
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if assembly.platform.display_available() {
+    if assembly.runtime.platform.display_available() {
         let _ = assembly
+            .runtime
             .platform
             .display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
     }
@@ -2826,7 +2720,7 @@ fn start_agent_plane(
         move || skill_prompt_cache.get()
     });
     let get_capability_package_text: CapabilityPackageTextProvider = Arc::new({
-        let state_fs = assembly.platform.state_fs();
+        let state_fs = assembly.runtime.platform.state_fs();
         let runtime_capabilities = Arc::clone(&assembly.capability_package_runtime_capabilities);
         move |channel, max_chars| {
             if max_chars == 0 {
@@ -2907,49 +2801,11 @@ fn start_agent_plane(
         beetle::agent::AgentRunStrategy::LinuxEnhanced
     };
     let agent_config = Arc::new(beetle::AgentLoopConfig {
-        platform: Arc::clone(&assembly.platform),
-        memory_store: Arc::clone(&assembly.stores.memory_store),
-        long_term_memory_store: Arc::clone(&assembly.stores.long_term_memory_store),
-        continuity_capsule_store: Arc::clone(&assembly.stores.continuity_capsule_store),
-        long_term_memory_extraction_state_store: Arc::clone(
-            &assembly.stores.long_term_memory_extraction_state_store,
-        ),
-        session_store: Arc::clone(&assembly.stores.session_store),
-        session_summary_store: Arc::clone(&assembly.stores.session_summary_store),
-        execution_state_store: Arc::clone(&assembly.stores.execution_state_store),
-        self_model_store: Arc::clone(&assembly.stores.self_model_store),
-        self_authored_core_store: Arc::clone(&assembly.stores.self_authored_core_store),
-        core_revision_ledger_store: Arc::clone(&assembly.stores.core_revision_ledger_store),
-        relationship_constitution_store: Arc::clone(
-            &assembly.stores.relationship_constitution_store,
-        ),
-        relationship_portfolio_store: Arc::clone(&assembly.stores.relationship_portfolio_store),
-        world_sense_store: Arc::clone(&assembly.stores.world_sense_store),
-        autonomy_strategy_store: Arc::clone(&assembly.stores.autonomy_strategy_store),
-        outer_voice_store: Arc::clone(&assembly.stores.outer_voice_store),
-        inner_life_store: Arc::clone(&assembly.stores.inner_life_store),
-        self_continuity_store: Arc::clone(&assembly.stores.self_continuity_store),
-        relationship_topology_store: Arc::clone(&assembly.stores.relationship_topology_store),
-        private_doc_store: Arc::clone(&assembly.stores.private_doc_store),
-        private_garden_store: Arc::clone(&assembly.stores.private_garden_store),
-        mental_privacy_store: Arc::clone(&assembly.stores.mental_privacy_store),
-        turn_ledger_store: Arc::clone(&assembly.stores.turn_ledger_store),
-        skill_storage: Arc::clone(&assembly.skill_storage),
-        memory_system_kind: assembly.memory_system_kind,
+        runtime: assembly.runtime.clone(),
         get_skill_descriptions,
         get_capability_package_text,
         session_max_messages: session_max,
         tg_group_activation: Arc::<str>::from(assembly.config.tg_group_activation.as_str()),
-        important_message_store: Arc::clone(&assembly.stores.important_message_store),
-        emotion_signal_store: Arc::clone(&assembly.stores.emotion_signal_store)
-            as Arc<dyn beetle::memory::EmotionSignalStore + Send + Sync>,
-        remind_store: Arc::clone(&assembly.stores.remind_at_store),
-        task_store: Arc::clone(&assembly.stores.task_store),
-        task_run_store: Arc::clone(&assembly.stores.task_run_store),
-        task_artifact_store: Arc::clone(&assembly.stores.task_artifact_store),
-        task_execution_ledger_store: Arc::clone(&assembly.stores.task_execution_ledger_store),
-        task_learning_store: Arc::clone(&assembly.stores.task_learning_store),
-        pending_retry: Arc::clone(&assembly.stores.pending_retry_store),
         channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
         strategy: agent_strategy,
         llm_stream: assembly.config.llm_stream,
@@ -2962,10 +2818,10 @@ fn start_agent_plane(
     {
         let cli_ctx = beetle::cli::CliContext::new(
             Arc::clone(&assembly.config),
-            Arc::clone(&assembly.config_store),
-            Arc::clone(&assembly.stores.memory_store),
-            Arc::clone(&assembly.stores.session_store),
-            Arc::clone(&assembly.platform),
+            Arc::clone(&assembly.runtime.config_store),
+            Arc::clone(&assembly.runtime.memory_store),
+            Arc::clone(&assembly.runtime.session_store),
+            Arc::clone(&assembly.runtime.platform),
             Arc::clone(&assembly.registry),
             Arc::clone(&assembly.channel_capability_registry),
             Arc::clone(&assembly.capability_package_runtime_capabilities),
@@ -2984,7 +2840,7 @@ fn start_agent_plane(
     let tag = TAG;
     let agent_registry = Arc::clone(&assembly.registry);
     let agent_worker_llm = Arc::clone(&worker_llm);
-    let agent_platform = Arc::clone(&assembly.platform);
+    let agent_platform = Arc::clone(&assembly.runtime.platform);
     let agent_network = Arc::clone(&assembly.network_governor);
     let agent_loop_config = Arc::clone(&agent_config);
     let worker_user_inbound_tx = assembly.bus.user_inbound_tx.clone();
@@ -3085,7 +2941,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     if let Err(error) = start_support_planes(&assembly, wifi_init_ok) {
         log::error!("[{}] support plane startup failed: {}", TAG, error);
         app_runtime_support::record_startup_failure_and_request_restart(
-            &assembly.platform,
+            &assembly.runtime.platform,
             &error,
             "support_plane_startup_failed",
         );
@@ -3095,7 +2951,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     if let Err(error) = start_communication_planes(&mut assembly) {
         log::error!("[{}] communication plane startup failed: {}", TAG, error);
         app_runtime_support::record_startup_failure_and_request_restart(
-            &assembly.platform,
+            &assembly.runtime.platform,
             &error,
             "communication_plane_startup_failed",
         );
@@ -3107,7 +2963,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         Err(error) => {
             log::error!("[{}] agent plane startup failed: {}", TAG, error);
             app_runtime_support::record_startup_failure_and_request_restart(
-                &assembly.platform,
+                &assembly.runtime.platform,
                 &error,
                 "agent_plane_startup_failed",
             );
@@ -3124,5 +2980,5 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::platform::task_wdt::register_current_task_to_task_wdt();
     beetle::state::set_boot_phase_active(false);
-    run_runtime_guard_loop(Arc::clone(&assembly.platform), agent_handle);
+    run_runtime_guard_loop(Arc::clone(&assembly.runtime.platform), agent_handle);
 }

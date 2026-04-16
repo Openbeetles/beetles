@@ -46,7 +46,7 @@ pub(super) fn handle_worker_path_error(
     turn_ledger.total_ms = total_ms.min(u64::MAX as u128) as u64;
     turn_ledger.reply_preview = normalize_turn_preview(&tr(user_message.clone(), loc));
     persist_turn_ledger(
-        config.turn_ledger_store.as_ref(),
+        config.runtime.turn_ledger_store.as_ref(),
         &relationship_id,
         turn_ledger,
         "error",
@@ -80,7 +80,7 @@ pub(super) fn handle_worker_path_error(
             match inbound_tx.try_send(msg.clone()) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                    let _ = config.pending_retry.save_pending_retry(&m);
+                    let _ = config.runtime.pending_retry_store.save_pending_retry(&m);
                     log::warn!(
                         "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
                         m.chat_id

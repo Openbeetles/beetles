@@ -623,6 +623,18 @@ fn build_policy_view(
     ))
 }
 
+fn convert_relationship_target(
+    target: &crate::memory::RelationshipSelectionTarget,
+) -> MemoryOperatorRelationshipTarget {
+    MemoryOperatorRelationshipTarget {
+        scope_id: target.scope_id.clone(),
+        channel: target.channel.clone(),
+        chat_id: target.chat_id.clone(),
+        score: target.score,
+        reason: target.reason.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,17 +680,5 @@ mod tests {
         assert!(text.contains("latest_strategy_feedback=true"));
         assert!(text.contains("latest_post_reply_runtime=true"));
         assert!(text.contains("primary_action=repair_self_authored_core"));
-    }
-}
-
-fn convert_relationship_target(
-    target: &crate::memory::RelationshipSelectionTarget,
-) -> MemoryOperatorRelationshipTarget {
-    MemoryOperatorRelationshipTarget {
-        scope_id: target.scope_id.clone(),
-        channel: target.channel.clone(),
-        chat_id: target.chat_id.clone(),
-        score: target.score,
-        reason: target.reason.clone(),
     }
 }

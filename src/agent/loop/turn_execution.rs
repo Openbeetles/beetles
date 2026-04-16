@@ -65,11 +65,15 @@ pub(super) fn execute_turn(
         locale: loc,
     };
     let request_semantics_started = Instant::now();
-    let active_run =
-        active_task_run_for_chat(config.task_run_store.as_ref(), &msg.channel, &msg.chat_id)
-            .ok()
-            .flatten();
+    let active_run = active_task_run_for_chat(
+        config.runtime.task_run_store.as_ref(),
+        &msg.channel,
+        &msg.chat_id,
+    )
+    .ok()
+    .flatten();
     let active_execution_state = config
+        .runtime
         .execution_state_store
         .get(&msg.chat_id)
         .ok()
@@ -125,7 +129,7 @@ pub(super) fn execute_turn(
         outbound_tx,
         editor,
         channel_capability,
-        config.memory_system_kind,
+        config.runtime.memory_system_kind,
         loc,
     );
     let PreparedWorkerConversation {
@@ -480,11 +484,11 @@ pub(super) fn execute_turn(
                     && interactive_fast_path
                     && allow_tool_round_recall_refill
                     && prompt_memory_system_budget
-                        >= memory_policy(config.memory_system_kind)
+                        >= memory_policy(config.runtime.memory_system_kind)
                             .long_term_recall
                             .block_min_len
                 {
-                    let recall_recent_count = memory_policy(config.memory_system_kind)
+                    let recall_recent_count = memory_policy(config.runtime.memory_system_kind)
                         .long_term_recall
                         .recent_grounding_message_count;
                     let recent_start = runtime_carry
@@ -492,13 +496,13 @@ pub(super) fn execute_turn(
                         .len()
                         .saturating_sub(recall_recent_count);
                     runtime_carry.long_term_memory_text = recall_long_term_memory_block(
-                        config.long_term_memory_store.as_ref(),
+                        config.runtime.long_term_memory_store.as_ref(),
                         &msg.chat_id,
                         &msg.content,
                         runtime_carry.summary_text.as_deref(),
                         &runtime_carry.recent_messages[recent_start..],
                         prompt_memory_system_budget,
-                        config.memory_system_kind.memory_profile(),
+                        config.runtime.memory_system_kind.memory_profile(),
                     );
                 }
                 memory_grounding = build_memory_grounding_text(

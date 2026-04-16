@@ -59,21 +59,16 @@ use crate::memory::{
     render_core_revision_governance_block, render_recent_persona_evidence_block,
     run_long_term_memory_refresh, run_mental_privacy_disclosure_adjudication,
     run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
-    upsert_relationship_topology_entry, AutonomyStrategyStore, EmotionSignalStore,
-    ExecutionStateStore, ImportantMessageStore, InnerLifeStore, LongTermMemoryExtractionStateStore,
-    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
-    LongTermMemoryRefreshRequestOutcome, LongTermMemoryStore, MemoryStore,
-    MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
-    MentalPrivacyReviewContext, MentalPrivacyReviewInput, MentalPrivacyReviewOutcome,
-    MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PersonaPriorityAdjudication,
-    PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
-    PostReplyMemoryMaintenanceContext, PostReplyMemoryMaintenanceInput, PrivateDocStore,
-    PrivateGardenStore, PromptMemoryContext, PromptMemoryContextParams, PromptRuntimeCarry,
-    RelationshipTopologyStore, RemindAtStore, SelfContinuityStore, SelfModelStore,
-    SelfRuntimeContext, SessionMessage, SessionStore, SessionSummaryRefreshOutcome,
-    SessionSummaryStore, TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus,
-    TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger,
-    TurnPersonaReviewLedger, TurnToolPathLedger, WorldSenseStore,
+    upsert_relationship_topology_entry, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    LongTermMemoryRefreshRequestOutcome, MentalPrivacyDisclosureAdjudicationContext,
+    MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext, MentalPrivacyReviewInput,
+    MentalPrivacyReviewOutcome, PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput,
+    PersonaPriorityGrounding, PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
+    PostReplyMemoryMaintenanceInput, PromptMemoryContext, PromptMemoryContextParams,
+    PromptRuntimeCarry, SelfRuntimeContext, SessionMessage, SessionSummaryRefreshOutcome,
+    TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
+    TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger, TurnPersonaReviewLedger,
+    TurnToolPathLedger,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
@@ -91,9 +86,7 @@ use crate::task_execution::{
     TaskPlannerDecision, TaskReviewDecision, TaskReviewOutcome, TaskRunRecord, TaskRunStatus,
     TaskStep, TaskStepStatus,
 };
-use crate::task_execution::{
-    TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
-};
+use crate::task_execution::{TaskArtifactStore, TaskExecutionLedgerStore, TaskRunStore};
 use crate::tools::http_bridge::HttpClientToolContext;
 use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::{
@@ -1388,7 +1381,7 @@ fn handle_llm_gate(
             match inbound_tx.try_send(msg) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                    let _ = config.pending_retry.save_pending_retry(&m);
+                    let _ = config.runtime.pending_retry_store.save_pending_retry(&m);
                     let suffix = if m.ingress == IngressKind::System {
                         "(system)"
                     } else {
@@ -1418,7 +1411,7 @@ fn handle_llm_gate(
                 msg.enqueue_ts_ms = now_unix_ms();
                 let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
                 if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(msg) {
-                    let _ = config.pending_retry.save_pending_retry(&m);
+                    let _ = config.runtime.pending_retry_store.save_pending_retry(&m);
                 }
             } else {
                 log::info!("[agent] LLM degraded: {}", reason);
@@ -1589,47 +1582,11 @@ struct EndTurnFollowupContext<'a> {
 
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
 pub struct AgentLoopConfig {
-    pub platform: Arc<dyn crate::Platform>,
-    pub memory_store: Arc<dyn MemoryStore + Send + Sync>,
-    pub long_term_memory_store: Arc<dyn LongTermMemoryStore + Send + Sync>,
-    pub continuity_capsule_store: Arc<dyn crate::memory::ContinuityCapsuleStore + Send + Sync>,
-    pub long_term_memory_extraction_state_store:
-        Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
-    pub session_store: Arc<dyn SessionStore + Send + Sync>,
-    pub session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
-    pub execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
-    pub self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
-    pub self_authored_core_store: Arc<dyn crate::memory::SelfAuthoredCoreStore + Send + Sync>,
-    pub core_revision_ledger_store: Arc<dyn crate::memory::CoreRevisionLedgerStore + Send + Sync>,
-    pub relationship_constitution_store:
-        Arc<dyn crate::memory::RelationshipConstitutionStore + Send + Sync>,
-    pub world_sense_store: Arc<dyn WorldSenseStore + Send + Sync>,
-    pub autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
-    pub outer_voice_store: Arc<dyn OuterVoiceStore + Send + Sync>,
-    pub inner_life_store: Arc<dyn InnerLifeStore + Send + Sync>,
-    pub self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
-    pub relationship_portfolio_store:
-        Arc<dyn crate::memory::RelationshipPortfolioStore + Send + Sync>,
-    pub relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
-    pub private_doc_store: Arc<dyn PrivateDocStore + Send + Sync>,
-    pub private_garden_store: Arc<dyn PrivateGardenStore + Send + Sync>,
-    pub mental_privacy_store: Arc<dyn MentalPrivacyStore + Send + Sync>,
-    pub turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
-    pub skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
-    pub memory_system_kind: crate::memory::MemorySystemKind,
+    pub runtime: crate::RuntimeServices,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub get_capability_package_text: CapabilityPackageTextProvider,
     pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
-    pub important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
-    pub emotion_signal_store: Arc<dyn EmotionSignalStore + Send + Sync>,
-    pub remind_store: Arc<dyn RemindAtStore + Send + Sync>,
-    pub task_store: Arc<dyn crate::task::TaskStore + Send + Sync>,
-    pub task_run_store: Arc<dyn TaskRunStore + Send + Sync>,
-    pub task_artifact_store: Arc<dyn TaskArtifactStore + Send + Sync>,
-    pub task_execution_ledger_store: Arc<dyn TaskExecutionLedgerStore + Send + Sync>,
-    pub task_learning_store: Arc<dyn TaskLearningStore + Send + Sync>,
-    pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
     pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     pub strategy: AgentRunStrategy,
     /// 全局 LLM 流式模式；true 时 agent 使用 chat_with_progress 回调。
@@ -1855,7 +1812,7 @@ fn run_agent_loop_main(
             turn_started_at_ms,
         );
         persist_turn_ledger(
-            config.turn_ledger_store.as_ref(),
+            config.runtime.turn_ledger_store.as_ref(),
             &crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
             &turn_ledger,
             "start",
@@ -1972,12 +1929,13 @@ mod tests {
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
     use crate::memory::{
-        EmotionSignalStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
-        LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
+        AutonomyStrategyStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
+        InnerLifeStore, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
         LongTermMemoryExtractionStateStore, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
-        MentalPrivacyState, MentalPrivacyStore, PendingRetryStore, PrivateGardenDoc,
-        PrivateGardenDocRecord, SessionMessage, SessionStore, SessionSummaryStore, TurnLedger,
-        TurnLedgerStore,
+        MentalPrivacyState, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
+        PrivateDocStore, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
+        RelationshipTopologyStore, SelfContinuityStore, SelfModelStore, SessionMessage,
+        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use crate::runtime::workflow::{reset_workflow_audit_for_tests, workflow_audit_snapshot};
@@ -2834,18 +2792,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct StubEmotionSignalStore;
-
-    impl EmotionSignalStore for StubEmotionSignalStore {
-        fn set(&self, _chat_id: &str, _signal: &str) -> Result<()> {
-            Ok(())
-        }
-        fn get_then_clear(&self, _chat_id: &str) -> Result<Option<String>> {
-            Ok(None)
-        }
-    }
-
     struct StubTurnLedgerStore;
 
     impl TurnLedgerStore for StubTurnLedgerStore {
@@ -3125,47 +3071,55 @@ mod tests {
         config.enabled_channel = crate::CHANNEL_QQ_CHANNEL.to_string();
         config.qq_channel_app_id = "qq-app".to_string();
         config.qq_channel_secret = "qq-secret".to_string();
+        let platform: Arc<dyn crate::Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         AgentLoopConfig {
-            platform: Arc::new(crate::platform::LinuxPlatform::new()),
-            memory_store: Arc::new(EmptyMemoryStore),
-            long_term_memory_store: Arc::new(StubLongTermMemoryStore),
-            continuity_capsule_store: Arc::new(StubContinuityCapsuleStore),
-            long_term_memory_extraction_state_store: Arc::new(
-                StubLongTermMemoryExtractionStateStore,
-            ),
-            session_store: Arc::new(StubSessionStore::default()),
-            session_summary_store: Arc::new(StubSessionSummaryStore),
-            execution_state_store: Arc::new(StubExecutionStateStore::default()),
-            self_model_store: Arc::new(StubSelfModelStore),
-            self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),
-            core_revision_ledger_store: Arc::new(StubCoreRevisionLedgerStore),
-            relationship_constitution_store: Arc::new(StubRelationshipConstitutionStore),
-            world_sense_store: Arc::new(StubWorldSenseStore),
-            autonomy_strategy_store: Arc::new(StubAutonomyStrategyStore),
-            outer_voice_store: Arc::new(StubOuterVoiceStore),
-            inner_life_store: Arc::new(StubInnerLifeStore),
-            self_continuity_store: Arc::new(StubSelfContinuityStore),
-            relationship_portfolio_store: Arc::new(StubRelationshipPortfolioStore),
-            relationship_topology_store: Arc::new(StubRelationshipTopologyStore),
-            private_doc_store: Arc::new(StubPrivateDocStore),
-            private_garden_store: Arc::new(StubPrivateGardenStore),
-            mental_privacy_store: Arc::new(StubMentalPrivacyStore),
-            turn_ledger_store: Arc::new(StubTurnLedgerStore),
-            skill_storage: Arc::new(crate::platform::SpiffsSkillStorage),
-            memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
+            runtime: crate::RuntimeServices {
+                config_store: platform.config_store(),
+                memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
+                skill_storage: platform.skill_storage(),
+                skill_meta_store: platform.skill_meta_store(),
+                memory_store: Arc::new(EmptyMemoryStore),
+                long_term_memory_store: Arc::new(StubLongTermMemoryStore),
+                continuity_capsule_store: Arc::new(StubContinuityCapsuleStore),
+                long_term_memory_extraction_state_store: Arc::new(
+                    StubLongTermMemoryExtractionStateStore,
+                ),
+                session_store: Arc::new(StubSessionStore::default()),
+                pending_retry_store: Arc::new(StubPendingRetryStore),
+                calendar_store: platform.calendar_store(),
+                office_credential_store: platform.office_credential_store(),
+                office_runtime_status_store: platform.office_runtime_status_store(),
+                task_store: Arc::new(StubTaskStore),
+                task_run_store: Arc::new(StubTaskRunStore),
+                task_artifact_store: Arc::new(StubTaskArtifactStore),
+                task_execution_ledger_store: Arc::new(StubTaskExecutionLedgerStore),
+                task_learning_store: Arc::new(StubTaskLearningStore),
+                execution_state_store: Arc::new(StubExecutionStateStore::default()),
+                self_model_store: Arc::new(StubSelfModelStore),
+                self_authored_core_store: Arc::new(StubSelfAuthoredCoreStore),
+                core_revision_ledger_store: Arc::new(StubCoreRevisionLedgerStore),
+                relationship_constitution_store: Arc::new(StubRelationshipConstitutionStore),
+                relationship_portfolio_store: Arc::new(StubRelationshipPortfolioStore),
+                world_sense_store: Arc::new(StubWorldSenseStore),
+                autonomy_strategy_store: Arc::new(StubAutonomyStrategyStore),
+                outer_voice_store: Arc::new(StubOuterVoiceStore),
+                inner_life_store: Arc::new(StubInnerLifeStore),
+                self_continuity_store: Arc::new(StubSelfContinuityStore),
+                relationship_topology_store: Arc::new(StubRelationshipTopologyStore),
+                private_doc_store: Arc::new(StubPrivateDocStore),
+                private_garden_store: Arc::new(StubPrivateGardenStore),
+                mental_privacy_store: Arc::new(StubMentalPrivacyStore),
+                important_message_store: Arc::new(StubImportantMessageStore),
+                remind_at_store: Arc::new(StubRemindAtStore),
+                session_summary_store: Arc::new(StubSessionSummaryStore),
+                turn_ledger_store: Arc::new(StubTurnLedgerStore),
+                emotion_signal_store: Arc::new(crate::memory::MemoryEmotionSignalStore::new()),
+                platform,
+            },
             get_skill_descriptions: Arc::new(String::new),
             get_capability_package_text: Arc::new(|_, _| None),
             session_max_messages: 16,
             tg_group_activation: Arc::from(""),
-            important_message_store: Arc::new(StubImportantMessageStore),
-            emotion_signal_store: Arc::new(StubEmotionSignalStore),
-            remind_store: Arc::new(StubRemindAtStore),
-            task_store: Arc::new(StubTaskStore),
-            task_run_store: Arc::new(StubTaskRunStore),
-            task_artifact_store: Arc::new(StubTaskArtifactStore),
-            task_execution_ledger_store: Arc::new(StubTaskExecutionLedgerStore),
-            task_learning_store: Arc::new(StubTaskLearningStore),
-            pending_retry: Arc::new(StubPendingRetryStore),
             channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
                 &config, false,
             )),
@@ -3175,6 +3129,19 @@ mod tests {
             stream_editor_channel: None,
             resolve_locale: Arc::new(|| UiLocale::Zh),
         }
+    }
+
+    #[test]
+    fn agent_loop_config_exposes_shared_runtime_services() {
+        let mut config = test_agent_loop_config();
+        let session_store = Arc::new(StubSessionStore::default());
+        config.runtime.session_store =
+            Arc::clone(&session_store) as Arc<dyn SessionStore + Send + Sync>;
+
+        assert!(Arc::ptr_eq(
+            &config.runtime.session_store,
+            &(session_store as Arc<dyn SessionStore + Send + Sync>)
+        ));
     }
 
     #[derive(Clone)]
@@ -3811,7 +3778,7 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "这是存在中的内在余波。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -3914,8 +3881,8 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "这是存在中的内在余波。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -3965,8 +3932,8 @@ mod tests {
         let mut http = DummyPlatformHttp;
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "这是存在中的内在余波。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -4036,7 +4003,7 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
+        config.runtime.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
             value: crate::memory::SelfAuthoredCore {
                 identity_anchor: "board beetle".to_string(),
                 default_response_mode: "steady_task".to_string(),
@@ -4048,7 +4015,7 @@ mod tests {
             },
         });
         let tracked_store = Arc::new(TrackingRelationshipConstitutionStore::default());
-        config.relationship_constitution_store = tracked_store.clone();
+        config.runtime.relationship_constitution_store = tracked_store.clone();
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续回答", false).expect("message");
         let mut repeat = HashMap::new();
 
@@ -4108,8 +4075,8 @@ mod tests {
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let registry = crate::tools::ToolRegistry::new();
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.self_authored_core_store = Arc::new(LoadedSelfAuthoredCoreStore {
             value: crate::memory::SelfAuthoredCore {
                 identity_anchor: "board beetle".to_string(),
                 default_response_mode: "steady_task".to_string(),
@@ -4121,7 +4088,7 @@ mod tests {
             },
         });
         let tracked_store = Arc::new(TrackingRelationshipConstitutionStore::default());
-        config.relationship_constitution_store = tracked_store.clone();
+        config.runtime.relationship_constitution_store = tracked_store.clone();
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续回答", false).expect("message");
         let mut repeat = HashMap::new();
 
@@ -4161,8 +4128,8 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "这是存在中的内在余波。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -4260,8 +4227,8 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "这是受保护的私域笔记。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -4358,8 +4325,8 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "这是私域材料。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -4427,8 +4394,8 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let mut config = test_agent_loop_config();
-        config.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
-        config.inner_life_store = Arc::new(LoadedInnerLifeStore {
+        config.runtime.memory_system_kind = crate::memory::MemorySystemKind::LinuxFull;
+        config.runtime.inner_life_store = Arc::new(LoadedInnerLifeStore {
             value: crate::memory::InnerLife {
                 private_journal: "任务期间也可能触碰私域。".to_string(),
                 ..crate::memory::InnerLife::default()
@@ -5114,7 +5081,7 @@ mod tests {
                 },
             )])),
         });
-        config.execution_state_store =
+        config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let msg = PcMsg::new_inbound(
             "qq_channel",
@@ -5215,7 +5182,7 @@ mod tests {
                 },
             )])),
         });
-        config.execution_state_store =
+        config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-group-config", "继续", true).expect("message");
@@ -5310,7 +5277,7 @@ mod tests {
                 },
             )])),
         });
-        config.execution_state_store =
+        config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let msg = PcMsg::new_inbound(
             "qq_channel",
@@ -5379,7 +5346,7 @@ mod tests {
     fn complete_turn_seeds_execution_state_for_tool_backed_user_turn() {
         let execution_state_store = Arc::new(StubExecutionStateStore::default());
         let mut config = test_agent_loop_config();
-        config.execution_state_store =
+        config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
@@ -5504,7 +5471,7 @@ mod tests {
             )])),
         });
         let mut config = test_agent_loop_config();
-        config.execution_state_store =
+        config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
@@ -5826,8 +5793,9 @@ mod tests {
         let seen_args = Arc::new(Mutex::new(Vec::new()));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
-        config.session_store = Arc::clone(&session_store) as Arc<dyn SessionStore + Send + Sync>;
-        config.execution_state_store =
+        config.runtime.session_store =
+            Arc::clone(&session_store) as Arc<dyn SessionStore + Send + Sync>;
+        config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);

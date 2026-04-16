@@ -1,5 +1,6 @@
 use super::turn_prepare::PreReplyGovernanceMode;
 use super::*;
+use crate::memory::EmotionSignalStore;
 
 pub(super) struct PrepareRuntimeStage {
     pub prepare_trace_enabled: bool,
@@ -87,6 +88,7 @@ pub(super) fn compute_prepare_runtime<'a>(
     log_prepare_stage(prepare_trace_enabled, msg, "start");
     log_prepare_stage(prepare_trace_enabled, msg, "emotion_signal_start");
     let emotion_signal_suffix = config
+        .runtime
         .emotion_signal_store
         .get_then_clear(&msg.chat_id)
         .ok()
@@ -144,7 +146,7 @@ pub(super) fn compute_prepare_runtime<'a>(
         .system_prompt_max
         .saturating_sub(post_memory_tail_len);
     let assembly_plan = crate::memory::decide_prompt_assembly(
-        config.memory_system_kind,
+        config.runtime.memory_system_kind,
         msg.ingress,
         has_tools,
         runtime_mode,
@@ -187,7 +189,7 @@ pub(super) fn compute_prepare_runtime<'a>(
         capability_package_text,
         relationship_id: crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
         active_governance_mode: PreReplyGovernanceMode::for_turn(
-            config.memory_system_kind,
+            config.runtime.memory_system_kind,
             msg.ingress,
         ),
         emotion_signal_suffix,
@@ -220,13 +222,16 @@ pub(super) fn run_prepare_mental_privacy(
             tool_ctx,
             worker_llm,
             MentalPrivacyDisclosureAdjudicationContext {
-                mental_privacy_store: config.mental_privacy_store.as_ref(),
-                relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-                self_model_store: config.self_model_store.as_ref(),
-                self_continuity_store: config.self_continuity_store.as_ref(),
-                inner_life_store: config.inner_life_store.as_ref(),
-                private_doc_store: config.private_doc_store.as_ref(),
-                private_garden_store: config.private_garden_store.as_ref(),
+                mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
+                relationship_constitution_store: config
+                    .runtime
+                    .relationship_constitution_store
+                    .as_ref(),
+                self_model_store: config.runtime.self_model_store.as_ref(),
+                self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+                inner_life_store: config.runtime.inner_life_store.as_ref(),
+                private_doc_store: config.runtime.private_doc_store.as_ref(),
+                private_garden_store: config.runtime.private_garden_store.as_ref(),
             },
             MentalPrivacyDisclosureAdjudicationInput {
                 channel: &msg.channel,
@@ -280,39 +285,39 @@ pub(super) fn load_prepare_prompt_memory(
         chat_id: &msg.chat_id,
         current_channel: &msg.channel,
         user_query: &msg.content,
-        memory_system_kind: config.memory_system_kind,
+        memory_system_kind: config.runtime.memory_system_kind,
         system_max_len: runtime_stage.prompt_memory_system_budget,
         now_secs: runtime_stage.runtime.now_secs,
         participation_plan: runtime_stage.participation_plan,
         recent_messages_limit: config.session_max_messages,
         load_long_term_memory: true,
         include_private_garden_projection: msg.ingress != IngressKind::User,
-        session_store: config.session_store.as_ref(),
-        memory_store: config.memory_store.as_ref(),
-        session_summary_store: config.session_summary_store.as_ref(),
-        long_term_memory_store: config.long_term_memory_store.as_ref(),
-        execution_state_store: config.execution_state_store.as_ref(),
-        task_run_store: config.task_run_store.as_ref(),
-        task_artifact_store: config.task_artifact_store.as_ref(),
-        task_learning_store: config.task_learning_store.as_ref(),
-        self_model_store: config.self_model_store.as_ref(),
-        self_authored_core_store: config.self_authored_core_store.as_ref(),
-        relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-        relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
-        relationship_topology_store: config.relationship_topology_store.as_ref(),
-        world_sense_store: config.world_sense_store.as_ref(),
-        autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
-        outer_voice_store: config.outer_voice_store.as_ref(),
-        inner_life_store: config.inner_life_store.as_ref(),
-        self_continuity_store: config.self_continuity_store.as_ref(),
-        private_doc_store: config.private_doc_store.as_ref(),
-        private_garden_store: config.private_garden_store.as_ref(),
-        mental_privacy_store: config.mental_privacy_store.as_ref(),
-        remind_store: config.remind_store.as_ref(),
-        task_store: config.task_store.as_ref(),
-        turn_ledger_store: config.turn_ledger_store.as_ref(),
-        skill_storage: config.skill_storage.as_ref(),
-        continuity_capsule_store: config.continuity_capsule_store.as_ref(),
+        session_store: config.runtime.session_store.as_ref(),
+        memory_store: config.runtime.memory_store.as_ref(),
+        session_summary_store: config.runtime.session_summary_store.as_ref(),
+        long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
+        execution_state_store: config.runtime.execution_state_store.as_ref(),
+        task_run_store: config.runtime.task_run_store.as_ref(),
+        task_artifact_store: config.runtime.task_artifact_store.as_ref(),
+        task_learning_store: config.runtime.task_learning_store.as_ref(),
+        self_model_store: config.runtime.self_model_store.as_ref(),
+        self_authored_core_store: config.runtime.self_authored_core_store.as_ref(),
+        relationship_constitution_store: config.runtime.relationship_constitution_store.as_ref(),
+        relationship_portfolio_store: config.runtime.relationship_portfolio_store.as_ref(),
+        relationship_topology_store: config.runtime.relationship_topology_store.as_ref(),
+        world_sense_store: config.runtime.world_sense_store.as_ref(),
+        autonomy_strategy_store: config.runtime.autonomy_strategy_store.as_ref(),
+        outer_voice_store: config.runtime.outer_voice_store.as_ref(),
+        inner_life_store: config.runtime.inner_life_store.as_ref(),
+        self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+        private_doc_store: config.runtime.private_doc_store.as_ref(),
+        private_garden_store: config.runtime.private_garden_store.as_ref(),
+        mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
+        remind_store: config.runtime.remind_at_store.as_ref(),
+        task_store: config.runtime.task_store.as_ref(),
+        turn_ledger_store: config.runtime.turn_ledger_store.as_ref(),
+        skill_storage: config.runtime.skill_storage.as_ref(),
+        continuity_capsule_store: config.runtime.continuity_capsule_store.as_ref(),
     });
     if runtime_stage.prepare_trace_enabled {
         let (recent_messages, has_summary, has_message_summary, has_self_model_text) =
@@ -328,7 +333,7 @@ pub(super) fn load_prepare_prompt_memory(
         );
     }
     let recent_persona_evidence = load_recent_persona_evidence(
-        config.turn_ledger_store.as_ref(),
+        config.runtime.turn_ledger_store.as_ref(),
         &runtime_stage.relationship_id,
     )
     .ok()
@@ -338,6 +343,7 @@ pub(super) fn load_prepare_prompt_memory(
         .filter(|mode| mode.allow_sync_relationship_constitution())
         .and_then(|_| {
             config
+                .runtime
                 .mental_privacy_store
                 .get(&runtime_stage.relationship_id)
                 .ok()
@@ -348,22 +354,24 @@ pub(super) fn load_prepare_prompt_memory(
         .filter(|mode| mode.allow_sync_relationship_constitution())
         .and_then(|_| {
             config
+                .runtime
                 .relationship_portfolio_store
                 .get(board_subject_scope_id())
                 .ok()
                 .flatten()
         });
     let prompt_relationship_topology = config
+        .runtime
         .relationship_topology_store
         .get(board_subject_scope_id())
         .ok()
         .flatten();
     let allow_tool_round_recall_refill =
-        crate::memory::prompt_participation_policy(config.memory_system_kind)
+        crate::memory::prompt_participation_policy(config.runtime.memory_system_kind)
             .tool_round_recall_enabled
             && prompt_memory.long_term_memory_text.is_none()
             && runtime_stage.prompt_memory_system_budget
-                >= memory_policy(config.memory_system_kind)
+                >= memory_policy(config.runtime.memory_system_kind)
                     .long_term_recall
                     .block_min_len
             && runtime_stage
@@ -410,7 +418,7 @@ pub(super) fn enrich_prepare_governance(
         .is_some_and(|mode| mode.allow_sync_relationship_constitution())
     {
         if let Ok(Some(constitution)) = crate::memory::sync_relationship_constitution(
-            config.relationship_constitution_store.as_ref(),
+            config.runtime.relationship_constitution_store.as_ref(),
             crate::memory::RelationshipConstitutionSyncInput {
                 scope_id: &runtime_stage.relationship_id,
                 channel: &msg.channel,
@@ -438,6 +446,7 @@ pub(super) fn enrich_prepare_governance(
         );
     }
     let core_revision_ledger = config
+        .runtime
         .core_revision_ledger_store
         .get(board_subject_scope_id())
         .ok()
@@ -621,6 +630,7 @@ pub(super) fn enrich_prepare_governance(
         pressure: runtime_stage.runtime.pressure,
     });
     let recent_observation = config
+        .runtime
         .turn_ledger_store
         .get(&runtime_stage.relationship_id)
         .ok()
@@ -699,7 +709,7 @@ pub(super) fn finalize_prepare_context<'a>(
         ..
     } = prompt_stage;
     if matches!(
-        config.memory_system_kind,
+        config.runtime.memory_system_kind,
         crate::memory::MemorySystemKind::EspCompact
     ) {
         // ESP compact path should not keep pre-joined projection caches alive and then
@@ -720,10 +730,10 @@ pub(super) fn finalize_prepare_context<'a>(
         });
     let (mut system, messages) = build_context(&crate::agent::ContextParams {
         msg,
-        memory_system_kind: config.memory_system_kind,
-        memory: config.memory_store.as_ref(),
-        session: config.session_store.as_ref(),
-        important_message_store: config.important_message_store.as_ref(),
+        memory_system_kind: config.runtime.memory_system_kind,
+        memory: config.runtime.memory_store.as_ref(),
+        session: config.runtime.session_store.as_ref(),
+        important_message_store: config.runtime.important_message_store.as_ref(),
         has_tools: runtime_stage.has_tools,
         skill_descriptions: "",
         system_max_len: runtime_stage.budget.system_prompt_max,

@@ -46,13 +46,16 @@ pub(super) fn maybe_apply_mental_privacy_review(
         &mut privacy_http,
         worker_llm,
         MentalPrivacyReviewContext {
-            mental_privacy_store: config.mental_privacy_store.as_ref(),
-            relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-            self_model_store: config.self_model_store.as_ref(),
-            self_continuity_store: config.self_continuity_store.as_ref(),
-            inner_life_store: config.inner_life_store.as_ref(),
-            private_doc_store: config.private_doc_store.as_ref(),
-            private_garden_store: config.private_garden_store.as_ref(),
+            mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
+            relationship_constitution_store: config
+                .runtime
+                .relationship_constitution_store
+                .as_ref(),
+            self_model_store: config.runtime.self_model_store.as_ref(),
+            self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+            inner_life_store: config.runtime.inner_life_store.as_ref(),
+            private_doc_store: config.runtime.private_doc_store.as_ref(),
+            private_garden_store: config.runtime.private_garden_store.as_ref(),
         },
         MentalPrivacyReviewInput {
             channel: &msg.channel,

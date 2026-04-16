@@ -274,8 +274,8 @@ pub use process::ProcessTool;
 #[cfg(feature = "tools_network_extra")]
 pub use proxy_config::ProxyConfigTool;
 pub use registry::{
-    build_default_registry, DefaultRegistryDeps, ToolBridgeCatalogEntry,
-    ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCatalogEntry, ToolRegistry,
+    build_default_registry, ToolBridgeCatalogEntry, ToolBridgeProposalAssessment,
+    ToolBridgeProposalDecision, ToolCatalogEntry, ToolRegistry,
 };
 pub use remind_at::{RemindAtTool, RemindListTool};
 pub use sensor_watch::SensorWatchTool;

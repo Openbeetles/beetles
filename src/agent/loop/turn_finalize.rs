@@ -23,31 +23,35 @@ pub(super) fn sync_user_turn_relationship_topology(
 ) {
     let relationship_id = crate::memory::relationship_scope_id(channel, chat_id);
     let turn_ledger = config
+        .runtime
         .turn_ledger_store
         .get(&relationship_id)
         .ok()
         .flatten();
     let mental_privacy_state = config
+        .runtime
         .mental_privacy_store
         .get(&relationship_id)
         .ok()
         .flatten();
     let outer_voice = config
+        .runtime
         .outer_voice_store
         .get(&relationship_id)
         .ok()
         .flatten();
     let world_sense = config
+        .runtime
         .world_sense_store
         .get(&relationship_id)
         .ok()
         .flatten();
     let recent_persona_evidence =
-        load_recent_persona_evidence(config.turn_ledger_store.as_ref(), &relationship_id)
+        load_recent_persona_evidence(config.runtime.turn_ledger_store.as_ref(), &relationship_id)
             .ok()
             .flatten();
     if let Err(error) = upsert_relationship_topology_entry(
-        config.relationship_topology_store.as_ref(),
+        config.runtime.relationship_topology_store.as_ref(),
         crate::memory::RelationshipTopologyUpsertInput {
             channel,
             chat_id,

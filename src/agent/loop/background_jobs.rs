@@ -230,20 +230,26 @@ fn run_long_term_memory_refresh_job(
         &mut llm_ctx,
         worker_llm,
         LongTermMemoryRefreshContext {
-            memory_store: config.memory_store.as_ref(),
-            session_store: config.session_store.as_ref(),
-            session_summary_store: config.session_summary_store.as_ref(),
-            long_term_memory_store: config.long_term_memory_store.as_ref(),
-            extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
-            turn_ledger_store: config.turn_ledger_store.as_ref(),
-            skill_storage: config.skill_storage.as_ref(),
+            memory_store: config.runtime.memory_store.as_ref(),
+            session_store: config.runtime.session_store.as_ref(),
+            session_summary_store: config.runtime.session_summary_store.as_ref(),
+            long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
+            extraction_state_store: config
+                .runtime
+                .long_term_memory_extraction_state_store
+                .as_ref(),
+            turn_ledger_store: config.runtime.turn_ledger_store.as_ref(),
+            skill_storage: config.runtime.skill_storage.as_ref(),
         },
         &msg.chat_id,
         crate::orchestrator::snapshot().pressure,
-        config.memory_system_kind.memory_profile(),
+        config.runtime.memory_system_kind.memory_profile(),
     );
     outcome.persist(
-        config.long_term_memory_extraction_state_store.as_ref(),
+        config
+            .runtime
+            .long_term_memory_extraction_state_store
+            .as_ref(),
         &msg.chat_id,
     );
     match outcome {
@@ -265,9 +271,9 @@ fn run_long_term_memory_refresh_job(
 
 fn run_idle_memory_forge_job(config: &AgentLoopConfig, msg: &PcMsg) {
     match crate::reasoning::run_idle_memory_forge_background_job(
-        config.long_term_memory_store.as_ref(),
-        config.continuity_capsule_store.as_ref(),
-        config.platform.state_fs().as_ref(),
+        config.runtime.long_term_memory_store.as_ref(),
+        config.runtime.continuity_capsule_store.as_ref(),
+        config.runtime.platform.state_fs().as_ref(),
         msg,
     ) {
         Ok(summary) => {
@@ -313,18 +319,21 @@ fn run_post_reply_maintenance_job(
         &mut llm_ctx,
         worker_llm,
         PostReplyMemoryMaintenanceContext {
-            session_store: config.session_store.as_ref(),
-            memory_store: config.memory_store.as_ref(),
-            session_summary_store: config.session_summary_store.as_ref(),
-            execution_state_store: config.execution_state_store.as_ref(),
-            long_term_memory_store: config.long_term_memory_store.as_ref(),
-            continuity_capsule_store: config.continuity_capsule_store.as_ref(),
-            extraction_state_store: config.long_term_memory_extraction_state_store.as_ref(),
-            turn_ledger_store: config.turn_ledger_store.as_ref(),
-            skill_storage: config.skill_storage.as_ref(),
-            task_run_store: config.task_run_store.as_ref(),
-            task_artifact_store: config.task_artifact_store.as_ref(),
-            task_learning_store: config.task_learning_store.as_ref(),
+            session_store: config.runtime.session_store.as_ref(),
+            memory_store: config.runtime.memory_store.as_ref(),
+            session_summary_store: config.runtime.session_summary_store.as_ref(),
+            execution_state_store: config.runtime.execution_state_store.as_ref(),
+            long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
+            continuity_capsule_store: config.runtime.continuity_capsule_store.as_ref(),
+            extraction_state_store: config
+                .runtime
+                .long_term_memory_extraction_state_store
+                .as_ref(),
+            turn_ledger_store: config.runtime.turn_ledger_store.as_ref(),
+            skill_storage: config.runtime.skill_storage.as_ref(),
+            task_run_store: config.runtime.task_run_store.as_ref(),
+            task_artifact_store: config.runtime.task_artifact_store.as_ref(),
+            task_learning_store: config.runtime.task_learning_store.as_ref(),
         },
         PostReplyMemoryMaintenanceInput {
             chat_id: &msg.chat_id,
@@ -333,7 +342,7 @@ fn run_post_reply_maintenance_job(
             user_content: &payload.user_content,
             reply_content: &payload.reply_content,
             pressure: crate::orchestrator::snapshot().pressure,
-            memory_profile: config.memory_system_kind.memory_profile(),
+            memory_profile: config.runtime.memory_system_kind.memory_profile(),
             tool_calls: payload.tool_calls,
             external_content_used: payload.external_content_used,
             prompt_recall_intent: payload.prompt_recall_intent,
@@ -440,34 +449,37 @@ fn run_self_runtime_job(
         &mut llm_ctx,
         worker_llm,
         SelfRuntimeContext {
-            memory_system_kind: config.memory_system_kind,
-            session_store: config.session_store.as_ref(),
-            memory_store: config.memory_store.as_ref(),
-            session_summary_store: config.session_summary_store.as_ref(),
-            execution_state_store: config.execution_state_store.as_ref(),
-            long_term_memory_store: config.long_term_memory_store.as_ref(),
-            continuity_capsule_store: config.continuity_capsule_store.as_ref(),
-            self_model_store: config.self_model_store.as_ref(),
-            self_authored_core_store: config.self_authored_core_store.as_ref(),
-            core_revision_ledger_store: config.core_revision_ledger_store.as_ref(),
-            relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-            relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
-            relationship_topology_store: config.relationship_topology_store.as_ref(),
-            world_sense_store: config.world_sense_store.as_ref(),
-            autonomy_strategy_store: config.autonomy_strategy_store.as_ref(),
-            outer_voice_store: config.outer_voice_store.as_ref(),
-            private_doc_store: config.private_doc_store.as_ref(),
-            private_garden_store: config.private_garden_store.as_ref(),
-            inner_life_store: config.inner_life_store.as_ref(),
-            self_continuity_store: config.self_continuity_store.as_ref(),
-            mental_privacy_store: config.mental_privacy_store.as_ref(),
-            remind_store: config.remind_store.as_ref(),
-            task_store: config.task_store.as_ref(),
-            task_run_store: config.task_run_store.as_ref(),
-            task_artifact_store: config.task_artifact_store.as_ref(),
-            task_learning_store: config.task_learning_store.as_ref(),
-            turn_ledger_store: config.turn_ledger_store.as_ref(),
-            skill_storage: config.skill_storage.as_ref(),
+            memory_system_kind: config.runtime.memory_system_kind,
+            session_store: config.runtime.session_store.as_ref(),
+            memory_store: config.runtime.memory_store.as_ref(),
+            session_summary_store: config.runtime.session_summary_store.as_ref(),
+            execution_state_store: config.runtime.execution_state_store.as_ref(),
+            long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
+            continuity_capsule_store: config.runtime.continuity_capsule_store.as_ref(),
+            self_model_store: config.runtime.self_model_store.as_ref(),
+            self_authored_core_store: config.runtime.self_authored_core_store.as_ref(),
+            core_revision_ledger_store: config.runtime.core_revision_ledger_store.as_ref(),
+            relationship_constitution_store: config
+                .runtime
+                .relationship_constitution_store
+                .as_ref(),
+            relationship_portfolio_store: config.runtime.relationship_portfolio_store.as_ref(),
+            relationship_topology_store: config.runtime.relationship_topology_store.as_ref(),
+            world_sense_store: config.runtime.world_sense_store.as_ref(),
+            autonomy_strategy_store: config.runtime.autonomy_strategy_store.as_ref(),
+            outer_voice_store: config.runtime.outer_voice_store.as_ref(),
+            private_doc_store: config.runtime.private_doc_store.as_ref(),
+            private_garden_store: config.runtime.private_garden_store.as_ref(),
+            inner_life_store: config.runtime.inner_life_store.as_ref(),
+            self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+            mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
+            remind_store: config.runtime.remind_at_store.as_ref(),
+            task_store: config.runtime.task_store.as_ref(),
+            task_run_store: config.runtime.task_run_store.as_ref(),
+            task_artifact_store: config.runtime.task_artifact_store.as_ref(),
+            task_learning_store: config.runtime.task_learning_store.as_ref(),
+            turn_ledger_store: config.runtime.turn_ledger_store.as_ref(),
+            skill_storage: config.runtime.skill_storage.as_ref(),
         },
         &msg.chat_id,
         &payload,
@@ -704,13 +716,20 @@ fn resolve_operator_maintenance_target(
         return Some((chat_id.to_string(), channel.to_string()));
     }
     let subject_id = crate::memory::board_subject_scope_id();
-    let self_continuity = config.self_continuity_store.get(subject_id).ok().flatten();
+    let self_continuity = config
+        .runtime
+        .self_continuity_store
+        .get(subject_id)
+        .ok()
+        .flatten();
     let relationship_portfolio = config
+        .runtime
         .relationship_portfolio_store
         .get(subject_id)
         .ok()
         .flatten();
     let relationship_topology = config
+        .runtime
         .relationship_topology_store
         .get(subject_id)
         .ok()
@@ -741,10 +760,10 @@ fn rebuild_operator_continuity_snapshots(
         vec![chat_id.to_string()]
     } else {
         crate::memory::select_active_continuity_snapshot_chat_ids(
-            config.session_store.as_ref(),
-            config.self_continuity_store.as_ref(),
-            config.relationship_portfolio_store.as_ref(),
-            config.relationship_topology_store.as_ref(),
+            config.runtime.session_store.as_ref(),
+            config.runtime.self_continuity_store.as_ref(),
+            config.runtime.relationship_portfolio_store.as_ref(),
+            config.runtime.relationship_topology_store.as_ref(),
             None,
             now_secs,
             7 * 86_400,
@@ -757,16 +776,19 @@ fn rebuild_operator_continuity_snapshots(
     for chat_id in target_chat_ids {
         let snapshot = crate::memory::export_continuity_snapshot(
             crate::memory::ContinuitySnapshotExportContext {
-                long_term_memory_store: config.long_term_memory_store.as_ref(),
-                session_summary_store: config.session_summary_store.as_ref(),
-                execution_state_store: config.execution_state_store.as_ref(),
-                self_model_store: config.self_model_store.as_ref(),
-                self_authored_core_store: config.self_authored_core_store.as_ref(),
-                core_revision_ledger_store: config.core_revision_ledger_store.as_ref(),
-                self_continuity_store: config.self_continuity_store.as_ref(),
-                relationship_constitution_store: config.relationship_constitution_store.as_ref(),
-                relationship_portfolio_store: config.relationship_portfolio_store.as_ref(),
-                relationship_topology_store: config.relationship_topology_store.as_ref(),
+                long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
+                session_summary_store: config.runtime.session_summary_store.as_ref(),
+                execution_state_store: config.runtime.execution_state_store.as_ref(),
+                self_model_store: config.runtime.self_model_store.as_ref(),
+                self_authored_core_store: config.runtime.self_authored_core_store.as_ref(),
+                core_revision_ledger_store: config.runtime.core_revision_ledger_store.as_ref(),
+                self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+                relationship_constitution_store: config
+                    .runtime
+                    .relationship_constitution_store
+                    .as_ref(),
+                relationship_portfolio_store: config.runtime.relationship_portfolio_store.as_ref(),
+                relationship_topology_store: config.runtime.relationship_topology_store.as_ref(),
             },
             chat_id.as_str(),
             crate::memory::ContinuitySnapshotMode::FullRestore,
@@ -791,6 +813,7 @@ fn rebuild_operator_continuity_snapshots(
             crate::error::Error::config("operator_maintenance_snapshot", error.to_string())
         })?;
         config
+            .runtime
             .platform
             .state_fs()
             .write(rel_path.as_str(), &payload)?;
@@ -884,7 +907,7 @@ fn run_operator_maintenance_job(
         }
         crate::runtime::OperatorMaintenanceAction::ReplayRecovery => {
             let report = crate::runtime::ensure_platform_soul_kernel_recovery(
-                config.platform.as_ref(),
+                config.runtime.platform.as_ref(),
                 now_secs,
             );
             if report.restore_attempted {
@@ -905,7 +928,7 @@ fn run_operator_maintenance_job(
         }
         crate::runtime::OperatorMaintenanceAction::RefreshOperatorDigest => {
             match crate::platform::memory_operator_surface::build_memory_operator_surface(
-                config.platform.as_ref(),
+                config.runtime.platform.as_ref(),
                 None,
                 None,
             ) {
@@ -1092,7 +1115,11 @@ pub(super) fn handle_admission_defer(
             }
         }
         Err(std::sync::mpsc::TrySendError::Full(m)) => {
-            let _ = ctx.config.pending_retry.save_pending_retry(&m);
+            let _ = ctx
+                .config
+                .runtime
+                .pending_retry_store
+                .save_pending_retry(&m);
             log::warn!(
                 "[agent] admission defer, pending_retry saved chat_id={}",
                 m.chat_id

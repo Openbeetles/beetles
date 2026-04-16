@@ -72,19 +72,8 @@ fn run(platform: Arc<dyn Platform>) -> Result<()> {
         Arc::clone(&skill_storage),
         8192,
     ));
-    let (tool_registry, _) = crate::build_default_registry(
-        config.as_ref(),
-        crate::DefaultRegistryDeps {
-            platform: Arc::clone(&platform),
-            remind_at_store: platform.remind_at_store(),
-            session_store: platform.session_store(),
-            memory_store: platform.memory_store(),
-            long_term_memory_store: platform.long_term_memory_store(),
-            turn_ledger_store: platform.turn_ledger_store(),
-            private_garden_store: platform.private_garden_store(),
-            config_store: platform.config_store(),
-        },
-    );
+    let runtime_services = crate::RuntimeServices::from_platform(Arc::clone(&platform));
+    let (tool_registry, _) = crate::build_default_registry(config.as_ref(), &runtime_services);
     let tool_registry = Arc::new(tool_registry);
     let channel_capability_registry =
         Arc::new(build_channel_capability_registry(config.as_ref(), false));

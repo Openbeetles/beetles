@@ -694,19 +694,8 @@ mod tests {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         let config = AppConfig::load_from_env();
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
-        let (tool_registry, _) = crate::tools::build_default_registry(
-            &config,
-            crate::tools::DefaultRegistryDeps {
-                platform: Arc::clone(&platform),
-                remind_at_store: platform.remind_at_store(),
-                session_store: platform.session_store(),
-                memory_store: platform.memory_store(),
-                long_term_memory_store: platform.long_term_memory_store(),
-                turn_ledger_store: platform.turn_ledger_store(),
-                private_garden_store: platform.private_garden_store(),
-                config_store: platform.config_store(),
-            },
-        );
+        let runtime_services = crate::RuntimeServices::from_platform(Arc::clone(&platform));
+        let (tool_registry, _) = crate::tools::build_default_registry(&config, &runtime_services);
         let snapshot = build_operator_status(OperatorStatusInput {
             config: &config,
             platform: platform.as_ref(),

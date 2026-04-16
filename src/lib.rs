@@ -94,7 +94,9 @@ pub mod i18n;
 pub mod office;
 pub mod orchestrator;
 pub mod runtime;
+mod runtime_services;
 pub mod skills;
+pub use runtime_services::RuntimeServices;
 
 pub use agent::{
     build_context, run_agent_loop, AgentLoopConfig, ContextParams, StreamEditor, TypingNotifier,
@@ -192,11 +194,10 @@ pub use tools::LuaStateMachineCheckerTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaToolBridgeTool;
 pub use tools::{
-    build_default_registry, DefaultRegistryDeps, FileEditTool, FileWriteTool, FilesTool,
-    GetTimeTool, KvStoreTool, PrivateGardenTool, RemindAtTool, TaskTool, Tool,
-    ToolBridgeCatalogEntry, ToolBridgeProposalAssessment, ToolBridgeProposalDecision,
-    ToolCapabilityContract, ToolContext, ToolExposure, ToolMetadata, ToolPolicyContext,
-    ToolRegistry, VoiceInputTool, VoiceOutputTool,
+    build_default_registry, FileEditTool, FileWriteTool, FilesTool, GetTimeTool, KvStoreTool,
+    PrivateGardenTool, RemindAtTool, TaskTool, Tool, ToolBridgeCatalogEntry,
+    ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCapabilityContract, ToolContext,
+    ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
 #[cfg(all(
     feature = "capability_office",

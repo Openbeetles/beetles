@@ -1,7 +1,8 @@
-use super::{RuntimeStores, TAG};
+use super::TAG;
 use beetle::bus::IngressKind;
 use beetle::memory::MemoryStore;
 use beetle::Platform;
+use beetle::RuntimeServices;
 use std::sync::Arc;
 
 /// 启动自检：存储可读（memory 或 soul 至少其一成功）。失败返回 false，调用方应 log 并 return。
@@ -41,18 +42,18 @@ pub(crate) fn ensure_storage_ready(memory_store: &dyn MemoryStore) {
     }
 }
 
-pub(crate) fn log_runtime_store_lengths(stores: &RuntimeStores) {
-    if let Ok(memory) = stores.memory_store.get_memory() {
+pub(crate) fn log_runtime_store_lengths(runtime: &RuntimeServices) {
+    if let Ok(memory) = runtime.memory_store.get_memory() {
         log::info!("[{}] memory len={}", TAG, memory.len());
     } else {
         log::warn!("[{}] memory read failed or empty", TAG);
     }
-    if let Ok(soul) = stores.memory_store.get_soul() {
+    if let Ok(soul) = runtime.memory_store.get_soul() {
         log::info!("[{}] soul len={}", TAG, soul.len());
     } else {
         log::warn!("[{}] soul read failed", TAG);
     }
-    if let Ok(user) = stores.memory_store.get_user() {
+    if let Ok(user) = runtime.memory_store.get_user() {
         log::info!("[{}] user len={}", TAG, user.len());
     } else {
         log::warn!("[{}] user read failed", TAG);
