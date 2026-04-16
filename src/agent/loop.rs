@@ -5520,6 +5520,244 @@ mod tests {
     }
 
     #[test]
+    fn execute_turn_action_request_without_tool_use_emits_started_and_blocked_progress() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: serde_json::json!({
+                        "request_kind": "general",
+                        "evidence_need": "host_tool",
+                        "disclosure_surface": "governed",
+                        "execution_preference": "tool_first",
+                        "action_family": "action_request",
+                        "resume_relation": "independent_turn",
+                        "confidence": 96
+                    })
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "请先提供 QQ 邮箱的授权码，我才能继续配置。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-action-without-tool-use",
+            "帮我配置 QQ 邮箱账户",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-action-without-tool-use",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let delivered = match executed.outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        assert_eq!(delivered, "请先提供 QQ 邮箱的授权码，我才能继续配置。");
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
+        assert_eq!(
+            executed.telemetry.delivery.terminal_progress_updates_sent,
+            1
+        );
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 2, "{observed:#?}");
+    }
+
+    #[test]
+    fn execute_turn_action_request_without_tool_use_keeps_truth_guard_after_started_progress() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: serde_json::json!({
+                        "request_kind": "general",
+                        "evidence_need": "host_tool",
+                        "disclosure_surface": "governed",
+                        "execution_preference": "tool_first",
+                        "action_family": "action_request",
+                        "resume_relation": "independent_turn",
+                        "confidence": 96
+                    })
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "让我先检查当前邮件状态，然后继续配置。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-action-truth-guard",
+            "帮我配置 QQ 邮箱账户",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-action-truth-guard",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &SequenceStubLlm {
+                responses: Mutex::new(Vec::new()),
+            },
+            &config,
+            &msg,
+            UiLocale::Zh,
+            Instant::now(),
+            executed.outcome,
+            executed.telemetry,
+        )
+        .expect("finalize turn");
+
+        let delivered = finalized.reply_content;
+        assert_eq!(
+            delivered,
+            "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。"
+        );
+        assert_eq!(finalized.delivery.progress_updates_sent, 1);
+        assert_eq!(finalized.delivery.action_progress_updates_sent, 1);
+        assert_eq!(finalized.delivery.tool_progress_updates_sent, 0);
+        assert_eq!(finalized.delivery.terminal_progress_updates_sent, 0);
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 2, "{observed:#?}");
+    }
+
+    #[test]
+    fn execute_turn_active_action_without_tool_use_emits_resumed_and_blocked_progress() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: serde_json::json!({
+                        "request_kind": "general",
+                        "evidence_need": "host_tool",
+                        "disclosure_surface": "governed",
+                        "execution_preference": "tool_first",
+                        "action_family": "active_action",
+                        "resume_relation": "supply_active_action_input",
+                        "confidence": 92
+                    })
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "请把 SMTP 授权码也发我，我才能继续配置。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let execution_state_store = Arc::new(StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-active-action-without-tool-use".to_string(),
+                ExecutionState {
+                    status: crate::memory::ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    next_action: "等待用户补充 SMTP 授权码".to_string(),
+                    updated_at: 9,
+                    ..ExecutionState::default()
+                },
+            )])),
+        });
+        config.runtime.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-active-action-without-tool-use",
+            "SMTP 授权码还需要吗",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-active-action-without-tool-use",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let delivered = match executed.outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        assert_eq!(delivered, "请把 SMTP 授权码也发我，我才能继续配置。");
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
+        assert_eq!(
+            executed.telemetry.delivery.terminal_progress_updates_sent,
+            1
+        );
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 2, "{observed:#?}");
+    }
+
+    #[test]
     fn execute_turn_runs_active_action_probe_before_switch_request_tool_turn() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {

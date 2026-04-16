@@ -342,6 +342,14 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
+    pub(crate) fn emit_foreground_work_started(&mut self) {
+        self.emit_task_action_progress(TaskActionProgressKind::Started);
+    }
+
+    pub(crate) fn emit_foreground_work_resumed(&mut self) {
+        self.emit_task_action_progress(TaskActionProgressKind::Resumed);
+    }
+
     pub(crate) fn emit_task_terminal_progress(&mut self, kind: TaskTerminalProgressKind) {
         if !self.policy.supports_current_supplemental {
             return;
@@ -362,6 +370,10 @@ impl<'a> DeliverySession<'a> {
             }
             DeliveryMode::Silent => {}
         }
+    }
+
+    pub(crate) fn emit_foreground_work_blocked(&mut self) {
+        self.emit_task_terminal_progress(TaskTerminalProgressKind::Blocked);
     }
 
     pub(crate) fn emit_partial(&mut self, content: &str) {
@@ -1684,6 +1696,61 @@ mod tests {
     }
 
     #[test]
+    fn queued_delivery_foreground_work_started_uses_action_progress_contract() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_foreground_work_started();
+
+        let outbound = outbound_rx.try_recv().expect("action pulse");
+        assert_eq!(outbound.content, "已进入任务执行，继续推进 🪲");
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                action_progress_updates_sent: 1,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
+    }
+
+    #[test]
+    fn presence_pulse_is_not_the_only_signal_when_active_work_starts() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_foreground_work_resumed();
+
+        let outbound = outbound_rx.try_recv().expect("action pulse");
+        assert_eq!(outbound.content, "已恢复当前任务，继续推进 🪲");
+        assert_eq!(delivery.report().presence_pulses_sent, 0);
+        assert_eq!(delivery.report().action_progress_updates_sent, 1);
+    }
+
+    #[test]
     fn queued_delivery_task_terminal_progress_uses_typed_progress_contract() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
@@ -1703,6 +1770,37 @@ mod tests {
 
         let outbound = outbound_rx.try_recv().expect("terminal pulse");
         assert_eq!(outbound.content, "当前任务已部分完成，正在整理结果 🪲");
+        assert_eq!(
+            delivery.report(),
+            DeliveryReport {
+                progress_updates_sent: 1,
+                terminal_progress_updates_sent: 1,
+                visible_text_updates_sent: 1,
+                ..DeliveryReport::default()
+            }
+        );
+    }
+
+    #[test]
+    fn queued_delivery_foreground_work_blocked_uses_terminal_progress_contract() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_foreground_work_blocked();
+
+        let outbound = outbound_rx.try_recv().expect("terminal pulse");
+        assert_eq!(outbound.content, "当前任务已阻塞，正在整理结果 🪲");
         assert_eq!(
             delivery.report(),
             DeliveryReport {

@@ -55,14 +55,16 @@ fn truthful_no_new_execution_result_copy(loc: UiLocale) -> &'static str {
     }
 }
 
-fn looks_like_truthful_blocker_or_input_request(content: &str) -> bool {
+pub(super) fn looks_like_truthful_blocker_or_input_request(content: &str) -> bool {
     let trimmed = content.trim();
     let lower = trimmed.to_ascii_lowercase();
     trimmed.contains('?')
         || trimmed.contains('？')
         || trimmed.contains("缺")
+        || trimmed.contains("请先提供")
         || trimmed.contains("无法继续")
         || trimmed.contains("不能继续")
+        || trimmed.contains("才能继续")
         || trimmed.contains("请提供")
         || trimmed.contains("请把")
         || trimmed.contains("请发")
@@ -116,7 +118,6 @@ fn should_apply_truth_guard(
         || external_content_used
         || delivery.planner_progress_updates_sent > 0
         || delivery.tool_progress_updates_sent > 0
-        || delivery.action_progress_updates_sent > 0
         || delivery.terminal_progress_updates_sent > 0
     {
         return false;

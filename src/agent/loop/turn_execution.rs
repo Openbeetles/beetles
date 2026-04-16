@@ -7,17 +7,13 @@ pub(super) struct ExecutedTurn {
     pub(super) telemetry: WorkerRunTelemetry,
 }
 
-fn action_progress_kind_for_regular_tool_round(
+fn foreground_action_progress_kind_for_turn(
     request_semantics: crate::agent::request_semantics::RequestSemantics,
-    any_tool_used: bool,
-    delivery: &DeliverySession<'_>,
+    has_tools: bool,
 ) -> Option<crate::agent::delivery::TaskActionProgressKind> {
     use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 
-    if any_tool_used
-        || request_semantics.execution_preference != ExecutionPreference::ToolFirst
-        || delivery.report().action_progress_updates_sent > 0
-    {
+    if !has_tools || request_semantics.execution_preference != ExecutionPreference::ToolFirst {
         return None;
     }
     match request_semantics.action_family {
@@ -27,6 +23,42 @@ fn action_progress_kind_for_regular_tool_round(
         ActionFamily::ActiveAction => Some(crate::agent::delivery::TaskActionProgressKind::Resumed),
         ActionFamily::Conversation | ActionFamily::TaskExecution => None,
     }
+}
+
+fn maybe_emit_regular_foreground_action_progress(
+    delivery: &mut DeliverySession<'_>,
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
+    has_tools: bool,
+) {
+    use crate::agent::delivery::TaskActionProgressKind;
+
+    if delivery.report().action_progress_updates_sent > 0 {
+        return;
+    }
+    match foreground_action_progress_kind_for_turn(request_semantics, has_tools) {
+        Some(TaskActionProgressKind::Started) => delivery.emit_foreground_work_started(),
+        Some(TaskActionProgressKind::Resumed) => delivery.emit_foreground_work_resumed(),
+        None => {}
+    }
+}
+
+fn should_emit_regular_foreground_blocked_progress(
+    request_semantics: crate::agent::request_semantics::RequestSemantics,
+    any_tool_used: bool,
+    delivery: &DeliverySession<'_>,
+    content: &str,
+) -> bool {
+    use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
+
+    !any_tool_used
+        && request_semantics.execution_preference == ExecutionPreference::ToolFirst
+        && matches!(
+            request_semantics.action_family,
+            ActionFamily::ActionRequest | ActionFamily::ActiveAction
+        )
+        && delivery.report().action_progress_updates_sent > 0
+        && delivery.report().terminal_progress_updates_sent == 0
+        && super::reply_finalize::looks_like_truthful_blocker_or_input_request(content)
 }
 
 fn surface_finalization_collapses_after_cleanup(strategy: AgentRunStrategy, content: &str) -> bool {
@@ -164,6 +196,11 @@ pub(super) fn execute_turn(
         &mut latency,
     )?;
     let reply_surface = request_plan.reply_surface();
+    maybe_emit_regular_foreground_action_progress(
+        &mut delivery,
+        request_semantics,
+        request_plan.has_tools(),
+    );
     if let Some(task_execution_outcome) = try_run_task_execution(
         worker_llm,
         msg,
@@ -426,13 +463,6 @@ pub(super) fn execute_turn(
                 final_content = response.content;
                 break;
             }
-            if let Some(kind) = action_progress_kind_for_regular_tool_round(
-                request_semantics,
-                any_tool_used,
-                &delivery,
-            ) {
-                delivery.emit_task_action_progress(kind);
-            }
             if !response.content.trim().is_empty() && response.content.trim() != "[tool_use]" {
                 mark_ttft_if_visible(&mut latency, worker_start, &response.content);
                 delivery.emit_partial(&response.content);
@@ -610,6 +640,14 @@ pub(super) fn execute_turn(
                 used_final_answer_recovery
             ),
         ));
+    }
+    if should_emit_regular_foreground_blocked_progress(
+        request_semantics,
+        any_tool_used,
+        &delivery,
+        &final_content,
+    ) {
+        delivery.emit_foreground_work_blocked();
     }
     let streamed = delivery.finalize(&final_content);
     let outcome = if let Some(reply) = delivered_current_chat_reply {
