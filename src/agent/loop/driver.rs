@@ -6,6 +6,21 @@ use std::borrow::Cow;
 const PUBLIC_RUNTIME_FINALIZATION_SYSTEM_SUFFIX: &str = "\n\n## Public Runtime Finalization\nThis turn is on the public_runtime reply surface. Using only the completed tool results and public runtime evidence already present in this conversation, produce the final user-facing answer now. Return JSON only with fields: surface and reply. surface must be public_runtime. reply must be a non-empty user-facing answer grounded in the current runtime evidence. Do not greet, do not ask generic follow-up questions, do not mention private/internal mechanisms, do not output progress logs, and do not call tools.";
 const PRIVATE_BOUNDARY_FINALIZATION_SYSTEM_SUFFIX: &str = "\n\n## Private Boundary Finalization\nThis turn is on the private_boundary reply surface. Using only the already-governed conclusions, tool evidence, and safe boundary decisions already present in this conversation, produce the final user-facing answer now. Return JSON only with fields: surface and reply. surface must be private_boundary. reply must be a non-empty user-facing answer. Do not reveal private source material, raw inner notes, internal-only memory, or hidden mechanisms. If the governed conclusion is that the request cannot be fulfilled, state that boundary clearly and briefly. Do not greet, do not output internal logs, and do not call tools.";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OfficeResolveHintCandidate {
+    account_key: String,
+    account_label: String,
+    provider_kind: String,
+    identity_class: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OfficeResolveHintSummary {
+    capability: String,
+    provider: Option<String>,
+    candidate_accounts: Vec<OfficeResolveHintCandidate>,
+}
+
 fn collect_recent_assistant_messages<'a>(
     messages: &'a [Message],
     limit: usize,
@@ -65,6 +80,191 @@ fn end_turn_recovery_suffix(followup: &str) -> String {
     out
 }
 
+fn extract_tool_result_attr<'a>(line: &'a str, attr: &str) -> Option<&'a str> {
+    let needle = {
+        let mut value = String::with_capacity(attr.len().saturating_add(2));
+        value.push_str(attr);
+        value.push_str("=\"");
+        value
+    };
+    let start = line.find(needle.as_str())?;
+    let value_start = start + needle.len();
+    let remain = &line[value_start..];
+    let end = remain.find('"')?;
+    Some(&remain[..end])
+}
+
+fn parse_office_resolve_hint_from_tool_result_block(
+    block: &str,
+) -> Option<OfficeResolveHintSummary> {
+    let payload = serde_json::from_str::<Value>(block.trim()).ok()?;
+    let office_assessment = payload.get("office_assessment")?;
+    let resolve_hint = office_assessment.get("resolve_hint")?;
+    if resolve_hint.get("status")?.as_str()? != "ambiguous" {
+        return None;
+    }
+    let capability = office_assessment
+        .get("capability")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if capability.is_empty() {
+        return None;
+    }
+    let provider = payload
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let candidate_accounts = resolve_hint
+        .get("candidate_accounts")?
+        .as_array()?
+        .iter()
+        .filter_map(|candidate| {
+            let account_key = candidate.get("account_key")?.as_str()?.trim().to_string();
+            let account_label = candidate
+                .get("account_label")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            let provider_kind = candidate
+                .get("provider_kind")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            let identity_class = candidate
+                .get("identity_class")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            if account_key.is_empty() {
+                return None;
+            }
+            Some(OfficeResolveHintCandidate {
+                account_key,
+                account_label,
+                provider_kind,
+                identity_class,
+            })
+        })
+        .collect::<Vec<_>>();
+    if candidate_accounts.len() < 2 {
+        return None;
+    }
+    Some(OfficeResolveHintSummary {
+        capability,
+        provider,
+        candidate_accounts,
+    })
+}
+
+fn extract_recent_office_resolve_hint(messages: &[Message]) -> Option<OfficeResolveHintSummary> {
+    for message in messages.iter().rev() {
+        if message.role.as_ref() != "user" {
+            continue;
+        }
+        let mut lines = message.content.lines();
+        while let Some(line) = lines.next() {
+            if !line.starts_with("<tool_result ") {
+                continue;
+            }
+            let status = extract_tool_result_attr(line, "status");
+            let failure = extract_tool_result_attr(line, "failure");
+            if status != Some("error") || failure != Some("capability") {
+                for next in lines.by_ref() {
+                    if next == "</tool_result>" {
+                        break;
+                    }
+                }
+                continue;
+            }
+            let mut block = String::new();
+            for next in lines.by_ref() {
+                if next == "</tool_result>" {
+                    break;
+                }
+                if !block.is_empty() {
+                    block.push('\n');
+                }
+                block.push_str(next);
+            }
+            if let Some(summary) = parse_office_resolve_hint_from_tool_result_block(&block) {
+                return Some(summary);
+            }
+        }
+    }
+    None
+}
+
+fn content_already_requests_office_account_choice(
+    content: &str,
+    summary: &OfficeResolveHintSummary,
+) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let asks_for_choice = trimmed.contains('?')
+        || trimmed.contains('？')
+        || trimmed.contains("哪个")
+        || trimmed.contains("选择")
+        || trimmed.contains("选")
+        || lower.contains("which")
+        || lower.contains("choose")
+        || lower.contains("select")
+        || lower.contains("pick");
+    if !asks_for_choice {
+        return false;
+    }
+    summary.candidate_accounts.iter().any(|candidate| {
+        trimmed.contains(&candidate.account_key)
+            || (!candidate.account_label.is_empty() && trimmed.contains(&candidate.account_label))
+    })
+}
+
+fn office_account_clarification_followup(messages: &[Message], content: &str) -> Option<String> {
+    let summary = extract_recent_office_resolve_hint(messages)?;
+    if content_already_requests_office_account_choice(content, &summary) {
+        return None;
+    }
+    let mut out = String::with_capacity(512);
+    out.push_str("[SYSTEM] A completed office tool call could not continue because account selection is ambiguous. Ask one brief user-facing clarification question now so the current action can continue. Do not claim work is still running. Do not mention JSON, tool logs, internal mechanisms, or hidden state.");
+    out.push_str(" The unresolved capability is ");
+    out.push_str(summary.capability.as_str());
+    if let Some(provider) = summary.provider.as_deref() {
+        out.push_str(" on provider ");
+        out.push_str(provider);
+    }
+    out.push_str(". Candidate accounts:\n");
+    for candidate in &summary.candidate_accounts {
+        out.push_str("- ");
+        if !candidate.account_label.is_empty() {
+            out.push_str(candidate.account_label.as_str());
+            out.push_str(" (");
+            out.push_str(candidate.account_key.as_str());
+            out.push(')');
+        } else {
+            out.push_str(candidate.account_key.as_str());
+        }
+        if !candidate.identity_class.is_empty() {
+            out.push_str(", identity_class=");
+            out.push_str(candidate.identity_class.as_str());
+        }
+        if !candidate.provider_kind.is_empty() {
+            out.push_str(", provider=");
+            out.push_str(candidate.provider_kind.as_str());
+        }
+        out.push('\n');
+    }
+    out.push_str("Return only the clarification question. Prefer account labels over raw account keys when the labels are clear.");
+    Some(out)
+}
+
 fn prepare_final_recovery_messages<'a>(
     messages: &'a [Message],
     draft_content: &str,
@@ -87,6 +287,9 @@ fn prepare_final_recovery_messages<'a>(
 }
 
 pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<String> {
+    if let Some(followup) = office_account_clarification_followup(ctx.messages, ctx.content) {
+        return Some(end_turn_recovery_suffix(&followup));
+    }
     if let Some(followup) = final_answer_followup(
         ctx.strategy,
         ctx.recent_tool_round.successful_round,
@@ -346,6 +549,46 @@ pub(super) fn recv_next_agent_msg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_recent_office_resolve_hint_reads_ambiguous_tool_result_block() {
+        let messages = vec![Message {
+            role: Cow::Borrowed("user"),
+            content: concat!(
+                "Tool results:\n",
+                "<tool_result id=\"call_1\" tool=\"mail\" status=\"error\" failure=\"capability\">\n",
+                "{\"ok\":false,\"office_assessment\":{\"capability\":\"mail\",\"resolve_hint\":{\"status\":\"ambiguous\",\"candidate_accounts\":[{\"account_key\":\"mail-work\",\"account_label\":\"Work\",\"provider_kind\":\"imap_smtp\",\"identity_class\":\"work\"},{\"account_key\":\"mail-personal\",\"account_label\":\"Personal\",\"provider_kind\":\"imap_smtp\",\"identity_class\":\"personal\"}]}}}\n",
+                "</tool_result>\n"
+            )
+            .to_string(),
+        }];
+
+        let summary = extract_recent_office_resolve_hint(&messages).expect("resolve hint");
+        assert_eq!(summary.capability, "mail");
+        assert_eq!(summary.candidate_accounts.len(), 2);
+        assert_eq!(summary.candidate_accounts[0].account_key, "mail-work");
+        assert_eq!(summary.candidate_accounts[1].account_label, "Personal");
+    }
+
+    #[test]
+    fn office_account_clarification_followup_skips_when_draft_already_asks_choice() {
+        let messages = vec![Message {
+            role: Cow::Borrowed("user"),
+            content: concat!(
+                "Tool results:\n",
+                "<tool_result id=\"call_1\" tool=\"calendar\" status=\"error\" failure=\"capability\">\n",
+                "{\"ok\":false,\"office_assessment\":{\"capability\":\"calendar\",\"resolve_hint\":{\"status\":\"ambiguous\",\"candidate_accounts\":[{\"account_key\":\"calendar-work\",\"account_label\":\"Work\",\"provider_kind\":\"mock_remote\",\"identity_class\":\"work\"},{\"account_key\":\"calendar-personal\",\"account_label\":\"Personal\",\"provider_kind\":\"mock_remote\",\"identity_class\":\"personal\"}]}}}\n",
+                "</tool_result>\n"
+            )
+            .to_string(),
+        }];
+
+        assert!(office_account_clarification_followup(
+            &messages,
+            "你要用 Work（calendar-work）还是 Personal（calendar-personal）这个日历账户？"
+        )
+        .is_none());
+    }
 
     #[test]
     fn private_boundary_has_structured_finalization_prompt() {

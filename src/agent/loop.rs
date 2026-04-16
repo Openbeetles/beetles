@@ -2966,6 +2966,150 @@ mod tests {
         }
     }
 
+    struct StubAmbiguousOfficeMailTool;
+
+    impl crate::tools::Tool for StubAmbiguousOfficeMailTool {
+        fn name(&self) -> &'static str {
+            "mail"
+        }
+
+        fn description(&self) -> &str {
+            "return an office account ambiguity failure"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, args: &str, ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.execute_outcome(args, ctx)
+                .map(|outcome| outcome.content)
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<crate::tools::ToolExecutionOutcome> {
+            Ok(crate::tools::ToolExecutionOutcome::text(
+                serde_json::json!({
+                    "ok": false,
+                    "provider": "imap_smtp",
+                    "office_assessment": {
+                        "capability": "mail",
+                        "resolve_hint": {
+                            "status": "ambiguous",
+                            "candidate_accounts": [
+                                {
+                                    "account_key": "mail-work",
+                                    "account_label": "Work",
+                                    "provider_kind": "imap_smtp",
+                                    "identity_class": "work"
+                                },
+                                {
+                                    "account_key": "mail-personal",
+                                    "account_label": "Personal",
+                                    "provider_kind": "imap_smtp",
+                                    "identity_class": "personal"
+                                }
+                            ]
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability))
+        }
+    }
+
+    struct StubResolvableOfficeMailTool {
+        seen_args: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl crate::tools::Tool for StubResolvableOfficeMailTool {
+        fn name(&self) -> &'static str {
+            "mail"
+        }
+
+        fn description(&self) -> &str {
+            "return office ambiguity until account_key is resolved"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"},"provider":{"type":"string"},"account_key":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, args: &str, ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.execute_outcome(args, ctx)
+                .map(|outcome| outcome.content)
+        }
+
+        fn execute_outcome(
+            &self,
+            args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<crate::tools::ToolExecutionOutcome> {
+            self.seen_args
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(args.to_string());
+            if args.contains(r#""account_key":"mail-work""#) {
+                return Ok(crate::tools::ToolExecutionOutcome::text(
+                    serde_json::json!({
+                        "ok": true,
+                        "provider": "imap_smtp",
+                        "account_key": "mail-work",
+                        "messages": [
+                            {"id": "msg-1", "subject": "Work mail"}
+                        ]
+                    })
+                    .to_string(),
+                ));
+            }
+            if args.contains(r#""account_key":"mail-personal""#) {
+                return Ok(crate::tools::ToolExecutionOutcome::text(
+                    serde_json::json!({
+                        "ok": true,
+                        "provider": "imap_smtp",
+                        "account_key": "mail-personal",
+                        "messages": [
+                            {"id": "msg-2", "subject": "Personal mail"}
+                        ]
+                    })
+                    .to_string(),
+                ));
+            }
+            Ok(crate::tools::ToolExecutionOutcome::text(
+                serde_json::json!({
+                    "ok": false,
+                    "provider": "imap_smtp",
+                    "office_assessment": {
+                        "capability": "mail",
+                        "resolve_hint": {
+                            "status": "ambiguous",
+                            "candidate_accounts": [
+                                {
+                                    "account_key": "mail-work",
+                                    "account_label": "Work",
+                                    "provider_kind": "imap_smtp",
+                                    "identity_class": "work"
+                                },
+                                {
+                                    "account_key": "mail-personal",
+                                    "account_label": "Personal",
+                                    "provider_kind": "imap_smtp",
+                                    "identity_class": "personal"
+                                }
+                            ]
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability))
+        }
+    }
+
     fn test_agent_loop_config() -> AgentLoopConfig {
         let mut config = crate::AppConfig::load_from_env();
         config.enabled_channel = crate::CHANNEL_QQ_CHANNEL.to_string();
@@ -5491,6 +5635,299 @@ mod tests {
         assert!(telemetry.used_final_answer_recovery);
         assert!(!telemetry.used_surface_finalization);
         assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
+    }
+
+    #[test]
+    fn execute_turn_office_account_ambiguity_uses_final_recovery_for_minimal_confirmation() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: serde_json::json!({
+                        "request_kind": "general",
+                        "evidence_need": "host_tool",
+                        "disclosure_surface": "governed",
+                        "execution_preference": "tool_first",
+                        "action_family": "action_request",
+                        "resume_relation": "independent_turn",
+                        "confidence": 96
+                    })
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "mail".to_string(),
+                        input: r#"{"op":"list","provider":"imap_smtp"}"#.to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "让我继续处理。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+                        .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubAmbiguousOfficeMailTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-office-ambiguity", "帮我看看邮箱", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-office-account-ambiguity",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let delivered = match outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 4, "{:#?}", observed);
+        assert!(
+            observed[3]
+                .system
+                .contains("account selection is ambiguous"),
+            "{:#?}",
+            observed[3]
+        );
+        assert!(
+            observed[3].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX),
+            "{:#?}",
+            observed[3]
+        );
+        assert_eq!(
+            delivered, "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？",
+            "{:#?}",
+            observed[2]
+        );
+        assert!(telemetry.used_final_answer_recovery);
+        assert_eq!(telemetry.latency.tool_calls, 1);
+    }
+
+    #[test]
+    fn office_account_confirmation_turn_resumes_action_and_calls_tool_with_selected_account() {
+        let session_store = Arc::new(StubSessionStore::default());
+        let execution_state_store = Arc::new(StubExecutionStateStore::default());
+        let seen_args = Arc::new(Mutex::new(Vec::new()));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        config.session_store = Arc::clone(&session_store) as Arc<dyn SessionStore + Send + Sync>;
+        config.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubResolvableOfficeMailTool {
+            seen_args: Arc::clone(&seen_args),
+        }));
+
+        let first_turn_llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: serde_json::json!({
+                        "request_kind": "general",
+                        "evidence_need": "host_tool",
+                        "disclosure_surface": "governed",
+                        "execution_preference": "tool_first",
+                        "action_family": "action_request",
+                        "resume_relation": "independent_turn",
+                        "confidence": 96
+                    })
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "mail".to_string(),
+                        input: r#"{"op":"list","provider":"imap_smtp"}"#.to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "让我继续处理。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+                        .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let msg1 = PcMsg::new_inbound("qq_channel", "chat-office-resume", "帮我看看邮箱", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+        let turn_execution::ExecutedTurn {
+            outcome: first_outcome,
+            telemetry: first_telemetry,
+        } = turn_execution::execute_turn(
+            &mut http,
+            &first_turn_llm,
+            &msg1,
+            &outbound_tx,
+            "req-office-resume-1",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("first execute turn");
+        let first_finalized = self::reply_finalize::finalize_turn(
+            &mut http,
+            &SequenceStubLlm {
+                responses: Mutex::new(Vec::new()),
+            },
+            &config,
+            &msg1,
+            UiLocale::Zh,
+            Instant::now(),
+            first_outcome,
+            first_telemetry,
+        )
+        .expect("finalize first turn");
+        let first_turn_ledger = build_turn_ledger_start(
+            "req-office-resume-1",
+            msg1.channel.as_ref(),
+            msg1.ingress,
+            &msg1.content,
+            1,
+        );
+        self::reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg: msg1.clone(),
+                loc: UiLocale::Zh,
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger: first_turn_ledger,
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            first_finalized,
+            delivery_handoff::DeliveryHandoff {
+                delivered: true,
+                outbound_enqueue_ms: 0,
+                reply_handoff_ms: 1,
+            },
+        );
+
+        let second_observed = Arc::new(Mutex::new(Vec::new()));
+        let second_turn_llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: serde_json::json!({
+                        "request_kind": "general",
+                        "evidence_need": "host_tool",
+                        "disclosure_surface": "governed",
+                        "execution_preference": "tool_first",
+                        "action_family": "active_action",
+                        "resume_relation": "supply_active_action_input",
+                        "confidence": 95
+                    })
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_2".to_string(),
+                        name: "mail".to_string(),
+                        input: r#"{"op":"list","provider":"imap_smtp","account_key":"mail-work"}"#
+                            .to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "已切到 Work 邮箱，并拿到 1 封邮件。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&second_observed),
+        };
+        let msg2 = PcMsg::new_inbound("qq_channel", "chat-office-resume", "用 Work", false)
+            .expect("message");
+        let turn_execution::ExecutedTurn {
+            outcome: second_outcome,
+            telemetry: second_telemetry,
+        } = turn_execution::execute_turn(
+            &mut http,
+            &second_turn_llm,
+            &msg2,
+            &outbound_tx,
+            "req-office-resume-2",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("second execute turn");
+
+        let delivered = match second_outcome {
+            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
+        };
+        assert_eq!(delivered, "已切到 Work 邮箱，并拿到 1 封邮件。");
+        assert_eq!(
+            second_telemetry.request_semantics.action_family,
+            ActionFamily::ActiveAction
+        );
+        assert_eq!(
+            second_telemetry.request_semantics.resume_relation,
+            ResumeRelation::SupplyActiveActionInput
+        );
+        assert_eq!(second_telemetry.latency.tool_calls, 1);
+        let seen_args = seen_args.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(seen_args.len(), 2, "{seen_args:#?}");
+        assert!(
+            seen_args[1].contains(r#""account_key":"mail-work""#),
+            "{seen_args:#?}"
+        );
+        let observed = second_observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            observed[1]
+                .message_dump
+                .contains("你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"),
+            "{:#?}",
+            observed[1]
+        );
     }
 
     #[test]

@@ -205,8 +205,14 @@ fn should_run_request_semantics_probe(
         && input.msg.ingress == IngressKind::User
         && !input.msg.is_group
         && !input.has_active_task_run
-        && deterministic.action_family == ActionFamily::Conversation
-        && deterministic.resume_relation == ResumeRelation::IndependentTurn
+        && matches!(
+            (deterministic.action_family, deterministic.resume_relation),
+            (ActionFamily::Conversation, ResumeRelation::IndependentTurn)
+                | (
+                    ActionFamily::ActiveAction,
+                    ResumeRelation::ResumeActiveAction
+                )
+        )
 }
 
 fn probe_request_semantics(

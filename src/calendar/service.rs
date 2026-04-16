@@ -5,7 +5,8 @@ use crate::calendar::{
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability,
-    OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
+    OfficeResolveRequest, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::util::current_unix_secs;
 use std::sync::Arc;
@@ -71,6 +72,44 @@ impl CalendarService {
         Ok(self
             .load_office_service()?
             .and_then(|service| service.default_account_key(OfficeCapability::Calendar)))
+    }
+
+    pub fn office_resolve_hint(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeResolveResult>> {
+        if account_key.is_some_and(|value| !value.trim().is_empty()) {
+            return Ok(None);
+        }
+        let Some(office_service) = self.load_office_service()? else {
+            return Ok(None);
+        };
+        let provider = provider.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(provider) = provider {
+            let candidates = office_service
+                .accounts_for_capability(OfficeCapability::Calendar)
+                .into_iter()
+                .filter(|account| account.provider_kind == provider)
+                .map(|account| OfficeResolveCandidate::from_account(&account))
+                .collect::<Vec<_>>();
+            if candidates.len() > 1 {
+                return Ok(Some(OfficeResolveResult::Ambiguous(
+                    OfficeResolveAmbiguity {
+                        reason: OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
+                        candidate_accounts: candidates,
+                    },
+                )));
+            }
+        }
+        match office_service.resolve(&OfficeResolveRequest {
+            capability: OfficeCapability::Calendar,
+            preferred_account_key: None,
+            preferred_identity_class: None,
+        }) {
+            OfficeResolveResult::Selected(_) => Ok(None),
+            other => Ok(Some(other)),
+        }
     }
 
     pub fn resolve_account_key_for_provider(
@@ -286,13 +325,34 @@ impl CalendarService {
                 format!("provider '{}' has no configured credential", provider),
             )),
             1 => Ok(keys.remove(0)),
-            _ => Err(Error::config(
-                "calendar_provider",
-                format!(
-                    "provider '{}' has multiple configured accounts; account_key is required",
-                    provider
-                ),
-            )),
+            _ => {
+                if let Some(OfficeResolveResult::Ambiguous(ambiguity)) =
+                    self.office_resolve_hint(Some(provider), None)?
+                {
+                    let candidate_accounts = ambiguity
+                        .candidate_accounts
+                        .iter()
+                        .map(|candidate| {
+                            format!("{} ({})", candidate.account_key, candidate.account_label)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(Error::config(
+                        "calendar_provider",
+                        format!(
+                            "provider '{}' has multiple configured accounts; candidate accounts: {}",
+                            provider, candidate_accounts
+                        ),
+                    ));
+                }
+                Err(Error::config(
+                    "calendar_provider",
+                    format!(
+                        "provider '{}' has multiple configured accounts; account_key is required",
+                        provider
+                    ),
+                ))
+            }
         }
     }
 

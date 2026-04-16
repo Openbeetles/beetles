@@ -168,7 +168,9 @@ impl CalendarTool {
             account_key,
             capability: OfficeCapability::Calendar,
             default_account_key: self.service.office_default_account_key()?,
-            resolve_hint: None,
+            resolve_hint: self
+                .service
+                .office_resolve_hint(Some(provider), account_key)?,
             account_assessments: self.service.office_account_assessments()?,
             error,
         })
@@ -1236,5 +1238,92 @@ mod tests {
             .as_str()
             .expect("error string")
             .contains("no configured credential"));
+    }
+
+    #[test]
+    fn calendar_tool_remote_list_returns_resolve_hint_when_accounts_are_ambiguous() {
+        let mut providers = CalendarProviderRegistry::new();
+        providers.register(Arc::new(StubProvider));
+        let mut registry = OfficeAccountRegistry::new();
+        for (account_key, external_account_id, account_label, identity_class) in [
+            (
+                "calendar-work",
+                "work@example.com",
+                "Work",
+                OfficeAccountIdentityClass::Work,
+            ),
+            (
+                "calendar-personal",
+                "personal@example.com",
+                "Personal",
+                OfficeAccountIdentityClass::Personal,
+            ),
+        ] {
+            registry.insert(OfficeAccount {
+                account_key: account_key.to_string(),
+                provider_kind: "mock_remote".to_string(),
+                external_account_id: external_account_id.to_string(),
+                account_label: account_label.to_string(),
+                identity_class,
+                enabled_capabilities: vec![OfficeCapability::Calendar],
+            });
+        }
+        let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for account_key in ["calendar-work", "calendar-personal"] {
+            office_credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: std::collections::BTreeMap::new(),
+                })
+                .expect("seed office credential");
+        }
+        let office_service = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy::default(),
+            office_credential_store,
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let tool = CalendarTool::with_office_service(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(OfficeBackedCalendarProviderCredentialStore::new(
+                office_service.clone(),
+            )),
+            providers,
+            office_service,
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list","provider":"mock_remote"}"#, &mut ctx)
+            .expect("structured ambiguity outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&outcome.content).expect("valid failure response json");
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["status"],
+            "ambiguous"
+        );
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["candidate_accounts"][0]["account_key"],
+            "calendar-personal"
+        );
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["candidate_accounts"][1]["account_key"],
+            "calendar-work"
+        );
+        assert!(payload["error"]
+            .as_str()
+            .expect("error string")
+            .contains("candidate accounts"));
     }
 }

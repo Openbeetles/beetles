@@ -157,7 +157,7 @@ impl ContactsDirectoryTool {
             account_key,
             capability: crate::office::OfficeCapability::ContactsDirectory,
             default_account_key: self.service.office_default_account_key()?,
-            resolve_hint: None,
+            resolve_hint: self.service.office_resolve_hint(provider, account_key)?,
             account_assessments: self.service.office_account_assessments()?,
             error,
         })
@@ -835,5 +835,100 @@ mod tests {
             payload["office_assessment"]["account_assessments"][0]["account_key"],
             "contacts-feishu"
         );
+    }
+
+    #[test]
+    fn contacts_directory_tool_remote_lookup_returns_resolve_hint_when_accounts_are_ambiguous() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let local_store = Arc::new(StateFsContactsDirectoryStore::new(state_fs));
+        let mut registry = OfficeAccountRegistry::new();
+        for (account_key, account_label, identity_class) in [
+            (
+                "contacts-feishu-work",
+                "Feishu Contacts Work",
+                OfficeAccountIdentityClass::Work,
+            ),
+            (
+                "contacts-feishu-personal",
+                "Feishu Contacts Personal",
+                OfficeAccountIdentityClass::Personal,
+            ),
+        ] {
+            registry.insert(OfficeAccount {
+                account_key: account_key.to_string(),
+                provider_kind: "feishu_contacts_directory".to_string(),
+                external_account_id: String::new(),
+                account_label: account_label.to_string(),
+                identity_class,
+                enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
+            });
+        }
+        let credential_store = Arc::new(StubOfficeCredentialStore::default());
+        for account_key in ["contacts-feishu-work", "contacts-feishu-personal"] {
+            credential_store
+                .set(&OfficeCredential {
+                    account_key: account_key.to_string(),
+                    access_token: "app-secret".to_string(),
+                    refresh_token: String::new(),
+                    token_endpoint: String::new(),
+                    expires_at_unix_secs: 0,
+                    updated_at: 1,
+                    metadata: [(
+                        OFFICE_METADATA_CONTACTS_APP_ID.to_string(),
+                        "cli_contacts".to_string(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                })
+                .expect("seed office credential");
+        }
+        let office_service = OfficeService::new(
+            registry,
+            OfficeCapabilityBinding::default(),
+            OfficeSelectionPolicy::default(),
+            credential_store,
+            Arc::new(StubRuntimeStatusStore),
+        );
+        let contacts_credentials = Arc::new(
+            OfficeBackedContactsDirectoryProviderCredentialStore::new(office_service.clone()),
+        );
+        let mut providers = ContactsDirectoryProviderRegistry::new();
+        providers.register(Arc::new(FailingRemoteProvider));
+        let tool = ContactsDirectoryTool::with_office_service(
+            local_store,
+            contacts_credentials,
+            providers,
+            office_service,
+        );
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"op":"lookup","query":"alice","provider":"feishu_contacts_directory"}"#,
+                &mut ctx,
+            )
+            .expect("structured ambiguity outcome");
+        assert_eq!(
+            outcome.failure_kind,
+            Some(crate::tools::ToolExecutionFailureKind::Capability)
+        );
+
+        let payload: Value = serde_json::from_str(&outcome.content).expect("failure json");
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["status"],
+            "ambiguous"
+        );
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["candidate_accounts"][0]["account_key"],
+            "contacts-feishu-personal"
+        );
+        assert_eq!(
+            payload["office_assessment"]["resolve_hint"]["candidate_accounts"][1]["account_key"],
+            "contacts-feishu-work"
+        );
+        assert!(payload["error"]
+            .as_str()
+            .expect("error string")
+            .contains("candidate accounts"));
     }
 }
