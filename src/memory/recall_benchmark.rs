@@ -154,7 +154,7 @@ mod tests {
     };
     use crate::task_execution::{
         TaskLearningKind, TaskLearningRecord, TaskLearningRoute, TaskLearningStore, TaskPlan,
-        TaskRun, TaskRunRecord, TaskRunStatus, TaskRunStore, TaskStep, TaskStepStatus,
+        TaskRun, TaskRunKind, TaskRunRecord, TaskRunStatus, TaskRunStore, TaskStep, TaskStepStatus,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -514,6 +514,7 @@ mod tests {
         TaskRunRecord {
             run: TaskRun {
                 run_id: "run_net".to_string(),
+                kind: TaskRunKind::TaskExecution,
                 source_channel: "telegram".to_string(),
                 source_chat_id: "chat-a".to_string(),
                 user_request: "fix network setup".to_string(),

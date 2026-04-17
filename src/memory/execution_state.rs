@@ -827,7 +827,7 @@ fn merge_execution_state(
     normalize_execution_state(next, now_secs)
 }
 
-fn execution_state_has_pending_work(state: &ExecutionState) -> bool {
+pub(crate) fn execution_state_has_pending_work(state: &ExecutionState) -> bool {
     !state.next_action.is_empty()
         || !state.blocker.is_empty()
         || !state.active_constraints.is_empty()

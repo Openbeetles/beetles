@@ -1448,6 +1448,7 @@ mod tests {
             active: vec![crate::task_execution::TaskRunRecord {
                 run: crate::task_execution::TaskRun {
                     run_id: "run-1".to_string(),
+                    kind: crate::task_execution::TaskRunKind::TaskExecution,
                     source_channel: "qq_channel".to_string(),
                     source_chat_id: "chat-1".to_string(),
                     user_request: "继续把 continuity capsule 接到维护链".to_string(),
@@ -1611,6 +1612,7 @@ mod tests {
             recent: vec![crate::task_execution::TaskRunRecord {
                 run: crate::task_execution::TaskRun {
                     run_id: "run-unsettled".to_string(),
+                    kind: crate::task_execution::TaskRunKind::TaskExecution,
                     source_channel: "qq_channel".to_string(),
                     source_chat_id: "chat-1".to_string(),
                     user_request: "继续收口 continuity capsule".to_string(),
@@ -1720,6 +1722,7 @@ mod tests {
                 crate::task_execution::TaskRunRecord {
                     run: crate::task_execution::TaskRun {
                         run_id: "run-unsettled".to_string(),
+                        kind: crate::task_execution::TaskRunKind::TaskExecution,
                         source_channel: "qq_channel".to_string(),
                         source_chat_id: "chat-1".to_string(),
                         user_request: "继续收口 continuity capsule".to_string(),
@@ -1761,6 +1764,7 @@ mod tests {
                 crate::task_execution::TaskRunRecord {
                     run: crate::task_execution::TaskRun {
                         run_id: "run-settled".to_string(),
+                        kind: crate::task_execution::TaskRunKind::TaskExecution,
                         source_channel: "qq_channel".to_string(),
                         source_chat_id: "chat-1".to_string(),
                         user_request: "继续收口 continuity capsule".to_string(),
@@ -1865,6 +1869,7 @@ mod tests {
         let run = crate::task_execution::TaskRunRecord {
             run: crate::task_execution::TaskRun {
                 run_id: "run-2".to_string(),
+                kind: crate::task_execution::TaskRunKind::TaskExecution,
                 source_channel: "qq_channel".to_string(),
                 source_chat_id: "chat-1".to_string(),
                 user_request: "继续收口写入治理".to_string(),

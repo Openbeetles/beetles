@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::active_work::should_keep_interactive_action_work;
 use crate::agent::final_reply::reply_has_concrete_anchor;
 use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 use crate::memory::EmotionSignalStore;
@@ -439,6 +440,7 @@ pub(super) fn complete_turn(
             crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
                 | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
         );
+    let now_secs = super::now_unix_ms() / 1000;
     if clear_execution_state {
         if let Err(error) = config.runtime.execution_state_store.clear(&msg.chat_id) {
             log::warn!(
@@ -476,7 +478,7 @@ pub(super) fn complete_turn(
                 user_content: &msg.content,
                 reply_content: &reply_content,
                 tool_calls: worker_latency.tool_calls,
-                now_secs: super::now_unix_ms() / 1000,
+                now_secs,
                 turn_observation: turn_observation.as_ref(),
             },
         ) {
@@ -494,13 +496,114 @@ pub(super) fn complete_turn(
             .flatten();
     }
     if delivered && msg.ingress == IngressKind::User {
-        let active_task_run = active_task_run_for_chat(
+        let mut active_task_run = active_task_run_for_chat(
             config.runtime.task_run_store.as_ref(),
             msg.channel.as_ref(),
             msg.chat_id.as_ref(),
         )
         .ok()
         .flatten();
+        let keep_interactive_task_run = seeded_execution_state
+            .as_ref()
+            .is_some_and(crate::memory::execution_state_has_pending_work)
+            && should_keep_interactive_action_work(request_semantics)
+            && active_task_run.as_ref().is_none_or(|record| {
+                record.run.kind == crate::task_execution::TaskRunKind::InteractiveAction
+            })
+            && reply_surface != ReplySurface::TaskExecution;
+        if matches!(
+            request_semantics.resume_relation,
+            crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
+                | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
+        ) {
+            if let Some(run) = active_task_run.as_ref() {
+                let reason = if request_semantics.resume_relation
+                    == crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
+                {
+                    "cancelled by the user"
+                } else {
+                    "superseded by a newer user request"
+                };
+                if let Err(error) = crate::task_execution::finalize_foreground_task_run(
+                    config.runtime.task_run_store.as_ref(),
+                    run,
+                    crate::task_execution::TaskRunStatus::Aborted,
+                    &reply_content,
+                    reason,
+                    now_secs,
+                ) {
+                    log::warn!(
+                        "[task_execution] failed to abort foreground run chat_id={}: {}",
+                        msg.chat_id,
+                        error
+                    );
+                }
+            }
+            active_task_run = None;
+        } else if reply_surface == ReplySurface::TaskExecution {
+            active_task_run = active_task_run_for_chat(
+                config.runtime.task_run_store.as_ref(),
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            )
+            .ok()
+            .flatten();
+        } else if keep_interactive_task_run {
+            if let Some(state) = seeded_execution_state.as_ref() {
+                let mut durable_state = state.clone();
+                if looks_like_truthful_blocker_or_input_request(&reply_content)
+                    && durable_state.status == crate::memory::ExecutionStatus::Active
+                {
+                    durable_state.status = crate::memory::ExecutionStatus::Blocked;
+                    if durable_state.blocker.trim().is_empty() {
+                        durable_state.blocker = if !durable_state.next_action.trim().is_empty() {
+                            durable_state.next_action.clone()
+                        } else {
+                            reply_content.trim().to_string()
+                        };
+                    }
+                }
+                match crate::task_execution::upsert_interactive_action_run_record(
+                    config.runtime.task_run_store.as_ref(),
+                    active_task_run.as_ref(),
+                    msg.channel.as_ref(),
+                    msg.chat_id.as_ref(),
+                    &msg.content,
+                    &durable_state,
+                    now_secs,
+                ) {
+                    Ok(record) => {
+                        active_task_run = Some(record);
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "[task_execution] failed to materialize interactive action run chat_id={}: {}",
+                            msg.chat_id,
+                            error
+                        );
+                        active_task_run = None;
+                    }
+                }
+            }
+        } else if let Some(run) = active_task_run.as_ref().filter(|record| {
+            record.run.kind == crate::task_execution::TaskRunKind::InteractiveAction
+        }) {
+            if let Err(error) = crate::task_execution::finalize_foreground_task_run(
+                config.runtime.task_run_store.as_ref(),
+                run,
+                crate::task_execution::TaskRunStatus::Completed,
+                &reply_content,
+                "",
+                now_secs,
+            ) {
+                log::warn!(
+                    "[task_execution] failed to complete interactive action run chat_id={}: {}",
+                    msg.chat_id,
+                    error
+                );
+            }
+            active_task_run = None;
+        }
         if let Err(error) = crate::agent::sync_active_work_after_turn(
             config.runtime.active_work_store.as_ref(),
             crate::agent::ActiveWorkSyncInput {

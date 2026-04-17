@@ -1749,8 +1749,8 @@ mod tests {
     use crate::platform::SkillStorage;
     use crate::task_execution::{
         TaskArtifactRecord, TaskArtifactStore, TaskLearningKind, TaskLearningRecord,
-        TaskLearningRoute, TaskLearningStore, TaskPlan, TaskRun, TaskRunRecord, TaskRunStatus,
-        TaskRunStore,
+        TaskLearningRoute, TaskLearningStore, TaskPlan, TaskRun, TaskRunKind, TaskRunRecord,
+        TaskRunStatus, TaskRunStore,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -2326,6 +2326,7 @@ mod tests {
         TaskRunRecord {
             run: TaskRun {
                 run_id: run_id.to_string(),
+                kind: TaskRunKind::TaskExecution,
                 source_channel: "qq_channel".to_string(),
                 source_chat_id: "chat-1".to_string(),
                 user_request: "Summarize the fix path".to_string(),

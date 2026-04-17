@@ -1915,6 +1915,7 @@ mod tests {
         crate::task_execution::TaskRunRecord {
             run: crate::task_execution::TaskRun {
                 run_id: run_id.to_string(),
+                kind: crate::task_execution::TaskRunKind::TaskExecution,
                 source_channel: "qq_channel".to_string(),
                 source_chat_id: "chat-1".to_string(),
                 user_request: goal.to_string(),

@@ -2873,28 +2873,74 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubTaskRunStore;
+    struct StubTaskRunStore {
+        entries: Mutex<HashMap<String, crate::task_execution::TaskRunRecord>>,
+    }
+
+    impl StubTaskRunStore {
+        fn new(records: Vec<crate::task_execution::TaskRunRecord>) -> Self {
+            let entries = records
+                .into_iter()
+                .map(|record| (record.run.run_id.clone(), record))
+                .collect();
+            Self {
+                entries: Mutex::new(entries),
+            }
+        }
+    }
 
     impl crate::task_execution::TaskRunStore for StubTaskRunStore {
-        fn get(&self, _run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
-            Ok(None)
+        fn get(&self, run_id: &str) -> Result<Option<crate::task_execution::TaskRunRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(run_id)
+                .cloned())
         }
 
-        fn upsert(&self, _record: &crate::task_execution::TaskRunRecord) -> Result<()> {
+        fn upsert(&self, record: &crate::task_execution::TaskRunRecord) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(record.run.run_id.clone(), record.clone());
             Ok(())
         }
 
-        fn list_recent(&self, _limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
-            Ok(Vec::new())
+        fn list_recent(&self, limit: usize) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
+            let mut records = self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.run.updated_at));
+            records.truncate(limit);
+            Ok(records)
         }
 
         fn list_active_for_chat(
             &self,
-            _channel: &str,
-            _chat_id: &str,
-            _limit: usize,
+            channel: &str,
+            chat_id: &str,
+            limit: usize,
         ) -> Result<Vec<crate::task_execution::TaskRunRecord>> {
-            Ok(Vec::new())
+            let mut records = self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .filter(|record| {
+                    record.run.source_channel == channel
+                        && record.run.source_chat_id == chat_id
+                        && record.run.status.is_active()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.run.updated_at));
+            records.truncate(limit);
+            Ok(records)
         }
     }
 
@@ -3380,7 +3426,7 @@ mod tests {
                 office_credential_store: platform.office_credential_store(),
                 office_runtime_status_store: platform.office_runtime_status_store(),
                 task_store: Arc::new(StubTaskStore),
-                task_run_store: Arc::new(StubTaskRunStore),
+                task_run_store: Arc::new(StubTaskRunStore::default()),
                 task_artifact_store: Arc::new(StubTaskArtifactStore),
                 task_execution_ledger_store: Arc::new(StubTaskExecutionLedgerStore),
                 task_learning_store: Arc::new(StubTaskLearningStore),
@@ -6320,6 +6366,7 @@ mod tests {
     fn office_account_confirmation_turn_resumes_action_and_calls_tool_with_selected_account() {
         let session_store = Arc::new(StubSessionStore::default());
         let execution_state_store = Arc::new(StubExecutionStateStore::default());
+        let task_run_store = Arc::new(StubTaskRunStore::default());
         let seen_args = Arc::new(Mutex::new(Vec::new()));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6327,6 +6374,8 @@ mod tests {
             Arc::clone(&session_store) as Arc<dyn SessionStore + Send + Sync>;
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        config.runtime.task_run_store = Arc::clone(&task_run_store)
+            as Arc<dyn crate::task_execution::TaskRunStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut registry = crate::tools::ToolRegistry::new();
@@ -6436,6 +6485,18 @@ mod tests {
                 reply_handoff_ms: 1,
             },
         );
+        let active_runs = task_run_store
+            .list_active_for_chat("qq_channel", "chat-office-resume", 8)
+            .expect("list active task runs");
+        assert_eq!(active_runs.len(), 1, "{active_runs:#?}");
+        assert_eq!(
+            active_runs[0].run.kind,
+            crate::task_execution::TaskRunKind::InteractiveAction
+        );
+        assert_eq!(
+            active_runs[0].run.status,
+            crate::task_execution::TaskRunStatus::Blocked
+        );
 
         let second_observed = Arc::new(Mutex::new(Vec::new()));
         let second_turn_llm = ObservedSequenceStubLlm {
@@ -6517,6 +6578,152 @@ mod tests {
             "{:#?}",
             observed[1]
         );
+    }
+
+    #[test]
+    fn complete_turn_aborts_active_task_run_for_cancel_active_action_turn() {
+        let task_run_store = Arc::new(StubTaskRunStore::new(vec![
+            crate::task_execution::TaskRunRecord {
+                run: crate::task_execution::TaskRun {
+                    run_id: "run-cancel".to_string(),
+                    kind: crate::task_execution::TaskRunKind::InteractiveAction,
+                    source_channel: "qq_channel".to_string(),
+                    source_chat_id: "chat-cancel-run".to_string(),
+                    user_request: "配置 QQ 邮箱".to_string(),
+                    title: "QQ 邮箱配置".to_string(),
+                    status: crate::task_execution::TaskRunStatus::Blocked,
+                    current_step_id: "s01".to_string(),
+                    planner_reason: String::new(),
+                    final_summary: String::new(),
+                    failure_reason: "等待用户补充 provider_kind".to_string(),
+                    plan_revision: 1,
+                    created_at: 1,
+                    updated_at: 9,
+                    finished_at: 0,
+                },
+                plan: crate::task_execution::TaskPlan {
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    completion_definition: "账户已完成配置".to_string(),
+                    risk_notes: Vec::new(),
+                    ordered_steps: vec![crate::task_execution::TaskStep {
+                        step_id: "s01".to_string(),
+                        title: "补认证信息".to_string(),
+                        instruction: "请用户补充 provider_kind".to_string(),
+                        status: crate::task_execution::TaskStepStatus::Blocked,
+                        tool_budget: 1,
+                        retry_budget: 1,
+                        expected_artifacts: Vec::new(),
+                        review_criteria: Vec::new(),
+                        attempt_count: 0,
+                        last_result_summary: "账户草案已创建".to_string(),
+                        last_review_summary: "等待用户补充 provider_kind".to_string(),
+                        started_at: 0,
+                        finished_at: 0,
+                    }],
+                },
+            },
+        ]));
+        let mut config = test_agent_loop_config();
+        config.runtime.task_run_store = Arc::clone(&task_run_store)
+            as Arc<dyn crate::task_execution::TaskRunStore + Send + Sync>;
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-cancel-run",
+            "先别配了，这个动作取消",
+            false,
+        )
+        .expect("message");
+        let turn_ledger = build_turn_ledger_start(
+            "req-cancel-run",
+            msg.channel.as_ref(),
+            msg.ingress,
+            &msg.content,
+            1,
+        );
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply_content: "好，当前配置动作先取消。".to_string(),
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: None,
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "好，当前配置动作先取消。".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "好，当前配置动作先取消。".to_string(),
+            worker_latency: WorkerLatency::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            used_final_answer_recovery: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            request_semantics: RequestSemantics {
+                request_kind: crate::agent::request_semantics::RequestKind::General,
+                evidence_need: crate::agent::request_semantics::EvidenceNeed::None,
+                disclosure_surface: crate::agent::request_semantics::DisclosureSurface::Governed,
+                execution_preference:
+                    crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
+                action_family: crate::agent::request_semantics::ActionFamily::ActiveAction,
+                resume_relation:
+                    crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction,
+                confidence: 100,
+            },
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            subject_state: None,
+            soul_feedback_projection: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg: msg.clone(),
+                loc: UiLocale::Zh,
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger,
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            finalized,
+            delivery_handoff::DeliveryHandoff {
+                delivered: true,
+                outbound_enqueue_ms: 0,
+                reply_handoff_ms: 1,
+            },
+        );
+
+        let run = task_run_store
+            .get("run-cancel")
+            .expect("get task run")
+            .expect("task run");
+        assert_eq!(
+            run.run.status,
+            crate::task_execution::TaskRunStatus::Aborted
+        );
+        assert!(task_run_store
+            .list_active_for_chat("qq_channel", "chat-cancel-run", 8)
+            .expect("list active task runs")
+            .is_empty());
     }
 
     #[test]

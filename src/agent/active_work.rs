@@ -12,7 +12,7 @@ use crate::runtime::system_work::{
     CHANNEL_IDLE_MEMORY_FORGE, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE,
     CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
 };
-use crate::task_execution::{current_or_next_step, TaskRunRecord, TaskRunStatus};
+use crate::task_execution::{current_or_next_step, TaskRunKind, TaskRunRecord, TaskRunStatus};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -88,30 +88,14 @@ impl ActiveWorkRecord {
             record.run.title.clone()
         };
         let candidate = Self {
-            kind: ActiveWorkKind::TaskExecution,
+            kind: match record.run.kind {
+                TaskRunKind::InteractiveAction => ActiveWorkKind::InteractiveAction,
+                TaskRunKind::TaskExecution => ActiveWorkKind::TaskExecution,
+            },
             title,
             state,
         };
         candidate.is_meaningful().then_some(candidate)
-    }
-
-    pub(crate) fn from_execution_state(
-        kind: ActiveWorkKind,
-        state: &ExecutionState,
-    ) -> Option<Self> {
-        if state.status == ExecutionStatus::Done || !state.is_meaningful() {
-            return None;
-        }
-        let title = if !state.goal.trim().is_empty() {
-            state.goal.clone()
-        } else {
-            state.next_action.clone()
-        };
-        Some(Self {
-            kind,
-            title,
-            state: state.clone(),
-        })
     }
 }
 
@@ -326,15 +310,11 @@ pub(crate) fn sync_active_work_after_turn(
         input
             .active_task_run
             .and_then(ActiveWorkRecord::from_task_run)
-            .or_else(|| {
-                input.execution_state.and_then(|state| {
-                    ActiveWorkRecord::from_execution_state(ActiveWorkKind::TaskExecution, state)
-                })
-            })
     } else if should_keep_interactive_action_work(input.request_semantics) {
-        input.execution_state.and_then(|state| {
-            ActiveWorkRecord::from_execution_state(ActiveWorkKind::InteractiveAction, state)
-        })
+        input
+            .active_task_run
+            .filter(|record| record.run.kind == TaskRunKind::InteractiveAction)
+            .and_then(ActiveWorkRecord::from_task_run)
     } else {
         None
     };
@@ -345,7 +325,7 @@ pub(crate) fn sync_active_work_after_turn(
     }
 }
 
-fn should_keep_interactive_action_work(
+pub(crate) fn should_keep_interactive_action_work(
     semantics: crate::agent::request_semantics::RequestSemantics,
 ) -> bool {
     use crate::agent::request_semantics::{ActionFamily, ResumeRelation};
@@ -464,7 +444,10 @@ mod tests {
         ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
         RequestSemantics, ResumeRelation,
     };
-    use crate::task_execution::{TaskPlan, TaskRun, TaskRunStatus, TaskStep, TaskStepStatus};
+    use crate::task_execution::{
+        build_interactive_action_run_record, TaskPlan, TaskRun, TaskRunKind, TaskRunStatus,
+        TaskStep, TaskStepStatus,
+    };
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -654,6 +637,7 @@ mod tests {
         TaskRunRecord {
             run: TaskRun {
                 run_id: "run-1".to_string(),
+                kind: TaskRunKind::TaskExecution,
                 source_channel: "qq_channel".to_string(),
                 source_chat_id: "chat-1".to_string(),
                 user_request: "配置 QQ 邮箱".to_string(),
@@ -771,11 +755,23 @@ mod tests {
     fn sync_promotes_action_execution_state_but_not_plain_conversation() {
         let store = MemoryActiveWorkStore::default();
         let state = ExecutionState {
+            status: ExecutionStatus::Blocked,
             goal: "配置 QQ 邮箱账户".to_string(),
+            progress: "账户草案已创建".to_string(),
+            blocker: "缺少 provider_kind".to_string(),
             next_action: "补认证信息".to_string(),
             updated_at: 7,
             ..ExecutionState::default()
         };
+        let interactive_run = build_interactive_action_run_record(
+            "run-2",
+            "qq_channel",
+            "chat-1",
+            "配置 QQ 邮箱",
+            &state,
+            7,
+        )
+        .expect("interactive run");
 
         sync_active_work_after_turn(
             &store,
@@ -786,15 +782,14 @@ mod tests {
                     ResumeRelation::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
-                active_task_run: None,
+                active_task_run: Some(&interactive_run),
                 execution_state: Some(&state),
             },
         )
         .expect("sync");
-        assert_eq!(
-            store.get("chat-1").expect("get").expect("record").kind,
-            ActiveWorkKind::InteractiveAction
-        );
+        let record = store.get("chat-1").expect("get").expect("record");
+        assert_eq!(record.kind, ActiveWorkKind::InteractiveAction);
+        assert_eq!(record.state.blocker, "缺少 provider_kind");
 
         sync_active_work_after_turn(
             &store,

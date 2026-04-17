@@ -1164,6 +1164,9 @@ pub fn build_task_recall_bundle(
     if max_len < MIN_TASK_RECALL_BLOCK_LEN {
         return None;
     }
+    if active_run.run.kind != crate::task_execution::TaskRunKind::TaskExecution {
+        return None;
+    }
     let step_title = current_or_next_step(active_run)
         .map(|step| step.title.as_str())
         .unwrap_or("");
@@ -1478,7 +1481,11 @@ pub fn inspect_task_workspace(
             task_run_store
                 .list_active_for_chat(channel, chat_id, 1)
                 .ok()
-                .and_then(|mut runs| runs.drain(..).next())
+                .and_then(|mut runs| {
+                    runs.drain(..).find(|record| {
+                        record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
+                    })
+                })
         })
         .or_else(|| {
             task_run_store
@@ -1486,7 +1493,9 @@ pub fn inspect_task_workspace(
                 .ok()
                 .and_then(|runs| {
                     runs.into_iter().find(|record| {
-                        record.run.source_channel == channel && record.run.source_chat_id == chat_id
+                        record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
+                            && record.run.source_channel == channel
+                            && record.run.source_chat_id == chat_id
                     })
                 })
         });
@@ -2008,7 +2017,7 @@ mod tests {
     };
     use crate::platform::SkillStorage;
     use crate::skills::{build_runtime_skill_recall_block, runtime_skill_name_for_topic};
-    use crate::task_execution::{TaskArtifactRecord, TaskRun, TaskRunStore};
+    use crate::task_execution::{TaskArtifactRecord, TaskRun, TaskRunKind, TaskRunStore};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -2322,6 +2331,7 @@ mod tests {
         TaskRunRecord {
             run: TaskRun {
                 run_id: run_id.to_string(),
+                kind: TaskRunKind::TaskExecution,
                 source_channel: "telegram".to_string(),
                 source_chat_id: "chat-1".to_string(),
                 user_request: "Finish the migration".to_string(),
