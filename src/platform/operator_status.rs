@@ -314,6 +314,9 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningStage::ExperienceCrystal => "experience_crystal",
             crate::ProgrammableReasoningStage::EngineeringSynthesis => "engineering_synthesis",
             crate::ProgrammableReasoningStage::IntentCompiler => "intent_compiler",
+            crate::ProgrammableReasoningStage::CounterfactualSandbox => {
+                "counterfactual_sandbox"
+            }
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,
         match snapshot.programmable_reasoning.runtime_contract.execution_backend {

@@ -252,6 +252,96 @@ impl TurnReasoningIntentLedger {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnCounterfactualSnapshotLedger {
+    #[serde(default)]
+    pub request_kind: String,
+    #[serde(default)]
+    pub evidence_need: String,
+    #[serde(default)]
+    pub execution_preference: String,
+    #[serde(default)]
+    pub action_family: String,
+    #[serde(default)]
+    pub deliberation_class: String,
+    #[serde(default)]
+    pub reasoning_kind: String,
+    #[serde(default)]
+    pub reasoning_strategy: String,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub runtime_grounding_required: bool,
+    #[serde(default)]
+    pub has_tools: bool,
+    #[serde(default)]
+    pub active_task_context_present: bool,
+    #[serde(default)]
+    pub governed_memory_evidence_present: bool,
+}
+
+impl TurnCounterfactualSnapshotLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.request_kind.trim().is_empty()
+            || !self.evidence_need.trim().is_empty()
+            || !self.execution_preference.trim().is_empty()
+            || !self.action_family.trim().is_empty()
+            || !self.deliberation_class.trim().is_empty()
+            || !self.reasoning_kind.trim().is_empty()
+            || !self.reasoning_strategy.trim().is_empty()
+            || self.confidence > 0
+            || self.runtime_grounding_required
+            || self.has_tools
+            || self.active_task_context_present
+            || self.governed_memory_evidence_present
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnCounterfactualBranchLedger {
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub score: u8,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub rationale: Vec<String>,
+    #[serde(default)]
+    pub requires_native_tool_round: bool,
+}
+
+impl TurnCounterfactualBranchLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.branch.trim().is_empty()
+            || self.score > 0
+            || !self.summary.trim().is_empty()
+            || !self.rationale.is_empty()
+            || self.requires_native_tool_round
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnCounterfactualLedger {
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub snapshot: TurnCounterfactualSnapshotLedger,
+    #[serde(default)]
+    pub selected_branch: TurnCounterfactualBranchLedger,
+    #[serde(default)]
+    pub alternatives: Vec<TurnCounterfactualBranchLedger>,
+}
+
+impl TurnCounterfactualLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.summary.trim().is_empty()
+            || self.snapshot.is_meaningful()
+            || self.selected_branch.is_meaningful()
+            || !self.alternatives.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnSubjectStateLedger {
     #[serde(default)]
     pub summary: String,
@@ -536,6 +626,8 @@ pub struct TurnLedger {
     pub soul_feedback: Option<TurnSoulFeedbackLedger>,
     #[serde(default)]
     pub reasoning_intent: Option<TurnReasoningIntentLedger>,
+    #[serde(default)]
+    pub counterfactual: Option<TurnCounterfactualLedger>,
 }
 
 pub trait TurnLedgerStore: Send + Sync {
@@ -843,6 +935,61 @@ pub fn render_turn_reasoning_intent_ledger_block(
     (!rendered.trim().is_empty()).then_some(rendered)
 }
 
+pub fn render_turn_counterfactual_ledger_block(
+    counterfactual: &TurnCounterfactualLedger,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 || !counterfactual.is_meaningful() {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(640));
+    out.push_str("## Latest Counterfactual Sandbox\n");
+    if !counterfactual.summary.trim().is_empty() {
+        let _ = writeln!(out, "Summary: {}", counterfactual.summary.trim());
+    }
+    if counterfactual.selected_branch.is_meaningful() {
+        let _ = writeln!(
+            out,
+            "Selected: {} ({})",
+            counterfactual.selected_branch.branch.trim(),
+            counterfactual.selected_branch.score
+        );
+        if !counterfactual.selected_branch.summary.trim().is_empty() {
+            let _ = writeln!(
+                out,
+                "Selected summary: {}",
+                counterfactual.selected_branch.summary.trim()
+            );
+        }
+    }
+    if !counterfactual.alternatives.is_empty() {
+        let branches = counterfactual
+            .alternatives
+            .iter()
+            .filter(|branch| branch.is_meaningful())
+            .map(|branch| format!("{} ({})", branch.branch.trim(), branch.score))
+            .collect::<Vec<_>>();
+        if !branches.is_empty() {
+            let _ = writeln!(out, "Rejected: {}", branches.join(" | "));
+        }
+    }
+    if counterfactual.snapshot.is_meaningful() {
+        let _ = writeln!(
+            out,
+            "Snapshot: request_kind={} evidence_need={} action_family={} deliberation={} reasoning={} strategy={} confidence={}",
+            counterfactual.snapshot.request_kind.trim(),
+            counterfactual.snapshot.evidence_need.trim(),
+            counterfactual.snapshot.action_family.trim(),
+            counterfactual.snapshot.deliberation_class.trim(),
+            counterfactual.snapshot.reasoning_kind.trim(),
+            counterfactual.snapshot.reasoning_strategy.trim(),
+            counterfactual.snapshot.confidence
+        );
+    }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
 pub fn turn_ledger_observed_at_ms(ledger: &TurnLedger) -> u64 {
     if ledger.finished_at_ms > 0 {
         ledger.finished_at_ms
@@ -1005,5 +1152,49 @@ mod tests {
         assert!(rendered.contains("Confidence: 92"));
         assert!(rendered.contains("Preferred tools: lua_query, office_status"));
         assert!(rendered.contains("Runtime grounding required: true"));
+    }
+
+    #[test]
+    fn render_turn_counterfactual_ledger_block_includes_selected_and_rejected_branches() {
+        let rendered = render_turn_counterfactual_ledger_block(
+            &TurnCounterfactualLedger {
+                summary: "Prefer structured tool synthesis over direct reply.".to_string(),
+                snapshot: TurnCounterfactualSnapshotLedger {
+                    request_kind: "general".to_string(),
+                    evidence_need: "host_tool".to_string(),
+                    execution_preference: "tool_first".to_string(),
+                    action_family: "action_request".to_string(),
+                    deliberation_class: "hard_reasoning".to_string(),
+                    reasoning_kind: "engineering_synthesis".to_string(),
+                    reasoning_strategy: "require_native_tool_round".to_string(),
+                    confidence: 91,
+                    runtime_grounding_required: true,
+                    has_tools: true,
+                    active_task_context_present: true,
+                    governed_memory_evidence_present: false,
+                },
+                selected_branch: TurnCounterfactualBranchLedger {
+                    branch: "structured_tool_synthesis".to_string(),
+                    score: 94,
+                    summary: "Collect live evidence, then synthesize one coherent action answer."
+                        .to_string(),
+                    rationale: vec!["hard_reasoning".to_string()],
+                    requires_native_tool_round: true,
+                },
+                alternatives: vec![TurnCounterfactualBranchLedger {
+                    branch: "direct_reply".to_string(),
+                    score: 34,
+                    summary: "Answer immediately from the current context.".to_string(),
+                    rationale: vec!["under_grounded".to_string()],
+                    requires_native_tool_round: false,
+                }],
+            },
+            420,
+        )
+        .expect("counterfactual block");
+
+        assert!(rendered.contains("## Latest Counterfactual Sandbox"));
+        assert!(rendered.contains("Selected: structured_tool_synthesis (94)"));
+        assert!(rendered.contains("Rejected: direct_reply (34)"));
     }
 }

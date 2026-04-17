@@ -1721,6 +1721,18 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                             println!("{line}");
                         }
                     }
+                    if let Some(counterfactual) =
+                        ledger.counterfactual.as_ref().and_then(|counterfactual| {
+                            beetle::memory::render_turn_counterfactual_ledger_block(
+                                counterfactual,
+                                320,
+                            )
+                        })
+                    {
+                        for line in counterfactual.lines() {
+                            println!("{line}");
+                        }
+                    }
                 }
                 None => println!("Recent turn: none"),
             }

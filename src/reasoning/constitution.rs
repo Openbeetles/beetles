@@ -14,6 +14,7 @@ pub enum ProgrammableReasoningStage {
     ExperienceCrystal,
     EngineeringSynthesis,
     IntentCompiler,
+    CounterfactualSandbox,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -58,7 +59,7 @@ pub struct ProgrammableReasoningRuntimeContract {
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
     let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::IntentCompiler,
+        stage: ProgrammableReasoningStage::CounterfactualSandbox,
         linux_only: true,
         execution_backend: if execution_enabled {
             ProgrammableReasoningExecutionBackend::LuaSandbox
@@ -99,9 +100,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_moves_to_p9_intent_compiler() {
+    fn runtime_contract_moves_to_p10_counterfactual_sandbox() {
         let contract = programmable_reasoning_runtime_contract();
-        assert_eq!(contract.stage, ProgrammableReasoningStage::IntentCompiler);
+        assert_eq!(
+            contract.stage,
+            ProgrammableReasoningStage::CounterfactualSandbox
+        );
         assert!(contract.linux_only);
         assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));
         assert!(contract.proposal_only_persistence);

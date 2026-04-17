@@ -29,6 +29,8 @@ pub(super) struct FinalizedTurn {
     pub(super) task_learning_selected_ids: Vec<String>,
     pub(super) programmable_reasoning_intent:
         Option<crate::agent::reasoning_intent::ProgrammableReasoningIntent>,
+    pub(super) counterfactual_analysis:
+        Option<crate::agent::counterfactual::CounterfactualAnalysis>,
     pub(super) subject_state: Option<SubjectState>,
     pub(super) soul_feedback_projection: Option<SoulFeedbackProjection>,
     pub(super) mental_privacy_adjudication:
@@ -171,6 +173,7 @@ pub(super) fn finalize_turn(
         runtime_skill_selected_ids,
         task_learning_selected_ids,
         programmable_reasoning_intent,
+        counterfactual_analysis,
         subject_state,
         soul_feedback_projection,
         mental_privacy_adjudication,
@@ -317,6 +320,7 @@ pub(super) fn finalize_turn(
         runtime_skill_selected_ids,
         task_learning_selected_ids,
         programmable_reasoning_intent,
+        counterfactual_analysis,
         subject_state,
         soul_feedback_projection,
         mental_privacy_adjudication,
@@ -369,6 +373,7 @@ pub(super) fn complete_turn(
         runtime_skill_selected_ids,
         task_learning_selected_ids,
         programmable_reasoning_intent,
+        counterfactual_analysis,
         subject_state,
         mut soul_feedback_projection,
         mental_privacy_adjudication,
@@ -805,6 +810,20 @@ pub(super) fn complete_turn(
             .ok()
             .flatten()
             .and_then(|ledger| ledger.reasoning_intent)
+    };
+    turn_ledger.counterfactual = if msg.ingress == IngressKind::User {
+        counterfactual_analysis
+            .as_ref()
+            .map(crate::agent::counterfactual::build_turn_counterfactual_ledger)
+    } else {
+        let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
+        config
+            .runtime
+            .turn_ledger_store
+            .get(&relationship_id)
+            .ok()
+            .flatten()
+            .and_then(|ledger| ledger.counterfactual)
     };
     super::turn_finalize::persist_turn_ledger(
         config.runtime.turn_ledger_store.as_ref(),

@@ -358,7 +358,7 @@ mod tests {
 
     fn linux_runtime_contract() -> crate::ProgrammableReasoningRuntimeContract {
         crate::ProgrammableReasoningRuntimeContract {
-            stage: crate::ProgrammableReasoningStage::IntentCompiler,
+            stage: crate::ProgrammableReasoningStage::CounterfactualSandbox,
             linux_only: true,
             execution_backend: crate::ProgrammableReasoningExecutionBackend::LuaSandbox,
             execution_enabled: true,

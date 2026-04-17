@@ -3,6 +3,7 @@
 
 mod active_work;
 mod context;
+mod counterfactual;
 mod deliberation;
 mod delivery;
 mod final_reply;

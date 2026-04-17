@@ -2,6 +2,7 @@
 //! Centralizes runtime tool visibility plus typed tool-demand mapping so the
 //! agent loop stays thin and request understanding stays outside prompt hacks.
 
+use super::counterfactual::{render_counterfactual_guidance_block, CounterfactualAnalysis};
 use super::reasoning_intent::ProgrammableReasoningIntent;
 use super::reply_surface::ReplySurface;
 use super::request_semantics::RequestSemantics;
@@ -17,6 +18,7 @@ pub(crate) enum ToolCallMode {
     PromptGuided,
 }
 
+#[derive(Clone)]
 pub(crate) struct AgentRequestPlan<'a> {
     tool_policy: ToolPolicyContext<'a>,
     tool_specs: Vec<ToolSpec>,
@@ -25,6 +27,7 @@ pub(crate) struct AgentRequestPlan<'a> {
     semantics: RequestSemantics,
     strategy: super::strategy::AgentRunStrategy,
     programmable_reasoning_intent: Option<ProgrammableReasoningIntent>,
+    counterfactual_analysis: Option<CounterfactualAnalysis>,
 }
 
 impl<'a> AgentRequestPlan<'a> {
@@ -54,6 +57,7 @@ impl<'a> AgentRequestPlan<'a> {
             semantics,
             strategy,
             programmable_reasoning_intent: None,
+            counterfactual_analysis: None,
         }
     }
 
@@ -62,6 +66,14 @@ impl<'a> AgentRequestPlan<'a> {
         intent: Option<&ProgrammableReasoningIntent>,
     ) -> Self {
         self.programmable_reasoning_intent = intent.cloned();
+        self
+    }
+
+    pub(crate) fn with_counterfactual_analysis(
+        mut self,
+        analysis: Option<&CounterfactualAnalysis>,
+    ) -> Self {
+        self.counterfactual_analysis = analysis.cloned();
         self
     }
 
@@ -99,6 +111,14 @@ impl<'a> AgentRequestPlan<'a> {
     fn requires_native_tool_first_round(&self, round: usize) -> bool {
         if round == 0
             && self
+                .counterfactual_analysis
+                .as_ref()
+                .is_some_and(CounterfactualAnalysis::requires_native_tool_round)
+        {
+            return true;
+        }
+        if round == 0
+            && self
                 .programmable_reasoning_intent
                 .as_ref()
                 .is_some_and(ProgrammableReasoningIntent::requires_native_tool_round)
@@ -121,6 +141,18 @@ impl<'a> AgentRequestPlan<'a> {
     }
 
     pub(crate) fn apply_system_prompt(&self, system: &mut String, max_len: usize) {
+        if let Some(counterfactual) = self
+            .counterfactual_analysis
+            .as_ref()
+            .and_then(|analysis| render_counterfactual_guidance_block(analysis, max_len))
+        {
+            let _ = crate::agent::context::append_capped_section(
+                system,
+                "\n\n",
+                &counterfactual,
+                max_len,
+            );
+        }
         if matches!(self.tool_call_mode, ToolCallMode::PromptGuided) {
             append_tool_fallback_instructions(system, max_len, &self.tool_specs);
         }
@@ -138,6 +170,10 @@ impl<'a> AgentRequestPlan<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::counterfactual::{
+        CounterfactualAnalysis, CounterfactualBranchKind, CounterfactualBranchProjection,
+        CounterfactualTurnSnapshot,
+    };
     use crate::agent::reasoning_intent::{
         ProgrammableReasoningIntent, ProgrammableReasoningIntentKind, ProgrammableReasoningStrategy,
     };
@@ -668,5 +704,50 @@ mod tests {
         }));
 
         assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+    }
+
+    #[test]
+    fn counterfactual_analysis_can_force_native_tool_round_and_append_guidance() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "继续排查并修这个运行时故障", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::None, ExecutionPreference::AnswerDirect),
+        )
+        .with_counterfactual_analysis(Some(&CounterfactualAnalysis {
+            snapshot: CounterfactualTurnSnapshot::default(),
+            selected_branch: CounterfactualBranchProjection {
+                kind: CounterfactualBranchKind::StructuredToolSynthesis,
+                score: 94,
+                summary: "Collect live evidence, then synthesize one coherent action answer."
+                    .to_string(),
+                rationale: vec![
+                    "hard_reasoning".to_string(),
+                    "runtime_grounding".to_string(),
+                ],
+                requires_native_tool_round: true,
+            },
+            alternatives: vec![CounterfactualBranchProjection {
+                kind: CounterfactualBranchKind::DirectReply,
+                score: 36,
+                summary: "Answer immediately from the current context.".to_string(),
+                rationale: vec!["under_grounded".to_string()],
+                requires_native_tool_round: false,
+            }],
+            summary: "Prefer structured tool synthesis over direct reply.".to_string(),
+        }));
+
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
+        assert!(system.contains("## Counterfactual Sandbox"));
+        assert!(system.contains("Selected branch: structured_tool_synthesis"));
+        assert!(system.contains("Rejected: direct_reply"));
     }
 }

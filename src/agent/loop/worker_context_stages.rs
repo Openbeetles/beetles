@@ -743,6 +743,27 @@ pub(super) fn finalize_prepare_context<'a>(
     let programmable_reasoning_intent = programmable_reasoning_intent
         .is_meaningful()
         .then_some(programmable_reasoning_intent);
+    let counterfactual_analysis = crate::agent::counterfactual::compile_counterfactual_analysis(
+        crate::agent::counterfactual::CounterfactualAnalysisInput {
+            strategy: config.strategy,
+            runtime_contract: crate::programmable_reasoning_runtime_contract(),
+            request_semantics,
+            deliberation_gate: &governance_stage.deliberation_gate,
+            reasoning_intent: programmable_reasoning_intent.as_ref(),
+            has_tools: runtime_stage.has_tools,
+            active_task_context_present: prompt_memory
+                .active_task_context_text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty()),
+            governed_memory_evidence_present: prompt_memory
+                .governed_memory_evidence_text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty()),
+        },
+    );
+    let counterfactual_analysis = counterfactual_analysis
+        .is_meaningful()
+        .then_some(counterfactual_analysis);
     let programmable_reasoning_intent_text =
         programmable_reasoning_intent.as_ref().and_then(|intent| {
             crate::agent::reasoning_intent::render_programmable_reasoning_intent_block(intent, 360)
@@ -805,7 +826,11 @@ pub(super) fn finalize_prepare_context<'a>(
         }
     }
     latency.context_ms = session.context_start.elapsed().as_millis();
-    request_plan.apply_system_prompt(&mut system, runtime_stage.budget.system_prompt_max);
+    let shaped_request_plan = request_plan
+        .clone()
+        .with_programmable_reasoning_intent(programmable_reasoning_intent.as_ref())
+        .with_counterfactual_analysis(counterfactual_analysis.as_ref());
+    shaped_request_plan.apply_system_prompt(&mut system, runtime_stage.budget.system_prompt_max);
     let system_scratch = String::with_capacity(
         system
             .len()
@@ -822,6 +847,7 @@ pub(super) fn finalize_prepare_context<'a>(
         system_scratch,
         deliberation_gate: governance_stage.deliberation_gate,
         programmable_reasoning_intent: programmable_reasoning_intent.map(Box::new),
+        counterfactual_analysis: counterfactual_analysis.map(Box::new),
         interactive_fast_path: runtime_stage.interactive_fast_path,
         allow_tool_round_recall_refill,
         prompt_memory_system_budget: runtime_stage.prompt_memory_system_budget,
