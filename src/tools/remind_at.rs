@@ -1018,6 +1018,11 @@ mod tests {
     };
     use crate::platform::ResponseBody;
     use crate::tools::ToolContext;
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    use crate::tools::ToolExecutionFailureKind;
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};

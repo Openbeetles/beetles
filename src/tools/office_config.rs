@@ -110,10 +110,10 @@ impl Tool for OfficeConfigTool {
                     .get("capability")
                     .map(parse_capability_value)
                     .transpose()?;
-                let providers = self.service.provider_schemas(
-                    obj.get("provider_kind").and_then(Value::as_str),
-                    capability,
-                )?;
+                let preferred_provider_kind = tool_facing_provider_kind(&obj);
+                let providers = self
+                    .service
+                    .provider_schemas(preferred_provider_kind.as_deref(), capability)?;
                 serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
@@ -152,12 +152,7 @@ impl Tool for OfficeConfigTool {
                                 .get("preferred_account_key")
                                 .and_then(Value::as_str)
                                 .map(str::to_string),
-                            preferred_provider_kind: obj
-                                .get("provider_kind")
-                                .and_then(Value::as_str)
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .map(str::to_string),
+                            preferred_provider_kind: tool_facing_provider_kind(&obj),
                             preferred_identity_class,
                             historical_account_key: None,
                         })?,
@@ -386,8 +381,8 @@ fn normalize_tool_facing_account_draft_request(
         .map(parse_capability_value)
         .transpose()?;
     let account_key = required_string(account_obj, "account_key")?;
-    let provider_kind =
-        normalize_office_provider_kind(required_string(account_obj, "provider_kind")?);
+    let provider_kind = tool_facing_account_provider_kind(account_obj, obj)
+        .ok_or_else(|| Error::config("tool_office_config", "missing provider_kind"))?;
     let external_account_id = preferred_string(
         account_obj,
         &["external_account_id", "email", "account_id", "username"],
@@ -453,8 +448,8 @@ fn apply_tool_facing_account_aliases(
             preferred_string(account_obj, &["account_label", "display_name", "label"])
                 .unwrap_or_default();
     }
-    request.account.provider_kind =
-        normalize_office_provider_kind(request.account.provider_kind.clone());
+    request.account.provider_kind = tool_facing_account_provider_kind(account_obj, obj)
+        .unwrap_or_else(|| normalize_office_provider_kind(&request.account.provider_kind));
     if request.account.enabled_capabilities.is_empty() {
         request.account.enabled_capabilities = parse_capability_list_with_hint(
             account_obj,
@@ -749,9 +744,23 @@ fn insert_metadata_bool(metadata: &mut BTreeMap<String, String>, key: &str, valu
     }
 }
 
-fn normalize_office_provider_kind(raw: String) -> String {
+fn tool_facing_provider_kind(obj: &Map<String, Value>) -> Option<String> {
+    preferred_string(obj, &["provider_kind", "provider"])
+        .map(|raw| normalize_office_provider_kind(raw.as_str()))
+}
+
+fn tool_facing_account_provider_kind(
+    account_obj: &Map<String, Value>,
+    obj: &Map<String, Value>,
+) -> Option<String> {
+    preferred_string(account_obj, &["provider_kind", "provider"])
+        .or_else(|| preferred_string(obj, &["provider_kind", "provider"]))
+        .map(|raw| normalize_office_provider_kind(raw.as_str()))
+}
+
+fn normalize_office_provider_kind(raw: &str) -> String {
     match raw.trim() {
-        "qq" => "imap_smtp".to_string(),
+        "qq" | "qqmail" | "qq_mail" => "imap_smtp".to_string(),
         other => other.to_string(),
     }
 }
@@ -1004,6 +1013,80 @@ mod tests {
         assert_eq!(account["external_account_id"], "675778650@qq.com");
         assert_eq!(account["identity_class"], "other");
         assert_eq!(account["enabled_capabilities"][0], "mail");
+    }
+
+    #[test]
+    fn draft_accounts_accepts_nested_provider_alias_when_provider_kind_missing() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"draft_accounts",
+                "capability":"mail",
+                "account":{
+                    "account_key":"qq_675778650",
+                    "display_name":"QQ邮箱",
+                    "email":"675778650@qq.com",
+                    "provider":"qqmail",
+                    "capabilities":["mail"]
+                },
+                "set_defaults":["mail"]
+            }"#,
+                &mut ctx,
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let account = &payload["payload"]["registry"]["accounts"]["qq_675778650"];
+        assert_eq!(account["provider_kind"], "imap_smtp");
+        assert_eq!(account["account_label"], "QQ邮箱");
+        assert_eq!(account["external_account_id"], "675778650@qq.com");
+    }
+
+    #[test]
+    fn draft_accounts_accepts_top_level_provider_kind_when_nested_field_is_missing() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"draft_accounts",
+                "capability":"mail",
+                "provider_kind":"qq",
+                "account":{
+                    "account_key":"qq_675778650",
+                    "display_name":"QQ邮箱",
+                    "email":"675778650@qq.com",
+                    "capabilities":["mail"]
+                },
+                "set_defaults":["mail"]
+            }"#,
+                &mut ctx,
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let account = &payload["payload"]["registry"]["accounts"]["qq_675778650"];
+        assert_eq!(account["provider_kind"], "imap_smtp");
+        assert_eq!(account["account_label"], "QQ邮箱");
+        assert_eq!(account["external_account_id"], "675778650@qq.com");
+    }
+
+    #[test]
+    fn provider_schema_accepts_top_level_provider_alias() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(r#"{"op":"provider_schema","provider":"qqmail"}"#, &mut ctx)
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["payload"]["count"], 1);
+        assert_eq!(
+            payload["payload"]["providers"][0]["provider_kind"],
+            "imap_smtp"
+        );
     }
 
     #[test]
