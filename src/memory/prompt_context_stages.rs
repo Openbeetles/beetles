@@ -14,11 +14,11 @@ use super::{
     render_persistent_self_authored_core_block, render_private_doc_workspace_block,
     render_private_garden_block, render_relationship_constitution_block,
     render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
-    render_self_state_block, render_turn_observation_ledger_block, render_world_sense_block,
-    render_world_snapshot_block, ContinuityCapsuleRecallInspectionInput,
+    render_self_state_block, render_turn_observation_ledger_block, render_work_continuity_block,
+    render_world_sense_block, render_world_snapshot_block, ContinuityCapsuleRecallInspectionInput,
     ContinuityCapsuleScopeKind, ExecutionState, MemoryProfile, PromptMemoryContextParams,
     PromptRecallRouterDecision, RecallPlane, RecallQuery, RecallSelectionReport, SessionMessage,
-    WorldSnapshotContext,
+    WorldSnapshotContext, MAX_WORK_CONTINUITY_BLOCK_LEN,
 };
 
 pub(crate) struct PromptContextSeed {
@@ -35,6 +35,7 @@ pub(crate) struct PromptSessionStage {
     pub recent_messages: Vec<SessionMessage>,
     pub summary_text: Option<String>,
     pub execution_state: Option<Box<ExecutionState>>,
+    pub work_continuity_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub active_task_run: Option<Box<TaskRunRecord>>,
     pub task_workspace_text: Option<String>,
@@ -216,6 +217,17 @@ pub(crate) fn load_session_stage(
             .map(Box::new)
         })
         .flatten();
+    let work_continuity_text = super::build_work_continuity_record(
+        active_task_run.as_deref(),
+        execution_state.as_deref(),
+        summary_text.as_deref(),
+    )
+    .and_then(|record| {
+        render_work_continuity_block(
+            &record,
+            params.system_max_len.min(MAX_WORK_CONTINUITY_BLOCK_LEN),
+        )
+    });
     let task_workspace_text = active_task_run.as_ref().and_then(|record| {
         let artifacts = params
             .task_artifact_store
@@ -238,6 +250,7 @@ pub(crate) fn load_session_stage(
         recent_messages,
         summary_text,
         execution_state,
+        work_continuity_text,
         execution_state_text,
         active_task_run,
         task_workspace_text,

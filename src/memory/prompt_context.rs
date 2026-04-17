@@ -32,6 +32,7 @@ pub struct PromptMemoryContext {
     pub archive_evidence_text: Option<String>,
     pub runtime_skill_text: Option<String>,
     pub recent_turn_observation_text: Option<String>,
+    pub work_continuity_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub task_workspace_text: Option<String>,
     pub task_recall_text: Option<String>,
@@ -112,12 +113,12 @@ impl PromptMemoryContext {
         self.constitutional_stack_text = self.soul_kernel_projection().constitutional_stack_text();
         let continuity_capsule_in_active =
             matches!(self.recall_router.intent, PromptRecallIntent::Continuity)
-                && (self.execution_state_text.is_some()
+                && (self.work_continuity_text.is_some()
                     || self.recent_turn_observation_text.is_some()
                     || self.task_workspace_text.is_some()
                     || self.task_recall_text.is_some());
         let active_task_parts = self.recall_router.active_task_parts(
-            self.execution_state_text.as_deref(),
+            self.work_continuity_text.as_deref(),
             self.recent_turn_observation_text.as_deref(),
             self.task_workspace_text.as_deref(),
             self.task_recall_text.as_deref(),
@@ -257,11 +258,12 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
     let governed = load_governed_memory_stage(&params, &seed, &session);
     let constitutional = load_constitutional_stage(&params, &seed);
     let private_projection = load_private_projection_stage(&params, &seed, &constitutional);
-    let message_summary_text = if session.execution_state_text.is_some() {
-        None
-    } else {
-        session.summary_text.clone()
-    };
+    let message_summary_text =
+        if session.work_continuity_text.is_some() || session.execution_state_text.is_some() {
+            None
+        } else {
+            session.summary_text.clone()
+        };
     let super::prompt_context_stages::PromptGovernedMemoryStage {
         long_term_memory_text,
         continuity_capsule_text,
@@ -291,6 +293,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         archive_evidence_text,
         runtime_skill_text,
         recent_turn_observation_text: constitutional.recent_turn_observation_text,
+        work_continuity_text: session.work_continuity_text,
         execution_state_text: session.execution_state_text,
         task_workspace_text: session.task_workspace_text,
         task_recall_text: session.task_recall_text,
@@ -392,6 +395,7 @@ mod tests {
             archive_evidence_text: None,
             runtime_skill_text: None,
             recent_turn_observation_text: None,
+            work_continuity_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -449,6 +453,7 @@ mod tests {
             archive_evidence_text: None,
             runtime_skill_text: None,
             recent_turn_observation_text: None,
+            work_continuity_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -3081,12 +3086,12 @@ mod tests {
         });
 
         let active = context.active_task_context_text.unwrap_or_default();
-        assert!(active.contains("## Continuity Capsules"));
-        assert!(active.contains("## Task Workspace"));
-        assert!(
-            active.find("## Continuity Capsules").unwrap()
-                < active.find("## Task Workspace").unwrap()
-        );
+        let continuity_pos = active.find("## Work Continuity").unwrap();
+        let capsule_pos = active.find("## Continuity Capsules").unwrap();
+        let workspace_pos = active.find("## Task Workspace").unwrap();
+        assert!(continuity_pos < capsule_pos);
+        assert!(capsule_pos < workspace_pos);
+        assert!(!active.contains("## Execution State"));
         assert!(!context
             .governed_memory_evidence_text
             .as_deref()
@@ -3095,7 +3100,7 @@ mod tests {
     }
 
     #[test]
-    fn active_task_context_includes_recent_turn_observation_between_execution_state_and_capsule() {
+    fn active_task_context_includes_recent_turn_observation_after_work_continuity() {
         let session_store = StubSessionStore {
             recent: Mutex::new(vec![SessionMessage {
                 role: "user".to_string(),
@@ -3219,14 +3224,18 @@ mod tests {
         });
 
         let active = context.active_task_context_text.unwrap_or_default();
-        let execution_state_pos = active.find("## Execution State").unwrap();
+        let continuity_pos = active.find("## Work Continuity").unwrap();
         let observation_pos = active.find("## Latest Turn Observation").unwrap();
         let capsule_pos = active.find("## Continuity Capsules").unwrap();
         let workspace_pos = active.find("## Task Workspace").unwrap();
 
-        assert!(execution_state_pos < observation_pos);
+        assert!(continuity_pos < observation_pos);
         assert!(observation_pos < capsule_pos);
         assert!(capsule_pos < workspace_pos);
+        assert!(!active.contains("## Execution State"));
+        assert!(active.contains("Focus: Close replay substrate loop"));
+        assert!(active.contains("Progress: turn observation 已写入 ledger"));
+        assert!(active.contains("Next: 接入 active task prompt"));
         assert!(active.contains("Final outcome: final_recovery"));
         assert!(active.contains("Tool path: tool_recovery"));
         assert!(!context
@@ -3469,10 +3478,12 @@ mod tests {
         let governed = context.governed_memory_evidence_text.unwrap_or_default();
 
         assert_eq!(context.recall_router.intent, PromptRecallIntent::Continuity);
+        let continuity_pos = active.find("## Work Continuity").unwrap();
         let capsule_pos = active.find("## Continuity Capsules").unwrap();
         let workspace_pos = active.find("## Task Workspace").unwrap();
         let archive_pos = governed.find("Archive evidence").unwrap();
         let canonical_pos = governed.find("## Long-term memory").unwrap();
+        assert!(continuity_pos < capsule_pos);
         assert!(capsule_pos < workspace_pos);
         assert!(!governed.contains("## Continuity Capsules"));
         assert!(archive_pos < canonical_pos);
@@ -3485,7 +3496,11 @@ mod tests {
                 "continuity",
                 continuity_router_context_for_regression(),
                 PromptRecallIntent::Continuity,
-                &["## Continuity Capsules", "## Task Workspace"],
+                &[
+                    "## Work Continuity",
+                    "## Continuity Capsules",
+                    "## Task Workspace",
+                ],
                 &["Archive evidence", "## Long-term memory"],
             ),
             observe_prompt_projection_case(

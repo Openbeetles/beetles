@@ -285,6 +285,7 @@ impl Tool for ContinuitySnapshotTool {
                     session_store: self.session_store.as_ref(),
                     memory_store: self.memory_store.as_ref(),
                     long_term_memory_store: self.long_term_memory_store.as_ref(),
+                    execution_state_store: Some(self.execution_state_store.as_ref()),
                     continuity_capsule_store: self.continuity_capsule_store.as_ref(),
                     turn_ledger_store: self.turn_ledger_store.as_ref(),
                     skill_storage: Some(self.skill_storage.as_ref()),

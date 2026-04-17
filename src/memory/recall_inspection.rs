@@ -10,17 +10,19 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     build_archive_evidence_block, build_continuity_recall_query, build_cross_plane_rerank_result,
-    build_shared_factual_plane_snapshot, decide_prompt_recall_route, inspect_archive_recall,
-    inspect_continuity_capsule_recall, inspect_runtime_skill_recall, inspect_shared_factual_recall,
-    inspect_task_recall, memory_policy, parse_explicit_long_term_slot_query,
-    recall_long_term_memory_block, render_continuity_capsule_block,
-    render_exact_long_term_memory_block, search_archive_records_detailed,
+    build_shared_factual_plane_snapshot, build_work_continuity_record, decide_prompt_recall_route,
+    inspect_archive_recall, inspect_continuity_capsule_recall, inspect_runtime_skill_recall,
+    inspect_shared_factual_recall, inspect_task_recall, memory_policy,
+    parse_explicit_long_term_slot_query, recall_long_term_memory_block,
+    render_continuity_capsule_block, render_exact_long_term_memory_block,
+    render_work_continuity_block, search_archive_records_detailed,
     select_archive_hits_for_prompt_with_report, ArchivePromptSelectionReport, ArchiveSearchHit,
     ArchiveSearchQuery, ArchiveSearchQueryReport, ContinuityCapsule,
     ContinuityCapsuleRecallInspectionInput, ContinuityCapsuleScopeKind, ContinuityCapsuleStore,
-    CrossPlaneRerankInput, CrossPlaneRerankResult, LongTermMemoryStore, MemoryProfile, MemoryStore,
-    PromptRecallIntent, RecallPlane, RecallQuery, RecallSelectionReport, SessionMessage,
-    SessionStore, SharedFactualPlaneSnapshot, TurnLedgerStore,
+    CrossPlaneRerankInput, CrossPlaneRerankResult, ExecutionStateStore, LongTermMemoryStore,
+    MemoryProfile, MemoryStore, PromptRecallIntent, RecallPlane, RecallQuery,
+    RecallSelectionReport, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
+    TurnLedgerStore, MAX_WORK_CONTINUITY_BLOCK_LEN,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +32,8 @@ pub struct WorkingRecallInspection {
     pub profile: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_continuity_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub long_term_memory_text: Option<String>,
     pub shared_factual_plane: SharedFactualPlaneSnapshot,
@@ -76,6 +80,7 @@ pub struct WorkingRecallInspectionInput<'a> {
     pub session_store: &'a dyn SessionStore,
     pub memory_store: &'a dyn MemoryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
+    pub execution_state_store: Option<&'a dyn ExecutionStateStore>,
     pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: Option<&'a dyn SkillStorage>,
@@ -159,11 +164,25 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         }
         _ => None,
     };
+    let execution_state = input
+        .execution_state_store
+        .and_then(|store| store.get(input.chat_id).ok().flatten());
+    let work_continuity_text = build_work_continuity_record(
+        active_task_run.as_ref(),
+        execution_state.as_ref(),
+        input.summary_text,
+    )
+    .and_then(|record| {
+        render_work_continuity_block(
+            &record,
+            input.system_max_len.min(MAX_WORK_CONTINUITY_BLOCK_LEN),
+        )
+    });
     let continuity_query = build_continuity_recall_query(
         input.query,
         input.summary_text,
         input.recent,
-        None,
+        execution_state.as_ref(),
         active_task_run.as_ref(),
     );
     let (continuity_capsule_report, continuity_capsules) =
@@ -294,6 +313,7 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        work_continuity_text,
         long_term_memory_text,
         shared_factual_plane,
         archive_evidence_text,
@@ -337,6 +357,14 @@ pub fn render_working_recall_inspection_markdown(inspection: &WorkingRecallInspe
         "- prompt_intent: {}\n",
         inspection.prompt_recall_intent.label()
     ));
+
+    out.push_str("\n## Work Continuity\n");
+    if let Some(text) = inspection.work_continuity_text.as_deref() {
+        out.push_str(text.trim());
+        out.push('\n');
+    } else {
+        out.push_str("- No work continuity projection.\n");
+    }
 
     out.push_str("\n## Canonical Recall\n");
     if let Some(text) = inspection.long_term_memory_text.as_deref() {
@@ -718,6 +746,9 @@ mod tests {
             query: "继续 release patch".to_string(),
             profile: "standard".to_string(),
             summary_text: Some("summary".to_string()),
+            work_continuity_text: Some(
+                "## Work Continuity\nFocus: release patch\nStatus: active".to_string(),
+            ),
             long_term_memory_text: None,
             shared_factual_plane: SharedFactualPlaneSnapshot {
                 block: None,
@@ -789,6 +820,7 @@ mod tests {
         });
 
         assert!(markdown.contains("## Cross-Plane Rerank"));
+        assert!(markdown.contains("## Work Continuity"));
         assert!(markdown.contains("intent: procedural"));
         assert!(markdown.contains("plane=runtime_skill"));
         assert!(markdown.contains("Release patch flow"));
@@ -837,6 +869,7 @@ mod tests {
             session_store: &session_store,
             memory_store: &memory_store,
             long_term_memory_store: &StubLongTermMemoryStore,
+            execution_state_store: None,
             continuity_capsule_store: &continuity_capsule_store,
             turn_ledger_store: &StubTurnLedgerStore,
             skill_storage: None,

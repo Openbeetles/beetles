@@ -450,6 +450,7 @@ fn build_deep_inspection(
         session_store: ctx.session_store.as_ref(),
         memory_store: ctx.memory_store.as_ref(),
         long_term_memory_store: ctx.platform.long_term_memory_store().as_ref(),
+        execution_state_store: Some(ctx.platform.execution_state_store().as_ref()),
         continuity_capsule_store: ctx.platform.continuity_capsule_store().as_ref(),
         turn_ledger_store: ctx.platform.turn_ledger_store().as_ref(),
         skill_storage: Some(ctx.skill_storage.as_ref()),

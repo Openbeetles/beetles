@@ -59,6 +59,7 @@ mod shared_factual_plane;
 mod shared_memory_governance;
 mod skill_routing;
 mod turn_ledger;
+mod work_continuity;
 mod world_sense;
 mod write_coordination;
 
@@ -402,6 +403,10 @@ pub use turn_ledger::{
     TurnSoulInitiativeLedger, TurnSoulReplyLedger, TurnSoulStrategyLedger, TurnSubjectStateLedger,
     TurnToolPathLedger, REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGER_HISTORY,
     TURN_LEDGER_HISTORY_MAX_ITEMS,
+};
+pub use work_continuity::{
+    build_work_continuity_record, render_work_continuity_block, WorkContinuityRecord,
+    MAX_WORK_CONTINUITY_BLOCK_LEN,
 };
 pub(crate) use world_sense::run_world_sense_refresh_with_state;
 pub use world_sense::{
