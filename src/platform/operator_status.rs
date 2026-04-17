@@ -19,7 +19,8 @@ use crate::runtime;
 use crate::skills::{
     build_capability_atom_operator_summary, build_runtime_skill_doctrine_snapshot,
     build_runtime_skill_genome_snapshot, build_runtime_skill_operator_summary,
-    list_capability_atom_records, list_runtime_skill_records, CapabilityAtomSourceKind,
+    capability_atom_lifecycle_event_at, list_capability_atom_records, list_runtime_skill_records,
+    runtime_skill_doctrine_event_at, runtime_skill_genome_event_at, CapabilityAtomSourceKind,
     CapabilityAtomTrustLevel, RuntimeSkillRecord, RuntimeSkillStrategyDiffKind,
 };
 use crate::task_execution::build_task_learning_operator_snapshot;
@@ -143,6 +144,7 @@ pub fn build_operator_status(
         tool_governance_state.as_ref(),
         input.platform.session_store().as_ref(),
         input.platform.turn_ledger_store().as_ref(),
+        input.platform.skill_storage().as_ref(),
     )?;
     let programmable_reasoning_usage =
         build_programmable_reasoning_usage_analytics(&programmable_reasoning_activity_records);
@@ -501,6 +503,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
 enum ProgrammableReasoningActivityKind {
     Tool,
     TurnStage,
+    AssetLifecycle,
 }
 
 impl ProgrammableReasoningActivityKind {
@@ -508,6 +511,7 @@ impl ProgrammableReasoningActivityKind {
         match self {
             Self::Tool => "tool",
             Self::TurnStage => "turn_stage",
+            Self::AssetLifecycle => "asset_lifecycle",
         }
     }
 }
@@ -529,6 +533,7 @@ fn collect_programmable_reasoning_activity_records(
     governance: Option<&ToolExecutionGovernanceState>,
     session_store: &dyn crate::memory::SessionStore,
     turn_ledger_store: &dyn crate::memory::TurnLedgerStore,
+    skill_storage: &dyn crate::platform::SkillStorage,
 ) -> crate::error::Result<Vec<ProgrammableReasoningActivityRecord>> {
     let mut records = Vec::new();
     if let Some(governance) = governance {
@@ -553,6 +558,11 @@ fn collect_programmable_reasoning_activity_records(
         ));
     }
 
+    records.extend(collect_programmable_reasoning_asset_activity_records(
+        skill_storage,
+        10_000,
+    ));
+
     records.sort_by(|left, right| {
         right
             .recorded_at
@@ -562,6 +572,37 @@ fn collect_programmable_reasoning_activity_records(
             .then_with(|| left.detail.cmp(&right.detail))
     });
     Ok(records)
+}
+
+fn collect_programmable_reasoning_asset_activity_records(
+    skill_storage: &dyn crate::platform::SkillStorage,
+    base_order: u32,
+) -> Vec<ProgrammableReasoningActivityRecord> {
+    let mut records = Vec::new();
+    let mut next_order = base_order;
+
+    for record in list_runtime_skill_records(skill_storage) {
+        if let Some(activity) = programmable_reasoning_doctrine_activity_record(&record, next_order)
+        {
+            records.push(activity);
+            next_order = next_order.saturating_add(1);
+        }
+        if let Some(activity) = programmable_reasoning_genome_activity_record(&record, next_order) {
+            records.push(activity);
+            next_order = next_order.saturating_add(1);
+        }
+    }
+
+    for record in list_capability_atom_records(skill_storage) {
+        if let Some(activity) =
+            programmable_reasoning_capability_atom_activity_record(&record, next_order)
+        {
+            records.push(activity);
+            next_order = next_order.saturating_add(1);
+        }
+    }
+
+    records
 }
 
 fn build_programmable_reasoning_usage_analytics(
@@ -661,7 +702,8 @@ fn build_programmable_reasoning_usage_analytics(
                     }
                 }
             }
-            ProgrammableReasoningActivityKind::TurnStage => {
+            ProgrammableReasoningActivityKind::TurnStage
+            | ProgrammableReasoningActivityKind::AssetLifecycle => {
                 let entry = stage_counts
                     .entry(record.activity_name.clone())
                     .or_default();
@@ -913,21 +955,20 @@ fn collect_programmable_reasoning_doctrine_replays(
     list_runtime_skill_records(skill_storage)
         .into_iter()
         .filter(|record| record.validated_success_count > 0 || record.revision_pending)
-        .map(|record| crate::ProgrammableReasoningDoctrineReplayRecord {
-            recorded_at_ms: record
-                .updated_at
-                .max(record.observed_at)
-                .saturating_mul(1000),
-            source_chat_id: record.source_chat_id.clone(),
-            source_skill_name: record.name.clone(),
-            topic: record.topic.clone(),
-            status: if record.revision_pending {
-                "revision_pending".to_string()
-            } else {
-                "stable".to_string()
-            },
-            validated_success_count: record.validated_success_count,
-            summary: summarize_runtime_skill_doctrine_replay(&record),
+        .filter_map(|record| {
+            Some(crate::ProgrammableReasoningDoctrineReplayRecord {
+                recorded_at_ms: runtime_skill_doctrine_event_at(&record)?.saturating_mul(1000),
+                source_chat_id: record.source_chat_id.clone(),
+                source_skill_name: record.name.clone(),
+                topic: record.topic.clone(),
+                status: if record.revision_pending {
+                    "revision_pending".to_string()
+                } else {
+                    "stable".to_string()
+                },
+                validated_success_count: record.validated_success_count,
+                summary: summarize_runtime_skill_doctrine_replay(&record),
+            })
         })
         .collect()
 }
@@ -938,15 +979,9 @@ fn collect_programmable_reasoning_genome_replays(
     list_runtime_skill_records(skill_storage)
         .into_iter()
         .filter(|record| !record.strategy_diffs.is_empty() || record.retired_at.is_some())
-        .map(|record| {
-            let recorded_at = record
-                .strategy_diffs
-                .last()
-                .map(|diff| diff.recorded_at)
-                .or(record.retired_at)
-                .unwrap_or(record.updated_at.max(record.observed_at));
-            crate::ProgrammableReasoningGenomeReplayRecord {
-                recorded_at_ms: recorded_at.saturating_mul(1000),
+        .filter_map(|record| {
+            Some(crate::ProgrammableReasoningGenomeReplayRecord {
+                recorded_at_ms: runtime_skill_genome_event_at(&record)?.saturating_mul(1000),
                 source_chat_id: record.source_chat_id.clone(),
                 skill_name: record.name.clone(),
                 topic: record.topic.clone(),
@@ -958,7 +993,7 @@ fn collect_programmable_reasoning_genome_replays(
                     .last()
                     .map(|node| node.node_id.clone()),
                 summary: summarize_runtime_skill_genome_replay(&record),
-            }
+            })
         })
         .collect()
 }
@@ -968,9 +1003,9 @@ fn collect_programmable_reasoning_capability_atom_replays(
 ) -> Vec<crate::ProgrammableReasoningCapabilityAtomReplayRecord> {
     list_capability_atom_records(skill_storage)
         .into_iter()
-        .map(
-            |record| crate::ProgrammableReasoningCapabilityAtomReplayRecord {
-                recorded_at_ms: record.provenance.updated_at.saturating_mul(1000),
+        .filter_map(|record| {
+            Some(crate::ProgrammableReasoningCapabilityAtomReplayRecord {
+                recorded_at_ms: capability_atom_lifecycle_event_at(&record)?.saturating_mul(1000),
                 source_chat_id: record.provenance.source_chat_id.clone(),
                 atom_name: record.name.clone(),
                 topic: record.topic.clone(),
@@ -979,9 +1014,83 @@ fn collect_programmable_reasoning_capability_atom_replays(
                     .to_string(),
                 status: capability_atom_replay_status(&record),
                 summary: summarize_capability_atom_replay(&record),
-            },
-        )
+            })
+        })
         .collect()
+}
+
+fn programmable_reasoning_doctrine_activity_record(
+    record: &RuntimeSkillRecord,
+    same_timestamp_order: u32,
+) -> Option<ProgrammableReasoningActivityRecord> {
+    if record.validated_success_count == 0 && !record.revision_pending {
+        return None;
+    }
+    Some(ProgrammableReasoningActivityRecord {
+        recorded_at: runtime_skill_doctrine_event_at(record)?.saturating_mul(1000),
+        activity_kind: ProgrammableReasoningActivityKind::AssetLifecycle,
+        activity_name: "doctrine_genome_evolution".to_string(),
+        tool_name: None,
+        status: if record.revision_pending {
+            "revision_pending".to_string()
+        } else {
+            "stable".to_string()
+        },
+        detail: summarize_runtime_skill_doctrine_replay(record),
+        attention_required: record.revision_pending,
+        bucket: if record.revision_pending {
+            ProgrammableReasoningRecordBucket::Failed
+        } else {
+            ProgrammableReasoningRecordBucket::Succeeded
+        },
+        same_timestamp_order,
+    })
+}
+
+fn programmable_reasoning_genome_activity_record(
+    record: &RuntimeSkillRecord,
+    same_timestamp_order: u32,
+) -> Option<ProgrammableReasoningActivityRecord> {
+    if record.strategy_diffs.is_empty() && record.retired_at.is_none() {
+        return None;
+    }
+    Some(ProgrammableReasoningActivityRecord {
+        recorded_at: runtime_skill_genome_event_at(record)?.saturating_mul(1000),
+        activity_kind: ProgrammableReasoningActivityKind::AssetLifecycle,
+        activity_name: "doctrine_genome_evolution".to_string(),
+        tool_name: None,
+        status: runtime_skill_genome_replay_status(record),
+        detail: summarize_runtime_skill_genome_replay(record),
+        attention_required: false,
+        bucket: ProgrammableReasoningRecordBucket::Succeeded,
+        same_timestamp_order,
+    })
+}
+
+fn programmable_reasoning_capability_atom_activity_record(
+    record: &crate::skills::CapabilityAtomRecord,
+    same_timestamp_order: u32,
+) -> Option<ProgrammableReasoningActivityRecord> {
+    let attention_required = record.provenance.requires_local_adjudication
+        || matches!(
+            record.trust,
+            CapabilityAtomTrustLevel::ImportedPendingAdjudication
+        );
+    Some(ProgrammableReasoningActivityRecord {
+        recorded_at: capability_atom_lifecycle_event_at(record)?.saturating_mul(1000),
+        activity_kind: ProgrammableReasoningActivityKind::AssetLifecycle,
+        activity_name: "capability_atoms_exchange".to_string(),
+        tool_name: None,
+        status: capability_atom_replay_status(record),
+        detail: summarize_capability_atom_replay(record),
+        attention_required,
+        bucket: if attention_required {
+            ProgrammableReasoningRecordBucket::Denied
+        } else {
+            ProgrammableReasoningRecordBucket::Succeeded
+        },
+        same_timestamp_order,
+    })
 }
 
 fn branch_replay_record_from_ledger(
@@ -1606,10 +1715,12 @@ mod tests {
         let state = governance.inspect().expect("inspect governance");
         let session_store = TestSessionStore::default();
         let turn_ledger_store = TestTurnLedgerStore::default();
+        let skill_storage = TestSkillStorage::default();
         let activity_records = collect_programmable_reasoning_activity_records(
             Some(&state),
             &session_store,
             &turn_ledger_store,
+            &skill_storage,
         )
         .expect("collect activity records");
         let usage = build_programmable_reasoning_usage_analytics(&activity_records);
@@ -1690,10 +1801,12 @@ mod tests {
         let state = governance.inspect().expect("inspect governance");
         let session_store = TestSessionStore::default();
         let turn_ledger_store = TestTurnLedgerStore::default();
+        let skill_storage = TestSkillStorage::default();
         let activity_records = collect_programmable_reasoning_activity_records(
             Some(&state),
             &session_store,
             &turn_ledger_store,
+            &skill_storage,
         )
         .expect("collect activity records");
         let timeline = build_programmable_reasoning_timeline(&activity_records);
@@ -1792,10 +1905,12 @@ mod tests {
         let state = governance.inspect().expect("inspect governance");
         let session_store = TestSessionStore::default();
         let turn_ledger_store = TestTurnLedgerStore::default();
+        let skill_storage = TestSkillStorage::default();
         let activity_records = collect_programmable_reasoning_activity_records(
             Some(&state),
             &session_store,
             &turn_ledger_store,
+            &skill_storage,
         )
         .expect("collect activity records");
         let usage = build_programmable_reasoning_usage_analytics(&activity_records);
@@ -1914,6 +2029,7 @@ mod tests {
             None,
             &session_store,
             &turn_ledger_store,
+            &TestSkillStorage::default(),
         )
         .expect("collect activity records");
         let usage = build_programmable_reasoning_usage_analytics(&activity_records);
@@ -1972,6 +2088,202 @@ mod tests {
         assert!(digest
             .headline
             .contains("2 recent programmable reasoning events, no operator intervention needed"));
+    }
+
+    #[test]
+    fn build_operator_status_counts_asset_lifecycle_activity_in_main_observability_chain() {
+        let skill_storage = TestSkillStorage::default();
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let topic = "serial_framing".to_string();
+        let skill_name = crate::skills::runtime_skill_name_for_topic(&topic);
+
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "Serial framing".to_string(),
+                summary: "Recover frame boundaries before decoding.".to_string(),
+                content: "1. detect sync word\n2. validate length\n3. emit frame".to_string(),
+                citations: vec!["transcript:chat-42#message=1".to_string()],
+                source_chat_id: Some("chat-42".to_string()),
+                observed_at: 4_500_000_000,
+            },
+        )
+        .expect("write base runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            &skill_storage,
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            4_500_000_100,
+            "validated in field test",
+        )
+        .expect("record success");
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "Serial framing".to_string(),
+                summary: "Recover frame boundaries and checksum windows before decoding."
+                    .to_string(),
+                content: "1. detect sync word\n2. validate checksum window\n3. emit frame"
+                    .to_string(),
+                citations: vec!["transcript:chat-42#message=2".to_string()],
+                source_chat_id: Some("chat-42".to_string()),
+                observed_at: 4_500_000_200,
+            },
+        )
+        .expect("write revised runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            &skill_storage,
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Mismatch,
+            4_500_000_300,
+            "needs doctrine revision",
+        )
+        .expect("record mismatch");
+        crate::skills::sync_capability_atoms_from_runtime_skills(&skill_storage, 4_500_000_900)
+            .expect("sync capability atoms");
+
+        let activity_records = collect_programmable_reasoning_activity_records(
+            None,
+            &session_store,
+            &turn_ledger_store,
+            &skill_storage,
+        )
+        .expect("collect activity records");
+        let usage = build_programmable_reasoning_usage_analytics(&activity_records);
+        let timeline = build_programmable_reasoning_timeline(&activity_records);
+        let digest = build_programmable_reasoning_maintenance_digest(&usage, &timeline);
+
+        assert_eq!(usage.recent_total_events, 3);
+        assert_eq!(usage.recent_total_attempts, 0);
+        assert_eq!(usage.recent_attention_events, 1);
+        assert!(usage.tool_counts.is_empty());
+        assert!(usage.stage_counts.iter().any(|entry| entry.stage_name
+            == "doctrine_genome_evolution"
+            && entry.total_events == 2));
+        assert!(usage.stage_counts.iter().any(|entry| entry.stage_name
+            == "capability_atoms_exchange"
+            && entry.total_events == 1));
+
+        assert_eq!(timeline.recent_events.len(), 3);
+        assert_eq!(timeline.recent_events[0].activity_kind, "asset_lifecycle");
+        assert_eq!(
+            timeline.recent_events[0].activity_name,
+            "capability_atoms_exchange"
+        );
+        assert_eq!(timeline.recent_events[0].tool_name, None);
+        assert_eq!(timeline.recent_events[1].activity_kind, "asset_lifecycle");
+        assert_eq!(
+            timeline.recent_events[1].activity_name,
+            "doctrine_genome_evolution"
+        );
+        assert_eq!(timeline.recent_events[1].status, "revision_pending");
+        assert!(timeline.recent_events[1].attention_required);
+        assert!(timeline
+            .recent_events
+            .iter()
+            .any(|event| event.activity_name == "capability_atoms_exchange"
+                && event.status == "local_verified"));
+
+        assert_eq!(digest.status, "attention");
+        assert_eq!(
+            digest.attention_activities,
+            vec!["doctrine_genome_evolution".to_string()]
+        );
+        assert!(digest
+            .headline
+            .contains("3 recent programmable reasoning events, 1 need attention"));
+    }
+
+    #[test]
+    fn doctrine_replay_uses_doctrine_event_time_instead_of_generic_updated_at() {
+        let skill_storage = TestSkillStorage::default();
+        let topic = "operator_status_truth".to_string();
+        let skill_name = crate::skills::runtime_skill_name_for_topic(&topic);
+
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "Operator status truth".to_string(),
+                summary: "Capture doctrine evidence at the time it changes.".to_string(),
+                content: "1. inspect operator surface\n2. compare evidence\n3. record result"
+                    .to_string(),
+                citations: vec!["transcript:chat-77#message=1".to_string()],
+                source_chat_id: Some("chat-77".to_string()),
+                observed_at: 4_600_000_100,
+            },
+        )
+        .expect("write base runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            &skill_storage,
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            4_600_000_200,
+            "validated doctrine clause",
+        )
+        .expect("record doctrine validation");
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic,
+                title: "Operator status truth".to_string(),
+                summary: "Capture doctrine evidence at the time it changes.".to_string(),
+                content: "1. inspect operator surface\n2. compare evidence\n3. record result"
+                    .to_string(),
+                citations: vec!["transcript:chat-77#message=2".to_string()],
+                source_chat_id: Some("chat-77".to_string()),
+                observed_at: 4_600_000_900,
+            },
+        )
+        .expect("touch runtime skill without doctrine change");
+
+        let doctrine_replays = collect_programmable_reasoning_doctrine_replays(&skill_storage);
+        assert_eq!(doctrine_replays.len(), 1);
+        assert_eq!(doctrine_replays[0].recorded_at_ms, 4_600_000_200_000);
+    }
+
+    #[test]
+    fn capability_atom_replay_uses_lifecycle_event_time_instead_of_sync_wall_clock() {
+        let skill_storage = TestSkillStorage::default();
+        let topic = "serial_protocol".to_string();
+        let skill_name = crate::skills::runtime_skill_name_for_topic(&topic);
+
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic,
+                title: "Serial protocol".to_string(),
+                summary: "Recover frames with a reusable macro.".to_string(),
+                content: "1. detect preamble\n2. confirm crc\n3. emit payload".to_string(),
+                citations: vec!["transcript:chat-88#message=1".to_string()],
+                source_chat_id: Some("chat-88".to_string()),
+                observed_at: 4_700_000_100,
+            },
+        )
+        .expect("write base runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            &skill_storage,
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            4_700_000_200,
+            "validated reusable macro",
+        )
+        .expect("record validation");
+        crate::skills::sync_capability_atoms_from_runtime_skills(&skill_storage, 4_700_000_900)
+            .expect("sync capability atoms");
+
+        let atom_replays = collect_programmable_reasoning_capability_atom_replays(&skill_storage);
+        assert_eq!(atom_replays.len(), 1);
+        assert_eq!(atom_replays[0].recorded_at_ms, 4_700_000_200_000);
+        assert_eq!(atom_replays[0].status, "local_verified");
     }
 
     #[test]

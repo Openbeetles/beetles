@@ -8,7 +8,6 @@ mod capability_atoms;
 mod prompt_cache;
 mod runtime;
 
-pub(crate) use capability_atoms::list_capability_atom_records;
 pub use capability_atoms::{
     build_capability_atom_operator_summary, export_capability_atom_exchange_envelope,
     import_capability_atom_exchange_envelope, is_capability_atom_name,
@@ -17,6 +16,9 @@ pub use capability_atoms::{
     CapabilityAtomOperatorRecord, CapabilityAtomOperatorSummary, CapabilityAtomProvenance,
     CapabilityAtomRecord, CapabilityAtomSourceKind, CapabilityAtomSyncOutcome,
     CapabilityAtomTrustLevel,
+};
+pub(crate) use capability_atoms::{
+    capability_atom_lifecycle_event_at, list_capability_atom_records,
 };
 pub use prompt_cache::SkillPromptCache;
 pub use runtime::{
@@ -32,7 +34,10 @@ pub use runtime::{
     RuntimeSkillStrategyDiffKind, RuntimeSkillWriteAction, RuntimeSkillWriteItemReport,
     RuntimeSkillWriteOutcome, RuntimeSkillWriteReason, RuntimeSkillWriteSource,
 };
-pub(crate) use runtime::{list_runtime_skill_records, retrieve_runtime_skill_hits_with_backend};
+pub(crate) use runtime::{
+    list_runtime_skill_records, retrieve_runtime_skill_hits_with_backend,
+    runtime_skill_doctrine_event_at, runtime_skill_genome_event_at,
+};
 
 fn is_skill_name_valid(name: &str) -> bool {
     !name.is_empty() && !name.contains("..") && !name.contains('/') && !name.contains('\\')

@@ -177,6 +177,10 @@ fn service_delayed_tasks_with_scope(scope: DelayedTaskServiceScope) {
     let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
         .action_budget
         .allow_best_effort_delayed_tasks;
+    service_delayed_tasks_with_policy(scope, allow_best_effort);
+}
+
+fn service_delayed_tasks_with_policy(scope: DelayedTaskServiceScope, allow_best_effort: bool) {
     let due = {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
         take_due_jobs_locked_with_policy(&mut pending, Instant::now(), scope, allow_best_effort)
@@ -185,11 +189,15 @@ fn service_delayed_tasks_with_scope(scope: DelayedTaskServiceScope) {
 }
 
 pub fn next_delayed_task_wait(max_wait: Duration) -> Duration {
-    let pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
     let allow_best_effort = crate::runtime::thread_registry::runtime_mode_snapshot()
         .action_budget
         .allow_best_effort_delayed_tasks;
+    next_delayed_task_wait_with_policy(max_wait, allow_best_effort)
+}
+
+fn next_delayed_task_wait_with_policy(max_wait: Duration, allow_best_effort: bool) -> Duration {
+    let pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
     pending
         .iter()
         .filter(|job| allow_best_effort || job.priority == DelayedTaskPriority::Critical)
@@ -260,7 +268,7 @@ mod tests {
         }
 
         std::thread::sleep(Duration::from_millis(30));
-        service_delayed_tasks();
+        service_delayed_tasks_with_policy(DelayedTaskServiceScope::AllEligible, true);
 
         let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec![2, 3, 1]);
@@ -274,7 +282,7 @@ mod tests {
         schedule_delayed_task(now + Duration::from_millis(15), Box::new(|| {}));
         schedule_delayed_task(now + Duration::from_millis(40), Box::new(|| {}));
 
-        let wait = next_delayed_task_wait(Duration::from_millis(100));
+        let wait = next_delayed_task_wait_with_policy(Duration::from_millis(100), true);
         assert!(wait <= Duration::from_millis(20));
     }
 
@@ -346,7 +354,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
             .is_empty());
 
-        service_delayed_tasks();
+        service_delayed_tasks_with_policy(DelayedTaskServiceScope::AllEligible, true);
         let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec![1]);
     }
@@ -378,12 +386,12 @@ mod tests {
             .is_ok());
         }
 
-        service_critical_delayed_tasks();
+        service_delayed_tasks_with_policy(DelayedTaskServiceScope::CriticalOnly, false);
         let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec![2]);
         assert_eq!(pending_counts_for_tests(), (1, 0));
 
-        service_delayed_tasks();
+        service_delayed_tasks_with_policy(DelayedTaskServiceScope::AllEligible, true);
         let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec![2, 1]);
     }

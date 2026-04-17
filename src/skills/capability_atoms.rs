@@ -1,7 +1,7 @@
 use super::{
     get_skill_content, list_skill_names, runtime::list_runtime_skill_records,
-    runtime_skill_name_for_topic, write_skill, RuntimeSkillRecord, RuntimeSkillStatus,
-    MAX_SKILL_CONTENT_LEN,
+    runtime::runtime_skill_last_transition_at, runtime_skill_name_for_topic, write_skill,
+    RuntimeSkillRecord, RuntimeSkillStatus, MAX_SKILL_CONTENT_LEN,
 };
 use crate::error::{Error, Result};
 use crate::platform::SkillStorage;
@@ -178,7 +178,7 @@ pub fn build_capability_atom_operator_summary(
 
 pub fn sync_capability_atoms_from_runtime_skills(
     storage: &dyn SkillStorage,
-    now_secs: u64,
+    _now_secs: u64,
 ) -> Result<CapabilityAtomSyncOutcome> {
     let runtime_records = list_runtime_skill_records(storage);
     let eligible_records = runtime_records
@@ -198,12 +198,8 @@ pub fn sync_capability_atoms_from_runtime_skills(
     for record in &eligible_records {
         let atom_name = capability_atom_name_for_topic(&record.topic);
         let existing = existing_atoms.remove(&atom_name);
-        let next = build_capability_atom_from_runtime_skill(
-            record,
-            existing.as_ref(),
-            &eligible_names,
-            now_secs,
-        )?;
+        let next =
+            build_capability_atom_from_runtime_skill(record, existing.as_ref(), &eligible_names)?;
         let rendered = render_capability_atom_record(&next)?;
         let changed = get_skill_content(storage, &atom_name)
             .map(|current| current.trim() != rendered.trim())
@@ -367,7 +363,6 @@ fn build_capability_atom_from_runtime_skill(
     record: &RuntimeSkillRecord,
     existing: Option<&CapabilityAtomRecord>,
     eligible_atom_names: &HashSet<String>,
-    now_secs: u64,
 ) -> Result<CapabilityAtomRecord> {
     let name = capability_atom_name_for_topic(&record.topic);
     let macro_steps = extract_capability_atom_macro_steps(&record.procedure);
@@ -397,6 +392,9 @@ fn build_capability_atom_from_runtime_skill(
             .upstream_trust_hint
             .or(Some(CapabilityAtomTrustLevel::ImportedPendingAdjudication))
     });
+    let lifecycle_event_at = runtime_skill_last_transition_at(record)
+        .unwrap_or(record.updated_at.max(record.observed_at))
+        .max(imported_at.unwrap_or(0));
     normalize_capability_atom_record(CapabilityAtomRecord {
         name: name.clone(),
         atom_id: capability_atom_id_for_topic(&record.topic),
@@ -417,7 +415,7 @@ fn build_capability_atom_from_runtime_skill(
             validated_success_count: record.validated_success_count,
             source_chat_id: record.source_chat_id.clone(),
             observed_at: record.observed_at,
-            updated_at: record.updated_at.max(now_secs),
+            updated_at: lifecycle_event_at,
             imported_at,
             exported_at,
             upstream_trust_hint,
@@ -486,6 +484,30 @@ pub(crate) fn list_capability_atom_records(
         out.push(record);
     }
     out
+}
+
+pub(crate) fn capability_atom_lifecycle_event_at(record: &CapabilityAtomRecord) -> Option<u64> {
+    let event_at = match record.trust {
+        CapabilityAtomTrustLevel::ImportedPendingAdjudication => record
+            .provenance
+            .imported_at
+            .or(Some(record.provenance.observed_at).filter(|value| *value > 0))
+            .or(Some(record.provenance.updated_at).filter(|value| *value > 0)),
+        CapabilityAtomTrustLevel::ImportedAdopted => Some(
+            record
+                .provenance
+                .updated_at
+                .max(record.provenance.imported_at.unwrap_or(0))
+                .max(record.provenance.observed_at),
+        ),
+        CapabilityAtomTrustLevel::LocalVerified => Some(
+            record
+                .provenance
+                .updated_at
+                .max(record.provenance.observed_at),
+        ),
+    };
+    event_at.filter(|value| *value > 0)
 }
 
 fn get_capability_atom_record(

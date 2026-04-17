@@ -1476,14 +1476,53 @@ fn active_runtime_skill_genome_node(record: &RuntimeSkillRecord) -> Option<Runti
         .find(|node| node.disposition == RuntimeSkillGenomeDisposition::Active)
 }
 
-fn runtime_skill_last_transition_at(record: &RuntimeSkillRecord) -> Option<u64> {
-    runtime_skill_effective_lineage(record)
+pub(crate) fn runtime_skill_last_transition_at(record: &RuntimeSkillRecord) -> Option<u64> {
+    let lineage_transition_at = runtime_skill_effective_lineage(record)
         .into_iter()
         .map(|node| node.recorded_at)
         .max()
+        .unwrap_or(0);
+    let transition_at = lineage_transition_at
+        .max(record.retired_at.unwrap_or(0))
+        .max(record.last_outcome_at.unwrap_or(0))
+        .max(record.updated_at.max(record.observed_at));
+    (transition_at > 0).then_some(transition_at)
+}
+
+pub(crate) fn runtime_skill_doctrine_event_at(record: &RuntimeSkillRecord) -> Option<u64> {
+    let doctrine_diff_at = record
+        .strategy_diffs
+        .iter()
+        .filter(|diff| {
+            !matches!(
+                diff.change_kind,
+                RuntimeSkillStrategyDiffKind::ProcedureRefinement
+            )
+        })
+        .map(|diff| diff.recorded_at)
+        .max();
+    record
+        .last_outcome_at
+        .map(|outcome_at| doctrine_diff_at.map_or(outcome_at, |diff_at| diff_at.max(outcome_at)))
+        .or(doctrine_diff_at)
+        .or(Some(record.observed_at).filter(|value| *value > 0))
+        .or(Some(record.updated_at).filter(|value| *value > 0))
+}
+
+pub(crate) fn runtime_skill_genome_event_at(record: &RuntimeSkillRecord) -> Option<u64> {
+    record
+        .strategy_diffs
+        .last()
+        .map(|diff| diff.recorded_at)
         .or(record.retired_at)
-        .or(record.last_outcome_at)
-        .or(Some(record.updated_at.max(record.observed_at)))
+        .or_else(|| {
+            runtime_skill_effective_lineage(record)
+                .into_iter()
+                .map(|node| node.recorded_at)
+                .max()
+        })
+        .or(Some(record.observed_at).filter(|value| *value > 0))
+        .or(Some(record.updated_at).filter(|value| *value > 0))
 }
 
 fn runtime_skill_doctrine_clause_from_record(
