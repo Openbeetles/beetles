@@ -23,6 +23,10 @@ const MIN_RUNTIME_SKILL_BLOCK_LEN: usize = 180;
 const RUNTIME_SKILL_TOUCH_INTERVAL_SECS: u64 = 6 * 60 * 60;
 const RUNTIME_SKILL_STALE_AFTER_SECS: u64 = 90 * 86_400;
 const RUNTIME_SKILL_DUPLICATE_SIMILARITY: u32 = 16;
+const MAX_RUNTIME_SKILL_GENOME_NODES: usize = 8;
+const MAX_RUNTIME_SKILL_STRATEGY_DIFFS: usize = 8;
+const MAX_RUNTIME_SKILL_DOCTRINE_RECORDS: usize = 6;
+const MAX_RUNTIME_SKILL_GENOME_RECORDS: usize = 6;
 #[cfg(target_os = "linux")]
 const RUNTIME_SKILL_INDEX_VERSION: u32 = 1;
 #[cfg(target_os = "linux")]
@@ -70,12 +74,14 @@ struct RuntimeSkillIndexHint {
 
 const MAX_RUNTIME_SKILL_OPERATOR_RECORDS: usize = 6;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeSkillStatus {
+    #[default]
     Active,
     Stale,
     LowValue,
+    Retired,
 }
 
 impl RuntimeSkillStatus {
@@ -84,6 +90,7 @@ impl RuntimeSkillStatus {
             Self::Active => "active",
             Self::Stale => "stale",
             Self::LowValue => "low_value",
+            Self::Retired => "retired",
         }
     }
 
@@ -91,9 +98,89 @@ impl RuntimeSkillStatus {
         match value.trim().to_ascii_lowercase().as_str() {
             "stale" => Self::Stale,
             "low_value" | "low-value" | "low value" => Self::LowValue,
+            "retired" => Self::Retired,
             _ => Self::Active,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillGenomeDisposition {
+    #[default]
+    Active,
+    Superseded,
+    Retired,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillGenomeNode {
+    pub node_id: String,
+    pub strategy_digest: String,
+    pub recorded_at: u64,
+    pub summary: String,
+    pub disposition: RuntimeSkillGenomeDisposition,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillStrategyDiffKind {
+    #[default]
+    SummaryRevision,
+    ProcedureRefinement,
+    DoctrineRevision,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillStrategyDiff {
+    pub recorded_at: u64,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub change_kind: RuntimeSkillStrategyDiffKind,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillDoctrineClauseRecord {
+    pub source_skill_name: String,
+    pub topic: String,
+    pub clause: String,
+    pub validated_success_count: u32,
+    pub revision_pending: bool,
+    pub evidence_ref_count: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillDoctrineSnapshot {
+    pub total_clauses: usize,
+    pub stable_clauses: usize,
+    pub revision_pending_clauses: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_clauses: Vec<RuntimeSkillDoctrineClauseRecord>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillGenomeLineageRecord {
+    pub skill_name: String,
+    pub topic: String,
+    pub title: String,
+    pub status: RuntimeSkillStatus,
+    pub lineage_depth: usize,
+    pub diff_events: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_transition_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeSkillGenomeSnapshot {
+    pub total_lineages: usize,
+    pub active_lineages: usize,
+    pub retired_lineages: usize,
+    pub total_diff_events: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_lineages: Vec<RuntimeSkillGenomeLineageRecord>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,6 +189,7 @@ pub struct RuntimeSkillGovernanceOutcome {
     pub pruned: usize,
     pub stale_marked: usize,
     pub low_value_marked: usize,
+    pub retired_marked: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -205,6 +293,10 @@ pub struct RuntimeSkillRecord {
     pub last_outcome_note: String,
     pub supersedes: Vec<String>,
     pub component_topics: Vec<String>,
+    pub genome_lineage: Vec<RuntimeSkillGenomeNode>,
+    pub strategy_diffs: Vec<RuntimeSkillStrategyDiff>,
+    pub retired_at: Option<u64>,
+    pub retirement_reason: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -235,6 +327,8 @@ pub struct RuntimeSkillOperatorSummary {
     pub stale: usize,
     #[serde(default)]
     pub low_value: usize,
+    #[serde(default)]
+    pub retired: usize,
     #[serde(default)]
     pub validated: usize,
     #[serde(default)]
@@ -309,6 +403,9 @@ pub fn build_runtime_skill_operator_summary(
             RuntimeSkillStatus::LowValue => {
                 summary.low_value = summary.low_value.saturating_add(1);
             }
+            RuntimeSkillStatus::Retired => {
+                summary.retired = summary.retired.saturating_add(1);
+            }
         }
         if record.validated_success_count > 0 {
             summary.validated = summary.validated.saturating_add(1);
@@ -347,6 +444,91 @@ pub fn build_runtime_skill_operator_summary(
         })
         .collect();
     summary
+}
+
+pub fn build_runtime_skill_doctrine_snapshot(
+    storage: &dyn SkillStorage,
+) -> RuntimeSkillDoctrineSnapshot {
+    let mut clauses = list_runtime_skill_records(storage)
+        .into_iter()
+        .filter_map(runtime_skill_doctrine_clause_from_record)
+        .collect::<Vec<_>>();
+    clauses.sort_by(|a, b| {
+        b.validated_success_count
+            .cmp(&a.validated_success_count)
+            .then_with(|| a.revision_pending.cmp(&b.revision_pending))
+            .then_with(|| b.evidence_ref_count.cmp(&a.evidence_ref_count))
+            .then_with(|| a.source_skill_name.cmp(&b.source_skill_name))
+    });
+    let total_clauses = clauses.len();
+    let stable_clauses = clauses
+        .iter()
+        .filter(|record| !record.revision_pending)
+        .count();
+    let revision_pending_clauses = clauses
+        .iter()
+        .filter(|record| record.revision_pending)
+        .count();
+    clauses.truncate(MAX_RUNTIME_SKILL_DOCTRINE_RECORDS);
+    RuntimeSkillDoctrineSnapshot {
+        total_clauses,
+        stable_clauses,
+        revision_pending_clauses,
+        recent_clauses: clauses,
+    }
+}
+
+pub fn build_runtime_skill_genome_snapshot(
+    storage: &dyn SkillStorage,
+) -> RuntimeSkillGenomeSnapshot {
+    let mut records = list_runtime_skill_records(storage);
+    let total_lineages = records.len();
+    let active_lineages = records
+        .iter()
+        .filter(|record| record.status != RuntimeSkillStatus::Retired)
+        .count();
+    let retired_lineages = records
+        .iter()
+        .filter(|record| record.status == RuntimeSkillStatus::Retired)
+        .count();
+    let total_diff_events = records
+        .iter()
+        .map(|record| record.strategy_diffs.len())
+        .sum();
+    records.sort_by(|a, b| {
+        runtime_skill_last_transition_at(b)
+            .cmp(&runtime_skill_last_transition_at(a))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let recent_lineages = records
+        .into_iter()
+        .take(MAX_RUNTIME_SKILL_GENOME_RECORDS)
+        .map(|record| {
+            let active_node_id =
+                active_runtime_skill_genome_node(&record).map(|node| node.node_id.clone());
+            let last_transition_at = runtime_skill_last_transition_at(&record);
+            let lineage_depth = runtime_skill_effective_lineage(&record).len();
+            let diff_events = record.strategy_diffs.len();
+            RuntimeSkillGenomeLineageRecord {
+                active_node_id,
+                last_transition_at,
+                skill_name: record.name,
+                topic: record.topic,
+                title: record.title,
+                status: record.status,
+                lineage_depth,
+                diff_events,
+            }
+        })
+        .collect();
+    RuntimeSkillGenomeSnapshot {
+        total_lineages,
+        active_lineages,
+        retired_lineages,
+        total_diff_events,
+        recent_lineages,
+    }
 }
 
 pub(crate) fn retrieve_runtime_skill_hits_with_backend(
@@ -434,6 +616,11 @@ pub fn touch_runtime_skill_hits(
         record.use_count = record.use_count.saturating_add(1);
         record.quality_score = compute_runtime_skill_quality(&record);
         record.status = RuntimeSkillStatus::Active;
+        record.retired_at = None;
+        record.retirement_reason.clear();
+        if let Some(last) = record.genome_lineage.last_mut() {
+            last.disposition = RuntimeSkillGenomeDisposition::Active;
+        }
         if write_runtime_skill_record(storage, &record).is_ok() {
             changed = changed.saturating_add(1);
         }
@@ -680,7 +867,9 @@ fn fallback_runtime_skill_hits(
     let mut hits = list_runtime_skill_records(storage)
         .into_iter()
         .filter_map(|record| {
-            if should_prune_runtime_skill(&record, now_secs) {
+            if should_prune_runtime_skill(&record, now_secs)
+                || matches!(record.status, RuntimeSkillStatus::Retired)
+            {
                 return None;
             }
             let mut reasons = vec!["fallback procedural memory".to_string()];
@@ -719,7 +908,7 @@ fn fallback_runtime_skill_hits(
                 match record.status {
                     RuntimeSkillStatus::Active => 4,
                     RuntimeSkillStatus::Stale => 1,
-                    RuntimeSkillStatus::LowValue => 0,
+                    RuntimeSkillStatus::LowValue | RuntimeSkillStatus::Retired => 0,
                 },
             );
             let source_score = record.citations.len().min(3) as u32 * 2;
@@ -1183,6 +1372,154 @@ fn runtime_skill_match_expression(normalized_query: &str, terms: &[String]) -> O
     (!parts.is_empty()).then(|| parts.join(" OR "))
 }
 
+fn parse_runtime_skill_json_section<T>(
+    sections: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let raw = sections.get(key)?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    serde_json::from_str(raw).ok()
+}
+
+fn runtime_skill_strategy_digest(summary: &str, procedure: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    normalize_runtime_skill_text(summary).hash(&mut hasher);
+    normalize_runtime_skill_text(procedure).hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn runtime_skill_summary_excerpt(summary: &str, procedure: &str) -> String {
+    let summary = summary.trim();
+    if !summary.is_empty() {
+        return truncate_content_to_max(summary, 120).into_owned();
+    }
+    truncate_content_to_max(procedure.trim(), 120).into_owned()
+}
+
+fn runtime_skill_genome_node_id(skill_name: &str, digest: &str) -> String {
+    format!(
+        "{}@{}",
+        skill_name.trim(),
+        digest.chars().take(10).collect::<String>()
+    )
+}
+
+fn build_runtime_skill_genome_node(
+    skill_name: &str,
+    summary: &str,
+    procedure: &str,
+    recorded_at: u64,
+    disposition: RuntimeSkillGenomeDisposition,
+) -> RuntimeSkillGenomeNode {
+    let strategy_digest = runtime_skill_strategy_digest(summary, procedure);
+    RuntimeSkillGenomeNode {
+        node_id: runtime_skill_genome_node_id(skill_name, &strategy_digest),
+        strategy_digest,
+        recorded_at,
+        summary: runtime_skill_summary_excerpt(summary, procedure),
+        disposition,
+    }
+}
+
+fn runtime_skill_effective_lineage(record: &RuntimeSkillRecord) -> Vec<RuntimeSkillGenomeNode> {
+    if !record.genome_lineage.is_empty() {
+        return record.genome_lineage.clone();
+    }
+    vec![build_runtime_skill_genome_node(
+        &record.name,
+        &record.summary,
+        &record.procedure,
+        record.updated_at.max(record.observed_at),
+        match record.status {
+            RuntimeSkillStatus::Retired => RuntimeSkillGenomeDisposition::Retired,
+            _ => RuntimeSkillGenomeDisposition::Active,
+        },
+    )]
+}
+
+fn active_runtime_skill_genome_node(record: &RuntimeSkillRecord) -> Option<RuntimeSkillGenomeNode> {
+    runtime_skill_effective_lineage(record)
+        .into_iter()
+        .rev()
+        .find(|node| node.disposition == RuntimeSkillGenomeDisposition::Active)
+}
+
+fn runtime_skill_last_transition_at(record: &RuntimeSkillRecord) -> Option<u64> {
+    runtime_skill_effective_lineage(record)
+        .into_iter()
+        .map(|node| node.recorded_at)
+        .max()
+        .or(record.retired_at)
+        .or(record.last_outcome_at)
+        .or(Some(record.updated_at.max(record.observed_at)))
+}
+
+fn runtime_skill_doctrine_clause_from_record(
+    record: RuntimeSkillRecord,
+) -> Option<RuntimeSkillDoctrineClauseRecord> {
+    if matches!(record.status, RuntimeSkillStatus::Retired) {
+        return None;
+    }
+    if record.summary.trim().is_empty() {
+        return None;
+    }
+    if record.validated_success_count == 0 && record.use_count == 0 {
+        return None;
+    }
+    Some(RuntimeSkillDoctrineClauseRecord {
+        source_skill_name: record.name,
+        topic: record.topic,
+        clause: truncate_content_to_max(record.summary.trim(), 180).into_owned(),
+        validated_success_count: record.validated_success_count,
+        revision_pending: record.revision_pending,
+        evidence_ref_count: record.citations.len(),
+    })
+}
+
+fn build_runtime_skill_strategy_diff(
+    previous: &RuntimeSkillRecord,
+    next: &RuntimeSkillRecord,
+    from_node_id: &str,
+    to_node_id: &str,
+    recorded_at: u64,
+) -> RuntimeSkillStrategyDiff {
+    let summary_changed = normalize_runtime_skill_text(&previous.summary)
+        != normalize_runtime_skill_text(&next.summary);
+    let procedure_changed = normalize_runtime_skill_text(&previous.procedure)
+        != normalize_runtime_skill_text(&next.procedure);
+    let change_kind = match (summary_changed, procedure_changed) {
+        (true, true) => RuntimeSkillStrategyDiffKind::DoctrineRevision,
+        (false, true) => RuntimeSkillStrategyDiffKind::ProcedureRefinement,
+        _ => RuntimeSkillStrategyDiffKind::SummaryRevision,
+    };
+    let summary = match change_kind {
+        RuntimeSkillStrategyDiffKind::DoctrineRevision => {
+            "summary and procedure changed under the same canonical strategy".to_string()
+        }
+        RuntimeSkillStrategyDiffKind::ProcedureRefinement => {
+            "procedure changed while the canonical doctrine stayed stable".to_string()
+        }
+        RuntimeSkillStrategyDiffKind::SummaryRevision => {
+            "summary changed while the procedure stayed stable".to_string()
+        }
+    };
+    RuntimeSkillStrategyDiff {
+        recorded_at,
+        from_node_id: from_node_id.to_string(),
+        to_node_id: to_node_id.to_string(),
+        change_kind,
+        summary,
+    }
+}
+
 fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillRecord> {
     if !content.trim_start().starts_with(RUNTIME_SKILL_MARKER) {
         return None;
@@ -1271,6 +1608,11 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
         .or_else(|| meta.get("last_used_at"))
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0);
+    let retired_at = meta
+        .get("retired at")
+        .or_else(|| meta.get("retired_at"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
     let use_count = meta
         .get("use count")
         .or_else(|| meta.get("use_count"))
@@ -1326,6 +1668,16 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
                     .unwrap_or_default(),
                 supersedes: Vec::new(),
                 component_topics: vec![topic.clone()],
+                genome_lineage: parse_runtime_skill_json_section(&sections, "genome lineage")
+                    .unwrap_or_default(),
+                strategy_diffs: parse_runtime_skill_json_section(&sections, "strategy diff ledger")
+                    .unwrap_or_default(),
+                retired_at,
+                retirement_reason: meta
+                    .get("retirement reason")
+                    .or_else(|| meta.get("retirement_reason"))
+                    .cloned()
+                    .unwrap_or_default(),
             })
         });
     let mut component_topics = meta
@@ -1390,6 +1742,16 @@ fn parse_runtime_skill_record(name: &str, content: &str) -> Option<RuntimeSkillR
             .map(|value| parse_list_field(value))
             .unwrap_or_default(),
         component_topics,
+        genome_lineage: parse_runtime_skill_json_section(&sections, "genome lineage")
+            .unwrap_or_default(),
+        strategy_diffs: parse_runtime_skill_json_section(&sections, "strategy diff ledger")
+            .unwrap_or_default(),
+        retired_at,
+        retirement_reason: meta
+            .get("retirement reason")
+            .or_else(|| meta.get("retirement_reason"))
+            .cloned()
+            .unwrap_or_default(),
     })
 }
 
@@ -1460,6 +1822,7 @@ fn merge_runtime_skill_record(
         quality_score: 0,
         status: existing
             .map(|record| record.status)
+            .filter(|status| *status != RuntimeSkillStatus::Retired)
             .unwrap_or(RuntimeSkillStatus::Active),
         validated_success_count: existing
             .map(|record| record.validated_success_count)
@@ -1479,6 +1842,14 @@ fn merge_runtime_skill_record(
         component_topics: existing
             .map(|record| record.component_topics.clone())
             .unwrap_or_else(|| vec![topic]),
+        genome_lineage: existing
+            .map(runtime_skill_effective_lineage)
+            .unwrap_or_default(),
+        strategy_diffs: existing
+            .map(|record| record.strategy_diffs.clone())
+            .unwrap_or_default(),
+        retired_at: None,
+        retirement_reason: String::new(),
     };
     if let Some(existing) = existing {
         if record.summary.is_empty() {
@@ -1529,6 +1900,74 @@ fn merge_runtime_skill_record(
     record.component_topics.dedup();
     record.supersedes.sort();
     record.supersedes.dedup();
+    let next_node = build_runtime_skill_genome_node(
+        &record.name,
+        &record.summary,
+        &record.procedure,
+        record.updated_at.max(record.observed_at),
+        RuntimeSkillGenomeDisposition::Active,
+    );
+    if let Some(existing) = existing {
+        let existing_lineage = runtime_skill_effective_lineage(existing);
+        let previous_node = existing_lineage.last().cloned().unwrap_or_else(|| {
+            build_runtime_skill_genome_node(
+                &existing.name,
+                &existing.summary,
+                &existing.procedure,
+                existing.updated_at.max(existing.observed_at),
+                match existing.status {
+                    RuntimeSkillStatus::Retired => RuntimeSkillGenomeDisposition::Retired,
+                    _ => RuntimeSkillGenomeDisposition::Active,
+                },
+            )
+        });
+        if previous_node.strategy_digest == next_node.strategy_digest {
+            if record.genome_lineage.is_empty() {
+                record.genome_lineage.push(next_node);
+            } else if let Some(last) = record.genome_lineage.last_mut() {
+                last.disposition = RuntimeSkillGenomeDisposition::Active;
+                last.recorded_at = last
+                    .recorded_at
+                    .max(record.updated_at.max(record.observed_at));
+                last.summary = runtime_skill_summary_excerpt(&record.summary, &record.procedure);
+            }
+        } else {
+            if let Some(last) = record.genome_lineage.last_mut() {
+                if last.disposition == RuntimeSkillGenomeDisposition::Active {
+                    last.disposition = RuntimeSkillGenomeDisposition::Superseded;
+                }
+            }
+            record.genome_lineage.push(next_node.clone());
+            record
+                .strategy_diffs
+                .push(build_runtime_skill_strategy_diff(
+                    existing,
+                    &record,
+                    &previous_node.node_id,
+                    &next_node.node_id,
+                    record.updated_at.max(record.observed_at),
+                ));
+        }
+    } else {
+        record.genome_lineage.push(next_node);
+    }
+    if record.genome_lineage.is_empty() {
+        record.genome_lineage.push(build_runtime_skill_genome_node(
+            &record.name,
+            &record.summary,
+            &record.procedure,
+            record.updated_at.max(record.observed_at),
+            RuntimeSkillGenomeDisposition::Active,
+        ));
+    }
+    if record.genome_lineage.len() > MAX_RUNTIME_SKILL_GENOME_NODES {
+        let drain = record.genome_lineage.len() - MAX_RUNTIME_SKILL_GENOME_NODES;
+        record.genome_lineage.drain(0..drain);
+    }
+    if record.strategy_diffs.len() > MAX_RUNTIME_SKILL_STRATEGY_DIFFS {
+        let drain = record.strategy_diffs.len() - MAX_RUNTIME_SKILL_STRATEGY_DIFFS;
+        record.strategy_diffs.drain(0..drain);
+    }
     record.quality_score = compute_runtime_skill_quality(&record);
     record
 }
@@ -1603,6 +2042,16 @@ fn render_runtime_skill_record(record: &RuntimeSkillRecord) -> String {
         out.push_str(record.last_outcome_note.trim());
         out.push('\n');
     }
+    if let Some(retired_at) = record.retired_at.filter(|value| *value > 0) {
+        out.push_str("Retired at: ");
+        out.push_str(&retired_at.to_string());
+        out.push('\n');
+    }
+    if !record.retirement_reason.trim().is_empty() {
+        out.push_str("Retirement reason: ");
+        out.push_str(record.retirement_reason.trim());
+        out.push('\n');
+    }
     if !record.supersedes.is_empty() {
         out.push_str("Supersedes: ");
         out.push_str(&record.supersedes.join(", "));
@@ -1623,6 +2072,18 @@ fn render_runtime_skill_record(record: &RuntimeSkillRecord) -> String {
             out.push_str("- ");
             out.push_str(citation.trim());
             out.push('\n');
+        }
+    }
+    if !record.genome_lineage.is_empty() {
+        out.push_str("\n\n## Genome lineage\n");
+        if let Ok(value) = serde_json::to_string_pretty(&record.genome_lineage) {
+            out.push_str(&value);
+        }
+    }
+    if !record.strategy_diffs.is_empty() {
+        out.push_str("\n\n## Strategy diff ledger\n");
+        if let Ok(value) = serde_json::to_string_pretty(&record.strategy_diffs) {
+            out.push_str(&value);
         }
     }
     out
@@ -1680,8 +2141,10 @@ fn score_runtime_skill_record_breakdown(
     preferred_chat_id: Option<&str>,
     now_secs: u64,
 ) -> Option<RuntimeSkillRecallScoreBreakdown> {
-    if matches!(record.status, RuntimeSkillStatus::LowValue)
-        && runtime_skill_is_stale(record, now_secs)
+    if matches!(
+        record.status,
+        RuntimeSkillStatus::LowValue | RuntimeSkillStatus::Retired
+    ) && runtime_skill_is_stale(record, now_secs)
         && record.use_count == 0
     {
         return None;
@@ -1782,13 +2245,16 @@ fn score_runtime_skill_record_breakdown(
         match record.status {
             RuntimeSkillStatus::Active => 6,
             RuntimeSkillStatus::Stale => 1,
-            RuntimeSkillStatus::LowValue => 0,
+            RuntimeSkillStatus::LowValue | RuntimeSkillStatus::Retired => 0,
         },
     );
     if runtime_skill_is_stale(record, now_secs) {
         reasons.push("stale".to_string());
     }
-    if matches!(record.status, RuntimeSkillStatus::LowValue) {
+    if matches!(
+        record.status,
+        RuntimeSkillStatus::LowValue | RuntimeSkillStatus::Retired
+    ) {
         reasons.push("low-value".to_string());
     }
     let total_score = lexical_score
@@ -1892,6 +2358,10 @@ fn find_canonical_runtime_skill_name(
         last_outcome_note: String::new(),
         supersedes: Vec::new(),
         component_topics: vec![input.topic.clone()],
+        genome_lineage: Vec::new(),
+        strategy_diffs: Vec::new(),
+        retired_at: None,
+        retirement_reason: String::new(),
     };
     records
         .iter()
@@ -1939,6 +2409,9 @@ fn merge_runtime_skill_group(
 ) -> RuntimeSkillRecord {
     let mut canonical = group.swap_remove(canonical_idx);
     for duplicate in group {
+        let duplicate_lineage = runtime_skill_effective_lineage(&duplicate);
+        let duplicate_strategy_diffs = duplicate.strategy_diffs.clone();
+        let duplicate_source_chat_id = duplicate.source_chat_id.clone();
         if duplicate.name != canonical.name
             && !canonical
                 .supersedes
@@ -1982,14 +2455,51 @@ fn merge_runtime_skill_group(
         if duplicate.procedure.lines().count() > canonical.procedure.lines().count() {
             canonical.procedure = duplicate.procedure;
         }
+        for mut node in duplicate_lineage {
+            if node.disposition == RuntimeSkillGenomeDisposition::Active {
+                node.disposition = RuntimeSkillGenomeDisposition::Superseded;
+            }
+            if canonical
+                .genome_lineage
+                .iter()
+                .all(|existing| existing.node_id != node.node_id)
+            {
+                canonical.genome_lineage.push(node);
+            }
+        }
+        for diff in duplicate_strategy_diffs {
+            if canonical.strategy_diffs.iter().all(|existing| {
+                existing.from_node_id != diff.from_node_id || existing.to_node_id != diff.to_node_id
+            }) {
+                canonical.strategy_diffs.push(diff);
+            }
+        }
         if canonical.source_chat_id.is_none() {
-            canonical.source_chat_id = duplicate.source_chat_id;
+            canonical.source_chat_id = duplicate_source_chat_id;
         }
     }
     canonical.component_topics.sort();
     canonical.component_topics.dedup();
     canonical.supersedes.sort();
     canonical.supersedes.dedup();
+    canonical.genome_lineage.sort_by(|a, b| {
+        a.recorded_at
+            .cmp(&b.recorded_at)
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
+    if canonical.genome_lineage.len() > MAX_RUNTIME_SKILL_GENOME_NODES {
+        let drain = canonical.genome_lineage.len() - MAX_RUNTIME_SKILL_GENOME_NODES;
+        canonical.genome_lineage.drain(0..drain);
+    }
+    canonical.strategy_diffs.sort_by(|a, b| {
+        a.recorded_at
+            .cmp(&b.recorded_at)
+            .then_with(|| a.to_node_id.cmp(&b.to_node_id))
+    });
+    if canonical.strategy_diffs.len() > MAX_RUNTIME_SKILL_STRATEGY_DIFFS {
+        let drain = canonical.strategy_diffs.len() - MAX_RUNTIME_SKILL_STRATEGY_DIFFS;
+        canonical.strategy_diffs.drain(0..drain);
+    }
     canonical.quality_score = compute_runtime_skill_quality(&canonical);
     canonical
 }
@@ -2000,7 +2510,13 @@ fn apply_runtime_skill_status(
     outcome: &mut RuntimeSkillGovernanceOutcome,
 ) -> RuntimeSkillRecord {
     let stale = runtime_skill_is_stale(&record, now_secs);
-    let next_status = if stale && record.quality_score < 45 && record.use_count == 0 {
+    let has_preservable_lineage = record.validated_success_count > 0
+        || record.genome_lineage.len() > 1
+        || !record.strategy_diffs.is_empty()
+        || !record.supersedes.is_empty();
+    let next_status = if stale && has_preservable_lineage && record.use_count == 0 {
+        RuntimeSkillStatus::Retired
+    } else if stale && record.quality_score < 45 && record.use_count == 0 {
         RuntimeSkillStatus::LowValue
     } else if stale {
         RuntimeSkillStatus::Stale
@@ -2017,10 +2533,33 @@ fn apply_runtime_skill_status(
             RuntimeSkillStatus::LowValue => {
                 outcome.low_value_marked = outcome.low_value_marked.saturating_add(1)
             }
+            RuntimeSkillStatus::Retired => {
+                outcome.retired_marked = outcome.retired_marked.saturating_add(1)
+            }
             RuntimeSkillStatus::Active => {}
         }
     }
     record.status = next_status;
+    match next_status {
+        RuntimeSkillStatus::Retired => {
+            record.retired_at = Some(now_secs);
+            record.retirement_reason =
+                "retired after proven lineage aged out of the active working set".to_string();
+            if let Some(last) = record.genome_lineage.last_mut() {
+                last.disposition = RuntimeSkillGenomeDisposition::Retired;
+                last.recorded_at = now_secs;
+            }
+        }
+        _ => {
+            record.retired_at = None;
+            record.retirement_reason.clear();
+            if let Some(last) = record.genome_lineage.last_mut() {
+                if last.disposition == RuntimeSkillGenomeDisposition::Retired {
+                    last.disposition = RuntimeSkillGenomeDisposition::Active;
+                }
+            }
+        }
+    }
     record
 }
 
@@ -2200,6 +2739,10 @@ mod tests {
             last_outcome_note: String::new(),
             supersedes: Vec::new(),
             component_topics: vec![topic.to_string()],
+            genome_lineage: Vec::new(),
+            strategy_diffs: Vec::new(),
+            retired_at: None,
+            retirement_reason: String::new(),
         }
     }
 
@@ -2614,5 +3157,130 @@ mod tests {
         )
         .unwrap();
         assert!(block.contains("[Composition]"));
+    }
+
+    #[test]
+    fn runtime_skill_revision_records_genome_lineage_and_strategy_diff() {
+        let storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Patch the release and verify the result".to_string(),
+                content: "1. inspect diff\n2. patch rollback guards\n3. verify logs".to_string(),
+                citations: vec!["turn_log:chat-1#req=req-1".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Patch the release, then verify rollback and health signals".to_string(),
+                content: "1. inspect diff and rollback blast radius\n2. patch rollback guards\n3. verify health signals and logs".to_string(),
+                citations: vec!["turn_log:chat-1#req=req-2".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 160,
+            },
+        )
+        .unwrap();
+
+        let record = parse_runtime_skill_record(
+            "runtime_skill__release_patch_flow",
+            &get_skill_content(&storage, "runtime_skill__release_patch_flow").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.genome_lineage.len(), 2);
+        assert_eq!(
+            record.genome_lineage[0].disposition,
+            RuntimeSkillGenomeDisposition::Superseded
+        );
+        assert_eq!(
+            record.genome_lineage[1].disposition,
+            RuntimeSkillGenomeDisposition::Active
+        );
+        assert_eq!(record.strategy_diffs.len(), 1);
+        assert_eq!(
+            record.strategy_diffs[0].change_kind,
+            RuntimeSkillStrategyDiffKind::DoctrineRevision
+        );
+        assert!(record.strategy_diffs[0]
+            .summary
+            .contains("summary and procedure changed"));
+    }
+
+    #[test]
+    fn governance_retires_stale_validated_runtime_skill_instead_of_pruning() {
+        let storage = StubSkillStorage::default();
+        let mut record = runtime_skill_record(
+            "runtime_skill__wifi_recovery",
+            "wifi_recovery",
+            "Wi-Fi recovery",
+            "Recover Wi-Fi first, then validate the route.",
+            "1. reconnect wifi\n2. validate route",
+            1,
+        );
+        record.validated_success_count = 2;
+        record.updated_at = 1;
+        record.quality_score = compute_runtime_skill_quality(&record);
+        write_runtime_skill_record(&storage, &record).unwrap();
+
+        let outcome =
+            govern_runtime_skills(&storage, RUNTIME_SKILL_STALE_AFTER_SECS.saturating_add(20))
+                .unwrap();
+        assert_eq!(outcome.pruned, 0);
+        let record = parse_runtime_skill_record(
+            "runtime_skill__wifi_recovery",
+            &get_skill_content(&storage, "runtime_skill__wifi_recovery").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.status, RuntimeSkillStatus::Retired);
+        assert_eq!(record.retired_at, Some(RUNTIME_SKILL_STALE_AFTER_SECS + 20));
+        assert!(record
+            .retirement_reason
+            .contains("retired after proven lineage aged out"));
+    }
+
+    #[test]
+    fn doctrine_and_genome_snapshots_surface_stable_assets() {
+        let storage = StubSkillStorage::default();
+        upsert_runtime_skill(
+            &storage,
+            &RuntimeSkillWrite {
+                name: String::new(),
+                topic: "release_patch_flow".to_string(),
+                title: "Release patch flow".to_string(),
+                summary: "Patch the release only after inspection, then verify health.".to_string(),
+                content: "1. inspect diff\n2. patch rollback guards\n3. verify health".to_string(),
+                citations: vec!["turn_log:chat-1#req=req-1".to_string()],
+                source_chat_id: Some("chat-1".to_string()),
+                observed_at: 100,
+            },
+        )
+        .unwrap();
+        record_runtime_skill_outcomes(
+            &storage,
+            &[String::from("runtime_skill__release_patch_flow")],
+            RuntimeSkillReuseOutcome::Succeeded,
+            130,
+            "final_answer",
+        )
+        .unwrap();
+
+        let doctrine = build_runtime_skill_doctrine_snapshot(&storage);
+        let genome = build_runtime_skill_genome_snapshot(&storage);
+
+        assert_eq!(doctrine.total_clauses, 1);
+        assert_eq!(doctrine.stable_clauses, 1);
+        assert_eq!(genome.total_lineages, 1);
+        assert_eq!(genome.retired_lineages, 0);
+        assert_eq!(genome.total_diff_events, 0);
+        assert!(doctrine.recent_clauses[0].clause.contains("verify health"));
     }
 }

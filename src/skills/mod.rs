@@ -10,14 +10,17 @@ mod runtime;
 pub use prompt_cache::SkillPromptCache;
 pub(crate) use runtime::retrieve_runtime_skill_hits_with_backend;
 pub use runtime::{
+    build_runtime_skill_doctrine_snapshot, build_runtime_skill_genome_snapshot,
     build_runtime_skill_operator_summary, build_runtime_skill_recall_block, govern_runtime_skills,
     is_runtime_skill_name, record_runtime_skill_outcomes, retrieve_runtime_skill_hits,
     touch_runtime_skill_hits, upsert_runtime_skill, write_governed_runtime_skills,
+    RuntimeSkillDoctrineClauseRecord, RuntimeSkillDoctrineSnapshot, RuntimeSkillGenomeDisposition,
+    RuntimeSkillGenomeLineageRecord, RuntimeSkillGenomeNode, RuntimeSkillGenomeSnapshot,
     RuntimeSkillGovernanceOutcome, RuntimeSkillHit, RuntimeSkillOperatorRecord,
     RuntimeSkillOperatorSummary, RuntimeSkillRecallScoreBreakdown, RuntimeSkillRecord,
-    RuntimeSkillReuseOutcome, RuntimeSkillStatus, RuntimeSkillWriteAction,
-    RuntimeSkillWriteItemReport, RuntimeSkillWriteOutcome, RuntimeSkillWriteReason,
-    RuntimeSkillWriteSource,
+    RuntimeSkillReuseOutcome, RuntimeSkillStatus, RuntimeSkillStrategyDiff,
+    RuntimeSkillStrategyDiffKind, RuntimeSkillWriteAction, RuntimeSkillWriteItemReport,
+    RuntimeSkillWriteOutcome, RuntimeSkillWriteReason, RuntimeSkillWriteSource,
 };
 
 fn is_skill_name_valid(name: &str) -> bool {

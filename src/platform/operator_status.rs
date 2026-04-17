@@ -14,7 +14,10 @@ use crate::platform::memory_operator_surface::{
 };
 use crate::reasoning::summarize_programmable_reasoning_operator;
 use crate::runtime;
-use crate::skills::build_runtime_skill_operator_summary;
+use crate::skills::{
+    build_runtime_skill_doctrine_snapshot, build_runtime_skill_genome_snapshot,
+    build_runtime_skill_operator_summary,
+};
 use crate::task_execution::build_task_learning_operator_snapshot;
 use crate::tools::{ToolExecutionGovernanceState, ToolRegistry};
 use crate::util::current_unix_secs;
@@ -175,10 +178,16 @@ pub fn build_operator_status(
     let soul_kernel = presence.soul_kernel.clone();
     let runtime_skill_summary =
         build_runtime_skill_operator_summary(input.platform.skill_storage().as_ref());
+    let runtime_skill_doctrine =
+        build_runtime_skill_doctrine_snapshot(input.platform.skill_storage().as_ref());
+    let runtime_skill_genome =
+        build_runtime_skill_genome_snapshot(input.platform.skill_storage().as_ref());
     let task_learning_snapshot =
         build_task_learning_operator_snapshot(input.platform.task_learning_store().as_ref())?;
     let mut programmable_reasoning = crate::programmable_reasoning_operator_snapshot(
         &runtime_skill_summary,
+        &runtime_skill_doctrine,
+        &runtime_skill_genome,
         Some(&task_learning_snapshot),
     );
     programmable_reasoning.usage_analytics = programmable_reasoning_usage;
@@ -318,6 +327,9 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
                 "counterfactual_sandbox"
             }
             crate::ProgrammableReasoningStage::AdversarialArena => "adversarial_arena",
+            crate::ProgrammableReasoningStage::DoctrineGenomeEvolution => {
+                "doctrine_genome_evolution"
+            }
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,
         match snapshot.programmable_reasoning.runtime_contract.execution_backend {

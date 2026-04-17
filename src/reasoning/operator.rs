@@ -12,7 +12,9 @@ use crate::reasoning::experience_crystal::{
 use crate::reasoning::proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposalKind,
 };
-use crate::skills::RuntimeSkillOperatorSummary;
+use crate::skills::{
+    RuntimeSkillDoctrineSnapshot, RuntimeSkillGenomeSnapshot, RuntimeSkillOperatorSummary,
+};
 use crate::task_execution::TaskLearningOperatorSnapshot;
 use serde::Serialize;
 
@@ -77,6 +79,8 @@ pub struct ProgrammableReasoningOperatorSnapshot {
     pub capabilities: Vec<ProgrammableReasoningCapabilityContract>,
     pub proposal_kinds: Vec<ProgrammableReasoningProposalKind>,
     pub experience_crystals: ExperienceCrystalOperatorSummary,
+    pub doctrine: RuntimeSkillDoctrineSnapshot,
+    pub genome: RuntimeSkillGenomeSnapshot,
     pub usage_analytics: ProgrammableReasoningUsageAnalytics,
     pub timeline: ProgrammableReasoningTimeline,
     pub adversarial_arena: AdversarialArenaAuditSnapshot,
@@ -106,6 +110,7 @@ fn programmable_reasoning_stage_label(stage: ProgrammableReasoningStage) -> &'st
         ProgrammableReasoningStage::IntentCompiler => "intent_compiler",
         ProgrammableReasoningStage::CounterfactualSandbox => "counterfactual_sandbox",
         ProgrammableReasoningStage::AdversarialArena => "adversarial_arena",
+        ProgrammableReasoningStage::DoctrineGenomeEvolution => "doctrine_genome_evolution",
     }
 }
 
@@ -113,7 +118,7 @@ pub fn summarize_programmable_reasoning_operator(
     snapshot: &ProgrammableReasoningOperatorSnapshot,
 ) -> String {
     format!(
-        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | recent_attempts={} arena_revised={} arena_hold={} attention={}",
+        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} | recent_attempts={} arena_revised={} arena_hold={} attention={}",
         programmable_reasoning_stage_label(snapshot.stage),
         snapshot.runtime_contract.execution_backend,
         snapshot.runtime_contract.execution_enabled,
@@ -122,6 +127,11 @@ pub fn summarize_programmable_reasoning_operator(
         snapshot.experience_crystals.pending_candidates,
         snapshot.experience_crystals.promoted_candidates,
         snapshot.experience_crystals.rejected_candidates,
+        snapshot.doctrine.stable_clauses,
+        snapshot.doctrine.revision_pending_clauses,
+        snapshot.genome.total_lineages,
+        snapshot.genome.retired_lineages,
+        snapshot.genome.total_diff_events,
         snapshot.usage_analytics.recent_total_attempts,
         snapshot.adversarial_arena.summary.revised,
         snapshot.adversarial_arena.summary.held_for_clarification,
@@ -131,6 +141,8 @@ pub fn summarize_programmable_reasoning_operator(
 
 pub fn programmable_reasoning_operator_snapshot(
     runtime_skills: &RuntimeSkillOperatorSummary,
+    doctrine: &RuntimeSkillDoctrineSnapshot,
+    genome: &RuntimeSkillGenomeSnapshot,
     task_learning: Option<&TaskLearningOperatorSnapshot>,
 ) -> ProgrammableReasoningOperatorSnapshot {
     let runtime_contract = programmable_reasoning_runtime_contract();
@@ -143,6 +155,8 @@ pub fn programmable_reasoning_operator_snapshot(
             runtime_skills,
             task_learning,
         ),
+        doctrine: doctrine.clone(),
+        genome: genome.clone(),
         usage_analytics: ProgrammableReasoningUsageAnalytics::default(),
         timeline: ProgrammableReasoningTimeline::default(),
         adversarial_arena: adversarial_arena_snapshot(12),
@@ -172,12 +186,19 @@ mod tests {
     };
 
     #[test]
-    fn operator_snapshot_reports_p11_contract() {
+    fn operator_snapshot_reports_p12_contract() {
         let _guard = adversarial_arena_test_guard();
         reset_adversarial_arena_for_tests();
-        let snapshot =
-            programmable_reasoning_operator_snapshot(&RuntimeSkillOperatorSummary::default(), None);
-        assert_eq!(snapshot.stage, ProgrammableReasoningStage::AdversarialArena);
+        let snapshot = programmable_reasoning_operator_snapshot(
+            &RuntimeSkillOperatorSummary::default(),
+            &RuntimeSkillDoctrineSnapshot::default(),
+            &RuntimeSkillGenomeSnapshot::default(),
+            None,
+        );
+        assert_eq!(
+            snapshot.stage,
+            ProgrammableReasoningStage::DoctrineGenomeEvolution
+        );
         assert_eq!(snapshot.capabilities.len(), 6);
         assert_eq!(snapshot.proposal_kinds.len(), 5);
         assert_eq!(
@@ -189,15 +210,24 @@ mod tests {
         assert!(snapshot.timeline.recent_events.is_empty());
         assert_eq!(snapshot.adversarial_arena.summary.total_retained, 0);
         assert!(snapshot.adversarial_arena.recent_events.is_empty());
+        assert_eq!(snapshot.doctrine.total_clauses, 0);
+        assert!(snapshot.doctrine.recent_clauses.is_empty());
+        assert_eq!(snapshot.genome.total_lineages, 0);
+        assert!(snapshot.genome.recent_lineages.is_empty());
         assert!(snapshot.maintenance_digest.status.is_empty());
-        assert!(snapshot.operator_summary.contains("adversarial_arena |"));
+        assert!(snapshot
+            .operator_summary
+            .contains("doctrine_genome_evolution |"));
         assert!(snapshot.operator_summary.contains("recent_attempts=0"));
     }
 
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(summary.stage, ProgrammableReasoningStage::AdversarialArena);
+        assert_eq!(
+            summary.stage,
+            ProgrammableReasoningStage::DoctrineGenomeEvolution
+        );
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);

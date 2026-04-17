@@ -16,6 +16,7 @@ pub enum ProgrammableReasoningStage {
     IntentCompiler,
     CounterfactualSandbox,
     AdversarialArena,
+    DoctrineGenomeEvolution,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -60,7 +61,7 @@ pub struct ProgrammableReasoningRuntimeContract {
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
     let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::AdversarialArena,
+        stage: ProgrammableReasoningStage::DoctrineGenomeEvolution,
         linux_only: true,
         execution_backend: if execution_enabled {
             ProgrammableReasoningExecutionBackend::LuaSandbox
@@ -101,9 +102,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_moves_to_p11_adversarial_arena() {
+    fn runtime_contract_moves_to_p12_doctrine_genome_evolution() {
         let contract = programmable_reasoning_runtime_contract();
-        assert_eq!(contract.stage, ProgrammableReasoningStage::AdversarialArena);
+        assert_eq!(
+            contract.stage,
+            ProgrammableReasoningStage::DoctrineGenomeEvolution
+        );
         assert!(contract.linux_only);
         assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));
         assert!(contract.proposal_only_persistence);
