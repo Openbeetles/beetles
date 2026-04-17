@@ -101,6 +101,7 @@ fn programmable_reasoning_stage_label(stage: ProgrammableReasoningStage) -> &'st
         ProgrammableReasoningStage::CapabilityBridgeExpansion => "capability_bridge_expansion",
         ProgrammableReasoningStage::ExperienceCrystal => "experience_crystal",
         ProgrammableReasoningStage::EngineeringSynthesis => "engineering_synthesis",
+        ProgrammableReasoningStage::IntentCompiler => "intent_compiler",
     }
 }
 
@@ -161,13 +162,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operator_snapshot_reports_p7_contract() {
+    fn operator_snapshot_reports_p9_contract() {
         let snapshot =
             programmable_reasoning_operator_snapshot(&RuntimeSkillOperatorSummary::default(), None);
-        assert_eq!(
-            snapshot.stage,
-            ProgrammableReasoningStage::EngineeringSynthesis
-        );
+        assert_eq!(snapshot.stage, ProgrammableReasoningStage::IntentCompiler);
         assert_eq!(snapshot.capabilities.len(), 6);
         assert_eq!(snapshot.proposal_kinds.len(), 5);
         assert_eq!(
@@ -178,19 +176,14 @@ mod tests {
         assert!(snapshot.usage_analytics.tool_counts.is_empty());
         assert!(snapshot.timeline.recent_events.is_empty());
         assert!(snapshot.maintenance_digest.status.is_empty());
-        assert!(snapshot
-            .operator_summary
-            .contains("engineering_synthesis |"));
+        assert!(snapshot.operator_summary.contains("intent_compiler |"));
         assert!(snapshot.operator_summary.contains("recent_attempts=0"));
     }
 
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(
-            summary.stage,
-            ProgrammableReasoningStage::EngineeringSynthesis
-        );
+        assert_eq!(summary.stage, ProgrammableReasoningStage::IntentCompiler);
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);

@@ -1706,6 +1706,21 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                             println!("{line}");
                         }
                     }
+                    if let Some(reasoning_intent) =
+                        ledger
+                            .reasoning_intent
+                            .as_ref()
+                            .and_then(|reasoning_intent| {
+                                beetle::memory::render_turn_reasoning_intent_ledger_block(
+                                    reasoning_intent,
+                                    320,
+                                )
+                            })
+                    {
+                        for line in reasoning_intent.lines() {
+                            println!("{line}");
+                        }
+                    }
                 }
                 None => println!("Recent turn: none"),
             }

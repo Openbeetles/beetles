@@ -23,6 +23,8 @@ const TURN_PERSONA_SCOPE_MAX_CHARS: usize = 24;
 const TURN_SUBJECT_STATE_TEXT_MAX_CHARS: usize = 72;
 const TURN_SUBJECT_STATE_SUMMARY_MAX_CHARS: usize = 160;
 const TURN_OBSERVATION_TEXT_MAX_CHARS: usize = 96;
+const TURN_REASONING_SIGNAL_MAX_CHARS: usize = 32;
+const TURN_REASONING_SUMMARY_MAX_CHARS: usize = 160;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -216,6 +218,36 @@ impl TurnObservationLedger {
             || self.tool_path.current_primary_delivered
             || self.tool_path.final_answer_recovered
             || self.blocker.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnReasoningIntentLedger {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub strategy: String,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub rationale: Vec<String>,
+    #[serde(default)]
+    pub preferred_tools: Vec<String>,
+    #[serde(default)]
+    pub runtime_grounding_required: bool,
+}
+
+impl TurnReasoningIntentLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.kind.trim().is_empty()
+            || !self.strategy.trim().is_empty()
+            || self.confidence > 0
+            || !self.summary.trim().is_empty()
+            || !self.rationale.is_empty()
+            || !self.preferred_tools.is_empty()
+            || self.runtime_grounding_required
     }
 }
 
@@ -502,6 +534,8 @@ pub struct TurnLedger {
     pub persona: Option<TurnPersonaLedger>,
     #[serde(default)]
     pub soul_feedback: Option<TurnSoulFeedbackLedger>,
+    #[serde(default)]
+    pub reasoning_intent: Option<TurnReasoningIntentLedger>,
 }
 
 pub trait TurnLedgerStore: Send + Sync {
@@ -742,6 +776,73 @@ pub fn render_turn_observation_ledger_block(
     (!rendered.trim().is_empty()).then_some(rendered)
 }
 
+pub fn render_turn_reasoning_intent_ledger_block(
+    reasoning_intent: &TurnReasoningIntentLedger,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 || !reasoning_intent.is_meaningful() {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(512));
+    out.push_str("## Latest Programmable Reasoning Intent\n");
+    if !reasoning_intent.kind.trim().is_empty() {
+        let _ = writeln!(out, "Kind: {}", reasoning_intent.kind.trim());
+    }
+    if !reasoning_intent.strategy.trim().is_empty() {
+        let _ = writeln!(out, "Strategy: {}", reasoning_intent.strategy.trim());
+    }
+    if reasoning_intent.confidence > 0 {
+        let _ = writeln!(out, "Confidence: {}", reasoning_intent.confidence);
+    }
+    if !reasoning_intent.summary.trim().is_empty() {
+        let _ = writeln!(
+            out,
+            "Summary: {}",
+            truncate_content_to_max(
+                reasoning_intent.summary.trim(),
+                TURN_REASONING_SUMMARY_MAX_CHARS
+            )
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Runtime grounding required: {}",
+        reasoning_intent.runtime_grounding_required
+    );
+    if !reasoning_intent.rationale.is_empty() {
+        let normalized = reasoning_intent
+            .rationale
+            .iter()
+            .map(|item| {
+                truncate_content_to_max(item.trim(), TURN_REASONING_SIGNAL_MAX_CHARS)
+                    .trim()
+                    .to_string()
+            })
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>();
+        if !normalized.is_empty() {
+            let _ = writeln!(out, "Signals: {}", normalized.join(" | "));
+        }
+    }
+    if !reasoning_intent.preferred_tools.is_empty() {
+        let normalized = reasoning_intent
+            .preferred_tools
+            .iter()
+            .map(|item| {
+                truncate_content_to_max(item.trim(), TURN_REASONING_SIGNAL_MAX_CHARS)
+                    .trim()
+                    .to_string()
+            })
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>();
+        if !normalized.is_empty() {
+            let _ = writeln!(out, "Preferred tools: {}", normalized.join(", "));
+        }
+    }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
 pub fn turn_ledger_observed_at_ms(ledger: &TurnLedger) -> u64 {
     if ledger.finished_at_ms > 0 {
         ledger.finished_at_ms
@@ -880,5 +981,29 @@ mod tests {
         assert!(rendered.contains("Tool path: tool_recovery"));
         assert!(rendered.contains("Final outcome: final_recovery"));
         assert!(rendered.contains("Blocker: retryable 2/2"));
+    }
+
+    #[test]
+    fn render_turn_reasoning_intent_ledger_block_includes_kind_strategy_and_tools() {
+        let rendered = render_turn_reasoning_intent_ledger_block(
+            &TurnReasoningIntentLedger {
+                kind: "engineering_synthesis".to_string(),
+                strategy: "require_native_tool_round".to_string(),
+                confidence: 92,
+                summary: "Compile runtime evidence before answering.".to_string(),
+                rationale: vec!["hard_reasoning".to_string(), "host_tool".to_string()],
+                preferred_tools: vec!["lua_query".to_string(), "office_status".to_string()],
+                runtime_grounding_required: true,
+            },
+            420,
+        )
+        .expect("reasoning intent block");
+
+        assert!(rendered.contains("## Latest Programmable Reasoning Intent"));
+        assert!(rendered.contains("Kind: engineering_synthesis"));
+        assert!(rendered.contains("Strategy: require_native_tool_round"));
+        assert!(rendered.contains("Confidence: 92"));
+        assert!(rendered.contains("Preferred tools: lua_query, office_status"));
+        assert!(rendered.contains("Runtime grounding required: true"));
     }
 }

@@ -56,6 +56,7 @@ const REPLY_LAW_CONSTRAINT: &str = "\n\n## Reply Law\nFor relationship, self, me
 const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
 const SUBJECT_STATE_SECTION: &str = "\n\n## Subject State\nResolved pre-reply digest of the current subject stance. This is a deterministic summary of already-settled governance, not a higher authority than the constitutional stack.\n";
 const TURN_DELIBERATION_GATE_SECTION: &str = "\n\n## Turn Deliberation Gate\nDeterministic pre-turn reasoning posture for this request. Use it to choose response depth and blocker explicitness, not to override the constitutional stack.\n";
+const PROGRAMMABLE_REASONING_INTENT_SECTION: &str = "\n\n## Programmable Reasoning Intent\nDeterministic compiled programmable reasoning posture for this turn. Use it to decide whether deeper programmable reasoning should stay prompt-local, memory-grounded, or tool-grounded. It does not override the constitutional stack.\n";
 const SOUL_FEEDBACK_PROJECTION_SECTION: &str = "\n\n## Soul Feedback Projection\nDeterministic summary of how governed soul layers are feeding this turn's reply, initiative, and post-reply strategy. It does not outrank the constitutional stack.\n";
 const ACTIVE_TASK_CONTEXT_SECTION: &str = "\n\n## Active Task Context\nCurrent task state and run-specific recall. Solve the present request only after obeying the constitutional stack.\n";
 const GOVERNED_MEMORY_EVIDENCE_SECTION: &str = "\n\n## Governed Memory Evidence\nTop-k governed evidence for this turn. Canonical factual memory outranks archive evidence, and archive evidence outranks runtime skill procedure notes when they conflict.\n";
@@ -86,6 +87,7 @@ pub struct ContextParams<'a> {
     pub active_task_context_text: Option<&'a str>,
     pub governed_memory_evidence_text: Option<&'a str>,
     pub background_governance_text: Option<&'a str>,
+    pub programmable_reasoning_intent_text: Option<&'a str>,
     pub execution_state_text: Option<&'a str>,
     pub task_workspace_text: Option<&'a str>,
     pub task_recall_text: Option<&'a str>,
@@ -231,6 +233,7 @@ struct PriorityMemoryBudgetInputs<'a> {
     constitutional_stack_text: Option<&'a str>,
     subject_state_text: Option<&'a str>,
     deliberation_gate_text: Option<&'a str>,
+    programmable_reasoning_intent_text: Option<&'a str>,
     soul_feedback_projection_text: Option<&'a str>,
     active_task_context_text: Option<&'a str>,
     governed_memory_evidence_text: Option<&'a str>,
@@ -259,6 +262,12 @@ fn reserve_priority_memory_budget(
     )
     .min(remaining / 5);
     let remaining = remaining.saturating_sub(deliberation_gate_reserve);
+    let programmable_reasoning_intent_reserve = projection_section_len(
+        PROGRAMMABLE_REASONING_INTENT_SECTION,
+        inputs.programmable_reasoning_intent_text,
+    )
+    .min(remaining / 5);
+    let remaining = remaining.saturating_sub(programmable_reasoning_intent_reserve);
     let soul_feedback_projection_reserve = projection_section_len(
         SOUL_FEEDBACK_PROJECTION_SECTION,
         inputs.soul_feedback_projection_text,
@@ -284,6 +293,7 @@ fn reserve_priority_memory_budget(
         .saturating_add(constitutional_stack_reserve)
         .saturating_add(subject_state_reserve)
         .saturating_add(deliberation_gate_reserve)
+        .saturating_add(programmable_reasoning_intent_reserve)
         .saturating_add(soul_feedback_projection_reserve)
         .saturating_add(active_task_context_reserve)
         .saturating_add(governed_memory_evidence_reserve)
@@ -502,6 +512,7 @@ fn build_context_inner(
             constitutional_stack_text: constitutional_stack_text.as_deref(),
             subject_state_text: p.subject_state_text,
             deliberation_gate_text: p.deliberation_gate_text,
+            programmable_reasoning_intent_text: p.programmable_reasoning_intent_text,
             soul_feedback_projection_text: p.soul_feedback_projection_text,
             active_task_context_text: active_task_context_text.as_deref(),
             governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
@@ -541,6 +552,12 @@ fn build_context_inner(
         &mut system,
         TURN_DELIBERATION_GATE_SECTION,
         p.deliberation_gate_text,
+        base_max,
+    );
+    let _ = append_projection_section(
+        &mut system,
+        PROGRAMMABLE_REASONING_INTENT_SECTION,
+        p.programmable_reasoning_intent_text,
         base_max,
     );
     let _ = append_projection_section(
@@ -876,6 +893,7 @@ mod tests {
             background_governance_text: Some(
                 "## Relationship Portfolio\n- qq:chat-1 state=maintain inheritance=guarded\n\n## World Snapshot\nOuter scene now: Wednesday 18:00-18:59, evening.\n\n## World Sense\nCurrent scene: quiet but active chat.\n\n## Self State\nMemory pressure: Cautious\n\n## Autonomy Strategy\nCurrent mode: consolidate\n\n## Outer Voice\nTone: calm, deliberate, warm at the edge.\n\n## Mental Privacy Boundary\nDo not leak private layers.",
             ),
+            programmable_reasoning_intent_text: None,
             mental_privacy_adjudication_text: Some(
                 "## Disclosure Adjudication\nChosen share action: allow_summary",
             ),
@@ -944,6 +962,7 @@ mod tests {
             background_governance_text: Some(
                 "## Relationship Portfolio\n- telegram:chat-1 state=repair inheritance=limited\n\n## Outer Voice\nRelational response style: warm but firm\n\n## Mental Privacy Boundary\nRelational boundary state: trust=52",
             ),
+            programmable_reasoning_intent_text: None,
             relationship_constitution_text: Some(
                 "## Relationship Constitution\nTask scope ceiling: narrow\nMust realign: true",
             ),
@@ -1024,6 +1043,7 @@ mod tests {
             background_governance_text: Some(
                 "## Mental Privacy Boundary\nProtected targets include inner_life and private_docs.inner_journal",
             ),
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1101,6 +1121,7 @@ mod tests {
             active_task_context_text: Some("## Execution State\nGoal: close current task"),
             governed_memory_evidence_text: None,
             background_governance_text: None,
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1168,6 +1189,7 @@ mod tests {
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1227,6 +1249,7 @@ mod tests {
             ),
             governed_memory_evidence_text: None,
             background_governance_text: None,
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1285,6 +1308,7 @@ mod tests {
                 "## Governed Memory Evidence\nCompressed long-term memory.",
             ),
             background_governance_text: None,
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1342,6 +1366,7 @@ mod tests {
                 "## Governed Memory Evidence\nCompressed long-term memory.",
             ),
             background_governance_text: None,
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1401,6 +1426,7 @@ mod tests {
             background_governance_text: Some(
                 "## Background Governance\nrelationship portfolio\nouter voice\nmental privacy",
             ),
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1465,6 +1491,7 @@ mod tests {
                 "## Governed Memory Evidence\nCompressed long-term memory.",
             ),
             background_governance_text: None,
+            programmable_reasoning_intent_text: None,
             execution_state_text: None,
             task_workspace_text: None,
             task_recall_text: None,
@@ -1485,5 +1512,68 @@ mod tests {
         .expect("context");
 
         assert!(system.contains("## Capability Package"));
+    }
+
+    #[test]
+    fn build_context_includes_programmable_reasoning_intent_section() {
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "继续排查这个问题", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: true,
+            skill_descriptions: "",
+            system_max_len: 2048,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            subject_state_text: None,
+            deliberation_gate_text: Some(
+                "## Turn Deliberation Gate\nClass: hard_reasoning\nGuidance: reconcile evidence",
+            ),
+            soul_feedback_projection_text: None,
+            active_task_context_text: Some("## Active Task Context\nContinue the foreground action."),
+            governed_memory_evidence_text: Some(
+                "## Governed Memory Evidence\nRuntime evidence already selected.",
+            ),
+            background_governance_text: None,
+            programmable_reasoning_intent_text: Some(
+                "Kind: engineering_synthesis\nStrategy: require_native_tool_round\nSummary: Compile runtime evidence before answering.",
+            ),
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Programmable Reasoning Intent"));
+        assert!(system.contains("Strategy: require_native_tool_round"));
     }
 }

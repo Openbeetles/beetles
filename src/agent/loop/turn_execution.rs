@@ -175,6 +175,7 @@ pub(super) fn execute_turn(
         mut runtime_carry,
         subject_state,
         soul_feedback_projection,
+        programmable_reasoning_intent,
         system,
         mut messages,
         mut system_scratch,
@@ -195,6 +196,8 @@ pub(super) fn execute_turn(
         &mut tool_ctx,
         &mut latency,
     )?;
+    let request_plan =
+        request_plan.with_programmable_reasoning_intent(programmable_reasoning_intent.as_deref());
     let reply_surface = request_plan.reply_surface();
     maybe_emit_regular_foreground_action_progress(
         &mut delivery,
@@ -674,6 +677,7 @@ pub(super) fn execute_turn(
             prompt_recall_intent: runtime_carry.prompt_recall_intent,
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
             task_learning_selected_ids: runtime_carry.task_recall_selected_ids,
+            programmable_reasoning_intent: programmable_reasoning_intent.map(|value| *value),
             subject_state: subject_state.map(|value| *value),
             soul_feedback_projection: soul_feedback_projection.map(|value| *value),
             mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),

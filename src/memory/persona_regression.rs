@@ -279,6 +279,7 @@ fn assemble_persona_regression_system(
         active_task_context_text: None,
         governed_memory_evidence_text: None,
         background_governance_text: None,
+        programmable_reasoning_intent_text: None,
         execution_state_text: None,
         task_workspace_text: None,
         task_recall_text: None,

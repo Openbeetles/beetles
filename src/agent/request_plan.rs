@@ -2,6 +2,7 @@
 //! Centralizes runtime tool visibility plus typed tool-demand mapping so the
 //! agent loop stays thin and request understanding stays outside prompt hacks.
 
+use super::reasoning_intent::ProgrammableReasoningIntent;
 use super::reply_surface::ReplySurface;
 use super::request_semantics::RequestSemantics;
 use crate::bus::PcMsg;
@@ -23,6 +24,7 @@ pub(crate) struct AgentRequestPlan<'a> {
     reply_surface: ReplySurface,
     semantics: RequestSemantics,
     strategy: super::strategy::AgentRunStrategy,
+    programmable_reasoning_intent: Option<ProgrammableReasoningIntent>,
 }
 
 impl<'a> AgentRequestPlan<'a> {
@@ -51,7 +53,16 @@ impl<'a> AgentRequestPlan<'a> {
             reply_surface,
             semantics,
             strategy,
+            programmable_reasoning_intent: None,
         }
+    }
+
+    pub(crate) fn with_programmable_reasoning_intent(
+        mut self,
+        intent: Option<&ProgrammableReasoningIntent>,
+    ) -> Self {
+        self.programmable_reasoning_intent = intent.cloned();
+        self
     }
 
     pub(crate) fn policy(&self) -> &ToolPolicyContext<'a> {
@@ -86,6 +97,14 @@ impl<'a> AgentRequestPlan<'a> {
     }
 
     fn requires_native_tool_first_round(&self, round: usize) -> bool {
+        if round == 0
+            && self
+                .programmable_reasoning_intent
+                .as_ref()
+                .is_some_and(ProgrammableReasoningIntent::requires_native_tool_round)
+        {
+            return true;
+        }
         if round > 0
             || self.strategy != super::strategy::AgentRunStrategy::LinuxEnhanced
             || self.semantics.execution_preference
@@ -119,6 +138,9 @@ impl<'a> AgentRequestPlan<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::reasoning_intent::{
+        ProgrammableReasoningIntent, ProgrammableReasoningIntentKind, ProgrammableReasoningStrategy,
+    };
     use crate::agent::request_semantics::{
         ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
         RequestSemantics, ResumeRelation,
@@ -620,5 +642,31 @@ mod tests {
         let mut system = String::new();
         plan.apply_system_prompt(&mut system, 4096);
         assert!(system.is_empty());
+    }
+
+    #[test]
+    fn programmable_reasoning_intent_can_force_native_tool_round() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound("telegram", "chat", "resolve current runtime issue", false)
+            .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::None, ExecutionPreference::AnswerDirect),
+        )
+        .with_programmable_reasoning_intent(Some(&ProgrammableReasoningIntent {
+            kind: ProgrammableReasoningIntentKind::EngineeringSynthesis,
+            strategy: ProgrammableReasoningStrategy::RequireNativeToolRound,
+            confidence: 91,
+            summary: "Compile runtime evidence before answering".to_string(),
+            rationale: vec!["hard_reasoning".to_string(), "host_tool".to_string()],
+            preferred_tools: vec!["visible".to_string()],
+            runtime_grounding_required: true,
+        }));
+
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Require);
     }
 }

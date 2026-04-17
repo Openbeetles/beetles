@@ -722,6 +722,7 @@ pub(super) fn try_run_task_execution(
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
+            programmable_reasoning_intent: None,
             subject_state,
             soul_feedback_projection: None,
             mental_privacy_adjudication,

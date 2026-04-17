@@ -722,6 +722,31 @@ pub(super) fn finalize_prepare_context<'a>(
         .and_then(|state| render_subject_state_block(state, 360));
     let deliberation_gate_text =
         render_turn_deliberation_gate_block(&governance_stage.deliberation_gate, 360);
+    let programmable_reasoning_intent =
+        crate::agent::reasoning_intent::compile_programmable_reasoning_intent(
+            crate::agent::reasoning_intent::ProgrammableReasoningIntentInput {
+                strategy: config.strategy,
+                runtime_contract: crate::programmable_reasoning_runtime_contract(),
+                request_semantics,
+                deliberation_gate: &governance_stage.deliberation_gate,
+                has_tools: runtime_stage.has_tools,
+                active_task_context_present: prompt_memory
+                    .active_task_context_text
+                    .as_ref()
+                    .is_some_and(|text| !text.trim().is_empty()),
+                governed_memory_evidence_present: prompt_memory
+                    .governed_memory_evidence_text
+                    .as_ref()
+                    .is_some_and(|text| !text.trim().is_empty()),
+            },
+        );
+    let programmable_reasoning_intent = programmable_reasoning_intent
+        .is_meaningful()
+        .then_some(programmable_reasoning_intent);
+    let programmable_reasoning_intent_text =
+        programmable_reasoning_intent.as_ref().and_then(|intent| {
+            crate::agent::reasoning_intent::render_programmable_reasoning_intent_block(intent, 360)
+        });
     let soul_feedback_projection_text = governance_stage
         .soul_feedback_projection
         .as_ref()
@@ -744,6 +769,7 @@ pub(super) fn finalize_prepare_context<'a>(
         constitutional_stack_text: prompt_memory.constitutional_stack_text.as_deref(),
         subject_state_text: subject_state_text.as_deref(),
         deliberation_gate_text: deliberation_gate_text.as_deref(),
+        programmable_reasoning_intent_text: programmable_reasoning_intent_text.as_deref(),
         soul_feedback_projection_text: soul_feedback_projection_text.as_deref(),
         active_task_context_text: prompt_memory.active_task_context_text.as_deref(),
         governed_memory_evidence_text: prompt_memory.governed_memory_evidence_text.as_deref(),
@@ -795,6 +821,7 @@ pub(super) fn finalize_prepare_context<'a>(
         messages,
         system_scratch,
         deliberation_gate: governance_stage.deliberation_gate,
+        programmable_reasoning_intent: programmable_reasoning_intent.map(Box::new),
         interactive_fast_path: runtime_stage.interactive_fast_path,
         allow_tool_round_recall_refill,
         prompt_memory_system_budget: runtime_stage.prompt_memory_system_budget,

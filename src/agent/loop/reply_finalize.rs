@@ -27,6 +27,8 @@ pub(super) struct FinalizedTurn {
     pub(super) prompt_recall_intent: crate::memory::PromptRecallIntent,
     pub(super) runtime_skill_selected_ids: Vec<String>,
     pub(super) task_learning_selected_ids: Vec<String>,
+    pub(super) programmable_reasoning_intent:
+        Option<crate::agent::reasoning_intent::ProgrammableReasoningIntent>,
     pub(super) subject_state: Option<SubjectState>,
     pub(super) soul_feedback_projection: Option<SoulFeedbackProjection>,
     pub(super) mental_privacy_adjudication:
@@ -168,6 +170,7 @@ pub(super) fn finalize_turn(
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
+        programmable_reasoning_intent,
         subject_state,
         soul_feedback_projection,
         mental_privacy_adjudication,
@@ -313,6 +316,7 @@ pub(super) fn finalize_turn(
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
+        programmable_reasoning_intent,
         subject_state,
         soul_feedback_projection,
         mental_privacy_adjudication,
@@ -364,6 +368,7 @@ pub(super) fn complete_turn(
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
+        programmable_reasoning_intent,
         subject_state,
         mut soul_feedback_projection,
         mental_privacy_adjudication,
@@ -786,6 +791,20 @@ pub(super) fn complete_turn(
             .ok()
             .flatten()
             .and_then(|ledger| ledger.soul_feedback)
+    };
+    turn_ledger.reasoning_intent = if msg.ingress == IngressKind::User {
+        programmable_reasoning_intent
+            .as_ref()
+            .map(crate::agent::reasoning_intent::build_turn_reasoning_intent_ledger)
+    } else {
+        let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
+        config
+            .runtime
+            .turn_ledger_store
+            .get(&relationship_id)
+            .ok()
+            .flatten()
+            .and_then(|ledger| ledger.reasoning_intent)
     };
     super::turn_finalize::persist_turn_ledger(
         config.runtime.turn_ledger_store.as_ref(),
