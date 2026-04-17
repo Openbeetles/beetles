@@ -2,6 +2,7 @@
 //! Centralizes runtime tool visibility plus typed tool-demand mapping so the
 //! agent loop stays thin and request understanding stays outside prompt hacks.
 
+use super::adversarial_arena::render_adversarial_arena_guidance_block;
 use super::counterfactual::{render_counterfactual_guidance_block, CounterfactualAnalysis};
 use super::reasoning_intent::ProgrammableReasoningIntent;
 use super::reply_surface::ReplySurface;
@@ -28,6 +29,7 @@ pub(crate) struct AgentRequestPlan<'a> {
     strategy: super::strategy::AgentRunStrategy,
     programmable_reasoning_intent: Option<ProgrammableReasoningIntent>,
     counterfactual_analysis: Option<CounterfactualAnalysis>,
+    adversarial_arena_adjudication: Option<crate::reasoning::AdversarialArenaAdjudication>,
 }
 
 impl<'a> AgentRequestPlan<'a> {
@@ -58,6 +60,7 @@ impl<'a> AgentRequestPlan<'a> {
             strategy,
             programmable_reasoning_intent: None,
             counterfactual_analysis: None,
+            adversarial_arena_adjudication: None,
         }
     }
 
@@ -74,6 +77,14 @@ impl<'a> AgentRequestPlan<'a> {
         analysis: Option<&CounterfactualAnalysis>,
     ) -> Self {
         self.counterfactual_analysis = analysis.cloned();
+        self
+    }
+
+    pub(crate) fn with_adversarial_arena_adjudication(
+        mut self,
+        adjudication: Option<&crate::reasoning::AdversarialArenaAdjudication>,
+    ) -> Self {
+        self.adversarial_arena_adjudication = adjudication.cloned();
         self
     }
 
@@ -109,6 +120,11 @@ impl<'a> AgentRequestPlan<'a> {
     }
 
     fn requires_native_tool_first_round(&self, round: usize) -> bool {
+        if round == 0 {
+            if let Some(adjudication) = self.adversarial_arena_adjudication.as_ref() {
+                return adjudication.winner_requires_native_tool_round();
+            }
+        }
         if round == 0
             && self
                 .counterfactual_analysis
@@ -141,6 +157,18 @@ impl<'a> AgentRequestPlan<'a> {
     }
 
     pub(crate) fn apply_system_prompt(&self, system: &mut String, max_len: usize) {
+        if let Some(adversarial_arena) = self
+            .adversarial_arena_adjudication
+            .as_ref()
+            .and_then(|adjudication| render_adversarial_arena_guidance_block(adjudication, max_len))
+        {
+            let _ = crate::agent::context::append_capped_section(
+                system,
+                "\n\n",
+                &adversarial_arena,
+                max_len,
+            );
+        }
         if let Some(counterfactual) = self
             .counterfactual_analysis
             .as_ref()
@@ -183,6 +211,10 @@ mod tests {
     };
     use crate::agent::AgentRunStrategy;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
+    use crate::reasoning::{
+        AdversarialArenaAdjudication, AdversarialArenaClaim, AdversarialArenaDisposition,
+        AdversarialArenaRole, AdversarialArenaSubjectKind,
+    };
     use crate::tools::{Tool, ToolMetadata};
     use crate::Result;
 
@@ -749,5 +781,82 @@ mod tests {
         assert!(system.contains("## Counterfactual Sandbox"));
         assert!(system.contains("Selected branch: structured_tool_synthesis"));
         assert!(system.contains("Rejected: direct_reply"));
+    }
+
+    #[test]
+    fn adversarial_arena_can_override_counterfactual_tool_bias_and_append_guidance() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+        let msg = PcMsg::new_inbound(
+            "telegram",
+            "chat",
+            "继续配置邮箱，但如果信息不够先别乱配",
+            false,
+        )
+        .expect("pcmsg");
+        let plan = AgentRequestPlan::build(
+            &msg,
+            &registry,
+            &NativeLlm,
+            AgentRunStrategy::LinuxEnhanced,
+            semantics(EvidenceNeed::HostTool, ExecutionPreference::ToolFirst),
+        )
+        .with_counterfactual_analysis(Some(&CounterfactualAnalysis {
+            snapshot: CounterfactualTurnSnapshot::default(),
+            selected_branch: CounterfactualBranchProjection {
+                kind: CounterfactualBranchKind::StructuredToolSynthesis,
+                score: 94,
+                summary: "Collect live evidence, then synthesize one coherent action answer."
+                    .to_string(),
+                rationale: vec!["hard_reasoning".to_string()],
+                requires_native_tool_round: true,
+            },
+            alternatives: vec![CounterfactualBranchProjection {
+                kind: CounterfactualBranchKind::ClarifyBeforeAction,
+                score: 89,
+                summary: "Ask for the missing approval or parameter before acting.".to_string(),
+                rationale: vec!["explicit_blocker".to_string()],
+                requires_native_tool_round: false,
+            }],
+            summary: "Counterfactual still leans toward live synthesis.".to_string(),
+        }))
+        .with_adversarial_arena_adjudication(Some(&AdversarialArenaAdjudication {
+            subject_kind: AdversarialArenaSubjectKind::TurnStrategy,
+            disposition: AdversarialArenaDisposition::HoldForClarification,
+            summary: "Attacker blocked the live tool path because the missing blocker is more material than fresh evidence."
+                .to_string(),
+            defender: AdversarialArenaClaim {
+                role: AdversarialArenaRole::Defender,
+                label: "structured_tool_synthesis".to_string(),
+                summary: "Collect live evidence, then synthesize.".to_string(),
+                evidence_score: 84,
+                signals: vec!["host_tool".to_string()],
+                requires_native_tool_round: true,
+            },
+            attacker: AdversarialArenaClaim {
+                role: AdversarialArenaRole::Attacker,
+                label: "clarify_before_action".to_string(),
+                summary: "Ask for the missing blocker before acting.".to_string(),
+                evidence_score: 88,
+                signals: vec!["explicit_blocker".to_string()],
+                requires_native_tool_round: false,
+            },
+            winner: AdversarialArenaClaim {
+                role: AdversarialArenaRole::Attacker,
+                label: "clarify_before_action".to_string(),
+                summary: "Ask for the missing blocker before acting.".to_string(),
+                evidence_score: 88,
+                signals: vec!["explicit_blocker".to_string()],
+                requires_native_tool_round: false,
+            },
+        }));
+
+        let mut system = String::new();
+        plan.apply_system_prompt(&mut system, 4096);
+
+        assert_eq!(plan.tool_choice(0, false), ToolChoicePolicy::Auto);
+        assert!(system.contains("## Adversarial Arena"));
+        assert!(system.contains("Adjudication: hold_for_clarification"));
+        assert!(system.contains("Winner: clarify_before_action"));
     }
 }

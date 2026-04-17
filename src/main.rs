@@ -1733,6 +1733,15 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                             println!("{line}");
                         }
                     }
+                    if let Some(adversarial_arena) =
+                        ledger.adversarial_arena.as_ref().and_then(|arena| {
+                            beetle::memory::render_turn_adversarial_arena_ledger_block(arena, 320)
+                        })
+                    {
+                        for line in adversarial_arena.lines() {
+                            println!("{line}");
+                        }
+                    }
                 }
                 None => println!("Recent turn: none"),
             }

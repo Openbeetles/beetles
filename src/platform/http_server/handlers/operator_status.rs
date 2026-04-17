@@ -68,7 +68,7 @@ mod tests {
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("counterfactual_sandbox")
+            Some("adversarial_arena")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),
@@ -89,6 +89,12 @@ mod tests {
         assert!(parsed["programmable_reasoning"].get("timeline").is_some());
         assert!(parsed["programmable_reasoning"]["timeline"]
             .get("recent_events")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]
+            .get("adversarial_arena")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["adversarial_arena"]
+            .get("summary")
             .is_some());
         assert!(parsed["programmable_reasoning"]
             .get("maintenance_digest")

@@ -1,5 +1,6 @@
 //! Operator-visible programmable reasoning snapshot.
 
+use super::adversarial_arena::{adversarial_arena_snapshot, AdversarialArenaAuditSnapshot};
 use crate::reasoning::constitution::{
     programmable_reasoning_capability_taxonomy, programmable_reasoning_runtime_contract,
     ProgrammableReasoningCapabilityContract, ProgrammableReasoningRuntimeContract,
@@ -78,6 +79,7 @@ pub struct ProgrammableReasoningOperatorSnapshot {
     pub experience_crystals: ExperienceCrystalOperatorSummary,
     pub usage_analytics: ProgrammableReasoningUsageAnalytics,
     pub timeline: ProgrammableReasoningTimeline,
+    pub adversarial_arena: AdversarialArenaAuditSnapshot,
     pub maintenance_digest: ProgrammableReasoningMaintenanceDigest,
     pub operator_summary: String,
 }
@@ -103,6 +105,7 @@ fn programmable_reasoning_stage_label(stage: ProgrammableReasoningStage) -> &'st
         ProgrammableReasoningStage::EngineeringSynthesis => "engineering_synthesis",
         ProgrammableReasoningStage::IntentCompiler => "intent_compiler",
         ProgrammableReasoningStage::CounterfactualSandbox => "counterfactual_sandbox",
+        ProgrammableReasoningStage::AdversarialArena => "adversarial_arena",
     }
 }
 
@@ -110,7 +113,7 @@ pub fn summarize_programmable_reasoning_operator(
     snapshot: &ProgrammableReasoningOperatorSnapshot,
 ) -> String {
     format!(
-        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | recent_attempts={} attention={}",
+        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | recent_attempts={} arena_revised={} arena_hold={} attention={}",
         programmable_reasoning_stage_label(snapshot.stage),
         snapshot.runtime_contract.execution_backend,
         snapshot.runtime_contract.execution_enabled,
@@ -120,6 +123,8 @@ pub fn summarize_programmable_reasoning_operator(
         snapshot.experience_crystals.promoted_candidates,
         snapshot.experience_crystals.rejected_candidates,
         snapshot.usage_analytics.recent_total_attempts,
+        snapshot.adversarial_arena.summary.revised,
+        snapshot.adversarial_arena.summary.held_for_clarification,
         snapshot.maintenance_digest.attention_event_count,
     )
 }
@@ -140,6 +145,7 @@ pub fn programmable_reasoning_operator_snapshot(
         ),
         usage_analytics: ProgrammableReasoningUsageAnalytics::default(),
         timeline: ProgrammableReasoningTimeline::default(),
+        adversarial_arena: adversarial_arena_snapshot(12),
         maintenance_digest: ProgrammableReasoningMaintenanceDigest::default(),
         operator_summary: String::new(),
     };
@@ -161,15 +167,17 @@ pub fn programmable_reasoning_system_info_summary() -> ProgrammableReasoningSyst
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reasoning::adversarial_arena::{
+        adversarial_arena_test_guard, reset_adversarial_arena_for_tests,
+    };
 
     #[test]
-    fn operator_snapshot_reports_p10_contract() {
+    fn operator_snapshot_reports_p11_contract() {
+        let _guard = adversarial_arena_test_guard();
+        reset_adversarial_arena_for_tests();
         let snapshot =
             programmable_reasoning_operator_snapshot(&RuntimeSkillOperatorSummary::default(), None);
-        assert_eq!(
-            snapshot.stage,
-            ProgrammableReasoningStage::CounterfactualSandbox
-        );
+        assert_eq!(snapshot.stage, ProgrammableReasoningStage::AdversarialArena);
         assert_eq!(snapshot.capabilities.len(), 6);
         assert_eq!(snapshot.proposal_kinds.len(), 5);
         assert_eq!(
@@ -179,20 +187,17 @@ mod tests {
         assert_eq!(snapshot.usage_analytics.recent_total_attempts, 0);
         assert!(snapshot.usage_analytics.tool_counts.is_empty());
         assert!(snapshot.timeline.recent_events.is_empty());
+        assert_eq!(snapshot.adversarial_arena.summary.total_retained, 0);
+        assert!(snapshot.adversarial_arena.recent_events.is_empty());
         assert!(snapshot.maintenance_digest.status.is_empty());
-        assert!(snapshot
-            .operator_summary
-            .contains("counterfactual_sandbox |"));
+        assert!(snapshot.operator_summary.contains("adversarial_arena |"));
         assert!(snapshot.operator_summary.contains("recent_attempts=0"));
     }
 
     #[test]
     fn system_info_summary_stays_compact() {
         let summary = programmable_reasoning_system_info_summary();
-        assert_eq!(
-            summary.stage,
-            ProgrammableReasoningStage::CounterfactualSandbox
-        );
+        assert_eq!(summary.stage, ProgrammableReasoningStage::AdversarialArena);
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);
         assert!(summary.proposal_only_persistence);

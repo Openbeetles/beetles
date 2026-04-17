@@ -317,6 +317,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningStage::CounterfactualSandbox => {
                 "counterfactual_sandbox"
             }
+            crate::ProgrammableReasoningStage::AdversarialArena => "adversarial_arena",
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,
         match snapshot.programmable_reasoning.runtime_contract.execution_backend {

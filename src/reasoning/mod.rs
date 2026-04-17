@@ -1,5 +1,6 @@
 //! Linux programmable reasoning constitution and operator-visible contracts.
 
+mod adversarial_arena;
 mod constitution;
 mod engineering_distillation;
 mod experience_crystal;
@@ -16,6 +17,13 @@ mod runtime;
 mod state_machine;
 mod tool_request;
 
+pub use adversarial_arena::{
+    adversarial_arena_snapshot, append_adversarial_arena_event, AdversarialArenaAdjudication,
+    AdversarialArenaAuditSnapshot, AdversarialArenaAuditSummary, AdversarialArenaClaim,
+    AdversarialArenaDisposition, AdversarialArenaRole, AdversarialArenaSubjectKind,
+    AdversarialArenaTimelineEvent,
+};
+pub(crate) use adversarial_arena::{build_adversarial_arena_timeline_event, normalize_arena_claim};
 pub use constitution::{
     programmable_reasoning_capability_taxonomy, programmable_reasoning_runtime_contract,
     ProgrammableReasoningCapabilityContract, ProgrammableReasoningCapabilityKind,

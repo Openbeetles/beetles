@@ -31,6 +31,8 @@ pub(super) struct FinalizedTurn {
         Option<crate::agent::reasoning_intent::ProgrammableReasoningIntent>,
     pub(super) counterfactual_analysis:
         Option<crate::agent::counterfactual::CounterfactualAnalysis>,
+    pub(super) adversarial_arena_adjudication:
+        Option<crate::reasoning::AdversarialArenaAdjudication>,
     pub(super) subject_state: Option<SubjectState>,
     pub(super) soul_feedback_projection: Option<SoulFeedbackProjection>,
     pub(super) mental_privacy_adjudication:
@@ -174,6 +176,7 @@ pub(super) fn finalize_turn(
         task_learning_selected_ids,
         programmable_reasoning_intent,
         counterfactual_analysis,
+        adversarial_arena_adjudication,
         subject_state,
         soul_feedback_projection,
         mental_privacy_adjudication,
@@ -321,6 +324,7 @@ pub(super) fn finalize_turn(
         task_learning_selected_ids,
         programmable_reasoning_intent,
         counterfactual_analysis,
+        adversarial_arena_adjudication,
         subject_state,
         soul_feedback_projection,
         mental_privacy_adjudication,
@@ -374,6 +378,7 @@ pub(super) fn complete_turn(
         task_learning_selected_ids,
         programmable_reasoning_intent,
         counterfactual_analysis,
+        adversarial_arena_adjudication,
         subject_state,
         mut soul_feedback_projection,
         mental_privacy_adjudication,
@@ -825,12 +830,34 @@ pub(super) fn complete_turn(
             .flatten()
             .and_then(|ledger| ledger.counterfactual)
     };
+    turn_ledger.adversarial_arena = if msg.ingress == IngressKind::User {
+        adversarial_arena_adjudication
+            .as_ref()
+            .map(crate::agent::adversarial_arena::build_turn_adversarial_arena_ledger)
+    } else {
+        let relationship_id = crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id);
+        config
+            .runtime
+            .turn_ledger_store
+            .get(&relationship_id)
+            .ok()
+            .flatten()
+            .and_then(|ledger| ledger.adversarial_arena)
+    };
     super::turn_finalize::persist_turn_ledger(
         config.runtime.turn_ledger_store.as_ref(),
         &crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
         &turn_ledger,
         "finish",
     );
+    if let Some(adjudication) = adversarial_arena_adjudication.as_ref() {
+        crate::reasoning::append_adversarial_arena_event(
+            crate::agent::adversarial_arena::build_turn_adversarial_arena_timeline_event(
+                adjudication,
+                turn_ledger.finished_at_ms / 1000,
+            ),
+        );
+    }
     if msg.ingress == IngressKind::User {
         super::turn_finalize::sync_user_turn_relationship_topology(
             config,

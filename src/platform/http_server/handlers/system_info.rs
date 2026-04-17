@@ -191,7 +191,7 @@ mod tests {
         assert!(parsed["workflow"].get("executed").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("counterfactual_sandbox")
+            Some("adversarial_arena")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["execution_enabled"].as_bool(),

@@ -177,6 +177,7 @@ pub(super) fn execute_turn(
         soul_feedback_projection,
         programmable_reasoning_intent,
         counterfactual_analysis,
+        adversarial_arena_adjudication,
         system,
         mut messages,
         mut system_scratch,
@@ -199,7 +200,8 @@ pub(super) fn execute_turn(
     )?;
     let request_plan = request_plan
         .with_programmable_reasoning_intent(programmable_reasoning_intent.as_deref())
-        .with_counterfactual_analysis(counterfactual_analysis.as_deref());
+        .with_counterfactual_analysis(counterfactual_analysis.as_deref())
+        .with_adversarial_arena_adjudication(adversarial_arena_adjudication.as_deref());
     let reply_surface = request_plan.reply_surface();
     maybe_emit_regular_foreground_action_progress(
         &mut delivery,
@@ -681,6 +683,7 @@ pub(super) fn execute_turn(
             task_learning_selected_ids: runtime_carry.task_recall_selected_ids,
             programmable_reasoning_intent: programmable_reasoning_intent.map(|value| *value),
             counterfactual_analysis: counterfactual_analysis.map(|value| *value),
+            adversarial_arena_adjudication: adversarial_arena_adjudication.map(|value| *value),
             subject_state: subject_state.map(|value| *value),
             soul_feedback_projection: soul_feedback_projection.map(|value| *value),
             mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),

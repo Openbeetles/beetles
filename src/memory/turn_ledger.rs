@@ -342,6 +342,60 @@ impl TurnCounterfactualLedger {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnAdversarialArenaClaimLedger {
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub evidence_score: u8,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub signals: Vec<String>,
+    #[serde(default)]
+    pub requires_native_tool_round: bool,
+}
+
+impl TurnAdversarialArenaClaimLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.role.trim().is_empty()
+            || !self.label.trim().is_empty()
+            || self.evidence_score > 0
+            || !self.summary.trim().is_empty()
+            || !self.signals.is_empty()
+            || self.requires_native_tool_round
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnAdversarialArenaLedger {
+    #[serde(default)]
+    pub subject_kind: String,
+    #[serde(default)]
+    pub disposition: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub winner: TurnAdversarialArenaClaimLedger,
+    #[serde(default)]
+    pub defender: TurnAdversarialArenaClaimLedger,
+    #[serde(default)]
+    pub attacker: TurnAdversarialArenaClaimLedger,
+}
+
+impl TurnAdversarialArenaLedger {
+    pub fn is_meaningful(&self) -> bool {
+        !self.subject_kind.trim().is_empty()
+            || !self.disposition.trim().is_empty()
+            || !self.summary.trim().is_empty()
+            || self.winner.is_meaningful()
+            || self.defender.is_meaningful()
+            || self.attacker.is_meaningful()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnSubjectStateLedger {
     #[serde(default)]
     pub summary: String,
@@ -628,6 +682,8 @@ pub struct TurnLedger {
     pub reasoning_intent: Option<TurnReasoningIntentLedger>,
     #[serde(default)]
     pub counterfactual: Option<TurnCounterfactualLedger>,
+    #[serde(default)]
+    pub adversarial_arena: Option<TurnAdversarialArenaLedger>,
 }
 
 pub trait TurnLedgerStore: Send + Sync {
@@ -990,6 +1046,52 @@ pub fn render_turn_counterfactual_ledger_block(
     (!rendered.trim().is_empty()).then_some(rendered)
 }
 
+pub fn render_turn_adversarial_arena_ledger_block(
+    arena: &TurnAdversarialArenaLedger,
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 96 || !arena.is_meaningful() {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(640));
+    out.push_str("## Latest Adversarial Arena\n");
+    if !arena.subject_kind.trim().is_empty() {
+        let _ = writeln!(out, "Subject: {}", arena.subject_kind.trim());
+    }
+    if !arena.disposition.trim().is_empty() {
+        let _ = writeln!(out, "Disposition: {}", arena.disposition.trim());
+    }
+    if !arena.summary.trim().is_empty() {
+        let _ = writeln!(out, "Summary: {}", arena.summary.trim());
+    }
+    if arena.winner.is_meaningful() {
+        let _ = writeln!(
+            out,
+            "Winner: {} ({})",
+            arena.winner.label.trim(),
+            arena.winner.evidence_score
+        );
+    }
+    if arena.defender.is_meaningful() {
+        let _ = writeln!(
+            out,
+            "Defender: {} ({})",
+            arena.defender.label.trim(),
+            arena.defender.evidence_score
+        );
+    }
+    if arena.attacker.is_meaningful() {
+        let _ = writeln!(
+            out,
+            "Attacker: {} ({})",
+            arena.attacker.label.trim(),
+            arena.attacker.evidence_score
+        );
+    }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
 pub fn turn_ledger_observed_at_ms(ledger: &TurnLedger) -> u64 {
     if ledger.finished_at_ms > 0 {
         ledger.finished_at_ms
@@ -1196,5 +1298,48 @@ mod tests {
         assert!(rendered.contains("## Latest Counterfactual Sandbox"));
         assert!(rendered.contains("Selected: structured_tool_synthesis (94)"));
         assert!(rendered.contains("Rejected: direct_reply (34)"));
+    }
+
+    #[test]
+    fn render_turn_adversarial_arena_ledger_block_includes_winner_and_challenger() {
+        let rendered = render_turn_adversarial_arena_ledger_block(
+            &TurnAdversarialArenaLedger {
+                subject_kind: "turn_strategy".to_string(),
+                disposition: "hold_for_clarification".to_string(),
+                summary: "Attacker overturned the live action path because the blocker signal was stronger.".to_string(),
+                winner: TurnAdversarialArenaClaimLedger {
+                    role: "attacker".to_string(),
+                    label: "clarify_before_action".to_string(),
+                    evidence_score: 88,
+                    summary: "Ask for the missing blocker before acting.".to_string(),
+                    signals: vec!["explicit_blocker".to_string()],
+                    requires_native_tool_round: false,
+                },
+                defender: TurnAdversarialArenaClaimLedger {
+                    role: "defender".to_string(),
+                    label: "structured_tool_synthesis".to_string(),
+                    evidence_score: 84,
+                    summary: "Collect live evidence, then synthesize.".to_string(),
+                    signals: vec!["host_tool".to_string()],
+                    requires_native_tool_round: true,
+                },
+                attacker: TurnAdversarialArenaClaimLedger {
+                    role: "attacker".to_string(),
+                    label: "clarify_before_action".to_string(),
+                    evidence_score: 88,
+                    summary: "Ask for the missing blocker before acting.".to_string(),
+                    signals: vec!["explicit_blocker".to_string()],
+                    requires_native_tool_round: false,
+                },
+            },
+            420,
+        )
+        .expect("arena block");
+
+        assert!(rendered.contains("## Latest Adversarial Arena"));
+        assert!(rendered.contains("Disposition: hold_for_clarification"));
+        assert!(rendered.contains("Winner: clarify_before_action (88)"));
+        assert!(rendered.contains("Defender: structured_tool_synthesis (84)"));
+        assert!(rendered.contains("Attacker: clarify_before_action (88)"));
     }
 }

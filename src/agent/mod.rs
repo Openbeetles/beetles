@@ -2,6 +2,7 @@
 //! Agent: context build and ReAct loop; trait-only, no platform.
 
 mod active_work;
+mod adversarial_arena;
 mod context;
 mod counterfactual;
 mod deliberation;

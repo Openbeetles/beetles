@@ -625,7 +625,7 @@ mod tests {
 
     fn linux_runtime_contract() -> ProgrammableReasoningRuntimeContract {
         ProgrammableReasoningRuntimeContract {
-            stage: ProgrammableReasoningStage::CounterfactualSandbox,
+            stage: ProgrammableReasoningStage::AdversarialArena,
             linux_only: true,
             execution_backend: ProgrammableReasoningExecutionBackend::LuaSandbox,
             execution_enabled: true,
