@@ -2,13 +2,17 @@
 
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
-    build_search_snippet, contains_query_text, documents_search_match_kind,
-    documents_search_match_score, DocumentsEntry, DocumentsOperation, DocumentsProvider,
-    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
-    DocumentsSearchQuery, DOCUMENTS_SEARCH_MATCH_PATH, EMPTY_DOCUMENT_WARNING,
+    build_search_snippet, contains_query_text, documents_bounded_read_bytes,
+    documents_search_match_kind, documents_search_match_score, merge_document_warning,
+    DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
+    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
+    DOCUMENTS_SEARCH_MATCH_PATH, EMPTY_DOCUMENT_WARNING, PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
-use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
+use crate::office::{
+    read_bounded_http_bytes, OfficeAccount, OfficeHttpClient, OfficeProbeAdapter,
+    OfficeProbeDisposition, OfficeProbeResult,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -37,13 +41,14 @@ impl DocumentsProvider for FeishuDocumentsProvider {
 
     fn list_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        let client = FeishuDocumentsClient::new(credential)?;
+        let client = FeishuDocumentsClient::new(http, credential)?;
         let normalized_path = normalize_relative_path(&query.path);
-        let folder = client.resolve_folder(&normalized_path)?;
-        let mut entries = client.list_folder_entries(&folder.token, &folder.path)?;
+        let folder = client.resolve_folder(http, &normalized_path)?;
+        let mut entries = client.list_folder_entries(http, &folder.token, &folder.path)?;
         entries.sort_by(|left, right| {
             right
                 .is_dir
@@ -58,40 +63,46 @@ impl DocumentsProvider for FeishuDocumentsProvider {
 
     fn read_document(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        let client = FeishuDocumentsClient::new(credential)?;
-        let resolved = client.resolve_entry(path)?;
+        let client = FeishuDocumentsClient::new(http, credential)?;
+        let resolved = client.resolve_entry(http, path)?;
         if resolved.item.is_dir() {
             return Err(Error::config(
                 "feishu_documents_read",
                 format!("'{}' is a folder, not a document", resolved.path),
             ));
         }
-        let content = client.read_supported_document(&resolved.item)?;
-        let trimmed = normalize_document_text(&content);
+        let transport_limit = documents_bounded_read_bytes(max_chars);
+        let read = client.read_supported_document(http, &resolved.item, transport_limit)?;
+        let trimmed = normalize_document_text(&read.content);
         let (content, truncated) = truncate_chars(&trimmed, max_chars.max(1));
         Ok(DocumentsReadResult {
             entry: resolved.item.to_documents_entry(&resolved.parent_path),
             content,
-            truncated,
+            truncated: truncated || read.truncated,
             raw_bytes: trimmed.len(),
-            warning: trimmed
-                .is_empty()
-                .then(|| EMPTY_DOCUMENT_WARNING.to_string()),
+            warning: merge_document_warning(
+                trimmed
+                    .is_empty()
+                    .then(|| EMPTY_DOCUMENT_WARNING.to_string()),
+                read.truncated.then_some(PARTIAL_DOCUMENT_READ_WARNING),
+            ),
         })
     }
 
     fn search_documents(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        let client = FeishuDocumentsClient::new(credential)?;
+        let client = FeishuDocumentsClient::new(http, credential)?;
         let normalized_path = normalize_relative_path(&query.path);
-        let start_folder = client.resolve_folder(&normalized_path)?;
+        let start_folder = client.resolve_folder(http, &normalized_path)?;
         let mut queue = VecDeque::from([start_folder]);
         let mut hits = Vec::new();
         let mut scanned_entries = 0usize;
@@ -105,7 +116,7 @@ impl DocumentsProvider for FeishuDocumentsProvider {
             if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
                 break;
             }
-            let entries = client.list_folder_items(&folder.token)?;
+            let entries = client.list_folder_items(http, &folder.token)?;
             for item in entries {
                 let entry = item.to_documents_entry(&folder.path);
                 scanned_entries += 1;
@@ -133,19 +144,17 @@ impl DocumentsProvider for FeishuDocumentsProvider {
                 let mut content_match = None;
                 let mut warning = None;
                 if item.supports_raw_read() {
-                    let content = client.read_supported_document(&item)?;
-                    if content.len() > max_read_bytes {
-                        warning =
-                            Some("content not searched because the file is too large".to_string());
-                    } else {
-                        let normalized = normalize_document_text(&content);
-                        if contains_query_text(&normalized, &query.query, query.case_sensitive) {
-                            content_match = Some(build_search_snippet(
-                                &normalized,
-                                &query.query,
-                                query.case_sensitive,
-                            ));
-                        }
+                    let read = client.read_supported_document(http, &item, max_read_bytes)?;
+                    let normalized = normalize_document_text(&read.content);
+                    if contains_query_text(&normalized, &query.query, query.case_sensitive) {
+                        content_match = Some(build_search_snippet(
+                            &normalized,
+                            &query.query,
+                            query.case_sensitive,
+                        ));
+                    }
+                    if read.truncated {
+                        warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
                     }
                 }
 
@@ -187,6 +196,7 @@ impl OfficeProbeAdapter for FeishuDocumentsOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -211,8 +221,8 @@ impl OfficeProbeAdapter for FeishuDocumentsOfficeProbeAdapter {
                 reason: "documents_transport_config_missing".to_string(),
             });
         }
-        let client = FeishuDocumentsClient::new(&adapted)?;
-        client.list_folder_items(&adapted.root_path)?;
+        let client = FeishuDocumentsClient::new(http, &adapted)?;
+        client.list_folder_items(http, &adapted.root_path)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -229,6 +239,11 @@ struct FeishuDocumentsClient<'a> {
     tenant_access_token: String,
 }
 
+struct FeishuRawDocumentRead {
+    content: String,
+    truncated: bool,
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedFolder {
     token: String,
@@ -243,15 +258,22 @@ struct ResolvedEntry {
 }
 
 impl<'a> FeishuDocumentsClient<'a> {
-    fn new(credential: &'a DocumentsProviderCredential) -> Result<Self> {
+    fn new(
+        http: &mut dyn OfficeHttpClient,
+        credential: &'a DocumentsProviderCredential,
+    ) -> Result<Self> {
         validate_feishu_credential(credential)?;
         Ok(Self {
             credential,
-            tenant_access_token: fetch_tenant_access_token(credential)?,
+            tenant_access_token: fetch_tenant_access_token(http, credential)?,
         })
     }
 
-    fn resolve_folder(&self, path: &str) -> Result<ResolvedFolder> {
+    fn resolve_folder(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        path: &str,
+    ) -> Result<ResolvedFolder> {
         let normalized = normalize_relative_path(path);
         if normalized.is_empty() {
             return Ok(ResolvedFolder {
@@ -265,7 +287,7 @@ impl<'a> FeishuDocumentsClient<'a> {
         };
         for component in normalized.split('/') {
             let item = self
-                .list_folder_items(&current.token)?
+                .list_folder_items(http, &current.token)?
                 .into_iter()
                 .find(|item| item.is_dir() && item.name == component)
                 .ok_or_else(|| {
@@ -285,7 +307,7 @@ impl<'a> FeishuDocumentsClient<'a> {
         Ok(current)
     }
 
-    fn resolve_entry(&self, path: &str) -> Result<ResolvedEntry> {
+    fn resolve_entry(&self, http: &mut dyn OfficeHttpClient, path: &str) -> Result<ResolvedEntry> {
         let normalized = normalize_relative_path(path);
         if normalized.is_empty() {
             return Err(Error::config(
@@ -296,9 +318,9 @@ impl<'a> FeishuDocumentsClient<'a> {
         let mut segments = normalized.split('/').collect::<Vec<_>>();
         let leaf = segments.pop().unwrap_or_default();
         let parent_path = segments.join("/");
-        let folder = self.resolve_folder(&parent_path)?;
+        let folder = self.resolve_folder(http, &parent_path)?;
         let item = self
-            .list_folder_items(&folder.token)?
+            .list_folder_items(http, &folder.token)?
             .into_iter()
             .find(|item| item.name == leaf)
             .ok_or_else(|| {
@@ -316,22 +338,28 @@ impl<'a> FeishuDocumentsClient<'a> {
 
     fn list_folder_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         folder_token: &str,
         folder_path: &str,
     ) -> Result<Vec<DocumentsEntry>> {
         Ok(self
-            .list_folder_items(folder_token)?
+            .list_folder_items(http, folder_token)?
             .into_iter()
             .map(|item| item.to_documents_entry(folder_path))
             .collect())
     }
 
-    fn list_folder_items(&self, folder_token: &str) -> Result<Vec<FeishuDriveFile>> {
+    fn list_folder_items(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        folder_token: &str,
+    ) -> Result<Vec<FeishuDriveFile>> {
         let mut files = Vec::new();
         let mut next_page_token = None::<String>;
         loop {
             let data = self
                 .api_get::<FeishuDriveListResponse>(
+                    http,
                     "feishu_documents_list",
                     "/open-apis/drive/v1/files",
                     &[
@@ -352,9 +380,14 @@ impl<'a> FeishuDocumentsClient<'a> {
         Ok(files)
     }
 
-    fn read_supported_document(&self, item: &FeishuDriveFile) -> Result<String> {
+    fn read_supported_document(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        item: &FeishuDriveFile,
+        max_response_bytes: usize,
+    ) -> Result<FeishuRawDocumentRead> {
         match item.file_type.as_str() {
-            "docx" => self.read_docx_raw_content(&item.token),
+            "docx" => self.read_docx_raw_content(http, &item.token, max_response_bytes),
             other => Err(Error::config(
                 "feishu_documents_read",
                 format!("file type '{}' is not readable yet", other),
@@ -362,31 +395,62 @@ impl<'a> FeishuDocumentsClient<'a> {
         }
     }
 
-    fn read_docx_raw_content(&self, document_id: &str) -> Result<String> {
-        let data = self
-            .api_get::<FeishuDocxRawContentResponse>(
-                "feishu_documents_read",
-                &format!("/open-apis/docx/v1/documents/{document_id}/raw_content"),
-                &[],
-            )?
-            .require_data("feishu_documents_read")?;
-        Ok(data.content.unwrap_or_default())
+    fn read_docx_raw_content(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        document_id: &str,
+        max_response_bytes: usize,
+    ) -> Result<FeishuRawDocumentRead> {
+        let url = build_api_url(
+            &self.credential.base_url,
+            &format!("/open-apis/docx/v1/documents/{document_id}/raw_content"),
+            &[],
+        );
+        let auth = format!("Bearer {}", self.tenant_access_token);
+        let bounded = read_bounded_http_bytes(
+            http,
+            "feishu_documents_read",
+            &url,
+            &[("Authorization", auth.as_str())],
+            max_response_bytes.max(1),
+        )?;
+        let data: FeishuDocxRawContentResponse = serde_json::from_slice(&bounded.bytes).map_err(|error| {
+            if bounded.truncated {
+                Error::config(
+                    "feishu_documents_read",
+                    format!(
+                        "document exceeded bounded read budget of {} bytes; increase max_read_bytes to inspect more",
+                        max_response_bytes.max(1)
+                    ),
+                )
+            } else {
+                Error::config("feishu_documents_read", error.to_string())
+            }
+        })?;
+        let data = data.require_data("feishu_documents_read")?;
+        Ok(FeishuRawDocumentRead {
+            content: data.content.unwrap_or_default(),
+            truncated: bounded.truncated,
+        })
     }
 
     fn api_get<T: DeserializeOwned>(
         &self,
+        http: &mut dyn OfficeHttpClient,
         stage: &'static str,
         path: &str,
         params: &[(&str, String)],
     ) -> Result<T> {
         let url = build_api_url(&self.credential.base_url, path, params);
-        let response = ureq::get(&url)
-            .set(
-                "Authorization",
-                &format!("Bearer {}", self.tenant_access_token),
-            )
-            .call();
-        read_json_response(stage, response)
+        let auth = format!("Bearer {}", self.tenant_access_token);
+        request_feishu_json(
+            http,
+            stage,
+            "GET",
+            &url,
+            &[("Authorization", auth.as_str())],
+            None,
+        )
     }
 }
 
@@ -513,7 +577,10 @@ fn validate_feishu_credential(credential: &DocumentsProviderCredential) -> Resul
     Ok(())
 }
 
-fn fetch_tenant_access_token(credential: &DocumentsProviderCredential) -> Result<String> {
+fn fetch_tenant_access_token(
+    http: &mut dyn OfficeHttpClient,
+    credential: &DocumentsProviderCredential,
+) -> Result<String> {
     let url = format!(
         "{}/open-apis/auth/v3/tenant_access_token/internal",
         credential.base_url.trim_end_matches('/')
@@ -523,10 +590,14 @@ fn fetch_tenant_access_token(credential: &DocumentsProviderCredential) -> Result
         app_secret: credential.secret.as_str(),
     })
     .map_err(|error| Error::config("feishu_documents_auth", error.to_string()))?;
-    let response = ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&body);
-    let payload: FeishuTokenResponse = read_json_response("feishu_documents_auth", response)?;
+    let payload: FeishuTokenResponse = request_feishu_json(
+        http,
+        "feishu_documents_auth",
+        "POST",
+        &url,
+        &[("Content-Type", "application/json")],
+        Some(body.as_bytes()),
+    )?;
     if payload.code != 0 {
         return Err(Error::config(
             "feishu_documents_auth",
@@ -546,19 +617,20 @@ fn fetch_tenant_access_token(credential: &DocumentsProviderCredential) -> Result
     Ok(payload.tenant_access_token)
 }
 
-fn read_json_response<T: DeserializeOwned>(
+fn request_feishu_json<T: DeserializeOwned>(
+    http: &mut dyn OfficeHttpClient,
     stage: &'static str,
-    response: std::result::Result<ureq::Response, ureq::Error>,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
 ) -> Result<T> {
-    let response = match response {
-        Ok(response) => response,
-        Err(ureq::Error::Status(status, _)) => return Err(Error::http(stage, status)),
-        Err(error) => return Err(Error::config(stage, error.to_string())),
-    };
-    let body = response
-        .into_string()
-        .map_err(|error| Error::config(stage, error.to_string()))?;
-    serde_json::from_str(&body).map_err(|error| Error::config(stage, error.to_string()))
+    let (status, response_body) = http.request_with_headers(method, url, headers, body)?;
+    if !(200..300).contains(&status) {
+        return Err(Error::http(stage, status));
+    }
+    serde_json::from_slice(response_body.as_slice())
+        .map_err(|error| Error::config(stage, error.to_string()))
 }
 
 fn build_api_url(base_url: &str, path: &str, params: &[(&str, String)]) -> String {
@@ -716,9 +788,11 @@ mod tests {
         let (base_url, handle) = spawn_feishu_stub_server();
         let provider = FeishuDocumentsProvider;
         let credential = credential(&base_url);
+        let mut http = crate::platform::EspHttpClient::new().expect("http client");
 
         let entries = provider
             .list_entries(
+                &mut http,
                 &credential,
                 DocumentsQuery {
                     path: String::new(),
@@ -731,13 +805,14 @@ mod tests {
         assert_eq!(entries[1].kind, "docx");
 
         let document = provider
-            .read_document(&credential, "Quarterly Plan", 10_000)
+            .read_document(&mut http, &credential, "Quarterly Plan", 10_000)
             .expect("read docx content");
         assert!(document.content.contains("Quarterly plan summary"));
         assert_eq!(document.entry.kind, "docx");
 
         let hits = provider
             .search_documents(
+                &mut http,
                 &credential,
                 DocumentsSearchQuery {
                     path: String::new(),

@@ -235,6 +235,14 @@ impl ToolRegistry {
         if let Some(blocker) = self.runtime_capability_blocker(name) {
             return Err(runtime_capability_error(name, &blocker));
         }
+        let shape = tool.execution_shape(args)?;
+        enforce_direct_execution_governance(
+            self.tools
+                .get(name)
+                .map(|entry| entry.metadata)
+                .unwrap_or_else(|| tool.metadata()),
+            &shape,
+        )?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
         if outcome.failure_kind.is_none() {
@@ -672,6 +680,23 @@ fn last_record_for_tool<'a>(
         .find(|record| record.tool_name == tool_name)
 }
 
+fn enforce_direct_execution_governance(
+    metadata: ToolMetadata,
+    shape: &crate::tools::ToolExecutionShape,
+) -> Result<()> {
+    if matches!(
+        metadata.exposure,
+        crate::tools::ToolExposure::Admin | crate::tools::ToolExposure::Debug
+    ) || matches!(shape.approval_mode, ToolApprovalMode::OperatorOnly)
+    {
+        return Err(Error::config("tool_execute", "operator_only_tool"));
+    }
+    if matches!(shape.approval_mode, ToolApprovalMode::ExplicitIntent) && !shape.approval_granted {
+        return Err(Error::config("tool_execute", "explicit_intent_required"));
+    }
+    Ok(())
+}
+
 /// 构建包含所有内置工具的注册表。`platform` 用于 `board_info` 等依赖平台能力的工具。
 /// Returns `(registry, Option<baidu_token_cache>)` — the cache is shared with voice_session.
 #[cold]
@@ -1084,6 +1109,10 @@ fn register_host_only_tools(
     registry.register(Box::new(super::LuaToolBridgeTool::default()));
     #[cfg(target_os = "linux")]
     registry.register(Box::new(super::CapabilityAtomsExchangeTool::new(
+        Arc::clone(skill_storage),
+    )));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::CapabilityAtomsInspectTool::new(
         Arc::clone(skill_storage),
     )));
 }
@@ -1737,9 +1766,13 @@ mod tests {
         let skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync> =
             Arc::new(StubSkillStorage::default());
         registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
+            Arc::clone(&skill_storage),
+        )));
+        registry.register(Box::new(crate::tools::CapabilityAtomsInspectTool::new(
             skill_storage,
         )));
         assert!(registry.get("capability_atoms_exchange").is_some());
+        assert!(registry.get("capability_atoms_inspect").is_some());
     }
 
     #[cfg(feature = "capability_office")]
@@ -1865,6 +1898,9 @@ mod tests {
         registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
             Arc::clone(&skill_storage),
         )));
+        registry.register(Box::new(crate::tools::CapabilityAtomsInspectTool::new(
+            skill_storage,
+        )));
         let catalog_entry = registry
             .tool_catalog()
             .expect("tool catalog")
@@ -1877,6 +1913,19 @@ mod tests {
         assert!(catalog_entry.llm_visible_user);
         assert!(!catalog_entry.llm_visible_system);
         assert!(!catalog_entry.llm_visible_internal_system);
+
+        let inspect_catalog_entry = registry
+            .tool_catalog()
+            .expect("tool catalog")
+            .into_iter()
+            .find(|entry| entry.name == "capability_atoms_inspect")
+            .expect("capability_atoms_inspect catalog entry");
+        assert_eq!(inspect_catalog_entry.effect_class, "read_only");
+        assert_eq!(inspect_catalog_entry.risk_level, "low");
+        assert_eq!(inspect_catalog_entry.approval_mode, "automatic");
+        assert!(inspect_catalog_entry.llm_visible_user);
+        assert!(inspect_catalog_entry.llm_visible_system);
+        assert!(!inspect_catalog_entry.llm_visible_internal_system);
 
         let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
         let user_bridge_entry = registry
@@ -1893,6 +1942,20 @@ mod tests {
             crate::tools::ToolApprovalMode::ExplicitIntent
         );
 
+        let inspect_bridge_entry = registry
+            .tool_bridge_catalog_for_policy(&user)
+            .into_iter()
+            .find(|entry| entry.name == "capability_atoms_inspect")
+            .expect("capability_atoms_inspect bridge entry");
+        assert_eq!(
+            inspect_bridge_entry.effect_class,
+            crate::tools::ToolEffectClass::ReadOnly
+        );
+        assert_eq!(
+            inspect_bridge_entry.approval_mode,
+            crate::tools::ToolApprovalMode::Automatic
+        );
+
         let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
         let system_names = registry
             .tool_bridge_catalog_for_policy(&system)
@@ -1902,6 +1965,9 @@ mod tests {
         assert!(!system_names
             .iter()
             .any(|name| name == "capability_atoms_exchange"));
+        assert!(system_names
+            .iter()
+            .any(|name| name == "capability_atoms_inspect"));
     }
 
     #[test]
@@ -1944,6 +2010,26 @@ mod tests {
             crate::tools::ToolApprovalMode::ExplicitIntent
         );
         assert!(permit.shape().approval_granted);
+    }
+
+    #[test]
+    fn registry_execute_denies_unconfirmed_explicit_intent_tool() {
+        let mut registry = ToolRegistry::new();
+        let skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync> =
+            Arc::new(StubSkillStorage::default());
+        registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
+            skill_storage,
+        )));
+        let mut ctx = StubToolContext;
+
+        let error = registry
+            .execute(
+                "capability_atoms_exchange",
+                r#"{"op":"export","atom_name":"demo"}"#,
+                &mut ctx,
+            )
+            .expect_err("unconfirmed exchange must fail");
+        assert!(error.to_string().contains("explicit_intent_required"));
     }
 
     #[test]

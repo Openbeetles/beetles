@@ -3,6 +3,7 @@ use crate::documents::{
     DocumentsSearchHit, DocumentsSearchQuery,
 };
 use crate::error::Result;
+use crate::office::OfficeHttpClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,17 +20,20 @@ pub trait DocumentsProvider: Send + Sync {
     fn supports(&self, op: DocumentsOperation) -> bool;
     fn list_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>>;
     fn read_document(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult>;
     fn search_documents(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>>;

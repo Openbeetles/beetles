@@ -3,20 +3,21 @@
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, documents_search_match_kind, documents_search_match_score,
-    DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
-    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
-    DOCUMENTS_SEARCH_MATCH_PATH,
+    decode_searchable_document_text, documents_bounded_read_bytes, documents_search_match_kind,
+    documents_search_match_score, merge_document_warning, DocumentsEntry, DocumentsOperation,
+    DocumentsProvider, DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult,
+    DocumentsSearchHit, DocumentsSearchQuery, DOCUMENTS_SEARCH_MATCH_PATH,
+    PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    fetch_wecom_access_token_ureq, request_wecom_json_ureq, OfficeAccount, OfficeProbeAdapter,
-    OfficeProbeDisposition, OfficeProbeResult, WecomApiEnvelope, WecomAuthCredential,
+    fetch_wecom_access_token, read_bounded_http_bytes, request_wecom_json, OfficeAccount,
+    OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+    WecomApiEnvelope, WecomAuthCredential,
 };
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::VecDeque;
-use std::io::Read;
 
 const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
 const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
@@ -42,12 +43,13 @@ impl DocumentsProvider for WecomDocumentsProvider {
 
     fn list_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        let client = WecomDocumentsClient::new(credential)?;
-        let folder = client.resolve_folder(&normalize_relative_path(&query.path))?;
-        let mut entries = client.list_folder_entries(&folder.file_id, &folder.path)?;
+        let client = WecomDocumentsClient::new(http, credential)?;
+        let folder = client.resolve_folder(http, &normalize_relative_path(&query.path))?;
+        let mut entries = client.list_folder_entries(http, &folder.file_id, &folder.path)?;
         entries.sort_by(|left, right| {
             right
                 .is_dir
@@ -62,41 +64,47 @@ impl DocumentsProvider for WecomDocumentsProvider {
 
     fn read_document(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        let client = WecomDocumentsClient::new(credential)?;
-        let resolved = client.resolve_entry(path)?;
+        let client = WecomDocumentsClient::new(http, credential)?;
+        let resolved = client.resolve_entry(http, path)?;
         if resolved.item.is_dir() {
             return Err(Error::config(
                 "wecom_documents_read",
                 format!("'{}' is a folder, not a document", resolved.path),
             ));
         }
-        let raw = client.download_file(&resolved.item)?;
+        let transport_limit = documents_bounded_read_bytes(max_chars);
+        let raw = client.download_file(http, &resolved.item, transport_limit)?;
         let decoded = decode_readable_document(
             &resolved.path,
-            &raw,
+            &raw.bytes,
             max_chars.max(1),
             "wecom_documents_read",
         )?;
         Ok(DocumentsReadResult {
             entry: resolved.item.to_documents_entry(&resolved.parent_path),
             content: decoded.content,
-            truncated: decoded.truncated,
+            truncated: decoded.truncated || raw.truncated,
             raw_bytes: decoded.raw_bytes,
-            warning: decoded.warning,
+            warning: merge_document_warning(
+                decoded.warning,
+                raw.truncated.then_some(PARTIAL_DOCUMENT_READ_WARNING),
+            ),
         })
     }
 
     fn search_documents(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        let client = WecomDocumentsClient::new(credential)?;
-        let start_folder = client.resolve_folder(&normalize_relative_path(&query.path))?;
+        let client = WecomDocumentsClient::new(http, credential)?;
+        let start_folder = client.resolve_folder(http, &normalize_relative_path(&query.path))?;
         let mut queue = VecDeque::from([start_folder]);
         let mut hits = Vec::new();
         let mut scanned_entries = 0usize;
@@ -110,7 +118,7 @@ impl DocumentsProvider for WecomDocumentsProvider {
             if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
                 break;
             }
-            let items = client.list_folder_items(&folder.file_id)?;
+            let items = client.list_folder_items(http, &folder.file_id)?;
             for item in items {
                 let entry = item.to_documents_entry(&folder.path);
                 scanned_entries += 1;
@@ -137,9 +145,13 @@ impl DocumentsProvider for WecomDocumentsProvider {
 
                 let mut content_match = None;
                 let mut warning = None;
-                if item.size_bytes() as usize <= max_read_bytes {
-                    let raw = client.download_file(&item)?;
-                    if let Some(text) = decode_searchable_document_text(&entry.path, &raw) {
+                if item
+                    .size_bytes()
+                    .map(|size| size as usize <= max_read_bytes)
+                    .unwrap_or(true)
+                {
+                    let raw = client.download_file(http, &item, max_read_bytes)?;
+                    if let Some(text) = decode_searchable_document_text(&entry.path, &raw.bytes) {
                         if contains_query_text(&text, &query.query, query.case_sensitive) {
                             content_match = Some(build_search_snippet(
                                 &text,
@@ -147,6 +159,9 @@ impl DocumentsProvider for WecomDocumentsProvider {
                                 query.case_sensitive,
                             ));
                         }
+                    }
+                    if raw.truncated {
+                        warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
                     }
                 } else {
                     warning =
@@ -191,6 +206,7 @@ impl OfficeProbeAdapter for WecomDocumentsOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -215,8 +231,8 @@ impl OfficeProbeAdapter for WecomDocumentsOfficeProbeAdapter {
                 reason: "documents_transport_config_missing".to_string(),
             });
         }
-        let client = WecomDocumentsClient::new(&adapted)?;
-        client.list_folder_items(&adapted.root_path)?;
+        let client = WecomDocumentsClient::new(http, &adapted)?;
+        client.list_folder_items(http, &adapted.root_path)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -247,9 +263,13 @@ struct ResolvedEntry {
 }
 
 impl<'a> WecomDocumentsClient<'a> {
-    fn new(credential: &'a DocumentsProviderCredential) -> Result<Self> {
+    fn new(
+        http: &mut dyn OfficeHttpClient,
+        credential: &'a DocumentsProviderCredential,
+    ) -> Result<Self> {
         validate_wecom_documents_credential(credential)?;
-        let access_token = fetch_wecom_access_token_ureq(
+        let access_token = fetch_wecom_access_token(
+            http,
             "wecom_documents_auth",
             WecomAuthCredential {
                 corp_id: credential.app_id.as_str(),
@@ -263,7 +283,11 @@ impl<'a> WecomDocumentsClient<'a> {
         })
     }
 
-    fn resolve_folder(&self, path: &str) -> Result<ResolvedFolder> {
+    fn resolve_folder(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        path: &str,
+    ) -> Result<ResolvedFolder> {
         let normalized = normalize_relative_path(path);
         if normalized.is_empty() {
             return Ok(ResolvedFolder {
@@ -277,7 +301,7 @@ impl<'a> WecomDocumentsClient<'a> {
         };
         for component in normalized.split('/') {
             let item = self
-                .list_folder_items(&current.file_id)?
+                .list_folder_items(http, &current.file_id)?
                 .into_iter()
                 .find(|item| item.is_dir() && item.file_name == component)
                 .ok_or_else(|| {
@@ -297,7 +321,7 @@ impl<'a> WecomDocumentsClient<'a> {
         Ok(current)
     }
 
-    fn resolve_entry(&self, path: &str) -> Result<ResolvedEntry> {
+    fn resolve_entry(&self, http: &mut dyn OfficeHttpClient, path: &str) -> Result<ResolvedEntry> {
         let normalized = normalize_relative_path(path);
         if normalized.is_empty() {
             return Err(Error::config(
@@ -308,9 +332,9 @@ impl<'a> WecomDocumentsClient<'a> {
         let mut segments = normalized.split('/').collect::<Vec<_>>();
         let leaf = segments.pop().unwrap_or_default();
         let parent_path = segments.join("/");
-        let folder = self.resolve_folder(&parent_path)?;
+        let folder = self.resolve_folder(http, &parent_path)?;
         let item = self
-            .list_folder_items(&folder.file_id)?
+            .list_folder_items(http, &folder.file_id)?
             .into_iter()
             .find(|item| item.file_name == leaf)
             .ok_or_else(|| {
@@ -328,33 +352,39 @@ impl<'a> WecomDocumentsClient<'a> {
 
     fn list_folder_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         folder_id: &str,
         parent_path: &str,
     ) -> Result<Vec<DocumentsEntry>> {
-        self.list_folder_items(folder_id)?
+        self.list_folder_items(http, folder_id)?
             .into_iter()
             .map(|item| Ok(item.to_documents_entry(parent_path)))
             .collect()
     }
 
-    fn list_folder_items(&self, folder_id: &str) -> Result<Vec<WecomDriveFile>> {
+    fn list_folder_items(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        folder_id: &str,
+    ) -> Result<Vec<WecomDriveFile>> {
         let mut start = 0usize;
         let mut out = Vec::new();
         loop {
-            let payload: WecomApiEnvelope<WecomFileListPayload> = request_wecom_json_ureq(
+            let body = json!({
+                "spaceid": self.credential.space_id,
+                "fatherid": folder_id,
+                "sort_type": 1,
+                "start": start,
+                "limit": WECOM_LIST_LIMIT
+            })
+            .to_string();
+            let payload: WecomApiEnvelope<WecomFileListPayload> = request_wecom_json(
+                http,
                 "wecom_documents_list",
-                ureq::post(&self.endpoint("/cgi-bin/wedrive/file_list"))
-                    .set("Content-Type", "application/json")
-                    .send_string(
-                        &json!({
-                            "spaceid": self.credential.space_id,
-                            "fatherid": folder_id,
-                            "sort_type": 1,
-                            "start": start,
-                            "limit": WECOM_LIST_LIMIT
-                        })
-                        .to_string(),
-                    ),
+                "POST",
+                &self.endpoint("/cgi-bin/wedrive/file_list"),
+                &[("Content-Type", "application/json")],
+                Some(body.as_bytes()),
             )?;
             let data = payload.require_ok("wecom_documents_list")?;
             out.extend(data.file_list.item);
@@ -372,18 +402,24 @@ impl<'a> WecomDocumentsClient<'a> {
         Ok(out)
     }
 
-    fn download_file(&self, item: &WecomDriveFile) -> Result<Vec<u8>> {
-        let payload: WecomApiEnvelope<WecomFileDownloadPayload> = request_wecom_json_ureq(
+    fn download_file(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        item: &WecomDriveFile,
+        max_read_bytes: usize,
+    ) -> Result<crate::office::OfficeBoundedBytes> {
+        let body = json!({
+            "spaceid": self.credential.space_id,
+            "fileid": item.file_id,
+        })
+        .to_string();
+        let payload: WecomApiEnvelope<WecomFileDownloadPayload> = request_wecom_json(
+            http,
             "wecom_documents_download",
-            ureq::post(&self.endpoint("/cgi-bin/wedrive/file_download"))
-                .set("Content-Type", "application/json")
-                .send_string(
-                    &json!({
-                        "spaceid": self.credential.space_id,
-                        "fileid": item.file_id,
-                    })
-                    .to_string(),
-                ),
+            "POST",
+            &self.endpoint("/cgi-bin/wedrive/file_download"),
+            &[("Content-Type", "application/json")],
+            Some(body.as_bytes()),
         )?;
         let data = payload.require_ok("wecom_documents_download")?;
         if data.download_url.trim().is_empty() {
@@ -392,28 +428,14 @@ impl<'a> WecomDocumentsClient<'a> {
                 "missing download_url",
             ));
         }
-        let response = ureq::get(&data.download_url)
-            .set(
-                "Cookie",
-                &format!("{}={}", data.cookie_name.trim(), data.cookie_value.trim()),
-            )
-            .call();
-        let response = match response {
-            Ok(response) => response,
-            Err(ureq::Error::Status(status, _)) => {
-                return Err(Error::config(
-                    "wecom_documents_download",
-                    format!("download failed with status {}", status),
-                ))
-            }
-            Err(error) => return Err(Error::config("wecom_documents_download", error.to_string())),
-        };
-        let mut reader = response.into_reader();
-        let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
-            .map_err(|error| Error::config("wecom_documents_download", error.to_string()))?;
-        Ok(bytes)
+        let cookie = format!("{}={}", data.cookie_name.trim(), data.cookie_value.trim());
+        read_bounded_http_bytes(
+            http,
+            "wecom_documents_download",
+            &data.download_url,
+            &[("Cookie", cookie.as_str())],
+            max_read_bytes.max(1),
+        )
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -459,8 +481,13 @@ impl WecomDriveFile {
         self.file_type.eq_ignore_ascii_case("folder")
     }
 
-    fn size_bytes(&self) -> u64 {
-        self.file_size.parse::<u64>().unwrap_or(0)
+    fn size_bytes(&self) -> Option<u64> {
+        let trimmed = self.file_size.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse::<u64>().ok()
+        }
     }
 
     fn kind(&self) -> String {
@@ -483,7 +510,7 @@ impl WecomDriveFile {
             kind: self.kind(),
             is_dir: self.is_dir(),
             content_type: None,
-            size_bytes: (!self.is_dir()).then_some(self.size_bytes()),
+            size_bytes: (!self.is_dir()).then(|| self.size_bytes()).flatten(),
         }
     }
 }
@@ -669,9 +696,11 @@ mod tests {
         let (base_url, handle) = spawn_wecom_stub_server();
         let provider = WecomDocumentsProvider;
         let credential = credential(&base_url);
+        let mut http = crate::platform::EspHttpClient::new().expect("http client");
 
         let entries = provider
             .list_entries(
+                &mut http,
                 &credential,
                 DocumentsQuery {
                     path: String::new(),
@@ -683,13 +712,14 @@ mod tests {
         assert_eq!(entries[1].path, "Quarterly Plan.txt");
 
         let document = provider
-            .read_document(&credential, "Quarterly Plan.txt", 10_000)
+            .read_document(&mut http, &credential, "Quarterly Plan.txt", 10_000)
             .expect("read document");
         assert!(document.content.contains("Quarterly plan summary"));
         assert_eq!(document.entry.kind, "txt");
 
         let hits = provider
             .search_documents(
+                &mut http,
                 &credential,
                 DocumentsSearchQuery {
                     path: String::new(),

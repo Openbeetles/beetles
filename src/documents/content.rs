@@ -3,6 +3,10 @@ use crate::error::{Error, Result};
 use std::collections::HashSet;
 
 pub const EMPTY_DOCUMENT_WARNING: &str = "document is empty or contains no readable text";
+pub const PARTIAL_DOCUMENT_READ_WARNING: &str =
+    "document content was read through a bounded transport window and may be incomplete";
+const MIN_BOUNDED_REMOTE_READ_BYTES: usize = 16 * 1024;
+const MAX_BOUNDED_REMOTE_READ_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedReadableDocument {
@@ -85,6 +89,31 @@ pub fn decode_searchable_document_text(source: &str, raw: &[u8]) -> Option<Strin
     };
     let normalized = normalize_text(&content);
     (!normalized.is_empty()).then_some(normalized)
+}
+
+pub fn documents_bounded_read_bytes(max_chars: usize) -> usize {
+    max_chars
+        .max(1)
+        .saturating_mul(8)
+        .clamp(MIN_BOUNDED_REMOTE_READ_BYTES, MAX_BOUNDED_REMOTE_READ_BYTES)
+}
+
+pub fn merge_document_warning(
+    primary: Option<String>,
+    secondary: Option<&'static str>,
+) -> Option<String> {
+    match (primary, secondary) {
+        (Some(primary), Some(secondary)) if !primary.is_empty() => {
+            if primary == secondary {
+                Some(primary)
+            } else {
+                Some(format!("{primary}; {secondary}"))
+            }
+        }
+        (Some(primary), _) if !primary.is_empty() => Some(primary),
+        (None, Some(secondary)) => Some(secondary.to_string()),
+        _ => None,
+    }
 }
 
 pub fn detect_document_kind(source: &str, raw: &[u8]) -> &'static str {

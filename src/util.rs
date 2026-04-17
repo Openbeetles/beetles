@@ -1216,6 +1216,14 @@ where
     spawn_res
 }
 
+/// 统一 transport HTTP permit facade，供非低层业务域通过批准 owner 请求网络 admission。
+pub fn request_transport_http_permit(
+    priority: crate::orchestrator::Priority,
+    timeout: std::time::Duration,
+) -> crate::Result<crate::orchestrator::HttpPermitGuard> {
+    crate::orchestrator::request_http_permit(priority, timeout)
+}
+
 #[cfg(test)]
 mod scrub_credentials_tests {
     use super::*;

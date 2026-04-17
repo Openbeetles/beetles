@@ -13,6 +13,7 @@ use crate::office::{
     OfficeAuthoritySource, OfficeCapability, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    http_bridge::ToolContextHttpClient,
     office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
@@ -226,7 +227,8 @@ impl MailTool {
         })
     }
 
-    fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+    fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+        let mut http = ToolContextHttpClient::new(ctx);
         let obj = parse_tool_args(args, "tool_mail")?;
         let op = obj
             .get("op")
@@ -281,7 +283,8 @@ impl MailTool {
                         )
                     }
                 };
-                let items = match self.service.list_with_identity(
+                let items = match self.service.list_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     preferred_identity_class,
@@ -342,7 +345,8 @@ impl MailTool {
                 if query.is_empty() {
                     return Err(Error::config("tool_mail", "query must not be empty"));
                 }
-                let items = match self.service.search_with_identity(
+                let items = match self.service.search_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     preferred_identity_class,
@@ -402,7 +406,8 @@ impl MailTool {
                     }
                 };
                 let id = required_str(&obj, "id")?;
-                let message = match self.service.get_with_identity(
+                let message = match self.service.get_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     preferred_identity_class,
@@ -481,7 +486,8 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.send_with_identity(
+                let message = match self.service.send_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -566,7 +572,8 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.draft_with_identity(
+                let message = match self.service.draft_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -637,7 +644,8 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.reply_with_identity(
+                let message = match self.service.reply_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -715,7 +723,8 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.forward_with_identity(
+                let message = match self.service.forward_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -1436,6 +1445,7 @@ mod tests {
 
         fn list_messages(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &MailProviderCredential,
             query: MailQuery,
         ) -> Result<Vec<MailMessageSummary>> {
@@ -1459,6 +1469,7 @@ mod tests {
 
         fn search_messages(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &MailProviderCredential,
             query: MailSearchQuery,
         ) -> Result<Vec<MailMessageSummary>> {
@@ -1482,6 +1493,7 @@ mod tests {
 
         fn get_message(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &MailProviderCredential,
             id: &str,
         ) -> Result<Option<MailMessage>> {
@@ -1507,6 +1519,7 @@ mod tests {
 
         fn send_message(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &MailProviderCredential,
             request: &MailSendRequest,
         ) -> Result<MailMessageSummary> {
@@ -1530,6 +1543,7 @@ mod tests {
 
         fn draft_message(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &MailProviderCredential,
             request: &MailSendRequest,
         ) -> Result<MailMessageSummary> {
@@ -2126,6 +2140,7 @@ mod tests {
 
         fn lookup_contacts(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &ContactsDirectoryProviderCredential,
             _query: &str,
             _limit: usize,

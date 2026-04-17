@@ -2,6 +2,7 @@ use super::deliberation::TurnDeliberationGate;
 use super::request_semantics::{ActionFamily, EvidenceNeed, ExecutionPreference, RequestSemantics};
 use super::strategy::AgentRunStrategy;
 use crate::memory::TurnReasoningIntentLedger;
+use crate::tools::TOOL_CAPABILITY_ATOMS_INSPECT;
 use crate::util::truncate_content_to_max;
 use crate::ProgrammableReasoningRuntimeContract;
 
@@ -400,7 +401,7 @@ fn intent_preferred_tools(kind: ProgrammableReasoningIntentKind) -> Vec<String> 
         ProgrammableReasoningIntentKind::MemoryQuery => vec!["lua_memory_query".to_string()],
         ProgrammableReasoningIntentKind::CapabilityBridge => vec!["lua_tool_bridge".to_string()],
         ProgrammableReasoningIntentKind::CapabilityAtomsExchange => {
-            vec!["capability_atoms_exchange".to_string()]
+            vec![TOOL_CAPABILITY_ATOMS_INSPECT.to_string()]
         }
         ProgrammableReasoningIntentKind::EngineeringSynthesis => {
             vec!["lua_query".to_string()]
@@ -559,7 +560,7 @@ mod tests {
         assert!(intent.runtime_grounding_required);
         assert_eq!(
             intent.preferred_tools,
-            vec!["capability_atoms_exchange".to_string()]
+            vec!["capability_atoms_inspect".to_string()]
         );
     }
 

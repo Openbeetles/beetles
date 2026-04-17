@@ -5,7 +5,7 @@ use crate::mail::{
     MailMessage, MailMessageSummary, MailOperation, MailProvider, MailProviderCredential,
     MailQuery, MailSearchQuery, MailSendRequest,
 };
-use crate::office::{OfficeProbeAdapter, OfficeProbeResult};
+use crate::office::{OfficeHttpClient, OfficeProbeAdapter, OfficeProbeResult};
 
 use super::imap_smtp::{ImapSmtpOfficeProbeAdapter, ImapSmtpProvider};
 
@@ -26,56 +26,61 @@ impl MailProvider for FeishuMailProvider {
 
     fn list_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         let backend = ImapSmtpProvider;
         backend
-            .list_messages(credential, query)
+            .list_messages(http, credential, query)
             .map_err(remap_transport_error)
     }
 
     fn search_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         let backend = ImapSmtpProvider;
         backend
-            .search_messages(credential, query)
+            .search_messages(http, credential, query)
             .map_err(remap_transport_error)
     }
 
     fn get_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>> {
         let backend = ImapSmtpProvider;
         backend
-            .get_message(credential, id)
+            .get_message(http, credential, id)
             .map_err(remap_transport_error)
     }
 
     fn send_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
         let backend = ImapSmtpProvider;
         backend
-            .send_message(credential, request)
+            .send_message(http, credential, request)
             .map_err(remap_transport_error)
     }
 
     fn draft_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
         let backend = ImapSmtpProvider;
         backend
-            .draft_message(credential, request)
+            .draft_message(http, credential, request)
             .map_err(remap_transport_error)
     }
 }
@@ -89,12 +94,13 @@ impl OfficeProbeAdapter for FeishuMailOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
         let backend = ImapSmtpOfficeProbeAdapter;
         backend
-            .probe(account, credential)
+            .probe(http, account, credential)
             .map(|mut result| {
                 if result.reason == "imap_login_ok" {
                     result.reason = "feishu_mail_login_ok".to_string();
@@ -165,8 +171,10 @@ mod tests {
         credential
             .metadata
             .insert("mail_username".to_string(), "work@example.com".to_string());
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "mail-feishu".to_string(),
                     provider_kind: "feishu_mail".to_string(),

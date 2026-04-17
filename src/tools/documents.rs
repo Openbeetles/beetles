@@ -15,6 +15,7 @@ use crate::office::{
     OfficeAuthoritySource, OfficeCapability, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
+    http_bridge::ToolContextHttpClient,
     office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
@@ -212,7 +213,8 @@ impl DocumentsTool {
         })
     }
 
-    fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+    fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+        let mut http = ToolContextHttpClient::new(ctx);
         let obj = parse_tool_args(args, "tool_documents")?;
         let preferred_identity_class =
             parse_preferred_identity_class(&obj, "preferred_identity_class", "tool_documents")?;
@@ -281,7 +283,8 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let items = match self.service.list_with_identity(
+                let items = match self.service.list_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -351,7 +354,8 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let document = match self.service.read_with_identity(
+                let document = match self.service.read_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -418,7 +422,8 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let document = match self.service.read_with_identity(
+                let document = match self.service.read_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -489,7 +494,8 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let hits = match self.service.search_with_identity(
+                let hits = match self.service.search_with_http_and_identity(
+                    &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
@@ -1048,6 +1054,7 @@ mod tests {
 
         fn list_entries(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &DocumentsProviderCredential,
             query: DocumentsQuery,
         ) -> Result<Vec<DocumentsEntry>> {
@@ -1067,6 +1074,7 @@ mod tests {
 
         fn read_document(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &DocumentsProviderCredential,
             path: &str,
             _max_chars: usize,
@@ -1098,6 +1106,7 @@ mod tests {
 
         fn search_documents(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &DocumentsProviderCredential,
             query: DocumentsSearchQuery,
         ) -> Result<Vec<DocumentsSearchHit>> {
@@ -1136,6 +1145,7 @@ mod tests {
 
         fn lookup_contacts(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &ContactsDirectoryProviderCredential,
             _query: &str,
             _limit: usize,

@@ -484,6 +484,20 @@ pub trait PlatformHttpClient {
     fn delete(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         self.get(url, headers)
     }
+    /// 流式 GET：逐块回调响应体，不将完整响应体读入内存。
+    /// `max_response_bytes`: None = 无限制；Some(n) = 限制总字节数。
+    /// 默认实现回退到 get()，将完整响应体一次性传给 on_chunk。
+    fn get_streaming(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        _max_response_bytes: Option<usize>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u16> {
+        let (status, resp_body) = self.get(url, headers)?;
+        on_chunk(resp_body.as_ref())?;
+        Ok(status)
+    }
     /// 流式 POST：发送请求后逐块回调 on_chunk，不将响应体读入内存。
     /// `max_response_bytes`: None = 无限制（适用于边到达边消费的场景如 TTS）；Some(n) = 限制总字节数。
     /// 默认实现回退到 post()，将完整响应体一次性传给 on_chunk。
@@ -514,6 +528,15 @@ impl PlatformHttpClient for Box<dyn PlatformHttpClient + '_> {
     }
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         (**self).get(url, headers)
+    }
+    fn get_streaming(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_response_bytes: Option<usize>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u16> {
+        (**self).get_streaming(url, headers, max_response_bytes, on_chunk)
     }
     fn post(
         &mut self,

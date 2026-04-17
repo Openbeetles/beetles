@@ -1275,6 +1275,7 @@ mod tests {
 
         fn lookup_contacts(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &ContactsDirectoryProviderCredential,
             _query: &str,
             _limit: usize,

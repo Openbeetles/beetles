@@ -176,6 +176,50 @@ impl EspHttpClient {
         })
     }
 
+    fn do_get_streaming(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_response_bytes: Option<usize>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u16> {
+        self.execute_request(|agent| {
+            let req = apply_headers(agent.get(url), headers);
+            let resp = req
+                .call()
+                .or_any_status()
+                .map_err(|e| transport_to_error(e, "http_get_request"))?;
+            let status = resp.status();
+            let mut reader = resp.into_reader();
+            let max_len = max_response_bytes
+                .unwrap_or_else(|| crate::orchestrator::current_budget().response_body_max);
+            let enforce_limit = max_response_bytes.is_some();
+            let mut total = 0usize;
+            let mut buf = [0u8; RESPONSE_READ_CHUNK];
+            loop {
+                let n = reader.read(&mut buf).map_err(|e| Error::Other {
+                    source: Box::new(e),
+                    stage: "http_read",
+                })?;
+                if n == 0 {
+                    break;
+                }
+                total += n;
+                if enforce_limit && total > max_len {
+                    log::warn!(
+                        "[{}] streaming response truncated at {} bytes",
+                        TAG,
+                        max_len
+                    );
+                    drain_reader(&mut reader);
+                    break;
+                }
+                on_chunk(&buf[..n])?;
+            }
+            Ok(status)
+        })
+    }
+
     fn do_request_with_body(
         &mut self,
         method: &str,
@@ -338,6 +382,16 @@ impl crate::platform::PlatformHttpClient for EspHttpClient {
 
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, ResponseBody)> {
         self.get_with_headers_inner(url, headers)
+    }
+
+    fn get_streaming(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_response_bytes: Option<usize>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u16> {
+        self.do_get_streaming(url, headers, max_response_bytes, on_chunk)
     }
 
     fn post(

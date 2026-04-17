@@ -193,6 +193,7 @@ impl OfficeProbeAdapter for GoogleCalendarOfficeProbeAdapter {
 
     fn probe(
         &self,
+        _http: &mut dyn crate::office::OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -467,8 +468,10 @@ mod tests {
     #[test]
     fn google_calendar_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = GoogleCalendarOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "google-calendar".to_string(),
                     provider_kind: "google_calendar".to_string(),

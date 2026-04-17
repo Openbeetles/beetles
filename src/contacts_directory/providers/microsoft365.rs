@@ -7,7 +7,7 @@ use crate::contacts_directory::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    build_microsoft_graph_url, request_microsoft_graph_json_ureq, OfficeAccount,
+    build_microsoft_graph_url, request_microsoft_graph_json, OfficeAccount, OfficeHttpClient,
     OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use serde::Deserialize;
@@ -25,13 +25,14 @@ impl ContactsDirectoryProvider for Microsoft365ContactsDirectoryProvider {
 
     fn lookup_contacts(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &ContactsDirectoryProviderCredential,
         query: &str,
         limit: usize,
     ) -> Result<Vec<ContactEntry>> {
         validate_microsoft365_credential(credential)?;
         let client = Microsoft365ContactsClient::new(credential)?;
-        client.lookup_contacts(query, limit)
+        client.lookup_contacts(http, query, limit)
     }
 }
 
@@ -44,6 +45,7 @@ impl OfficeProbeAdapter for Microsoft365ContactsDirectoryOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -69,7 +71,7 @@ impl OfficeProbeAdapter for Microsoft365ContactsDirectoryOfficeProbeAdapter {
             });
         }
         let client = Microsoft365ContactsClient::new(&adapted)?;
-        client.list_directory_users(Some(""), 1)?;
+        client.list_directory_users(http, Some(""), 1)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -90,9 +92,14 @@ impl<'a> Microsoft365ContactsClient<'a> {
         Ok(Self { credential })
     }
 
-    fn lookup_contacts(&self, query: &str, limit: usize) -> Result<Vec<ContactEntry>> {
+    fn lookup_contacts(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ContactEntry>> {
         let limit = limit.clamp(1, 50);
-        let users = self.list_directory_users(Some(query.trim()), limit)?;
+        let users = self.list_directory_users(http, Some(query.trim()), limit)?;
         let normalized_query = query.trim().to_ascii_lowercase();
         let mut contacts = Vec::new();
         for user in users {
@@ -112,6 +119,7 @@ impl<'a> Microsoft365ContactsClient<'a> {
 
     fn list_directory_users(
         &self,
+        http: &mut dyn OfficeHttpClient,
         query: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MicrosoftGraphUser>> {
@@ -130,12 +138,19 @@ impl<'a> Microsoft365ContactsClient<'a> {
             query_pairs.push(("$search", format!("\"{}\"", render_directory_search(query))));
         }
         let url = build_microsoft_graph_url(&self.credential.base_url, "/users", &query_pairs);
-        let mut request = ureq::get(&url).set("Authorization", &self.authorization_header());
+        let auth = self.authorization_header();
+        let mut headers = vec![("Authorization", auth.as_str())];
         if normalized_query.is_some() {
-            request = request.set("ConsistencyLevel", "eventual");
+            headers.push(("ConsistencyLevel", "eventual"));
         }
-        let payload: MicrosoftGraphUsersCollection =
-            request_microsoft_graph_json_ureq("microsoft365_contacts_lookup", request.call())?;
+        let payload: MicrosoftGraphUsersCollection = request_microsoft_graph_json(
+            http,
+            "microsoft365_contacts_lookup",
+            "GET",
+            &url,
+            &headers,
+            None,
+        )?;
         Ok(payload.value)
     }
 
@@ -275,8 +290,10 @@ mod tests {
     #[test]
     fn microsoft365_contacts_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = Microsoft365ContactsDirectoryOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &crate::office::OfficeAccount {
                     account_key: "contacts-ms".to_string(),
                     provider_kind: "microsoft365_contacts_directory".to_string(),

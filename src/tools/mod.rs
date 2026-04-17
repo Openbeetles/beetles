@@ -167,7 +167,7 @@ pub use board_info::BoardInfoTool;
 ))]
 pub use calendar::CalendarTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use capability_atoms_exchange::CapabilityAtomsExchangeTool;
+pub use capability_atoms_exchange::{CapabilityAtomsExchangeTool, CapabilityAtomsInspectTool};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -321,6 +321,24 @@ pub fn serialize_tool_output<T: Serialize>(stage: &'static str, value: &T) -> Re
 pub const MAX_TOOL_ARGS_LEN: usize = 8 * 1024;
 /// 单次 execute 返回值最大长度（字符）。超限截断或返回 Error::Config。
 pub const MAX_TOOL_RESULT_LEN: usize = 16 * 1024;
+pub const TOOL_CAPABILITY_ATOMS_EXCHANGE: &str = "capability_atoms_exchange";
+pub const TOOL_CAPABILITY_ATOMS_INSPECT: &str = "capability_atoms_inspect";
+
+const PROGRAMMABLE_REASONING_TOOL_NAMES: &[&str] = &[
+    "lua_query",
+    "lua_memory_query",
+    "lua_tool_bridge",
+    TOOL_CAPABILITY_ATOMS_EXCHANGE,
+    TOOL_CAPABILITY_ATOMS_INSPECT,
+    "lua_datasheet_distill",
+    "lua_register_table_helper",
+    "lua_protocol_frame_helper",
+    "lua_state_machine_checker",
+];
+
+pub fn is_programmable_reasoning_tool_name(tool_name: &str) -> bool {
+    PROGRAMMABLE_REASONING_TOOL_NAMES.contains(&tool_name)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolOutboundTarget {
@@ -452,6 +470,18 @@ pub trait ToolContext {
         url: &str,
         headers: &[(&str, &str)],
     ) -> Result<(u16, crate::platform::ResponseBody)>;
+    /// 流式 GET：逐块回调响应体，默认回退到整包 get_with_headers。
+    fn get_streaming_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        _max_response_bytes: Option<usize>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u16> {
+        let (status, resp) = self.get_with_headers(url, headers)?;
+        on_chunk(resp.as_slice())?;
+        Ok(status)
+    }
     /// POST 请求，自定义 headers（须含 Content-Type 等）；供 web_search Tavily 等使用。
     fn post_with_headers(
         &mut self,

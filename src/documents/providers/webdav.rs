@@ -3,18 +3,21 @@
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, documents_search_match_kind, documents_search_match_score,
-    DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
-    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
-    DOCUMENTS_SEARCH_MATCH_PATH,
+    decode_searchable_document_text, documents_bounded_read_bytes, documents_search_match_kind,
+    documents_search_match_score, merge_document_warning, DocumentsEntry, DocumentsOperation,
+    DocumentsProvider, DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult,
+    DocumentsSearchHit, DocumentsSearchQuery, DOCUMENTS_SEARCH_MATCH_PATH,
+    PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
-use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
+use crate::office::{
+    read_bounded_http_bytes, OfficeAccount, OfficeHttpClient, OfficeProbeAdapter,
+    OfficeProbeDisposition, OfficeProbeResult,
+};
 use base64::Engine;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::VecDeque;
-use std::io::Read;
 
 const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
 const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
@@ -36,11 +39,12 @@ impl DocumentsProvider for WebDavProvider {
 
     fn list_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
         validate_webdav_credential(credential)?;
-        let mut entries = propfind_entries(credential, &query.path, 1)?;
+        let mut entries = propfind_entries(http, credential, &query.path, 1)?;
         entries.sort_by(|left, right| {
             right
                 .is_dir
@@ -55,6 +59,7 @@ impl DocumentsProvider for WebDavProvider {
 
     fn read_document(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         path: &str,
         max_chars: usize,
@@ -67,10 +72,11 @@ impl DocumentsProvider for WebDavProvider {
                 "read path must not be empty",
             ));
         }
-        let raw = http_get_bytes(credential, &normalized_path)?;
+        let transport_limit = documents_bounded_read_bytes(max_chars);
+        let raw = http_get_bytes(http, credential, &normalized_path, transport_limit)?;
         let decoded = decode_readable_document(
             &normalized_path,
-            &raw,
+            &raw.bytes,
             max_chars.max(1),
             "webdav_read_document",
         )?;
@@ -81,17 +87,21 @@ impl DocumentsProvider for WebDavProvider {
                 kind: decoded.kind,
                 is_dir: false,
                 content_type: None,
-                size_bytes: Some(raw.len() as u64),
+                size_bytes: Some(raw.bytes.len() as u64),
             },
             content: decoded.content,
-            truncated: decoded.truncated,
+            truncated: decoded.truncated || raw.truncated,
             raw_bytes: decoded.raw_bytes,
-            warning: decoded.warning,
+            warning: merge_document_warning(
+                decoded.warning,
+                raw.truncated.then_some(PARTIAL_DOCUMENT_READ_WARNING),
+            ),
         })
     }
 
     fn search_documents(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
@@ -109,7 +119,7 @@ impl DocumentsProvider for WebDavProvider {
             if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
                 break;
             }
-            let entries = propfind_entries(credential, &dir, 1)?;
+            let entries = propfind_entries(http, credential, &dir, 1)?;
             for entry in entries {
                 scanned_entries += 1;
                 let path_hit = contains_query_text(&entry.path, &query.query, query.case_sensitive)
@@ -132,9 +142,13 @@ impl DocumentsProvider for WebDavProvider {
 
                 let mut content_match = None;
                 let mut warning = None;
-                if entry.size_bytes.unwrap_or(0) as usize <= max_read_bytes {
-                    let raw = http_get_bytes(credential, &entry.path)?;
-                    if let Some(text) = decode_searchable_document_text(&entry.path, &raw) {
+                if entry
+                    .size_bytes
+                    .map(|size| size as usize <= max_read_bytes)
+                    .unwrap_or(true)
+                {
+                    let raw = http_get_bytes(http, credential, &entry.path, max_read_bytes)?;
+                    if let Some(text) = decode_searchable_document_text(&entry.path, &raw.bytes) {
                         if contains_query_text(&text, &query.query, query.case_sensitive) {
                             content_match = Some(build_search_snippet(
                                 &text,
@@ -142,6 +156,9 @@ impl DocumentsProvider for WebDavProvider {
                                 query.case_sensitive,
                             ));
                         }
+                    }
+                    if raw.truncated {
+                        warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
                     }
                 } else {
                     warning =
@@ -186,6 +203,7 @@ impl OfficeProbeAdapter for WebDavOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -210,7 +228,7 @@ impl OfficeProbeAdapter for WebDavOfficeProbeAdapter {
                 reason: "documents_transport_config_missing".to_string(),
             });
         }
-        propfind_entries(&adapted, "", 0)?;
+        propfind_entries(http, &adapted, "", 0)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -241,6 +259,7 @@ fn validate_webdav_credential(credential: &DocumentsProviderCredential) -> Resul
 }
 
 fn propfind_entries(
+    http: &mut dyn OfficeHttpClient,
     credential: &DocumentsProviderCredential,
     path: &str,
     depth: u8,
@@ -248,58 +267,45 @@ fn propfind_entries(
     let target_path = normalize_relative_path(path);
     let url = build_request_url(credential, &target_path, true);
     let request_body = r#"<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><displayname/><getcontentlength/><getcontenttype/><resourcetype/></prop></propfind>"#;
-    let response = ureq::request("PROPFIND", &url)
-        .set("Depth", &depth.to_string())
-        .set("Content-Type", "application/xml; charset=utf-8")
-        .set("Authorization", &basic_auth_header(credential))
-        .send_string(request_body);
-    let response = match response {
-        Ok(response) => response,
-        Err(ureq::Error::Status(status, _response)) => {
-            return Err(Error::config(
-                "webdav_propfind",
-                format!("propfind failed with status {}", status),
-            ))
-        }
-        Err(error) => {
-            return Err(Error::config("webdav_propfind", error.to_string()));
-        }
-    };
-    let status = response.status();
+    let depth_value = depth.to_string();
+    let auth = basic_auth_header(credential);
+    let (status, body) = http.request_with_headers(
+        "PROPFIND",
+        &url,
+        &[
+            ("Depth", depth_value.as_str()),
+            ("Content-Type", "application/xml; charset=utf-8"),
+            ("Authorization", auth.as_str()),
+        ],
+        Some(request_body.as_bytes()),
+    )?;
     if status != 207 && !(200..300).contains(&status) {
         return Err(Error::config(
             "webdav_propfind",
             format!("propfind failed with status {}", status),
         ));
     }
-    let body = response
-        .into_string()
+    let body = String::from_utf8(body.as_slice().to_vec())
         .map_err(|error| Error::config("webdav_propfind_read", error.to_string()))?;
     let request_directory = normalize_relative_path(path);
     parse_propfind_response(credential, &request_directory, &body)
 }
 
-fn http_get_bytes(credential: &DocumentsProviderCredential, path: &str) -> Result<Vec<u8>> {
+fn http_get_bytes(
+    http: &mut dyn OfficeHttpClient,
+    credential: &DocumentsProviderCredential,
+    path: &str,
+    max_read_bytes: usize,
+) -> Result<crate::office::OfficeBoundedBytes> {
     let url = build_request_url(credential, path, false);
-    let response = ureq::get(&url)
-        .set("Authorization", &basic_auth_header(credential))
-        .call();
-    let response = match response {
-        Ok(response) => response,
-        Err(ureq::Error::Status(status, _response)) => {
-            return Err(Error::config(
-                "webdav_get",
-                format!("get failed with status {}", status),
-            ))
-        }
-        Err(error) => return Err(Error::config("webdav_get", error.to_string())),
-    };
-    let mut reader = response.into_reader();
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|error| Error::config("webdav_get_read", error.to_string()))?;
-    Ok(bytes)
+    let auth = basic_auth_header(credential);
+    read_bounded_http_bytes(
+        http,
+        "webdav_get",
+        &url,
+        &[("Authorization", auth.as_str())],
+        max_read_bytes.max(1),
+    )
 }
 
 fn basic_auth_header(credential: &DocumentsProviderCredential) -> String {
@@ -594,8 +600,9 @@ mod tests {
             updated_at: 0,
             metadata: std::collections::BTreeMap::new(),
         };
+        let mut http = crate::platform::EspHttpClient::new().expect("http client");
         let result = WebDavOfficeProbeAdapter
-            .probe(&account, &credential)
+            .probe(&mut http, &account, &credential)
             .expect("probe result");
         assert_eq!(
             result.disposition,

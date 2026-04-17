@@ -27,9 +27,9 @@ use crate::tools::office_failure::{
     build_office_operation_failure_outcome, OfficeOperationFailureInput,
 };
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolCapabilityContract,
-    ToolContext, ToolEffectClass, ToolExecutionOutcome, ToolExecutionShape, ToolMetadata,
-    ToolRiskLevel, ToolRollbackKind,
+    http_bridge::ToolContextHttpClient, parse_tool_args, serialize_tool_output, Tool,
+    ToolApprovalMode, ToolCapabilityContract, ToolContext, ToolEffectClass, ToolExecutionOutcome,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -173,7 +173,8 @@ impl ContactsDirectoryTool {
         })
     }
 
-    fn execute_impl(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+    fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
+        let mut http = ToolContextHttpClient::new(ctx);
         let obj = parse_tool_args(args, "tool_contacts_directory")?;
         #[cfg(all(
             feature = "capability_office",
@@ -253,12 +254,13 @@ impl ContactsDirectoryTool {
                     feature = "capability_office",
                     not(any(target_arch = "xtensa", target_arch = "riscv32"))
                 ))]
-                let items = match self.service.lookup_with_route_and_identity(
+                let items = match self.service.lookup_with_route_and_identity_and_http(
                     query,
                     parse_limit(&obj),
                     provider.as_deref(),
                     account_key.as_deref(),
                     preferred_identity_class,
+                    &mut http,
                 ) {
                     Ok(items) => items,
                     Err(error) => {
@@ -687,6 +689,7 @@ mod tests {
 
         fn lookup_contacts(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &ContactsDirectoryProviderCredential,
             _query: &str,
             _limit: usize,
@@ -708,6 +711,7 @@ mod tests {
 
         fn lookup_contacts(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &ContactsDirectoryProviderCredential,
             query: &str,
             _limit: usize,
@@ -737,6 +741,7 @@ mod tests {
 
         fn lookup_contacts(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &ContactsDirectoryProviderCredential,
             _query: &str,
             _limit: usize,

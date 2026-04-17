@@ -1,5 +1,6 @@
 use crate::contacts_directory::{ContactEntry, ContactsDirectoryProviderCredential};
 use crate::error::Result;
+use crate::office::OfficeHttpClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ pub trait ContactsDirectoryProvider: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn lookup_contacts(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &ContactsDirectoryProviderCredential,
         query: &str,
         limit: usize,

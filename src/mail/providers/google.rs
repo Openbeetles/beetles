@@ -8,8 +8,8 @@ use crate::mail::{
     MailQuery, MailSearchQuery, MailSendRequest,
 };
 use crate::office::{
-    build_google_api_url, request_google_api_json_ureq, OfficeProbeAdapter, OfficeProbeDisposition,
-    OfficeProbeResult,
+    build_google_api_url, request_google_api_json, OfficeHttpClient, OfficeProbeAdapter,
+    OfficeProbeDisposition, OfficeProbeResult,
 };
 use crate::util::current_unix_secs;
 use base64::Engine as _;
@@ -43,47 +43,52 @@ impl MailProvider for GoogleMailProvider {
 
     fn list_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         let client = GoogleMailClient::new(credential)?;
-        client.list_messages(&query)
+        client.list_messages(http, &query)
     }
 
     fn search_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         let client = GoogleMailClient::new(credential)?;
-        client.search_messages(&query)
+        client.search_messages(http, &query)
     }
 
     fn get_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>> {
         let client = GoogleMailClient::new(credential)?;
-        client.get_message(id)
+        client.get_message(http, id)
     }
 
     fn send_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
         let client = GoogleMailClient::new(credential)?;
-        client.send_message(request)
+        client.send_message(http, request)
     }
 
     fn draft_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
         let client = GoogleMailClient::new(credential)?;
-        client.draft_message(request)
+        client.draft_message(http, request)
     }
 }
 
@@ -96,6 +101,7 @@ impl OfficeProbeAdapter for GoogleMailOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -121,7 +127,7 @@ impl OfficeProbeAdapter for GoogleMailOfficeProbeAdapter {
             });
         }
         let client = GoogleMailClient::new(&adapted)?;
-        client.fetch_sender_profile()?;
+        client.fetch_sender_profile(http)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -142,94 +148,142 @@ impl<'a> GoogleMailClient<'a> {
         Ok(Self { credential })
     }
 
-    fn list_messages(&self, query: &MailQuery) -> Result<Vec<MailMessageSummary>> {
+    fn list_messages(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &MailQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
         let q = render_mail_query(
             query.mailbox.as_str(),
             query.unread_only,
             query.received_after_unix_secs,
         );
-        let payload: GoogleMessagesList = request_google_api_json_ureq(
+        let auth = self.auth_header();
+        let payload: GoogleMessagesList = request_google_api_json(
+            http,
             "google_mail_list",
-            ureq::get(&self.endpoint(
+            "GET",
+            &self.endpoint(
                 "/users/me/messages",
                 &[
                     ("maxResults", query.limit.clamp(1, 50).to_string()),
                     ("q", q),
                 ],
-            ))
-            .set("Authorization", &self.auth_header())
-            .call(),
+            ),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
-        self.hydrate_summaries(payload.messages, normalized_mailbox(query.mailbox.as_str()))
+        self.hydrate_summaries(
+            http,
+            payload.messages,
+            normalized_mailbox(query.mailbox.as_str()),
+        )
     }
 
-    fn search_messages(&self, query: &MailSearchQuery) -> Result<Vec<MailMessageSummary>> {
+    fn search_messages(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &MailSearchQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
         let scoped_query = render_search_query(query);
-        let payload: GoogleMessagesList = request_google_api_json_ureq(
+        let auth = self.auth_header();
+        let payload: GoogleMessagesList = request_google_api_json(
+            http,
             "google_mail_search",
-            ureq::get(&self.endpoint(
+            "GET",
+            &self.endpoint(
                 "/users/me/messages",
                 &[
                     ("maxResults", query.limit.clamp(1, 50).to_string()),
                     ("q", scoped_query),
                 ],
-            ))
-            .set("Authorization", &self.auth_header())
-            .call(),
+            ),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
-        self.hydrate_summaries(payload.messages, normalized_mailbox(query.mailbox.as_str()))
+        self.hydrate_summaries(
+            http,
+            payload.messages,
+            normalized_mailbox(query.mailbox.as_str()),
+        )
     }
 
     fn hydrate_summaries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         messages: Vec<GoogleMessageRef>,
         mailbox: &str,
     ) -> Result<Vec<MailMessageSummary>> {
         let mut items = Vec::new();
         for message in messages {
-            if let Some(full) = self.fetch_message(&message.id, false)? {
+            if let Some(full) = self.fetch_message(http, &message.id, false)? {
                 items.push(full.into_summary(self.credential, mailbox));
             }
         }
         Ok(items)
     }
 
-    fn get_message(&self, id: &str) -> Result<Option<MailMessage>> {
-        self.fetch_message(id, true)
+    fn get_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        id: &str,
+    ) -> Result<Option<MailMessage>> {
+        self.fetch_message(http, id, true)
             .map(|item| item.map(|message| message.into_message(self.credential, DEFAULT_MAILBOX)))
     }
 
-    fn send_message(&self, request: &MailSendRequest) -> Result<MailMessageSummary> {
+    fn send_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         let raw = render_raw_message(self.credential, request)?;
-        let response: GoogleMessageSent = request_google_api_json_ureq(
+        let auth = self.auth_header();
+        let body = json!({ "raw": raw }).to_string();
+        let response: GoogleMessageSent = request_google_api_json(
+            http,
             "google_mail_send",
-            ureq::post(&self.endpoint("/users/me/messages/send", &[]))
-                .set("Authorization", &self.auth_header())
-                .set("Content-Type", "application/json")
-                .send_string(&json!({ "raw": raw }).to_string()),
+            "POST",
+            &self.endpoint("/users/me/messages/send", &[]),
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
         )?;
-        self.build_mutation_summary(response.id, request, false)
+        self.build_mutation_summary(http, response.id, request, false)
     }
 
-    fn draft_message(&self, request: &MailSendRequest) -> Result<MailMessageSummary> {
+    fn draft_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         let raw = render_raw_message(self.credential, request)?;
-        let response: GoogleDraftCreated = request_google_api_json_ureq(
+        let auth = self.auth_header();
+        let body = json!({ "message": { "raw": raw } }).to_string();
+        let response: GoogleDraftCreated = request_google_api_json(
+            http,
             "google_mail_draft",
-            ureq::post(&self.endpoint("/users/me/drafts", &[]))
-                .set("Authorization", &self.auth_header())
-                .set("Content-Type", "application/json")
-                .send_string(&json!({ "message": { "raw": raw } }).to_string()),
+            "POST",
+            &self.endpoint("/users/me/drafts", &[]),
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
         )?;
-        self.build_mutation_summary(response.message.id, request, true)
+        self.build_mutation_summary(http, response.message.id, request, true)
     }
 
     fn build_mutation_summary(
         &self,
+        http: &mut dyn OfficeHttpClient,
         id: String,
         request: &MailSendRequest,
         is_draft: bool,
     ) -> Result<MailMessageSummary> {
-        let sender = self.fetch_sender_profile().unwrap_or_default();
+        let sender = self.fetch_sender_profile(http).unwrap_or_default();
         Ok(MailMessageSummary {
             id,
             provider: self.credential.provider.clone(),
@@ -248,42 +302,50 @@ impl<'a> GoogleMailClient<'a> {
         })
     }
 
-    fn fetch_sender_profile(&self) -> Result<GoogleProfile> {
-        request_google_api_json_ureq(
+    fn fetch_sender_profile(&self, http: &mut dyn OfficeHttpClient) -> Result<GoogleProfile> {
+        let auth = self.auth_header();
+        request_google_api_json(
+            http,
             "google_mail_profile",
-            ureq::get(&self.endpoint("/users/me/profile", &[]))
-                .set("Authorization", &self.auth_header())
-                .call(),
+            "GET",
+            &self.endpoint("/users/me/profile", &[]),
+            &[("Authorization", auth.as_str())],
+            None,
         )
     }
 
-    fn fetch_message(&self, id: &str, include_body: bool) -> Result<Option<GoogleMessage>> {
+    fn fetch_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        id: &str,
+        include_body: bool,
+    ) -> Result<Option<GoogleMessage>> {
         let format = if include_body { "full" } else { "metadata" };
-        match ureq::get(&self.endpoint(
-            &format!("/users/me/messages/{}", urlencoding::encode(id)),
-            &[
-                ("format", format.to_string()),
-                (
-                    "metadataHeaders",
-                    "Subject,From,To,Cc,Bcc,Date,Message-ID,In-Reply-To,References".to_string(),
-                ),
-            ],
-        ))
-        .set("Authorization", &self.auth_header())
-        .call()
-        {
-            Ok(response) => request_google_api_json_ureq("google_mail_get", Ok(response)).map(Some),
-            Err(ureq::Error::Status(404, _)) => Ok(None),
-            Err(ureq::Error::Status(status, response)) => {
-                request_google_api_json_ureq::<serde_json::Value>(
-                    "google_mail_get",
-                    Err(ureq::Error::Status(status, response)),
-                )
-                .map(|_| None)
+        let auth = self.auth_header();
+        let (status, body) = http.get_with_headers(
+            &self.endpoint(
+                &format!("/users/me/messages/{}", urlencoding::encode(id)),
+                &[
+                    ("format", format.to_string()),
+                    (
+                        "metadataHeaders",
+                        "Subject,From,To,Cc,Bcc,Date,Message-ID,In-Reply-To,References".to_string(),
+                    ),
+                ],
+            ),
+            &[("Authorization", auth.as_str())],
+        )?;
+        match status {
+            404 => Ok(None),
+            200..=299 => {
+                crate::office::parse_google_api_json("google_mail_get", status, body).map(Some)
             }
-            Err(ureq::Error::Transport(error)) => {
-                Err(Error::config("google_mail_get", error.to_string()))
-            }
+            _ => crate::office::parse_google_api_json::<serde_json::Value>(
+                "google_mail_get",
+                status,
+                body,
+            )
+            .map(|_| None),
         }
     }
 
@@ -580,8 +642,10 @@ mod tests {
     #[test]
     fn google_mail_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = GoogleMailOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "google-mail".to_string(),
                     provider_kind: "google_mail".to_string(),

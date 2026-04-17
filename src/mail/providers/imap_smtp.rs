@@ -5,7 +5,10 @@ use crate::mail::{
     credentials::mail_credential_from_office, MailMessage, MailMessageSummary, MailOperation,
     MailProvider, MailProviderCredential, MailQuery, MailSearchQuery, MailSendRequest,
 };
-use crate::office::{OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
+use crate::office::{
+    OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+};
+use crate::orchestrator::Priority;
 use crate::util::{current_unix_secs, truncate_content_to_max};
 use async_imap::types::Fetch;
 use futures::TryStreamExt;
@@ -17,12 +20,16 @@ use mail_parser::MessageParser;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::DnsName;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::runtime::Builder;
+use tokio::time::timeout;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
 type ImapSession = async_imap::Session<TlsStream<TcpStream>>;
+const IMAP_SMTP_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(30);
+const IMAP_SMTP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ImapSmtpProvider;
 
@@ -41,6 +48,7 @@ impl MailProvider for ImapSmtpProvider {
 
     fn list_messages(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
@@ -50,6 +58,7 @@ impl MailProvider for ImapSmtpProvider {
 
     fn search_messages(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
@@ -59,6 +68,7 @@ impl MailProvider for ImapSmtpProvider {
 
     fn get_message(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>> {
@@ -68,6 +78,7 @@ impl MailProvider for ImapSmtpProvider {
 
     fn send_message(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
@@ -77,6 +88,7 @@ impl MailProvider for ImapSmtpProvider {
 
     fn draft_message(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
@@ -94,6 +106,7 @@ impl OfficeProbeAdapter for ImapSmtpOfficeProbeAdapter {
 
     fn probe(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -181,14 +194,18 @@ fn build_mail_runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 async fn async_probe(credential: &MailProviderCredential) -> Result<()> {
+    let _permit = request_mail_transport_permit()?;
     let mut session = connect_imap(credential).await?;
-    session
-        .select(&credential.imap_mailbox)
+    timeout(
+        IMAP_SMTP_TRANSPORT_TIMEOUT,
+        session.select(&credential.imap_mailbox),
+    )
+    .await
+    .map_err(|_| Error::config("imap_smtp_probe_select", "imap select timed out"))?
+    .map_err(|error| Error::config("imap_smtp_probe_select", error.to_string()))?;
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.logout())
         .await
-        .map_err(|error| Error::config("imap_smtp_probe_select", error.to_string()))?;
-    session
-        .logout()
-        .await
+        .map_err(|_| Error::config("imap_smtp_probe_logout", "imap logout timed out"))?
         .map_err(|error| Error::config("imap_smtp_probe_logout", error.to_string()))?;
     Ok(())
 }
@@ -197,20 +214,21 @@ async fn async_list_messages(
     credential: &MailProviderCredential,
     query: MailQuery,
 ) -> Result<Vec<MailMessageSummary>> {
+    let _permit = request_mail_transport_permit()?;
     let mut session = connect_imap(credential).await?;
     let mailbox = if query.mailbox.trim().is_empty() {
         credential.imap_mailbox.as_str()
     } else {
         query.mailbox.as_str()
     };
-    session
-        .select(mailbox)
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.select(mailbox))
         .await
+        .map_err(|_| Error::config("imap_smtp_select", "imap select timed out"))?
         .map_err(|error| Error::config("imap_smtp_select", error.to_string()))?;
     let criteria = if query.unread_only { "UNSEEN" } else { "ALL" };
-    let uids = session
-        .uid_search(criteria)
+    let uids = timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.uid_search(criteria))
         .await
+        .map_err(|_| Error::config("imap_smtp_search", "imap search timed out"))?
         .map_err(|error| Error::config("imap_smtp_search", error.to_string()))?;
     let items = fetch_message_summaries_for_uids(
         &mut session,
@@ -221,9 +239,9 @@ async fn async_list_messages(
         query.limit,
     )
     .await?;
-    session
-        .logout()
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.logout())
         .await
+        .map_err(|_| Error::config("imap_smtp_logout", "imap logout timed out"))?
         .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
     Ok(items)
 }
@@ -232,20 +250,21 @@ async fn async_search_messages(
     credential: &MailProviderCredential,
     query: MailSearchQuery,
 ) -> Result<Vec<MailMessageSummary>> {
+    let _permit = request_mail_transport_permit()?;
     let mut session = connect_imap(credential).await?;
     let mailbox = if query.mailbox.trim().is_empty() {
         credential.imap_mailbox.as_str()
     } else {
         query.mailbox.as_str()
     };
-    session
-        .select(mailbox)
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.select(mailbox))
         .await
+        .map_err(|_| Error::config("imap_smtp_select", "imap select timed out"))?
         .map_err(|error| Error::config("imap_smtp_select", error.to_string()))?;
     let criteria = render_search_criteria(&query)?;
-    let uids = session
-        .uid_search(criteria)
+    let uids = timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.uid_search(criteria))
         .await
+        .map_err(|_| Error::config("imap_smtp_search", "imap search timed out"))?
         .map_err(|error| Error::config("imap_smtp_search", error.to_string()))?;
     let items = fetch_message_summaries_for_uids(
         &mut session,
@@ -256,9 +275,9 @@ async fn async_search_messages(
         query.limit,
     )
     .await?;
-    session
-        .logout()
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.logout())
         .await
+        .map_err(|_| Error::config("imap_smtp_logout", "imap logout timed out"))?
         .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
     Ok(items)
 }
@@ -267,14 +286,18 @@ async fn async_get_message(
     credential: &MailProviderCredential,
     id: &str,
 ) -> Result<Option<MailMessage>> {
+    let _permit = request_mail_transport_permit()?;
     let mut session = connect_imap(credential).await?;
-    session
-        .select(&credential.imap_mailbox)
+    timeout(
+        IMAP_SMTP_TRANSPORT_TIMEOUT,
+        session.select(&credential.imap_mailbox),
+    )
+    .await
+    .map_err(|_| Error::config("imap_smtp_select", "imap select timed out"))?
+    .map_err(|error| Error::config("imap_smtp_select", error.to_string()))?;
+    let fetches = timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.uid_fetch(id, "RFC822"))
         .await
-        .map_err(|error| Error::config("imap_smtp_select", error.to_string()))?;
-    let fetches = session
-        .uid_fetch(id, "RFC822")
-        .await
+        .map_err(|_| Error::config("imap_smtp_fetch", "imap fetch timed out"))?
         .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
     let fetches: Vec<Fetch> = fetches
         .try_collect()
@@ -289,9 +312,9 @@ async fn async_get_message(
     } else {
         None
     };
-    session
-        .logout()
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.logout())
         .await
+        .map_err(|_| Error::config("imap_smtp_logout", "imap logout timed out"))?
         .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
     Ok(result)
 }
@@ -316,10 +339,13 @@ async fn fetch_message_summaries_for_uids(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    let fetches = session
-        .uid_fetch(&uid_set, "RFC822")
-        .await
-        .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
+    let fetches = timeout(
+        IMAP_SMTP_TRANSPORT_TIMEOUT,
+        session.uid_fetch(&uid_set, "RFC822"),
+    )
+    .await
+    .map_err(|_| Error::config("imap_smtp_fetch", "imap fetch timed out"))?
+    .map_err(|error| Error::config("imap_smtp_fetch", error.to_string()))?;
     let fetches: Vec<Fetch> = fetches
         .try_collect()
         .await
@@ -363,19 +389,23 @@ async fn save_draft_via_imap(
     request: &MailSendRequest,
 ) -> Result<MailMessageSummary> {
     let message = build_rfc822_message(credential, request)?;
+    let _permit = request_mail_transport_permit()?;
     let mut session = connect_imap(credential).await?;
-    session
-        .append(
+    timeout(
+        IMAP_SMTP_TRANSPORT_TIMEOUT,
+        session.append(
             &credential.draft_mailbox,
             Some(r"(\Draft)"),
             None,
             message.formatted(),
-        )
+        ),
+    )
+    .await
+    .map_err(|_| Error::config("imap_smtp_append_draft", "imap append timed out"))?
+    .map_err(|error| Error::config("imap_smtp_append_draft", error.to_string()))?;
+    timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, session.logout())
         .await
-        .map_err(|error| Error::config("imap_smtp_append_draft", error.to_string()))?;
-    session
-        .logout()
-        .await
+        .map_err(|_| Error::config("imap_smtp_logout", "imap logout timed out"))?
         .map_err(|error| Error::config("imap_smtp_logout", error.to_string()))?;
     Ok(MailMessageSummary {
         id: format!("draft-{}", current_unix_secs()),
@@ -393,8 +423,9 @@ async fn save_draft_via_imap(
 
 async fn connect_imap(credential: &MailProviderCredential) -> Result<ImapSession> {
     let addr = format!("{}:{}", credential.imap_host, credential.imap_port);
-    let tcp = TcpStream::connect(&addr)
+    let tcp = timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, TcpStream::connect(&addr))
         .await
+        .map_err(|_| Error::config("imap_smtp_tcp_connect", "tcp connect timed out"))?
         .map_err(|error| Error::config("imap_smtp_tcp_connect", error.to_string()))?;
     let certs = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.into(),
@@ -405,15 +436,18 @@ async fn connect_imap(credential: &MailProviderCredential) -> Result<ImapSession
     let tls = TlsConnector::from(Arc::new(config));
     let sni = DnsName::try_from(credential.imap_host.clone())
         .map_err(|error| Error::config("imap_smtp_sni", error.to_string()))?;
-    let stream = tls
-        .connect(sni.into(), tcp)
+    let stream = timeout(IMAP_SMTP_TRANSPORT_TIMEOUT, tls.connect(sni.into(), tcp))
         .await
+        .map_err(|_| Error::config("imap_smtp_tls_connect", "tls connect timed out"))?
         .map_err(|error| Error::config("imap_smtp_tls_connect", error.to_string()))?;
     let client = async_imap::Client::new(stream);
-    client
-        .login(&credential.username, &credential.secret)
-        .await
-        .map_err(|(error, _)| Error::config("imap_smtp_login", error.to_string()))
+    timeout(
+        IMAP_SMTP_TRANSPORT_TIMEOUT,
+        client.login(&credential.username, &credential.secret),
+    )
+    .await
+    .map_err(|_| Error::config("imap_smtp_login", "imap login timed out"))?
+    .map_err(|(error, _)| Error::config("imap_smtp_login", error.to_string()))
 }
 
 fn summarize_fetch(
@@ -510,6 +544,7 @@ fn send_via_smtp(
     request: &MailSendRequest,
 ) -> Result<MailMessageSummary> {
     let message = build_rfc822_message(credential, request)?;
+    let _permit = request_mail_transport_permit()?;
     let credentials = Credentials::new(credential.username.clone(), credential.secret.clone());
     let builder = if credential.smtp_tls {
         if credential.smtp_port == 587 {
@@ -525,6 +560,7 @@ fn send_via_smtp(
     let transport = builder
         .port(credential.smtp_port)
         .credentials(credentials)
+        .timeout(Some(IMAP_SMTP_TRANSPORT_TIMEOUT))
         .build();
     transport
         .send(&message)
@@ -541,6 +577,10 @@ fn send_via_smtp(
         unread: false,
         received_at_unix_secs: current_unix_secs(),
     })
+}
+
+fn request_mail_transport_permit() -> Result<crate::orchestrator::HttpPermitGuard> {
+    crate::util::request_transport_http_permit(Priority::Normal, IMAP_SMTP_ADMISSION_TIMEOUT)
 }
 
 fn build_rfc822_message(
@@ -660,8 +700,10 @@ mod tests {
         credential
             .metadata
             .insert("mail_username".to_string(), "work@example.com".to_string());
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &crate::office::OfficeAccount {
                     account_key: "mail-work".to_string(),
                     provider_kind: "imap_smtp".to_string(),

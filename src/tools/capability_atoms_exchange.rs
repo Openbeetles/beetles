@@ -1,4 +1,4 @@
-//! Linux-only capability atom exchange tool.
+//! Linux-only capability atom inspection and exchange tools.
 
 use crate::error::{Error, Result};
 use crate::skills::{
@@ -9,7 +9,8 @@ use crate::skills::{
 };
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
-    ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    ToolMetadata, ToolRiskLevel, ToolRollbackKind, TOOL_CAPABILITY_ATOMS_EXCHANGE,
+    TOOL_CAPABILITY_ATOMS_INSPECT,
 };
 use crate::util::current_unix_secs;
 use crate::SkillStorage;
@@ -17,11 +18,16 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 
-const PLANE: &str = "capability_atoms_exchange";
+const EXCHANGE_PLANE: &str = TOOL_CAPABILITY_ATOMS_EXCHANGE;
+const INSPECT_PLANE: &str = TOOL_CAPABILITY_ATOMS_INSPECT;
 const DEFAULT_INSPECT_LIMIT: usize = 12;
 const MAX_INSPECT_LIMIT: usize = 24;
 
 pub struct CapabilityAtomsExchangeTool {
+    skill_storage: Arc<dyn SkillStorage + Send + Sync>,
+}
+
+pub struct CapabilityAtomsInspectTool {
     skill_storage: Arc<dyn SkillStorage + Send + Sync>,
 }
 
@@ -65,17 +71,23 @@ impl CapabilityAtomsExchangeTool {
     }
 }
 
+impl CapabilityAtomsInspectTool {
+    pub fn new(skill_storage: Arc<dyn SkillStorage + Send + Sync>) -> Self {
+        Self { skill_storage }
+    }
+}
+
 impl Tool for CapabilityAtomsExchangeTool {
     fn name(&self) -> &'static str {
-        "capability_atoms_exchange"
+        TOOL_CAPABILITY_ATOMS_EXCHANGE
     }
 
     fn description(&self) -> &str {
-        "Inspect, export, and import Linux-only capability atom exchange envelopes. Imports land as pending local adjudication until the runtime skill chain re-validates them."
+        "Export and import Linux-only capability atom exchange envelopes. Imports land as pending local adjudication until the runtime skill chain re-validates them."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","enum":["inspect","export","import"],"description":"Inspect current capability atoms, export one atom as an exchange envelope, or import an exchange envelope into the local pending-adjudication set."},"atom_name":{"type":"string","description":"Capability atom name for export or focused inspection."},"topic":{"type":"string","description":"Capability atom topic for export or focused inspection. Used when atom_name is omitted."},"limit":{"type":"integer","description":"Optional inspect limit. Defaults to 12 and caps at 24."},"confirm":{"type":"boolean","description":"Required for export/import. Must be true to approve the governed capability atom state change."},"envelope":{"description":"Capability atom exchange envelope as a JSON string or embedded JSON object when op=import."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","enum":["export","import"],"description":"Export one atom as an exchange envelope, or import an exchange envelope into the local pending-adjudication set."},"atom_name":{"type":"string","description":"Capability atom name for export."},"topic":{"type":"string","description":"Capability atom topic for export. Used when atom_name is omitted."},"confirm":{"type":"boolean","description":"Must be true to approve the governed capability atom state change."},"envelope":{"description":"Capability atom exchange envelope as a JSON string or embedded JSON object when op=import."}},"required":["op","confirm"],"allOf":[{"if":{"properties":{"op":{"const":"export"}}},"then":{"anyOf":[{"required":["atom_name"]},{"required":["topic"]}]}},{"if":{"properties":{"op":{"const":"import"}}},"then":{"required":["envelope"]}}]}"#
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
@@ -88,9 +100,14 @@ impl Tool for CapabilityAtomsExchangeTool {
             .ok_or_else(|| Error::config("tool_capability_atoms_exchange", "missing op"))?;
 
         let response = match op {
-            "inspect" => self.inspect(&obj)?,
-            "export" => self.export(&obj)?,
-            "import" => self.import(&obj)?,
+            "export" => {
+                require_confirm(&obj, "tool_capability_atoms_exchange", "export")?;
+                self.export(&obj)?
+            }
+            "import" => {
+                require_confirm(&obj, "tool_capability_atoms_exchange", "import")?;
+                self.import(&obj)?
+            }
             _ => {
                 return Err(Error::config(
                     "tool_capability_atoms_exchange",
@@ -107,17 +124,9 @@ impl Tool for CapabilityAtomsExchangeTool {
 
     fn execution_shape(&self, args: &str) -> Result<crate::tools::ToolExecutionShape> {
         let obj = parse_tool_args(args, "tool_capability_atoms_exchange_governance")?;
-        let op = obj.get("op").and_then(Value::as_str).unwrap_or("inspect");
+        let op = obj.get("op").and_then(Value::as_str).unwrap_or("export");
         let confirm = obj.get("confirm").and_then(Value::as_bool).unwrap_or(false);
         Ok(match op {
-            "inspect" => self
-                .metadata()
-                .default_execution_shape(op)
-                .with_effect_class(ToolEffectClass::ReadOnly)
-                .with_risk_level(ToolRiskLevel::Low)
-                .with_approval_mode(ToolApprovalMode::Automatic)
-                .with_approval_granted(true)
-                .with_rollback_kind(ToolRollbackKind::None),
             "import" => self
                 .metadata()
                 .default_execution_shape(op)
@@ -140,46 +149,69 @@ impl Tool for CapabilityAtomsExchangeTool {
 
     fn governance_examples(&self) -> &'static [&'static str] {
         &[
-            r#"{"op":"inspect"}"#,
             r#"{"op":"export","atom_name":"demo"}"#,
             r#"{"op":"import","envelope":{"version":1}}"#,
         ]
     }
 }
 
-impl CapabilityAtomsExchangeTool {
-    fn inspect(
-        &self,
-        obj: &serde_json::Map<String, Value>,
-    ) -> Result<CapabilityAtomsExchangeResponse> {
-        let limit = obj
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map(|value| value as usize)
-            .map(|value| value.clamp(1, MAX_INSPECT_LIMIT))
-            .unwrap_or(DEFAULT_INSPECT_LIMIT);
-        let summary = build_capability_atom_operator_summary(self.skill_storage.as_ref());
-        let mut records = sorted_capability_atom_records(self.skill_storage.as_ref());
-        if let Some(filter) = atom_filter(obj) {
-            records.retain(|record| filter.matches(record));
-        }
-        let views = records
-            .into_iter()
-            .take(limit)
-            .map(capability_atom_exchange_view)
-            .collect::<Vec<_>>();
-        Ok(CapabilityAtomsExchangeResponse {
-            ok: true,
-            plane: PLANE,
-            op: "inspect".to_string(),
-            summary: Some(summary),
-            records: views,
-            atom: None,
-            envelope: None,
-            import_outcome: None,
-        })
+impl Tool for CapabilityAtomsInspectTool {
+    fn name(&self) -> &'static str {
+        TOOL_CAPABILITY_ATOMS_INSPECT
     }
 
+    fn description(&self) -> &str {
+        "Inspect Linux-only capability atoms and exchange readiness without mutating local state."
+    }
+
+    fn schema(&self) -> &str {
+        r#"{"type":"object","properties":{"atom_name":{"type":"string","description":"Capability atom name for focused inspection."},"topic":{"type":"string","description":"Capability atom topic for focused inspection. Used when atom_name is omitted."},"limit":{"type":"integer","description":"Optional inspect limit. Defaults to 12 and caps at 24."}}}"#
+    }
+
+    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+        let obj = parse_tool_args(args, "tool_capability_atoms_inspect")?;
+        let response = inspect_capability_atoms(self.skill_storage.as_ref(), &obj)?;
+        serialize_tool_output("tool_capability_atoms_inspect", &response)
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task()
+    }
+}
+
+fn inspect_capability_atoms(
+    storage: &dyn SkillStorage,
+    obj: &serde_json::Map<String, Value>,
+) -> Result<CapabilityAtomsExchangeResponse> {
+    let limit = obj
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .map(|value| value.clamp(1, MAX_INSPECT_LIMIT))
+        .unwrap_or(DEFAULT_INSPECT_LIMIT);
+    let summary = build_capability_atom_operator_summary(storage);
+    let mut records = sorted_capability_atom_records(storage);
+    if let Some(filter) = atom_filter(obj) {
+        records.retain(|record| filter.matches(record));
+    }
+    let views = records
+        .into_iter()
+        .take(limit)
+        .map(capability_atom_exchange_view)
+        .collect::<Vec<_>>();
+    Ok(CapabilityAtomsExchangeResponse {
+        ok: true,
+        plane: INSPECT_PLANE,
+        op: "inspect".to_string(),
+        summary: Some(summary),
+        records: views,
+        atom: None,
+        envelope: None,
+        import_outcome: None,
+    })
+}
+
+impl CapabilityAtomsExchangeTool {
     fn export(
         &self,
         obj: &serde_json::Map<String, Value>,
@@ -194,7 +226,7 @@ impl CapabilityAtomsExchangeTool {
             find_capability_atom(self.skill_storage.as_ref(), &atom.name).unwrap_or(atom);
         Ok(CapabilityAtomsExchangeResponse {
             ok: true,
-            plane: PLANE,
+            plane: EXCHANGE_PLANE,
             op: "export".to_string(),
             summary: None,
             records: Vec::new(),
@@ -232,7 +264,7 @@ impl CapabilityAtomsExchangeTool {
             .map(capability_atom_exchange_view);
         Ok(CapabilityAtomsExchangeResponse {
             ok: true,
-            plane: PLANE,
+            plane: EXCHANGE_PLANE,
             op: "import".to_string(),
             summary: None,
             records: Vec::new(),
@@ -240,6 +272,18 @@ impl CapabilityAtomsExchangeTool {
             envelope: None,
             import_outcome: Some(import_outcome),
         })
+    }
+}
+
+fn require_confirm(
+    obj: &serde_json::Map<String, Value>,
+    stage: &'static str,
+    op: &str,
+) -> Result<()> {
+    if obj.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(Error::config(stage, format!("{op} requires confirm=true")))
     }
 }
 
@@ -470,16 +514,14 @@ mod tests {
     fn inspect_reports_local_exchange_ready_atoms() {
         let storage: Arc<dyn SkillStorage + Send + Sync> = Arc::new(TestSkillStorage::default());
         let atom_name = seed_capability_atom(storage.as_ref(), "serial_framing");
-        let tool = CapabilityAtomsExchangeTool::new(Arc::clone(&storage));
+        let tool = CapabilityAtomsInspectTool::new(Arc::clone(&storage));
         let mut ctx = DummyCtx;
 
-        let output = tool
-            .execute(r#"{"op":"inspect"}"#, &mut ctx)
-            .expect("inspect output");
+        let output = tool.execute(r#"{}"#, &mut ctx).expect("inspect output");
         let parsed: Value = serde_json::from_str(&output).expect("inspect json");
 
         assert_eq!(parsed["ok"], Value::Bool(true));
-        assert_eq!(parsed["plane"], Value::String(PLANE.to_string()));
+        assert_eq!(parsed["plane"], Value::String(INSPECT_PLANE.to_string()));
         assert_eq!(parsed["summary"]["total"], Value::from(1));
         assert_eq!(parsed["records"][0]["name"], Value::String(atom_name));
         assert_eq!(
@@ -499,7 +541,7 @@ mod tests {
 
         let export_output = source_tool
             .execute(
-                &format!(r#"{{"op":"export","atom_name":"{atom_name}"}}"#),
+                &format!(r#"{{"op":"export","confirm":true,"atom_name":"{atom_name}"}}"#),
                 &mut ctx,
             )
             .expect("export output");
@@ -553,17 +595,21 @@ mod tests {
     }
 
     #[test]
-    fn execution_shape_requires_confirm_for_export_and_import_but_not_inspect() {
+    fn inspect_tool_metadata_exposes_read_only_automatic_contract() {
+        let storage: Arc<dyn SkillStorage + Send + Sync> = Arc::new(TestSkillStorage::default());
+        let tool = CapabilityAtomsInspectTool::new(storage);
+        let metadata = tool.metadata();
+
+        assert_eq!(metadata.effect_class, ToolEffectClass::ReadOnly);
+        assert_eq!(metadata.risk_level, ToolRiskLevel::Low);
+        assert_eq!(metadata.approval_mode, ToolApprovalMode::Automatic);
+        assert!(metadata.allow_in_system_ingress);
+    }
+
+    #[test]
+    fn exchange_execution_shape_requires_confirm_for_export_and_import() {
         let storage: Arc<dyn SkillStorage + Send + Sync> = Arc::new(TestSkillStorage::default());
         let tool = CapabilityAtomsExchangeTool::new(storage);
-
-        let inspect = tool
-            .execution_shape(r#"{"op":"inspect"}"#)
-            .expect("inspect shape");
-        assert_eq!(inspect.effect_class, ToolEffectClass::ReadOnly);
-        assert_eq!(inspect.risk_level, ToolRiskLevel::Low);
-        assert_eq!(inspect.approval_mode, ToolApprovalMode::Automatic);
-        assert!(inspect.approval_granted);
 
         let export = tool
             .execution_shape(r#"{"op":"export","atom_name":"demo"}"#)
@@ -587,5 +633,30 @@ mod tests {
             ToolApprovalMode::ExplicitIntent
         );
         assert!(confirmed_import.approval_granted);
+    }
+
+    #[test]
+    fn exchange_execute_rejects_export_and_import_without_confirm() {
+        let storage: Arc<dyn SkillStorage + Send + Sync> = Arc::new(TestSkillStorage::default());
+        let atom_name = seed_capability_atom(storage.as_ref(), "cap_exchange_guard");
+        let tool = CapabilityAtomsExchangeTool::new(storage);
+        let mut ctx = DummyCtx;
+
+        let export_error = tool
+            .execute(
+                &format!(r#"{{"op":"export","atom_name":"{atom_name}"}}"#),
+                &mut ctx,
+            )
+            .expect_err("export without confirm must fail");
+        assert!(export_error
+            .to_string()
+            .contains("export requires confirm=true"));
+
+        let import_error = tool
+            .execute(r#"{"op":"import","envelope":{"version":1}}"#, &mut ctx)
+            .expect_err("import without confirm must fail");
+        assert!(import_error
+            .to_string()
+            .contains("import requires confirm=true"));
     }
 }

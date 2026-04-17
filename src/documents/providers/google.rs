@@ -3,18 +3,18 @@
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, documents_search_match_kind, DocumentsEntry,
-    DocumentsOperation, DocumentsProvider, DocumentsProviderCredential, DocumentsQuery,
-    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
+    decode_searchable_document_text, documents_bounded_read_bytes, documents_search_match_kind,
+    merge_document_warning, DocumentsEntry, DocumentsOperation, DocumentsProvider,
+    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
+    DocumentsSearchQuery, PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    build_google_api_url, request_google_api_json_ureq, OfficeAccount, OfficeProbeAdapter,
-    OfficeProbeDisposition, OfficeProbeResult,
+    build_google_api_url, read_bounded_http_bytes, request_google_api_json, OfficeAccount,
+    OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::io::Read;
 
 const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
 const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
@@ -40,51 +40,67 @@ impl DocumentsProvider for GoogleDocumentsProvider {
 
     fn list_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
         let client = GoogleDocumentsClient::new(credential)?;
-        let items = client.list_entries(&query.path)?;
+        let items = client.list_entries(http, &query.path)?;
         Ok(items.into_iter().take(query.limit).collect())
     }
 
     fn read_document(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
         let client = GoogleDocumentsClient::new(credential)?;
-        let item = client.resolve_item(path)?;
+        let item = client.resolve_item(http, path)?;
         if item.is_dir() {
             return Err(Error::config(
                 "google_documents_read",
                 format!("'{}' is a folder, not a document", item.relative_path),
             ));
         }
-        let raw = client.read_item_bytes(&item)?;
-        let decoded = decode_readable_document(
-            &item.relative_path,
-            &raw,
-            max_chars.max(1),
-            "google_documents_read",
-        )?;
+        let transport_limit = documents_bounded_read_bytes(max_chars);
+        let read = client.read_item_bytes(http, &item, transport_limit)?;
+        let decoded =
+            decode_readable_document(&item.relative_path, &read.bytes, max_chars.max(1), "google_documents_read")
+                .map_err(|error| {
+                    if read.truncated {
+                        Error::config(
+                            "google_documents_read",
+                            format!(
+                                "document exceeded bounded read budget of {} bytes; increase max_chars to read more",
+                                transport_limit
+                            ),
+                        )
+                    } else {
+                        error
+                    }
+                })?;
         Ok(DocumentsReadResult {
             entry: item.to_documents_entry(),
             content: decoded.content,
-            truncated: decoded.truncated,
+            truncated: decoded.truncated || read.truncated,
             raw_bytes: decoded.raw_bytes,
-            warning: decoded.warning,
+            warning: merge_document_warning(
+                decoded.warning,
+                read.truncated.then_some(PARTIAL_DOCUMENT_READ_WARNING),
+            ),
         })
     }
 
     fn search_documents(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
         let client = GoogleDocumentsClient::new(credential)?;
-        let search_hits = client.search_entries(&query.query, query.limit.max(20))?;
+        let search_hits = client.search_entries(http, &query.query, query.limit.max(20))?;
         let mut queue = search_hits
             .into_iter()
             .filter(|item| {
@@ -109,9 +125,14 @@ impl DocumentsProvider for GoogleDocumentsProvider {
             let mut snippet = None;
             let mut warning = None;
             let mut content_hit = false;
-            if !item.is_dir() && item.size_bytes.unwrap_or(0) as usize <= max_read_bytes {
-                let raw = client.read_item_bytes(&item)?;
-                if let Some(text) = decode_searchable_document_text(&entry.path, &raw) {
+            if !item.is_dir()
+                && item
+                    .size_bytes
+                    .map(|size| size as usize <= max_read_bytes)
+                    .unwrap_or(true)
+            {
+                let raw = client.read_item_bytes(http, &item, max_read_bytes)?;
+                if let Some(text) = decode_searchable_document_text(&entry.path, &raw.bytes) {
                     if contains_query_text(&text, &query.query, query.case_sensitive) {
                         content_hit = true;
                         snippet = Some(build_search_snippet(
@@ -120,6 +141,9 @@ impl DocumentsProvider for GoogleDocumentsProvider {
                             query.case_sensitive,
                         ));
                     }
+                }
+                if raw.truncated {
+                    warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
                 }
             } else if !item.is_dir() {
                 warning = Some("content not searched because the file is too large".to_string());
@@ -149,6 +173,7 @@ impl OfficeProbeAdapter for GoogleDocumentsOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -174,7 +199,7 @@ impl OfficeProbeAdapter for GoogleDocumentsOfficeProbeAdapter {
             });
         }
         let client = GoogleDocumentsClient::new(&adapted)?;
-        client.list_entries("")?;
+        client.list_entries(http, "")?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -204,12 +229,19 @@ impl GoogleDocumentsClient<'_> {
         Ok(GoogleDocumentsClient { credential })
     }
 
-    fn list_entries(&self, relative_path: &str) -> Result<Vec<DocumentsEntry>> {
-        let parent_id = self.resolve_parent_folder_id(relative_path)?;
+    fn list_entries(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        relative_path: &str,
+    ) -> Result<Vec<DocumentsEntry>> {
+        let parent_id = self.resolve_parent_folder_id(http, relative_path)?;
         let q = format!("'{}' in parents and trashed=false", parent_id);
-        let payload: GoogleDriveFiles = request_google_api_json_ureq(
+        let auth = self.auth_header();
+        let payload: GoogleDriveFiles = request_google_api_json(
+            http,
             "google_documents_list",
-            ureq::get(&self.endpoint(
+            "GET",
+            &self.endpoint(
                 "/files",
                 &[
                     ("q", q),
@@ -227,9 +259,9 @@ impl GoogleDocumentsClient<'_> {
                         },
                     ),
                 ],
-            ))
-            .set("Authorization", &self.auth_header())
-            .call(),
+            ),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         let current_parent = normalize_relative_path(relative_path);
         Ok(payload
@@ -241,7 +273,11 @@ impl GoogleDocumentsClient<'_> {
             .collect())
     }
 
-    fn resolve_item(&self, relative_path: &str) -> Result<GoogleDriveItem> {
+    fn resolve_item(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        relative_path: &str,
+    ) -> Result<GoogleDriveItem> {
         let request_path = scoped_relative_path(&self.credential.root_path, relative_path);
         if request_path.is_empty() {
             return Ok(GoogleDriveItem {
@@ -264,9 +300,12 @@ impl GoogleDocumentsClient<'_> {
                 parent_id,
                 escape_drive_query(segment)
             );
-            let payload: GoogleDriveFiles = request_google_api_json_ureq(
+            let auth = self.auth_header();
+            let payload: GoogleDriveFiles = request_google_api_json(
+                http,
                 "google_documents_resolve",
-                ureq::get(&self.endpoint(
+                "GET",
+                &self.endpoint(
                     "/files",
                     &[
                         ("q", q),
@@ -284,9 +323,9 @@ impl GoogleDocumentsClient<'_> {
                             },
                         ),
                     ],
-                ))
-                .set("Authorization", &self.auth_header())
-                .call(),
+                ),
+                &[("Authorization", auth.as_str())],
+                None,
             )?;
             let item = payload.files.into_iter().next().ok_or_else(|| {
                 Error::config(
@@ -315,45 +354,39 @@ impl GoogleDocumentsClient<'_> {
         ))
     }
 
-    fn read_item_bytes(&self, item: &GoogleDriveItem) -> Result<Vec<u8>> {
-        let request = if item.mime_type.starts_with("application/vnd.google-apps") {
-            ureq::get(&self.endpoint(
+    fn read_item_bytes(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        item: &GoogleDriveItem,
+        max_bytes: usize,
+    ) -> Result<crate::office::OfficeBoundedBytes> {
+        let endpoint = if item.mime_type.starts_with("application/vnd.google-apps") {
+            self.endpoint(
                 &format!("/files/{}/export", urlencoding::encode(&item.id)),
                 &[("mimeType", "text/plain".to_string())],
-            ))
+            )
         } else {
-            ureq::get(&self.endpoint(
+            self.endpoint(
                 &format!("/files/{}", urlencoding::encode(&item.id)),
                 &[("alt", "media".to_string())],
-            ))
+            )
         };
-        match request.set("Authorization", &self.auth_header()).call() {
-            Ok(response) => {
-                let mut reader = response.into_reader();
-                let mut bytes = Vec::new();
-                reader
-                    .read_to_end(&mut bytes)
-                    .map_err(|error| Error::config("google_documents_read", error.to_string()))?;
-                Ok(bytes)
-            }
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response
-                    .into_string()
-                    .map_err(|error| Error::config("google_documents_read", error.to_string()))?;
-                crate::office::parse_google_api_json::<serde_json::Value>(
-                    "google_documents_read",
-                    status,
-                    crate::platform::ResponseBody::Heap(body.into_bytes()),
-                )
-                .map(|_| Vec::new())
-            }
-            Err(ureq::Error::Transport(error)) => {
-                Err(Error::config("google_documents_read", error.to_string()))
-            }
-        }
+        let auth = self.auth_header();
+        read_bounded_http_bytes(
+            http,
+            "google_documents_read",
+            &endpoint,
+            &[("Authorization", auth.as_str())],
+            max_bytes,
+        )
     }
 
-    fn search_entries(&self, query: &str, limit: usize) -> Result<Vec<GoogleDriveItem>> {
+    fn search_entries(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GoogleDriveItem>> {
         let escaped = escape_drive_query(query.trim());
         let q = if escaped.is_empty() {
             "trashed=false".to_string()
@@ -363,9 +396,12 @@ impl GoogleDocumentsClient<'_> {
                 escaped, escaped
             )
         };
-        let payload: GoogleDriveFiles = request_google_api_json_ureq(
+        let auth = self.auth_header();
+        let payload: GoogleDriveFiles = request_google_api_json(
+            http,
             "google_documents_search",
-            ureq::get(&self.endpoint(
+            "GET",
+            &self.endpoint(
                 "/files",
                 &[
                     ("q", q),
@@ -383,9 +419,9 @@ impl GoogleDocumentsClient<'_> {
                         },
                     ),
                 ],
-            ))
-            .set("Authorization", &self.auth_header())
-            .call(),
+            ),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         Ok(payload
             .files
@@ -397,12 +433,16 @@ impl GoogleDocumentsClient<'_> {
             .collect())
     }
 
-    fn resolve_parent_folder_id(&self, relative_path: &str) -> Result<String> {
+    fn resolve_parent_folder_id(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        relative_path: &str,
+    ) -> Result<String> {
         let request_path = scoped_relative_path(&self.credential.root_path, relative_path);
         if request_path.is_empty() {
             return Ok(self.root_parent_id());
         }
-        self.resolve_item(relative_path).map(|item| item.id)
+        self.resolve_item(http, relative_path).map(|item| item.id)
     }
 
     fn root_parent_id(&self) -> String {
@@ -556,8 +596,10 @@ mod tests {
     #[test]
     fn google_documents_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = GoogleDocumentsOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "google-docs".to_string(),
                     provider_kind: "google_documents".to_string(),

@@ -3,18 +3,18 @@
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, documents_search_match_kind, DocumentsEntry,
-    DocumentsOperation, DocumentsProvider, DocumentsProviderCredential, DocumentsQuery,
-    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
+    decode_searchable_document_text, documents_bounded_read_bytes, documents_search_match_kind,
+    merge_document_warning, DocumentsEntry, DocumentsOperation, DocumentsProvider,
+    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
+    DocumentsSearchQuery, PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    build_microsoft_graph_url, request_microsoft_graph_json_ureq, OfficeAccount,
-    OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+    build_microsoft_graph_url, read_bounded_http_bytes, request_microsoft_graph_json,
+    OfficeAccount, OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::io::Read;
 
 const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
 const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
@@ -39,51 +39,58 @@ impl DocumentsProvider for Microsoft365DocumentsProvider {
 
     fn list_entries(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
         let client = Microsoft365DocumentsClient::new(credential)?;
-        let items = client.list_entries(&query.path)?;
+        let items = client.list_entries(http, &query.path)?;
         Ok(items.into_iter().take(query.limit).collect())
     }
 
     fn read_document(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
         let client = Microsoft365DocumentsClient::new(credential)?;
-        let item = client.resolve_item(path)?;
+        let item = client.resolve_item(http, path)?;
         if item.is_dir() {
             return Err(Error::config(
                 "microsoft365_documents_read",
                 format!("'{}' is a folder, not a document", item.relative_path),
             ));
         }
-        let raw = client.read_item_bytes(&item)?;
+        let transport_limit = documents_bounded_read_bytes(max_chars);
+        let raw = client.read_item_bytes(http, &item, transport_limit)?;
         let decoded = decode_readable_document(
             &item.relative_path,
-            &raw,
+            &raw.bytes,
             max_chars.max(1),
             "microsoft365_documents_read",
         )?;
         Ok(DocumentsReadResult {
             entry: item.to_documents_entry(),
             content: decoded.content,
-            truncated: decoded.truncated,
+            truncated: decoded.truncated || raw.truncated,
             raw_bytes: decoded.raw_bytes,
-            warning: decoded.warning,
+            warning: merge_document_warning(
+                decoded.warning,
+                raw.truncated.then_some(PARTIAL_DOCUMENT_READ_WARNING),
+            ),
         })
     }
 
     fn search_documents(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &DocumentsProviderCredential,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
         let client = Microsoft365DocumentsClient::new(credential)?;
-        let search_hits = client.search_entries(&query.query, query.limit.max(20))?;
+        let search_hits = client.search_entries(http, &query.query, query.limit.max(20))?;
         let mut queue = search_hits
             .into_iter()
             .filter(|item| {
@@ -108,9 +115,14 @@ impl DocumentsProvider for Microsoft365DocumentsProvider {
             let mut snippet = None;
             let mut warning = None;
             let mut content_hit = false;
-            if !item.is_dir() && item.size_bytes.unwrap_or(0) as usize <= max_read_bytes {
-                let raw = client.read_item_bytes(&item)?;
-                if let Some(text) = decode_searchable_document_text(&entry.path, &raw) {
+            if !item.is_dir()
+                && item
+                    .size_bytes
+                    .map(|size| size as usize <= max_read_bytes)
+                    .unwrap_or(true)
+            {
+                let raw = client.read_item_bytes(http, &item, max_read_bytes)?;
+                if let Some(text) = decode_searchable_document_text(&entry.path, &raw.bytes) {
                     if contains_query_text(&text, &query.query, query.case_sensitive) {
                         content_hit = true;
                         snippet = Some(build_search_snippet(
@@ -119,6 +131,9 @@ impl DocumentsProvider for Microsoft365DocumentsProvider {
                             query.case_sensitive,
                         ));
                     }
+                }
+                if raw.truncated {
+                    warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
                 }
             } else if !item.is_dir() {
                 warning = Some("content not searched because the file is too large".to_string());
@@ -148,6 +163,7 @@ impl OfficeProbeAdapter for Microsoft365DocumentsOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -173,7 +189,7 @@ impl OfficeProbeAdapter for Microsoft365DocumentsOfficeProbeAdapter {
             });
         }
         let client = Microsoft365DocumentsClient::new(&adapted)?;
-        client.list_entries("")?;
+        client.list_entries(http, "")?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -203,7 +219,11 @@ impl Microsoft365DocumentsClient<'_> {
         Ok(Microsoft365DocumentsClient { credential })
     }
 
-    fn list_entries(&self, relative_path: &str) -> Result<Vec<DocumentsEntry>> {
+    fn list_entries(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        relative_path: &str,
+    ) -> Result<Vec<DocumentsEntry>> {
         let request_path = scoped_relative_path(&self.credential.root_path, relative_path);
         let path = if request_path.is_empty() {
             format!("{}/children", self.drive_root_path())
@@ -214,11 +234,14 @@ impl Microsoft365DocumentsClient<'_> {
                 encode_path_segments(&request_path)
             )
         };
-        let payload: MicrosoftGraphDriveCollection = request_microsoft_graph_json_ureq(
+        let auth = self.auth_header();
+        let payload: MicrosoftGraphDriveCollection = request_microsoft_graph_json(
+            http,
             "microsoft365_documents_list",
-            ureq::get(&self.endpoint(&path, &[("$top", "200".to_string())]))
-                .set("Authorization", &self.auth_header())
-                .call(),
+            "GET",
+            &self.endpoint(&path, &[("$top", "200".to_string())]),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         let current_parent = normalize_relative_path(relative_path);
         Ok(payload
@@ -230,7 +253,11 @@ impl Microsoft365DocumentsClient<'_> {
             .collect())
     }
 
-    fn resolve_item(&self, relative_path: &str) -> Result<MicrosoftDriveItem> {
+    fn resolve_item(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        relative_path: &str,
+    ) -> Result<MicrosoftDriveItem> {
         let request_path = scoped_relative_path(&self.credential.root_path, relative_path);
         if request_path.is_empty() {
             return Ok(MicrosoftDriveItem {
@@ -246,17 +273,20 @@ impl Microsoft365DocumentsClient<'_> {
             self.drive_root_path(),
             encode_path_segments(&request_path)
         );
-        let item: MicrosoftGraphDriveItem = request_microsoft_graph_json_ureq(
+        let auth = self.auth_header();
+        let item: MicrosoftGraphDriveItem = request_microsoft_graph_json(
+            http,
             "microsoft365_documents_resolve",
-            ureq::get(&self.endpoint(
+            "GET",
+            &self.endpoint(
                 &path,
                 &[(
                     "$select",
                     "id,name,folder,file,size,parentReference,webUrl".to_string(),
                 )],
-            ))
-            .set("Authorization", &self.auth_header())
-            .call(),
+            ),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         Ok(MicrosoftDriveItem::from_graph_item(
             item,
@@ -264,39 +294,40 @@ impl Microsoft365DocumentsClient<'_> {
         ))
     }
 
-    fn read_item_bytes(&self, item: &MicrosoftDriveItem) -> Result<Vec<u8>> {
+    fn read_item_bytes(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        item: &MicrosoftDriveItem,
+        max_bytes: usize,
+    ) -> Result<crate::office::OfficeBoundedBytes> {
         let request_path = scoped_relative_path(&self.credential.root_path, &item.relative_path);
         let path = format!(
             "{}:/{}:/content",
             self.drive_root_path(),
             encode_path_segments(&request_path)
         );
-        let response = ureq::get(&self.endpoint(&path, &[]))
-            .set("Authorization", &self.auth_header())
-            .call();
-        match response {
-            Ok(response) => {
-                let mut reader = response.into_reader();
-                let mut bytes = Vec::new();
-                reader.read_to_end(&mut bytes).map_err(|error| {
-                    Error::config("microsoft365_documents_read", error.to_string())
-                })?;
-                Ok(bytes)
-            }
-            Err(ureq::Error::Status(status, _)) => {
-                Err(Error::http("microsoft365_documents_read", status))
-            }
-            Err(ureq::Error::Transport(error)) => Err(Error::config(
-                "microsoft365_documents_read",
-                error.to_string(),
-            )),
-        }
+        let auth = self.auth_header();
+        read_bounded_http_bytes(
+            http,
+            "microsoft365_documents_read",
+            &self.endpoint(&path, &[]),
+            &[("Authorization", auth.as_str())],
+            max_bytes,
+        )
     }
 
-    fn search_entries(&self, query: &str, limit: usize) -> Result<Vec<MicrosoftDriveItem>> {
-        let payload: MicrosoftGraphDriveCollection = request_microsoft_graph_json_ureq(
+    fn search_entries(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MicrosoftDriveItem>> {
+        let auth = self.auth_header();
+        let payload: MicrosoftGraphDriveCollection = request_microsoft_graph_json(
+            http,
             "microsoft365_documents_search",
-            ureq::get(&self.endpoint(
+            "GET",
+            &self.endpoint(
                 &format!(
                     "{}/search(q='{}')",
                     self.drive_root_path(),
@@ -309,9 +340,9 @@ impl Microsoft365DocumentsClient<'_> {
                         "id,name,folder,file,size,parentReference,webUrl".to_string(),
                     ),
                 ],
-            ))
-            .set("Authorization", &self.auth_header())
-            .call(),
+            ),
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         Ok(payload
             .value
@@ -516,8 +547,10 @@ mod tests {
     #[test]
     fn microsoft365_documents_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = Microsoft365DocumentsOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "docs-ms".to_string(),
                     provider_kind: "microsoft365_documents".to_string(),

@@ -8,9 +8,8 @@ use crate::mail::{
     MailQuery, MailSearchQuery, MailSendRequest,
 };
 use crate::office::{
-    build_microsoft_graph_url, request_microsoft_graph_empty_ureq,
-    request_microsoft_graph_json_ureq, OfficeProbeAdapter, OfficeProbeDisposition,
-    OfficeProbeResult,
+    build_microsoft_graph_url, request_microsoft_graph_empty, request_microsoft_graph_json,
+    OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use crate::util::{current_unix_secs, epoch_to_ymdhms, parse_iso8601};
 use serde::Deserialize;
@@ -42,47 +41,52 @@ impl MailProvider for Microsoft365MailProvider {
 
     fn list_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         let client = Microsoft365MailClient::new(credential)?;
-        client.list_messages(&query)
+        client.list_messages(http, &query)
     }
 
     fn search_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
         let client = Microsoft365MailClient::new(credential)?;
-        client.search_messages(&query)
+        client.search_messages(http, &query)
     }
 
     fn get_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>> {
         let client = Microsoft365MailClient::new(credential)?;
-        client.get_message(id)
+        client.get_message(http, id)
     }
 
     fn send_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
         let client = Microsoft365MailClient::new(credential)?;
-        client.send_message(request)
+        client.send_message(http, request)
     }
 
     fn draft_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
         let client = Microsoft365MailClient::new(credential)?;
-        client.draft_message(request)
+        client.draft_message(http, request)
     }
 }
 
@@ -95,6 +99,7 @@ impl OfficeProbeAdapter for Microsoft365MailOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -120,7 +125,7 @@ impl OfficeProbeAdapter for Microsoft365MailOfficeProbeAdapter {
             });
         }
         let client = Microsoft365MailClient::new(&adapted)?;
-        client.fetch_sender_profile()?;
+        client.fetch_sender_profile(http)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -141,7 +146,11 @@ impl<'a> Microsoft365MailClient<'a> {
         Ok(Self { credential })
     }
 
-    fn list_messages(&self, query: &MailQuery) -> Result<Vec<MailMessageSummary>> {
+    fn list_messages(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &MailQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
         let endpoint = mailbox_messages_endpoint(&query.mailbox);
         let mut query_pairs = vec![
             ("$top", query.limit.clamp(1, 50).to_string()),
@@ -156,11 +165,14 @@ impl<'a> Microsoft365MailClient<'a> {
             query_pairs.push(("$filter", filter));
         }
         let url = self.endpoint(&endpoint, &query_pairs);
-        let payload: MicrosoftGraphMailCollection = request_microsoft_graph_json_ureq(
+        let auth = self.auth_header();
+        let payload: MicrosoftGraphMailCollection = request_microsoft_graph_json(
+            http,
             "microsoft365_mail_list",
-            ureq::get(&url)
-                .set("Authorization", &self.auth_header())
-                .call(),
+            "GET",
+            &url,
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         payload
             .value
@@ -169,7 +181,11 @@ impl<'a> Microsoft365MailClient<'a> {
             .collect()
     }
 
-    fn search_messages(&self, query: &MailSearchQuery) -> Result<Vec<MailMessageSummary>> {
+    fn search_messages(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &MailSearchQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
         let endpoint = mailbox_messages_endpoint(&query.mailbox);
         let url = self.endpoint(
             &endpoint,
@@ -183,12 +199,17 @@ impl<'a> Microsoft365MailClient<'a> {
                 ("$search", format!("\"{}\"", query.query.trim())),
             ],
         );
-        let mut payload: MicrosoftGraphMailCollection = request_microsoft_graph_json_ureq(
+        let auth = self.auth_header();
+        let mut payload: MicrosoftGraphMailCollection = request_microsoft_graph_json(
+            http,
             "microsoft365_mail_search",
-            ureq::get(&url)
-                .set("Authorization", &self.auth_header())
-                .set("ConsistencyLevel", "eventual")
-                .call(),
+            "GET",
+            &url,
+            &[
+                ("Authorization", auth.as_str()),
+                ("ConsistencyLevel", "eventual"),
+            ],
+            None,
         )?;
         let mailbox = normalized_mailbox(&query.mailbox);
         let mut items = payload
@@ -215,7 +236,11 @@ impl<'a> Microsoft365MailClient<'a> {
         Ok(items)
     }
 
-    fn get_message(&self, id: &str) -> Result<Option<MailMessage>> {
+    fn get_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        id: &str,
+    ) -> Result<Option<MailMessage>> {
         let url = self.endpoint(
             &format!("/me/messages/{}", urlencoding::encode(id)),
             &[(
@@ -223,40 +248,47 @@ impl<'a> Microsoft365MailClient<'a> {
                 "id,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,body,bodyPreview,isRead,receivedDateTime,internetMessageId,conversationId".to_string(),
             )],
         );
-        match ureq::get(&url)
-            .set("Authorization", &self.auth_header())
-            .call()
-        {
-            Ok(response) => {
-                let item: MicrosoftGraphMessage =
-                    request_microsoft_graph_json_ureq("microsoft365_mail_get", Ok(response))?;
+        let auth = self.auth_header();
+        let (status, body) = http.get_with_headers(&url, &[("Authorization", auth.as_str())])?;
+        match status {
+            404 => Ok(None),
+            200..=299 => {
+                let item: MicrosoftGraphMessage = crate::office::parse_microsoft_graph_json(
+                    "microsoft365_mail_get",
+                    status,
+                    body,
+                )?;
                 Ok(Some(item.into_message(self.credential, DEFAULT_MAILBOX)?))
             }
-            Err(ureq::Error::Status(404, _)) => Ok(None),
-            Err(ureq::Error::Status(status, response)) => {
-                request_microsoft_graph_json_ureq::<serde_json::Value>(
-                    "microsoft365_mail_get",
-                    Err(ureq::Error::Status(status, response)),
-                )
-                .map(|_| None)
-            }
-            Err(ureq::Error::Transport(error)) => {
-                Err(Error::config("microsoft365_mail_get", error.to_string()))
-            }
+            _ => crate::office::parse_microsoft_graph_json::<serde_json::Value>(
+                "microsoft365_mail_get",
+                status,
+                body,
+            )
+            .map(|_| None),
         }
     }
 
-    fn send_message(&self, request: &MailSendRequest) -> Result<MailMessageSummary> {
+    fn send_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         let url = self.endpoint("/me/sendMail", &[]);
-        let body = render_send_body(request);
-        request_microsoft_graph_empty_ureq(
+        let body = render_send_body(request).to_string();
+        let auth = self.auth_header();
+        request_microsoft_graph_empty(
+            http,
             "microsoft365_mail_send",
-            ureq::post(&url)
-                .set("Authorization", &self.auth_header())
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string()),
+            "POST",
+            &url,
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
         )?;
-        let sender = self.fetch_sender_profile().unwrap_or_default();
+        let sender = self.fetch_sender_profile(http).unwrap_or_default();
         Ok(MailMessageSummary {
             id: format!("microsoft365-mail-{}", current_unix_secs()),
             provider: self.credential.provider.clone(),
@@ -271,26 +303,41 @@ impl<'a> Microsoft365MailClient<'a> {
         })
     }
 
-    fn draft_message(&self, request: &MailSendRequest) -> Result<MailMessageSummary> {
+    fn draft_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         let url = self.endpoint("/me/messages", &[]);
-        let body = render_draft_body(request);
-        let item: MicrosoftGraphMessage = request_microsoft_graph_json_ureq(
+        let body = render_draft_body(request).to_string();
+        let auth = self.auth_header();
+        let item: MicrosoftGraphMessage = request_microsoft_graph_json(
+            http,
             "microsoft365_mail_draft",
-            ureq::post(&url)
-                .set("Authorization", &self.auth_header())
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string()),
+            "POST",
+            &url,
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
         )?;
         Ok(item.into_summary(self.credential, "Drafts"))
     }
 
-    fn fetch_sender_profile(&self) -> Result<MicrosoftGraphSenderProfile> {
+    fn fetch_sender_profile(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+    ) -> Result<MicrosoftGraphSenderProfile> {
         let url = self.endpoint("/me", &[("$select", "mail,userPrincipalName".to_string())]);
-        let profile: MicrosoftGraphUserProfile = request_microsoft_graph_json_ureq(
+        let auth = self.auth_header();
+        let profile: MicrosoftGraphUserProfile = request_microsoft_graph_json(
+            http,
             "microsoft365_mail_profile",
-            ureq::get(&url)
-                .set("Authorization", &self.auth_header())
-                .call(),
+            "GET",
+            &url,
+            &[("Authorization", auth.as_str())],
+            None,
         )?;
         Ok(MicrosoftGraphSenderProfile {
             email: profile
@@ -616,8 +663,10 @@ mod tests {
     #[test]
     fn microsoft365_mail_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = Microsoft365MailOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "mail-ms".to_string(),
                     provider_kind: "microsoft365_mail".to_string(),

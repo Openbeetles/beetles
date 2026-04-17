@@ -1313,7 +1313,7 @@ fn programmable_reasoning_timeline_event_from_record(
 fn programmable_reasoning_activity_record_from_tool_record(
     record: &crate::tools::ToolExecutionRecord,
 ) -> Option<ProgrammableReasoningActivityRecord> {
-    if !is_programmable_reasoning_tool(record.tool_name.as_str()) {
+    if !crate::tools::is_programmable_reasoning_tool_name(record.tool_name.as_str()) {
         return None;
     }
     let status = match record.status {
@@ -1459,20 +1459,6 @@ fn summarize_adversarial_arena_activity(
     } else {
         "adjudicated programmable reasoning arena".to_string()
     }
-}
-
-fn is_programmable_reasoning_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "lua_query"
-            | "lua_memory_query"
-            | "lua_tool_bridge"
-            | "capability_atoms_exchange"
-            | "lua_datasheet_distill"
-            | "lua_register_table_helper"
-            | "lua_protocol_frame_helper"
-            | "lua_state_machine_checker"
-    )
 }
 
 #[cfg(test)]
@@ -2230,6 +2216,83 @@ mod tests {
         assert!(digest
             .headline
             .contains("3 recent programmable reasoning events, 1 need attention"));
+    }
+
+    #[test]
+    fn build_operator_status_counts_capability_atoms_inspect_in_programmable_reasoning_usage() {
+        let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
+            MemoryStateFs::default(),
+        )));
+
+        governance
+            .record_success(
+                &reasoning_permit("capability_atoms_inspect"),
+                &ToolExecutionOutcome::text("inspected 4 capability atoms"),
+            )
+            .expect("record inspect success");
+
+        let state = governance.inspect().expect("inspect governance");
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let skill_storage = TestSkillStorage::default();
+        let activity_records = collect_programmable_reasoning_activity_records(
+            Some(&state),
+            &session_store,
+            &turn_ledger_store,
+            &skill_storage,
+        )
+        .expect("collect activity records");
+        let usage = build_programmable_reasoning_usage_analytics(&activity_records);
+        let timeline = build_programmable_reasoning_timeline(&activity_records);
+        let digest = build_programmable_reasoning_maintenance_digest(&usage, &timeline);
+
+        assert_eq!(usage.recent_total_events, 1);
+        assert_eq!(usage.recent_total_attempts, 1);
+        assert_eq!(usage.recent_attention_events, 0);
+        assert_eq!(
+            usage.last_event_name.as_deref(),
+            Some("capability_atoms_inspect")
+        );
+        assert_eq!(
+            usage.last_tool_name.as_deref(),
+            Some("capability_atoms_inspect")
+        );
+        assert!(usage
+            .tool_counts
+            .iter()
+            .any(|entry| entry.tool_name == "capability_atoms_inspect" && entry.succeeded == 1));
+
+        assert_eq!(timeline.recent_events.len(), 1);
+        assert_eq!(timeline.recent_events[0].activity_kind, "tool");
+        assert_eq!(
+            timeline.recent_events[0].activity_name,
+            "capability_atoms_inspect"
+        );
+        assert_eq!(
+            timeline.recent_events[0].tool_name.as_deref(),
+            Some("capability_atoms_inspect")
+        );
+        assert_eq!(timeline.recent_events[0].status, "succeeded");
+        assert_eq!(
+            timeline.recent_events[0].detail,
+            "inspected 4 capability atoms"
+        );
+        assert!(!timeline.recent_events[0].attention_required);
+
+        assert_eq!(digest.status, "healthy");
+        assert_eq!(digest.last_event_kind.as_deref(), Some("tool"));
+        assert_eq!(
+            digest.last_event_name.as_deref(),
+            Some("capability_atoms_inspect")
+        );
+        assert_eq!(
+            digest.last_event_tool_name.as_deref(),
+            Some("capability_atoms_inspect")
+        );
+        assert_eq!(digest.last_event_status.as_deref(), Some("succeeded"));
+        assert!(digest
+            .headline
+            .contains("1 recent programmable reasoning events, no operator intervention needed"));
     }
 
     #[test]

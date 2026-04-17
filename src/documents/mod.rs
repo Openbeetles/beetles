@@ -26,8 +26,9 @@ use serde::{Deserialize, Serialize};
 
 pub use content::{
     build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, detect_document_kind, summarize_document_read_result,
-    DecodedReadableDocument, EMPTY_DOCUMENT_WARNING,
+    decode_searchable_document_text, detect_document_kind, documents_bounded_read_bytes,
+    merge_document_warning, summarize_document_read_result, DecodedReadableDocument,
+    EMPTY_DOCUMENT_WARNING, PARTIAL_DOCUMENT_READ_WARNING,
 };
 #[cfg(all(
     feature = "capability_office",

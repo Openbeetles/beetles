@@ -6,7 +6,9 @@ use crate::contacts_directory::{
     ContactsDirectoryProviderCredential,
 };
 use crate::error::{Error, Result};
-use crate::office::{OfficeAccount, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
+use crate::office::{
+    OfficeAccount, OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -26,13 +28,14 @@ impl ContactsDirectoryProvider for FeishuContactsDirectoryProvider {
 
     fn lookup_contacts(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &ContactsDirectoryProviderCredential,
         query: &str,
         limit: usize,
     ) -> Result<Vec<ContactEntry>> {
         validate_feishu_credential(credential)?;
-        let client = FeishuContactsClient::new(credential)?;
-        client.lookup_contacts(query, limit)
+        let client = FeishuContactsClient::new(http, credential)?;
+        client.lookup_contacts(http, query, limit)
     }
 }
 
@@ -45,6 +48,7 @@ impl OfficeProbeAdapter for FeishuContactsDirectoryOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -69,8 +73,8 @@ impl OfficeProbeAdapter for FeishuContactsDirectoryOfficeProbeAdapter {
                 reason: "contacts_transport_config_missing".to_string(),
             });
         }
-        let client = FeishuContactsClient::new(&adapted)?;
-        client.list_users_page(None)?;
+        let client = FeishuContactsClient::new(http, &adapted)?;
+        client.list_users_page(http, None)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -87,21 +91,29 @@ struct FeishuContactsClient {
 }
 
 impl FeishuContactsClient {
-    fn new(credential: &ContactsDirectoryProviderCredential) -> Result<Self> {
-        let tenant_access_token = fetch_tenant_access_token(credential)?;
+    fn new(
+        http: &mut dyn OfficeHttpClient,
+        credential: &ContactsDirectoryProviderCredential,
+    ) -> Result<Self> {
+        let tenant_access_token = fetch_tenant_access_token(http, credential)?;
         Ok(Self {
             base_url: credential.base_url.trim_end_matches('/').to_string(),
             tenant_access_token,
         })
     }
 
-    fn lookup_contacts(&self, query: &str, limit: usize) -> Result<Vec<ContactEntry>> {
+    fn lookup_contacts(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ContactEntry>> {
         let query = query.trim().to_ascii_lowercase();
         let limit = limit.clamp(1, 50);
         let mut out = Vec::new();
         let mut page_token = None::<String>;
         for _ in 0..FEISHU_CONTACTS_MAX_PAGES {
-            let page = self.list_users_page(page_token.as_deref())?;
+            let page = self.list_users_page(http, page_token.as_deref())?;
             for user in page.items {
                 if let Some(contact) = user.to_contact_entry()? {
                     if query.is_empty() || contact_matches_query(&contact, &query) {
@@ -121,7 +133,11 @@ impl FeishuContactsClient {
         Ok(out)
     }
 
-    fn list_users_page(&self, page_token: Option<&str>) -> Result<FeishuUsersPage> {
+    fn list_users_page(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        page_token: Option<&str>,
+    ) -> Result<FeishuUsersPage> {
         let mut url = format!(
             "{}/open-apis/contact/v3/users?page_size={}&user_id_type=open_id",
             self.base_url, FEISHU_CONTACTS_PAGE_SIZE
@@ -130,15 +146,15 @@ impl FeishuContactsClient {
             url.push_str("&page_token=");
             url.push_str(page_token);
         }
-        let response = ureq::get(&url)
-            .set(
-                "Authorization",
-                &format!("Bearer {}", self.tenant_access_token),
-            )
-            .call()
-            .map_err(|error| Error::config("feishu_contacts_lookup", error.to_string()))?;
-        let payload: FeishuEnvelope<FeishuUsersData> =
-            read_json_response("feishu_contacts_lookup", response)?;
+        let auth = format!("Bearer {}", self.tenant_access_token);
+        let payload: FeishuEnvelope<FeishuUsersData> = request_feishu_json(
+            http,
+            "feishu_contacts_lookup",
+            "GET",
+            &url,
+            &[("Authorization", auth.as_str())],
+            None,
+        )?;
         let data = payload.require_data("feishu_contacts_lookup")?;
         Ok(FeishuUsersPage {
             has_more: data.has_more,
@@ -278,7 +294,10 @@ fn validate_feishu_credential(credential: &ContactsDirectoryProviderCredential) 
     Ok(())
 }
 
-fn fetch_tenant_access_token(credential: &ContactsDirectoryProviderCredential) -> Result<String> {
+fn fetch_tenant_access_token(
+    http: &mut dyn OfficeHttpClient,
+    credential: &ContactsDirectoryProviderCredential,
+) -> Result<String> {
     validate_feishu_credential(credential)?;
     let body = serde_json::to_vec(&FeishuTenantTokenRequest {
         app_id: credential.app_id.as_str(),
@@ -289,12 +308,14 @@ fn fetch_tenant_access_token(credential: &ContactsDirectoryProviderCredential) -
         "{}/open-apis/auth/v3/tenant_access_token/internal",
         credential.base_url.trim_end_matches('/')
     );
-    let response = ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .send_bytes(&body)
-        .map_err(|error| Error::config("feishu_contacts_auth", error.to_string()))?;
-    let payload: FeishuEnvelope<serde_json::Value> =
-        read_json_response("feishu_contacts_auth", response)?;
+    let payload: FeishuEnvelope<serde_json::Value> = request_feishu_json(
+        http,
+        "feishu_contacts_auth",
+        "POST",
+        &url,
+        &[("Content-Type", "application/json")],
+        Some(body.as_slice()),
+    )?;
     payload.require_ok("feishu_contacts_auth")?;
     payload
         .tenant_access_token
@@ -302,21 +323,26 @@ fn fetch_tenant_access_token(credential: &ContactsDirectoryProviderCredential) -
         .ok_or_else(|| Error::config("feishu_contacts_auth", "missing tenant_access_token"))
 }
 
-fn read_json_response<T: DeserializeOwned>(
+fn request_feishu_json<T: DeserializeOwned>(
+    http: &mut dyn OfficeHttpClient,
     stage: &'static str,
-    response: ureq::Response,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
 ) -> Result<T> {
-    let status = response.status();
-    let body = response
-        .into_string()
-        .map_err(|error| Error::config(stage, error.to_string()))?;
+    let (status, body) = http.request_with_headers(method, url, headers, body)?;
     if !(200..300).contains(&status) {
         return Err(Error::config(
             stage,
-            format!("http {}: {}", status, body.trim()),
+            format!(
+                "http {}: {}",
+                status,
+                String::from_utf8_lossy(body.as_slice()).trim()
+            ),
         ));
     }
-    serde_json::from_str(&body).map_err(|error| Error::config(stage, error.to_string()))
+    serde_json::from_slice(body.as_slice()).map_err(|error| Error::config(stage, error.to_string()))
 }
 
 fn contact_matches_query(contact: &ContactEntry, query: &str) -> bool {
@@ -392,8 +418,9 @@ mod tests {
     fn feishu_contacts_provider_validates_required_fields() {
         let mut credential = credential();
         credential.app_id.clear();
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let error = FeishuContactsDirectoryProvider
-            .lookup_contacts(&credential, "alice", 5)
+            .lookup_contacts(&mut http, &credential, "alice", 5)
             .expect_err("missing app id must fail");
         assert_eq!(error.stage(), "feishu_contacts_provider");
     }

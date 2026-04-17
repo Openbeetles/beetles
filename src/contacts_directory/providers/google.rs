@@ -7,8 +7,8 @@ use crate::contacts_directory::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    build_google_api_url, request_google_api_json_ureq, OfficeAccount, OfficeProbeAdapter,
-    OfficeProbeDisposition, OfficeProbeResult,
+    build_google_api_url, request_google_api_json, OfficeAccount, OfficeHttpClient,
+    OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use serde::Deserialize;
 
@@ -25,13 +25,14 @@ impl ContactsDirectoryProvider for GoogleContactsDirectoryProvider {
 
     fn lookup_contacts(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &ContactsDirectoryProviderCredential,
         query: &str,
         limit: usize,
     ) -> Result<Vec<ContactEntry>> {
         validate_google_credential(credential)?;
         let client = GoogleContactsClient::new(credential)?;
-        client.lookup_contacts(query, limit)
+        client.lookup_contacts(http, query, limit)
     }
 }
 
@@ -44,6 +45,7 @@ impl OfficeProbeAdapter for GoogleContactsDirectoryOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -69,7 +71,7 @@ impl OfficeProbeAdapter for GoogleContactsDirectoryOfficeProbeAdapter {
             });
         }
         let client = GoogleContactsClient::new(&adapted)?;
-        client.list_connections(1)?;
+        client.list_connections(http, 1)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -90,15 +92,22 @@ impl<'a> GoogleContactsClient<'a> {
         Ok(Self { credential })
     }
 
-    fn lookup_contacts(&self, query: &str, limit: usize) -> Result<Vec<ContactEntry>> {
+    fn lookup_contacts(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ContactEntry>> {
         let limit = limit.clamp(1, 50);
         let normalized_query = query.trim();
         if normalized_query.is_empty() {
-            return self.list_connections(limit);
+            return self.list_connections(http, limit);
         }
-        let payload: GoogleSearchContactsResponse = request_google_api_json_ureq(
+        let payload: GoogleSearchContactsResponse = request_google_api_json(
+            http,
             "google_contacts_lookup",
-            ureq::get(&build_google_api_url(
+            "GET",
+            &build_google_api_url(
                 &self.credential.base_url,
                 "/people:searchContacts",
                 &[
@@ -109,9 +118,9 @@ impl<'a> GoogleContactsClient<'a> {
                     ),
                     ("pageSize", limit.to_string()),
                 ],
-            ))
-            .set("Authorization", &self.authorization_header())
-            .call(),
+            ),
+            &[("Authorization", self.authorization_header().as_str())],
+            None,
         )?;
         payload
             .results
@@ -121,10 +130,16 @@ impl<'a> GoogleContactsClient<'a> {
             .collect()
     }
 
-    fn list_connections(&self, limit: usize) -> Result<Vec<ContactEntry>> {
-        let payload: GoogleConnectionsResponse = request_google_api_json_ureq(
+    fn list_connections(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        limit: usize,
+    ) -> Result<Vec<ContactEntry>> {
+        let payload: GoogleConnectionsResponse = request_google_api_json(
+            http,
             "google_contacts_connections",
-            ureq::get(&build_google_api_url(
+            "GET",
+            &build_google_api_url(
                 &self.credential.base_url,
                 "/people/me/connections",
                 &[
@@ -134,9 +149,9 @@ impl<'a> GoogleContactsClient<'a> {
                     ),
                     ("pageSize", limit.to_string()),
                 ],
-            ))
-            .set("Authorization", &self.authorization_header())
-            .call(),
+            ),
+            &[("Authorization", self.authorization_header().as_str())],
+            None,
         )?;
         payload
             .connections
@@ -277,8 +292,10 @@ mod tests {
     #[test]
     fn google_contacts_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = GoogleContactsDirectoryOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "google-contacts".to_string(),
                     provider_kind: "google_contacts_directory".to_string(),

@@ -205,6 +205,7 @@ impl OfficeProbeAdapter for Microsoft365CalendarOfficeProbeAdapter {
 
     fn probe(
         &self,
+        _http: &mut dyn crate::office::OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -488,8 +489,10 @@ mod tests {
     #[test]
     fn microsoft365_calendar_probe_adapter_reports_missing_transport_shape_before_network() {
         let adapter = Microsoft365CalendarOfficeProbeAdapter;
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = adapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "calendar-ms".to_string(),
                     provider_kind: "microsoft365_calendar".to_string(),

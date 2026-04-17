@@ -154,6 +154,7 @@ impl OfficeProbeAdapter for CalDavOfficeProbeAdapter {
 
     fn probe(
         &self,
+        _http: &mut dyn crate::office::OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -855,8 +856,10 @@ END:VCALENDAR</c:calendar-data>
 
     #[test]
     fn probe_adapter_reports_missing_transport_shape_before_network() {
+        let mut http = crate::office::UnavailableOfficeHttpClient;
         let result = CalDavOfficeProbeAdapter
             .probe(
+                &mut http,
                 &OfficeAccount {
                     account_key: "calendar-work".to_string(),
                     provider_kind: "caldav".to_string(),

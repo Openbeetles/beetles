@@ -3,6 +3,7 @@ use crate::mail::{
     MailMessage, MailMessageSummary, MailProviderCredential, MailQuery, MailSearchQuery,
     MailSendRequest,
 };
+use crate::office::OfficeHttpClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,26 +22,31 @@ pub trait MailProvider: Send + Sync {
     fn supports(&self, op: MailOperation) -> bool;
     fn list_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>>;
     fn search_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>>;
     fn get_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>>;
     fn send_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary>;
     fn draft_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary>;

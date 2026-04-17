@@ -188,6 +188,7 @@ impl OfficeProbeAdapter for WecomCalendarOfficeProbeAdapter {
 
     fn probe(
         &self,
+        _http: &mut dyn crate::office::OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {

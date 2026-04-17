@@ -6,8 +6,8 @@ use crate::documents::{
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime, OfficeResolveResult,
-    OfficeService, SnapshotOfficeAuthoritySource,
+    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime, OfficeHttpClient,
+    OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
 };
 use std::sync::Arc;
 
@@ -142,11 +142,40 @@ impl DocumentsService {
         account_key: Option<&str>,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        self.list_with_identity(provider, account_key, None, query)
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.list_with_http(&mut unavailable_http, provider, account_key, query)
+    }
+
+    pub fn list_with_http(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        provider: &str,
+        account_key: Option<&str>,
+        query: DocumentsQuery,
+    ) -> Result<Vec<DocumentsEntry>> {
+        self.list_with_http_and_identity(http, provider, account_key, None, query)
     }
 
     pub fn list_with_identity(
         &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: DocumentsQuery,
+    ) -> Result<Vec<DocumentsEntry>> {
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.list_with_http_and_identity(
+            &mut unavailable_http,
+            provider,
+            account_key,
+            preferred_identity_class,
+            query,
+        )
+    }
+
+    pub fn list_with_http_and_identity(
+        &self,
+        http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -158,7 +187,7 @@ impl DocumentsService {
             preferred_identity_class,
             DocumentsOperation::List,
         )?;
-        let result = provider_impl.list_entries(&credential, query);
+        let result = provider_impl.list_entries(http, &credential, query);
         self.record_runtime_activity(
             &credential.account_key,
             "documents_list",
@@ -174,11 +203,49 @@ impl DocumentsService {
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        self.read_with_identity(provider, account_key, None, path, max_chars)
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.read_with_http(
+            &mut unavailable_http,
+            provider,
+            account_key,
+            path,
+            max_chars,
+        )
+    }
+
+    pub fn read_with_http(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        provider: &str,
+        account_key: Option<&str>,
+        path: &str,
+        max_chars: usize,
+    ) -> Result<DocumentsReadResult> {
+        self.read_with_http_and_identity(http, provider, account_key, None, path, max_chars)
     }
 
     pub fn read_with_identity(
         &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        path: &str,
+        max_chars: usize,
+    ) -> Result<DocumentsReadResult> {
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.read_with_http_and_identity(
+            &mut unavailable_http,
+            provider,
+            account_key,
+            preferred_identity_class,
+            path,
+            max_chars,
+        )
+    }
+
+    pub fn read_with_http_and_identity(
+        &self,
+        http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -191,7 +258,7 @@ impl DocumentsService {
             preferred_identity_class,
             DocumentsOperation::Read,
         )?;
-        let result = provider_impl.read_document(&credential, path, max_chars);
+        let result = provider_impl.read_document(http, &credential, path, max_chars);
         self.record_runtime_activity(
             &credential.account_key,
             "documents_read",
@@ -206,11 +273,40 @@ impl DocumentsService {
         account_key: Option<&str>,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        self.search_with_identity(provider, account_key, None, query)
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.search_with_http(&mut unavailable_http, provider, account_key, query)
+    }
+
+    pub fn search_with_http(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        provider: &str,
+        account_key: Option<&str>,
+        query: DocumentsSearchQuery,
+    ) -> Result<Vec<DocumentsSearchHit>> {
+        self.search_with_http_and_identity(http, provider, account_key, None, query)
     }
 
     pub fn search_with_identity(
         &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        query: DocumentsSearchQuery,
+    ) -> Result<Vec<DocumentsSearchHit>> {
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.search_with_http_and_identity(
+            &mut unavailable_http,
+            provider,
+            account_key,
+            preferred_identity_class,
+            query,
+        )
+    }
+
+    pub fn search_with_http_and_identity(
+        &self,
+        http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -222,7 +318,7 @@ impl DocumentsService {
             preferred_identity_class,
             DocumentsOperation::Search,
         )?;
-        let result = provider_impl.search_documents(&credential, query);
+        let result = provider_impl.search_documents(http, &credential, query);
         self.record_runtime_activity(
             &credential.account_key,
             "documents_search",
@@ -408,6 +504,7 @@ mod tests {
         }
         fn list_entries(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &DocumentsProviderCredential,
             query: DocumentsQuery,
         ) -> Result<Vec<DocumentsEntry>> {
@@ -426,6 +523,7 @@ mod tests {
         }
         fn read_document(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &DocumentsProviderCredential,
             path: &str,
             _max_chars: usize,
@@ -447,6 +545,7 @@ mod tests {
         }
         fn search_documents(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &DocumentsProviderCredential,
             query: DocumentsSearchQuery,
         ) -> Result<Vec<DocumentsSearchHit>> {
@@ -487,6 +586,7 @@ mod tests {
 
         fn list_entries(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &DocumentsProviderCredential,
             _query: DocumentsQuery,
         ) -> Result<Vec<DocumentsEntry>> {
@@ -498,6 +598,7 @@ mod tests {
 
         fn read_document(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &DocumentsProviderCredential,
             _path: &str,
             _max_chars: usize,
@@ -510,6 +611,7 @@ mod tests {
 
         fn search_documents(
             &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &DocumentsProviderCredential,
             _query: DocumentsSearchQuery,
         ) -> Result<Vec<DocumentsSearchHit>> {

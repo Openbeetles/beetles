@@ -12,6 +12,11 @@ use crate::office::{
     OfficeResolveRequest, OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     OfficeService,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::office::{OfficeHttpClient, UnavailableOfficeHttpClient};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -211,6 +216,7 @@ pub trait OfficeProbeAdapter: Send + Sync {
     fn provider_kind(&self) -> &'static str;
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &OfficeCredential,
     ) -> Result<OfficeProbeResult>;
@@ -664,6 +670,15 @@ impl OfficeConfigManagementService {
     }
 
     pub fn probe(&self, account_key: &str) -> Result<OfficeProbeResult> {
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.probe_with_http(&mut unavailable_http, account_key)
+    }
+
+    pub fn probe_with_http(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        account_key: &str,
+    ) -> Result<OfficeProbeResult> {
         let accounts = self.load_accounts_segment()?;
         let office = self.build_office_service(&accounts)?;
         let account = office.account(account_key).ok_or_else(|| {
@@ -688,7 +703,7 @@ impl OfficeConfigManagementService {
             .iter()
             .find(|adapter| adapter.provider_kind() == account.provider_kind)
         {
-            let result = adapter.probe(&account, &credential)?;
+            let result = adapter.probe(http, &account, &credential)?;
             self.persist_probe_runtime_status(&office, &result)?;
             return Ok(result);
         }
@@ -1874,6 +1889,7 @@ mod tests {
 
             fn probe(
                 &self,
+                _http: &mut dyn OfficeHttpClient,
                 account: &OfficeAccount,
                 _credential: &OfficeCredential,
             ) -> Result<OfficeProbeResult> {

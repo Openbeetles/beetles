@@ -4,6 +4,7 @@
 ))]
 
 use crate::error::{Error, Result};
+use crate::office::OfficeHttpClient;
 use crate::platform::ResponseBody;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -113,6 +114,18 @@ pub fn request_google_api_json_ureq<T: DeserializeOwned>(
     }
 }
 
+pub fn request_google_api_json<T: DeserializeOwned>(
+    http: &mut dyn OfficeHttpClient,
+    stage: &'static str,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> Result<T> {
+    let (status, body) = http.request_with_headers(method, url, headers, body)?;
+    parse_google_api_json(stage, status, body)
+}
+
 pub fn request_google_api_empty_ureq(
     stage: &'static str,
     response: std::result::Result<ureq::Response, ureq::Error>,
@@ -132,6 +145,21 @@ pub fn request_google_api_empty_ureq(
         }
         Err(ureq::Error::Transport(error)) => Err(Error::config(stage, error.to_string())),
     }
+}
+
+pub fn request_google_api_empty(
+    http: &mut dyn OfficeHttpClient,
+    stage: &'static str,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> Result<u16> {
+    let (status, body) = http.request_with_headers(method, url, headers, body)?;
+    if (200..=299).contains(&status) {
+        return Ok(status);
+    }
+    parse_google_api_json::<serde_json::Value>(stage, status, body).map(|_| status)
 }
 
 fn extract_google_error_message(body: &[u8]) -> Option<String> {

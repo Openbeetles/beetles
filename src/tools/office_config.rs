@@ -12,9 +12,9 @@ use crate::office::{
     OfficeResolveRequest,
 };
 use crate::tools::{
-    office_args::parse_identity_class_value, parse_tool_args, serialize_tool_output, Tool,
-    ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata,
-    ToolRiskLevel, ToolRollbackKind,
+    http_bridge::ToolContextHttpClient, office_args::parse_identity_class_value, parse_tool_args,
+    serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -74,7 +74,7 @@ impl Tool for OfficeConfigTool {
         r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|assess|provider_schema|resolve_account|draft_accounts|draft_credentials|validate_accounts|validate_credentials|commit_accounts|commit_credentials|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"provider_kind":{"type":"string","description":"Optional provider kind for provider_schema"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"OfficeAccount payload for draft_accounts"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to account.account_key"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at account.account_key"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for draft_accounts"},"credential":{"type":"object","description":"OfficeCredential payload for draft_credentials"},"segment":{"type":"object","description":"OfficeAccountsSegment or OfficeCredentialsSegment payload for validate/commit ops"},"account_key":{"type":"string","description":"Optional account key for assess, revoke, or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for commit_* and revoke"}},"required":["op"]}"#
     }
 
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_office_config")?;
         let op = obj
             .get("op")
@@ -276,7 +276,10 @@ impl Tool for OfficeConfigTool {
                     &OfficeConfigResponse {
                         op: "probe",
                         ok: true,
-                        payload: self.service.probe(account_key)?,
+                        payload: {
+                            let mut http = ToolContextHttpClient::new(ctx);
+                            self.service.probe_with_http(&mut http, account_key)?
+                        },
                     },
                 )
             }

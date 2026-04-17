@@ -7,8 +7,9 @@ use crate::contacts_directory::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    fetch_wecom_access_token_ureq, request_wecom_json_ureq, OfficeAccount, OfficeProbeAdapter,
-    OfficeProbeDisposition, OfficeProbeResult, WecomApiEnvelope, WecomAuthCredential,
+    fetch_wecom_access_token, request_wecom_json, OfficeAccount, OfficeHttpClient,
+    OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult, WecomApiEnvelope,
+    WecomAuthCredential,
 };
 use serde::Deserialize;
 
@@ -27,13 +28,14 @@ impl ContactsDirectoryProvider for WecomContactsDirectoryProvider {
 
     fn lookup_contacts(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &ContactsDirectoryProviderCredential,
         query: &str,
         limit: usize,
     ) -> Result<Vec<ContactEntry>> {
         validate_wecom_credential(credential)?;
-        let client = WecomContactsClient::new(credential)?;
-        client.lookup_contacts(query, limit)
+        let client = WecomContactsClient::new(http, credential)?;
+        client.lookup_contacts(http, query, limit)
     }
 }
 
@@ -46,6 +48,7 @@ impl OfficeProbeAdapter for WecomContactsDirectoryOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -70,8 +73,8 @@ impl OfficeProbeAdapter for WecomContactsDirectoryOfficeProbeAdapter {
                 reason: "contacts_transport_config_missing".to_string(),
             });
         }
-        let client = WecomContactsClient::new(&adapted)?;
-        client.list_users()?;
+        let client = WecomContactsClient::new(http, &adapted)?;
+        client.list_users(http)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -88,8 +91,12 @@ struct WecomContactsClient {
 }
 
 impl WecomContactsClient {
-    fn new(credential: &ContactsDirectoryProviderCredential) -> Result<Self> {
-        let access_token = fetch_wecom_access_token_ureq(
+    fn new(
+        http: &mut dyn OfficeHttpClient,
+        credential: &ContactsDirectoryProviderCredential,
+    ) -> Result<Self> {
+        let access_token = fetch_wecom_access_token(
+            http,
             "wecom_contacts_auth",
             WecomAuthCredential {
                 corp_id: credential.app_id.as_str(),
@@ -103,11 +110,16 @@ impl WecomContactsClient {
         })
     }
 
-    fn lookup_contacts(&self, query: &str, limit: usize) -> Result<Vec<ContactEntry>> {
+    fn lookup_contacts(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ContactEntry>> {
         let query = query.trim().to_ascii_lowercase();
         let limit = limit.clamp(1, 50);
         let mut out = Vec::new();
-        for user in self.list_users()? {
+        for user in self.list_users(http)? {
             let contact = user.to_contact_entry()?;
             if query.is_empty() || matches_query(&contact, &query) {
                 out.push(contact);
@@ -119,7 +131,7 @@ impl WecomContactsClient {
         Ok(out)
     }
 
-    fn list_users(&self) -> Result<Vec<WecomUser>> {
+    fn list_users(&self, http: &mut dyn OfficeHttpClient) -> Result<Vec<WecomUser>> {
         let url = format!(
             "{}/cgi-bin/user/list?access_token={}&department_id={}&fetch_child=1",
             self.base_url,
@@ -127,7 +139,7 @@ impl WecomContactsClient {
             WECOM_ROOT_DEPARTMENT_ID
         );
         let payload: WecomApiEnvelope<WecomUsersPayload> =
-            request_wecom_json_ureq("wecom_contacts_lookup", ureq::get(&url).call())?;
+            request_wecom_json(http, "wecom_contacts_lookup", "GET", &url, &[], None)?;
         Ok(payload.require_ok("wecom_contacts_lookup")?.userlist)
     }
 }

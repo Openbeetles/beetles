@@ -234,6 +234,7 @@ impl OfficeProbeAdapter for FeishuCalendarOfficeProbeAdapter {
 
     fn probe(
         &self,
+        _http: &mut dyn crate::office::OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {

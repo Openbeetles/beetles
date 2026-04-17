@@ -41,6 +41,11 @@ mod status;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+mod transport;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod wecom;
 
 pub use account::{
@@ -81,9 +86,10 @@ pub use credentials::{
 ))]
 pub use google_api::{
     build_google_api_url, normalize_google_api_base_url, parse_google_api_json,
-    request_google_api_empty_ureq, request_google_api_json_ureq, GoogleApiErrorEnvelope,
-    GoogleApiListEnvelope, GOOGLE_CALENDAR_DEFAULT_BASE_URL, GOOGLE_DRIVE_DEFAULT_BASE_URL,
-    GOOGLE_GMAIL_DEFAULT_BASE_URL, GOOGLE_PEOPLE_DEFAULT_BASE_URL,
+    request_google_api_empty, request_google_api_empty_ureq, request_google_api_json,
+    request_google_api_json_ureq, GoogleApiErrorEnvelope, GoogleApiListEnvelope,
+    GOOGLE_CALENDAR_DEFAULT_BASE_URL, GOOGLE_DRIVE_DEFAULT_BASE_URL, GOOGLE_GMAIL_DEFAULT_BASE_URL,
+    GOOGLE_PEOPLE_DEFAULT_BASE_URL,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -96,8 +102,9 @@ pub(crate) use integration_topology::build_default_office_integration_topology;
 ))]
 pub use microsoft_graph::{
     build_microsoft_graph_url, normalize_microsoft_graph_base_url, parse_microsoft_graph_json,
-    request_microsoft_graph_empty_ureq, request_microsoft_graph_json_ureq,
-    MicrosoftGraphCollection, MicrosoftGraphErrorEnvelope, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    request_microsoft_graph_empty, request_microsoft_graph_empty_ureq,
+    request_microsoft_graph_json, request_microsoft_graph_json_ureq, MicrosoftGraphCollection,
+    MicrosoftGraphErrorEnvelope, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 pub use policy::OfficeSelectionPolicy;
 #[cfg(feature = "capability_office")]
@@ -123,7 +130,16 @@ pub use status::{
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+pub use transport::{
+    read_bounded_http_bytes, OfficeBoundedBytes, OfficeHttpClient, OfficeStreamingResponse,
+    UnavailableOfficeHttpClient,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use wecom::{
-    fetch_wecom_access_token_ureq, request_wecom_json_ureq, WecomApiEnvelope, WecomAuthCredential,
-    WecomTokenPayload, WECOM_DEFAULT_BASE_URL,
+    fetch_wecom_access_token, fetch_wecom_access_token_ureq, request_wecom_json,
+    request_wecom_json_ureq, WecomApiEnvelope, WecomAuthCredential, WecomTokenPayload,
+    WECOM_DEFAULT_BASE_URL,
 };

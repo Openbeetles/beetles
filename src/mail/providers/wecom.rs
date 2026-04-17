@@ -10,7 +10,7 @@ use crate::mail::{
     MailQuery, MailSearchQuery, MailSendRequest,
 };
 use crate::office::{
-    fetch_wecom_access_token_ureq, request_wecom_json_ureq, OfficeProbeAdapter,
+    fetch_wecom_access_token, request_wecom_json, OfficeHttpClient, OfficeProbeAdapter,
     OfficeProbeDisposition, OfficeProbeResult, WecomApiEnvelope, WecomAuthCredential,
 };
 use crate::util::current_unix_secs;
@@ -41,6 +41,7 @@ impl MailProvider for WecomMailProvider {
 
     fn list_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
@@ -50,12 +51,13 @@ impl MailProvider for WecomMailProvider {
                 "unread_only is not supported by wecom mail",
             ));
         }
-        let client = WecomMailClient::new(credential)?;
-        client.list_messages(&query)
+        let client = WecomMailClient::new(http, credential)?;
+        client.list_messages(http, &query)
     }
 
     fn search_messages(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
@@ -65,30 +67,33 @@ impl MailProvider for WecomMailProvider {
                 "unread_only is not supported by wecom mail",
             ));
         }
-        let client = WecomMailClient::new(credential)?;
-        client.search_messages(&query)
+        let client = WecomMailClient::new(http, credential)?;
+        client.search_messages(http, &query)
     }
 
     fn get_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>> {
-        let client = WecomMailClient::new(credential)?;
-        client.get_message(id)
+        let client = WecomMailClient::new(http, credential)?;
+        client.get_message(http, id)
     }
 
     fn send_message(
         &self,
+        http: &mut dyn OfficeHttpClient,
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        let client = WecomMailClient::new(credential)?;
-        client.send_message(request)
+        let client = WecomMailClient::new(http, credential)?;
+        client.send_message(http, request)
     }
 
     fn draft_message(
         &self,
+        _http: &mut dyn OfficeHttpClient,
         _credential: &MailProviderCredential,
         _request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
@@ -108,6 +113,7 @@ impl OfficeProbeAdapter for WecomMailOfficeProbeAdapter {
 
     fn probe(
         &self,
+        http: &mut dyn OfficeHttpClient,
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
@@ -132,8 +138,8 @@ impl OfficeProbeAdapter for WecomMailOfficeProbeAdapter {
                 reason: "mail_transport_config_missing".to_string(),
             });
         }
-        let client = WecomMailClient::new(&adapted)?;
-        client.query_mailbox_address()?;
+        let client = WecomMailClient::new(http, &adapted)?;
+        client.query_mailbox_address(http)?;
         Ok(OfficeProbeResult {
             account_key: account.account_key.clone(),
             provider_kind: account.provider_kind.clone(),
@@ -150,9 +156,13 @@ struct WecomMailClient<'a> {
 }
 
 impl<'a> WecomMailClient<'a> {
-    fn new(credential: &'a MailProviderCredential) -> Result<Self> {
+    fn new(
+        http: &mut dyn OfficeHttpClient,
+        credential: &'a MailProviderCredential,
+    ) -> Result<Self> {
         validate_wecom_mail_credential(credential)?;
-        let access_token = fetch_wecom_access_token_ureq(
+        let access_token = fetch_wecom_access_token(
+            http,
             "wecom_mail_auth",
             WecomAuthCredential {
                 corp_id: credential.corp_id.as_str(),
@@ -166,20 +176,28 @@ impl<'a> WecomMailClient<'a> {
         })
     }
 
-    fn list_messages(&self, query: &MailQuery) -> Result<Vec<MailMessageSummary>> {
-        let ids = self.fetch_mail_ids(query.received_after_unix_secs, query.limit)?;
+    fn list_messages(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &MailQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
+        let ids = self.fetch_mail_ids(http, query.received_after_unix_secs, query.limit)?;
         ids.into_iter()
-            .map(|item| self.read_mail(&item))
+            .map(|item| self.read_mail(http, &item))
             .collect::<Result<Vec<_>>>()
             .map(|items| items.into_iter().map(|item| item.summary).collect())
     }
 
-    fn search_messages(&self, query: &MailSearchQuery) -> Result<Vec<MailMessageSummary>> {
-        let ids = self.fetch_mail_ids(query.received_after_unix_secs, query.limit.max(20))?;
+    fn search_messages(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        query: &MailSearchQuery,
+    ) -> Result<Vec<MailMessageSummary>> {
+        let ids = self.fetch_mail_ids(http, query.received_after_unix_secs, query.limit.max(20))?;
         let needle = query.query.trim().to_ascii_lowercase();
         let mut out = Vec::new();
         for id in ids {
-            let item = self.read_mail(&id)?;
+            let item = self.read_mail(http, &id)?;
             let haystack = format!(
                 "{}\n{}\n{}\n{}",
                 item.summary.subject,
@@ -198,11 +216,19 @@ impl<'a> WecomMailClient<'a> {
         Ok(out)
     }
 
-    fn get_message(&self, id: &str) -> Result<Option<MailMessage>> {
-        self.read_mail(id).map(Some)
+    fn get_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        id: &str,
+    ) -> Result<Option<MailMessage>> {
+        self.read_mail(http, id).map(Some)
     }
 
-    fn send_message(&self, request: &MailSendRequest) -> Result<MailMessageSummary> {
+    fn send_message(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        request: &MailSendRequest,
+    ) -> Result<MailMessageSummary> {
         let url = self.endpoint("/cgi-bin/exmail/app/compose_send");
         let body = json!({
             "to": {"emails": request.to},
@@ -212,15 +238,18 @@ impl<'a> WecomMailClient<'a> {
             "content": request.text_body,
             "content_type": "text/plain",
         });
-        let payload: WecomApiEnvelope<serde_json::Value> = request_wecom_json_ureq(
+        let body = body.to_string();
+        let payload: WecomApiEnvelope<serde_json::Value> = request_wecom_json(
+            http,
             "wecom_mail_send",
-            ureq::post(&url)
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string()),
+            "POST",
+            &url,
+            &[("Content-Type", "application/json")],
+            Some(body.as_bytes()),
         )?;
         payload.require_ok("wecom_mail_send")?;
         let from = if self.credential.from_address.trim().is_empty() {
-            self.query_mailbox_address()?
+            self.query_mailbox_address(http)?
         } else {
             self.credential.from_address.clone()
         };
@@ -240,6 +269,7 @@ impl<'a> WecomMailClient<'a> {
 
     fn fetch_mail_ids(
         &self,
+        http: &mut dyn OfficeHttpClient,
         received_after_unix_secs: Option<u64>,
         limit: usize,
     ) -> Result<Vec<String>> {
@@ -252,11 +282,14 @@ impl<'a> WecomMailClient<'a> {
             "limit": limit.clamp(1, WECOM_MAIL_FETCH_LIMIT),
         });
         let url = self.endpoint("/cgi-bin/exmail/app/get_mail_list");
-        let payload: WecomApiEnvelope<WecomMailListPayload> = request_wecom_json_ureq(
+        let body = body.to_string();
+        let payload: WecomApiEnvelope<WecomMailListPayload> = request_wecom_json(
+            http,
             "wecom_mail_list",
-            ureq::post(&url)
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string()),
+            "POST",
+            &url,
+            &[("Content-Type", "application/json")],
+            Some(body.as_bytes()),
         )?;
         Ok(payload
             .require_ok("wecom_mail_list")?
@@ -266,23 +299,26 @@ impl<'a> WecomMailClient<'a> {
             .collect())
     }
 
-    fn read_mail(&self, mail_id: &str) -> Result<MailMessage> {
+    fn read_mail(&self, http: &mut dyn OfficeHttpClient, mail_id: &str) -> Result<MailMessage> {
         let url = self.endpoint("/cgi-bin/exmail/app/read_mail");
         let body = json!({ "mail_id": mail_id });
-        let payload: WecomApiEnvelope<WecomReadMailPayload> = request_wecom_json_ureq(
+        let body = body.to_string();
+        let payload: WecomApiEnvelope<WecomReadMailPayload> = request_wecom_json(
+            http,
             "wecom_mail_get",
-            ureq::post(&url)
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string()),
+            "POST",
+            &url,
+            &[("Content-Type", "application/json")],
+            Some(body.as_bytes()),
         )?;
         let data = payload.require_ok("wecom_mail_get")?;
         parse_raw_message(self.credential, mail_id, &data.mail_content)
     }
 
-    fn query_mailbox_address(&self) -> Result<String> {
+    fn query_mailbox_address(&self, http: &mut dyn OfficeHttpClient) -> Result<String> {
         let url = self.endpoint("/cgi-bin/exmail/app/get_email_alias");
         let payload: WecomApiEnvelope<WecomMailboxPayload> =
-            request_wecom_json_ureq("wecom_mail_probe", ureq::post(&url).call())?;
+            request_wecom_json(http, "wecom_mail_probe", "POST", &url, &[], None)?;
         let data = payload.require_ok("wecom_mail_probe")?;
         if data.email.trim().is_empty() {
             return Err(Error::config("wecom_mail_probe", "missing mailbox email"));
