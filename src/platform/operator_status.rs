@@ -19,6 +19,8 @@ use crate::runtime;
 use crate::skills::{
     build_capability_atom_operator_summary, build_runtime_skill_doctrine_snapshot,
     build_runtime_skill_genome_snapshot, build_runtime_skill_operator_summary,
+    list_capability_atom_records, list_runtime_skill_records, CapabilityAtomSourceKind,
+    CapabilityAtomTrustLevel, RuntimeSkillRecord, RuntimeSkillStrategyDiffKind,
 };
 use crate::task_execution::build_task_learning_operator_snapshot;
 use crate::tools::{ToolExecutionGovernanceState, ToolRegistry};
@@ -209,6 +211,7 @@ pub fn build_operator_status(
     programmable_reasoning.replay = build_programmable_reasoning_replay_inspection(
         input.platform.session_store().as_ref(),
         input.platform.turn_ledger_store().as_ref(),
+        input.platform.skill_storage().as_ref(),
     )?;
     programmable_reasoning.inspection = programmable_reasoning_inspection_views(
         &programmable_reasoning.doctrine,
@@ -254,6 +257,26 @@ pub fn build_operator_status(
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         release,
     })
+}
+
+pub(crate) fn build_programmable_reasoning_system_info_summary(
+    platform: &dyn Platform,
+) -> crate::error::Result<crate::ProgrammableReasoningSystemInfoSummary> {
+    let doctrine = build_runtime_skill_doctrine_snapshot(platform.skill_storage().as_ref());
+    let genome = build_runtime_skill_genome_snapshot(platform.skill_storage().as_ref());
+    let capability_atoms =
+        build_capability_atom_operator_summary(platform.skill_storage().as_ref());
+    let replay = build_programmable_reasoning_replay_inspection(
+        platform.session_store().as_ref(),
+        platform.turn_ledger_store().as_ref(),
+        platform.skill_storage().as_ref(),
+    )?;
+    Ok(crate::programmable_reasoning_system_info_summary(
+        &doctrine,
+        &genome,
+        &capability_atoms,
+        &replay,
+    ))
 }
 
 pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String {
@@ -574,12 +597,16 @@ fn build_programmable_reasoning_usage_analytics(
     let mut last_tool_event: Option<(&str, u64, u32)> = None;
     for record in activity_records {
         let status_bucket = record.bucket;
-        usage.recent_total_attempts += 1;
+        usage.recent_total_events += 1;
+        if record.attention_required {
+            usage.recent_attention_events += 1;
+        }
         usage.last_seen_at = Some(usage.last_seen_at.map_or(record.recorded_at, |current| {
             current.max(record.recorded_at)
         }));
         match record.activity_kind {
             ProgrammableReasoningActivityKind::Tool => {
+                usage.recent_total_attempts += 1;
                 if let Some(tool_name) = record.tool_name.as_deref() {
                     let entry = tool_counts.entry(tool_name.to_string()).or_default();
                     entry.total_attempts += 1;
@@ -599,6 +626,40 @@ fn build_programmable_reasoning_usage_analytics(
                             Some((tool_name, record.recorded_at, record.same_timestamp_order));
                     }
                 }
+                match status_bucket {
+                    ProgrammableReasoningRecordBucket::Succeeded => {
+                        usage.recent_succeeded += 1;
+                        if let Some(tool_name) = record.tool_name.as_deref() {
+                            if let Some(entry) = tool_counts.get_mut(tool_name) {
+                                entry.succeeded += 1;
+                            }
+                        }
+                    }
+                    ProgrammableReasoningRecordBucket::Failed => {
+                        usage.recent_failed += 1;
+                        if let Some(tool_name) = record.tool_name.as_deref() {
+                            if let Some(entry) = tool_counts.get_mut(tool_name) {
+                                entry.failed += 1;
+                            }
+                        }
+                    }
+                    ProgrammableReasoningRecordBucket::Denied => {
+                        usage.recent_denied += 1;
+                        if let Some(tool_name) = record.tool_name.as_deref() {
+                            if let Some(entry) = tool_counts.get_mut(tool_name) {
+                                entry.denied += 1;
+                            }
+                        }
+                    }
+                    ProgrammableReasoningRecordBucket::ResourceDenied => {
+                        usage.recent_resource_denied += 1;
+                        if let Some(tool_name) = record.tool_name.as_deref() {
+                            if let Some(entry) = tool_counts.get_mut(tool_name) {
+                                entry.resource_denied += 1;
+                            }
+                        }
+                    }
+                }
             }
             ProgrammableReasoningActivityKind::TurnStage => {
                 let entry = stage_counts
@@ -609,40 +670,6 @@ fn build_programmable_reasoning_usage_analytics(
                     Some(entry.last_seen_at.map_or(record.recorded_at, |current| {
                         current.max(record.recorded_at)
                     }));
-            }
-        }
-        match status_bucket {
-            ProgrammableReasoningRecordBucket::Succeeded => {
-                usage.recent_succeeded += 1;
-                if let Some(tool_name) = record.tool_name.as_deref() {
-                    if let Some(entry) = tool_counts.get_mut(tool_name) {
-                        entry.succeeded += 1;
-                    }
-                }
-            }
-            ProgrammableReasoningRecordBucket::Failed => {
-                usage.recent_failed += 1;
-                if let Some(tool_name) = record.tool_name.as_deref() {
-                    if let Some(entry) = tool_counts.get_mut(tool_name) {
-                        entry.failed += 1;
-                    }
-                }
-            }
-            ProgrammableReasoningRecordBucket::Denied => {
-                usage.recent_denied += 1;
-                if let Some(tool_name) = record.tool_name.as_deref() {
-                    if let Some(entry) = tool_counts.get_mut(tool_name) {
-                        entry.denied += 1;
-                    }
-                }
-            }
-            ProgrammableReasoningRecordBucket::ResourceDenied => {
-                usage.recent_resource_denied += 1;
-                if let Some(tool_name) = record.tool_name.as_deref() {
-                    if let Some(entry) = tool_counts.get_mut(tool_name) {
-                        entry.resource_denied += 1;
-                    }
-                }
             }
         }
     }
@@ -717,10 +744,7 @@ fn build_programmable_reasoning_maintenance_digest(
     usage: &crate::ProgrammableReasoningUsageAnalytics,
     timeline: &crate::ProgrammableReasoningTimeline,
 ) -> crate::ProgrammableReasoningMaintenanceDigest {
-    let attention_event_count = usage
-        .recent_failed
-        .saturating_add(usage.recent_denied)
-        .saturating_add(usage.recent_resource_denied);
+    let attention_event_count = usage.recent_attention_events;
     let last_event = timeline.recent_events.first();
     let attention_activities = timeline
         .recent_events
@@ -744,7 +768,7 @@ fn build_programmable_reasoning_maintenance_digest(
             }
             acc
         });
-    let status = if usage.recent_total_attempts == 0 {
+    let status = if usage.recent_total_events == 0 {
         "idle"
     } else if attention_event_count > 0 {
         "attention"
@@ -754,12 +778,12 @@ fn build_programmable_reasoning_maintenance_digest(
     let headline = match status {
         "idle" => "no recent programmable reasoning activity".to_string(),
         "attention" => format!(
-            "{} recent attempts, {} need attention",
-            usage.recent_total_attempts, attention_event_count
+            "{} recent programmable reasoning events, {} need attention",
+            usage.recent_total_events, attention_event_count
         ),
         _ => format!(
-            "{} recent attempts, all completed successfully",
-            usage.recent_total_attempts
+            "{} recent programmable reasoning events, no operator intervention needed",
+            usage.recent_total_events
         ),
     };
     crate::ProgrammableReasoningMaintenanceDigest {
@@ -778,6 +802,9 @@ fn build_programmable_reasoning_maintenance_digest(
 const PROGRAMMABLE_REASONING_LEDGER_SCAN_LIMIT_PER_CHAT: usize = 4;
 const PROGRAMMABLE_REASONING_BRANCH_REPLAY_LIMIT: usize = 6;
 const PROGRAMMABLE_REASONING_ARENA_REPLAY_LIMIT: usize = 6;
+const PROGRAMMABLE_REASONING_DOCTRINE_REPLAY_LIMIT: usize = 6;
+const PROGRAMMABLE_REASONING_GENOME_REPLAY_LIMIT: usize = 6;
+const PROGRAMMABLE_REASONING_CAPABILITY_ATOM_REPLAY_LIMIT: usize = 6;
 
 fn collect_recent_programmable_reasoning_turn_ledgers(
     session_store: &dyn crate::memory::SessionStore,
@@ -801,9 +828,14 @@ fn collect_recent_programmable_reasoning_turn_ledgers(
 fn build_programmable_reasoning_replay_inspection(
     session_store: &dyn crate::memory::SessionStore,
     turn_ledger_store: &dyn crate::memory::TurnLedgerStore,
+    skill_storage: &dyn crate::platform::SkillStorage,
 ) -> crate::error::Result<crate::ProgrammableReasoningReplayInspection> {
     let mut branch_replays = Vec::new();
     let mut arena_replays = Vec::new();
+    let mut doctrine_replays = collect_programmable_reasoning_doctrine_replays(skill_storage);
+    let mut genome_replays = collect_programmable_reasoning_genome_replays(skill_storage);
+    let mut capability_atom_replays =
+        collect_programmable_reasoning_capability_atom_replays(skill_storage);
 
     for (chat_id, ledger) in
         collect_recent_programmable_reasoning_turn_ledgers(session_store, turn_ledger_store)?
@@ -833,15 +865,123 @@ fn build_programmable_reasoning_replay_inspection(
 
     let branch_replays_retained = branch_replays.len();
     let arena_replays_retained = arena_replays.len();
+    doctrine_replays.sort_by(|left, right| {
+        right
+            .recorded_at_ms
+            .cmp(&left.recorded_at_ms)
+            .then_with(|| left.source_skill_name.cmp(&right.source_skill_name))
+    });
+    genome_replays.sort_by(|left, right| {
+        right
+            .recorded_at_ms
+            .cmp(&left.recorded_at_ms)
+            .then_with(|| left.skill_name.cmp(&right.skill_name))
+    });
+    capability_atom_replays.sort_by(|left, right| {
+        right
+            .recorded_at_ms
+            .cmp(&left.recorded_at_ms)
+            .then_with(|| left.atom_name.cmp(&right.atom_name))
+    });
+
+    let doctrine_replays_retained = doctrine_replays.len();
+    let genome_replays_retained = genome_replays.len();
+    let capability_atom_replays_retained = capability_atom_replays.len();
     branch_replays.truncate(PROGRAMMABLE_REASONING_BRANCH_REPLAY_LIMIT);
     arena_replays.truncate(PROGRAMMABLE_REASONING_ARENA_REPLAY_LIMIT);
+    doctrine_replays.truncate(PROGRAMMABLE_REASONING_DOCTRINE_REPLAY_LIMIT);
+    genome_replays.truncate(PROGRAMMABLE_REASONING_GENOME_REPLAY_LIMIT);
+    capability_atom_replays.truncate(PROGRAMMABLE_REASONING_CAPABILITY_ATOM_REPLAY_LIMIT);
 
     Ok(crate::ProgrammableReasoningReplayInspection {
         branch_replays_retained,
         recent_branch_replays: branch_replays,
         arena_replays_retained,
         recent_arena_replays: arena_replays,
+        doctrine_replays_retained,
+        recent_doctrine_replays: doctrine_replays,
+        genome_replays_retained,
+        recent_genome_replays: genome_replays,
+        capability_atom_replays_retained,
+        recent_capability_atom_replays: capability_atom_replays,
     })
+}
+
+fn collect_programmable_reasoning_doctrine_replays(
+    skill_storage: &dyn crate::platform::SkillStorage,
+) -> Vec<crate::ProgrammableReasoningDoctrineReplayRecord> {
+    list_runtime_skill_records(skill_storage)
+        .into_iter()
+        .filter(|record| record.validated_success_count > 0 || record.revision_pending)
+        .map(|record| crate::ProgrammableReasoningDoctrineReplayRecord {
+            recorded_at_ms: record
+                .updated_at
+                .max(record.observed_at)
+                .saturating_mul(1000),
+            source_chat_id: record.source_chat_id.clone(),
+            source_skill_name: record.name.clone(),
+            topic: record.topic.clone(),
+            status: if record.revision_pending {
+                "revision_pending".to_string()
+            } else {
+                "stable".to_string()
+            },
+            validated_success_count: record.validated_success_count,
+            summary: summarize_runtime_skill_doctrine_replay(&record),
+        })
+        .collect()
+}
+
+fn collect_programmable_reasoning_genome_replays(
+    skill_storage: &dyn crate::platform::SkillStorage,
+) -> Vec<crate::ProgrammableReasoningGenomeReplayRecord> {
+    list_runtime_skill_records(skill_storage)
+        .into_iter()
+        .filter(|record| !record.strategy_diffs.is_empty() || record.retired_at.is_some())
+        .map(|record| {
+            let recorded_at = record
+                .strategy_diffs
+                .last()
+                .map(|diff| diff.recorded_at)
+                .or(record.retired_at)
+                .unwrap_or(record.updated_at.max(record.observed_at));
+            crate::ProgrammableReasoningGenomeReplayRecord {
+                recorded_at_ms: recorded_at.saturating_mul(1000),
+                source_chat_id: record.source_chat_id.clone(),
+                skill_name: record.name.clone(),
+                topic: record.topic.clone(),
+                status: runtime_skill_genome_replay_status(&record),
+                lineage_depth: record.genome_lineage.len().max(1),
+                diff_events: record.strategy_diffs.len(),
+                active_node_id: record
+                    .genome_lineage
+                    .last()
+                    .map(|node| node.node_id.clone()),
+                summary: summarize_runtime_skill_genome_replay(&record),
+            }
+        })
+        .collect()
+}
+
+fn collect_programmable_reasoning_capability_atom_replays(
+    skill_storage: &dyn crate::platform::SkillStorage,
+) -> Vec<crate::ProgrammableReasoningCapabilityAtomReplayRecord> {
+    list_capability_atom_records(skill_storage)
+        .into_iter()
+        .map(
+            |record| crate::ProgrammableReasoningCapabilityAtomReplayRecord {
+                recorded_at_ms: record.provenance.updated_at.saturating_mul(1000),
+                source_chat_id: record.provenance.source_chat_id.clone(),
+                atom_name: record.name.clone(),
+                topic: record.topic.clone(),
+                trust: capability_atom_trust_label(record.trust).to_string(),
+                source_kind: capability_atom_source_kind_label(record.provenance.source_kind)
+                    .to_string(),
+                status: capability_atom_replay_status(&record),
+                summary: summarize_capability_atom_replay(&record),
+            },
+        )
+        .collect()
 }
 
 fn branch_replay_record_from_ledger(
@@ -899,6 +1039,95 @@ fn arena_replay_record_from_ledger(
         defender: arena.defender.label.trim().to_string(),
         summary: arena.summary.trim().to_string(),
     })
+}
+
+fn summarize_runtime_skill_doctrine_replay(record: &RuntimeSkillRecord) -> String {
+    if record.revision_pending {
+        format!(
+            "{} now needs doctrine revision review after the latest governed update.",
+            record.title
+        )
+    } else {
+        format!(
+            "{} stabilized with {} validated successes.",
+            record.title, record.validated_success_count
+        )
+    }
+}
+
+fn runtime_skill_strategy_diff_kind_label(kind: RuntimeSkillStrategyDiffKind) -> &'static str {
+    match kind {
+        RuntimeSkillStrategyDiffKind::SummaryRevision => "summary_revision",
+        RuntimeSkillStrategyDiffKind::ProcedureRefinement => "procedure_refinement",
+        RuntimeSkillStrategyDiffKind::DoctrineRevision => "doctrine_revision",
+    }
+}
+
+fn runtime_skill_genome_replay_status(record: &RuntimeSkillRecord) -> String {
+    if record.retired_at.is_some() {
+        "retired".to_string()
+    } else if let Some(diff) = record.strategy_diffs.last() {
+        runtime_skill_strategy_diff_kind_label(diff.change_kind).to_string()
+    } else {
+        "lineage_recorded".to_string()
+    }
+}
+
+fn summarize_runtime_skill_genome_replay(record: &RuntimeSkillRecord) -> String {
+    if let Some(diff) = record.strategy_diffs.last() {
+        diff.summary.trim().to_string()
+    } else if !record.retirement_reason.trim().is_empty() {
+        record.retirement_reason.trim().to_string()
+    } else {
+        format!(
+            "{} lineage depth={} diff_events={}",
+            record.title,
+            record.genome_lineage.len().max(1),
+            record.strategy_diffs.len()
+        )
+    }
+}
+
+fn capability_atom_trust_label(trust: CapabilityAtomTrustLevel) -> &'static str {
+    match trust {
+        CapabilityAtomTrustLevel::LocalVerified => "local_verified",
+        CapabilityAtomTrustLevel::ImportedPendingAdjudication => "imported_pending_adjudication",
+        CapabilityAtomTrustLevel::ImportedAdopted => "imported_adopted",
+    }
+}
+
+fn capability_atom_source_kind_label(kind: CapabilityAtomSourceKind) -> &'static str {
+    match kind {
+        CapabilityAtomSourceKind::RuntimeSkill => "runtime_skill",
+        CapabilityAtomSourceKind::ImportedAtom => "imported_atom",
+    }
+}
+
+fn capability_atom_replay_status(record: &crate::skills::CapabilityAtomRecord) -> String {
+    match record.trust {
+        CapabilityAtomTrustLevel::LocalVerified => "local_verified".to_string(),
+        CapabilityAtomTrustLevel::ImportedPendingAdjudication => {
+            "pending_local_adjudication".to_string()
+        }
+        CapabilityAtomTrustLevel::ImportedAdopted => "imported_adopted".to_string(),
+    }
+}
+
+fn summarize_capability_atom_replay(record: &crate::skills::CapabilityAtomRecord) -> String {
+    match record.trust {
+        CapabilityAtomTrustLevel::LocalVerified => format!(
+            "{} promoted from {} into the local verified atom set.",
+            record.title, record.provenance.source_name
+        ),
+        CapabilityAtomTrustLevel::ImportedPendingAdjudication => format!(
+            "{} imported from {} and now waits for local adjudication.",
+            record.title, record.provenance.source_name
+        ),
+        CapabilityAtomTrustLevel::ImportedAdopted => format!(
+            "{} adopted the imported lineage from {} after local validation.",
+            record.title, record.provenance.source_name
+        ),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1112,6 +1341,9 @@ mod tests {
     use super::*;
     use crate::bus::IngressKind;
     use crate::config::AppConfig;
+    use crate::error::Error;
+    use crate::memory::{SessionMessage, SessionStore, TurnLedger, TurnLedgerStore};
+    use crate::platform::SkillStorage;
     use crate::tools::{
         ToolApprovalMode, ToolEffectClass, ToolExecutionGovernance, ToolExecutionOutcome,
         ToolExecutionPermit, ToolExecutionRequest, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
@@ -1154,6 +1386,130 @@ mod tests {
 
         fn list_dir(&self, _rel_path: &str) -> crate::Result<Vec<String>> {
             Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestSkillStorage {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl SkillStorage for TestSkillStorage {
+        fn list_names(&self) -> crate::Result<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> crate::Result<Vec<u8>> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::config("skill", "missing"))
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> crate::Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> crate::Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(name);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestSessionStore {
+        sessions: Mutex<HashMap<String, Vec<SessionMessage>>>,
+    }
+
+    impl SessionStore for TestSessionStore {
+        fn append(&self, chat_id: &str, role: &str, content: &str) -> crate::Result<()> {
+            self.sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(chat_id.to_string())
+                .or_default()
+                .push(SessionMessage {
+                    role: role.to_string(),
+                    content: content.to_string(),
+                });
+            Ok(())
+        }
+
+        fn load_recent(&self, chat_id: &str, n: usize) -> crate::Result<Vec<SessionMessage>> {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(messages) = sessions.get(chat_id) else {
+                return Ok(Vec::new());
+            };
+            let keep_from = messages.len().saturating_sub(n);
+            Ok(messages[keep_from..].to_vec())
+        }
+
+        fn clear(&self, chat_id: &str) -> crate::Result<()> {
+            self.sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> crate::Result<Vec<String>> {
+            Ok(self
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestTurnLedgerStore {
+        ledgers: Mutex<HashMap<String, TurnLedger>>,
+    }
+
+    impl TurnLedgerStore for TestTurnLedgerStore {
+        fn get(&self, chat_id: &str) -> crate::Result<Option<TurnLedger>> {
+            Ok(self
+                .ledgers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(chat_id)
+                .cloned())
+        }
+
+        fn set(&self, chat_id: &str, ledger: &TurnLedger) -> crate::Result<()> {
+            self.ledgers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(chat_id.to_string(), ledger.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> crate::Result<()> {
+            self.ledgers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(chat_id);
+            Ok(())
         }
     }
 
@@ -1209,14 +1565,9 @@ mod tests {
 
     #[test]
     fn build_operator_status_summarizes_programmable_reasoning_usage() {
-        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
-        let config = AppConfig::load_from_env();
-        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
             MemoryStateFs::default(),
         )));
-        let tool_registry =
-            crate::tools::ToolRegistry::new().with_execution_governance(Arc::clone(&governance));
 
         governance
             .record_success(
@@ -1252,15 +1603,19 @@ mod tests {
             )
             .expect("record unrelated success");
 
-        let snapshot = build_operator_status(OperatorStatusInput {
-            config: &config,
-            platform: platform.as_ref(),
-            tool_registry: &tool_registry,
-        })
-        .expect("operator status");
-
-        let usage = snapshot.programmable_reasoning.usage_analytics;
+        let state = governance.inspect().expect("inspect governance");
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let activity_records = collect_programmable_reasoning_activity_records(
+            Some(&state),
+            &session_store,
+            &turn_ledger_store,
+        )
+        .expect("collect activity records");
+        let usage = build_programmable_reasoning_usage_analytics(&activity_records);
+        assert_eq!(usage.recent_total_events, 4);
         assert_eq!(usage.recent_total_attempts, 4);
+        assert_eq!(usage.recent_attention_events, 3);
         assert_eq!(usage.recent_succeeded, 1);
         assert_eq!(usage.recent_failed, 1);
         assert_eq!(usage.recent_denied, 1);
@@ -1294,14 +1649,9 @@ mod tests {
 
     #[test]
     fn build_operator_status_exposes_programmable_reasoning_timeline() {
-        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
-        let config = AppConfig::load_from_env();
-        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
             MemoryStateFs::default(),
         )));
-        let tool_registry =
-            crate::tools::ToolRegistry::new().with_execution_governance(Arc::clone(&governance));
 
         governance
             .record_success(
@@ -1337,14 +1687,16 @@ mod tests {
             )
             .expect("record unrelated success");
 
-        let snapshot = build_operator_status(OperatorStatusInput {
-            config: &config,
-            platform: platform.as_ref(),
-            tool_registry: &tool_registry,
-        })
-        .expect("operator status");
-
-        let timeline = snapshot.programmable_reasoning.timeline;
+        let state = governance.inspect().expect("inspect governance");
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let activity_records = collect_programmable_reasoning_activity_records(
+            Some(&state),
+            &session_store,
+            &turn_ledger_store,
+        )
+        .expect("collect activity records");
+        let timeline = build_programmable_reasoning_timeline(&activity_records);
         assert_eq!(timeline.recent_events.len(), 4);
         assert_eq!(timeline.recent_events[0].activity_kind, "tool");
         assert_eq!(
@@ -1405,14 +1757,9 @@ mod tests {
 
     #[test]
     fn build_operator_status_exposes_programmable_reasoning_maintenance_digest() {
-        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
-        let config = AppConfig::load_from_env();
-        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let governance = Arc::new(ToolExecutionGovernance::new(Arc::new(
             MemoryStateFs::default(),
         )));
-        let tool_registry =
-            crate::tools::ToolRegistry::new().with_execution_governance(Arc::clone(&governance));
 
         governance
             .record_success(
@@ -1442,14 +1789,18 @@ mod tests {
             })
             .expect("record denial");
 
-        let snapshot = build_operator_status(OperatorStatusInput {
-            config: &config,
-            platform: platform.as_ref(),
-            tool_registry: &tool_registry,
-        })
-        .expect("operator status");
-
-        let digest = snapshot.programmable_reasoning.maintenance_digest;
+        let state = governance.inspect().expect("inspect governance");
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let activity_records = collect_programmable_reasoning_activity_records(
+            Some(&state),
+            &session_store,
+            &turn_ledger_store,
+        )
+        .expect("collect activity records");
+        let usage = build_programmable_reasoning_usage_analytics(&activity_records);
+        let timeline = build_programmable_reasoning_timeline(&activity_records);
+        let digest = build_programmable_reasoning_maintenance_digest(&usage, &timeline);
         assert_eq!(digest.status, "attention");
         assert_eq!(digest.last_event_kind.as_deref(), Some("tool"));
         assert_eq!(
@@ -1480,7 +1831,7 @@ mod tests {
         );
         assert!(digest
             .headline
-            .contains("4 recent attempts, 3 need attention"));
+            .contains("4 recent programmable reasoning events, 3 need attention"));
     }
 
     #[test]
@@ -1499,13 +1850,11 @@ mod tests {
                 .expect("system time")
                 .as_nanos()
         );
-        let config = AppConfig::load_from_env();
-        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
-        let tool_registry = crate::tools::ToolRegistry::new();
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
         let chat_id = format!("reasoning-turn-activity-{unique}");
 
-        platform
-            .session_store()
+        session_store
             .append(
                 &chat_id,
                 "user",
@@ -1557,21 +1906,21 @@ mod tests {
                 ..TurnCounterfactualBranchLedger::default()
             }],
         });
-        platform
-            .turn_ledger_store()
+        turn_ledger_store
             .set(&chat_id, &ledger)
             .expect("write turn ledger");
 
-        let snapshot = build_operator_status(OperatorStatusInput {
-            config: &config,
-            platform: platform.as_ref(),
-            tool_registry: &tool_registry,
-        })
-        .expect("operator status");
-
-        let usage = snapshot.programmable_reasoning.usage_analytics;
-        assert_eq!(usage.recent_total_attempts, 2);
-        assert_eq!(usage.recent_succeeded, 2);
+        let activity_records = collect_programmable_reasoning_activity_records(
+            None,
+            &session_store,
+            &turn_ledger_store,
+        )
+        .expect("collect activity records");
+        let usage = build_programmable_reasoning_usage_analytics(&activity_records);
+        assert_eq!(usage.recent_total_events, 2);
+        assert_eq!(usage.recent_total_attempts, 0);
+        assert_eq!(usage.recent_attention_events, 0);
+        assert_eq!(usage.recent_succeeded, 0);
         assert_eq!(usage.recent_failed, 0);
         assert_eq!(usage.recent_denied, 0);
         assert_eq!(usage.recent_resource_denied, 0);
@@ -1589,7 +1938,7 @@ mod tests {
             entry.stage_name == "counterfactual_sandbox" && entry.total_events == 1
         }));
 
-        let timeline = snapshot.programmable_reasoning.timeline;
+        let timeline = build_programmable_reasoning_timeline(&activity_records);
         assert_eq!(timeline.recent_events.len(), 2);
         assert_eq!(timeline.recent_events[0].activity_kind, "turn_stage");
         assert_eq!(
@@ -1610,8 +1959,9 @@ mod tests {
             "memory_query via intent_compiler"
         );
 
-        let digest = snapshot.programmable_reasoning.maintenance_digest;
+        let digest = build_programmable_reasoning_maintenance_digest(&usage, &timeline);
         assert_eq!(digest.status, "healthy");
+        assert_eq!(digest.last_event_kind.as_deref(), Some("turn_stage"));
         assert_eq!(
             digest.last_event_name.as_deref(),
             Some("counterfactual_sandbox")
@@ -1621,7 +1971,7 @@ mod tests {
         assert_eq!(digest.attention_event_count, 0);
         assert!(digest
             .headline
-            .contains("2 recent attempts, all completed successfully"));
+            .contains("2 recent programmable reasoning events, no operator intervention needed"));
     }
 
     #[test]
@@ -1858,18 +2208,16 @@ mod tests {
                 .expect("system time")
                 .as_nanos()
         );
-        let config = AppConfig::load_from_env();
-        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
-        let tool_registry = crate::tools::ToolRegistry::new();
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let skill_storage = TestSkillStorage::default();
         let chat_branch = format!("replay-branch-{unique}");
         let chat_arena = format!("replay-arena-{unique}");
 
-        platform
-            .session_store()
+        session_store
             .append(&chat_branch, "user", "compile the reasoning replay")
             .expect("write branch session");
-        platform
-            .session_store()
+        session_store
             .append(&chat_arena, "user", "adjudicate the replay claim")
             .expect("write arena session");
 
@@ -1905,8 +2253,7 @@ mod tests {
                 ..TurnCounterfactualBranchLedger::default()
             }],
         });
-        platform
-            .turn_ledger_store()
+        turn_ledger_store
             .set(&chat_branch, &branch_ledger)
             .expect("write branch ledger");
 
@@ -1948,19 +2295,16 @@ mod tests {
                 ..TurnAdversarialArenaClaimLedger::default()
             },
         });
-        platform
-            .turn_ledger_store()
+        turn_ledger_store
             .set(&chat_arena, &arena_ledger)
             .expect("write arena ledger");
 
-        let snapshot = build_operator_status(OperatorStatusInput {
-            config: &config,
-            platform: platform.as_ref(),
-            tool_registry: &tool_registry,
-        })
-        .expect("operator status");
-
-        let replay = snapshot.programmable_reasoning.replay;
+        let replay = build_programmable_reasoning_replay_inspection(
+            &session_store,
+            &turn_ledger_store,
+            &skill_storage,
+        )
+        .expect("build replay inspection");
         assert!(replay.branch_replays_retained >= 1);
         assert!(!replay.recent_branch_replays.is_empty());
         assert_eq!(replay.recent_branch_replays[0].chat_id, chat_branch);
@@ -1982,6 +2326,109 @@ mod tests {
         assert_eq!(replay.recent_arena_replays[0].disposition, "revise");
         assert_eq!(replay.recent_arena_replays[0].winner, "defender");
         assert_eq!(replay.recent_arena_replays[0].attacker, "attacker");
+        assert_eq!(replay.doctrine_replays_retained, 0);
+        assert!(replay.recent_doctrine_replays.is_empty());
+        assert_eq!(replay.genome_replays_retained, 0);
+        assert!(replay.recent_genome_replays.is_empty());
+        assert_eq!(replay.capability_atom_replays_retained, 0);
+        assert!(replay.recent_capability_atom_replays.is_empty());
+    }
+
+    #[test]
+    fn build_operator_status_exposes_doctrine_genome_and_capability_atom_replays() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        let session_store = TestSessionStore::default();
+        let turn_ledger_store = TestTurnLedgerStore::default();
+        let skill_storage = TestSkillStorage::default();
+        let topic = format!("p13_replay_contract_{unique}");
+        let chat_id = format!("replay-chat-{unique}");
+        let skill_name = format!("runtime_skill__{topic}");
+        let observed_at = 6_100_000_000_u64;
+
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "P13 replay contract".to_string(),
+                summary: "Compile the initial doctrine before promoting reusable capability."
+                    .to_string(),
+                content: "1. inspect doctrine\n2. record genome\n3. sync capability atom"
+                    .to_string(),
+                citations: vec!["turn_log:chat-1#req=req-1".to_string()],
+                source_chat_id: Some(chat_id.clone()),
+                observed_at,
+            },
+        )
+        .expect("write initial runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            &skill_storage,
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            observed_at + 20,
+            "validated initial doctrine",
+        )
+        .expect("record validated outcome");
+        crate::skills::upsert_runtime_skill(
+            &skill_storage,
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "P13 replay contract".to_string(),
+                summary:
+                    "Compile the revised doctrine, then preserve the genome diff before exchange."
+                        .to_string(),
+                content:
+                    "1. inspect doctrine delta\n2. review genome diff\n3. sync capability atom"
+                        .to_string(),
+                citations: vec!["turn_log:chat-1#req=req-2".to_string()],
+                source_chat_id: Some(chat_id.clone()),
+                observed_at: observed_at + 40,
+            },
+        )
+        .expect("write revised runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            &skill_storage,
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Mismatch,
+            observed_at + 60,
+            "revision pending after doctrine change",
+        )
+        .expect("record mismatch outcome");
+        crate::skills::sync_capability_atoms_from_runtime_skills(&skill_storage, observed_at + 80)
+            .expect("sync capability atoms");
+
+        let replay = build_programmable_reasoning_replay_inspection(
+            &session_store,
+            &turn_ledger_store,
+            &skill_storage,
+        )
+        .expect("build replay inspection");
+        assert!(replay.doctrine_replays_retained >= 1);
+        assert!(replay.recent_doctrine_replays.iter().any(|record| {
+            record.source_skill_name == skill_name
+                && record.source_chat_id.as_deref() == Some(chat_id.as_str())
+        }));
+        assert!(replay.genome_replays_retained >= 1);
+        assert!(replay.recent_genome_replays.iter().any(|record| {
+            record.skill_name == skill_name
+                && record.source_chat_id.as_deref() == Some(chat_id.as_str())
+                && record.diff_events >= 1
+        }));
+        assert!(replay.capability_atom_replays_retained >= 1);
+        assert!(replay.recent_capability_atom_replays.iter().any(|record| {
+            record.atom_name == format!("capability_atom__{topic}")
+                && record.source_chat_id.as_deref() == Some(chat_id.as_str())
+        }));
     }
 
     fn reasoning_shape(tool_name: &str) -> ToolExecutionShape {

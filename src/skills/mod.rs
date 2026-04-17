@@ -8,6 +8,7 @@ mod capability_atoms;
 mod prompt_cache;
 mod runtime;
 
+pub(crate) use capability_atoms::list_capability_atom_records;
 pub use capability_atoms::{
     build_capability_atom_operator_summary, export_capability_atom_exchange_envelope,
     import_capability_atom_exchange_envelope, is_capability_atom_name,
@@ -18,7 +19,6 @@ pub use capability_atoms::{
     CapabilityAtomTrustLevel,
 };
 pub use prompt_cache::SkillPromptCache;
-pub(crate) use runtime::retrieve_runtime_skill_hits_with_backend;
 pub use runtime::{
     build_runtime_skill_doctrine_snapshot, build_runtime_skill_genome_snapshot,
     build_runtime_skill_operator_summary, build_runtime_skill_recall_block, govern_runtime_skills,
@@ -32,6 +32,7 @@ pub use runtime::{
     RuntimeSkillStrategyDiffKind, RuntimeSkillWriteAction, RuntimeSkillWriteItemReport,
     RuntimeSkillWriteOutcome, RuntimeSkillWriteReason, RuntimeSkillWriteSource,
 };
+pub(crate) use runtime::{list_runtime_skill_records, retrieve_runtime_skill_hits_with_backend};
 
 fn is_skill_name_valid(name: &str) -> bool {
     !name.is_empty() && !name.contains("..") && !name.contains('/') && !name.contains('\\')

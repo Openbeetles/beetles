@@ -41,7 +41,9 @@ pub struct ProgrammableReasoningStageUsageSummary {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ProgrammableReasoningUsageAnalytics {
+    pub recent_total_events: usize,
     pub recent_total_attempts: usize,
+    pub recent_attention_events: usize,
     pub recent_succeeded: usize,
     pub recent_failed: usize,
     pub recent_denied: usize,
@@ -179,6 +181,46 @@ pub struct ProgrammableReasoningArenaReplayRecord {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningDoctrineReplayRecord {
+    pub recorded_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_chat_id: Option<String>,
+    pub source_skill_name: String,
+    pub topic: String,
+    pub status: String,
+    pub validated_success_count: u32,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningGenomeReplayRecord {
+    pub recorded_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_chat_id: Option<String>,
+    pub skill_name: String,
+    pub topic: String,
+    pub status: String,
+    pub lineage_depth: usize,
+    pub diff_events: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_node_id: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningCapabilityAtomReplayRecord {
+    pub recorded_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_chat_id: Option<String>,
+    pub atom_name: String,
+    pub topic: String,
+    pub trust: String,
+    pub source_kind: String,
+    pub status: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ProgrammableReasoningReplayInspection {
     pub branch_replays_retained: usize,
     #[serde(default)]
@@ -186,6 +228,15 @@ pub struct ProgrammableReasoningReplayInspection {
     pub arena_replays_retained: usize,
     #[serde(default)]
     pub recent_arena_replays: Vec<ProgrammableReasoningArenaReplayRecord>,
+    pub doctrine_replays_retained: usize,
+    #[serde(default)]
+    pub recent_doctrine_replays: Vec<ProgrammableReasoningDoctrineReplayRecord>,
+    pub genome_replays_retained: usize,
+    #[serde(default)]
+    pub recent_genome_replays: Vec<ProgrammableReasoningGenomeReplayRecord>,
+    pub capability_atom_replays_retained: usize,
+    #[serde(default)]
+    pub recent_capability_atom_replays: Vec<ProgrammableReasoningCapabilityAtomReplayRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -410,7 +461,7 @@ pub fn summarize_programmable_reasoning_operator(
     snapshot: &ProgrammableReasoningOperatorSnapshot,
 ) -> String {
     format!(
-        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} atoms_total={} atoms_local={} atoms_pending={} atoms_adopted={} | demos={} recent_attempts={} arena_revised={} arena_hold={} attention={} branch_replays={} arena_replays={}",
+        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} atoms_total={} atoms_local={} atoms_pending={} atoms_adopted={} | demos={} recent_events={} tool_attempts={} arena_revised={} arena_hold={} attention={} branch_replays={} arena_replays={} doctrine_replays={} genome_replays={} capability_atom_replays={}",
         programmable_reasoning_stage_label(snapshot.stage),
         snapshot.runtime_contract.execution_backend,
         snapshot.runtime_contract.execution_enabled,
@@ -429,12 +480,16 @@ pub fn summarize_programmable_reasoning_operator(
         snapshot.capability_atoms.imported_pending_adjudication,
         snapshot.capability_atoms.imported_adopted,
         snapshot.product_surface.demo_scenarios.len(),
+        snapshot.usage_analytics.recent_total_events,
         snapshot.usage_analytics.recent_total_attempts,
         snapshot.adversarial_arena.summary.revised,
         snapshot.adversarial_arena.summary.held_for_clarification,
         snapshot.maintenance_digest.attention_event_count,
         snapshot.replay.branch_replays_retained,
         snapshot.replay.arena_replays_retained,
+        snapshot.replay.doctrine_replays_retained,
+        snapshot.replay.genome_replays_retained,
+        snapshot.replay.capability_atom_replays_retained,
     )
 }
 
@@ -480,7 +535,12 @@ pub fn programmable_reasoning_operator_snapshot(
     snapshot
 }
 
-pub fn programmable_reasoning_system_info_summary() -> ProgrammableReasoningSystemInfoSummary {
+pub fn programmable_reasoning_system_info_summary(
+    doctrine: &RuntimeSkillDoctrineSnapshot,
+    genome: &RuntimeSkillGenomeSnapshot,
+    capability_atoms: &CapabilityAtomOperatorSummary,
+    replay: &ProgrammableReasoningReplayInspection,
+) -> ProgrammableReasoningSystemInfoSummary {
     let contract = programmable_reasoning_runtime_contract();
     ProgrammableReasoningSystemInfoSummary {
         stage: contract.stage,
@@ -492,18 +552,14 @@ pub fn programmable_reasoning_system_info_summary() -> ProgrammableReasoningSyst
         demo_scenario_count: build_programmable_reasoning_product_surface()
             .demo_scenarios
             .len(),
-        inspection_ready: matches!(
-            contract.stage,
-            ProgrammableReasoningStage::CapabilityAtomsExchange
-                | ProgrammableReasoningStage::DoctrineGenomeEvolution
-        ),
-        replay_ready: matches!(
-            contract.stage,
-            ProgrammableReasoningStage::CounterfactualSandbox
-                | ProgrammableReasoningStage::AdversarialArena
-                | ProgrammableReasoningStage::DoctrineGenomeEvolution
-                | ProgrammableReasoningStage::CapabilityAtomsExchange
-        ),
+        inspection_ready: doctrine.total_clauses > 0
+            || genome.total_lineages > 0
+            || capability_atoms.total > 0,
+        replay_ready: replay.branch_replays_retained > 0
+            || replay.arena_replays_retained > 0
+            || replay.doctrine_replays_retained > 0
+            || replay.genome_replays_retained > 0
+            || replay.capability_atom_replays_retained > 0,
     }
 }
 
@@ -564,19 +620,36 @@ mod tests {
         assert!(snapshot.replay.recent_branch_replays.is_empty());
         assert_eq!(snapshot.replay.arena_replays_retained, 0);
         assert!(snapshot.replay.recent_arena_replays.is_empty());
+        assert_eq!(snapshot.replay.doctrine_replays_retained, 0);
+        assert!(snapshot.replay.recent_doctrine_replays.is_empty());
+        assert_eq!(snapshot.replay.genome_replays_retained, 0);
+        assert!(snapshot.replay.recent_genome_replays.is_empty());
+        assert_eq!(snapshot.replay.capability_atom_replays_retained, 0);
+        assert!(snapshot.replay.recent_capability_atom_replays.is_empty());
         assert!(snapshot.maintenance_digest.status.is_empty());
         assert!(snapshot
             .operator_summary
             .contains("capability_atoms_exchange |"));
-        assert!(snapshot.operator_summary.contains("recent_attempts=0"));
+        assert!(snapshot.operator_summary.contains("recent_events=0"));
+        assert!(snapshot.operator_summary.contains("tool_attempts=0"));
         assert!(snapshot.operator_summary.contains("demos=3"));
         assert!(snapshot.operator_summary.contains("branch_replays=0"));
         assert!(snapshot.operator_summary.contains("arena_replays=0"));
+        assert!(snapshot.operator_summary.contains("doctrine_replays=0"));
+        assert!(snapshot.operator_summary.contains("genome_replays=0"));
+        assert!(snapshot
+            .operator_summary
+            .contains("capability_atom_replays=0"));
     }
 
     #[test]
-    fn system_info_summary_stays_compact() {
-        let summary = programmable_reasoning_system_info_summary();
+    fn system_info_summary_reflects_real_readiness_instead_of_stage_constants() {
+        let summary = programmable_reasoning_system_info_summary(
+            &RuntimeSkillDoctrineSnapshot::default(),
+            &RuntimeSkillGenomeSnapshot::default(),
+            &CapabilityAtomOperatorSummary::default(),
+            &ProgrammableReasoningReplayInspection::default(),
+        );
         assert_eq!(
             summary.stage,
             ProgrammableReasoningStage::CapabilityAtomsExchange
@@ -586,7 +659,7 @@ mod tests {
         assert!(summary.proposal_only_persistence);
         assert!(!summary.product_headline.is_empty());
         assert_eq!(summary.demo_scenario_count, 3);
-        assert!(summary.inspection_ready);
-        assert!(summary.replay_ready);
+        assert!(!summary.inspection_ready);
+        assert!(!summary.replay_ready);
     }
 }

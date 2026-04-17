@@ -20,6 +20,11 @@ pub(crate) enum ProgrammableReasoningIntentKind {
     MemoryQuery,
     CapabilityBridge,
     EngineeringSynthesis,
+    IntentCompiler,
+    CounterfactualSandbox,
+    AdversarialArena,
+    DoctrineGenomeEvolution,
+    CapabilityAtomsExchange,
 }
 
 impl ProgrammableReasoningIntentKind {
@@ -30,7 +35,24 @@ impl ProgrammableReasoningIntentKind {
             Self::MemoryQuery => "memory_query",
             Self::CapabilityBridge => "capability_bridge",
             Self::EngineeringSynthesis => "engineering_synthesis",
+            Self::IntentCompiler => "intent_compiler",
+            Self::CounterfactualSandbox => "counterfactual_sandbox",
+            Self::AdversarialArena => "adversarial_arena",
+            Self::DoctrineGenomeEvolution => "doctrine_genome_evolution",
+            Self::CapabilityAtomsExchange => "capability_atoms_exchange",
         }
+    }
+
+    pub(crate) fn prefers_structured_tool_synthesis(self) -> bool {
+        matches!(
+            self,
+            Self::EngineeringSynthesis
+                | Self::IntentCompiler
+                | Self::CounterfactualSandbox
+                | Self::AdversarialArena
+                | Self::DoctrineGenomeEvolution
+                | Self::CapabilityAtomsExchange
+        )
     }
 }
 
@@ -209,11 +231,12 @@ fn select_intent_strategy(
                     | ActionFamily::TaskExecution
             ))
     {
+        let kind = select_structured_tool_reasoning_kind(input);
         return (
-            ProgrammableReasoningIntentKind::EngineeringSynthesis,
+            kind,
             ProgrammableReasoningStrategy::RequireNativeToolRound,
-            "Compile runtime and tool evidence into a structured action answer before replying.",
-            vec!["lua_query".to_string()],
+            intent_summary(kind),
+            intent_preferred_tools(kind),
             input.request_semantics.confidence.max(90),
         );
     }
@@ -221,11 +244,12 @@ fn select_intent_strategy(
     if input.has_tools
         && input.request_semantics.execution_preference == ExecutionPreference::ToolFirst
     {
+        let kind = select_tool_first_coordination_kind(input.runtime_contract.stage);
         return (
-            ProgrammableReasoningIntentKind::CapabilityBridge,
+            kind,
             ProgrammableReasoningStrategy::PreferNativeToolRound,
-            "Bridge the current turn intent with tool evidence before replying.",
-            vec!["lua_query".to_string()],
+            intent_summary(kind),
+            intent_preferred_tools(kind),
             input.request_semantics.confidence.max(82),
         );
     }
@@ -250,6 +274,139 @@ fn select_intent_strategy(
         Vec::new(),
         0,
     )
+}
+
+fn select_structured_tool_reasoning_kind(
+    input: &ProgrammableReasoningIntentInput<'_>,
+) -> ProgrammableReasoningIntentKind {
+    use crate::ProgrammableReasoningStage;
+
+    if input.runtime_contract.stage == ProgrammableReasoningStage::CapabilityAtomsExchange
+        && input.active_task_context_present
+        && input.governed_memory_evidence_present
+    {
+        return ProgrammableReasoningIntentKind::CapabilityAtomsExchange;
+    }
+
+    if matches!(
+        input.runtime_contract.stage,
+        ProgrammableReasoningStage::DoctrineGenomeEvolution
+            | ProgrammableReasoningStage::CapabilityAtomsExchange
+    ) && (input.active_task_context_present || input.governed_memory_evidence_present)
+    {
+        return ProgrammableReasoningIntentKind::DoctrineGenomeEvolution;
+    }
+
+    if matches!(
+        input.runtime_contract.stage,
+        ProgrammableReasoningStage::AdversarialArena
+            | ProgrammableReasoningStage::DoctrineGenomeEvolution
+            | ProgrammableReasoningStage::CapabilityAtomsExchange
+    ) && input.deliberation_gate.prefer_explicit_blocker
+    {
+        return ProgrammableReasoningIntentKind::AdversarialArena;
+    }
+
+    if matches!(
+        input.runtime_contract.stage,
+        ProgrammableReasoningStage::CounterfactualSandbox
+            | ProgrammableReasoningStage::AdversarialArena
+            | ProgrammableReasoningStage::DoctrineGenomeEvolution
+            | ProgrammableReasoningStage::CapabilityAtomsExchange
+    ) {
+        return ProgrammableReasoningIntentKind::CounterfactualSandbox;
+    }
+
+    if matches!(
+        input.runtime_contract.stage,
+        ProgrammableReasoningStage::IntentCompiler
+            | ProgrammableReasoningStage::CounterfactualSandbox
+            | ProgrammableReasoningStage::AdversarialArena
+            | ProgrammableReasoningStage::DoctrineGenomeEvolution
+            | ProgrammableReasoningStage::CapabilityAtomsExchange
+    ) {
+        return ProgrammableReasoningIntentKind::IntentCompiler;
+    }
+
+    ProgrammableReasoningIntentKind::EngineeringSynthesis
+}
+
+fn select_tool_first_coordination_kind(
+    stage: crate::ProgrammableReasoningStage,
+) -> ProgrammableReasoningIntentKind {
+    use crate::ProgrammableReasoningStage;
+
+    match stage {
+        ProgrammableReasoningStage::CapabilityAtomsExchange => {
+            ProgrammableReasoningIntentKind::CapabilityAtomsExchange
+        }
+        ProgrammableReasoningStage::DoctrineGenomeEvolution => {
+            ProgrammableReasoningIntentKind::DoctrineGenomeEvolution
+        }
+        ProgrammableReasoningStage::AdversarialArena => {
+            ProgrammableReasoningIntentKind::AdversarialArena
+        }
+        ProgrammableReasoningStage::CounterfactualSandbox => {
+            ProgrammableReasoningIntentKind::CounterfactualSandbox
+        }
+        ProgrammableReasoningStage::IntentCompiler => {
+            ProgrammableReasoningIntentKind::IntentCompiler
+        }
+        ProgrammableReasoningStage::EngineeringSynthesis => {
+            ProgrammableReasoningIntentKind::EngineeringSynthesis
+        }
+        ProgrammableReasoningStage::CapabilityBridgeExpansion => {
+            ProgrammableReasoningIntentKind::CapabilityBridge
+        }
+        _ => ProgrammableReasoningIntentKind::CapabilityBridge,
+    }
+}
+
+fn intent_summary(kind: ProgrammableReasoningIntentKind) -> &'static str {
+    match kind {
+        ProgrammableReasoningIntentKind::Disabled => "",
+        ProgrammableReasoningIntentKind::TurnLocalReadonly => {
+            "Reconcile the active turn evidence before committing to the reply."
+        }
+        ProgrammableReasoningIntentKind::MemoryQuery => {
+            "Compile governed memory evidence before answering."
+        }
+        ProgrammableReasoningIntentKind::CapabilityBridge => {
+            "Bridge the current turn intent with tool evidence before replying."
+        }
+        ProgrammableReasoningIntentKind::EngineeringSynthesis => {
+            "Compile runtime and tool evidence into a structured action answer before replying."
+        }
+        ProgrammableReasoningIntentKind::IntentCompiler => {
+            "Compile the turn-level runtime and tool strategy before replying."
+        }
+        ProgrammableReasoningIntentKind::CounterfactualSandbox => {
+            "Compare candidate action branches before selecting the next runtime move."
+        }
+        ProgrammableReasoningIntentKind::AdversarialArena => {
+            "Adjudicate challenger and defender claims before committing to the action path."
+        }
+        ProgrammableReasoningIntentKind::DoctrineGenomeEvolution => {
+            "Ground the turn in current doctrine and lineage evidence before committing the action path."
+        }
+        ProgrammableReasoningIntentKind::CapabilityAtomsExchange => {
+            "Compile the turn through verified capability atoms and reusable runtime skills before selecting the action path."
+        }
+    }
+}
+
+fn intent_preferred_tools(kind: ProgrammableReasoningIntentKind) -> Vec<String> {
+    match kind {
+        ProgrammableReasoningIntentKind::MemoryQuery => vec!["lua_memory_query".to_string()],
+        ProgrammableReasoningIntentKind::CapabilityBridge
+        | ProgrammableReasoningIntentKind::CapabilityAtomsExchange => {
+            vec!["lua_tool_bridge".to_string()]
+        }
+        ProgrammableReasoningIntentKind::EngineeringSynthesis => {
+            vec!["lua_query".to_string()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn build_rationale(input: &ProgrammableReasoningIntentInput<'_>) -> Vec<String> {
@@ -358,7 +515,7 @@ mod tests {
 
     fn linux_runtime_contract() -> crate::ProgrammableReasoningRuntimeContract {
         crate::ProgrammableReasoningRuntimeContract {
-            stage: crate::ProgrammableReasoningStage::AdversarialArena,
+            stage: crate::ProgrammableReasoningStage::CapabilityAtomsExchange,
             linux_only: true,
             execution_backend: crate::ProgrammableReasoningExecutionBackend::LuaSandbox,
             execution_enabled: true,
@@ -371,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_escalates_hard_runtime_action_into_engineering_synthesis() {
+    fn compiler_escalates_hard_runtime_action_into_capability_atoms_exchange() {
         let intent = compile_programmable_reasoning_intent(ProgrammableReasoningIntentInput {
             strategy: AgentRunStrategy::LinuxEnhanced,
             runtime_contract: linux_runtime_contract(),
@@ -393,14 +550,14 @@ mod tests {
 
         assert_eq!(
             intent.kind,
-            ProgrammableReasoningIntentKind::EngineeringSynthesis
+            ProgrammableReasoningIntentKind::CapabilityAtomsExchange
         );
         assert_eq!(
             intent.strategy,
             ProgrammableReasoningStrategy::RequireNativeToolRound
         );
         assert!(intent.runtime_grounding_required);
-        assert!(intent
+        assert!(!intent
             .preferred_tools
             .iter()
             .any(|tool| tool == "lua_query"));

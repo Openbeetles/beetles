@@ -469,7 +469,9 @@ fn collect_capability_atom_components(
     normalize_capability_atom_components(refs, atom_name)
 }
 
-fn list_capability_atom_records(storage: &dyn SkillStorage) -> Vec<CapabilityAtomRecord> {
+pub(crate) fn list_capability_atom_records(
+    storage: &dyn SkillStorage,
+) -> Vec<CapabilityAtomRecord> {
     let mut out = Vec::new();
     for name in list_skill_names(storage) {
         if !is_capability_atom_name(&name) {

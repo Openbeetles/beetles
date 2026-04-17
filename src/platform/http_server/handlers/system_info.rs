@@ -88,6 +88,11 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
     let lan_ip = ctx.platform.lan_ipv4().unwrap_or_else(|| "—".to_string());
+    let programmable_reasoning =
+        crate::platform::operator_status::build_programmable_reasoning_system_info_summary(
+            ctx.platform.as_ref(),
+        )
+        .map_err(to_io)?;
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
@@ -98,7 +103,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "locale": locale,
         "lan_ip": lan_ip,
         "workflow": crate::runtime::workflow_audit_snapshot(8).summary,
-        "programmable_reasoning": crate::programmable_reasoning_system_info_summary(),
+        "programmable_reasoning": programmable_reasoning,
     });
 
     if let Some(obj) = json.as_object_mut() {
@@ -204,14 +209,12 @@ mod tests {
             parsed["programmable_reasoning"]["demo_scenario_count"].as_u64(),
             Some(3)
         );
-        assert_eq!(
-            parsed["programmable_reasoning"]["inspection_ready"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            parsed["programmable_reasoning"]["replay_ready"].as_bool(),
-            Some(true)
-        );
+        assert!(parsed["programmable_reasoning"]["inspection_ready"]
+            .as_bool()
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["replay_ready"]
+            .as_bool()
+            .is_some());
         assert!(parsed.get("initiative").is_none());
         assert!(parsed.get("presence").is_none());
         assert!(parsed.get("runtime_mode").is_none());

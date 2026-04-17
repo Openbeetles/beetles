@@ -307,7 +307,7 @@ fn should_consider_native_tool_round(snapshot: &CounterfactualTurnSnapshot) -> b
 
 fn should_consider_structured_tool_synthesis(snapshot: &CounterfactualTurnSnapshot) -> bool {
     snapshot.has_tools
-        && (snapshot.reasoning_kind == ProgrammableReasoningIntentKind::EngineeringSynthesis
+        && (snapshot.reasoning_kind.prefers_structured_tool_synthesis()
             || snapshot.deliberation_class == crate::memory::TurnDeliberationClass::HardReasoning
             || snapshot.active_task_context_present)
 }
@@ -477,9 +477,9 @@ fn score_structured_tool_synthesis(
 ) -> CounterfactualBranchProjection {
     let mut score = 25_i16;
     let mut rationale = Vec::with_capacity(5);
-    if snapshot.reasoning_kind == ProgrammableReasoningIntentKind::EngineeringSynthesis {
+    if snapshot.reasoning_kind.prefers_structured_tool_synthesis() {
         score += 30;
-        rationale.push("engineering_synthesis".to_string());
+        rationale.push(snapshot.reasoning_kind.label().to_string());
     }
     if snapshot.deliberation_class == crate::memory::TurnDeliberationClass::HardReasoning {
         score += 20;
@@ -625,7 +625,7 @@ mod tests {
 
     fn linux_runtime_contract() -> ProgrammableReasoningRuntimeContract {
         ProgrammableReasoningRuntimeContract {
-            stage: ProgrammableReasoningStage::AdversarialArena,
+            stage: ProgrammableReasoningStage::CapabilityAtomsExchange,
             linux_only: true,
             execution_backend: ProgrammableReasoningExecutionBackend::LuaSandbox,
             execution_enabled: true,
@@ -662,12 +662,12 @@ mod tests {
             },
             deliberation_gate: &hard_gate(),
             reasoning_intent: Some(&ProgrammableReasoningIntent {
-                kind: ProgrammableReasoningIntentKind::EngineeringSynthesis,
+                kind: ProgrammableReasoningIntentKind::CapabilityAtomsExchange,
                 strategy: ProgrammableReasoningStrategy::RequireNativeToolRound,
                 confidence: 92,
                 summary: "Compile runtime evidence before answering.".to_string(),
                 rationale: vec!["hard_reasoning".to_string()],
-                preferred_tools: vec!["lua_query".to_string()],
+                preferred_tools: vec!["lua_tool_bridge".to_string()],
                 runtime_grounding_required: true,
             }),
             has_tools: true,
