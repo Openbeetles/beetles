@@ -22,6 +22,20 @@ struct Meta {
     disabled: Vec<String>,
 }
 
+fn is_missing_skill_meta_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+fn parse_skill_meta_bytes(buf: &[u8]) -> Result<(Vec<String>, Vec<String>)> {
+    let s = String::from_utf8_lossy(buf);
+    let meta: Meta =
+        serde_json::from_str(&s).map_err(|e| Error::config("skills_meta_parse", e.to_string()))?;
+    Ok((meta.order, meta.disabled))
+}
+
 /// SPIFFS 实现的 SkillMetaStore；单文件 config/skills_meta.json。
 pub struct SpiffsSkillMetaStore;
 
@@ -59,11 +73,12 @@ impl SkillMetaStore for SpiffsSkillMetaStore {
     fn read_meta(&self) -> Result<(Vec<String>, Vec<String>)> {
         let buf = match read_file(full_path()) {
             Ok(b) => b,
-            Err(_) => return Ok((Vec::new(), Vec::new())),
+            Err(error) if is_missing_skill_meta_error(&error) => {
+                return Ok((Vec::new(), Vec::new()))
+            }
+            Err(error) => return Err(error.with_stage("skills_meta_read")),
         };
-        let s = String::from_utf8_lossy(&buf);
-        let meta: Meta = serde_json::from_str(&s).unwrap_or_default();
-        Ok((meta.order, meta.disabled))
+        parse_skill_meta_bytes(&buf)
     }
 
     fn write_meta(&self, order: &[String], disabled: &[String]) -> Result<()> {
@@ -169,5 +184,12 @@ mod tests {
         );
         assert_eq!(store.reads.load(Ordering::SeqCst), 1);
         assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn parse_skill_meta_bytes_rejects_corrupt_json() {
+        let error =
+            parse_skill_meta_bytes(br#"{"order":["alpha"],"disabled": }"#).expect_err("corrupt");
+        assert_eq!(error.stage(), "skills_meta_parse");
     }
 }

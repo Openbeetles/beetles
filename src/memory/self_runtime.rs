@@ -244,7 +244,60 @@ pub struct SelfRuntimeOutcome {
     pub outer_voice_result: Result<OuterVoiceRefreshOutcome>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SelfRuntimeLoadHealth {
+    issues: Vec<SelfRuntimeLoadIssue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SelfRuntimeLoadIssue {
+    layer: &'static str,
+    stage: &'static str,
+    detail: String,
+}
+
+impl SelfRuntimeLoadHealth {
+    fn record(&mut self, layer: &'static str, error: &crate::error::Error) {
+        let detail = truncate_content_to_max(error.to_string().trim(), 160)
+            .trim()
+            .to_string();
+        if self
+            .issues
+            .iter()
+            .any(|issue| issue.layer == layer && issue.stage == error.stage())
+        {
+            return;
+        }
+        self.issues.push(SelfRuntimeLoadIssue {
+            layer,
+            stage: error.stage(),
+            detail,
+        });
+    }
+
+    fn has_failures(&self) -> bool {
+        !self.issues.is_empty()
+    }
+
+    fn has_issue_for(&self, layer: &'static str) -> bool {
+        self.issues.iter().any(|issue| issue.layer == layer)
+    }
+
+    fn summary(&self) -> String {
+        let joined = self
+            .issues
+            .iter()
+            .map(|issue| format!("{}@{}={}", issue.layer, issue.stage, issue.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        truncate_content_to_max(joined.trim(), 512)
+            .trim()
+            .to_string()
+    }
+}
+
 struct LoadedSelfRuntimeState {
+    load_health: SelfRuntimeLoadHealth,
     summary_text: Option<String>,
     execution_state: Option<crate::memory::ExecutionState>,
     self_model: Option<crate::memory::SelfModel>,
@@ -1588,6 +1641,56 @@ fn self_runtime_push_compact(out: &mut Vec<String>, value: &str) {
     }
 }
 
+fn self_runtime_load_failure_error(load_health: &SelfRuntimeLoadHealth) -> crate::error::Error {
+    crate::error::Error::config(
+        "self_runtime_load_guard",
+        format!(
+            "critical self-runtime state load failed: {}",
+            load_health.summary()
+        ),
+    )
+}
+
+fn self_runtime_load_guard_outcome(
+    chat_id: &str,
+    state: &LoadedSelfRuntimeState,
+) -> Option<Box<SelfRuntimeOutcome>> {
+    if !state.load_health.has_failures() {
+        return None;
+    }
+    let summary = state.load_health.summary();
+    log::warn!(
+        "[self_runtime] degraded load guard blocked mutating path chat_id={}: {}",
+        chat_id,
+        summary
+    );
+    Some(Box::new(SelfRuntimeOutcome {
+        decision: None,
+        world_sense_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        autonomy_strategy_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        inner_life_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        private_doc_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        self_model_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        self_authored_core_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        self_continuity_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        task_learning_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        private_garden_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        boundary_persona_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        outer_voice_result: Err(self_runtime_load_failure_error(&state.load_health)),
+    }))
+}
+
+fn merge_self_continuity_touch_result(
+    refresh_result: Result<SelfContinuityRefreshOutcome>,
+    touch_result: Result<()>,
+) -> Result<SelfContinuityRefreshOutcome> {
+    match (refresh_result, touch_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(outcome), Ok(())) => Ok(outcome),
+    }
+}
+
 pub fn run_self_runtime(
     http: &mut dyn LlmHttpClient,
     llm: &(dyn LlmClient + Send + Sync),
@@ -1597,14 +1700,10 @@ pub fn run_self_runtime(
 ) -> Box<SelfRuntimeOutcome> {
     let profile = ctx.memory_system_kind.memory_profile();
     let authority_plan = decide_self_runtime_authority(ctx.memory_system_kind);
-    sync_self_runtime_relationship_topology(
-        &ctx,
-        payload.source_channel.as_str(),
-        chat_id,
-        payload.now_secs,
-    );
-    let _ = sync_self_runtime_relationship_portfolio(&ctx, payload.now_secs);
     let state = load_self_runtime_state(&ctx, chat_id, payload, profile, authority_plan);
+    if let Some(outcome) = self_runtime_load_guard_outcome(chat_id, state.as_ref()) {
+        return outcome;
+    }
     crate::platform::task_wdt::feed_current_task();
     let prelude =
         refresh_world_and_autonomy(http, llm, &ctx, chat_id, payload, profile, state.as_ref());
@@ -1637,7 +1736,7 @@ pub fn run_self_runtime(
         crate::platform::task_wdt::feed_current_task();
     }
 
-    let _ = touch_self_continuity_runtime(
+    let touch_self_continuity_result = touch_self_continuity_runtime(
         ctx.self_continuity_store,
         board_subject_scope_id(),
         payload.now_secs,
@@ -1645,7 +1744,16 @@ pub fn run_self_runtime(
         true,
         Some(chat_id),
         Some(payload.source_channel.as_str()),
-    );
+    )
+    .map_err(|error| {
+        let staged = error.with_stage("self_runtime_touch_autonomy_clock");
+        log::warn!(
+            "[self_runtime] autonomy runtime anchor persistence failed chat_id={}: {}",
+            chat_id,
+            staged
+        );
+        staged
+    });
     crate::platform::task_wdt::feed_current_task();
     sync_self_runtime_relationship_topology(
         &ctx,
@@ -1727,7 +1835,10 @@ pub fn run_self_runtime(
         private_doc_result: action_results.private_doc_result,
         self_model_result: action_results.self_model_result,
         self_authored_core_result: action_results.self_authored_core_result,
-        self_continuity_result: action_results.self_continuity_result,
+        self_continuity_result: merge_self_continuity_touch_result(
+            action_results.self_continuity_result,
+            touch_self_continuity_result,
+        ),
         task_learning_result: action_results.task_learning_result,
         private_garden_result: action_results.private_garden_result,
         boundary_persona_result: action_results.boundary_persona_result,
@@ -2398,6 +2509,7 @@ mod tests {
 
     fn sample_loaded_self_runtime_state() -> LoadedSelfRuntimeState {
         LoadedSelfRuntimeState {
+            load_health: SelfRuntimeLoadHealth::default(),
             summary_text: None,
             execution_state: None,
             self_model: None,
@@ -2451,6 +2563,38 @@ mod tests {
             },
             recent: Vec::new(),
         }
+    }
+
+    #[test]
+    fn self_runtime_load_guard_blocks_mutating_path_when_persistent_reads_fail() {
+        let mut state = sample_loaded_self_runtime_state();
+        state.load_health.record(
+            "self_model",
+            &crate::error::Error::config("test_self_runtime_load", "corrupt self model"),
+        );
+
+        let outcome = self_runtime_load_guard_outcome("chat-1", &state)
+            .expect("load guard should block self runtime");
+
+        assert!(outcome.decision.is_none());
+        assert!(outcome.world_sense_result.is_err());
+        assert!(outcome.self_model_result.is_err());
+        assert!(outcome.self_continuity_result.is_err());
+        assert!(outcome.task_learning_result.is_err());
+    }
+
+    #[test]
+    fn autonomy_touch_failure_surfaces_as_self_continuity_error() {
+        let merged = merge_self_continuity_touch_result(
+            Ok(crate::memory::SelfContinuityRefreshOutcome::Skipped),
+            Err(crate::error::Error::config(
+                "test_touch_runtime",
+                "touch failed",
+            )),
+        );
+
+        let error = merged.expect_err("touch failure must not be swallowed");
+        assert_eq!(error.stage(), "test_touch_runtime");
     }
 
     #[test]

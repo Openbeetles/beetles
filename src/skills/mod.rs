@@ -46,8 +46,6 @@ fn is_skill_name_valid(name: &str) -> bool {
 const TAG: &str = "skills";
 /// 单条 skill 内容最大字节数。
 pub const MAX_SKILL_CONTENT_LEN: usize = 32 * 1024;
-/// 列出 skill 数量上界。
-const MAX_SKILL_COUNT: usize = 64;
 const RUNTIME_SKILL_PREFIX: &str = "runtime_skill__";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,9 +69,29 @@ pub fn list_skill_names(storage: &dyn SkillStorage) -> Vec<String> {
             return vec![];
         }
     };
-    let mut out: Vec<String> = names.into_iter().take(MAX_SKILL_COUNT).collect();
+    let mut out: Vec<String> = names;
     out.sort();
     out
+}
+
+#[derive(Default)]
+struct SkillMetaSnapshot {
+    order: Vec<String>,
+    disabled: Vec<String>,
+}
+
+fn read_skill_meta_snapshot(meta_store: &dyn SkillMetaStore) -> Result<SkillMetaSnapshot> {
+    let (order, disabled) = meta_store.read_meta()?;
+    Ok(SkillMetaSnapshot {
+        order: order
+            .into_iter()
+            .filter(|name| is_skill_name_valid(name))
+            .collect(),
+        disabled: disabled
+            .into_iter()
+            .filter(|name| is_skill_name_valid(name))
+            .collect(),
+    })
 }
 
 /// 读取指定 skill 的完整内容；name 不含 .md。超过 MAX_SKILL_CONTENT_LEN 截断。失败返回 None，打日志。
@@ -104,14 +122,17 @@ pub fn get_skill_content(storage: &dyn SkillStorage, name: &str) -> Option<Strin
 
 /// 从 meta_store 读取禁用列表，过滤非法 name 后返回。
 pub fn get_disabled_skills(meta_store: &dyn SkillMetaStore) -> Vec<String> {
-    let (_, disabled) = match meta_store.read_meta() {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
-    disabled
-        .into_iter()
-        .filter(|s| is_skill_name_valid(s))
-        .collect()
+    match read_skill_meta_snapshot(meta_store) {
+        Ok(meta) => meta.disabled,
+        Err(error) => {
+            log::warn!(
+                "[{}] read_meta failed while loading disabled skills: {}",
+                TAG,
+                error
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// 设置某 skill 的启用状态；enabled=false 加入禁用列表，enabled=true 从禁用列表移除。
@@ -133,14 +154,17 @@ pub fn set_skill_enabled(meta_store: &dyn SkillMetaStore, name: &str, enabled: b
 
 /// 从 meta_store 读取技能顺序；空或缺失则返回空 vec。
 pub fn get_skills_order(meta_store: &dyn SkillMetaStore) -> Vec<String> {
-    let (order, _) = match meta_store.read_meta() {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
-    order
-        .into_iter()
-        .filter(|s| is_skill_name_valid(s))
-        .collect()
+    match read_skill_meta_snapshot(meta_store) {
+        Ok(meta) => meta.order,
+        Err(error) => {
+            log::warn!(
+                "[{}] read_meta failed while loading skill order: {}",
+                TAG,
+                error
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// 写入技能顺序；order 中仅保留合法 name。
@@ -155,20 +179,22 @@ pub fn set_skills_order(meta_store: &dyn SkillMetaStore, order: &[String]) -> Re
 }
 
 /// 返回已启用且按顺序排列的 skill 名称，供 API 返回 order 字段。
-pub fn get_ordered_enabled_skill_names(
+fn try_get_ordered_enabled_skill_names(
     meta_store: &dyn SkillMetaStore,
     storage: &dyn SkillStorage,
-) -> Vec<String> {
-    let disabled = get_disabled_skills(meta_store);
+) -> Result<Vec<String>> {
+    let meta = read_skill_meta_snapshot(meta_store)?;
     let all = list_skill_names(storage);
-    let enabled: Vec<String> = all.into_iter().filter(|n| !disabled.contains(n)).collect();
-    let order = get_skills_order(meta_store);
-    if order.is_empty() {
-        return enabled;
+    let enabled: Vec<String> = all
+        .into_iter()
+        .filter(|n| !meta.disabled.contains(n))
+        .collect();
+    if meta.order.is_empty() {
+        return Ok(enabled);
     }
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for name in &order {
+    for name in &meta.order {
         if enabled.contains(&name.to_string()) && seen.insert(name.as_str()) {
             out.push(name.clone());
         }
@@ -178,18 +204,36 @@ pub fn get_ordered_enabled_skill_names(
             out.push(name.clone());
         }
     }
-    out
+    Ok(out)
+}
+
+/// 返回已启用且按顺序排列的 skill 名称，供 API 返回 order 字段。
+pub fn get_ordered_enabled_skill_names(
+    meta_store: &dyn SkillMetaStore,
+    storage: &dyn SkillStorage,
+) -> Vec<String> {
+    match try_get_ordered_enabled_skill_names(meta_store, storage) {
+        Ok(names) => names,
+        Err(error) => {
+            log::warn!(
+                "[{}] read_meta failed; suppressing enabled skill exposure until meta recovers: {}",
+                TAG,
+                error
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// 聚合所有**已启用** skill 内容为 system prompt 用字符串，总长不超过 max_chars。
-pub fn build_skill_descriptions_for_system_prompt(
+pub(crate) fn try_build_skill_descriptions_for_system_prompt(
     meta_store: &dyn SkillMetaStore,
     storage: &dyn SkillStorage,
     max_chars: usize,
-) -> String {
-    let names = get_ordered_enabled_skill_names(meta_store, storage);
+) -> Result<String> {
+    let names = try_get_ordered_enabled_skill_names(meta_store, storage)?;
     if names.is_empty() || max_chars == 0 {
-        return String::new();
+        return Ok(String::new());
     }
     let mut out = String::with_capacity(max_chars.min(4096));
     for name in names {
@@ -214,7 +258,25 @@ pub fn build_skill_descriptions_for_system_prompt(
         }
     }
     out.truncate(max_chars);
-    out
+    Ok(out)
+}
+
+pub fn build_skill_descriptions_for_system_prompt(
+    meta_store: &dyn SkillMetaStore,
+    storage: &dyn SkillStorage,
+    max_chars: usize,
+) -> String {
+    match try_build_skill_descriptions_for_system_prompt(meta_store, storage, max_chars) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            log::warn!(
+                "[{}] prompt skill assembly suppressed because skill meta read failed: {}",
+                TAG,
+                error
+            );
+            String::new()
+        }
+    }
 }
 
 /// 写入或覆盖指定 skill 文件。name 校验同 get_skill_content；content 长度 ≤ MAX_SKILL_CONTENT_LEN。
@@ -269,4 +331,146 @@ pub fn delete_skill(storage: &dyn SkillStorage, name: &str) -> Result<()> {
         ));
     }
     storage.remove(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct TestSkillStorage {
+        names: Mutex<Vec<String>>,
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl TestSkillStorage {
+        fn with_entries(entries: &[(&str, &str)]) -> Self {
+            let mut names = Vec::new();
+            let mut files = HashMap::new();
+            for (name, content) in entries {
+                names.push((*name).to_string());
+                files.insert((*name).to_string(), content.as_bytes().to_vec());
+            }
+            Self {
+                names: Mutex::new(names),
+                files: Mutex::new(files),
+            }
+        }
+    }
+
+    impl SkillStorage for TestSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(self.names.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn read(&self, name: &str) -> Result<Vec<u8>> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::config("test_skill_storage_read", "missing"))
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> Result<()> {
+            if !self
+                .names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|value| value == name)
+            {
+                self.names
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(name.to_string());
+            }
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<()> {
+            self.names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|value| value != name);
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+            Ok(())
+        }
+    }
+
+    struct OrderedMetaStore {
+        order: Vec<String>,
+        disabled: Vec<String>,
+    }
+
+    impl SkillMetaStore for OrderedMetaStore {
+        fn read_meta(&self) -> Result<(Vec<String>, Vec<String>)> {
+            Ok((self.order.clone(), self.disabled.clone()))
+        }
+
+        fn write_meta(&self, _order: &[String], _disabled: &[String]) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingMetaStore;
+
+    impl SkillMetaStore for FailingMetaStore {
+        fn read_meta(&self) -> Result<(Vec<String>, Vec<String>)> {
+            Err(Error::config("test_skill_meta_read", "corrupt meta"))
+        }
+
+        fn write_meta(&self, _order: &[String], _disabled: &[String]) -> Result<()> {
+            Err(Error::config("test_skill_meta_write", "disabled"))
+        }
+    }
+
+    #[test]
+    fn list_skill_names_returns_full_sorted_inventory_without_global_truncation() {
+        let storage = TestSkillStorage {
+            names: Mutex::new((0..70).rev().map(|idx| format!("skill_{idx:02}")).collect()),
+            files: Mutex::new(HashMap::new()),
+        };
+
+        let names = list_skill_names(&storage);
+
+        assert_eq!(names.len(), 70);
+        assert_eq!(names.first().map(String::as_str), Some("skill_00"));
+        assert_eq!(names.last().map(String::as_str), Some("skill_69"));
+    }
+
+    #[test]
+    fn prompt_skill_assembly_fails_closed_when_skill_meta_read_fails() {
+        let storage = TestSkillStorage::with_entries(&[("alpha", "alpha body")]);
+        let rendered = build_skill_descriptions_for_system_prompt(&FailingMetaStore, &storage, 512);
+
+        assert!(rendered.is_empty());
+        assert!(get_ordered_enabled_skill_names(&FailingMetaStore, &storage).is_empty());
+    }
+
+    #[test]
+    fn ordered_enabled_skill_names_follow_meta_snapshot_when_available() {
+        let storage = TestSkillStorage::with_entries(&[
+            ("gamma", "gamma body"),
+            ("alpha", "alpha body"),
+            ("beta", "beta body"),
+        ]);
+        let meta = OrderedMetaStore {
+            order: vec!["beta".to_string(), "alpha".to_string()],
+            disabled: vec!["gamma".to_string()],
+        };
+
+        let names = get_ordered_enabled_skill_names(&meta, &storage);
+
+        assert_eq!(names, vec!["beta".to_string(), "alpha".to_string()]);
+    }
 }

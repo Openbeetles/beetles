@@ -1,5 +1,33 @@
 use super::*;
 
+fn load_optional_store<T>(
+    layer: &'static str,
+    load_health: &mut SelfRuntimeLoadHealth,
+    load: impl FnOnce() -> crate::error::Result<Option<T>>,
+) -> Option<T> {
+    match load() {
+        Ok(value) => value,
+        Err(error) => {
+            load_health.record(layer, &error);
+            None
+        }
+    }
+}
+
+fn load_list_store<T>(
+    layer: &'static str,
+    load_health: &mut SelfRuntimeLoadHealth,
+    load: impl FnOnce() -> crate::error::Result<Vec<T>>,
+) -> Vec<T> {
+    match load() {
+        Ok(values) => values,
+        Err(error) => {
+            load_health.record(layer, &error);
+            Vec::new()
+        }
+    }
+}
+
 pub(super) fn load_self_runtime_state(
     ctx: &SelfRuntimeContext<'_>,
     chat_id: &str,
@@ -9,25 +37,32 @@ pub(super) fn load_self_runtime_state(
 ) -> Box<LoadedSelfRuntimeState> {
     let subject_id = board_subject_scope_id();
     let relationship_governance_enabled = authority_plan.allows_relationship_governance();
-    let summary_text = ctx
-        .session_summary_store
-        .get_with_count(chat_id)
-        .ok()
-        .flatten()
-        .map(|(summary, _)| summary);
-    let execution_state = ctx.execution_state_store.get(chat_id).ok().flatten();
-    let self_model = ctx.self_model_store.get(subject_id).ok().flatten();
+    let mut load_health = SelfRuntimeLoadHealth::default();
+    let summary_text = load_optional_store("session_summary", &mut load_health, || {
+        ctx.session_summary_store
+            .get_with_count(chat_id)
+            .map(|value| value.map(|(summary, _)| summary))
+    });
+    let execution_state = load_optional_store("execution_state", &mut load_health, || {
+        ctx.execution_state_store.get(chat_id)
+    });
+    let self_model = load_optional_store("self_model", &mut load_health, || {
+        ctx.self_model_store.get(subject_id)
+    });
     let self_authored_core = authority_plan
         .allow_direct_self_authored_core
-        .then(|| ctx.self_authored_core_store.get(subject_id).ok().flatten())
+        .then(|| {
+            load_optional_store("self_authored_core", &mut load_health, || {
+                ctx.self_authored_core_store.get(subject_id)
+            })
+        })
         .flatten();
     let core_revision_ledger = authority_plan
         .allow_direct_self_authored_core
         .then(|| {
-            ctx.core_revision_ledger_store
-                .get(subject_id)
-                .ok()
-                .flatten()
+            load_optional_store("core_revision_ledger", &mut load_health, || {
+                ctx.core_revision_ledger_store.get(subject_id)
+            })
         })
         .flatten();
     let core_revision_governance = compute_core_revision_governance_digest(
@@ -44,39 +79,36 @@ pub(super) fn load_self_runtime_state(
     );
     let private_docs = authority_plan
         .allow_direct_private_docs
-        .then(|| ctx.private_doc_store.get(subject_id).ok().flatten())
+        .then(|| {
+            load_optional_store("private_docs", &mut load_health, || {
+                ctx.private_doc_store.get(subject_id)
+            })
+        })
         .flatten();
     let private_garden_docs = if authority_plan.allow_direct_private_garden {
-        ctx.private_garden_store
-            .list(
+        load_list_store("private_garden_docs", &mut load_health, || {
+            ctx.private_garden_store.list(
                 private_garden_scope_id(),
                 self_runtime_private_garden_doc_limit(profile),
             )
-            .unwrap_or_default()
+        })
     } else {
         Vec::new()
     };
-    let inner_life = ctx.inner_life_store.get(subject_id).ok().flatten();
-    let self_continuity = ctx.self_continuity_store.get(subject_id).ok().flatten();
-    let relationship_topology = ctx
-        .relationship_topology_store
-        .get(subject_id)
-        .ok()
-        .flatten();
-    let relationship_portfolio = sync_relationship_portfolio(
-        ctx.relationship_portfolio_store,
-        relationship_topology.as_ref(),
-        self_authored_core.as_ref(),
-        payload.now_secs,
-    )
-    .ok()
-    .flatten()
-    .or_else(|| {
-        ctx.relationship_portfolio_store
-            .get(subject_id)
-            .ok()
-            .flatten()
+    let inner_life = load_optional_store("inner_life", &mut load_health, || {
+        ctx.inner_life_store.get(subject_id)
     });
+    let self_continuity = load_optional_store("self_continuity", &mut load_health, || {
+        ctx.self_continuity_store.get(subject_id)
+    });
+    let relationship_topology =
+        load_optional_store("relationship_topology", &mut load_health, || {
+            ctx.relationship_topology_store.get(subject_id)
+        });
+    let relationship_portfolio =
+        load_optional_store("relationship_portfolio", &mut load_health, || {
+            ctx.relationship_portfolio_store.get(subject_id)
+        });
     let prior_user_channel = self_continuity
         .as_ref()
         .map(|continuity| continuity.last_user_channel.trim().to_string())
@@ -89,67 +121,58 @@ pub(super) fn load_self_runtime_state(
             relationship_portfolio.as_ref(),
             relationship_topology.as_ref(),
         );
-    let world_sense = ctx
-        .world_sense_store
-        .get(&active_relationship_scope_id)
-        .ok()
-        .flatten();
-    let autonomy_strategy = ctx.autonomy_strategy_store.get(subject_id).ok().flatten();
+    let world_sense = load_optional_store("world_sense", &mut load_health, || {
+        ctx.world_sense_store.get(&active_relationship_scope_id)
+    });
+    let autonomy_strategy = load_optional_store("autonomy_strategy", &mut load_health, || {
+        ctx.autonomy_strategy_store.get(subject_id)
+    });
     let outer_voice = authority_plan
         .allow_direct_outer_voice
         .then(|| {
-            ctx.outer_voice_store
-                .get(&active_relationship_scope_id)
-                .ok()
-                .flatten()
+            load_optional_store("outer_voice", &mut load_health, || {
+                ctx.outer_voice_store.get(&active_relationship_scope_id)
+            })
         })
         .flatten();
     let mental_privacy_state = authority_plan
         .allow_direct_boundary_persona
         .then(|| {
-            ctx.mental_privacy_store
-                .get(&active_relationship_scope_id)
-                .ok()
-                .flatten()
+            load_optional_store("mental_privacy", &mut load_health, || {
+                ctx.mental_privacy_store.get(&active_relationship_scope_id)
+            })
         })
         .flatten();
     let recent_persona_evidence =
-        load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
-            .ok()
-            .flatten();
+        load_optional_store("recent_persona_evidence", &mut load_health, || {
+            load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
+        });
     let relationship_constitution = if relationship_governance_enabled {
-        sync_relationship_constitution(
-            ctx.relationship_constitution_store,
-            RelationshipConstitutionSyncInput {
-                scope_id: &active_relationship_scope_id,
-                channel: &active_relationship_channel,
-                chat_id,
-                now_secs: payload.now_secs,
-                self_authored_core: self_authored_core.as_ref(),
-                relationship_portfolio: relationship_portfolio.as_ref(),
-                relationship_topology: relationship_topology.as_ref(),
-                mental_privacy_state: mental_privacy_state.as_ref(),
-                outer_voice: outer_voice.as_ref(),
-                recent_persona_evidence: recent_persona_evidence.as_ref(),
-            },
-        )
-        .ok()
-        .flatten()
-        .or_else(|| {
+        load_optional_store("relationship_constitution", &mut load_health, || {
             ctx.relationship_constitution_store
                 .get(&active_relationship_scope_id)
-                .ok()
-                .flatten()
         })
     } else {
         None
     };
     let self_continuity = if payload.trigger == SelfRuntimeTrigger::PostReply {
-        let mut continuity = self_continuity.unwrap_or_default();
-        continuity.last_user_turn_at = payload.now_secs;
-        continuity.last_user_chat_id = chat_id.trim().to_string();
-        continuity.last_user_channel = payload.source_channel.trim().to_string();
-        Some(continuity)
+        match self_continuity {
+            Some(mut continuity) => {
+                continuity.last_user_turn_at = payload.now_secs;
+                continuity.last_user_chat_id = chat_id.trim().to_string();
+                continuity.last_user_channel = payload.source_channel.trim().to_string();
+                Some(continuity)
+            }
+            None if !load_health.has_issue_for("self_continuity") => {
+                Some(crate::memory::SelfContinuity {
+                    last_user_turn_at: payload.now_secs,
+                    last_user_chat_id: chat_id.trim().to_string(),
+                    last_user_channel: payload.source_channel.trim().to_string(),
+                    ..crate::memory::SelfContinuity::default()
+                })
+            }
+            None => None,
+        }
     } else {
         self_continuity
     };
@@ -161,9 +184,8 @@ pub(super) fn load_self_runtime_state(
         remind_store: ctx.remind_store,
         task_store: ctx.task_store,
     });
-    let recent = ctx
-        .session_store
-        .load_recent(
+    let recent = load_list_store("recent_transcript", &mut load_health, || {
+        ctx.session_store.load_recent(
             chat_id,
             memory_policy(profile)
                 .self_runtime
@@ -183,8 +205,9 @@ pub(super) fn load_self_runtime_state(
                         .recent_message_count,
                 ),
         )
-        .unwrap_or_default();
+    });
     Box::new(LoadedSelfRuntimeState {
+        load_health,
         summary_text,
         execution_state,
         self_model,
@@ -313,18 +336,69 @@ pub(super) fn sync_self_runtime_relationship_topology(
         return;
     }
     let relationship_id = relationship_scope_id(relationship_channel, chat_id);
-    let turn_ledger = ctx.turn_ledger_store.get(&relationship_id).ok().flatten();
-    let mental_privacy_state = ctx
-        .mental_privacy_store
-        .get(&relationship_id)
-        .ok()
-        .flatten();
-    let outer_voice = ctx.outer_voice_store.get(&relationship_id).ok().flatten();
-    let world_sense = ctx.world_sense_store.get(&relationship_id).ok().flatten();
-    let recent_persona_evidence =
-        load_recent_persona_evidence(ctx.turn_ledger_store, &relationship_id)
-            .ok()
-            .flatten();
+    let turn_ledger = match ctx.turn_ledger_store.get(&relationship_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship topology sync skipped because turn ledger read failed channel={} chat_id={}: {}",
+                relationship_channel,
+                chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let mental_privacy_state = match ctx.mental_privacy_store.get(&relationship_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship topology sync skipped because mental privacy read failed channel={} chat_id={}: {}",
+                relationship_channel,
+                chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let outer_voice = match ctx.outer_voice_store.get(&relationship_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship topology sync skipped because outer voice read failed channel={} chat_id={}: {}",
+                relationship_channel,
+                chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let world_sense = match ctx.world_sense_store.get(&relationship_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship topology sync skipped because world sense read failed channel={} chat_id={}: {}",
+                relationship_channel,
+                chat_id,
+                error
+            );
+            return;
+        }
+    };
+    let recent_persona_evidence = match load_recent_persona_evidence(
+        ctx.turn_ledger_store,
+        &relationship_id,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship topology sync skipped because persona evidence read failed channel={} chat_id={}: {}",
+                relationship_channel,
+                chat_id,
+                error
+            );
+            return;
+        }
+    };
     if let Err(error) = upsert_relationship_topology_entry(
         ctx.relationship_topology_store,
         crate::memory::RelationshipTopologyUpsertInput {
@@ -354,12 +428,44 @@ pub(super) fn sync_self_runtime_relationship_portfolio(
     now_secs: u64,
 ) -> Option<RelationshipPortfolio> {
     let subject_id = board_subject_scope_id();
-    let relationship_topology = ctx
-        .relationship_topology_store
-        .get(subject_id)
-        .ok()
-        .flatten();
-    let self_authored_core = ctx.self_authored_core_store.get(subject_id).ok().flatten();
+    let relationship_topology = match ctx.relationship_topology_store.get(subject_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship portfolio sync skipped because topology read failed: {}",
+                error
+            );
+            match ctx.relationship_portfolio_store.get(subject_id) {
+                Ok(existing) => return existing,
+                Err(fallback_error) => {
+                    log::warn!(
+                        "[self_runtime] relationship portfolio fallback read failed: {}",
+                        fallback_error
+                    );
+                    return None;
+                }
+            }
+        }
+    };
+    let self_authored_core = match ctx.self_authored_core_store.get(subject_id) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] relationship portfolio sync skipped because self-authored core read failed: {}",
+                error
+            );
+            match ctx.relationship_portfolio_store.get(subject_id) {
+                Ok(existing) => return existing,
+                Err(fallback_error) => {
+                    log::warn!(
+                        "[self_runtime] relationship portfolio fallback read failed: {}",
+                        fallback_error
+                    );
+                    return None;
+                }
+            }
+        }
+    };
     match sync_relationship_portfolio(
         ctx.relationship_portfolio_store,
         relationship_topology.as_ref(),
@@ -372,10 +478,16 @@ pub(super) fn sync_self_runtime_relationship_portfolio(
                 "[self_runtime] relationship portfolio sync failed: {}",
                 error
             );
-            ctx.relationship_portfolio_store
-                .get(subject_id)
-                .ok()
-                .flatten()
+            match ctx.relationship_portfolio_store.get(subject_id) {
+                Ok(existing) => existing,
+                Err(fallback_error) => {
+                    log::warn!(
+                        "[self_runtime] relationship portfolio fallback read failed: {}",
+                        fallback_error
+                    );
+                    None
+                }
+            }
         }
     }
 }
@@ -416,10 +528,17 @@ pub(super) fn sync_self_runtime_relationship_constitution(
                 scope_id,
                 error
             );
-            ctx.relationship_constitution_store
-                .get(scope_id)
-                .ok()
-                .flatten()
+            match ctx.relationship_constitution_store.get(scope_id) {
+                Ok(existing) => existing,
+                Err(fallback_error) => {
+                    log::warn!(
+                        "[self_runtime] relationship constitution fallback read failed scope_id={}: {}",
+                        scope_id,
+                        fallback_error
+                    );
+                    None
+                }
+            }
         }
     }
 }

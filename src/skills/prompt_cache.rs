@@ -40,15 +40,29 @@ impl SkillPromptCache {
     }
 
     pub fn refresh(&self) -> String {
-        let rendered = crate::skills::build_skill_descriptions_for_system_prompt(
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::skills::try_build_skill_descriptions_for_system_prompt(
             self.meta_store.as_ref(),
             self.storage.as_ref(),
             self.max_chars,
-        );
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.loaded = true;
-        state.rendered = rendered.clone();
-        rendered
+        ) {
+            Ok(rendered) => {
+                state.loaded = true;
+                state.rendered = rendered.clone();
+                rendered
+            }
+            Err(error) => {
+                log::warn!(
+                    "[skills] prompt cache refresh retained last known good render because meta read failed: {}",
+                    error
+                );
+                if state.loaded {
+                    state.rendered.clone()
+                } else {
+                    String::new()
+                }
+            }
+        }
     }
 
     pub fn invalidate(&self) {
@@ -62,6 +76,7 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -69,6 +84,7 @@ mod tests {
         reads: AtomicUsize,
         order: Mutex<Vec<String>>,
         disabled: Mutex<Vec<String>>,
+        fail_reads: AtomicBool,
     }
 
     impl FakeMetaStore {
@@ -77,6 +93,7 @@ mod tests {
                 reads: AtomicUsize::new(0),
                 order: Mutex::new(order.iter().map(|value| (*value).to_string()).collect()),
                 disabled: Mutex::new(disabled.iter().map(|value| (*value).to_string()).collect()),
+                fail_reads: AtomicBool::new(false),
             }
         }
     }
@@ -84,6 +101,12 @@ mod tests {
     impl SkillMetaStore for FakeMetaStore {
         fn read_meta(&self) -> Result<(Vec<String>, Vec<String>)> {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.fail_reads.load(Ordering::SeqCst) {
+                return Err(crate::error::Error::config(
+                    "fake_skill_meta_read",
+                    "meta read failed",
+                ));
+            }
             Ok((
                 self.order.lock().unwrap_or_else(|e| e.into_inner()).clone(),
                 self.disabled
@@ -184,7 +207,7 @@ mod tests {
 
         assert!(first.contains("alpha body"));
         assert_eq!(first, second);
-        assert_eq!(meta.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(meta.reads.load(Ordering::SeqCst), 1);
         assert_eq!(storage.list_reads.load(Ordering::SeqCst), 1);
         assert_eq!(storage.file_reads.load(Ordering::SeqCst), 1);
     }
@@ -207,5 +230,28 @@ mod tests {
         assert!(refreshed.contains("updated body"));
         assert_eq!(storage.list_reads.load(Ordering::SeqCst), 2);
         assert_eq!(storage.file_reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn prompt_cache_retains_last_known_good_render_when_meta_read_fails() {
+        let meta = Arc::new(FakeMetaStore::new(&["alpha"], &[]));
+        let storage = Arc::new(FakeSkillStorage::new(&[("alpha", "alpha body")]));
+        let cache = SkillPromptCache::new(
+            Arc::clone(&meta) as Arc<dyn SkillMetaStore + Send + Sync>,
+            Arc::clone(&storage) as Arc<dyn SkillStorage + Send + Sync>,
+            256,
+        );
+
+        let first = cache.get();
+        meta.fail_reads.store(true, Ordering::SeqCst);
+        storage
+            .write("alpha", b"new body that should not leak")
+            .unwrap();
+
+        let second = cache.refresh();
+
+        assert_eq!(first, second);
+        assert!(second.contains("alpha body"));
+        assert!(!second.contains("new body that should not leak"));
     }
 }

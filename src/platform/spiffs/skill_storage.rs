@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use super::{list_dir, read_file_to_vec, remove_file, state_path_join, write_file};
 
 const SKILLS_SUBDIR: &str = "skills";
-const MAX_SKILL_COUNT: usize = 64;
 const SKILL_CACHE_MAX_FILES: usize = 64;
 
 fn skills_dir() -> PathBuf {
@@ -56,7 +55,6 @@ impl SkillStorage for SpiffsSkillStorage {
             .into_iter()
             .filter(|n| n.ends_with(".md"))
             .map(|n| n.trim_end_matches(".md").to_string())
-            .take(MAX_SKILL_COUNT)
             .collect();
         Ok(out)
     }
