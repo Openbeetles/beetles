@@ -68,7 +68,7 @@ mod tests {
         assert!(parsed["workflow"].get("recent_records").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
-            Some("doctrine_genome_evolution")
+            Some("capability_atoms_exchange")
         );
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),
@@ -103,6 +103,12 @@ mod tests {
         assert!(parsed["programmable_reasoning"].get("genome").is_some());
         assert!(parsed["programmable_reasoning"]["genome"]
             .get("recent_lineages")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]
+            .get("capability_atoms")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["capability_atoms"]
+            .get("total")
             .is_some());
         assert!(parsed["programmable_reasoning"]
             .get("maintenance_digest")

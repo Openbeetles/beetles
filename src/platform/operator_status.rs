@@ -15,8 +15,8 @@ use crate::platform::memory_operator_surface::{
 use crate::reasoning::summarize_programmable_reasoning_operator;
 use crate::runtime;
 use crate::skills::{
-    build_runtime_skill_doctrine_snapshot, build_runtime_skill_genome_snapshot,
-    build_runtime_skill_operator_summary,
+    build_capability_atom_operator_summary, build_runtime_skill_doctrine_snapshot,
+    build_runtime_skill_genome_snapshot, build_runtime_skill_operator_summary,
 };
 use crate::task_execution::build_task_learning_operator_snapshot;
 use crate::tools::{ToolExecutionGovernanceState, ToolRegistry};
@@ -182,12 +182,15 @@ pub fn build_operator_status(
         build_runtime_skill_doctrine_snapshot(input.platform.skill_storage().as_ref());
     let runtime_skill_genome =
         build_runtime_skill_genome_snapshot(input.platform.skill_storage().as_ref());
+    let capability_atom_summary =
+        build_capability_atom_operator_summary(input.platform.skill_storage().as_ref());
     let task_learning_snapshot =
         build_task_learning_operator_snapshot(input.platform.task_learning_store().as_ref())?;
     let mut programmable_reasoning = crate::programmable_reasoning_operator_snapshot(
         &runtime_skill_summary,
         &runtime_skill_doctrine,
         &runtime_skill_genome,
+        &capability_atom_summary,
         Some(&task_learning_snapshot),
     );
     programmable_reasoning.usage_analytics = programmable_reasoning_usage;
@@ -329,6 +332,9 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningStage::AdversarialArena => "adversarial_arena",
             crate::ProgrammableReasoningStage::DoctrineGenomeEvolution => {
                 "doctrine_genome_evolution"
+            }
+            crate::ProgrammableReasoningStage::CapabilityAtomsExchange => {
+                "capability_atoms_exchange"
             }
         },
         snapshot.programmable_reasoning.runtime_contract.execution_enabled,

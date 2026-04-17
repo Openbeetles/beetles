@@ -17,6 +17,7 @@ pub enum ProgrammableReasoningStage {
     CounterfactualSandbox,
     AdversarialArena,
     DoctrineGenomeEvolution,
+    CapabilityAtomsExchange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -61,7 +62,7 @@ pub struct ProgrammableReasoningRuntimeContract {
 pub fn programmable_reasoning_runtime_contract() -> ProgrammableReasoningRuntimeContract {
     let execution_enabled = cfg!(target_os = "linux");
     ProgrammableReasoningRuntimeContract {
-        stage: ProgrammableReasoningStage::DoctrineGenomeEvolution,
+        stage: ProgrammableReasoningStage::CapabilityAtomsExchange,
         linux_only: true,
         execution_backend: if execution_enabled {
             ProgrammableReasoningExecutionBackend::LuaSandbox
@@ -102,11 +103,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_contract_moves_to_p12_doctrine_genome_evolution() {
+    fn runtime_contract_moves_to_p13_capability_atoms_exchange() {
         let contract = programmable_reasoning_runtime_contract();
         assert_eq!(
             contract.stage,
-            ProgrammableReasoningStage::DoctrineGenomeEvolution
+            ProgrammableReasoningStage::CapabilityAtomsExchange
         );
         assert!(contract.linux_only);
         assert_eq!(contract.execution_enabled, cfg!(target_os = "linux"));

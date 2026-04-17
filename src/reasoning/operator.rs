@@ -13,7 +13,8 @@ use crate::reasoning::proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposalKind,
 };
 use crate::skills::{
-    RuntimeSkillDoctrineSnapshot, RuntimeSkillGenomeSnapshot, RuntimeSkillOperatorSummary,
+    CapabilityAtomOperatorSummary, RuntimeSkillDoctrineSnapshot, RuntimeSkillGenomeSnapshot,
+    RuntimeSkillOperatorSummary,
 };
 use crate::task_execution::TaskLearningOperatorSnapshot;
 use serde::Serialize;
@@ -81,6 +82,7 @@ pub struct ProgrammableReasoningOperatorSnapshot {
     pub experience_crystals: ExperienceCrystalOperatorSummary,
     pub doctrine: RuntimeSkillDoctrineSnapshot,
     pub genome: RuntimeSkillGenomeSnapshot,
+    pub capability_atoms: CapabilityAtomOperatorSummary,
     pub usage_analytics: ProgrammableReasoningUsageAnalytics,
     pub timeline: ProgrammableReasoningTimeline,
     pub adversarial_arena: AdversarialArenaAuditSnapshot,
@@ -111,6 +113,7 @@ fn programmable_reasoning_stage_label(stage: ProgrammableReasoningStage) -> &'st
         ProgrammableReasoningStage::CounterfactualSandbox => "counterfactual_sandbox",
         ProgrammableReasoningStage::AdversarialArena => "adversarial_arena",
         ProgrammableReasoningStage::DoctrineGenomeEvolution => "doctrine_genome_evolution",
+        ProgrammableReasoningStage::CapabilityAtomsExchange => "capability_atoms_exchange",
     }
 }
 
@@ -118,7 +121,7 @@ pub fn summarize_programmable_reasoning_operator(
     snapshot: &ProgrammableReasoningOperatorSnapshot,
 ) -> String {
     format!(
-        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} | recent_attempts={} arena_revised={} arena_hold={} attention={}",
+        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} atoms_total={} atoms_local={} atoms_pending={} atoms_adopted={} | recent_attempts={} arena_revised={} arena_hold={} attention={}",
         programmable_reasoning_stage_label(snapshot.stage),
         snapshot.runtime_contract.execution_backend,
         snapshot.runtime_contract.execution_enabled,
@@ -132,6 +135,10 @@ pub fn summarize_programmable_reasoning_operator(
         snapshot.genome.total_lineages,
         snapshot.genome.retired_lineages,
         snapshot.genome.total_diff_events,
+        snapshot.capability_atoms.total,
+        snapshot.capability_atoms.local_verified,
+        snapshot.capability_atoms.imported_pending_adjudication,
+        snapshot.capability_atoms.imported_adopted,
         snapshot.usage_analytics.recent_total_attempts,
         snapshot.adversarial_arena.summary.revised,
         snapshot.adversarial_arena.summary.held_for_clarification,
@@ -143,6 +150,7 @@ pub fn programmable_reasoning_operator_snapshot(
     runtime_skills: &RuntimeSkillOperatorSummary,
     doctrine: &RuntimeSkillDoctrineSnapshot,
     genome: &RuntimeSkillGenomeSnapshot,
+    capability_atoms: &CapabilityAtomOperatorSummary,
     task_learning: Option<&TaskLearningOperatorSnapshot>,
 ) -> ProgrammableReasoningOperatorSnapshot {
     let runtime_contract = programmable_reasoning_runtime_contract();
@@ -157,6 +165,7 @@ pub fn programmable_reasoning_operator_snapshot(
         ),
         doctrine: doctrine.clone(),
         genome: genome.clone(),
+        capability_atoms: capability_atoms.clone(),
         usage_analytics: ProgrammableReasoningUsageAnalytics::default(),
         timeline: ProgrammableReasoningTimeline::default(),
         adversarial_arena: adversarial_arena_snapshot(12),
@@ -186,18 +195,19 @@ mod tests {
     };
 
     #[test]
-    fn operator_snapshot_reports_p12_contract() {
+    fn operator_snapshot_reports_p13_contract() {
         let _guard = adversarial_arena_test_guard();
         reset_adversarial_arena_for_tests();
         let snapshot = programmable_reasoning_operator_snapshot(
             &RuntimeSkillOperatorSummary::default(),
             &RuntimeSkillDoctrineSnapshot::default(),
             &RuntimeSkillGenomeSnapshot::default(),
+            &CapabilityAtomOperatorSummary::default(),
             None,
         );
         assert_eq!(
             snapshot.stage,
-            ProgrammableReasoningStage::DoctrineGenomeEvolution
+            ProgrammableReasoningStage::CapabilityAtomsExchange
         );
         assert_eq!(snapshot.capabilities.len(), 6);
         assert_eq!(snapshot.proposal_kinds.len(), 5);
@@ -214,10 +224,12 @@ mod tests {
         assert!(snapshot.doctrine.recent_clauses.is_empty());
         assert_eq!(snapshot.genome.total_lineages, 0);
         assert!(snapshot.genome.recent_lineages.is_empty());
+        assert_eq!(snapshot.capability_atoms.total, 0);
+        assert!(snapshot.capability_atoms.recent_records.is_empty());
         assert!(snapshot.maintenance_digest.status.is_empty());
         assert!(snapshot
             .operator_summary
-            .contains("doctrine_genome_evolution |"));
+            .contains("capability_atoms_exchange |"));
         assert!(snapshot.operator_summary.contains("recent_attempts=0"));
     }
 
@@ -226,7 +238,7 @@ mod tests {
         let summary = programmable_reasoning_system_info_summary();
         assert_eq!(
             summary.stage,
-            ProgrammableReasoningStage::DoctrineGenomeEvolution
+            ProgrammableReasoningStage::CapabilityAtomsExchange
         );
         assert_eq!(summary.execution_enabled, cfg!(target_os = "linux"));
         assert!(summary.linux_only);

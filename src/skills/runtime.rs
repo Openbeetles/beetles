@@ -755,6 +755,9 @@ pub fn record_runtime_skill_outcomes(
         write_runtime_skill_record(storage, &record)?;
         changed = changed.saturating_add(1);
     }
+    if changed > 0 {
+        super::capability_atoms::sync_capability_atoms_from_runtime_skills(storage, now_secs)?;
+    }
     Ok(changed)
 }
 
@@ -772,7 +775,7 @@ pub fn write_governed_runtime_skills(
         let topic = write.topic.trim().to_string();
         let (reason, detail) = match inspect_runtime_skill_write_shape(write) {
             Ok(()) => {
-                let changed = upsert_runtime_skill(storage, write)?;
+                let changed = upsert_runtime_skill_inner(storage, write, false)?;
                 outcome.accepted = outcome.accepted.saturating_add(1);
                 outcome.changed = outcome.changed.saturating_add(usize::from(changed));
                 outcome.reports.push(RuntimeSkillWriteItemReport {
@@ -794,6 +797,12 @@ pub fn write_governed_runtime_skills(
             topic,
             detail,
         });
+    }
+    if outcome.accepted > 0 {
+        super::capability_atoms::sync_capability_atoms_from_runtime_skills(
+            storage,
+            crate::util::current_unix_secs(),
+        )?;
     }
     Ok(outcome)
 }
@@ -855,6 +864,7 @@ pub fn govern_runtime_skills(
     for name in removed_names {
         let _ = storage.remove(&name);
     }
+    super::capability_atoms::sync_capability_atoms_from_runtime_skills(storage, now_secs)?;
     Ok(outcome)
 }
 
@@ -953,6 +963,14 @@ pub fn upsert_runtime_skill(
     storage: &dyn SkillStorage,
     write: &RuntimeSkillWrite,
 ) -> crate::error::Result<bool> {
+    upsert_runtime_skill_inner(storage, write, true)
+}
+
+fn upsert_runtime_skill_inner(
+    storage: &dyn SkillStorage,
+    write: &RuntimeSkillWrite,
+    sync_atoms: bool,
+) -> crate::error::Result<bool> {
     let mut input = RuntimeSkillUpsertInput {
         name: if write.name.trim().is_empty() {
             runtime_skill_name_for_topic(&write.topic)
@@ -1013,10 +1031,16 @@ pub fn upsert_runtime_skill(
         ));
     }
     write_skill(storage, &record.name, &rendered)?;
+    if sync_atoms {
+        super::capability_atoms::sync_capability_atoms_from_runtime_skills(
+            storage,
+            crate::util::current_unix_secs(),
+        )?;
+    }
     Ok(true)
 }
 
-fn list_runtime_skill_records(storage: &dyn SkillStorage) -> Vec<RuntimeSkillRecord> {
+pub(crate) fn list_runtime_skill_records(storage: &dyn SkillStorage) -> Vec<RuntimeSkillRecord> {
     let mut out = Vec::new();
     for name in crate::skills::list_skill_names(storage) {
         if !is_runtime_skill_name(&name) {

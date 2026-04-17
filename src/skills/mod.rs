@@ -4,9 +4,19 @@
 use crate::error::{Error, Result};
 use crate::platform::{SkillMetaStore, SkillStorage};
 
+mod capability_atoms;
 mod prompt_cache;
 mod runtime;
 
+pub use capability_atoms::{
+    build_capability_atom_operator_summary, export_capability_atom_exchange_envelope,
+    import_capability_atom_exchange_envelope, is_capability_atom_name,
+    sync_capability_atoms_from_runtime_skills, CapabilityAtomComponentKind,
+    CapabilityAtomComponentRef, CapabilityAtomExchangeEnvelope, CapabilityAtomImportOutcome,
+    CapabilityAtomOperatorRecord, CapabilityAtomOperatorSummary, CapabilityAtomProvenance,
+    CapabilityAtomRecord, CapabilityAtomSourceKind, CapabilityAtomSyncOutcome,
+    CapabilityAtomTrustLevel,
+};
 pub use prompt_cache::SkillPromptCache;
 pub(crate) use runtime::retrieve_runtime_skill_hits_with_backend;
 pub use runtime::{
@@ -177,7 +187,7 @@ pub fn build_skill_descriptions_for_system_prompt(
     }
     let mut out = String::with_capacity(max_chars.min(4096));
     for name in names {
-        if is_runtime_skill_name(&name) {
+        if is_runtime_skill_name(&name) || is_capability_atom_name(&name) {
             continue;
         }
         if out.len() >= max_chars {
