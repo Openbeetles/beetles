@@ -550,10 +550,13 @@ fn clear_safe_mode(state: &mut LinuxSupervisorState) {
 }
 
 fn auto_release_rollback_eligible(platform: &dyn crate::platform::Platform, now_secs: u64) -> bool {
-    let status = crate::runtime::inspect_platform_linux_release(platform, now_secs);
-    status.managed
-        && status.rollback_available
-        && status.rollout_state == crate::runtime::LinuxReleaseRolloutState::PendingValidation
+    let _ = now_secs;
+    let current_exe =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("unknown"));
+    crate::runtime::linux_release::auto_release_rollback_eligible_for_state(
+        platform.state_fs().as_ref(),
+        current_exe.as_path(),
+    )
 }
 
 fn trigger_release_rollback(

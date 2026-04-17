@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const REL_PATH_LINUX_RELEASE_STATE: &str = "runtime/linux_release/state.json";
+pub const REL_PATH_LINUX_RELEASE_PENDING_VALIDATION: &str =
+    "runtime/linux_release/pending_validation.marker";
 pub const REL_PATH_STATE_SCHEMA_STATUS: &str = "runtime/state_schema.json";
 pub const LINUX_RELEASE_STATE_VERSION: u32 = 1;
 pub const BEETLE_STATE_SCHEMA_VERSION: u32 = 1;
@@ -55,6 +57,16 @@ pub struct StateSchemaStatus {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LinuxReleaseStatus {
+    #[serde(default)]
+    pub inspection_degraded: bool,
+    #[serde(default)]
+    pub state_readable: bool,
+    #[serde(default)]
+    pub state_schema_readable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_schema_error: Option<String>,
     pub managed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deploy_root: Option<String>,
@@ -144,37 +156,7 @@ pub fn inspect_platform_linux_release(
     _now_secs: u64,
 ) -> LinuxReleaseStatus {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("unknown"));
-    let state = load_release_state(platform.state_fs().as_ref())
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            let managed_layout = derive_managed_layout_from_binary(current_exe.as_path());
-            LinuxReleaseState {
-                version: LINUX_RELEASE_STATE_VERSION,
-                deploy_root: managed_layout
-                    .as_ref()
-                    .map(|(root, _)| root.to_string_lossy().into_owned()),
-                current: managed_layout.as_ref().map(|(_, pointer)| pointer.clone()),
-                rollback: managed_layout.as_ref().and_then(|(root, _)| {
-                    read_release_pointer_symlink(root.join("rollback").as_path())
-                }),
-                rollout_state: if managed_layout.is_some() {
-                    LinuxReleaseRolloutState::Steady
-                } else {
-                    LinuxReleaseRolloutState::Unmanaged
-                },
-                last_updated_at: 0,
-                last_action: String::new(),
-            }
-        });
-    let schema = read_state_schema(platform.state_fs().as_ref())
-        .unwrap_or_default()
-        .unwrap_or(StateSchemaStatus {
-            version: BEETLE_STATE_SCHEMA_VERSION,
-            upgraded_from: None,
-            updated_at: 0,
-        });
-    build_release_status(state, schema, current_exe.as_path())
+    inspect_linux_release_status(platform.state_fs().as_ref(), current_exe.as_path())
 }
 
 pub fn mark_current_release_steady(platform: &dyn Platform, now_secs: u64) -> Result<bool> {
@@ -245,6 +227,11 @@ fn build_release_status(
 ) -> LinuxReleaseStatus {
     let deploy_root = state.deploy_root.clone();
     LinuxReleaseStatus {
+        inspection_degraded: false,
+        state_readable: true,
+        state_schema_readable: true,
+        state_error: None,
+        state_schema_error: None,
         managed: state.current.is_some() && deploy_root.is_some(),
         deploy_root,
         current: state.current.clone(),
@@ -259,6 +246,109 @@ fn build_release_status(
         last_updated_at: state.last_updated_at,
         last_action: state.last_action,
     }
+}
+
+pub(crate) fn auto_release_rollback_eligible_for_state(
+    state_fs: &dyn StateFs,
+    current_exe: &Path,
+) -> bool {
+    let managed_layout = derive_managed_layout_from_binary(current_exe);
+    let rollback = managed_layout
+        .as_ref()
+        .and_then(|(root, _)| read_release_pointer_symlink(root.join("rollback").as_path()));
+    let marker_pending = read_pending_validation_marker(state_fs).unwrap_or(false);
+    match load_release_state(state_fs) {
+        Ok(Some(state)) => {
+            state.current.is_some()
+                && state.rollback.is_some()
+                && state.rollout_state == LinuxReleaseRolloutState::PendingValidation
+        }
+        Ok(None) | Err(_) => managed_layout.is_some() && rollback.is_some() && marker_pending,
+    }
+}
+
+fn inspect_linux_release_status(state_fs: &dyn StateFs, current_exe: &Path) -> LinuxReleaseStatus {
+    let managed_layout = derive_managed_layout_from_binary(current_exe);
+    let derived_deploy_root = managed_layout
+        .as_ref()
+        .map(|(root, _)| root.to_string_lossy().into_owned());
+    let derived_current = managed_layout.as_ref().map(|(_, pointer)| pointer.clone());
+    let derived_rollback = managed_layout
+        .as_ref()
+        .and_then(|(root, _)| read_release_pointer_symlink(root.join("rollback").as_path()));
+    let marker_pending = read_pending_validation_marker(state_fs).unwrap_or(false);
+    let (state, state_readable, state_error) = match load_release_state(state_fs) {
+        Ok(Some(state)) => (state, true, None),
+        Ok(None) => (
+            LinuxReleaseState {
+                version: LINUX_RELEASE_STATE_VERSION,
+                deploy_root: derived_deploy_root.clone(),
+                current: derived_current.clone(),
+                rollback: derived_rollback.clone(),
+                rollout_state: if marker_pending {
+                    LinuxReleaseRolloutState::PendingValidation
+                } else if managed_layout.is_some() {
+                    LinuxReleaseRolloutState::Steady
+                } else {
+                    LinuxReleaseRolloutState::Unmanaged
+                },
+                last_updated_at: 0,
+                last_action: String::new(),
+            },
+            true,
+            None,
+        ),
+        Err(error) => (
+            LinuxReleaseState {
+                version: LINUX_RELEASE_STATE_VERSION,
+                deploy_root: derived_deploy_root.clone(),
+                current: derived_current.clone(),
+                rollback: derived_rollback.clone(),
+                rollout_state: if marker_pending {
+                    LinuxReleaseRolloutState::PendingValidation
+                } else if managed_layout.is_some() {
+                    LinuxReleaseRolloutState::Steady
+                } else {
+                    LinuxReleaseRolloutState::Unmanaged
+                },
+                last_updated_at: 0,
+                last_action: String::new(),
+            },
+            false,
+            Some(error.to_string()),
+        ),
+    };
+    let (schema, schema_readable, schema_error) = match read_state_schema(state_fs) {
+        Ok(Some(schema)) => (schema, true, None),
+        Ok(None) => (
+            StateSchemaStatus {
+                version: BEETLE_STATE_SCHEMA_VERSION,
+                upgraded_from: None,
+                updated_at: 0,
+            },
+            true,
+            None,
+        ),
+        Err(error) => (
+            StateSchemaStatus {
+                version: BEETLE_STATE_SCHEMA_VERSION,
+                upgraded_from: None,
+                updated_at: 0,
+            },
+            false,
+            Some(error.to_string()),
+        ),
+    };
+    let mut status = build_release_status(state, schema, current_exe);
+    status.inspection_degraded = !state_readable || !schema_readable;
+    status.state_readable = state_readable;
+    status.state_schema_readable = schema_readable;
+    status.state_error = state_error;
+    status.state_schema_error = schema_error;
+    if !schema_readable {
+        status.state_schema_current = false;
+    }
+    status
 }
 
 fn normalize_release_action(reason: &str) -> String {
@@ -282,7 +372,8 @@ fn load_release_state(state_fs: &dyn StateFs) -> Result<Option<LinuxReleaseState
 fn write_release_state(state_fs: &dyn StateFs, state: &LinuxReleaseState) -> Result<()> {
     let payload = serde_json::to_vec_pretty(state)
         .map_err(|error| Error::config("linux_release_state", error.to_string()))?;
-    state_fs.write(REL_PATH_LINUX_RELEASE_STATE, &payload)
+    state_fs.write(REL_PATH_LINUX_RELEASE_STATE, &payload)?;
+    sync_pending_validation_marker(state_fs, state)
 }
 
 fn read_state_schema(state_fs: &dyn StateFs) -> Result<Option<StateSchemaStatus>> {
@@ -298,6 +389,23 @@ fn write_state_schema(state_fs: &dyn StateFs, status: &StateSchemaStatus) -> Res
     let payload = serde_json::to_vec_pretty(status)
         .map_err(|error| Error::config("state_schema", error.to_string()))?;
     state_fs.write(REL_PATH_STATE_SCHEMA_STATUS, &payload)
+}
+
+fn read_pending_validation_marker(state_fs: &dyn StateFs) -> Result<bool> {
+    Ok(state_fs
+        .read(REL_PATH_LINUX_RELEASE_PENDING_VALIDATION)?
+        .is_some())
+}
+
+fn sync_pending_validation_marker(state_fs: &dyn StateFs, state: &LinuxReleaseState) -> Result<()> {
+    if state.rollout_state == LinuxReleaseRolloutState::PendingValidation {
+        state_fs.write(
+            REL_PATH_LINUX_RELEASE_PENDING_VALIDATION,
+            b"pending_validation",
+        )
+    } else {
+        state_fs.remove(REL_PATH_LINUX_RELEASE_PENDING_VALIDATION)
+    }
 }
 
 fn derive_managed_layout_from_binary(path: &Path) -> Option<(PathBuf, LinuxReleasePointer)> {
@@ -384,15 +492,18 @@ fn atomic_symlink(target: &Path, link_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_managed_layout_from_binary, read_release_pointer_symlink, LinuxReleasePointer,
+        auto_release_rollback_eligible_for_state, derive_managed_layout_from_binary,
+        inspect_linux_release_status, read_release_pointer_symlink, LinuxReleasePointer,
         LinuxReleaseRolloutState, LinuxReleaseState, LinuxReleaseStatus, StateSchemaStatus,
-        BEETLE_STATE_SCHEMA_VERSION, REL_PATH_LINUX_RELEASE_STATE, REL_PATH_STATE_SCHEMA_STATUS,
+        BEETLE_STATE_SCHEMA_VERSION, REL_PATH_LINUX_RELEASE_PENDING_VALIDATION,
+        REL_PATH_LINUX_RELEASE_STATE, REL_PATH_STATE_SCHEMA_STATUS,
     };
     use crate::error::Result;
     use crate::platform::StateFs;
     use std::collections::{BTreeMap, BTreeSet};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
     struct MemoryStateFs {
@@ -509,6 +620,11 @@ mod tests {
     #[test]
     fn release_status_serializes_rollout_state() {
         let status = LinuxReleaseStatus {
+            inspection_degraded: false,
+            state_readable: true,
+            state_schema_readable: true,
+            state_error: None,
+            state_schema_error: None,
             managed: true,
             deploy_root: Some("/opt/beetle".to_string()),
             current: Some(LinuxReleasePointer {
@@ -528,6 +644,66 @@ mod tests {
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"rollout_state\":\"steady\""));
+    }
+
+    fn managed_release_fixture() -> (PathBuf, PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("beetle-linux-release-{unique}"));
+        let current = root.join("releases/r2");
+        let rollback = root.join("releases/r1");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&rollback).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&rollback, root.join("rollback")).unwrap();
+        (root, current.join("beetle"))
+    }
+
+    #[test]
+    fn inspect_release_marks_unreadable_state_as_degraded_without_losing_validation_marker() {
+        let fs = MemoryStateFs::default();
+        fs.write(REL_PATH_LINUX_RELEASE_STATE, br#"{"rollout_state":"#)
+            .unwrap();
+        fs.write(
+            REL_PATH_LINUX_RELEASE_PENDING_VALIDATION,
+            b"pending_validation",
+        )
+        .unwrap();
+        let (_root, current_exe) = managed_release_fixture();
+
+        let status = inspect_linux_release_status(&fs, current_exe.as_path());
+
+        assert!(status.inspection_degraded);
+        assert!(!status.state_readable);
+        assert_eq!(
+            status.rollout_state,
+            LinuxReleaseRolloutState::PendingValidation
+        );
+        assert!(status.rollback_available);
+        assert!(status
+            .state_error
+            .as_deref()
+            .is_some_and(|error| error.contains("linux_release_state")));
+    }
+
+    #[test]
+    fn auto_rollback_eligibility_uses_pending_validation_marker_when_state_is_unreadable() {
+        let fs = MemoryStateFs::default();
+        fs.write(REL_PATH_LINUX_RELEASE_STATE, br#"{"rollout_state":"#)
+            .unwrap();
+        fs.write(
+            REL_PATH_LINUX_RELEASE_PENDING_VALIDATION,
+            b"pending_validation",
+        )
+        .unwrap();
+        let (_root, current_exe) = managed_release_fixture();
+
+        assert!(auto_release_rollback_eligible_for_state(
+            &fs,
+            current_exe.as_path()
+        ));
     }
 
     #[test]

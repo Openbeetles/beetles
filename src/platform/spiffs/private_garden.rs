@@ -205,13 +205,8 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 return Ok(StoreOp::clean(Some(doc)));
             }
             let rel_path = chat_doc_rel_path(chat_id, &doc_path);
-            let buf = match super::read_file_to_vec(state_path_join(&rel_path)) {
-                Ok(buf) => buf,
-                Err(Error::Other { .. }) | Err(Error::Io { .. }) => {
-                    return Ok(StoreOp::clean(None));
-                }
-                Err(error) => return Err(error),
-            };
+            let buf = super::read_file_to_vec(state_path_join(&rel_path))
+                .map_err(|error| error.with_stage("private_garden_read"))?;
             let content = String::from_utf8(buf).map_err(|_| {
                 Error::config("private_garden_read", "stored document is not valid UTF-8")
             })?;
@@ -334,13 +329,8 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
                 return Ok(StoreOp::clean(None));
             };
             let rel_from_path = chat_doc_rel_path(chat_id, &from_path);
-            let buf = match super::read_file_to_vec(state_path_join(&rel_from_path)) {
-                Ok(buf) => buf,
-                Err(Error::Other { .. }) | Err(Error::Io { .. }) => {
-                    return Ok(StoreOp::clean(None));
-                }
-                Err(error) => return Err(error),
-            };
+            let buf = super::read_file_to_vec(state_path_join(&rel_from_path))
+                .map_err(|error| error.with_stage("private_garden_move"))?;
             let content = String::from_utf8(buf).map_err(|_| {
                 Error::config("private_garden_move", "stored document is not valid UTF-8")
             })?;
@@ -396,5 +386,70 @@ impl PrivateGardenStore for SpiffsPrivateGardenStore {
             }
             Ok(StoreOp::dirty(true))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("private garden test guard")
+    }
+
+    #[test]
+    fn indexed_doc_with_missing_body_fails_closed_on_read() {
+        let _guard = test_guard();
+        let suffix = unique_suffix();
+        let chat_id = format!("private-garden-read-{suffix}");
+        let doc_path = "notes/runtime.md";
+        let store = SpiffsPrivateGardenStore::new();
+        store.write(&chat_id, doc_path, "content", 1).unwrap();
+
+        let body_path = state_path_join(chat_doc_rel_path(&chat_id, doc_path));
+        std::fs::remove_file(&body_path).unwrap();
+
+        let reloaded = SpiffsPrivateGardenStore::new();
+        let error = reloaded
+            .read(&chat_id, doc_path)
+            .expect_err("indexed unreadable doc must not be treated as missing");
+        assert_eq!(error.stage(), "private_garden_read");
+
+        let _ = reloaded.delete(&chat_id, doc_path);
+    }
+
+    #[test]
+    fn indexed_doc_with_missing_body_fails_closed_on_move() {
+        let _guard = test_guard();
+        let suffix = unique_suffix();
+        let chat_id = format!("private-garden-move-{suffix}");
+        let from_path = "notes/runtime.md";
+        let to_path = "notes/runtime-renamed.md";
+        let store = SpiffsPrivateGardenStore::new();
+        store.write(&chat_id, from_path, "content", 1).unwrap();
+
+        let body_path = state_path_join(chat_doc_rel_path(&chat_id, from_path));
+        std::fs::remove_file(&body_path).unwrap();
+
+        let reloaded = SpiffsPrivateGardenStore::new();
+        let error = reloaded
+            .move_doc(&chat_id, from_path, to_path, 2)
+            .expect_err("indexed unreadable doc must block move");
+        assert_eq!(error.stage(), "private_garden_move");
+
+        let _ = reloaded.delete(&chat_id, from_path);
     }
 }

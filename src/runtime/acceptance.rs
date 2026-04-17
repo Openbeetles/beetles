@@ -596,6 +596,11 @@ mod tests {
                 },
             ),
             release: Some(crate::runtime::LinuxReleaseStatus {
+                inspection_degraded: false,
+                state_readable: true,
+                state_schema_readable: true,
+                state_error: None,
+                state_schema_error: None,
                 managed: true,
                 deploy_root: Some("/opt/beetle".to_string()),
                 current: Some(LinuxReleasePointer {

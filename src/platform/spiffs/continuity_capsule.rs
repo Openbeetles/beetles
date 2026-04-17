@@ -7,7 +7,7 @@ use crate::memory::{
     MAX_CONTINUITY_CAPSULES, REL_PATH_CONTINUITY_CAPSULES,
 };
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::{read_file, state_path_join, write_file};
 
@@ -17,27 +17,27 @@ fn full_path() -> PathBuf {
 
 pub struct SpiffsContinuityCapsuleStore {
     cache: Mutex<Option<Vec<ContinuityCapsule>>>,
-    path_fn: fn() -> PathBuf,
+    path_fn: Arc<dyn Fn() -> PathBuf + Send + Sync>,
 }
 
 impl SpiffsContinuityCapsuleStore {
     pub fn new() -> Self {
         Self {
             cache: Mutex::new(None),
-            path_fn: full_path,
+            path_fn: Arc::new(full_path),
         }
     }
 
     #[cfg(test)]
-    fn with_path_fn(path_fn: fn() -> PathBuf) -> Self {
+    fn with_path(path: PathBuf) -> Self {
         Self {
             cache: Mutex::new(None),
-            path_fn,
+            path_fn: Arc::new(move || path.clone()),
         }
     }
 
     fn load_entries_from_disk(&self) -> Result<Vec<ContinuityCapsule>> {
-        match read_file((self.path_fn)()) {
+        match read_file((self.path_fn.as_ref())()) {
             Ok(buf) => {
                 if buf.len() <= 2 {
                     Ok(Vec::new())
@@ -81,7 +81,7 @@ impl SpiffsContinuityCapsuleStore {
     fn persist(&self, entries: &[ContinuityCapsule]) -> Result<()> {
         let json = serde_json::to_vec(entries)
             .map_err(|error| Error::config("continuity_capsule_persist", error.to_string()))?;
-        write_file((self.path_fn)(), &json)
+        write_file((self.path_fn.as_ref())(), &json)
     }
 }
 
@@ -134,21 +134,16 @@ impl ContinuityCapsuleStore for SpiffsContinuityCapsuleStore {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn test_store_path() -> PathBuf {
-        static PATH: OnceLock<PathBuf> = OnceLock::new();
-        PATH.get_or_init(|| {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!("beetle-continuity-capsule-{unique}"));
-            std::fs::create_dir_all(&root).unwrap();
-            root.join("continuity_capsules.json")
-        })
-        .clone()
+    fn unique_test_store_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("beetle-continuity-capsule-{label}-{unique}"));
+        std::fs::create_dir_all(&root).unwrap();
+        root.join("continuity_capsules.json")
     }
 
     fn reset_test_store(path: &Path) {
@@ -160,9 +155,9 @@ mod tests {
 
     #[test]
     fn store_roundtrip_persists_capsules() {
-        let path = test_store_path();
+        let path = unique_test_store_path("roundtrip");
         reset_test_store(&path);
-        let store = SpiffsContinuityCapsuleStore::with_path_fn(test_store_path);
+        let store = SpiffsContinuityCapsuleStore::with_path(path.clone());
         let outcome = store
             .upsert_many(
                 &[ContinuityCapsuleDraft {
@@ -179,7 +174,7 @@ mod tests {
         let items = store.list(8).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].topic, "memory enhancement");
-        let store_reload = SpiffsContinuityCapsuleStore::with_path_fn(test_store_path);
+        let store_reload = SpiffsContinuityCapsuleStore::with_path(path.clone());
         let reloaded = store_reload.list(8).unwrap();
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded[0].summary, "close P4-B1");
@@ -187,11 +182,11 @@ mod tests {
 
     #[test]
     fn corrupt_capsule_file_fails_closed_without_overwrite() {
-        let path = test_store_path();
+        let path = unique_test_store_path("corrupt");
         reset_test_store(&path);
         super::super::write_file(&path, br#"{"capsules": }"#).unwrap();
 
-        let store = SpiffsContinuityCapsuleStore::with_path_fn(test_store_path);
+        let store = SpiffsContinuityCapsuleStore::with_path(path.clone());
         let load_error = store.list(8).expect_err("corrupt capsule file must error");
         assert_eq!(load_error.stage(), "continuity_capsule_load");
 

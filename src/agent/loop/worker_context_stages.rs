@@ -76,6 +76,14 @@ fn log_prepare_stage(prepare_trace_enabled: bool, msg: &crate::bus::PcMsg, stage
     }
 }
 
+fn record_prompt_memory_health_issue(
+    issues: &mut Vec<String>,
+    layer: &'static str,
+    error: &crate::error::Error,
+) {
+    issues.push(format!("{layer} ({})", error.stage().trim()));
+}
+
 #[inline(never)]
 pub(super) fn compute_prepare_runtime<'a>(
     session: &mut WorkerPrepareSession,
@@ -281,7 +289,7 @@ pub(super) fn load_prepare_prompt_memory(
         msg,
         "prompt_memory_load_start",
     );
-    let prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
+    let mut prompt_memory = load_prompt_memory_context(PromptMemoryContextParams {
         chat_id: &msg.chat_id,
         current_channel: &msg.channel,
         user_query: &msg.content,
@@ -319,6 +327,7 @@ pub(super) fn load_prepare_prompt_memory(
         skill_storage: config.runtime.skill_storage.as_ref(),
         continuity_capsule_store: config.runtime.continuity_capsule_store.as_ref(),
     });
+    let mut prompt_memory_health_issues = prompt_memory.memory_health_issues.clone();
     if runtime_stage.prepare_trace_enabled {
         let (recent_messages, has_summary, has_message_summary, has_self_model_text) =
             prompt_memory.trace_summary();
@@ -332,40 +341,76 @@ pub(super) fn load_prepare_prompt_memory(
             has_self_model_text
         );
     }
-    let recent_persona_evidence = load_recent_persona_evidence(
+    let recent_persona_evidence = match load_recent_persona_evidence(
         config.runtime.turn_ledger_store.as_ref(),
         &runtime_stage.relationship_id,
-    )
-    .ok()
-    .flatten();
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            record_prompt_memory_health_issue(
+                &mut prompt_memory_health_issues,
+                "recent_persona_evidence",
+                &error,
+            );
+            None
+        }
+    };
     let prompt_mental_privacy_state = runtime_stage
         .active_governance_mode
         .filter(|mode| mode.allow_sync_relationship_constitution())
         .and_then(|_| {
-            config
+            match config
                 .runtime
                 .mental_privacy_store
                 .get(&runtime_stage.relationship_id)
-                .ok()
-                .flatten()
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    record_prompt_memory_health_issue(
+                        &mut prompt_memory_health_issues,
+                        "mental_privacy_state",
+                        &error,
+                    );
+                    None
+                }
+            }
         });
     let prompt_relationship_portfolio = runtime_stage
         .active_governance_mode
         .filter(|mode| mode.allow_sync_relationship_constitution())
         .and_then(|_| {
-            config
+            match config
                 .runtime
                 .relationship_portfolio_store
                 .get(board_subject_scope_id())
-                .ok()
-                .flatten()
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    record_prompt_memory_health_issue(
+                        &mut prompt_memory_health_issues,
+                        "relationship_portfolio",
+                        &error,
+                    );
+                    None
+                }
+            }
         });
-    let prompt_relationship_topology = config
+    let prompt_relationship_topology = match config
         .runtime
         .relationship_topology_store
         .get(board_subject_scope_id())
-        .ok()
-        .flatten();
+    {
+        Ok(value) => value,
+        Err(error) => {
+            record_prompt_memory_health_issue(
+                &mut prompt_memory_health_issues,
+                "relationship_topology",
+                &error,
+            );
+            None
+        }
+    };
+    prompt_memory.memory_health_issues = prompt_memory_health_issues;
     let allow_tool_round_recall_refill =
         crate::memory::prompt_participation_policy(config.runtime.memory_system_kind)
             .tool_round_recall_enabled
@@ -779,6 +824,7 @@ pub(super) fn finalize_prepare_context<'a>(
         programmable_reasoning_intent.as_ref().and_then(|intent| {
             crate::agent::reasoning_intent::render_programmable_reasoning_intent_block(intent, 360)
         });
+    let memory_health_text = prompt_memory.render_memory_health_block(360);
     let soul_feedback_projection_text = governance_stage
         .soul_feedback_projection
         .as_ref()
@@ -798,6 +844,7 @@ pub(super) fn finalize_prepare_context<'a>(
         session_max_messages: config.session_max_messages,
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix: runtime_stage.emotion_signal_suffix,
+        memory_health_text: memory_health_text.as_deref(),
         constitutional_stack_text: prompt_memory.constitutional_stack_text.as_deref(),
         subject_state_text: subject_state_text.as_deref(),
         deliberation_gate_text: deliberation_gate_text.as_deref(),

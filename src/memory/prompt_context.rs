@@ -4,11 +4,12 @@
 use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 use crate::task_execution::{TaskArtifactStore, TaskLearningStore, TaskRunStore};
+use std::collections::BTreeSet;
 
 use super::{
     prompt_context_stages::{
         load_constitutional_stage, load_governed_memory_stage, load_private_projection_stage,
-        load_session_stage, seed_prompt_context,
+        load_session_stage, seed_prompt_context, PromptContextLoadHealth,
     },
     AutonomyStrategyStore, ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore,
     LongTermMemoryStore, MemoryStore, MemorySystemKind, MentalPrivacyStore, OuterVoiceStore,
@@ -19,6 +20,7 @@ use super::{
 };
 
 pub struct PromptMemoryContext {
+    pub memory_health_issues: Vec<String>,
     pub constitutional_stack_text: Option<String>,
     pub active_task_context_text: Option<String>,
     pub governed_memory_evidence_text: Option<String>,
@@ -93,6 +95,10 @@ impl PromptMemoryContext {
             persona_priority_text: self.persona_priority_text.clone(),
             mental_privacy_adjudication_text: self.mental_privacy_adjudication_text.clone(),
         }
+    }
+
+    pub fn render_memory_health_block(&self, max_len: usize) -> Option<String> {
+        render_memory_health_block(&self.memory_health_issues, max_len)
     }
 
     pub fn into_runtime_carry(self) -> PromptRuntimeCarry {
@@ -192,6 +198,39 @@ fn compose_prompt_projection_body(parts: &[Option<&str>]) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+fn render_memory_health_block(issues: &[String], max_len: usize) -> Option<String> {
+    if max_len == 0 {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let deduped = issues
+        .iter()
+        .filter_map(|issue| {
+            let trimmed = issue.trim();
+            if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    if deduped.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(512));
+    out.push_str(
+        "Some memory or governance stores were unreadable this turn. Treat missing context below as degraded, not absent.",
+    );
+    for issue in deduped {
+        let line = format!("\n- {issue}");
+        if out.len().saturating_add(line.len()) > max_len {
+            break;
+        }
+        out.push_str(&line);
+    }
+    Some(out)
+}
+
 pub struct PromptMemoryContextParams<'a> {
     pub chat_id: &'a str,
     pub current_channel: &'a str,
@@ -253,11 +292,13 @@ pub fn load_esp_prompt_memory_context(
 }
 
 fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> PromptMemoryContext {
-    let seed = seed_prompt_context(&params);
-    let session = load_session_stage(&params, &seed);
+    let mut health = PromptContextLoadHealth::default();
+    let seed = seed_prompt_context(&params, &mut health);
+    let session = load_session_stage(&params, &seed, &mut health);
     let governed = load_governed_memory_stage(&params, &seed, &session);
-    let constitutional = load_constitutional_stage(&params, &seed);
-    let private_projection = load_private_projection_stage(&params, &seed, &constitutional);
+    let constitutional = load_constitutional_stage(&params, &seed, &mut health);
+    let private_projection =
+        load_private_projection_stage(&params, &seed, &constitutional, &mut health);
     let message_summary_text =
         if session.work_continuity_text.is_some() || session.execution_state_text.is_some() {
             None
@@ -280,6 +321,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         task_recall_report,
     } = *scratch;
     let mut context = PromptMemoryContext {
+        memory_health_issues: health.issues(),
         constitutional_stack_text: None,
         active_task_context_text: None,
         governed_memory_evidence_text: None,
@@ -333,7 +375,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Result;
+    use crate::error::{Error, Result};
     use crate::memory::{
         AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
         ExecutionStatus, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
@@ -379,9 +421,33 @@ mod tests {
         }
     }
 
+    struct ErrorSessionStore;
+
+    impl SessionStore for ErrorSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, _limit: usize) -> Result<Vec<SessionMessage>> {
+            Err(Error::config(
+                "prompt_session_recent_messages",
+                "session store unavailable",
+            ))
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
     #[test]
     fn trace_summary_reports_current_prompt_memory_fields() {
         let context = PromptMemoryContext {
+            memory_health_issues: Vec::new(),
             constitutional_stack_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
@@ -440,6 +506,7 @@ mod tests {
     #[test]
     fn soul_kernel_projection_collects_constitutional_prompt_fields() {
         let context = PromptMemoryContext {
+            memory_health_issues: Vec::new(),
             constitutional_stack_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
@@ -494,6 +561,75 @@ mod tests {
             projection.constitutional_stack_text().as_deref(),
             Some("gate\n\ncore\n\nconstitution\n\npriority\n\nprivacy")
         );
+    }
+
+    #[test]
+    fn prompt_memory_records_unreadable_layers_as_health_issues() {
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            memory_system_kind: MemorySystemKind::LinuxFull,
+            system_max_len: 4096,
+            now_secs: 1,
+            participation_plan: PromptParticipationPlan::full(),
+            recent_messages_limit: 6,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &ErrorSessionStore,
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &ErrorSessionSummaryStore,
+            long_term_memory_store: &StubLongTermMemoryStore::default(),
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &ErrorSelfAuthoredCoreStore,
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &ErrorPrivateGardenStore,
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert!(context.recent_messages.is_empty());
+        assert!(context.summary_text.is_none());
+        assert!(context.self_authored_core_text.is_none());
+        assert!(context.private_garden_text.is_none());
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("session_recent_messages")));
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("session_summary")));
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("self_authored_core")));
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("private_garden")));
+        let rendered = context
+            .render_memory_health_block(320)
+            .expect("memory health block");
+        assert!(rendered.contains("Treat missing context below as degraded"));
+        assert!(rendered.contains("session_recent_messages"));
+        assert!(rendered.contains("self_authored_core"));
     }
 
     #[test]
@@ -685,7 +821,8 @@ mod tests {
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
         };
 
-        let seed = crate::memory::prompt_context_stages::seed_prompt_context(&params);
+        let mut health = crate::memory::prompt_context_stages::PromptContextLoadHealth::default();
+        let seed = crate::memory::prompt_context_stages::seed_prompt_context(&params, &mut health);
         assert!(seed.esp_compact_first_turn_graph);
         assert!(seed.governed_memory_enabled);
         assert!(!seed.reuse_stored_relationship_constitution);
@@ -946,6 +1083,29 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct ErrorSessionSummaryStore;
+
+    impl SessionSummaryStore for ErrorSessionSummaryStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<String>> {
+            Err(Error::config(
+                "prompt_session_summary",
+                "summary store unavailable",
+            ))
+        }
+
+        fn set(&self, _chat_id: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_with_count(&self, _chat_id: &str) -> Result<Option<(String, usize)>> {
+            Err(Error::config(
+                "prompt_session_summary",
+                "summary store unavailable",
+            ))
         }
     }
 
@@ -1598,6 +1758,26 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct ErrorSelfAuthoredCoreStore;
+
+    impl SelfAuthoredCoreStore for ErrorSelfAuthoredCoreStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<SelfAuthoredCore>> {
+            Err(Error::config(
+                "prompt_self_authored_core",
+                "self authored core unavailable",
+            ))
+        }
+
+        fn set(&self, _scope_id: &str, _core: &SelfAuthoredCore) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubRelationshipConstitutionStore {
         value: Mutex<Option<RelationshipConstitution>>,
     }
@@ -1752,6 +1932,49 @@ mod tests {
                 .iter()
                 .find(|doc| doc.path == doc_path)
                 .cloned())
+        }
+
+        fn write(
+            &self,
+            _chat_id: &str,
+            _doc_path: &str,
+            _content: &str,
+            _now_secs: u64,
+        ) -> Result<PrivateGardenDocRecord> {
+            unreachable!()
+        }
+
+        fn delete(&self, _chat_id: &str, _doc_path: &str) -> Result<bool> {
+            unreachable!()
+        }
+
+        fn move_doc(
+            &self,
+            _chat_id: &str,
+            _from_path: &str,
+            _to_path: &str,
+            _now_secs: u64,
+        ) -> Result<Option<PrivateGardenDocRecord>> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct ErrorPrivateGardenStore;
+
+    impl PrivateGardenStore for ErrorPrivateGardenStore {
+        fn list(&self, _chat_id: &str, _limit: usize) -> Result<Vec<PrivateGardenDocRecord>> {
+            Err(Error::config(
+                "prompt_private_garden",
+                "private garden unavailable",
+            ))
+        }
+
+        fn read(&self, _chat_id: &str, _doc_path: &str) -> Result<Option<PrivateGardenDoc>> {
+            Err(Error::config(
+                "prompt_private_garden",
+                "private garden unavailable",
+            ))
         }
 
         fn write(

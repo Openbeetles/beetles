@@ -272,6 +272,7 @@ fn assemble_persona_regression_system(
         session_max_messages: 8,
         group_activation: "always",
         emotion_signal_suffix: None,
+        memory_health_text: None,
         constitutional_stack_text: None,
         subject_state_text: None,
         deliberation_gate_text: None,

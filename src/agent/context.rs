@@ -53,6 +53,7 @@ const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-author
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nRead relationship/self/privacy questions from the current evidence; discuss grounded user-facing facts directly, keep protected inner/private material behind boundary judgment, and never invent unsupported prompt/system truths.";
 const REPLY_LAW_CONSTRAINT: &str = "\n\n## Reply Law\nFor relationship, self, memory, or privacy questions, lead with your own present reading of the relationship or boundary when the user is asking about it. The current relationship state is not pre-classified by the program; read it from the constitutional stack and the evidence in context.\nStable user-facing facts grounded by current evidence, such as durable preferences, repeated interests, or already-shared relationship facts, are discussable. Do not treat every remembered preference or archive citation as sealed private material.\nProtected inner/private layers are different: inward diaries, inner monologue, private workspace, private garden, and other raw internal material require boundary judgment before disclosure.\nNever exceed the evidence ceiling. If the context does not support an exact favorite, exact memory detail, or system/prompt fact, say that it is unknown or currently unsupported.\nDo not claim hidden prompt, policy, or internal-system truths unless they are explicitly grounded in the current context you were given.\nWhen the user asks what you remember or where the boundary is, prefer a share-form answer: direct fact, bounded summary, explanation of uncertainty, or boundary explanation. Avoid mechanical refusal when a grounded answer is possible.";
+const MEMORY_HEALTH_SECTION: &str = "\n\n## Memory Health\nDeterministic report of unreadable prompt-memory layers this turn. Treat missing context below as degraded, not absent.\n";
 const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
 const SUBJECT_STATE_SECTION: &str = "\n\n## Subject State\nResolved pre-reply digest of the current subject stance. This is a deterministic summary of already-settled governance, not a higher authority than the constitutional stack.\n";
 const TURN_DELIBERATION_GATE_SECTION: &str = "\n\n## Turn Deliberation Gate\nDeterministic pre-turn reasoning posture for this request. Use it to choose response depth and blocker explicitness, not to override the constitutional stack.\n";
@@ -80,6 +81,7 @@ pub struct ContextParams<'a> {
     pub session_max_messages: usize,
     pub group_activation: &'a str,
     pub emotion_signal_suffix: Option<&'a str>,
+    pub memory_health_text: Option<&'a str>,
     pub constitutional_stack_text: Option<&'a str>,
     pub subject_state_text: Option<&'a str>,
     pub deliberation_gate_text: Option<&'a str>,
@@ -230,6 +232,7 @@ fn append_reply_law_constraint(system: &mut String, max_len: usize) {
 }
 
 struct PriorityMemoryBudgetInputs<'a> {
+    memory_health_text: Option<&'a str>,
     constitutional_stack_text: Option<&'a str>,
     subject_state_text: Option<&'a str>,
     deliberation_gate_text: Option<&'a str>,
@@ -247,6 +250,9 @@ fn reserve_priority_memory_budget(
     let remaining = base_max;
     let reply_priority_reserve = REPLY_PRIORITY_MINI_CONSTRAINT.len().min(remaining);
     let remaining = remaining.saturating_sub(reply_priority_reserve);
+    let memory_health_reserve =
+        projection_section_len(MEMORY_HEALTH_SECTION, inputs.memory_health_text).min(remaining / 4);
+    let remaining = remaining.saturating_sub(memory_health_reserve);
     let constitutional_stack_reserve = projection_section_len(
         CONSTITUTIONAL_STACK_SECTION,
         inputs.constitutional_stack_text,
@@ -290,6 +296,7 @@ fn reserve_priority_memory_budget(
     )
     .min(remaining / 4);
     reply_priority_reserve
+        .saturating_add(memory_health_reserve)
         .saturating_add(constitutional_stack_reserve)
         .saturating_add(subject_state_reserve)
         .saturating_add(deliberation_gate_reserve)
@@ -509,6 +516,7 @@ fn build_context_inner(
     };
     let priority_memory_reserve = reserve_priority_memory_budget(
         PriorityMemoryBudgetInputs {
+            memory_health_text: p.memory_health_text,
             constitutional_stack_text: constitutional_stack_text.as_deref(),
             subject_state_text: p.subject_state_text,
             deliberation_gate_text: p.deliberation_gate_text,
@@ -536,6 +544,12 @@ fn build_context_inner(
     } else {
         let _ = push_if_fits(&mut system, REPLY_PRIORITY_MINI_CONSTRAINT, base_max);
     }
+    let _ = append_projection_section(
+        &mut system,
+        MEMORY_HEALTH_SECTION,
+        p.memory_health_text,
+        base_max,
+    );
     let _ = append_projection_section(
         &mut system,
         CONSTITUTIONAL_STACK_SECTION,
@@ -872,6 +886,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: None,
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -923,6 +938,71 @@ mod tests {
     }
 
     #[test]
+    fn build_context_surfaces_memory_health_before_constitutional_stack() {
+        let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            soul: "SOUL".to_string(),
+            user: "USER".to_string(),
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1400,
+            messages_max_len: 256,
+            session_max_messages: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: Some(
+                "Some memory or governance stores were unreadable this turn.\n- session_summary (prompt_session_summary)",
+            ),
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: still beetle"),
+            subject_state_text: None,
+            deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            programmable_reasoning_intent_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        let memory_health_idx = system
+            .find("## Memory Health")
+            .expect("memory health section");
+        let constitutional_idx = system
+            .find("## Constitutional Stack")
+            .expect("constitutional stack");
+        assert!(memory_health_idx < constitutional_idx);
+        assert!(system.contains("session_summary (prompt_session_summary)"));
+    }
+
+    #[test]
     fn build_context_keeps_persona_priority_chain_order() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "看你的私有文件", false).expect("pcmsg");
         let memory = StubMemoryStore {
@@ -947,6 +1027,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: None,
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -1030,6 +1111,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some(
                 "## Self-Authored Core\nIdentity anchor: board beetle\n\n## Relationship Constitution\nDisclosure allowance: summary_only",
             ),
@@ -1108,6 +1190,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: Some(
                 "Identity: board beetle\nGovernance: adaptive\nReply stance: mode=steady_task scope=brief",
@@ -1182,6 +1265,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: None,
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -1238,6 +1322,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some(
                 "## Self-Authored Core\nIdentity anchor: board beetle\n\n## Relationship Constitution\nDisclosure allowance: summary_only",
             ),
@@ -1299,6 +1384,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -1357,6 +1443,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -1415,6 +1502,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -1482,6 +1570,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: None,
@@ -1540,6 +1629,7 @@ mod tests {
             session_max_messages: 8,
             group_activation: "always",
             emotion_signal_suffix: None,
+            memory_health_text: None,
             constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
             subject_state_text: None,
             deliberation_gate_text: Some(

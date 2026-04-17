@@ -98,11 +98,11 @@ mod tests {
             .is_some());
         assert!(parsed["programmable_reasoning"].get("doctrine").is_some());
         assert!(parsed["programmable_reasoning"]["doctrine"]
-            .get("recent_clauses")
+            .get("total_clauses")
             .is_some());
         assert!(parsed["programmable_reasoning"].get("genome").is_some());
         assert!(parsed["programmable_reasoning"]["genome"]
-            .get("recent_lineages")
+            .get("total_lineages")
             .is_some());
         assert!(parsed["programmable_reasoning"]
             .get("capability_atoms")

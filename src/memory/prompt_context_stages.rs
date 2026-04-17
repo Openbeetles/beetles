@@ -1,6 +1,7 @@
 use crate::task_execution::{
     active_task_run_for_chat, build_task_recall_bundle, render_task_workspace_block, TaskRunRecord,
 };
+use std::collections::BTreeSet;
 
 use super::{
     board_subject_scope_id, build_archive_evidence_block, build_continuity_recall_query,
@@ -90,6 +91,54 @@ pub(crate) struct PromptGovernedMemoryStage {
     pub scratch: Box<PromptGovernedMemoryScratch>,
 }
 
+#[derive(Default)]
+pub(crate) struct PromptContextLoadHealth {
+    issues: Vec<String>,
+}
+
+impl PromptContextLoadHealth {
+    fn record(&mut self, layer: &'static str, error: &crate::error::Error) {
+        self.issues
+            .push(format!("{layer} ({})", error.stage().trim()));
+    }
+
+    pub(crate) fn issues(self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        self.issues
+            .into_iter()
+            .filter(|issue| seen.insert(issue.clone()))
+            .collect()
+    }
+}
+
+fn load_optional_with_health<T>(
+    health: &mut PromptContextLoadHealth,
+    layer: &'static str,
+    load: impl FnOnce() -> crate::error::Result<Option<T>>,
+) -> Option<T> {
+    match load() {
+        Ok(value) => value,
+        Err(error) => {
+            health.record(layer, &error);
+            None
+        }
+    }
+}
+
+fn load_vec_with_health<T>(
+    health: &mut PromptContextLoadHealth,
+    layer: &'static str,
+    load: impl FnOnce() -> crate::error::Result<Vec<T>>,
+) -> Vec<T> {
+    match load() {
+        Ok(value) => value,
+        Err(error) => {
+            health.record(layer, &error);
+            Vec::new()
+        }
+    }
+}
+
 fn prompt_private_garden_doc_limit(profile: MemoryProfile) -> usize {
     memory_policy(profile)
         .private_garden
@@ -119,14 +168,16 @@ fn disabled_recall_report(
 }
 
 #[inline(never)]
-pub(crate) fn seed_prompt_context(params: &PromptMemoryContextParams<'_>) -> PromptContextSeed {
+pub(crate) fn seed_prompt_context(
+    params: &PromptMemoryContextParams<'_>,
+    health: &mut PromptContextLoadHealth,
+) -> PromptContextSeed {
     let profile = params.memory_system_kind.memory_profile();
     let relationship_id = relationship_scope_id(params.current_channel, params.chat_id);
-    let relationship_constitution_existing = params
-        .relationship_constitution_store
-        .get(&relationship_id)
-        .ok()
-        .flatten();
+    let relationship_constitution_existing =
+        load_optional_with_health(health, "relationship_constitution_existing", || {
+            params.relationship_constitution_store.get(&relationship_id)
+        });
     let esp_compact_first_turn_graph = matches!(
         params.memory_system_kind,
         super::MemorySystemKind::EspCompact
@@ -154,6 +205,7 @@ pub(crate) fn seed_prompt_context(params: &PromptMemoryContextParams<'_>) -> Pro
 pub(crate) fn load_session_stage(
     params: &PromptMemoryContextParams<'_>,
     seed: &PromptContextSeed,
+    health: &mut PromptContextLoadHealth,
 ) -> Box<PromptSessionStage> {
     let recall_policy = memory_policy(seed.profile).long_term_recall;
     let recent_message_limit = params
@@ -167,34 +219,31 @@ pub(crate) fn load_session_stage(
     {
         Vec::new()
     } else {
-        params
-            .session_store
-            .load_recent(params.chat_id, recent_message_limit)
-            .unwrap_or_default()
+        load_vec_with_health(health, "session_recent_messages", || {
+            params
+                .session_store
+                .load_recent(params.chat_id, recent_message_limit)
+        })
     };
     let summary_text = params
         .participation_plan
         .load_l1_session
         .then(|| {
-            params
-                .session_summary_store
-                .get_with_count(params.chat_id)
-                .ok()
-                .flatten()
-                .map(|(summary, _)| summary.trim().to_string())
-                .filter(|summary| !summary.is_empty())
+            load_optional_with_health(health, "session_summary", || {
+                params.session_summary_store.get_with_count(params.chat_id)
+            })
+            .map(|(summary, _)| summary.trim().to_string())
+            .filter(|summary| !summary.is_empty())
         })
         .flatten();
     let execution_state = params
         .participation_plan
         .load_l1_session
         .then(|| {
-            params
-                .execution_state_store
-                .get(params.chat_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "execution_state", || {
+                params.execution_state_store.get(params.chat_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let execution_state_text = execution_state.as_ref().and_then(|state| {
@@ -207,13 +256,13 @@ pub(crate) fn load_session_stage(
         .participation_plan
         .load_l1_session
         .then(|| {
-            active_task_run_for_chat(
-                params.task_run_store,
-                params.current_channel,
-                params.chat_id,
-            )
-            .ok()
-            .flatten()
+            load_optional_with_health(health, "active_task_run", || {
+                active_task_run_for_chat(
+                    params.task_run_store,
+                    params.current_channel,
+                    params.chat_id,
+                )
+            })
             .map(Box::new)
         })
         .flatten();
@@ -229,10 +278,11 @@ pub(crate) fn load_session_stage(
         )
     });
     let task_workspace_text = active_task_run.as_ref().and_then(|record| {
-        let artifacts = params
-            .task_artifact_store
-            .list_for_run(&record.run.run_id, 4)
-            .unwrap_or_default();
+        let artifacts = load_vec_with_health(health, "task_artifacts", || {
+            params
+                .task_artifact_store
+                .list_for_run(&record.run.run_id, 4)
+        });
         render_task_workspace_block(record, &artifacts, 600)
     });
     let task_recall_text = active_task_run.as_ref().and_then(|record| {
@@ -262,120 +312,102 @@ pub(crate) fn load_session_stage(
 pub(crate) fn load_constitutional_stage(
     params: &PromptMemoryContextParams<'_>,
     seed: &PromptContextSeed,
+    health: &mut PromptContextLoadHealth,
 ) -> Box<PromptConstitutionalStage> {
     let self_authored_core = params
         .participation_plan
         .load_l1_constitutional
         .then(|| {
-            params
-                .self_authored_core_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "self_authored_core", || {
+                params.self_authored_core_store.get(seed.subject_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let relationship_portfolio = params
         .participation_plan
         .load_l2_background_governance
         .then(|| {
-            params
-                .relationship_portfolio_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
+            load_optional_with_health(health, "relationship_portfolio", || {
+                params.relationship_portfolio_store.get(seed.subject_id)
+            })
         })
         .flatten();
     let relationship_topology = ((params.participation_plan.load_l1_constitutional
         && !seed.reuse_stored_relationship_constitution)
         || params.participation_plan.load_l2_background_governance)
         .then(|| {
-            params
-                .relationship_topology_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
+            load_optional_with_health(health, "relationship_topology", || {
+                params.relationship_topology_store.get(seed.subject_id)
+            })
         })
         .flatten();
     let self_model = params
         .participation_plan
         .load_l2_background_governance
         .then(|| {
-            params
-                .self_model_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "self_model", || {
+                params.self_model_store.get(seed.subject_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let self_continuity = (params.participation_plan.load_l1_constitutional
         || params.participation_plan.load_l2_background_governance)
         .then(|| {
-            params
-                .self_continuity_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "self_continuity", || {
+                params.self_continuity_store.get(seed.subject_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let autonomy_strategy = params
         .participation_plan
         .load_l2_background_governance
         .then(|| {
-            params
-                .autonomy_strategy_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "autonomy_strategy", || {
+                params.autonomy_strategy_store.get(seed.subject_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let outer_voice = ((params.participation_plan.load_l1_constitutional
         && !seed.reuse_stored_relationship_constitution)
         || params.participation_plan.load_l2_background_governance)
         .then(|| {
-            params
-                .outer_voice_store
-                .get(&seed.relationship_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "outer_voice", || {
+                params.outer_voice_store.get(&seed.relationship_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let inner_life = params
         .participation_plan
         .load_l3_private_depth
         .then(|| {
-            params
-                .inner_life_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "inner_life", || {
+                params.inner_life_store.get(seed.subject_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let private_workspace = params
         .participation_plan
         .load_l3_private_depth
         .then(|| {
-            params
-                .private_doc_store
-                .get(seed.subject_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "private_workspace", || {
+                params.private_doc_store.get(seed.subject_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let recent_private_garden_docs = if params.participation_plan.load_l3_private_depth {
-        params
-            .private_garden_store
-            .list(
+        load_vec_with_health(health, "private_garden", || {
+            params.private_garden_store.list(
                 private_garden_scope_id(),
                 prompt_private_garden_doc_limit(seed.profile),
             )
-            .unwrap_or_default()
+        })
     } else {
         Vec::new()
     };
@@ -383,22 +415,27 @@ pub(crate) fn load_constitutional_stage(
         || params.participation_plan.load_l2_background_governance
         || params.participation_plan.load_l3_private_depth)
         .then(|| {
-            params
-                .mental_privacy_store
-                .get(&seed.relationship_id)
-                .ok()
-                .flatten()
-                .map(Box::new)
+            load_optional_with_health(health, "mental_privacy_state", || {
+                params.mental_privacy_store.get(&seed.relationship_id)
+            })
+            .map(Box::new)
         })
         .flatten();
     let recent_persona_evidence = (!seed.reuse_stored_relationship_constitution
         || params.participation_plan.load_l2_background_governance
         || params.participation_plan.load_l3_private_depth)
-        .then(|| load_recent_persona_evidence(params.turn_ledger_store, &seed.relationship_id))
-        .and_then(|result| result.ok().flatten());
+        .then(|| {
+            load_optional_with_health(health, "recent_persona_evidence", || {
+                load_recent_persona_evidence(params.turn_ledger_store, &seed.relationship_id)
+            })
+        })
+        .flatten();
     let recent_turn_ledger = params
         .turn_ledger_store
         .get(&seed.relationship_id)
+        .inspect_err(|error| {
+            health.record("recent_turn_ledger", error);
+        })
         .ok()
         .flatten();
     let recent_turn_observation_text = recent_turn_ledger
@@ -464,6 +501,7 @@ pub(crate) fn load_private_projection_stage(
     params: &PromptMemoryContextParams<'_>,
     seed: &PromptContextSeed,
     constitutional: &PromptConstitutionalStage,
+    health: &mut PromptContextLoadHealth,
 ) -> Box<PromptPrivateProjectionStage> {
     let self_model_text = constitutional.self_model.as_ref().and_then(|model| {
         render_self_model_block(model, memory_policy(seed.profile).self_model.render_max_len)
@@ -490,17 +528,15 @@ pub(crate) fn load_private_projection_stage(
         .participation_plan
         .load_l2_background_governance
         .then(|| {
-            params
-                .world_sense_store
-                .get(&seed.relationship_id)
-                .ok()
-                .flatten()
-                .and_then(|world_sense| {
-                    render_world_sense_block(
-                        &world_sense,
-                        memory_policy(seed.profile).world_sense.render_max_len,
-                    )
-                })
+            load_optional_with_health(health, "world_sense", || {
+                params.world_sense_store.get(&seed.relationship_id)
+            })
+            .and_then(|world_sense| {
+                render_world_sense_block(
+                    &world_sense,
+                    memory_policy(seed.profile).world_sense.render_max_len,
+                )
+            })
         })
         .flatten();
     let autonomy_strategy_text = constitutional
