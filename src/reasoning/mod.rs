@@ -73,9 +73,10 @@ pub use operator::{
     ProgrammableReasoningGenomeInspection, ProgrammableReasoningInspectionViews,
     ProgrammableReasoningMaintenanceDigest, ProgrammableReasoningOperatorSnapshot,
     ProgrammableReasoningProductSurface, ProgrammableReasoningReplayInspection,
-    ProgrammableReasoningSystemInfoSummary, ProgrammableReasoningTensionInspection,
-    ProgrammableReasoningTimeline, ProgrammableReasoningTimelineEvent,
-    ProgrammableReasoningToolUsageSummary, ProgrammableReasoningUsageAnalytics,
+    ProgrammableReasoningStageUsageSummary, ProgrammableReasoningSystemInfoSummary,
+    ProgrammableReasoningTensionInspection, ProgrammableReasoningTimeline,
+    ProgrammableReasoningTimelineEvent, ProgrammableReasoningToolUsageSummary,
+    ProgrammableReasoningUsageAnalytics,
 };
 pub use proposal::{
     programmable_reasoning_proposal_kinds, ProgrammableReasoningProposal,

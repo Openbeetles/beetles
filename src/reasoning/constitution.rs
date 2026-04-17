@@ -29,6 +29,12 @@ pub enum ProgrammableReasoningCapabilityKind {
     MemoryAttackDistillation,
     CapabilityBridgeExpansion,
     ExperienceCrystal,
+    EngineeringSynthesis,
+    IntentCompiler,
+    CounterfactualSandbox,
+    AdversarialArena,
+    DoctrineGenomeEvolution,
+    CapabilityAtomsExchange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -87,6 +93,12 @@ pub fn programmable_reasoning_capability_taxonomy() -> Vec<ProgrammableReasoning
         ProgrammableReasoningCapabilityKind::MemoryAttackDistillation,
         ProgrammableReasoningCapabilityKind::CapabilityBridgeExpansion,
         ProgrammableReasoningCapabilityKind::ExperienceCrystal,
+        ProgrammableReasoningCapabilityKind::EngineeringSynthesis,
+        ProgrammableReasoningCapabilityKind::IntentCompiler,
+        ProgrammableReasoningCapabilityKind::CounterfactualSandbox,
+        ProgrammableReasoningCapabilityKind::AdversarialArena,
+        ProgrammableReasoningCapabilityKind::DoctrineGenomeEvolution,
+        ProgrammableReasoningCapabilityKind::CapabilityAtomsExchange,
     ]
     .into_iter()
     .map(|kind| ProgrammableReasoningCapabilityContract {
@@ -118,13 +130,31 @@ mod tests {
     }
 
     #[test]
-    fn capability_taxonomy_is_linux_only_and_non_executable() {
+    fn capability_taxonomy_tracks_runtime_stage_and_stays_linux_only() {
         let taxonomy = programmable_reasoning_capability_taxonomy();
-        assert_eq!(taxonomy.len(), 6);
+        assert_eq!(taxonomy.len(), 12);
         assert!(taxonomy.iter().all(|entry| entry.linux_only));
         assert!(taxonomy
             .iter()
             .all(|entry| entry.execution_enabled == cfg!(target_os = "linux")));
         assert!(taxonomy.iter().all(|entry| entry.proposal_only_persistence));
+        assert!(taxonomy.iter().any(|entry| {
+            entry.kind == ProgrammableReasoningCapabilityKind::EngineeringSynthesis
+        }));
+        assert!(taxonomy
+            .iter()
+            .any(|entry| entry.kind == ProgrammableReasoningCapabilityKind::IntentCompiler));
+        assert!(taxonomy.iter().any(|entry| {
+            entry.kind == ProgrammableReasoningCapabilityKind::CounterfactualSandbox
+        }));
+        assert!(taxonomy
+            .iter()
+            .any(|entry| entry.kind == ProgrammableReasoningCapabilityKind::AdversarialArena));
+        assert!(taxonomy.iter().any(|entry| {
+            entry.kind == ProgrammableReasoningCapabilityKind::DoctrineGenomeEvolution
+        }));
+        assert!(taxonomy.iter().any(|entry| {
+            entry.kind == ProgrammableReasoningCapabilityKind::CapabilityAtomsExchange
+        }));
     }
 }

@@ -32,6 +32,14 @@ pub struct ProgrammableReasoningToolUsageSummary {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableReasoningStageUsageSummary {
+    pub stage_name: String,
+    pub total_events: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ProgrammableReasoningUsageAnalytics {
     pub recent_total_attempts: usize,
     pub recent_succeeded: usize,
@@ -41,17 +49,25 @@ pub struct ProgrammableReasoningUsageAnalytics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tool_name: Option<String>,
     #[serde(default)]
     pub tool_counts: Vec<ProgrammableReasoningToolUsageSummary>,
+    #[serde(default)]
+    pub stage_counts: Vec<ProgrammableReasoningStageUsageSummary>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ProgrammableReasoningTimelineEvent {
     pub recorded_at: u64,
-    pub tool_name: String,
+    pub activity_kind: String,
+    pub activity_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
     pub status: String,
     pub detail: String,
+    pub attention_required: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -66,9 +82,15 @@ pub struct ProgrammableReasoningMaintenanceDigest {
     pub headline: String,
     pub attention_event_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_event_tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_event_status: Option<String>,
+    #[serde(default)]
+    pub attention_activities: Vec<String>,
     #[serde(default)]
     pub attention_tools: Vec<String>,
 }
@@ -507,14 +529,16 @@ mod tests {
             snapshot.stage,
             ProgrammableReasoningStage::CapabilityAtomsExchange
         );
-        assert_eq!(snapshot.capabilities.len(), 6);
-        assert_eq!(snapshot.proposal_kinds.len(), 5);
+        assert_eq!(snapshot.capabilities.len(), 12);
+        assert_eq!(snapshot.proposal_kinds.len(), 6);
         assert_eq!(
             snapshot.runtime_contract.execution_enabled,
             cfg!(target_os = "linux")
         );
         assert_eq!(snapshot.usage_analytics.recent_total_attempts, 0);
+        assert_eq!(snapshot.usage_analytics.last_event_name, None);
         assert!(snapshot.usage_analytics.tool_counts.is_empty());
+        assert!(snapshot.usage_analytics.stage_counts.is_empty());
         assert!(snapshot.timeline.recent_events.is_empty());
         assert_eq!(snapshot.adversarial_arena.summary.total_retained, 0);
         assert!(snapshot.adversarial_arena.recent_events.is_empty());

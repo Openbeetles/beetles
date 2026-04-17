@@ -137,10 +137,15 @@ pub fn build_operator_status(
     } else {
         tool_governance_state.clone()
     };
+    let programmable_reasoning_activity_records = collect_programmable_reasoning_activity_records(
+        tool_governance_state.as_ref(),
+        input.platform.session_store().as_ref(),
+        input.platform.turn_ledger_store().as_ref(),
+    )?;
     let programmable_reasoning_usage =
-        build_programmable_reasoning_usage_analytics(tool_governance_state.as_ref());
+        build_programmable_reasoning_usage_analytics(&programmable_reasoning_activity_records);
     let programmable_reasoning_timeline =
-        build_programmable_reasoning_timeline(tool_governance_state.as_ref());
+        build_programmable_reasoning_timeline(&programmable_reasoning_activity_records);
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
     let runtime_capabilities = orchestrator::runtime_capability_snapshot();
     let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&crate::metrics::snapshot());
@@ -469,8 +474,75 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
     out
 }
 
-fn build_programmable_reasoning_usage_analytics(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgrammableReasoningActivityKind {
+    Tool,
+    TurnStage,
+}
+
+impl ProgrammableReasoningActivityKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::TurnStage => "turn_stage",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProgrammableReasoningActivityRecord {
+    recorded_at: u64,
+    activity_kind: ProgrammableReasoningActivityKind,
+    activity_name: String,
+    tool_name: Option<String>,
+    status: String,
+    detail: String,
+    attention_required: bool,
+    bucket: ProgrammableReasoningRecordBucket,
+    same_timestamp_order: u32,
+}
+
+fn collect_programmable_reasoning_activity_records(
     governance: Option<&ToolExecutionGovernanceState>,
+    session_store: &dyn crate::memory::SessionStore,
+    turn_ledger_store: &dyn crate::memory::TurnLedgerStore,
+) -> crate::error::Result<Vec<ProgrammableReasoningActivityRecord>> {
+    let mut records = Vec::new();
+    if let Some(governance) = governance {
+        for (index, record) in governance.recent_records.iter().enumerate() {
+            if let Some(mut activity) =
+                programmable_reasoning_activity_record_from_tool_record(record)
+            {
+                activity.same_timestamp_order = index as u32 + 1;
+                records.push(activity);
+            }
+        }
+    }
+
+    for (ledger_index, (_chat_id, ledger)) in
+        collect_recent_programmable_reasoning_turn_ledgers(session_store, turn_ledger_store)?
+            .into_iter()
+            .enumerate()
+    {
+        records.extend(programmable_reasoning_activity_records_from_turn_ledger(
+            &ledger,
+            (ledger_index as u32) * 10,
+        ));
+    }
+
+    records.sort_by(|left, right| {
+        right
+            .recorded_at
+            .cmp(&left.recorded_at)
+            .then_with(|| right.same_timestamp_order.cmp(&left.same_timestamp_order))
+            .then_with(|| left.activity_name.cmp(&right.activity_name))
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    Ok(records)
+}
+
+fn build_programmable_reasoning_usage_analytics(
+    activity_records: &[ProgrammableReasoningActivityRecord],
 ) -> crate::ProgrammableReasoningUsageAnalytics {
     #[derive(Default)]
     struct ToolUsageAccumulator {
@@ -482,50 +554,121 @@ fn build_programmable_reasoning_usage_analytics(
         last_seen_at: Option<u64>,
     }
 
-    let Some(governance) = governance else {
-        return crate::ProgrammableReasoningUsageAnalytics::default();
-    };
+    #[derive(Default)]
+    struct StageUsageAccumulator {
+        total_events: usize,
+        last_seen_at: Option<u64>,
+    }
 
-    let mut usage = crate::ProgrammableReasoningUsageAnalytics::default();
+    if activity_records.is_empty() {
+        return crate::ProgrammableReasoningUsageAnalytics::default();
+    }
+
+    let mut usage = crate::ProgrammableReasoningUsageAnalytics {
+        last_event_name: Some(activity_records[0].activity_name.clone()),
+        last_seen_at: Some(activity_records[0].recorded_at),
+        ..crate::ProgrammableReasoningUsageAnalytics::default()
+    };
     let mut tool_counts: BTreeMap<String, ToolUsageAccumulator> = BTreeMap::new();
-    for record in &governance.recent_records {
-        if !is_programmable_reasoning_tool(record.tool_name.as_str()) {
-            continue;
-        }
-        let Some(status_bucket) = classify_programmable_reasoning_record(record.status) else {
-            continue;
-        };
+    let mut stage_counts: BTreeMap<String, StageUsageAccumulator> = BTreeMap::new();
+    let mut last_tool_event: Option<(&str, u64, u32)> = None;
+    for record in activity_records {
+        let status_bucket = record.bucket;
         usage.recent_total_attempts += 1;
         usage.last_seen_at = Some(usage.last_seen_at.map_or(record.recorded_at, |current| {
             current.max(record.recorded_at)
         }));
-        if usage.last_seen_at == Some(record.recorded_at) {
-            usage.last_tool_name = Some(record.tool_name.clone());
+        match record.activity_kind {
+            ProgrammableReasoningActivityKind::Tool => {
+                if let Some(tool_name) = record.tool_name.as_deref() {
+                    let entry = tool_counts.entry(tool_name.to_string()).or_default();
+                    entry.total_attempts += 1;
+                    entry.last_seen_at =
+                        Some(entry.last_seen_at.map_or(record.recorded_at, |current| {
+                            current.max(record.recorded_at)
+                        }));
+                    let should_replace_last_tool = last_tool_event
+                        .map(|(_, current_at, current_order)| {
+                            record.recorded_at > current_at
+                                || (record.recorded_at == current_at
+                                    && record.same_timestamp_order >= current_order)
+                        })
+                        .unwrap_or(true);
+                    if should_replace_last_tool {
+                        last_tool_event =
+                            Some((tool_name, record.recorded_at, record.same_timestamp_order));
+                    }
+                }
+            }
+            ProgrammableReasoningActivityKind::TurnStage => {
+                let entry = stage_counts
+                    .entry(record.activity_name.clone())
+                    .or_default();
+                entry.total_events += 1;
+                entry.last_seen_at =
+                    Some(entry.last_seen_at.map_or(record.recorded_at, |current| {
+                        current.max(record.recorded_at)
+                    }));
+            }
         }
-        let entry = tool_counts.entry(record.tool_name.clone()).or_default();
-        entry.total_attempts += 1;
-        entry.last_seen_at = Some(entry.last_seen_at.map_or(record.recorded_at, |current| {
-            current.max(record.recorded_at)
-        }));
         match status_bucket {
             ProgrammableReasoningRecordBucket::Succeeded => {
                 usage.recent_succeeded += 1;
-                entry.succeeded += 1;
+                if let Some(tool_name) = record.tool_name.as_deref() {
+                    if let Some(entry) = tool_counts.get_mut(tool_name) {
+                        entry.succeeded += 1;
+                    }
+                }
             }
             ProgrammableReasoningRecordBucket::Failed => {
                 usage.recent_failed += 1;
-                entry.failed += 1;
+                if let Some(tool_name) = record.tool_name.as_deref() {
+                    if let Some(entry) = tool_counts.get_mut(tool_name) {
+                        entry.failed += 1;
+                    }
+                }
             }
             ProgrammableReasoningRecordBucket::Denied => {
                 usage.recent_denied += 1;
-                entry.denied += 1;
+                if let Some(tool_name) = record.tool_name.as_deref() {
+                    if let Some(entry) = tool_counts.get_mut(tool_name) {
+                        entry.denied += 1;
+                    }
+                }
             }
             ProgrammableReasoningRecordBucket::ResourceDenied => {
                 usage.recent_resource_denied += 1;
-                entry.resource_denied += 1;
+                if let Some(tool_name) = record.tool_name.as_deref() {
+                    if let Some(entry) = tool_counts.get_mut(tool_name) {
+                        entry.resource_denied += 1;
+                    }
+                }
             }
         }
     }
+
+    if let Some((tool_name, _, _)) = last_tool_event {
+        usage.last_tool_name = Some(tool_name.to_string());
+    }
+
+    let mut stage_counts = stage_counts
+        .into_iter()
+        .map(
+            |(stage_name, entry)| crate::ProgrammableReasoningStageUsageSummary {
+                stage_name,
+                total_events: entry.total_events,
+                last_seen_at: entry.last_seen_at,
+            },
+        )
+        .collect::<Vec<_>>();
+    stage_counts.sort_by(|left, right| {
+        right
+            .total_events
+            .cmp(&left.total_events)
+            .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+            .then_with(|| left.stage_name.cmp(&right.stage_name))
+    });
+    usage.stage_counts = stage_counts;
 
     let mut counts = tool_counts
         .into_iter()
@@ -553,20 +696,17 @@ fn build_programmable_reasoning_usage_analytics(
 }
 
 fn build_programmable_reasoning_timeline(
-    governance: Option<&ToolExecutionGovernanceState>,
+    activity_records: &[ProgrammableReasoningActivityRecord],
 ) -> crate::ProgrammableReasoningTimeline {
     const PROGRAMMABLE_REASONING_TIMELINE_LIMIT: usize = 8;
 
-    let Some(governance) = governance else {
+    if activity_records.is_empty() {
         return crate::ProgrammableReasoningTimeline::default();
-    };
+    }
 
-    let recent_events = governance
-        .recent_records
+    let recent_events = activity_records
         .iter()
-        .rev()
-        .filter(|record| is_programmable_reasoning_tool(record.tool_name.as_str()))
-        .filter_map(programmable_reasoning_timeline_event_from_record)
+        .map(programmable_reasoning_timeline_event_from_record)
         .take(PROGRAMMABLE_REASONING_TIMELINE_LIMIT)
         .collect::<Vec<_>>();
 
@@ -582,11 +722,22 @@ fn build_programmable_reasoning_maintenance_digest(
         .saturating_add(usage.recent_denied)
         .saturating_add(usage.recent_resource_denied);
     let last_event = timeline.recent_events.first();
+    let attention_activities = timeline
+        .recent_events
+        .iter()
+        .filter(|event| event.attention_required)
+        .map(|event| event.activity_name.clone())
+        .fold(Vec::<String>::new(), |mut acc, activity_name| {
+            if !acc.iter().any(|item| item == &activity_name) {
+                acc.push(activity_name);
+            }
+            acc
+        });
     let attention_tools = timeline
         .recent_events
         .iter()
-        .filter(|event| event.status != "succeeded")
-        .map(|event| event.tool_name.clone())
+        .filter(|event| event.attention_required)
+        .filter_map(|event| event.tool_name.clone())
         .fold(Vec::<String>::new(), |mut acc, tool_name| {
             if !acc.iter().any(|item| item == &tool_name) {
                 acc.push(tool_name);
@@ -615,39 +766,53 @@ fn build_programmable_reasoning_maintenance_digest(
         status: status.to_string(),
         headline,
         attention_event_count,
-        last_event_tool_name: last_event.map(|event| event.tool_name.clone()),
+        last_event_kind: last_event.map(|event| event.activity_kind.clone()),
+        last_event_name: last_event.map(|event| event.activity_name.clone()),
+        last_event_tool_name: last_event.and_then(|event| event.tool_name.clone()),
         last_event_status: last_event.map(|event| event.status.clone()),
+        attention_activities,
         attention_tools,
     }
 }
 
-const PROGRAMMABLE_REASONING_REPLAY_LEDGER_LIMIT_PER_CHAT: usize = 4;
+const PROGRAMMABLE_REASONING_LEDGER_SCAN_LIMIT_PER_CHAT: usize = 4;
 const PROGRAMMABLE_REASONING_BRANCH_REPLAY_LIMIT: usize = 6;
 const PROGRAMMABLE_REASONING_ARENA_REPLAY_LIMIT: usize = 6;
+
+fn collect_recent_programmable_reasoning_turn_ledgers(
+    session_store: &dyn crate::memory::SessionStore,
+    turn_ledger_store: &dyn crate::memory::TurnLedgerStore,
+) -> crate::error::Result<Vec<(String, crate::memory::TurnLedger)>> {
+    let mut chat_ids = session_store.list_chat_ids()?;
+    chat_ids.sort();
+    chat_ids.dedup();
+
+    let mut ledgers = Vec::new();
+    for chat_id in chat_ids {
+        for ledger in turn_ledger_store
+            .list_recent(&chat_id, PROGRAMMABLE_REASONING_LEDGER_SCAN_LIMIT_PER_CHAT)?
+        {
+            ledgers.push((chat_id.clone(), ledger));
+        }
+    }
+    Ok(ledgers)
+}
 
 fn build_programmable_reasoning_replay_inspection(
     session_store: &dyn crate::memory::SessionStore,
     turn_ledger_store: &dyn crate::memory::TurnLedgerStore,
 ) -> crate::error::Result<crate::ProgrammableReasoningReplayInspection> {
-    let mut chat_ids = session_store.list_chat_ids()?;
-    chat_ids.sort();
-    chat_ids.dedup();
-
     let mut branch_replays = Vec::new();
     let mut arena_replays = Vec::new();
 
-    for chat_id in chat_ids {
-        let ledgers = turn_ledger_store.list_recent(
-            &chat_id,
-            PROGRAMMABLE_REASONING_REPLAY_LEDGER_LIMIT_PER_CHAT,
-        )?;
-        for ledger in ledgers {
-            if let Some(record) = branch_replay_record_from_ledger(&chat_id, &ledger) {
-                branch_replays.push(record);
-            }
-            if let Some(record) = arena_replay_record_from_ledger(&chat_id, &ledger) {
-                arena_replays.push(record);
-            }
+    for (chat_id, ledger) in
+        collect_recent_programmable_reasoning_turn_ledgers(session_store, turn_ledger_store)?
+    {
+        if let Some(record) = branch_replay_record_from_ledger(&chat_id, &ledger) {
+            branch_replays.push(record);
+        }
+        if let Some(record) = arena_replay_record_from_ledger(&chat_id, &ledger) {
+            arena_replays.push(record);
         }
     }
 
@@ -765,13 +930,25 @@ fn classify_programmable_reasoning_record(
 }
 
 fn programmable_reasoning_timeline_event_from_record(
+    record: &ProgrammableReasoningActivityRecord,
+) -> crate::ProgrammableReasoningTimelineEvent {
+    crate::ProgrammableReasoningTimelineEvent {
+        recorded_at: record.recorded_at,
+        activity_kind: record.activity_kind.as_str().to_string(),
+        activity_name: record.activity_name.clone(),
+        tool_name: record.tool_name.clone(),
+        status: record.status.clone(),
+        detail: record.detail.clone(),
+        attention_required: record.attention_required,
+    }
+}
+
+fn programmable_reasoning_activity_record_from_tool_record(
     record: &crate::tools::ToolExecutionRecord,
-) -> Option<crate::ProgrammableReasoningTimelineEvent> {
-    let detail = if record.summary.trim().is_empty() {
-        record.reason.trim()
-    } else {
-        record.summary.trim()
-    };
+) -> Option<ProgrammableReasoningActivityRecord> {
+    if !is_programmable_reasoning_tool(record.tool_name.as_str()) {
+        return None;
+    }
     let status = match record.status {
         crate::tools::ToolExecutionRecordStatus::Succeeded => "succeeded",
         crate::tools::ToolExecutionRecordStatus::Failed => "failed",
@@ -779,12 +956,142 @@ fn programmable_reasoning_timeline_event_from_record(
         crate::tools::ToolExecutionRecordStatus::ResourceDenied => "resource_denied",
         crate::tools::ToolExecutionRecordStatus::Allowed => return None,
     };
-    Some(crate::ProgrammableReasoningTimelineEvent {
+    Some(ProgrammableReasoningActivityRecord {
         recorded_at: record.recorded_at,
-        tool_name: record.tool_name.clone(),
+        activity_kind: ProgrammableReasoningActivityKind::Tool,
+        activity_name: record.tool_name.clone(),
+        tool_name: Some(record.tool_name.clone()),
         status: status.to_string(),
-        detail: detail.to_string(),
+        detail: if record.summary.trim().is_empty() {
+            record.reason.trim()
+        } else {
+            record.summary.trim()
+        }
+        .to_string(),
+        attention_required: !matches!(
+            record.status,
+            crate::tools::ToolExecutionRecordStatus::Succeeded
+        ),
+        bucket: classify_programmable_reasoning_record(record.status)?,
+        same_timestamp_order: 0,
     })
+}
+
+fn programmable_reasoning_activity_records_from_turn_ledger(
+    ledger: &crate::memory::TurnLedger,
+    base_order: u32,
+) -> Vec<ProgrammableReasoningActivityRecord> {
+    let recorded_at = crate::memory::turn_ledger_observed_at_ms(ledger);
+    let mut records = Vec::new();
+
+    if let Some(intent) = ledger
+        .reasoning_intent
+        .as_ref()
+        .filter(|intent| intent.is_meaningful())
+    {
+        records.push(ProgrammableReasoningActivityRecord {
+            recorded_at,
+            activity_kind: ProgrammableReasoningActivityKind::TurnStage,
+            activity_name: "intent_compiler".to_string(),
+            tool_name: None,
+            status: "succeeded".to_string(),
+            detail: summarize_reasoning_intent_activity(intent),
+            attention_required: false,
+            bucket: ProgrammableReasoningRecordBucket::Succeeded,
+            same_timestamp_order: base_order + 1,
+        });
+    }
+
+    if let Some(counterfactual) = ledger
+        .counterfactual
+        .as_ref()
+        .filter(|counterfactual| counterfactual.is_meaningful())
+    {
+        records.push(ProgrammableReasoningActivityRecord {
+            recorded_at,
+            activity_kind: ProgrammableReasoningActivityKind::TurnStage,
+            activity_name: "counterfactual_sandbox".to_string(),
+            tool_name: None,
+            status: "succeeded".to_string(),
+            detail: summarize_counterfactual_activity(counterfactual),
+            attention_required: false,
+            bucket: ProgrammableReasoningRecordBucket::Succeeded,
+            same_timestamp_order: base_order + 2,
+        });
+    }
+
+    if let Some(arena) = ledger
+        .adversarial_arena
+        .as_ref()
+        .filter(|arena| arena.is_meaningful())
+    {
+        records.push(ProgrammableReasoningActivityRecord {
+            recorded_at,
+            activity_kind: ProgrammableReasoningActivityKind::TurnStage,
+            activity_name: "adversarial_arena".to_string(),
+            tool_name: None,
+            status: "succeeded".to_string(),
+            detail: summarize_adversarial_arena_activity(arena),
+            attention_required: false,
+            bucket: ProgrammableReasoningRecordBucket::Succeeded,
+            same_timestamp_order: base_order + 3,
+        });
+    }
+
+    records
+}
+
+fn summarize_reasoning_intent_activity(
+    intent: &crate::memory::TurnReasoningIntentLedger,
+) -> String {
+    let kind = intent.kind.trim();
+    let strategy = intent.strategy.trim();
+    if !kind.is_empty() && !strategy.is_empty() {
+        format!("{kind} via {strategy}")
+    } else if !intent.summary.trim().is_empty() {
+        intent.summary.trim().to_string()
+    } else if !kind.is_empty() {
+        format!("compiled {kind}")
+    } else {
+        "compiled governed reasoning intent".to_string()
+    }
+}
+
+fn summarize_counterfactual_activity(
+    counterfactual: &crate::memory::TurnCounterfactualLedger,
+) -> String {
+    let selected = counterfactual.selected_branch.branch.trim();
+    let rejected = counterfactual
+        .alternatives
+        .iter()
+        .find_map(|branch| {
+            let label = branch.branch.trim();
+            (!label.is_empty()).then_some(label)
+        })
+        .unwrap_or("");
+    if !selected.is_empty() && !rejected.is_empty() {
+        format!("selected {selected} over {rejected}")
+    } else if !selected.is_empty() {
+        format!("selected {selected}")
+    } else if !counterfactual.summary.trim().is_empty() {
+        counterfactual.summary.trim().to_string()
+    } else {
+        "compared counterfactual branches".to_string()
+    }
+}
+
+fn summarize_adversarial_arena_activity(
+    arena: &crate::memory::TurnAdversarialArenaLedger,
+) -> String {
+    let winner = arena.winner.label.trim();
+    let disposition = arena.disposition.trim();
+    if !winner.is_empty() && !disposition.is_empty() {
+        format!("{winner} won with {disposition} disposition")
+    } else if !arena.summary.trim().is_empty() {
+        arena.summary.trim().to_string()
+    } else {
+        "adjudicated programmable reasoning arena".to_string()
+    }
 }
 
 fn is_programmable_reasoning_tool(tool_name: &str) -> bool {
@@ -959,9 +1266,14 @@ mod tests {
         assert_eq!(usage.recent_denied, 1);
         assert_eq!(usage.recent_resource_denied, 1);
         assert_eq!(
+            usage.last_event_name.as_deref(),
+            Some("lua_protocol_frame_helper")
+        );
+        assert_eq!(
             usage.last_tool_name.as_deref(),
             Some("lua_protocol_frame_helper")
         );
+        assert!(usage.stage_counts.is_empty());
         assert!(usage
             .tool_counts
             .iter()
@@ -1034,37 +1346,61 @@ mod tests {
 
         let timeline = snapshot.programmable_reasoning.timeline;
         assert_eq!(timeline.recent_events.len(), 4);
+        assert_eq!(timeline.recent_events[0].activity_kind, "tool");
         assert_eq!(
-            timeline.recent_events[0].tool_name,
+            timeline.recent_events[0].activity_name,
             "lua_protocol_frame_helper"
+        );
+        assert_eq!(
+            timeline.recent_events[0].tool_name.as_deref(),
+            Some("lua_protocol_frame_helper")
         );
         assert_eq!(timeline.recent_events[0].status, "denied");
         assert_eq!(timeline.recent_events[0].detail, "explicit_intent_required");
-        assert_eq!(timeline.recent_events[1].tool_name, "lua_query");
+        assert!(timeline.recent_events[0].attention_required);
+        assert_eq!(timeline.recent_events[1].activity_kind, "tool");
+        assert_eq!(timeline.recent_events[1].activity_name, "lua_query");
+        assert_eq!(
+            timeline.recent_events[1].tool_name.as_deref(),
+            Some("lua_query")
+        );
         assert_eq!(timeline.recent_events[1].status, "resource_denied");
         assert_eq!(
             timeline.recent_events[1].detail,
             "runtime capability blocked"
         );
+        assert!(timeline.recent_events[1].attention_required);
+        assert_eq!(timeline.recent_events[2].activity_kind, "tool");
         assert_eq!(
-            timeline.recent_events[2].tool_name,
+            timeline.recent_events[2].activity_name,
             "lua_state_machine_checker"
+        );
+        assert_eq!(
+            timeline.recent_events[2].tool_name.as_deref(),
+            Some("lua_state_machine_checker")
         );
         assert_eq!(timeline.recent_events[2].status, "failed");
         assert_eq!(
             timeline.recent_events[2].detail,
             "config: transition missing (stage: lua_state_machine_checker_test)"
         );
+        assert!(timeline.recent_events[2].attention_required);
+        assert_eq!(timeline.recent_events[3].activity_kind, "tool");
         assert_eq!(
-            timeline.recent_events[3].tool_name,
+            timeline.recent_events[3].activity_name,
             "lua_register_table_helper"
+        );
+        assert_eq!(
+            timeline.recent_events[3].tool_name.as_deref(),
+            Some("lua_register_table_helper")
         );
         assert_eq!(timeline.recent_events[3].status, "succeeded");
         assert_eq!(timeline.recent_events[3].detail, "register table parsed");
+        assert!(!timeline.recent_events[3].attention_required);
         assert!(!timeline
             .recent_events
             .iter()
-            .any(|event| event.tool_name == "message"));
+            .any(|event| event.tool_name.as_deref() == Some("message")));
     }
 
     #[test]
@@ -1115,12 +1451,25 @@ mod tests {
 
         let digest = snapshot.programmable_reasoning.maintenance_digest;
         assert_eq!(digest.status, "attention");
+        assert_eq!(digest.last_event_kind.as_deref(), Some("tool"));
+        assert_eq!(
+            digest.last_event_name.as_deref(),
+            Some("lua_protocol_frame_helper")
+        );
         assert_eq!(
             digest.last_event_tool_name.as_deref(),
             Some("lua_protocol_frame_helper")
         );
         assert_eq!(digest.last_event_status.as_deref(), Some("denied"));
         assert_eq!(digest.attention_event_count, 3);
+        assert_eq!(
+            digest.attention_activities,
+            vec![
+                "lua_protocol_frame_helper".to_string(),
+                "lua_query".to_string(),
+                "lua_state_machine_checker".to_string()
+            ]
+        );
         assert_eq!(
             digest.attention_tools,
             vec![
@@ -1132,6 +1481,147 @@ mod tests {
         assert!(digest
             .headline
             .contains("4 recent attempts, 3 need attention"));
+    }
+
+    #[test]
+    fn build_operator_status_counts_turn_stage_activity_without_tool_records() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        use crate::memory::{
+            build_turn_ledger_start, TurnCounterfactualBranchLedger, TurnCounterfactualLedger,
+            TurnCounterfactualSnapshotLedger, TurnLedgerStatus, TurnReasoningIntentLedger,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let tool_registry = crate::tools::ToolRegistry::new();
+        let chat_id = format!("reasoning-turn-activity-{unique}");
+
+        platform
+            .session_store()
+            .append(
+                &chat_id,
+                "user",
+                "decide whether to inspect memory or ask first",
+            )
+            .expect("write session");
+
+        let mut ledger = build_turn_ledger_start(
+            "req-turn-activity",
+            "qq_channel",
+            IngressKind::User,
+            "Decide whether to inspect memory or ask first",
+            4_400_000_000_000,
+        );
+        ledger.status = TurnLedgerStatus::Answered;
+        ledger.updated_at_ms = 4_400_000_000_150;
+        ledger.finished_at_ms = 4_400_000_000_150;
+        ledger.reason = "compiled programmable reasoning turn stages".to_string();
+        ledger.reasoning_intent = Some(TurnReasoningIntentLedger {
+            kind: "memory_query".to_string(),
+            strategy: "intent_compiler".to_string(),
+            confidence: 84,
+            summary: "Memory evidence is available and should be queried before replying."
+                .to_string(),
+            rationale: vec!["governed memory evidence present".to_string()],
+            preferred_tools: vec!["memory_recall".to_string()],
+            runtime_grounding_required: true,
+        });
+        ledger.counterfactual = Some(TurnCounterfactualLedger {
+            summary: "Compared direct reply against memory query.".to_string(),
+            snapshot: TurnCounterfactualSnapshotLedger {
+                reasoning_kind: "intent_compiler".to_string(),
+                reasoning_strategy: "branch_compare".to_string(),
+                confidence: 84,
+                runtime_grounding_required: true,
+                governed_memory_evidence_present: true,
+                ..TurnCounterfactualSnapshotLedger::default()
+            },
+            selected_branch: TurnCounterfactualBranchLedger {
+                branch: "memory_query".to_string(),
+                score: 89,
+                summary: "Memory query preserves factual grounding.".to_string(),
+                ..TurnCounterfactualBranchLedger::default()
+            },
+            alternatives: vec![TurnCounterfactualBranchLedger {
+                branch: "direct_reply".to_string(),
+                score: 41,
+                summary: "Direct reply risks skipping governed memory evidence.".to_string(),
+                ..TurnCounterfactualBranchLedger::default()
+            }],
+        });
+        platform
+            .turn_ledger_store()
+            .set(&chat_id, &ledger)
+            .expect("write turn ledger");
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        })
+        .expect("operator status");
+
+        let usage = snapshot.programmable_reasoning.usage_analytics;
+        assert_eq!(usage.recent_total_attempts, 2);
+        assert_eq!(usage.recent_succeeded, 2);
+        assert_eq!(usage.recent_failed, 0);
+        assert_eq!(usage.recent_denied, 0);
+        assert_eq!(usage.recent_resource_denied, 0);
+        assert_eq!(
+            usage.last_event_name.as_deref(),
+            Some("counterfactual_sandbox")
+        );
+        assert_eq!(usage.last_tool_name, None);
+        assert!(usage.tool_counts.is_empty());
+        assert!(usage
+            .stage_counts
+            .iter()
+            .any(|entry| entry.stage_name == "intent_compiler" && entry.total_events == 1));
+        assert!(usage.stage_counts.iter().any(|entry| {
+            entry.stage_name == "counterfactual_sandbox" && entry.total_events == 1
+        }));
+
+        let timeline = snapshot.programmable_reasoning.timeline;
+        assert_eq!(timeline.recent_events.len(), 2);
+        assert_eq!(timeline.recent_events[0].activity_kind, "turn_stage");
+        assert_eq!(
+            timeline.recent_events[0].activity_name,
+            "counterfactual_sandbox"
+        );
+        assert_eq!(timeline.recent_events[0].tool_name, None);
+        assert_eq!(timeline.recent_events[0].status, "succeeded");
+        assert_eq!(
+            timeline.recent_events[0].detail,
+            "selected memory_query over direct_reply"
+        );
+        assert!(!timeline.recent_events[0].attention_required);
+        assert_eq!(timeline.recent_events[1].activity_name, "intent_compiler");
+        assert_eq!(timeline.recent_events[1].status, "succeeded");
+        assert_eq!(
+            timeline.recent_events[1].detail,
+            "memory_query via intent_compiler"
+        );
+
+        let digest = snapshot.programmable_reasoning.maintenance_digest;
+        assert_eq!(digest.status, "healthy");
+        assert_eq!(
+            digest.last_event_name.as_deref(),
+            Some("counterfactual_sandbox")
+        );
+        assert_eq!(digest.last_event_tool_name, None);
+        assert_eq!(digest.last_event_status.as_deref(), Some("succeeded"));
+        assert_eq!(digest.attention_event_count, 0);
+        assert!(digest
+            .headline
+            .contains("2 recent attempts, all completed successfully"));
     }
 
     #[test]
