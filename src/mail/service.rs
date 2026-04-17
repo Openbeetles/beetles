@@ -6,15 +6,19 @@ use crate::mail::{
 };
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime, OfficeHttpClient,
-    OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
+    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRemoteRuntime,
+    OfficeCapabilityRuntime, OfficeHttpClient, OfficeResolveResult, OfficeService,
+    SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
 };
 use std::sync::Arc;
 
+type MailRemoteRuntime = OfficeCapabilityRemoteRuntime<
+    MailProviderRegistry,
+    dyn MailProviderCredentialStore + Send + Sync,
+>;
+
 pub struct MailService {
-    credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
-    providers: MailProviderRegistry,
-    office_runtime: OfficeCapabilityRuntime,
+    remote: MailRemoteRuntime,
 }
 
 struct MutatingActionRoute<'a> {
@@ -54,20 +58,23 @@ impl MailService {
         office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
     ) -> Self {
         Self {
-            credential_store,
-            providers,
-            office_runtime: OfficeCapabilityRuntime::new(
-                OfficeCapability::Mail,
+            remote: OfficeCapabilityRemoteRuntime::new(
+                providers,
+                credential_store,
+                OfficeCapabilityRuntime::new(
+                    OfficeCapability::Mail,
+                    "mail_provider",
+                    "mail",
+                    "mail_runtime",
+                    office_authority,
+                ),
                 "mail_provider",
-                "mail",
-                "mail_runtime",
-                office_authority,
             ),
         }
     }
 
     pub fn provider_names(&self) -> Vec<&'static str> {
-        self.providers.names()
+        self.remote.provider_registry().names()
     }
 
     pub fn resolve_provider_name(&self, provider: Option<&str>) -> Result<String> {
@@ -79,19 +86,16 @@ impl MailService {
         provider: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<String> {
-        self.office_runtime.resolve_provider_name(
-            provider,
-            preferred_identity_class,
-            self.credential_store.as_ref(),
-        )
+        self.remote
+            .resolve_provider_name(provider, preferred_identity_class)
     }
 
     pub fn list_provider_statuses(&self) -> Result<Vec<MailProviderCredentialStatus>> {
-        self.credential_store.list_statuses()
+        self.remote.credential_store().list_statuses()
     }
 
     pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        self.office_runtime.default_account_key()
+        self.remote.default_account_key()
     }
 
     pub fn office_resolve_hint(
@@ -108,37 +112,34 @@ impl MailService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Option<OfficeResolveResult>> {
-        self.office_runtime
+        self.remote
             .resolve_hint(provider, account_key, preferred_identity_class)
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        self.office_runtime.runtime_statuses()
+        self.remote.runtime_statuses()
     }
 
     pub fn office_runtime_status(
         &self,
         account_key: &str,
     ) -> Result<Option<OfficeAccountRuntimeStatus>> {
-        self.office_runtime.runtime_status(account_key)
+        self.remote.runtime_status(account_key)
     }
 
     pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
-        self.office_runtime
-            .account_assessments(|provider_kind| self.providers.get(provider_kind).is_some())
+        self.remote.account_assessments()
     }
 
     pub fn office_identity_class_for_account(
         &self,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeAccountIdentityClass>> {
-        self.office_runtime.identity_class_for_account(account_key)
+        self.remote.identity_class_for_account(account_key)
     }
 
     pub fn provider_supports(&self, provider: &str, op: MailOperation) -> bool {
-        self.providers
-            .get(provider)
-            .is_some_and(|provider_impl| provider_impl.supports(op))
+        self.remote.provider_supports(provider, op)
     }
 
     pub fn provider_is_routable_for_ops(
@@ -147,8 +148,8 @@ impl MailService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         ops: &[MailOperation],
     ) -> bool {
-        self.resolve_remote_for_ops(provider, None, preferred_identity_class, ops)
-            .is_ok()
+        self.remote
+            .provider_is_routable_for_ops(provider, preferred_identity_class, ops)
     }
 
     pub fn list(
@@ -619,44 +620,8 @@ impl MailService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         ops: &[MailOperation],
     ) -> Result<(Arc<dyn MailProvider>, MailProviderCredential)> {
-        let provider_impl = self.providers.get(provider).ok_or_else(|| {
-            Error::config(
-                "mail_provider",
-                format!("provider '{}' is not registered", provider),
-            )
-        })?;
-        for op in ops {
-            if !provider_impl.supports(*op) {
-                return Err(Error::config(
-                    "mail_provider",
-                    format!("provider '{}' does not support {:?}", provider, op),
-                ));
-            }
-        }
-        let account_key = self.resolve_account_key_with_identity(
-            provider,
-            account_key,
-            preferred_identity_class,
-        )?;
-        let credential = self.credential_store.get(&account_key)?.ok_or_else(|| {
-            Error::config(
-                "mail_provider",
-                format!(
-                    "provider '{}' has no configured credential for account '{}'",
-                    provider, account_key
-                ),
-            )
-        })?;
-        if credential.provider != provider {
-            return Err(Error::config(
-                "mail_provider",
-                format!(
-                    "account '{}' is configured for provider '{}', not '{}'",
-                    account_key, credential.provider, provider
-                ),
-            ));
-        }
-        Ok((provider_impl, credential))
+        self.remote
+            .resolve_registered_remote(provider, account_key, preferred_identity_class, ops)
     }
 
     fn execute_mutating_action<F>(
@@ -693,22 +658,8 @@ impl MailService {
         activity_kind: &'static str,
         error: Option<&Error>,
     ) {
-        self.office_runtime
+        self.remote
             .record_runtime_activity(account_key, activity_kind, error);
-    }
-
-    fn resolve_account_key_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-    ) -> Result<String> {
-        self.office_runtime.resolve_account_key(
-            provider,
-            account_key,
-            preferred_identity_class,
-            self.credential_store.as_ref(),
-        )
     }
 }
 

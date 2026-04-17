@@ -891,17 +891,14 @@ fn register_office_tools(
     let calendar_providers = topology.calendar_providers();
     let task_calendar_providers = topology.calendar_providers();
     let reminder_calendar_providers = topology.calendar_providers();
-    let make_contacts_service = || {
+    let contacts_service =
         crate::contacts_directory::ContactsDirectoryService::with_office_authority(
             Arc::clone(&contacts_directory_store),
             Arc::clone(&contacts_directory_credential_store),
             topology.contacts_directory_providers(),
             office_authority.clone(),
-        )
-    };
-    let calendar_contacts_service = make_contacts_service();
-    let documents_contacts_service = make_contacts_service();
-    let mail_contacts_service = make_contacts_service();
+        );
+    let probe_supported_provider_kinds = topology.probe_supported_provider_kinds();
 
     registry.register(Box::new(
         super::CalendarTool::with_office_authority_and_contacts_service(
@@ -909,7 +906,7 @@ fn register_office_tools(
             Arc::clone(&calendar_credential_store),
             calendar_providers,
             office_authority.clone(),
-            calendar_contacts_service,
+            contacts_service.clone(),
         ),
     ));
     registry.register(Box::new(super::TaskTool::with_office_authority(
@@ -929,7 +926,7 @@ fn register_office_tools(
             Arc::clone(&mail_credential_store),
             mail_providers,
             office_authority.clone(),
-            mail_contacts_service,
+            contacts_service.clone(),
         ),
     ));
     registry.register(Box::new(
@@ -945,16 +942,18 @@ fn register_office_tools(
             Arc::clone(&documents_credential_store),
             documents_providers,
             office_authority.clone(),
-            documents_contacts_service,
+            contacts_service,
         ),
     ));
     registry.register(Box::new(super::OfficeConfigTool::new(
         office_config_service,
     )));
-    registry.register(Box::new(super::OfficeStatusTool::with_probe_adapters(
-        office_authority,
-        topology.probe_adapters(),
-    )));
+    registry.register(Box::new(
+        super::OfficeStatusTool::with_probe_supported_provider_kinds(
+            office_authority,
+            probe_supported_provider_kinds,
+        ),
+    ));
 }
 
 #[cold]

@@ -10,13 +10,24 @@ use crate::error::{Error, Result};
 ))]
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime, OfficeHttpClient,
-    OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
+    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityCredentialAccess,
+    OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime, OfficeHttpClient, OfficeResolveResult,
+    OfficeSelectedRoute, OfficeService, SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
 };
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+type ContactsRemoteRuntime = OfficeCapabilityRemoteRuntime<
+    crate::contacts_directory::ContactsDirectoryProviderRegistry,
+    dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync,
+>;
+
+#[derive(Clone)]
 pub struct ContactsDirectoryService {
     local_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     #[cfg(all(
@@ -31,12 +42,7 @@ pub struct ContactsDirectoryService {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 #[derive(Clone)]
-struct RemoteContactsDirectoryRuntime {
-    credential_store:
-        Arc<dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync>,
-    providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
-    office_runtime: OfficeCapabilityRuntime,
-}
+struct RemoteContactsDirectoryRuntime(ContactsRemoteRuntime);
 
 impl ContactsDirectoryService {
     pub fn new(store: Arc<dyn ContactsDirectoryStore + Send + Sync>) -> Self {
@@ -84,17 +90,20 @@ impl ContactsDirectoryService {
     ) -> Self {
         Self {
             local_store,
-            remote: Some(RemoteContactsDirectoryRuntime {
-                credential_store,
-                providers,
-                office_runtime: OfficeCapabilityRuntime::new(
-                    OfficeCapability::ContactsDirectory,
+            remote: Some(RemoteContactsDirectoryRuntime(
+                OfficeCapabilityRemoteRuntime::new(
+                    providers,
+                    credential_store,
+                    OfficeCapabilityRuntime::new(
+                        OfficeCapability::ContactsDirectory,
+                        "contacts_directory_lookup",
+                        "contacts",
+                        "contacts_runtime",
+                        Some(office_authority),
+                    ),
                     "contacts_directory_lookup",
-                    "contacts",
-                    "contacts_runtime",
-                    Some(office_authority),
                 ),
-            }),
+            )),
         }
     }
 
@@ -451,7 +460,7 @@ impl ContactsDirectoryService {
     pub fn provider_names(&self) -> Vec<&'static str> {
         self.remote
             .as_ref()
-            .map(|remote| remote.providers.names())
+            .map(|remote| remote.0.provider_registry().names())
             .unwrap_or_default()
     }
 
@@ -459,14 +468,14 @@ impl ContactsDirectoryService {
         &self,
     ) -> Result<Vec<crate::contacts_directory::ContactsDirectoryProviderCredentialStatus>> {
         match self.remote.as_ref() {
-            Some(remote) => remote.credential_store.list_statuses(),
+            Some(remote) => remote.0.credential_store().list_statuses(),
             None => Ok(Vec::new()),
         }
     }
 
     pub fn office_default_account_key(&self) -> Result<Option<String>> {
         match self.remote.as_ref() {
-            Some(remote) => remote.office_runtime.default_account_key(),
+            Some(remote) => remote.0.default_account_key(),
             None => Ok(None),
         }
     }
@@ -486,27 +495,23 @@ impl ContactsDirectoryService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Option<OfficeResolveResult>> {
         match self.remote.as_ref() {
-            Some(remote) => {
-                remote
-                    .office_runtime
-                    .resolve_hint(provider, account_key, preferred_identity_class)
-            }
+            Some(remote) => remote
+                .0
+                .resolve_hint(provider, account_key, preferred_identity_class),
             None => Ok(None),
         }
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
         match self.remote.as_ref() {
-            Some(remote) => remote.office_runtime.runtime_statuses(),
+            Some(remote) => remote.0.runtime_statuses(),
             None => Ok(Vec::new()),
         }
     }
 
     pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
         match self.remote.as_ref() {
-            Some(remote) => remote
-                .office_runtime
-                .account_assessments(|provider_kind| remote.providers.get(provider_kind).is_some()),
+            Some(remote) => remote.0.account_assessments(),
             None => Ok(Vec::new()),
         }
     }
@@ -531,15 +536,20 @@ impl ContactsDirectoryService {
                 None => return Ok(Vec::new()),
             }
         };
-        let provider_impl = remote.providers.get(&route.provider).ok_or_else(|| {
-            Error::config(
-                "contacts_directory_lookup",
-                format!("provider '{}' is not registered", route.provider),
-            )
-        })?;
+        let provider_impl = remote
+            .0
+            .provider_registry()
+            .get(&route.provider)
+            .ok_or_else(|| {
+                Error::config(
+                    "contacts_directory_lookup",
+                    format!("provider '{}' is not registered", route.provider),
+                )
+            })?;
         let credential = remote
-            .credential_store
-            .get(&route.account_key)?
+            .0
+            .credential_store()
+            .get_credential(&route.account_key)?
             .ok_or_else(|| {
                 Error::config(
                     "contacts_directory_lookup",
@@ -571,17 +581,10 @@ impl ContactsDirectoryService {
         let Some(remote) = self.remote.as_ref() else {
             return Ok(None);
         };
-        if let Some(route) = remote.office_runtime.selected_route(
-            None,
-            preferred_identity_class,
-            remote.credential_store.as_ref(),
-        )? {
-            return Ok(Some(ContactsLookupRoute {
-                provider: route.provider,
-                account_key: route.account_key,
-            }));
+        if let Some(route) = remote.0.selected_route(None, preferred_identity_class)? {
+            return Ok(Some(route));
         }
-        let mut statuses = remote.credential_store.list_statuses()?;
+        let mut statuses = remote.0.credential_store().list_statuses()?;
         statuses.sort_by(|left, right| {
             left.provider
                 .cmp(&right.provider)
@@ -589,7 +592,7 @@ impl ContactsDirectoryService {
         });
         if statuses.len() == 1 {
             let status = statuses.remove(0);
-            return Ok(Some(ContactsLookupRoute {
+            return Ok(Some(OfficeSelectedRoute {
                 provider: status.provider,
                 account_key: status.account_key,
             }));
@@ -609,45 +612,12 @@ impl ContactsDirectoryService {
                 "remote contacts providers are not configured",
             ));
         };
-        if let Some(account_key) = account_key.filter(|value| !value.trim().is_empty()) {
-            let credential = remote
-                .credential_store
-                .get(account_key)?
-                .ok_or_else(|| Error::config("contacts_directory_lookup", "unknown account_key"))?;
-            if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
-                if credential.provider != provider {
-                    return Err(Error::config(
-                        "contacts_directory_lookup",
-                        format!(
-                            "account '{}' is configured for provider '{}', not '{}'",
-                            account_key, credential.provider, provider
-                        ),
-                    ));
-                }
-            }
-            return Ok(ContactsLookupRoute {
-                provider: credential.provider,
-                account_key: account_key.to_string(),
-            });
-        }
-        let provider = provider
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                Error::config(
-                    "contacts_directory_lookup",
-                    "provider or account_key is required for explicit remote lookup",
-                )
-            })?;
-        Ok(ContactsLookupRoute {
-            provider: provider.to_string(),
-            account_key: remote.office_runtime.resolve_account_key(
-                provider,
-                None,
-                preferred_identity_class,
-                remote.credential_store.as_ref(),
-            )?,
-        })
+        remote.0.resolve_explicit_route(
+            provider,
+            account_key,
+            preferred_identity_class,
+            "provider or account_key is required for explicit remote lookup",
+        )
     }
 
     fn record_runtime_activity(
@@ -658,7 +628,7 @@ impl ContactsDirectoryService {
     ) {
         if let Some(remote) = self.remote.as_ref() {
             remote
-                .office_runtime
+                .0
                 .record_runtime_activity(account_key, activity_kind, error);
         }
     }
@@ -668,10 +638,7 @@ impl ContactsDirectoryService {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-struct ContactsLookupRoute {
-    provider: String,
-    account_key: String,
-}
+type ContactsLookupRoute = OfficeSelectedRoute;
 
 fn infer_existing_id_from_email(
     existing: &[ContactEntry],

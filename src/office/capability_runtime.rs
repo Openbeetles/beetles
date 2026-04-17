@@ -6,6 +6,7 @@ use crate::office::{
 };
 use crate::util::current_unix_secs;
 use std::collections::BTreeSet;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -29,9 +30,293 @@ pub(crate) struct OfficeSelectedRoute {
     pub account_key: String,
 }
 
+pub(crate) trait OfficeRoutedCredential: Clone + Send + Sync {
+    fn account_key(&self) -> &str;
+    fn provider(&self) -> &str;
+}
+
+pub(crate) trait OfficeCapabilityCredentialAccess:
+    OfficeCapabilityCredentialDirectory + Send + Sync
+{
+    type Credential: OfficeRoutedCredential;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>>;
+}
+
+pub(crate) trait OfficeCapabilityProvider<Op>: Send + Sync {
+    fn supports(&self, op: Op) -> bool;
+}
+
+pub(crate) trait OfficeCapabilityProviderLookup<P: ?Sized>: Clone + Send + Sync {
+    fn get(&self, provider: &str) -> Option<Arc<P>>;
+}
+
+pub(crate) struct OfficeCapabilityRemoteRuntime<R, C: ?Sized> {
+    providers: R,
+    credential_store: Arc<C>,
+    office_runtime: OfficeCapabilityRuntime,
+    provider_stage: &'static str,
+}
+
 enum OfficeSelectionAmbiguity<'a> {
     Ignore,
     ErrorForProvider(&'a str),
+}
+
+impl<R, C: ?Sized> OfficeCapabilityRemoteRuntime<R, C> {
+    pub(crate) fn new(
+        providers: R,
+        credential_store: Arc<C>,
+        office_runtime: OfficeCapabilityRuntime,
+        provider_stage: &'static str,
+    ) -> Self {
+        Self {
+            providers,
+            credential_store,
+            office_runtime,
+            provider_stage,
+        }
+    }
+
+    pub(crate) fn credential_store(&self) -> &Arc<C> {
+        &self.credential_store
+    }
+
+    pub(crate) fn provider_registry(&self) -> &R {
+        &self.providers
+    }
+
+    pub(crate) fn office_runtime(&self) -> &OfficeCapabilityRuntime {
+        &self.office_runtime
+    }
+
+    pub(crate) fn resolve_provider_name(
+        &self,
+        provider: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String>
+    where
+        C: OfficeCapabilityCredentialDirectory,
+    {
+        self.office_runtime.resolve_provider_name(
+            provider,
+            preferred_identity_class,
+            self.credential_store.as_ref(),
+        )
+    }
+
+    pub(crate) fn default_account_key(&self) -> Result<Option<String>> {
+        self.office_runtime.default_account_key()
+    }
+
+    pub(crate) fn resolve_hint(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeResolveResult>> {
+        self.office_runtime
+            .resolve_hint(provider, account_key, preferred_identity_class)
+    }
+
+    pub(crate) fn runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
+        self.office_runtime.runtime_statuses()
+    }
+
+    pub(crate) fn runtime_status(
+        &self,
+        account_key: &str,
+    ) -> Result<Option<OfficeAccountRuntimeStatus>> {
+        self.office_runtime.runtime_status(account_key)
+    }
+
+    pub(crate) fn identity_class_for_account(
+        &self,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeAccountIdentityClass>> {
+        self.office_runtime.identity_class_for_account(account_key)
+    }
+
+    pub(crate) fn account_assessments<P>(&self) -> Result<Vec<OfficeAccountAssessment>>
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        P: ?Sized,
+    {
+        self.office_runtime
+            .account_assessments(|provider_kind| self.providers.get(provider_kind).is_some())
+    }
+
+    pub(crate) fn provider_supports<P, Op>(&self, provider: &str, op: Op) -> bool
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy,
+    {
+        self.providers
+            .get(provider)
+            .is_some_and(|provider_impl| provider_impl.supports(op))
+    }
+
+    pub(crate) fn provider_is_routable_for_ops<P, Op>(
+        &self,
+        provider: &str,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ops: &[Op],
+    ) -> bool
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        C: OfficeCapabilityCredentialAccess,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy + Debug,
+    {
+        self.resolve_registered_remote(provider, None, preferred_identity_class, ops)
+            .is_ok()
+    }
+
+    pub(crate) fn resolve_registered_remote<P, Op>(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ops: &[Op],
+    ) -> Result<(Arc<P>, C::Credential)>
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        C: OfficeCapabilityCredentialAccess,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy + Debug,
+    {
+        let provider_impl = self.providers.get(provider).ok_or_else(|| {
+            Error::config(
+                self.provider_stage,
+                format!("provider '{}' is not registered", provider),
+            )
+        })?;
+        for op in ops {
+            if !provider_impl.supports(*op) {
+                return Err(Error::config(
+                    self.provider_stage,
+                    format!("provider '{}' does not support {:?}", provider, op),
+                ));
+            }
+        }
+        let account_key = self.office_runtime.resolve_account_key(
+            provider,
+            account_key,
+            preferred_identity_class,
+            self.credential_store.as_ref(),
+        )?;
+        let credential = self
+            .credential_store
+            .get_credential(&account_key)?
+            .ok_or_else(|| {
+                Error::config(
+                    self.provider_stage,
+                    format!(
+                        "provider '{}' has no configured credential for account '{}'",
+                        provider, account_key
+                    ),
+                )
+            })?;
+        if credential.provider() != provider {
+            return Err(Error::config(
+                self.provider_stage,
+                format!(
+                    "account '{}' is configured for provider '{}', not '{}'",
+                    credential.account_key(),
+                    credential.provider(),
+                    provider
+                ),
+            ));
+        }
+        Ok((provider_impl, credential))
+    }
+
+    pub(crate) fn selected_route(
+        &self,
+        preferred_provider_kind: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeSelectedRoute>>
+    where
+        C: OfficeCapabilityCredentialDirectory,
+    {
+        self.office_runtime.selected_route(
+            preferred_provider_kind,
+            preferred_identity_class,
+            self.credential_store.as_ref(),
+        )
+    }
+
+    pub(crate) fn resolve_explicit_route(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        missing_route_error: &'static str,
+    ) -> Result<OfficeSelectedRoute>
+    where
+        C: OfficeCapabilityCredentialAccess,
+    {
+        if let Some(account_key) = account_key.map(str::trim).filter(|value| !value.is_empty()) {
+            let credential = self
+                .credential_store
+                .get_credential(account_key)?
+                .ok_or_else(|| Error::config(self.provider_stage, "unknown account_key"))?;
+            if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
+                if credential.provider() != provider {
+                    return Err(Error::config(
+                        self.provider_stage,
+                        format!(
+                            "account '{}' is configured for provider '{}', not '{}'",
+                            credential.account_key(),
+                            credential.provider(),
+                            provider
+                        ),
+                    ));
+                }
+            }
+            return Ok(OfficeSelectedRoute {
+                provider: credential.provider().to_string(),
+                account_key: credential.account_key().to_string(),
+            });
+        }
+
+        let provider = provider
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| Error::config(self.provider_stage, missing_route_error))?;
+
+        Ok(OfficeSelectedRoute {
+            provider: provider.to_string(),
+            account_key: self.office_runtime.resolve_account_key(
+                provider,
+                None,
+                preferred_identity_class,
+                self.credential_store.as_ref(),
+            )?,
+        })
+    }
+
+    pub(crate) fn record_runtime_activity(
+        &self,
+        account_key: &str,
+        activity_kind: &'static str,
+        error: Option<&Error>,
+    ) {
+        self.office_runtime
+            .record_runtime_activity(account_key, activity_kind, error);
+    }
+}
+
+impl<R: Clone, C: ?Sized> Clone for OfficeCapabilityRemoteRuntime<R, C> {
+    fn clone(&self) -> Self {
+        Self {
+            providers: self.providers.clone(),
+            credential_store: Arc::clone(&self.credential_store),
+            office_runtime: self.office_runtime.clone(),
+            provider_stage: self.provider_stage,
+        }
+    }
 }
 
 impl OfficeCapabilityRuntime {
@@ -487,9 +772,222 @@ impl OfficeCapabilityCredentialDirectory
     }
 }
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeRoutedCredential for crate::mail::MailProviderCredential {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityCredentialAccess
+    for dyn crate::mail::MailProviderCredentialStore + Send + Sync
+{
+    type Credential = crate::mail::MailProviderCredential;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
+        self.get(account_key)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProvider<crate::mail::MailOperation> for dyn crate::mail::MailProvider {
+    fn supports(&self, op: crate::mail::MailOperation) -> bool {
+        self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderLookup<dyn crate::mail::MailProvider>
+    for crate::mail::MailProviderRegistry
+{
+    fn get(&self, provider: &str) -> Option<Arc<dyn crate::mail::MailProvider>> {
+        self.get(provider)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeRoutedCredential for crate::documents::DocumentsProviderCredential {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityCredentialAccess
+    for dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync
+{
+    type Credential = crate::documents::DocumentsProviderCredential;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
+        self.get(account_key)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProvider<crate::documents::DocumentsOperation>
+    for dyn crate::documents::DocumentsProvider
+{
+    fn supports(&self, op: crate::documents::DocumentsOperation) -> bool {
+        self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderLookup<dyn crate::documents::DocumentsProvider>
+    for crate::documents::DocumentsProviderRegistry
+{
+    fn get(&self, provider: &str) -> Option<Arc<dyn crate::documents::DocumentsProvider>> {
+        self.get(provider)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeRoutedCredential for crate::calendar::CalendarProviderCredential {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityCredentialAccess
+    for dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync
+{
+    type Credential = crate::calendar::CalendarProviderCredential;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
+        self.get(account_key)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProvider<crate::calendar::CalendarOperation>
+    for dyn crate::calendar::CalendarProvider
+{
+    fn supports(&self, op: crate::calendar::CalendarOperation) -> bool {
+        self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderLookup<dyn crate::calendar::CalendarProvider>
+    for crate::calendar::CalendarProviderRegistry
+{
+    fn get(&self, provider: &str) -> Option<Arc<dyn crate::calendar::CalendarProvider>> {
+        self.get(provider)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeRoutedCredential for crate::contacts_directory::ContactsDirectoryProviderCredential {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityCredentialAccess
+    for dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync
+{
+    type Credential = crate::contacts_directory::ContactsDirectoryProviderCredential;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
+        self.get(account_key)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProvider<crate::contacts_directory::ContactsDirectoryOperation>
+    for dyn crate::contacts_directory::ContactsDirectoryProvider
+{
+    fn supports(&self, op: crate::contacts_directory::ContactsDirectoryOperation) -> bool {
+        self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderLookup<dyn crate::contacts_directory::ContactsDirectoryProvider>
+    for crate::contacts_directory::ContactsDirectoryProviderRegistry
+{
+    fn get(
+        &self,
+        provider: &str,
+    ) -> Option<Arc<dyn crate::contacts_directory::ContactsDirectoryProvider>> {
+        self.get(provider)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OfficeCapabilityCredentialDirectory, OfficeCapabilityRuntime};
+    use super::{
+        OfficeCapabilityCredentialAccess, OfficeCapabilityCredentialDirectory,
+        OfficeCapabilityProvider, OfficeCapabilityProviderLookup, OfficeCapabilityRemoteRuntime,
+        OfficeCapabilityRuntime, OfficeRoutedCredential,
+    };
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
@@ -562,6 +1060,124 @@ mod tests {
 
         fn clear(&self, _account_key: &str) -> Result<()> {
             Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct StubRemoteCredential {
+        account_key: String,
+        provider: String,
+    }
+
+    impl OfficeRoutedCredential for StubRemoteCredential {
+        fn account_key(&self) -> &str {
+            &self.account_key
+        }
+
+        fn provider(&self) -> &str {
+            &self.provider
+        }
+    }
+
+    trait StubRemoteCredentialStore: OfficeCapabilityCredentialDirectory + Send + Sync {
+        fn get_credential(&self, account_key: &str) -> Result<Option<StubRemoteCredential>>;
+    }
+
+    #[derive(Default)]
+    struct StubRemoteStore {
+        items: Mutex<BTreeMap<String, StubRemoteCredential>>,
+    }
+
+    impl StubRemoteStore {
+        fn insert(&self, credential: StubRemoteCredential) {
+            self.items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(credential.account_key.clone(), credential);
+        }
+    }
+
+    impl StubRemoteCredentialStore for StubRemoteStore {
+        fn get_credential(&self, account_key: &str) -> Result<Option<StubRemoteCredential>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(account_key)
+                .cloned())
+        }
+    }
+
+    impl OfficeCapabilityCredentialAccess for StubRemoteStore {
+        type Credential = StubRemoteCredential;
+
+        fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
+            StubRemoteCredentialStore::get_credential(self, account_key)
+        }
+    }
+
+    impl OfficeCapabilityCredentialDirectory for StubRemoteStore {
+        fn provider_for_account(&self, account_key: &str) -> Result<Option<String>> {
+            Ok(
+                StubRemoteCredentialStore::get_credential(self, account_key)?
+                    .map(|credential| credential.provider),
+            )
+        }
+
+        fn configured_provider_names(&self) -> Result<Vec<String>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .map(|credential| credential.provider.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect())
+        }
+
+        fn account_keys_for_provider(&self, provider: &str) -> Result<Vec<String>> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .filter(|credential| credential.provider == provider)
+                .map(|credential| credential.account_key.clone())
+                .collect())
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum StubOperation {
+        Read,
+    }
+
+    #[derive(Default)]
+    struct StubProvider;
+
+    impl OfficeCapabilityProvider<StubOperation> for StubProvider {
+        fn supports(&self, op: StubOperation) -> bool {
+            matches!(op, StubOperation::Read)
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct StubProviderRegistry {
+        providers: Arc<BTreeMap<String, Arc<StubProvider>>>,
+    }
+
+    impl StubProviderRegistry {
+        fn new(items: impl IntoIterator<Item = (String, Arc<StubProvider>)>) -> Self {
+            Self {
+                providers: Arc::new(items.into_iter().collect()),
+            }
+        }
+    }
+
+    impl OfficeCapabilityProviderLookup<StubProvider> for StubProviderRegistry {
+        fn get(&self, provider: &str) -> Option<Arc<StubProvider>> {
+            self.providers.get(provider).cloned()
         }
     }
 
@@ -676,5 +1292,59 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("mail-work"));
         assert!(message.contains("mail-personal"));
+    }
+
+    #[test]
+    fn remote_runtime_resolves_registered_provider_and_credential_from_shared_route_logic() {
+        let runtime = runtime_with_default_mail_account(false, Some("mail-work"));
+        let store = Arc::new(StubRemoteStore::default());
+        store.insert(StubRemoteCredential {
+            account_key: "mail-work".to_string(),
+            provider: "imap_smtp".to_string(),
+        });
+        let remote = OfficeCapabilityRemoteRuntime::new(
+            StubProviderRegistry::new([(
+                "imap_smtp".to_string(),
+                Arc::new(StubProvider),
+            )]),
+            store.clone(),
+            runtime,
+            "mail_provider",
+        );
+
+        let (provider, credential): (Arc<StubProvider>, StubRemoteCredential) = remote
+            .resolve_registered_remote("imap_smtp", None, None, &[StubOperation::Read])
+            .expect("resolve remote");
+
+        assert!(provider.supports(StubOperation::Read));
+        assert_eq!(credential.account_key, "mail-work");
+        assert_eq!(credential.provider, "imap_smtp");
+    }
+
+    #[test]
+    fn remote_runtime_account_assessments_use_provider_registry_as_probe_truth() {
+        let runtime = runtime_with_default_mail_account(false, Some("mail-work"));
+        let store = Arc::new(StubRemoteStore::default());
+        store.insert(StubRemoteCredential {
+            account_key: "mail-work".to_string(),
+            provider: "imap_smtp".to_string(),
+        });
+        let remote = OfficeCapabilityRemoteRuntime::new(
+            StubProviderRegistry::new([(
+                "imap_smtp".to_string(),
+                Arc::new(StubProvider),
+            )]),
+            store.clone(),
+            runtime,
+            "mail_provider",
+        );
+
+        let assessments = remote.account_assessments().expect("account assessments");
+        assert_eq!(assessments.len(), 2);
+        assert_eq!(assessments[0].account_key, "mail-personal");
+        assert_eq!(assessments[1].account_key, "mail-work");
+        assert!(assessments
+            .iter()
+            .all(|assessment| assessment.probe_supported));
     }
 }

@@ -65,7 +65,10 @@ pub use binding::OfficeCapabilityBinding;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-pub(crate) use capability_runtime::OfficeCapabilityRuntime;
+pub(crate) use capability_runtime::{
+    OfficeCapabilityCredentialAccess, OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime,
+    OfficeSelectedRoute,
+};
 #[cfg(feature = "capability_office")]
 pub use config_management::{
     OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeAccountUpsertRequest,
