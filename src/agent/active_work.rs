@@ -4,8 +4,8 @@
 use crate::bus::PcMsg;
 use crate::error::Result;
 use crate::memory::{
-    render_execution_state_block, should_resume_active_execution_state, ExecutionState,
-    ExecutionStatus,
+    execution_state_has_pending_work, render_execution_state_block,
+    should_resume_active_execution_state, ExecutionState, ExecutionStateStore, ExecutionStatus,
 };
 use crate::orchestrator::snapshot as orchestrator_snapshot;
 use crate::runtime::system_work::{
@@ -97,12 +97,48 @@ impl ActiveWorkRecord {
         };
         candidate.is_meaningful().then_some(candidate)
     }
+
+    pub(crate) fn from_execution_state(state: &ExecutionState) -> Option<Self> {
+        if state.status == ExecutionStatus::Done || !execution_state_has_pending_work(state) {
+            return None;
+        }
+        let title = if !state.goal.trim().is_empty() {
+            state.goal.clone()
+        } else if !state.next_action.trim().is_empty() {
+            state.next_action.clone()
+        } else if !state.blocker.trim().is_empty() {
+            state.blocker.clone()
+        } else {
+            return None;
+        };
+        Some(Self {
+            kind: ActiveWorkKind::InteractiveAction,
+            title,
+            state: state.clone(),
+        })
+    }
 }
 
 pub trait ActiveWorkStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<ActiveWorkRecord>>;
     fn set(&self, chat_id: &str, record: &ActiveWorkRecord) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+pub(crate) fn has_meaningful_foreground_work_for_chat(
+    active_work_store: &dyn ActiveWorkStore,
+    execution_state_store: &dyn ExecutionStateStore,
+    chat_id: &str,
+) -> Result<bool> {
+    if active_work_store
+        .get(chat_id)?
+        .is_some_and(|record| record.is_meaningful())
+    {
+        return Ok(true);
+    }
+    Ok(execution_state_store
+        .get(chat_id)?
+        .is_some_and(|state| execution_state_has_pending_work(&state)))
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -310,13 +346,23 @@ pub(crate) fn sync_active_work_after_turn(
         input
             .active_task_run
             .and_then(ActiveWorkRecord::from_task_run)
-    } else if should_keep_interactive_action_work(input.request_semantics) {
+    } else {
+        let keep_interactive_work = should_keep_interactive_action_work(input.request_semantics);
         input
             .active_task_run
-            .filter(|record| record.run.kind == TaskRunKind::InteractiveAction)
+            .filter(|record| {
+                keep_interactive_work && record.run.kind == TaskRunKind::InteractiveAction
+            })
             .and_then(ActiveWorkRecord::from_task_run)
-    } else {
-        None
+            .or_else(|| {
+                keep_interactive_work
+                    .then(|| {
+                        input
+                            .execution_state
+                            .and_then(ActiveWorkRecord::from_execution_state)
+                    })
+                    .flatten()
+            })
     };
     if let Some(record) = next {
         store.set(input.chat_id, &record)
@@ -342,12 +388,12 @@ pub(crate) fn should_keep_interactive_action_work(
 }
 
 pub fn live_foreground_state_for_chat(
-    store: &dyn ActiveWorkStore,
+    active_work_store: &dyn ActiveWorkStore,
+    execution_state_store: &dyn ExecutionStateStore,
     chat_id: &str,
 ) -> Result<LiveForegroundState> {
-    let has_foreground_work = store
-        .get(chat_id)?
-        .is_some_and(|record| record.is_meaningful());
+    let has_foreground_work =
+        has_meaningful_foreground_work_for_chat(active_work_store, execution_state_store, chat_id)?;
     let snap = orchestrator_snapshot();
     Ok(LiveForegroundState {
         has_foreground_work,
@@ -806,6 +852,40 @@ mod tests {
         )
         .expect("sync");
         assert!(store.get("chat-1").expect("get").is_none());
+    }
+
+    #[test]
+    fn sync_falls_back_to_execution_state_when_interactive_run_is_not_materialized() {
+        let store = MemoryActiveWorkStore::default();
+        let state = ExecutionState {
+            status: ExecutionStatus::Blocked,
+            goal: "配置 QQ 邮箱账户".to_string(),
+            progress: "账户草案已创建".to_string(),
+            blocker: "缺少 SMTP 授权码".to_string(),
+            next_action: "等待用户补充 SMTP 授权码".to_string(),
+            updated_at: 9,
+            ..ExecutionState::default()
+        };
+
+        sync_active_work_after_turn(
+            &store,
+            ActiveWorkSyncInput {
+                chat_id: "chat-1",
+                request_semantics: semantics(
+                    ActionFamily::ActionRequest,
+                    ResumeRelation::IndependentTurn,
+                ),
+                reply_surface: ReplySurface::GovernedConversation,
+                active_task_run: None,
+                execution_state: Some(&state),
+            },
+        )
+        .expect("sync");
+
+        let record = store.get("chat-1").expect("get").expect("record");
+        assert_eq!(record.kind, ActiveWorkKind::InteractiveAction);
+        assert_eq!(record.title, "配置 QQ 邮箱账户");
+        assert_eq!(record.state.blocker, "缺少 SMTP 授权码");
     }
 
     #[test]

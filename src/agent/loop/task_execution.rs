@@ -1,9 +1,8 @@
 use super::*;
 
 pub(super) fn extract_worker_outcome_text(outcome: WorkerOutcome) -> String {
-    match outcome {
-        WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-    }
+    let WorkerOutcome::Content(text) = outcome;
+    text
 }
 
 fn terminal_progress_kind_for_status(

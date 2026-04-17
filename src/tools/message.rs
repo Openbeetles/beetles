@@ -27,11 +27,11 @@ impl Tool for MessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a user-visible message through the runtime outbound pipeline. Use target=current for the active chat, or target=explicit with channel and chat_id. Current-chat messages are supplemental only; the canonical finalizer owns the active chat's final main reply."
+        "Send a user-visible message to an explicit channel/chat target through the runtime outbound pipeline. This tool is for cross-target delivery only; the current chat's reply surface is owned by the canonical finalizer."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"content":{"type":"string","description":"Message body to send."},"target":{"type":"string","enum":["current","explicit"],"description":"current = active chat; explicit = use channel + chat_id.","default":"current"},"channel":{"type":"string","description":"Required when target=explicit."},"chat_id":{"type":"string","description":"Required when target=explicit."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"supplemental = visible update; primary is only allowed for explicit outbound targets, never for the active chat.","default":"supplemental"}},"required":["content"]}"#
+        r#"{"type":"object","properties":{"content":{"type":"string","description":"Message body to send."},"channel":{"type":"string","description":"Explicit target channel."},"chat_id":{"type":"string","description":"Explicit target chat id."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"supplemental = visible update; primary = canonical reply for the explicit target.","default":"supplemental"}},"required":["content","channel","chat_id"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -51,52 +51,30 @@ impl Tool for MessageTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| Error::config("tool_message", "missing content"))?;
 
-        let target = obj
-            .get("target")
-            .and_then(Value::as_str)
-            .unwrap_or("current");
         let delivery_kind = obj
             .get("delivery_kind")
             .and_then(Value::as_str)
             .unwrap_or("supplemental");
-        let (channel, chat_id, current_target) = match target {
-            "current" => {
-                let channel = ctx.current_channel().ok_or_else(|| {
-                    Error::config("tool_message", "current channel is unavailable")
-                })?;
-                let chat_id = ctx.current_chat_id().ok_or_else(|| {
-                    Error::config("tool_message", "current chat_id is unavailable")
-                })?;
-                (channel.to_string(), chat_id.to_string(), true)
-            }
-            "explicit" => {
-                let channel = obj
-                    .get("channel")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        Error::config("tool_message", "missing channel for explicit target")
-                    })?;
-                let chat_id = obj
-                    .get("chat_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        Error::config("tool_message", "missing chat_id for explicit target")
-                    })?;
-                let current_target = ctx.current_channel() == Some(channel)
-                    && ctx.current_chat_id() == Some(chat_id);
-                (channel.to_string(), chat_id.to_string(), current_target)
-            }
-            _ => {
-                return Err(Error::config(
-                    "tool_message",
-                    "target must be current or explicit",
-                ));
-            }
-        };
+        let channel = obj
+            .get("channel")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| Error::config("tool_message", "missing explicit target channel"))?;
+        let chat_id = obj
+            .get("chat_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| Error::config("tool_message", "missing explicit target chat_id"))?;
+        if ctx.current_channel() == Some(channel) && ctx.current_chat_id() == Some(chat_id) {
+            return Err(Error::config(
+                "tool_message",
+                "current-chat delivery is reserved for the canonical reply surface",
+            ));
+        }
+        let channel = channel.to_string();
+        let chat_id = chat_id.to_string();
 
         let primary = match delivery_kind {
             "supplemental" => false,
@@ -108,12 +86,6 @@ impl Tool for MessageTool {
                 ));
             }
         };
-        if primary && current_target {
-            return Err(Error::config(
-                "tool_message",
-                "current-chat primary reply is reserved for the canonical finalizer",
-            ));
-        }
         let capability = ctx.channel_capability(&channel).ok_or_else(|| {
             Error::config(
                 "tool_message",
@@ -138,36 +110,26 @@ impl Tool for MessageTool {
                 "target channel does not support supplemental reply delivery",
             ));
         }
-        if !current_target && !capability.contract.supports_explicit_target {
+        if !capability.contract.supports_explicit_target {
             return Err(Error::config(
                 "tool_message",
                 "target channel does not support explicit outbound targets",
             ));
         }
-        if current_target && !ctx.supports_current_chat_outbound_message() {
-            return Err(Error::config(
-                "tool_message",
-                "current-chat outbound delivery is not supported in this runtime context",
-            ));
-        }
-        if !current_target && !ctx.supports_explicit_outbound_message() {
+        if !ctx.supports_explicit_outbound_message() {
             return Err(Error::config(
                 "tool_message",
                 "explicit outbound target is not allowed in this runtime context",
             ));
         }
-        ctx.claim_outbound_message_delivery(current_target, primary)?;
+        ctx.claim_outbound_message_delivery(false, primary)?;
 
         let summary = serialize_tool_output(
             "tool_message",
             &MessageToolSummary {
                 ok: true,
                 tool: "message",
-                target: if current_target {
-                    "current"
-                } else {
-                    "explicit"
-                },
+                target: "explicit",
                 delivery_kind: if primary { "primary" } else { "supplemental" },
                 channel: channel.as_str(),
                 chat_id: chat_id.as_str(),
@@ -178,11 +140,7 @@ impl Tool for MessageTool {
 
         Ok(
             ToolExecutionOutcome::text(summary).with_outbound_intent(ToolOutboundIntent {
-                target: if current_target {
-                    ToolOutboundTarget::CurrentChat
-                } else {
-                    ToolOutboundTarget::Explicit { channel, chat_id }
-                },
+                target: ToolOutboundTarget::Explicit { channel, chat_id },
                 delivery_kind: if primary {
                     ToolOutboundDeliveryKind::Primary
                 } else {
@@ -203,40 +161,26 @@ impl Tool for MessageTool {
 
     fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
         let obj = parse_tool_args(args, "tool_message_governance")?;
-        let target = obj
-            .get("target")
-            .and_then(Value::as_str)
-            .unwrap_or("current");
         let delivery_kind = obj
             .get("delivery_kind")
             .and_then(Value::as_str)
             .unwrap_or("supplemental");
-        let explicit_or_primary = target == "explicit" || delivery_kind == "primary";
         Ok(self
             .metadata()
-            .default_execution_shape(if explicit_or_primary {
-                "message_visible_delivery"
-            } else {
-                "message_current_chat"
-            })
-            .with_risk_level(if explicit_or_primary {
+            .default_execution_shape("message_visible_delivery")
+            .with_risk_level(if delivery_kind == "primary" {
                 ToolRiskLevel::High
             } else {
                 ToolRiskLevel::Medium
             })
-            .with_approval_mode(if explicit_or_primary {
-                ToolApprovalMode::ExplicitIntent
-            } else {
-                ToolApprovalMode::Automatic
-            })
+            .with_approval_mode(ToolApprovalMode::ExplicitIntent)
             .with_approval_granted(true))
     }
 
     fn governance_examples(&self) -> &'static [&'static str] {
         &[
-            r#"{"target":"current","delivery_kind":"supplemental","content":"hi"}"#,
-            r#"{"target":"explicit","channel":"telegram","chat_id":"demo","delivery_kind":"supplemental","content":"hi"}"#,
-            r#"{"target":"current","delivery_kind":"primary","content":"hi"}"#,
+            r#"{"channel":"telegram","chat_id":"demo","delivery_kind":"supplemental","content":"hi"}"#,
+            r#"{"channel":"telegram","chat_id":"demo","delivery_kind":"primary","content":"hi"}"#,
         ]
     }
 }
@@ -370,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_current_message_is_rejected_for_current_chat() {
+    fn current_chat_target_is_rejected_for_canonical_reply_surface() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -388,8 +332,11 @@ mod tests {
         };
         let tool = MessageTool;
         let err = tool
-            .execute_outcome(r#"{"content":"done","delivery_kind":"primary"}"#, &mut ctx)
-            .expect_err("current-chat primary should be rejected");
+            .execute_outcome(
+                r#"{"content":"done","channel":"qq_channel","chat_id":"chat-1","delivery_kind":"primary"}"#,
+                &mut ctx,
+            )
+            .expect_err("current-chat target should be rejected");
 
         assert_eq!(err.stage(), "tool_message");
         assert_eq!(ctx.outbound_message_count, 0);
@@ -412,7 +359,7 @@ mod tests {
         let tool = MessageTool;
         let outcome = tool
             .execute_outcome(
-                r#"{"content":"ping","target":"explicit","channel":"telegram","chat_id":"chat-2","delivery_kind":"supplemental"}"#,
+                r#"{"content":"ping","channel":"telegram","chat_id":"chat-2","delivery_kind":"supplemental"}"#,
                 &mut ctx,
             )
             .expect("message tool");
@@ -431,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_current_message_rejects_even_when_runtime_disallows_primary() {
+    fn explicit_current_chat_target_is_rejected_before_runtime_delivery_permissions() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -449,9 +396,13 @@ mod tests {
         };
         let tool = MessageTool;
         let err = tool
-            .execute_outcome(r#"{"content":"done","delivery_kind":"primary"}"#, &mut ctx)
-            .expect_err("primary current message should fail");
+            .execute_outcome(
+                r#"{"content":"done","channel":"qq_channel","chat_id":"chat-1","delivery_kind":"primary"}"#,
+                &mut ctx,
+            )
+            .expect_err("current chat target should fail early");
         assert_eq!(err.stage(), "tool_message");
+        assert_eq!(ctx.outbound_message_count, 0);
     }
 
     #[test]
@@ -471,7 +422,7 @@ mod tests {
         let tool = MessageTool;
         let err = tool
             .execute_outcome(
-                r#"{"content":"ping","target":"explicit","channel":"telegram","chat_id":"chat-2"}"#,
+                r#"{"content":"ping","channel":"telegram","chat_id":"chat-2"}"#,
                 &mut ctx,
             )
             .expect_err("explicit message should fail");
@@ -495,13 +446,13 @@ mod tests {
         let tool = MessageTool;
 
         tool.execute_outcome(
-            r#"{"content":"first","target":"explicit","channel":"telegram","chat_id":"chat-2","delivery_kind":"primary"}"#,
+            r#"{"content":"first","channel":"telegram","chat_id":"chat-2","delivery_kind":"primary"}"#,
             &mut ctx,
         )
             .expect("first message");
         let err = tool
             .execute_outcome(
-                r#"{"content":"second","target":"explicit","channel":"telegram","chat_id":"chat-2"}"#,
+                r#"{"content":"second","channel":"telegram","chat_id":"chat-2"}"#,
                 &mut ctx,
             )
             .expect_err("second message should hit budget");
@@ -510,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn current_message_rejects_runtime_without_current_support() {
+    fn message_tool_requires_explicit_target_fields() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -532,9 +483,10 @@ mod tests {
                 r#"{"content":"status","delivery_kind":"supplemental"}"#,
                 &mut ctx,
             )
-            .expect_err("current message should fail");
+            .expect_err("explicit target fields are required");
 
         assert_eq!(err.stage(), "tool_message");
+        assert_eq!(ctx.outbound_message_count, 0);
     }
 
     #[test]
@@ -554,7 +506,7 @@ mod tests {
         let tool = MessageTool;
         let err = tool
             .execute_outcome(
-                r#"{"content":"ping","target":"explicit","channel":"dingtalk","chat_id":"chat-2"}"#,
+                r#"{"content":"ping","channel":"dingtalk","chat_id":"chat-2"}"#,
                 &mut ctx,
             )
             .expect_err("explicit contract denial should fail");

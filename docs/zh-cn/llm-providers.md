@@ -1,41 +1,15 @@
-# 大模型服务商说明
+# 大模型配置
 
 [English](../en-us/llm-providers.md) | **中文** | [文档索引](../README.md)
 
-这页讲的是 `config/llm.json` 应该怎么填。
+这页只讲两件事：
 
-主要说明三件事：
+1. `provider` 现在支持哪些值
+2. 多个来源时，Beetle 按什么顺序使用
 
-1. `provider` 可以填哪些值？
-2. 哪些服务商的 `api_url` 可以留空？
-3. 配了多个来源后，主用和备用来源怎么选？
+## 支持的 `provider`
 
-## 基本规则
-
-- Beetle 支持配置多个大模型来源
-- 配置页和配置文件都可以改
-- 部分服务商走 OpenAI 兼容接口
-- 你可以配主用来源，也可以额外配备用来源
-
-## 支持的服务商 ID
-
-| 服务商 ID | 接口类型 | 说明 |
-|-------------|------------------|------|
-| `openai` | OpenAI 兼容接口 | 标准 OpenAI 路径 |
-| `openai_compatible` | OpenAI 兼容接口 | 通用兼容接口 |
-| `gemini` | OpenAI 兼容接口 | 内部会做厂商适配 |
-| `glm` | OpenAI 兼容接口 | 智谱 GLM |
-| `qwen` | OpenAI 兼容接口 | 通义千问 |
-| `deepseek` | OpenAI 兼容接口 | DeepSeek |
-| `moonshot` | OpenAI 兼容接口 | Moonshot |
-| `ollama` | OpenAI 兼容接口 | 本地或自托管 |
-| `anthropic` | Anthropic 接口 | Claude Messages API |
-
-## `api_url` 的关键规则
-
-### 哪些可以留空
-
-下面这些服务商的 `api_url` 可以留空：
+当前代码支持这些值：
 
 - `openai`
 - `openai_compatible`
@@ -45,30 +19,47 @@
 - `deepseek`
 - `moonshot`
 - `ollama`
-
-### 哪些不能留空
-
 - `anthropic`
-- 任何未知的 `provider` 值
 
-对 `anthropic` 来说，非空 `api_url` 会被当作完整接口地址。
+## `api_url` 怎么填
 
-## 多来源怎么选
+如果你用官方默认地址，下面这些通常可以留空：
 
-配置多个来源后，Beetle 会先用你指定的优先来源；当前一个来源不可用时，再尝试后面的来源。
+- `openai`
+- `gemini`
+- `glm`
+- `qwen`
+- `deepseek`
+- `moonshot`
+- `ollama`
+- `anthropic`
 
-实际可以按这个理解：
+如果你用的是自建地址、代理地址或第三方兼容服务，就把 `api_url` 填成你自己的地址。
 
-1. 先试你设成最高优先级的来源
-2. 如果你还指定了第二优先来源，就接着试它
-3. 其余可用来源再按列表顺序继续尝试
+对 `openai_compatible` 来说，通常应该填写你实际使用的兼容服务地址。
 
-你不需要在聊天时手动切换。
-只要把来源顺序配好即可。
+## 多个来源怎么选
+
+Beetle 支持同时配置多个来源。
+
+默认情况下，会按 `llm_sources` 里的顺序依次尝试。
+
+如果你设置了下面两个字段，顺序会变成：
+
+- `llm_router_source_index`
+- `llm_worker_source_index`
+
+实际理解起来很简单：
+
+1. 先试 `llm_router_source_index`
+2. 再试 `llm_worker_source_index`
+3. 还不行，再按列表里的其余可用来源继续试
+
+你不需要在聊天里手动切换。
 
 ## 最小示例
 
-### 单个源
+### 单个来源
 
 ```json
 {
@@ -83,7 +74,7 @@
 }
 ```
 
-### 多个来源切换
+### 多个来源
 
 ```json
 {
@@ -95,25 +86,26 @@
       "api_url": ""
     },
     {
-      "provider": "glm",
+      "provider": "qwen",
       "api_key": "...",
-      "model": "glm-4-flash",
+      "model": "qwen-plus",
       "api_url": ""
     },
     {
       "provider": "ollama",
-      "api_key": "ollama",
-      "model": "qwen2",
+      "api_key": "local",
+      "model": "qwen2.5",
       "api_url": "http://192.168.1.100:11434/v1"
     }
-  ]
+  ],
+  "llm_router_source_index": 0,
+  "llm_worker_source_index": 1
 }
 ```
 
-## Ollama 说明
+## 几个直接结论
 
-- `provider` 用 `ollama`
-- `api_url` 通常写成 `http://<主机>:11434/v1`
-- 如果服务端不校验密钥，`api_key` 只要是非空占位字符串即可
-
-厂商模型名会持续变化，所以这里的模型名只用来举例，不代表程序会长期固定这些名字。
+- `llm_sources` 不能为空
+- 每个来源都至少要有 `provider`、`api_key`、`model`
+- 如果你用的是本地 Ollama，常见地址是 `http://<主机>:11434/v1`
+- 示例里的模型名只是示例，不代表 Beetle 固定要求这些名字

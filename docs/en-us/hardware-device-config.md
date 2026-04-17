@@ -1,59 +1,76 @@
-# Hardware Device Configuration
+# Hardware Configuration
 
 **English** | [中文](../zh-cn/hardware-device-config.md) | [Doc index](../README.md)
 
-This page explains how `config/hardware.json` becomes the `device_control` tool.
+For normal use, add and edit hardware through the config UI first.
 
-This page is mainly for people wiring hardware, writing config, or building integrations.
+This page explains which hardware fields exist now, so you can read the UI, API results, or saved config more easily.
+After saving, the same data ends up in `config/hardware.json`.
 
-The flow is simple:
+It no longer covers only simple GPIO. It can also hold I2C devices and I2C sensors.
 
-- you describe devices in JSON
-- the firmware validates that JSON
-- the agent sees device names and descriptions, not raw pin maps
-- Beetle executes the actual GPIO / PWM / ADC / buzzer operations
+## What is in this config
 
-## When To Use This
-
-Use `hardware.json` when you want the agent to operate hardware by meaning, not by pin number.
-
-Good fit:
-
-- LEDs
-- relays
-- buzzers
-- simple GPIO inputs
-- PWM-controlled outputs
-- ADC-based reads
-
-Not a good fit:
-
-- strict real-time loops
-- high-rate continuous sampling
-- chip-specific sensor drivers that need a richer protocol layer
-
-## Config Shape
-
-File path:
-
-- `config/hardware.json`
-
-Top-level key:
+The current structure is:
 
 - `hardware_devices`
+- `i2c_bus`
+- `i2c_devices`
+- `i2c_sensors`
 
-Each item in `hardware_devices` describes one device:
+You do not need to use every part.
 
-| Field | Required | Meaning |
-|-------|----------|---------|
-| `id` | Yes | Unique device name |
-| `device_type` | Yes | `gpio_out`, `gpio_in`, `pwm_out`, `adc_in`, or `buzzer` |
-| `pins` | Yes | Pin mapping, currently `{"pin": <gpio>}` |
-| `what` | Yes | What the device is and what it does |
-| `how` | Yes | How the agent should use it |
-| `options` | No | Device-specific options such as PWM frequency |
+## What `hardware_devices` is for
 
-## Example
+This section defines the devices Beetle can use directly.
+You describe the device name, purpose, and wiring here.
+
+Current `device_type` values:
+
+- `gpio_out`
+- `gpio_in`
+- `pwm_out`
+- `adc_in`
+- `buzzer`
+- `dht`
+
+Each device uses these core fields:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | unique device name |
+| `device_type` | device type |
+| `pins` | wiring info |
+| `what` | what the device is |
+| `how` | how Beetle should use it |
+| `options` | extra options, depending on the device |
+
+## `i2c_bus`, `i2c_devices`, and `i2c_sensors`
+
+If you use I2C, the same file can also define:
+
+- `i2c_bus`: the bus itself
+- `i2c_devices`: general I2C devices
+- `i2c_sensors`: I2C sensors
+
+The most-used fields are:
+
+| Section | Common fields |
+|---------|---------------|
+| `i2c_bus` | `sda_pin`, `scl_pin`, `freq_hz` |
+| `i2c_devices` | `id`, `addr`, `what`, `how`, `options` |
+| `i2c_sensors` | `id`, `addr`, `model`, `watch_field`, `what`, `how`, `options` |
+
+Current `i2c_sensors.model` values are:
+
+- `sht3x`
+- `aht20`
+- `raw`
+
+If you use `raw`, you need to provide its extra read/write options.
+If you use `dht`, common `options.model` values are `dht11`, `dht22`, or `dht21`.
+
+## What the underlying data looks like
 
 ```json
 {
@@ -62,72 +79,55 @@ Each item in `hardware_devices` describes one device:
       "id": "onboard_led",
       "device_type": "gpio_out",
       "pins": { "pin": 2 },
-      "what": "Onboard LED indicator",
-      "how": "Pass value: 1=on, 0=off"
+      "what": "Onboard indicator LED",
+      "how": "Use value 1 for on and 0 for off"
     },
     {
-      "id": "desk_lamp",
-      "device_type": "pwm_out",
-      "pins": { "pin": 15 },
-      "what": "Dimmable LED lamp",
-      "how": "Pass duty: 0-100 for brightness percent",
-      "options": { "frequency_hz": 5000 }
+      "id": "room_dht",
+      "device_type": "dht",
+      "pins": { "pin": 4 },
+      "what": "Room temperature and humidity sensor",
+      "how": "Read temperature and humidity",
+      "options": { "model": "dht22", "watch_field": "temperature" }
+    }
+  ],
+  "i2c_bus": {
+    "sda_pin": 8,
+    "scl_pin": 9,
+    "freq_hz": 400000
+  },
+  "i2c_sensors": [
+    {
+      "id": "desk_temp",
+      "addr": 68,
+      "model": "aht20",
+      "watch_field": "temperature",
+      "what": "Desk temperature and humidity sensor",
+      "how": "Read temperature and humidity"
     }
   ]
 }
 ```
 
-## What The Agent Sees
+## What happens after you save it
 
-The agent does **not** get raw pin mappings.
+- `hardware_devices` tells Beetle which devices it can use directly
+- `i2c_devices` tells Beetle which I2C devices it can access
+- `i2c_sensors` tells Beetle which I2C sensors it can read and monitor
 
-Instead, `device_control` is built from:
+If the config is invalid, those abilities do not appear normally.
 
-- `id`
-- `what`
-- `how`
+## Real limits worth knowing
 
-That gives the model a safer, more semantic interface.
+- `hardware_devices`: up to 8 items
+- `pwm_out`: up to 4 items
+- one pin cannot be reused by multiple devices
+- `adc_in` must use allowed ADC pins
+- `i2c_sensors.id` cannot clash with `hardware_devices.id`
 
-## Device Types
+## Read next
 
-| Type | Typical use | Input / output |
-|------|-------------|----------------|
-| `gpio_out` | LED, relay | write `value` 0/1 |
-| `gpio_in` | switch, contact sensor | read `value` 0/1 |
-| `pwm_out` | dimming, fan speed | write `duty` 0-100 |
-| `adc_in` | analog sensor, divider | read `raw` 0-4095 |
-| `buzzer` | alert/beep output | `duration_ms` or `beep: true` |
-
-## Validation and Limits
-
-Important limits:
-
-- strapping pins are blocked
-- device count is capped
-- `pwm_out` count is capped
-- pins cannot collide across devices
-- `adc_in` is restricted to ADC1-capable pins
-
-The exact read/write contract is documented in [config-api.md](config-api.md).
-
-## Behavior On Boot And During Use
-
-On boot:
-
-1. the firmware reads `config/hardware.json`
-2. it validates the file
-3. if valid, it registers `device_control`
-4. if invalid, the tool is not registered
-
-During use:
-
-- operations are rate-limited
-- each device has its own lock
-- busy devices return a busy-style error instead of queueing indefinitely
-
-## Related Docs
-
-- [config-api.md](config-api.md) for HTTP read/write behavior
-- [tools.md](tools.md) for the tool list
-- [hardware.md](hardware.md) for board and troubleshooting notes
+- To configure it in the UI first: [configuration.md](configuration.md)
+- To see how Beetle uses these abilities: [tools.md](tools.md)
+- To write config through the API: [config-api.md](config-api.md)
+- To choose boards and hardware direction: [hardware.md](hardware.md)

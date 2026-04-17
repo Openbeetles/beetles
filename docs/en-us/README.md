@@ -2,25 +2,25 @@
 
 [Back to documentation index](../README.md)
 
-Use this page when you want the English docs set directly.
-Start with the user guides first; technical references and developer docs come later.
+Choose by what you want to do next.
 
 | Doc | When to read it |
 |-----|-----------------|
-| [configuration.md](configuration.md) | First setup, hotspot access, pairing code, config page |
-| [tools.md](tools.md) | What Beetle Agent OS can do and what you will see |
-| [llm-providers.md](llm-providers.md) | Provider IDs, `api_url` rules, fallback order |
-| [display.md](display.md) | SPI display setup and dashboard behavior |
-| [hardware.md](hardware.md) | Supported boards and common hardware issues |
-| [config-api.md](config-api.md) | Custom frontend, scripts, or third-party integration |
-| [hardware-device-config.md](hardware-device-config.md) | `hardware.json` and `device_control` |
-| [linux-release-rollback.md](linux-release-rollback.md) | Linux Agent OS, packaging, and rollback notes |
-| [architecture.md](architecture.md) | Developer-facing module layout and extension points |
+| [configuration.md](configuration.md) | First-time Beetle setup |
+| [tools.md](tools.md) | See what Beetle can help with |
+| [llm-providers.md](llm-providers.md) | Configure model providers |
+| [build-script.md](build-script.md) | Build, flash, or deploy from a terminal |
+| [hardware.md](hardware.md) | Check boards, sensors, and hardware direction |
+| [hardware-device-config.md](hardware-device-config.md) | Let Beetle control real devices |
+| [display.md](display.md) | Set up a screen |
+| [config-api.md](config-api.md) | Build your own frontend, script, or integration |
+| [architecture.md](architecture.md) | Read the code and extend Beetle |
+| [linux-release-rollback.md](linux-release-rollback.md) | Deploy Beetle on Linux |
 
 Suggested order:
 
 1. `configuration`
 2. `tools`
 3. `llm-providers`
-4. `hardware` and `display`
-5. Read `config-api`, `hardware-device-config`, `linux-release-rollback`, and `architecture` only when you integrate or develop
+4. Read `hardware` and `display` only if needed
+5. Read `config-api` and `architecture` only when you integrate or develop

@@ -1,3 +1,4 @@
+use super::driver::current_turn_scope_start;
 use super::*;
 
 const STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX: &str = "\n\n## Structured finalization correction\nThe previous structured finalization reply collapsed to empty after internal-artifact stripping. Do not output JSON, markdown fences, tool evidence tags, XML-like blocks, or system markers. Write a plain, non-empty, user-facing answer grounded only in the completed tool results already present in this conversation.";
@@ -9,25 +10,34 @@ pub(super) struct ExecutedTurn {
 
 fn foreground_action_progress_kind_for_turn(
     request_semantics: crate::agent::request_semantics::RequestSemantics,
+    has_resumeable_work: bool,
     has_tools: bool,
 ) -> Option<crate::agent::delivery::TaskActionProgressKind> {
-    use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
+    use crate::agent::request_semantics::{ExecutionPreference, ResumeRelation};
 
-    if !has_tools || request_semantics.execution_preference != ExecutionPreference::ToolFirst {
+    if !has_tools
+        || !has_resumeable_work
+        || request_semantics.execution_preference != ExecutionPreference::ToolFirst
+    {
         return None;
     }
-    match request_semantics.action_family {
-        ActionFamily::ActionRequest => {
-            Some(crate::agent::delivery::TaskActionProgressKind::Started)
+    match request_semantics.resume_relation {
+        ResumeRelation::ResumeActiveAction
+        | ResumeRelation::ConfirmActiveAction
+        | ResumeRelation::SupplyActiveActionInput => {
+            Some(crate::agent::delivery::TaskActionProgressKind::Resumed)
         }
-        ActionFamily::ActiveAction => Some(crate::agent::delivery::TaskActionProgressKind::Resumed),
-        ActionFamily::Conversation | ActionFamily::TaskExecution => None,
+        ResumeRelation::IndependentTurn
+        | ResumeRelation::DenyOrCancelActiveAction
+        | ResumeRelation::SwitchToNewRequest
+        | ResumeRelation::ResumeActiveTaskRun => None,
     }
 }
 
 fn maybe_emit_regular_foreground_action_progress(
     delivery: &mut DeliverySession<'_>,
     request_semantics: crate::agent::request_semantics::RequestSemantics,
+    has_resumeable_work: bool,
     has_tools: bool,
 ) {
     use crate::agent::delivery::TaskActionProgressKind;
@@ -35,10 +45,13 @@ fn maybe_emit_regular_foreground_action_progress(
     if delivery.report().action_progress_updates_sent > 0 {
         return;
     }
-    match foreground_action_progress_kind_for_turn(request_semantics, has_tools) {
-        Some(TaskActionProgressKind::Started) => delivery.emit_foreground_work_started(),
+    match foreground_action_progress_kind_for_turn(
+        request_semantics,
+        has_resumeable_work,
+        has_tools,
+    ) {
         Some(TaskActionProgressKind::Resumed) => delivery.emit_foreground_work_resumed(),
-        None => {}
+        None | Some(TaskActionProgressKind::Started) => {}
     }
 }
 
@@ -150,16 +163,7 @@ pub(super) fn execute_turn(
     } else {
         None
     };
-    let current_channel_enabled = channel_capability
-        .map(|entry| entry.enabled)
-        .unwrap_or(false);
-    let current_user_visible = msg.ingress == IngressKind::User
-        && current_channel_enabled
-        && msg.channel.as_ref() != crate::CHANNEL_VOICE;
-    tool_ctx.supports_current_chat_outbound_message = current_user_visible
-        && channel_capability
-            .map(|entry| entry.contract.supports_supplemental_reply)
-            .unwrap_or(false);
+    tool_ctx.supports_current_chat_outbound_message = false;
     tool_ctx.supports_explicit_outbound_message =
         msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;
     let mut delivery = DeliverySession::new(
@@ -206,6 +210,10 @@ pub(super) fn execute_turn(
     maybe_emit_regular_foreground_action_progress(
         &mut delivery,
         request_semantics,
+        active_work.is_some()
+            || active_execution_state
+                .as_ref()
+                .is_some_and(crate::memory::execution_state_has_pending_work),
         request_plan.has_tools(),
     );
     if let Some(task_execution_outcome) = try_run_task_execution(
@@ -235,6 +243,7 @@ pub(super) fn execute_turn(
     }
 
     let initial_msg_count = messages.len();
+    let current_turn_scope_start = current_turn_scope_start(&messages, initial_msg_count);
     tool_call_repeat.clear();
     let mut final_content = String::with_capacity(4096);
     let mut memory_grounding: Option<String> = None;
@@ -243,7 +252,6 @@ pub(super) fn execute_turn(
     let mut any_tool_used = false;
     let mut external_content_used = false;
     let mut recent_tool_round = RecentToolRoundState::default();
-    let mut delivered_current_chat_reply: Option<String> = None;
     let mut used_surface_finalization = false;
     let mut used_final_answer_recovery = false;
 
@@ -355,9 +363,7 @@ pub(super) fn execute_turn(
             let delivery_report = delivery.report();
             let primary_reply_already_delivered = delivery_report.current_primary_delivered;
             let tool_visible_reply_sent = delivery_report.tool_visible_updates_sent > 0;
-            if any_tool_used
-                && delivered_current_chat_reply.is_none()
-                && reply_surface.requires_structured_finalization_after_tool_success()
+            if any_tool_used && reply_surface.requires_structured_finalization_after_tool_success()
             {
                 if !content.trim().is_empty() {
                     metrics::record_tool_succeeded_final_drift();
@@ -374,6 +380,7 @@ pub(super) fn execute_turn(
                     &mut tool_ctx,
                     &system,
                     &messages,
+                    current_turn_scope_start,
                     reply_surface,
                     &content,
                     recovery_suffix_for_gate(&deliberation_gate),
@@ -398,6 +405,7 @@ pub(super) fn execute_turn(
                         &mut tool_ctx,
                         &system,
                         &messages,
+                        current_turn_scope_start,
                         structured_reply.as_str(),
                         recovery_suffix.as_str(),
                         config.llm_stream,
@@ -425,6 +433,7 @@ pub(super) fn execute_turn(
                         &mut tool_ctx,
                         &system,
                         &messages,
+                        current_turn_scope_start,
                         &content,
                         recovery_suffix.as_str(),
                         config.llm_stream,
@@ -449,6 +458,7 @@ pub(super) fn execute_turn(
                     &mut tool_ctx,
                     &system,
                     &messages,
+                    current_turn_scope_start,
                     &content,
                     combined_suffix.as_str(),
                     config.llm_stream,
@@ -503,9 +513,6 @@ pub(super) fn execute_turn(
                 &mut tool_result_user_content,
                 &mut round_evidence_lines,
             );
-            if let Some(reply) = tool_round_output.delivered_current_chat_reply {
-                delivered_current_chat_reply = Some(reply);
-            }
             if tool_round_output.round_tool_success {
                 any_tool_used = true;
             }
@@ -577,7 +584,7 @@ pub(super) fn execute_turn(
         final_content = content;
         break;
     }
-    if final_content.trim().is_empty() && any_tool_used && delivered_current_chat_reply.is_none() {
+    if final_content.trim().is_empty() && any_tool_used {
         if reply_surface.requires_structured_finalization_after_tool_success() {
             used_surface_finalization = true;
             let structured_reply = run_surface_finalization_round(
@@ -585,6 +592,7 @@ pub(super) fn execute_turn(
                 &mut tool_ctx,
                 &system,
                 &messages,
+                current_turn_scope_start,
                 reply_surface,
                 final_content.as_str(),
                 recovery_suffix_for_gate(&deliberation_gate),
@@ -607,6 +615,7 @@ pub(super) fn execute_turn(
                     &mut tool_ctx,
                     &system,
                     &messages,
+                    current_turn_scope_start,
                     structured_reply.as_str(),
                     recovery_suffix.as_str(),
                     config.llm_stream,
@@ -623,6 +632,7 @@ pub(super) fn execute_turn(
                 &mut tool_ctx,
                 &system,
                 &messages,
+                current_turn_scope_start,
                 final_content.as_str(),
                 recovery_suffix_for_gate(&deliberation_gate),
                 config.llm_stream,
@@ -631,8 +641,7 @@ pub(super) fn execute_turn(
             )?;
         }
     }
-    if delivered_current_chat_reply.is_none()
-        && final_content.trim().is_empty()
+    if final_content.trim().is_empty()
         && msg.ingress == IngressKind::User
         && msg.channel.as_ref() != CHANNEL_CRON
     {
@@ -657,11 +666,7 @@ pub(super) fn execute_turn(
         delivery.emit_foreground_work_blocked();
     }
     let streamed = delivery.finalize(&final_content);
-    let outcome = if let Some(reply) = delivered_current_chat_reply {
-        WorkerOutcome::Delivered(reply)
-    } else {
-        WorkerOutcome::Content(final_content)
-    };
+    let outcome = WorkerOutcome::Content(final_content);
     Ok(ExecutedTurn {
         outcome,
         telemetry: WorkerRunTelemetry {

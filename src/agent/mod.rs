@@ -26,8 +26,9 @@ pub use active_work::{
     REL_PATH_ACTIVE_WORKS, REL_PATH_DETACHED_WORKS,
 };
 pub(crate) use active_work::{
-    current_unix_ms, due_detached_work_records, load_active_work_for_chat,
-    sync_active_work_after_turn, upsert_detached_work_job, ActiveWorkSyncInput,
+    current_unix_ms, due_detached_work_records, has_meaningful_foreground_work_for_chat,
+    load_active_work_for_chat, sync_active_work_after_turn, upsert_detached_work_job,
+    ActiveWorkSyncInput,
 };
 pub use context::{
     build_context, ContextParams, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN,

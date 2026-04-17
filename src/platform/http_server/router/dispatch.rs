@@ -1267,7 +1267,7 @@ mod tests {
     use super::dispatch;
     use crate::bus::new_inbound_channel;
     use crate::platform::http_server::handlers::{
-        build_default_test_handler_context, HandlerContext,
+        build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
     };
     use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
@@ -1432,6 +1432,7 @@ mod tests {
 
     #[test]
     fn operator_maintenance_route_accepts_structured_runtime_request() {
+        let _guard = default_test_handler_context_guard();
         let (system_inbound_tx, system_inbound_rx, _system_inbound_depth) =
             new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let mut ctx = build_authed_ctx();

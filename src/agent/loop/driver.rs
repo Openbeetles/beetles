@@ -286,6 +286,26 @@ fn prepare_final_recovery_messages<'a>(
     Cow::Owned(recovery_messages)
 }
 
+pub(super) fn current_turn_scope_start(messages: &[Message], initial_msg_count: usize) -> usize {
+    let search_end = initial_msg_count.min(messages.len());
+    messages[..search_end]
+        .iter()
+        .rposition(|message| message.role.as_ref() == "user")
+        .unwrap_or(0)
+}
+
+fn prepare_request_scoped_final_recovery_messages<'a>(
+    messages: &'a [Message],
+    scope_start: usize,
+    draft_content: &str,
+) -> Cow<'a, [Message]> {
+    let scoped_messages = messages.get(scope_start..).unwrap_or(messages);
+    if scoped_messages.is_empty() {
+        return prepare_final_recovery_messages(messages, draft_content);
+    }
+    prepare_final_recovery_messages(scoped_messages, draft_content)
+}
+
 pub(super) fn resolve_end_turn_followup(ctx: EndTurnFollowupContext<'_>) -> Option<String> {
     if let Some(followup) = office_account_clarification_followup(ctx.messages, ctx.content) {
         return Some(end_turn_recovery_suffix(&followup));
@@ -314,6 +334,7 @@ pub(super) fn run_final_answer_recovery_round(
     tool_ctx: &mut HttpClientToolContext<'_>,
     system: &str,
     messages: &[Message],
+    scope_start: usize,
     draft_content: &str,
     recovery_suffix: &str,
     llm_stream: bool,
@@ -326,7 +347,8 @@ pub(super) fn run_final_answer_recovery_round(
         recovery_suffix,
         system_scratch,
     );
-    let recovery_messages = prepare_final_recovery_messages(messages, draft_content);
+    let recovery_messages =
+        prepare_request_scoped_final_recovery_messages(messages, scope_start, draft_content);
     let t0 = metrics::record_llm_call_start();
     let llm_round_start = Instant::now();
     let response = if llm_stream {
@@ -414,6 +436,7 @@ pub(super) fn run_surface_finalization_round(
     tool_ctx: &mut HttpClientToolContext<'_>,
     system: &str,
     messages: &[Message],
+    scope_start: usize,
     reply_surface: ReplySurface,
     draft_content: &str,
     contract_suffix: &str,
@@ -429,7 +452,8 @@ pub(super) fn run_surface_finalization_round(
     })?;
     let finalization_system =
         prepare_system_with_two_suffixes(system, surface_suffix, contract_suffix, system_scratch);
-    let finalization_messages = prepare_final_recovery_messages(messages, draft_content);
+    let finalization_messages =
+        prepare_request_scoped_final_recovery_messages(messages, scope_start, draft_content);
     let t0 = metrics::record_llm_call_start();
     let llm_round_start = Instant::now();
     let response = if llm_stream {

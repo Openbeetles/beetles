@@ -3,11 +3,10 @@ use crate::error::Result;
 use crate::i18n::Locale as UiLocale;
 use crate::memory::MemorySystemKind;
 use crate::metrics;
-use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
+use crate::tools::{ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 const EDIT_THROTTLE_MS: u64 = 500;
 const MAX_EDIT_FAILURES: u8 = 3;
@@ -15,15 +14,6 @@ const MAX_QUEUED_VISIBLE_UPDATES: u8 = 4;
 const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
-
-#[cfg(test)]
-const COMPACT_PRESENCE_PULSE_SCHEDULE_MS: [u64; 1] = [20];
-#[cfg(test)]
-const RICH_PRESENCE_PULSE_SCHEDULE_MS: [u64; 2] = [20, 60];
-#[cfg(not(test))]
-const COMPACT_PRESENCE_PULSE_SCHEDULE_MS: [u64; 1] = [3000];
-#[cfg(not(test))]
-const RICH_PRESENCE_PULSE_SCHEDULE_MS: [u64; 2] = [3000, 9000];
 
 /// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
 /// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
@@ -57,7 +47,7 @@ pub(crate) struct DeliverySession<'a> {
     outbound_tx: &'a OutboundTx,
     req_id: &'a str,
     policy: DeliveryPolicy,
-    presence_contract: PresencePulseContract,
+    visible_update_contract: VisibleUpdateContract,
 }
 
 enum DeliveryMode<'a> {
@@ -110,32 +100,11 @@ pub(crate) enum ToolIntentDelivery {
 
 struct QueuedDeliveryShared {
     visible_updates_sent: AtomicU8,
-    presence_pulses_canceled: AtomicBool,
-    presence_pulses_sent: AtomicU8,
-}
-
-struct PresencePulseJob {
-    stage_idx: u8,
-    due_at: Instant,
-    outbound_tx: OutboundTx,
-    channel: Arc<str>,
-    chat_id: Arc<str>,
-    is_group: bool,
-    req_id: String,
-    content: String,
-    shared: Weak<QueuedDeliveryShared>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PresencePulseProfile {
-    Compact,
-    Rich,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct PresencePulseContract {
+struct VisibleUpdateContract {
     loc: UiLocale,
-    profile: PresencePulseProfile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,7 +113,6 @@ enum VisibleUpdateKind {
     ToolProgress,
     ActionProgress,
     TerminalProgress,
-    NeutralSupplemental,
     PartialDraft,
 }
 
@@ -175,10 +143,10 @@ impl<'a> DeliverySession<'a> {
         outbound_tx: &'a OutboundTx,
         editor: Option<&'a (dyn StreamEditor + Send + Sync)>,
         channel_capability: Option<crate::ChannelCapabilityEntry>,
-        memory_system_kind: MemorySystemKind,
+        _memory_system_kind: MemorySystemKind,
         loc: UiLocale,
     ) -> Self {
-        let presence_contract = PresencePulseContract::new(memory_system_kind, loc);
+        let visible_update_contract = VisibleUpdateContract::new(loc);
         let policy = channel_capability
             .filter(|entry| entry.enabled && msg.ingress == IngressKind::User)
             .map(|entry| DeliveryPolicy {
@@ -214,22 +182,9 @@ impl<'a> DeliverySession<'a> {
                 lifecycle: DeliveryLifecycle::Open,
                 last_visible_text: String::new(),
                 report: DeliveryReport::default(),
-                shared: if policy.supports_current_supplemental {
-                    spawn_presence_pulses(
-                        outbound_tx.clone(),
-                        Arc::clone(&msg.channel),
-                        Arc::clone(&msg.chat_id),
-                        msg.is_group,
-                        req_id,
-                        presence_contract,
-                    )
-                } else {
-                    Arc::new(QueuedDeliveryShared {
-                        visible_updates_sent: AtomicU8::new(0),
-                        presence_pulses_canceled: AtomicBool::new(true),
-                        presence_pulses_sent: AtomicU8::new(0),
-                    })
-                },
+                shared: Arc::new(QueuedDeliveryShared {
+                    visible_updates_sent: AtomicU8::new(0),
+                }),
             })
         };
         Self {
@@ -237,7 +192,7 @@ impl<'a> DeliverySession<'a> {
             outbound_tx,
             req_id,
             policy,
-            presence_contract,
+            visible_update_contract,
         }
     }
 
@@ -245,7 +200,7 @@ impl<'a> DeliverySession<'a> {
         match self.mode {
             DeliveryMode::Silent => DeliveryReport::default(),
             DeliveryMode::Edit(ref delivery) => delivery.report,
-            DeliveryMode::Queued(ref delivery) => delivery.report(),
+            DeliveryMode::Queued(ref delivery) => delivery.report,
         }
     }
 
@@ -281,7 +236,7 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         let text = normalize_visible_update(
-            &self.presence_contract.task_planner_progress(),
+            &self.visible_update_contract.task_planner_progress(),
             MAX_QUEUED_PROGRESS_CHARS,
         );
         if text.is_empty() {
@@ -303,7 +258,9 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         let text = normalize_visible_update(
-            &self.presence_contract.tool_progress(name, index, total),
+            &self
+                .visible_update_contract
+                .tool_progress(name, index, total),
             MAX_QUEUED_PROGRESS_CHARS,
         );
         if text.is_empty() {
@@ -325,7 +282,7 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         let text = normalize_visible_update(
-            &self.presence_contract.task_action_progress(kind),
+            &self.visible_update_contract.task_action_progress(kind),
             MAX_QUEUED_PROGRESS_CHARS,
         );
         if text.is_empty() {
@@ -342,10 +299,6 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
-    pub(crate) fn emit_foreground_work_started(&mut self) {
-        self.emit_task_action_progress(TaskActionProgressKind::Started);
-    }
-
     pub(crate) fn emit_foreground_work_resumed(&mut self) {
         self.emit_task_action_progress(TaskActionProgressKind::Resumed);
     }
@@ -355,7 +308,7 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         let text = normalize_visible_update(
-            &self.presence_contract.task_terminal_progress(kind),
+            &self.visible_update_contract.task_terminal_progress(kind),
             MAX_QUEUED_PROGRESS_CHARS,
         );
         if text.is_empty() {
@@ -390,7 +343,7 @@ impl<'a> DeliverySession<'a> {
             }
             // Non-edit channels cannot revise previously sent text, so exposing ToolUse-time
             // assistant drafts here tends to leak unfinished step plans to the user.
-            // Keep queued delivery runtime-controlled: presence pulses + tool progress + final answer.
+            // Keep queued delivery runtime-controlled: typed progress updates + final answer.
             DeliveryMode::Queued(_) => {}
             DeliveryMode::Silent => {}
         }
@@ -400,17 +353,13 @@ impl<'a> DeliverySession<'a> {
     pub(crate) fn finalize(&mut self, _final_content: &str) -> bool {
         if !self.policy.supports_current_primary {
             if let DeliveryMode::Queued(ref mut delivery) = self.mode {
-                delivery.cancel_presence_pulses();
                 delivery.finalize();
             }
             return false;
         }
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => delivery.finalize(_final_content),
-            DeliveryMode::Queued(ref mut delivery) => {
-                delivery.cancel_presence_pulses();
-                delivery.finalize()
-            }
+            DeliveryMode::Queued(ref mut delivery) => delivery.finalize(),
             DeliveryMode::Silent => false,
         }
     }
@@ -426,42 +375,10 @@ impl<'a> DeliverySession<'a> {
             return Ok(ToolIntentDelivery::Suppressed);
         }
         match &intent.target {
-            ToolOutboundTarget::CurrentChat => match intent.delivery_kind {
-                ToolOutboundDeliveryKind::Primary => {
-                    self.bump_tool_intent_suppressed();
-                    Ok(ToolIntentDelivery::Suppressed)
-                }
-                ToolOutboundDeliveryKind::Supplemental => {
-                    if !self.policy.supports_current_supplemental {
-                        self.bump_tool_intent_suppressed();
-                        return Ok(ToolIntentDelivery::Suppressed);
-                    }
-                    match self.mode {
-                        DeliveryMode::Edit(ref mut delivery) => {
-                            if delivery.deliver_current_supplemental(&text)? {
-                                self.bump_tool_visible_update(false);
-                                Ok(ToolIntentDelivery::VisibleUpdate)
-                            } else {
-                                self.bump_tool_intent_suppressed();
-                                Ok(ToolIntentDelivery::Suppressed)
-                            }
-                        }
-                        DeliveryMode::Queued(ref mut delivery) => {
-                            if delivery.deliver_current_supplemental(&text) {
-                                self.bump_tool_visible_update(false);
-                                Ok(ToolIntentDelivery::VisibleUpdate)
-                            } else {
-                                self.bump_tool_intent_suppressed();
-                                Ok(ToolIntentDelivery::Suppressed)
-                            }
-                        }
-                        DeliveryMode::Silent => {
-                            self.bump_tool_intent_suppressed();
-                            Ok(ToolIntentDelivery::Suppressed)
-                        }
-                    }
-                }
-            },
+            ToolOutboundTarget::CurrentChat => {
+                self.bump_tool_intent_suppressed();
+                Ok(ToolIntentDelivery::Suppressed)
+            }
             ToolOutboundTarget::Explicit { channel, chat_id } => {
                 if self.is_closed() {
                     self.bump_tool_intent_suppressed();
@@ -546,11 +463,7 @@ impl<'a> DeliverySession<'a> {
 }
 
 impl Drop for DeliverySession<'_> {
-    fn drop(&mut self) {
-        if let DeliveryMode::Queued(ref delivery) = self.mode {
-            delivery.cancel_presence_pulses();
-        }
-    }
+    fn drop(&mut self) {}
 }
 
 impl<'a> EditDelivery<'a> {
@@ -599,28 +512,6 @@ impl<'a> EditDelivery<'a> {
         self.lifecycle = DeliveryLifecycle::Finalized;
         self.report.finalize_streamed = streamed;
         streamed
-    }
-
-    fn deliver_current_supplemental(&mut self, content: &str) -> Result<bool> {
-        if self.lifecycle.is_closed() {
-            return Ok(false);
-        }
-        let before = self.last_visible_text.clone();
-        if self.message_id.is_none() {
-            self.send_initial(content);
-        } else {
-            self.edit_existing(content);
-        }
-        if self.last_visible_text == before {
-            return Ok(false);
-        }
-        if self.last_visible_text != content {
-            return Err(crate::error::Error::config(
-                "current_chat_delivery",
-                "failed to deliver current-chat supplemental update via stream editor",
-            ));
-        }
-        Ok(true)
     }
 
     fn send_initial(&mut self, content: &str) {
@@ -686,12 +577,6 @@ impl<'a> EditDelivery<'a> {
 }
 
 impl<'a> QueuedDelivery<'a> {
-    fn cancel_presence_pulses(&self) {
-        self.shared
-            .presence_pulses_canceled
-            .store(true, Ordering::Relaxed);
-    }
-
     fn emit(&mut self, content: &str, kind: VisibleUpdateKind) {
         if self.lifecycle.is_closed() {
             return;
@@ -725,15 +610,6 @@ impl<'a> QueuedDelivery<'a> {
         }
     }
 
-    fn deliver_current_supplemental(&mut self, content: &str) -> bool {
-        if self.lifecycle.is_closed() {
-            return false;
-        }
-        let before = self.last_visible_text.clone();
-        self.emit(content, VisibleUpdateKind::NeutralSupplemental);
-        self.last_visible_text != before
-    }
-
     fn finalize(&mut self) -> bool {
         match self.lifecycle {
             DeliveryLifecycle::Finalized => false,
@@ -765,53 +641,11 @@ impl<'a> QueuedDelivery<'a> {
             }
         }
     }
-
-    fn report(&self) -> DeliveryReport {
-        let mut report = self.report;
-        report.presence_pulses_sent = self.shared.presence_pulses_sent.load(Ordering::Relaxed);
-        report
-    }
 }
 
-impl PresencePulseProfile {
-    fn for_memory_system_kind(memory_system_kind: MemorySystemKind) -> Self {
-        match memory_system_kind {
-            MemorySystemKind::EspCompact => Self::Compact,
-            MemorySystemKind::LinuxFull => Self::Rich,
-        }
-    }
-}
-
-impl PresencePulseContract {
-    fn new(memory_system_kind: MemorySystemKind, loc: UiLocale) -> Self {
-        Self {
-            loc,
-            profile: PresencePulseProfile::for_memory_system_kind(memory_system_kind),
-        }
-    }
-
-    fn scheduled_text(self, stage_idx: u8) -> Option<String> {
-        match (self.loc, self.profile, stage_idx) {
-            (UiLocale::Zh, PresencePulseProfile::Rich, 0) => {
-                Some("已接到，继续处理中 🪲".to_string())
-            }
-            (UiLocale::Zh, PresencePulseProfile::Rich, 1) => {
-                Some("这轮还在整理，结果马上接上 (｀･ω･´)ゞ".to_string())
-            }
-            (UiLocale::Zh, PresencePulseProfile::Compact, 0) => {
-                Some("继续处理中，马上接上 🪲".to_string())
-            }
-            (UiLocale::En, PresencePulseProfile::Rich, 0) => {
-                Some("Turn received, still working 🪲".to_string())
-            }
-            (UiLocale::En, PresencePulseProfile::Rich, 1) => {
-                Some("Still organizing this turn, reply coming up (｀･ω･´)ゞ".to_string())
-            }
-            (UiLocale::En, PresencePulseProfile::Compact, 0) => {
-                Some("Still working, reply coming up 🪲".to_string())
-            }
-            _ => None,
-        }
+impl VisibleUpdateContract {
+    fn new(loc: UiLocale) -> Self {
+        Self { loc }
     }
 
     fn tool_progress(self, name: &str, index: usize, total: usize) -> String {
@@ -907,7 +741,6 @@ fn record_visible_update_kind(report: &mut DeliveryReport, kind: VisibleUpdateKi
             report.terminal_progress_updates_sent =
                 report.terminal_progress_updates_sent.saturating_add(1);
         }
-        VisibleUpdateKind::NeutralSupplemental => {}
         VisibleUpdateKind::PartialDraft => {
             report.partial_updates_sent = report.partial_updates_sent.saturating_add(1);
         }
@@ -1018,130 +851,6 @@ fn send_visible_update_explicit(
     }
 }
 
-fn spawn_presence_pulses(
-    outbound_tx: OutboundTx,
-    channel: Arc<str>,
-    chat_id: Arc<str>,
-    is_group: bool,
-    req_id: &str,
-    presence_contract: PresencePulseContract,
-) -> Arc<QueuedDeliveryShared> {
-    let shared = Arc::new(QueuedDeliveryShared {
-        visible_updates_sent: AtomicU8::new(0),
-        presence_pulses_canceled: AtomicBool::new(false),
-        presence_pulses_sent: AtomicU8::new(0),
-    });
-    for (stage_idx, delay_ms) in presence_pulse_schedule_ms(presence_contract.profile)
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        let Some(content) = presence_contract.scheduled_text(stage_idx as u8) else {
-            continue;
-        };
-        let job = PresencePulseJob {
-            stage_idx: stage_idx as u8,
-            due_at: Instant::now() + Duration::from_millis(delay_ms),
-            outbound_tx: outbound_tx.clone(),
-            channel: Arc::clone(&channel),
-            chat_id: Arc::clone(&chat_id),
-            is_group,
-            req_id: req_id.to_string(),
-            content,
-            shared: Arc::downgrade(&shared),
-        };
-        if !crate::runtime::schedule_delayed_task(
-            job.due_at,
-            Box::new(move || fire_presence_pulse_job(job)),
-        ) {
-            log::warn!(
-                "[agent_delivery] presence pulse skipped stage={} queue full",
-                stage_idx
-            );
-            break;
-        }
-    }
-    shared
-}
-
-fn fire_presence_pulse_job(job: PresencePulseJob) {
-    let Some(shared) = job.shared.upgrade() else {
-        return;
-    };
-    if shared.presence_pulses_canceled.load(Ordering::Relaxed) {
-        return;
-    }
-    if job.stage_idx == 0 && shared.visible_updates_sent.load(Ordering::Relaxed) > 0 {
-        return;
-    }
-    if !try_claim_shared_visible_slot(&shared) {
-        return;
-    }
-    if !should_send_presence_pulse_after_claim(&shared) {
-        return;
-    }
-    if send_visible_update(
-        &job.outbound_tx,
-        &job.channel,
-        &job.chat_id,
-        job.is_group,
-        &job.req_id,
-        &job.content,
-    )
-    .is_err()
-    {
-        shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
-    } else {
-        shared.presence_pulses_sent.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-fn try_claim_shared_visible_slot(shared: &QueuedDeliveryShared) -> bool {
-    loop {
-        let current = shared.visible_updates_sent.load(Ordering::Relaxed);
-        if current >= MAX_QUEUED_VISIBLE_UPDATES {
-            return false;
-        }
-        if shared
-            .visible_updates_sent
-            .compare_exchange(
-                current,
-                current.saturating_add(1),
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .is_ok()
-        {
-            return true;
-        }
-    }
-}
-
-fn should_send_presence_pulse_after_claim(shared: &QueuedDeliveryShared) -> bool {
-    if shared.presence_pulses_canceled.load(Ordering::Relaxed) {
-        shared.visible_updates_sent.fetch_sub(1, Ordering::Relaxed);
-        return false;
-    }
-    true
-}
-
-#[cfg(test)]
-fn presence_pulse_initial_delay() -> std::time::Duration {
-    Duration::from_millis(RICH_PRESENCE_PULSE_SCHEDULE_MS[0])
-}
-
-#[cfg(test)]
-fn presence_pulse_followup_delay() -> std::time::Duration {
-    Duration::from_millis(RICH_PRESENCE_PULSE_SCHEDULE_MS[1])
-}
-
-fn presence_pulse_schedule_ms(profile: PresencePulseProfile) -> &'static [u64] {
-    match profile {
-        PresencePulseProfile::Compact => &COMPACT_PRESENCE_PULSE_SCHEDULE_MS,
-        PresencePulseProfile::Rich => &RICH_PRESENCE_PULSE_SCHEDULE_MS,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1247,17 +956,6 @@ mod tests {
         crate::runtime::delayed_task::delayed_task_test_guard()
     }
 
-    fn service_delayed_tasks_in_normal_mode() {
-        crate::state::set_voice_exclusive_active(false);
-        crate::state::set_background_maintenance_active(false);
-        crate::state::set_config_plane_active(false);
-        crate::state::set_boot_phase_active(false);
-        crate::state::set_pairing_state_known(false);
-        crate::state::set_pairing_required(false);
-        crate::state::set_recovery_safe_mode_active(false);
-        crate::runtime::service_delayed_tasks();
-    }
-
     #[test]
     fn queued_delivery_emits_distinct_updates_with_cap() {
         let _guard = delayed_task_test_lock();
@@ -1310,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_without_supplemental_contract_suppresses_progress_and_presence_pulse() {
+    fn queued_delivery_without_supplemental_contract_suppresses_progress_updates() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1326,8 +1024,6 @@ mod tests {
         );
 
         delivery.emit_progress("处理中");
-        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
 
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().presence_pulses_sent, 0);
@@ -1383,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_accepts_current_supplemental_tool_intent() {
+    fn queued_delivery_suppresses_current_chat_tool_intents() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1398,46 +1094,21 @@ mod tests {
             UiLocale::Zh,
         );
 
-        let outcome = delivery
+        let supplemental = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
                 target: ToolOutboundTarget::CurrentChat,
                 delivery_kind: ToolOutboundDeliveryKind::Supplemental,
                 content: "补充说明".to_string(),
             })
             .expect("supplemental intent");
-
-        assert_eq!(outcome, ToolIntentDelivery::VisibleUpdate);
-        let outbound = outbound_rx.try_recv().expect("outbound");
-        assert_eq!(outbound.content, "补充说明");
-        assert_eq!(delivery.report().tool_outbound_intents_seen, 1);
-        assert_eq!(delivery.report().tool_visible_updates_sent, 1);
-        assert_eq!(delivery.report().tool_outbound_suppressed, 0);
-    }
-
-    #[test]
-    fn queued_delivery_suppresses_current_primary_tool_intent() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        let first = delivery
+        let primary = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
                 target: ToolOutboundTarget::CurrentChat,
                 delivery_kind: ToolOutboundDeliveryKind::Primary,
                 content: "主答复".to_string(),
             })
             .expect("suppressed primary intent");
-        let second = delivery
+        let explicit = delivery
             .deliver_tool_outbound_intent(&ToolOutboundIntent {
                 target: ToolOutboundTarget::Explicit {
                     channel: "telegram".to_string(),
@@ -1446,18 +1117,19 @@ mod tests {
                 delivery_kind: ToolOutboundDeliveryKind::Supplemental,
                 content: "不应再发送".to_string(),
             })
-            .expect("suppressed explicit intent");
+            .expect("explicit intent");
 
-        assert_eq!(first, ToolIntentDelivery::Suppressed);
-        assert_eq!(second, ToolIntentDelivery::VisibleUpdate);
+        assert_eq!(supplemental, ToolIntentDelivery::Suppressed);
+        assert_eq!(primary, ToolIntentDelivery::Suppressed);
+        assert_eq!(explicit, ToolIntentDelivery::VisibleUpdate);
         let outbound = outbound_rx.try_recv().expect("explicit outbound");
         assert_eq!(outbound.channel.as_ref(), "telegram");
         assert_eq!(outbound.chat_id.as_ref(), "chat-2");
         assert_eq!(outbound.content, "不应再发送");
         assert!(outbound_rx.try_recv().is_err());
-        assert_eq!(delivery.report().tool_outbound_intents_seen, 2);
+        assert_eq!(delivery.report().tool_outbound_intents_seen, 3);
         assert_eq!(delivery.report().tool_visible_updates_sent, 1);
-        assert_eq!(delivery.report().tool_outbound_suppressed, 1);
+        assert_eq!(delivery.report().tool_outbound_suppressed, 2);
         assert!(!delivery.report().current_primary_delivered);
     }
 
@@ -1573,37 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_sends_staged_presence_pulses_for_long_turn() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg_with_group("qq_channel", true);
-        let delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-        std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-
-        let first = outbound_rx.try_recv().expect("first pulse");
-        let second = outbound_rx.try_recv().expect("second pulse");
-        assert_eq!(first.content, "已接到，继续处理中 🪲");
-        assert_eq!(second.content, "这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
-        assert!(first.is_group);
-        assert!(second.is_group);
-        assert_eq!(delivery.report().presence_pulses_sent, 2);
-    }
-
-    #[test]
-    fn queued_delivery_tool_progress_uses_presence_copy() {
+    fn queued_delivery_tool_progress_uses_typed_progress_copy() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1696,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_foreground_work_started_uses_action_progress_contract() {
+    fn queued_delivery_started_action_progress_uses_action_progress_contract() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1711,7 +1353,7 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_foreground_work_started();
+        delivery.emit_task_action_progress(TaskActionProgressKind::Started);
 
         let outbound = outbound_rx.try_recv().expect("action pulse");
         assert_eq!(outbound.content, "已进入任务执行，继续推进 🪲");
@@ -1727,7 +1369,7 @@ mod tests {
     }
 
     #[test]
-    fn presence_pulse_is_not_the_only_signal_when_active_work_starts() {
+    fn action_progress_reports_no_implicit_presence_pulses() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1810,129 +1452,5 @@ mod tests {
                 ..DeliveryReport::default()
             }
         );
-    }
-
-    #[test]
-    fn compact_profile_sends_single_presence_pulse() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::EspCompact,
-            UiLocale::Zh,
-        );
-
-        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-        std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-
-        let first = outbound_rx.try_recv().expect("compact pulse");
-        assert_eq!(first.content, "继续处理中，马上接上 🪲");
-        assert!(outbound_rx.try_recv().is_err());
-        assert_eq!(delivery.report().presence_pulses_sent, 1);
-    }
-
-    #[test]
-    fn tool_progress_suppresses_initial_presence_pulse_but_keeps_followup() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        delivery.emit_tool_progress("board_info", 0, 1);
-        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-        std::thread::sleep(presence_pulse_followup_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-
-        let first = outbound_rx.try_recv().expect("tool progress");
-        let second = outbound_rx.try_recv().expect("followup pulse");
-        assert_eq!(first.content, "正在执行 board_info，继续推进 🪲");
-        assert_eq!(second.content, "这轮还在整理，结果马上接上 (｀･ω･´)ゞ");
-        assert!(outbound_rx.try_recv().is_err());
-        assert_eq!(delivery.report().presence_pulses_sent, 1);
-    }
-
-    #[test]
-    fn queued_delivery_finalize_cancels_presence_pulses() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        let streamed = delivery.finalize("最终答案");
-        assert!(!streamed);
-        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-
-        assert!(outbound_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn queued_delivery_drop_cancels_presence_pulses() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        {
-            let _delivery = DeliverySession::new(
-                &msg,
-                "req-1",
-                &outbound_tx,
-                None,
-                Some(capability_entry("qq_channel", true, true, false)),
-                MemorySystemKind::LinuxFull,
-                UiLocale::Zh,
-            );
-        }
-
-        std::thread::sleep(presence_pulse_initial_delay() + std::time::Duration::from_millis(20));
-        service_delayed_tasks_in_normal_mode();
-
-        assert!(outbound_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn presence_pulse_rechecks_cancel_after_claim() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let shared = Arc::new(QueuedDeliveryShared {
-            visible_updates_sent: AtomicU8::new(0),
-            presence_pulses_canceled: AtomicBool::new(false),
-            presence_pulses_sent: AtomicU8::new(0),
-        });
-
-        assert!(try_claim_shared_visible_slot(&shared));
-        shared
-            .presence_pulses_canceled
-            .store(true, Ordering::Relaxed);
-
-        assert!(!should_send_presence_pulse_after_claim(&shared));
-        assert_eq!(shared.visible_updates_sent.load(Ordering::Relaxed), 0);
     }
 }

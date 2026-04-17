@@ -226,6 +226,7 @@ fn is_lane_background_job(msg: &PcMsg) -> bool {
         || is_idle_memory_forge_job(msg)
         || is_self_runtime_job(msg)
         || is_operator_maintenance_job(msg)
+        || is_detached_work_wake(msg)
 }
 
 const BACKGROUND_DEFER_DELAY_MS: u64 = 1_000;
@@ -607,7 +608,6 @@ struct PreparedWorkerConversation {
 struct ToolCallExecutionResult {
     result_owned: String,
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
-    delivered_reply: Option<String>,
     call_succeeded: bool,
 }
 
@@ -617,7 +617,6 @@ struct ToolUseRoundExecutionOutput {
     round_failure_summary: ToolFailureSummary,
     used_external_content: bool,
     omitted_evidence_count: usize,
-    delivered_current_chat_reply: Option<String>,
 }
 
 fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
@@ -1613,10 +1612,9 @@ struct AdmissionDeferContext<'a> {
     low_mem_defer_log: &'a mut Option<(Arc<str>, Instant)>,
 }
 
-/// run_worker_path 返回：正常内容或已交付的主回复文案。
+/// run_worker_path 返回：当前轮 canonical final reply text。
 pub enum WorkerOutcome {
     Content(String),
-    Delivered(String),
 }
 
 #[derive(Default)]
@@ -2096,6 +2094,31 @@ mod tests {
                 .expect("queued record")
                 .state,
             crate::agent::DetachedWorkState::Queued
+        );
+    }
+
+    #[test]
+    fn detached_work_wake_messages_are_lane_background_jobs() {
+        let wake = crate::agent::DetachedWorkWake {
+            key: crate::agent::DetachedWorkKey::new(
+                "qq_channel",
+                "chat-1",
+                crate::agent::DetachedJobKind::PostReplyMaintenance,
+            ),
+            revision: 1,
+        };
+        let msg = PcMsg::new_system(
+            CHANNEL_DETACHED_WORK_WAKE,
+            "chat-1",
+            serde_json::to_string(&wake).expect("serialize wake"),
+        )
+        .expect("build detached work wake");
+
+        assert!(is_detached_work_wake(&msg));
+        assert!(is_lane_background_job(&msg));
+        assert_eq!(
+            classify_system_work(msg.channel.as_ref(), msg.ingress),
+            crate::runtime::system_work::SystemWorkClass::Maintenance
         );
     }
 
@@ -3561,9 +3584,7 @@ mod tests {
         let final_recovery_used = observed
             .iter()
             .any(|request| request.system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
-        let outcome_text = match outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(outcome_text) = outcome;
         let llm_calls = observed.len();
         let outcome_fragment_present = outcome_text.contains(case.expected_outcome_fragment);
         let passed = llm_calls == case.expected_llm_calls
@@ -3971,6 +3992,7 @@ mod tests {
             &mut tool_ctx,
             "base system",
             &messages,
+            0,
             "",
             recovery_suffix,
             false,
@@ -4027,6 +4049,7 @@ mod tests {
             &mut tool_ctx,
             "base system",
             &messages,
+            0,
             "我来总结一下当前情况。",
             "\n\n## EndTurn correction\n直接回答最终结论。",
             false,
@@ -4046,7 +4069,77 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_keeps_canonical_reply_when_message_tool_requests_current_primary() {
+    fn final_answer_recovery_round_scopes_context_to_current_turn() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = RecoveryStubLlm {
+            observed: Arc::clone(&observed),
+            response: LlmResponse {
+                content: "当前轮最终答案".to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            },
+        };
+        let mut http = DummyPlatformHttp;
+        let config = test_agent_loop_config();
+        let mut tool_ctx = HttpClientToolContext {
+            http: &mut http,
+            chat_id: Some(Arc::from("chat-1")),
+            ingress: crate::bus::IngressKind::User,
+            channel: Some(Arc::from("qq_channel")),
+            tool_registry: None,
+            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
+            supports_current_chat_outbound_message: false,
+            supports_explicit_outbound_message: false,
+            outbound_message_budget: 0,
+            outbound_message_count: 0,
+            locale: UiLocale::Zh,
+        };
+        let messages = vec![
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "旧问题".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("assistant"),
+                content: "旧答复".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "请继续当前邮件配置".to_string(),
+            },
+            Message {
+                role: Cow::Borrowed("user"),
+                content: "Tool results:\n<tool_result id=\"call_1\" tool=\"office_status\" status=\"ok\">...</tool_result>".to_string(),
+            },
+        ];
+        let mut latency = WorkerLatency::default();
+        let mut system_scratch = String::new();
+
+        let _ = run_final_answer_recovery_round(
+            &llm,
+            &mut tool_ctx,
+            "base system",
+            &messages,
+            2,
+            "",
+            "\n\n## EndTurn correction\n只基于当前请求和当前工具结果回答。",
+            false,
+            &mut latency,
+            &mut system_scratch,
+        )
+        .expect("recovery round should succeed");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].message_count, 2);
+        assert_eq!(
+            observed[0].last_message_content.as_deref(),
+            Some("Tool results:\n<tool_result id=\"call_1\" tool=\"office_status\" status=\"ok\">...</tool_result>")
+        );
+    }
+
+    #[test]
+    fn execute_turn_keeps_canonical_reply_when_message_tool_targets_current_chat_explicitly() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
@@ -4055,7 +4148,7 @@ mod tests {
                     tool_calls: Some(vec![crate::llm::ToolCall {
                         id: "call_1".to_string(),
                         name: "message".to_string(),
-                        input: r#"{"content":"工具主答复","delivery_kind":"primary"}"#.to_string(),
+                        input: r#"{"content":"工具主答复","channel":"qq_channel","chat_id":"chat-1","delivery_kind":"primary"}"#.to_string(),
                     }]),
                 },
                 LlmResponse {
@@ -4382,7 +4475,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
+            WorkerOutcome::Content(ref text)
                 if text == "ESP 主回复"
         ));
         assert_eq!(
@@ -5326,9 +5419,7 @@ mod tests {
         )
         .expect("execute turn");
 
-        let delivered = match outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = outcome;
         assert_eq!(delivered, "你好！很高兴见到你。有什么我可以帮你的吗？");
         assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
         assert!(!telemetry.used_surface_finalization);
@@ -5600,7 +5691,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_action_request_without_tool_use_emits_started_and_blocked_progress() {
+    fn execute_turn_action_request_without_tool_use_avoids_fake_started_and_blocked_progress() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![
@@ -5654,24 +5745,22 @@ mod tests {
         )
         .expect("execute turn");
 
-        let delivered = match executed.outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = executed.outcome;
         assert_eq!(delivered, "请先提供 QQ 邮箱的授权码，我才能继续配置。");
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
         assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
         assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
         assert_eq!(
             executed.telemetry.delivery.terminal_progress_updates_sent,
-            1
+            0
         );
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 2, "{observed:#?}");
     }
 
     #[test]
-    fn execute_turn_action_request_without_tool_use_keeps_truth_guard_after_started_progress() {
+    fn execute_turn_action_request_without_tool_use_uses_receipt_only_before_truth_guard() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![
@@ -5744,8 +5833,8 @@ mod tests {
             delivered,
             "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。"
         );
-        assert_eq!(finalized.delivery.progress_updates_sent, 1);
-        assert_eq!(finalized.delivery.action_progress_updates_sent, 1);
+        assert_eq!(finalized.delivery.progress_updates_sent, 0);
+        assert_eq!(finalized.delivery.action_progress_updates_sent, 0);
         assert_eq!(finalized.delivery.tool_progress_updates_sent, 0);
         assert_eq!(finalized.delivery.terminal_progress_updates_sent, 0);
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
@@ -5821,9 +5910,7 @@ mod tests {
         )
         .expect("execute turn");
 
-        let delivered = match executed.outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = executed.outcome;
         assert_eq!(delivered, "请把 SMTP 授权码也发我，我才能继续配置。");
         assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
         assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
@@ -5912,9 +5999,9 @@ mod tests {
         .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 2);
+        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 1);
         assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 1);
+        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
         assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 1);
         assert_eq!(
             executed.telemetry.delivery.terminal_progress_updates_sent,
@@ -6229,9 +6316,7 @@ mod tests {
         )
         .expect("execute turn");
 
-        let delivered = match outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = outcome;
         assert_eq!(
             delivered,
             "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
@@ -6299,9 +6384,7 @@ mod tests {
         )
         .expect("execute turn");
 
-        let delivered = match outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = outcome;
         assert_eq!(
             delivered,
             "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
@@ -6376,9 +6459,7 @@ mod tests {
         )
         .expect("execute turn");
 
-        let delivered = match outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = outcome;
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 4, "{:#?}", observed);
         assert!(
@@ -6591,9 +6672,7 @@ mod tests {
         )
         .expect("second execute turn");
 
-        let delivered = match second_outcome {
-            WorkerOutcome::Content(text) | WorkerOutcome::Delivered(text) => text,
-        };
+        let WorkerOutcome::Content(delivered) = second_outcome;
         assert_eq!(delivered, "已切到 Work 邮箱，并拿到 1 封邮件。");
         assert_eq!(
             second_telemetry.request_semantics.action_family,
@@ -6819,7 +6898,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            WorkerOutcome::Content(ref text) | WorkerOutcome::Delivered(ref text)
+            WorkerOutcome::Content(ref text)
                 if text == "系统信息属于内部运行机制，为了保护持续性和稳定性，这部分内容不对外公开。"
         ));
         assert!(!telemetry.used_surface_finalization);
@@ -7024,7 +7103,7 @@ mod tests {
                         tool_calls: Some(vec![crate::llm::ToolCall {
                             id: "call_1".to_string(),
                             name: "message".to_string(),
-                            input: r#"{"content":"工具主答复","delivery_kind":"primary"}"#
+                            input: r#"{"content":"工具主答复","channel":"qq_channel","chat_id":"chat-2","delivery_kind":"primary"}"#
                                 .to_string(),
                         }]),
                     },
@@ -7055,7 +7134,7 @@ mod tests {
                         tool_calls: Some(vec![crate::llm::ToolCall {
                             id: "call_1".to_string(),
                             name: "message".to_string(),
-                            input: r#"{"content":"补充消息","delivery_kind":"supplemental"}"#
+                            input: r#"{"content":"补充消息","channel":"qq_channel","chat_id":"chat-2","delivery_kind":"supplemental"}"#
                                 .to_string(),
                         }]),
                     },

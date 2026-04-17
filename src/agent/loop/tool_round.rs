@@ -30,7 +30,6 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(&message)),
         failure_kind: Some(assessment.kind),
-        delivered_reply: None,
         call_succeeded: false,
     }
 }
@@ -63,7 +62,6 @@ fn capability_blocked_tool_execution_result(
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&payload.to_string()),
         failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Capability),
-        delivered_reply: None,
         call_succeeded: false,
     }
 }
@@ -75,7 +73,6 @@ fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(reason)),
         failure_kind: Some(assessment.kind),
-        delivered_reply: None,
         call_succeeded: false,
     }
 }
@@ -104,7 +101,6 @@ fn outbound_error_tool_execution_result(
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
         failure_kind: Some(assessment.kind),
-        delivered_reply: None,
         call_succeeded: false,
     }
 }
@@ -135,7 +131,6 @@ fn execute_error_tool_execution_result(
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
         failure_kind: Some(assessment.kind),
-        delivered_reply: None,
         call_succeeded: false,
     }
 }
@@ -216,7 +211,6 @@ fn execute_tool_call(
                         ToolCallExecutionResult {
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: Some(tool_failure_kind_from_outcome(failure_kind)),
-                            delivered_reply: None,
                             call_succeeded: false,
                         }
                     } else {
@@ -224,7 +218,6 @@ fn execute_tool_call(
                         ToolCallExecutionResult {
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: None,
-                            delivered_reply: None,
                             call_succeeded: true,
                         }
                     }
@@ -268,7 +261,6 @@ pub(super) fn execute_tool_use_round(
     let mut round_failure_summary = ToolFailureSummary::default();
     let mut omitted_evidence_count = 0usize;
     let mut used_external_content = false;
-    let mut delivered_current_chat_reply = None;
 
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
 
@@ -276,9 +268,6 @@ pub(super) fn execute_tool_use_round(
         delivery.emit_tool_progress(&tc.name, i, tool_calls.len());
 
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
-        if let Some(reply) = execution.delivered_reply {
-            delivered_current_chat_reply = Some(reply);
-        }
         let result_view = execution.result_owned.as_str();
         if let Some(kind) = execution.failure_kind {
             round_failure_summary.record(kind);
@@ -336,7 +325,6 @@ pub(super) fn execute_tool_use_round(
         round_failure_summary,
         used_external_content,
         omitted_evidence_count,
-        delivered_current_chat_reply,
     }
 }
 

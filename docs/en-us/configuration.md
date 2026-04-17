@@ -2,126 +2,70 @@
 
 [中文](../zh-cn/configuration.md) | **English** | [Doc index](../README.md)
 
-This page is for first-time Beetle setup.
+This page is only about getting Beetle working for the first time.
 
-In most cases, the setup order is:
+## Short Path
 
-1. connect to the device hotspot
+For first-time setup, do these four things first:
+
+1. find the device address
 2. set the pairing code
-3. configure WiFi
-4. configure an LLM and a chat channel
+3. connect the device to your network
+4. choose one LLM source and one chat channel
 
-If you are building your own frontend or script, read [config-api.md](config-api.md) after this page.
+## Open the setup page first
 
-## First-Time Setup
+There are two common ways to reach it:
 
-Linux SBC builds differ slightly from ESP:
+- On first use, connect to the device hotspot **Beetle** and open `http://192.168.4.1`
+- If the device is already on your local network, open its local IP
 
-- If the Linux system already has a valid WiFi connection, Beetle inherits that connection and you should use the device's current LAN IP.
-- Beetle enters its own hotspot/provisioning fallback only when Linux does not currently have a valid WiFi connection.
-- ESP firmware still follows the default hotspot-first flow.
+The repo also includes `configure-ui`, which can connect to the device.
 
-### Step 1: connect to the hotspot
+## What the pairing code is for
 
-On first boot, the device opens a hotspot named **Beetle**.
+The pairing code protects important actions such as:
 
-1. Connect your phone or computer to that hotspot.
-2. Open **http://192.168.4.1** in a browser.
-3. You should see the pairing/config flow.
-
-### Step 2: set the pairing code
-
-The pairing code protects write operations such as:
-
-- saving config
+- saving settings
 - restarting the device
-- running factory reset
-- starting OTA updates
+- resetting settings
+- starting an online update
 
-Notes:
+Set it the first time you open the page, and keep it for later.
 
-- Set it the first time you open the config page.
-- Keep it somewhere safe.
-- You will need it later for saving config, restarting, and factory reset.
+## What you will usually configure
 
-### Step 3: configure WiFi
+| Area | What it is for |
+|------|----------------|
+| Network | connect the device to your network |
+| LLM | let Beetle understand and reply |
+| Chat channels | use Beetle from your chat app |
+| Work accounts | let Beetle handle mail, calendar, documents, and contacts |
+| Hardware | control devices and read sensors |
+| Display | show status on a screen |
+| Audio | enable voice input and output |
 
-After you save WiFi settings, the device will try to join your router.
+## Suggested order
 
-Once it is on the same LAN as your browser, you can open the config page again through the device's LAN IP instead of the hotspot address.
+If your goal is simply to start using Beetle, this order is enough:
 
-### Step 4: configure Beetle
+1. network
+2. LLM
+3. chat channel
 
-The usual minimum setup is:
+You can add these later if needed:
 
-1. WiFi
-2. one LLM source
-3. one chat channel
-
-## How To Open The Config UI
-
-You have two common options:
-
-### Option A: open the device directly
-
-- While connected to the hotspot: use **http://192.168.4.1**
-- While on the same LAN: use the device's router-assigned IP
-- On Linux SBC builds that inherited system WiFi at boot, the LAN IP is the primary address; `192.168.4.1` is not guaranteed to exist
-
-### Option B: use the external web UI
-
-The repo includes `configure-ui`, which can talk to the device over the HTTP API.
-
-You still need:
-
-- a flashed device
-- the browser and device on the same network
-- the correct device address
-
-## Common Config Areas
-
-| Area | What it controls |
-|------|------------------|
-| WiFi | Router SSID and password |
-| LLM | Provider, model, API key, API URL, backup sources |
-| Channels | Credentials and channel-specific settings |
-| Proxy / search | Proxy URL and search-related keys |
-| Hardware | `hardware.json`-driven devices for `device_control` |
-| Display | SPI TFT dashboard |
-| System | Restart, reset, diagnostics, OTA if enabled |
-
-## Common Config Keys
-
-These names show up in files and API payloads:
-
-| Category | Keys | Meaning |
-|----------|------|---------|
-| WiFi | `WIFI_SSID`, `WIFI_PASS` | Router credentials |
-| Telegram | `TG_TOKEN`, `TG_ALLOWED_CHAT_IDS` | Telegram bot credentials and allowed chats |
-| Feishu | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ALLOWED_CHAT_IDS` | Feishu app credentials |
-| DingTalk | `DINGTALK_WEBHOOK_URL` | DingTalk webhook |
-| WeCom | `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_AGENT_ID`, `WECOM_DEFAULT_TOUSER` | WeCom app settings |
-| QQ Channel | `QQ_CHANNEL_APP_ID`, `QQ_CHANNEL_SECRET` | QQ Channel credentials |
-| Proxy | `PROXY_URL` | Outbound HTTP proxy |
-| Search | `SEARCH_KEY`, `TAVILY_KEY` | Search service keys |
-
-Read [llm-providers.md](llm-providers.md) for supported provider IDs, `api_url` rules, and multi-source setup.
-
-## Pairing Code and Activation
-
-The built-in config UI handles pairing-code and security checks for you.
-Only read [config-api.md](config-api.md) if you are building your own frontend or script.
-
-## Useful Checks
-
-- If the config page opens, the device is basically online.
-- If saving works, the pairing code and current connection are fine.
-- If channels fail, check model settings, channel credentials, and allowed chat IDs first.
-- If you still need details, read [config-api.md](config-api.md) or check serial logs.
+- work accounts
+- hardware
+- display
+- audio
 
 ## Common Problems
 
-- Cannot open the device: on Linux SBC builds, first confirm whether Beetle inherited an existing system WiFi connection; if not, reconnect to hotspot **Beetle** and retry `http://192.168.4.1`
-- Cannot save config: reopen the config page and try again; if you are using your own frontend or script, then check pairing code and security headers
-- Device is online but channels do not work: check credentials and allowed chat IDs
-- Device booted but hardware control is missing: check `hardware.json` and whether `device_control` was registered
+- Cannot open the setup page: make sure you are on the device hotspot or the same local network
+- Cannot save settings: the pairing code is often wrong, or the page is stale, so reopen it and try again
+- The page opens but Beetle does not reply: check that both the LLM and chat channel are set up
+- Mail, calendar, or documents are missing: make sure the related account has been connected
+- Hardware does not respond: make sure the device is configured and the wiring matches the setup
+
+If you want to build your own frontend or script, read [config-api.md](config-api.md).

@@ -1,56 +1,62 @@
-# 硬件与板型说明
+# 硬件与板型
 
 [English](../en-us/hardware.md) | **中文** | [文档索引](../README.md)
 
-这页主要说明三件事：
+这页只讲和选设备最相关的事实。
 
-1. ESP32-S3 支持哪些板型
-2. Linux 版现在能做什么
-3. 出问题时先查哪里
+## 当前板型预设
 
-## ESP32-S3 支持板型
+仓库当前提供这些板型预设：
 
 | BOARD | Flash | PSRAM | 说明 |
 |------|-------|-------|------|
-| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
-| `esp32-s3-16mb` | 16MB | 8MB | 默认板型 |
-| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
+| `esp32-s3-8mb` | 8MB | 8MB | ESP32-S3 |
+| `esp32-s3-16mb` | 16MB | 8MB | ESP32-S3 |
+| `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
+| `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
-- 仓库里的板型预设只支持 **带 PSRAM 的 ESP32-S3**
+## 怎么选
 
-## Linux 支持情况
+- 主要是控外设、读传感器：选 ESP32-S3
+- 想用更高配的 ESP 板：看 ESP32-P4
+- 想接更多外部能力、跑更长的任务：选 Linux
 
-Linux 版已经可以稳定运行。
+## 你在硬件上最常会做的几件事
 
-- 聊天、工具、记忆、配置页面和接口都可以正常使用
-- 更适合承载更完整的 Agent OS 能力、安装和扩展
+- 接 GPIO 设备
+- 接 PWM 设备
+- 接模拟量输入
+- 接 DHT
+- 接 I2C 设备或 I2C 传感器
+- 接 SPI 屏幕
 
-## 选择建议
+对应文档：
 
-- 主要接外设、做本地硬件联动：优先选 ESP32-S3
-- 想跑更完整的 Beetle、做更复杂的集成：优先选 Linux
-- 需要更高配的 ESP 方案：看 ESP32-P4
+- 硬件控制配置： [hardware-device-config.md](hardware-device-config.md)
+- 屏幕配置： [display.md](display.md)
 
-## 状态检查入口
+## Linux 上额外有的方向
 
-| 入口 | 能看到什么 |
-|------|------------|
-| 配置页 | 最适合普通用户先看 |
-| `GET /api/health` | 设备整体状态 |
-| 串口日志 | 启动日志、heartbeat、警告信息 |
+Linux 这边除了常规运行外，还提供了硬件发现入口。
+当前公开的是 USB 方向的发现能力，常见分类包括：
 
-如果你需要精确字段说明，再去看 [config-api.md](config-api.md)。
+- 音频输入
+- 音频输出
+- 摄像头
+- 串口
+- HID
 
-## 硬件设备配置
+## 遇到问题先看哪里
 
-如果需要让 Beetle 控制 LED、继电器、蜂鸣器、传感器或 PWM 设备，请继续阅读：
-
-- [hardware-device-config.md](hardware-device-config.md)
-- [tools.md](tools.md) 里的 `device_control`
+- 配置页：先确认设备有没有被识别、配置有没有保存
+- [config-api.md](config-api.md)：需要自己查接口时再看
+- 串口或服务日志：看启动失败、配置失败、硬件初始化失败
 
 ## 常见问题
 
 - `spiffs partition could not be found`
-  基本就是没有用项目里的板型预设或分区表。
-- Linux 能联网但 Beetle 看起来不在线
-  先确认你访问的是设备当前的局域网地址。
+  基本就是板型或分区表没用对
+- 设备能启动但没有硬件能力
+  先确认配置已经写对，而且当前设备真的接了对应硬件
+- 屏幕亮了但显示不对
+  直接看 [display.md](display.md)

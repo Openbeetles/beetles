@@ -1,156 +1,123 @@
-# 配置接口说明
+# 配置接口
 
 [English](../en-us/config-api.md) | **中文** | [文档索引](../README.md)
 
-本文面向直接调用 Beetle HTTP 接口的开发者。内容只定义公开接口合同，包括：
+这页给自己写前端、脚本或集成的人看。每个接口都按“做什么、怎么传、会返回什么”来写。
 
-- 访问地址与鉴权规则
-- 请求方法、参数、请求体与响应体
-- 重要的状态码与副作用
+## 调用约定
 
-如果只是完成首次配网或使用设备自带页面，优先阅读 [configuration.md](configuration.md)。
+- 基础地址：首次配置常用 `http://192.168.4.1`；设备入网后用设备当前地址。
+- CORS：`/api/*` 支持跨域，`OPTIONS` 可直接调用。
+- 返回格式：除 `GET /api/soul`、`GET /api/user`、`GET /api/skills?name=...`、`GET /api/metrics?format=prometheus` 外，默认返回 JSON。
+- 错误格式：常见错误返回 `{"error":"..."}`。
+- 配对码：用查询参数 `?code=`，或请求头 `X-Pairing-Code`。
+- CSRF：用请求头 `X-CSRF-Token`；先调用 `GET /api/csrf_token` 获取。
+- 保存配置类接口提交完整对象，不支持只传要改的单个字段：
+  `POST /api/config/llm`、`POST /api/config/channels`、`POST /api/config/system`、
+  `POST /api/config/hardware`、`POST /api/config/audio`、`POST /api/config/display`。
 
-## 基础信息
+### 鉴权级别
 
-- **ESP SoftAP 地址**：首次上电后，ESP 固件会启动名为 **Beetle** 的热点。连接后使用 `http://192.168.4.1`。
-- **Linux 设备地址**：如果系统已有可用 WiFi，Beetle 直接复用该网络，请使用设备当前局域网 IP。
-- **跨域**：`/api/*` 与 `GET /` 返回 `Access-Control-Allow-Origin: *`。`OPTIONS` 预检返回 200，并带标准 CORS 头。
+- `公开`：不需要激活，也不需要配对码。
+- `已激活`：设备已经设置过配对码，但本次请求不用再传配对码。
+- `配对码`：本次请求要带配对码。
+- `配对码 + CSRF`：本次请求要同时带配对码和 CSRF。
 
-## 鉴权规则
+### 常见状态码
 
-### 术语
+- `200`：请求成功。
+- `202`：任务已接收，异步继续处理。
+- `400`：参数或请求体不对。
+- `401`：设备未激活，或配对码不对。
+- `403`：CSRF 不通过、Webhook token 不通过，或当前操作需要先打开运维窗口。
+- `404`：资源不存在。
+- `500`：服务端处理失败。
+- `503`：当前不可用，例如扫描器未就绪、队列不可用。
 
-- **未激活**：设备尚未保存有效的 6 位配对码。
-- **已激活**：`POST /api/pairing_code` 已成功执行过。
-- **配对码**：通过 query `?code=` 或请求头 `X-Pairing-Code` 传递。
-- **CSRF**：请求头 `X-CSRF-Token`，值来自 `GET /api/csrf_token`。
+## 激活与安全
 
-### 未激活时可调用的接口
+**GET /api/pairing_code**
 
-- 任意 `OPTIONS`
-- `GET /`
-- `GET /wifi`
-- `GET /pairing`
-- `GET /common.css`
-- `GET /common.js`
-- `GET /api/pairing_code`
-- `POST /api/pairing_code`
-- `GET /api/wifi/scan`
-- `GET /api/csrf_token`
-- 通道回调：
-  - `POST /api/feishu/event`
-  - `POST /api/dingtalk/webhook`
-  - `GET /api/wecom/webhook`
-  - `POST /api/wecom/webhook`
-  - `POST /api/webhook/qq`
+用途：查看设备是否已经设置配对码，并返回当前语言。
 
-除上述接口外，未激活状态通常返回 `401 Unauthorized`。
+鉴权：`公开`
 
-### 写接口的通用规则
-
-激活后，所有会修改配置、运行态或内容的 `POST` / `DELETE` 接口默认都要求：
-
-- 配对码
-- CSRF Token
-
-例外：
-
-- `POST /api/pairing_code` 只在未激活时可用，不需要配对码和 CSRF
-- 通道回调接口使用各平台自己的签名或 token 规则
-
-## 发现与配对
-
-### GET /
-
-- **鉴权**：未激活可调用；激活后不要求在请求里再次附带配对码。
-- **响应**：
-  - 未激活：`302 Found`，`Location: /pairing`
-  - 已激活：`200 OK`，JSON
-- **响应体**：
-  - `name`
-  - `version`
-  - `endpoints`
-
-示例：
+成功响应：`200 application/json`
 
 ```json
 {
-  "name": "beetle",
-  "version": "0.1.0",
-  "endpoints": ["GET /pairing", "GET /wifi", "GET /api/pairing_code"]
+  "code_set": true,
+  "locale": "zh"
 }
 ```
 
-### GET /api/pairing_code
+**POST /api/pairing_code**
 
-- **鉴权**：无
-- **响应**：`200 OK`
-- **响应体**：
-  - `code_set`
-  - `locale`
+用途：第一次设置配对码。只能设置一次。
 
-### POST /api/pairing_code
+鉴权：`公开`
 
-- **鉴权**：无；仅未激活时可用
-- **请求头**：`Content-Type: application/json`
-- **请求体**：
+请求体：`application/json`
 
 ```json
-{ "code": "123456" }
+{
+  "code": "123456"
+}
 ```
 
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 请求不合法或重复设置：`400 Bad Request`
-
-### GET /api/csrf_token
-
-- **鉴权**：无
-- **响应**：`200 OK`
+成功响应：`200 application/json`
 
 ```json
-{ "csrf_token": "<token>" }
+{
+  "ok": true
+}
 ```
 
-### GET /pairing
+常见失败：
 
-- **鉴权**：无
-- **响应**：`200 OK`
-- **Content-Type**：`text/html; charset=utf-8`
+- `400`：设备已经设置过配对码。
+- `400`：`code` 不是 6 位数字。
 
-### GET /wifi
+**GET /api/csrf_token**
 
-- **鉴权**：无
-- **响应**：`200 OK`
-- **Content-Type**：`text/html; charset=utf-8`
+用途：获取写接口要用的 CSRF token。
 
-## 配置总览
+鉴权：`公开`
 
-### GET /api/config
-
-- **鉴权**：已激活 + 配对码
-- **响应**：`200 OK`
-- **响应体**：完整 `AppConfig` JSON，包含当前真实配置值
-
-### GET /api/wifi/scan
-
-- **鉴权**：无
-- **响应**：
-  - 成功：`200 OK`
-  - 扫描不可用：`503 Service Unavailable`
-- **响应体**：按信号强度降序排列的 WiFi 列表
+成功响应：`200 application/json`
 
 ```json
-[
-  { "ssid": "MyWiFi", "rssi": -50 }
-]
+{
+  "csrf_token": "..."
+}
 ```
 
-### POST /api/config/wifi
+### 建议的激活顺序
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：
+1. 调 `GET /api/pairing_code` 看是否已激活。
+2. 如果还没激活，调 `POST /api/pairing_code` 设置配对码。
+3. 调 `GET /api/csrf_token` 拿到 CSRF token。
+4. 之后所有写接口都带上配对码和 CSRF。
+
+## 配置接口
+
+**GET /api/config**
+
+用途：读取当前总配置。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+返回体是完整配置对象，并额外带上 `locale` 和 `build_package`。这个结果包含敏感字段，不能直接暴露给无鉴权页面。
+
+**POST /api/config/wifi**
+
+用途：保存网络配置。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
 
 ```json
 {
@@ -159,227 +126,538 @@
 }
 ```
 
-- **响应**：
-  - 成功：`200 OK`
-  - 校验失败：`400 Bad Request`
-- **成功响应**：
+可选查询参数：`restart=1`
+保存成功后如果带了这个参数，设备会自动重启。
+
+成功响应：`200 application/json`
 
 ```json
-{ "ok": true, "restart_required": true }
+{
+  "ok": true,
+  "restart_required": true
+}
 ```
 
-### POST /api/config/system
+**POST /api/config/system**
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：系统配置段 JSON
-- **主要字段**：
-  - `wifi_ssid`
-  - `wifi_pass`
-  - `proxy_url`
-  - `session_max_messages`
-  - `tg_group_activation`
-  - `locale`
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 校验失败：`400 Bad Request`
+用途：保存系统段配置。
 
-### POST /api/config/llm
+鉴权：`配对码 + CSRF`
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：完整 LLM 配置段
-- **主要字段**：
-  - `llm_sources[]`
-  - `llm_stream`
-  - `llm_router_source_index`
-  - `llm_worker_source_index`
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 校验失败：`400 Bad Request`
+请求体：`application/json`
 
-### POST /api/config/channels
+字段：
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：完整通道配置段
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 校验失败：`400 Bad Request`
+- `wifi_ssid`
+- `wifi_pass`
+- `proxy_url`
+- `session_max_messages`
+- `tg_group_activation`
+- `locale`
 
-## 账户配置
+成功响应：`200 application/json`
 
-### GET /api/config/providers
+```json
+{
+  "ok": true
+}
+```
 
-- **鉴权**：已激活 + 配对码
-- **查询参数**：
-  - `capability`：可选，`mail|calendar|documents|contacts_directory`
-- **响应**：`200 OK`
-- **响应体**：
-  - `count`
-  - `items[]`
-    - `provider_kind`
-    - `capabilities`
-    - `account_fields[]`
-      - `key`
-      - `label`
-      - `description`
-      - `value_kind`
-      - `required`
-      - `secret`
-      - `multiple`
-      - `default_value`
-      - `default_values`
-      - `options[]`
-    - `config_fields[]`
-      - `key`
-      - `label`
-      - `description`
-      - `location`
-      - `value_kind`
-      - `required`
-      - `secret`
-      - `default_value`
+**POST /api/config/llm**
 
-### GET /api/config/capabilities
+用途：保存大模型配置。
 
-- **鉴权**：已激活 + 配对码
-- **响应**：`200 OK`
-- **响应体**：
-  - `count`
-  - `items[]`
-    - `capability`
-    - `default_account_key`
-    - `selection_status`
-    - `selected_account_key`
-    - `ready`
-    - `next_action`
-    - `accounts[]`
-      - `account_key`
-      - `provider_kind`
-      - `account_label`
-      - `identity_class`
-      - `enabled_capabilities`
-      - `selected_for_capabilities`
-      - `readiness`
-      - `next_action`
-      - `missing_fields_count`
-      - `has_runtime_error`
+鉴权：`配对码 + CSRF`
 
-### GET /api/config/capabilities/:capability
+请求体：`application/json`
 
-- **鉴权**：已激活 + 配对码
-- **路径参数**：
-  - `capability`：`mail|calendar|documents|contacts_directory`
-- **响应**：`200 OK`
-- **响应体**：单个 capability 状态对象，字段与 `GET /api/config/capabilities` 的 `items[]` 一致
+字段：
 
-### GET /api/config/accounts
+- `llm_sources`
+- `llm_stream`
+- `llm_router_source_index`
+- `llm_worker_source_index`
 
-- **鉴权**：已激活 + 配对码
-- **查询参数**：
-  - `capability`：可选，`mail|calendar|documents|contacts_directory`
-- `provider_kind`：可选，精确 provider kind，例如 `imap_smtp`、`feishu_mail`、`microsoft365_mail`、`google_mail`
-- **响应**：`200 OK`
-- **响应体**：
-  - `count`
-  - `items[]`
-    - `account_key`
-    - `provider_kind`
-    - `account_label`
-    - `identity_class`
-    - `enabled_capabilities`
-    - `selected_for_capabilities`
-    - `readiness`
-    - `next_action`
-    - `missing_fields_count`
-    - `has_runtime_error`
+`llm_sources` 中每个来源包含这些字段：
 
-### POST /api/config/accounts
+- `provider`
+- `api_key`
+- `model`
+- `api_url`
+- `max_tokens`
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：单个账户 create / upsert payload
-- **主要字段**：
-  - `account`
-    - `provider_kind`
-    - `external_account_id`
-    - `account_label`
-    - `identity_class`
-    - `enabled_capabilities`
-  - `set_defaults[]`
-  - `clear_defaults[]`
-  - `policy_patch`
-  - `config`
-    - `fields`
-    - `clear_fields[]`
-- **响应**：
-  - 成功：`200 OK`，返回更新后的账户详情
-  - 校验失败：`400 Bad Request`
-- **补充**：
-  - 如果 `account.account_key` 省略或为空，由服务端自动生成稳定的账户标识。
-  - 响应体会返回生成后的 `account_key`，后续详情、配置、探测、撤销和删除都继续使用这个路径键。
+示例：
 
-### GET /api/config/accounts/:account_key
+```json
+{
+  "llm_sources": [
+    {
+      "provider": "provider_name",
+      "api_key": "your_key",
+      "model": "model_name",
+      "api_url": "https://example.com/v1/chat/completions",
+      "max_tokens": 1024
+    }
+  ],
+  "llm_stream": true,
+  "llm_router_source_index": 0,
+  "llm_worker_source_index": 0
+}
+```
 
-- **鉴权**：已激活 + 配对码
-- **路径参数**：
-  - `account_key`
-- **响应**：`200 OK`
-- **响应体**：
-  - `account`
-  - `assessment`
-  - `fields[]`
-    - `key`
-    - `label`
-    - `description`
-    - `location`
-    - `value_kind`
-    - `required`
-    - `secret`
-    - `default_value`
-    - `configured`
-    - `current_value`
+成功响应：`200 application/json`
 
-### POST /api/config/accounts/:account_key/config
+```json
+{
+  "ok": true
+}
+```
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：
+相关说明见 [LLM 服务配置](llm-providers.md)。
+
+**POST /api/config/channels**
+
+用途：保存聊天通道配置。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+字段分组：
+
+- 通用：`enabled_channel`
+- Telegram：`tg_token`、`tg_allowed_chat_ids`
+- 飞书：`feishu_app_id`、`feishu_app_secret`、`feishu_allowed_chat_ids`
+- 钉钉：`dingtalk_webhook_url`、`dingtalk_app_secret`
+- 企业微信：`wecom_corp_id`、`wecom_corp_secret`、`wecom_agent_id`、`wecom_default_touser`、`wecom_token`、`wecom_encoding_aes_key`
+- QQ 频道：`qq_channel_app_id`、`qq_channel_secret`
+- 自定义 Webhook：`webhook_enabled`、`webhook_token`
+
+`enabled_channel` 允许值：
+
+- 空字符串
+- `telegram`
+- `feishu`
+- `dingtalk`
+- `wecom`
+- `qq_channel`
+
+最小示例：
+
+```json
+{
+  "enabled_channel": "telegram",
+  "tg_token": "bot_token",
+  "tg_allowed_chat_ids": "123456",
+  "webhook_enabled": false,
+  "webhook_token": ""
+}
+```
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+**GET /api/config/hardware**
+
+用途：读取当前硬件配置。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+如果还没有保存过，默认返回：
+
+```json
+{
+  "hardware_devices": []
+}
+```
+
+**POST /api/config/hardware**
+
+用途：保存硬件配置。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+顶层字段：
+
+- `hardware_devices`
+- `i2c_bus`
+- `i2c_devices`
+- `i2c_sensors`
+
+最小示例：
+
+```json
+{
+  "hardware_devices": [],
+  "i2c_bus": null,
+  "i2c_devices": [],
+  "i2c_sensors": []
+}
+```
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+字段说明见 [硬件设备配置](hardware-device-config.md)。
+
+**GET /api/config/audio**
+
+用途：读取当前音频配置。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+返回体是完整音频配置对象。没有保存过时，会返回一份关闭状态的默认对象。
+
+**POST /api/config/audio**
+
+用途：保存音频配置。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+顶层字段：
+
+- `version`
+- `enabled`
+- `service_provider`
+- `microphone`
+- `speaker`
+- `vad`
+- `wake_word`
+- `speech`
+- `tts`
+- `realtime`
+- `ambient_listening`
+- `led_indicator`
+
+可选查询参数：`restart=1`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true,
+  "restart_required": true
+}
+```
+
+**GET /api/config/display**
+
+用途：读取当前显示配置。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+返回体是完整显示配置对象。没有保存过时，会返回一份关闭状态的默认对象。
+
+**POST /api/config/display**
+
+用途：保存显示配置。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+常用字段：
+
+- `enabled`
+- `driver`
+- `bus`
+- `width`
+- `height`
+- `rotation`
+- `color_order`
+- `invert_colors`
+- `offset_x`
+- `offset_y`
+- `spi`
+- `fb_device`
+- `backlight_sysfs`
+- `sleep_timeout_secs`
+
+可选查询参数：`restart=1`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true,
+  "restart_required": true
+}
+```
+
+字段说明见 [显示配置](display.md)。
+
+**GET /api/wifi/scan**
+
+用途：扫描附近 WiFi，给配置页或外部前端做下拉列表。
+
+鉴权：`公开`
+
+成功响应：`200 application/json`
+
+```json
+[
+  {
+    "ssid": "MyWiFi",
+    "rssi": -50
+  }
+]
+```
+
+常见失败：
+
+- `503`：当前还不能扫描。
+- `500`：扫描过程失败。
+
+**GET /api/hardware/discovery**
+
+用途：发现可直接接入的外部硬件。
+
+鉴权：`配对码`
+
+查询参数：
+
+- `bus`：当前公开值只有 `usb`
+- `capability`：`audio_input`、`audio_output`、`camera`、`serial`、`hid`
+
+调用示例：
+
+```text
+GET /api/hardware/discovery?bus=usb&capability=audio_output
+```
+
+成功响应：`200 application/json`
+
+返回体字段：
+
+- `bus`
+- `capability`
+- `items`
+
+`items` 中每一项包含：
+
+- `device_ref`
+- `label`
+- `kind`
+- `capabilities`
+- `is_default`
+- `metadata`
+
+常见失败：
+
+- `400`：`bus` 或 `capability` 缺失，或值不对。
+- `503`：当前能力还不能发现设备。
+
+## 账号与办公能力接口
+
+**GET /api/config/providers**
+
+用途：读取可创建账号的服务目录。
+
+鉴权：`配对码`
+
+可选查询参数：`capability`
+
+成功响应：`200 application/json`
+
+返回体结构：
+
+- `count`
+- `items`
+
+`items` 中每一项包含：
+
+- `provider_kind`
+- `capabilities`
+- `account_fields`
+- `config_fields`
+
+**GET /api/config/capabilities**
+
+用途：读取各类办公能力当前状态。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+返回体结构：
+
+- `count`
+- `items`
+
+`items` 中每一项包含：
+
+- `capability`
+- `default_account_key`
+- `selection_status`
+- `selected_account_key`
+- `ready`
+- `next_action`
+- `accounts`
+
+**GET /api/config/capabilities/:capability**
+
+用途：读取某一个能力的状态。
+
+鉴权：`配对码`
+
+路径参数：`capability`
+
+当前公开值包括：
+
+- `mail`
+- `calendar`
+- `documents`
+- `contacts_directory`
+
+成功响应：`200 application/json`
+
+返回体和 `GET /api/config/capabilities` 中单项对象一致。
+
+**GET /api/config/accounts**
+
+用途：列出已接入账号。
+
+鉴权：`配对码`
+
+可选查询参数：
+
+- `provider_kind`
+- `capability`
+
+成功响应：`200 application/json`
+
+返回体结构：
+
+- `count`
+- `items`
+
+`items` 中每一项包含：
+
+- `account_key`
+- `provider_kind`
+- `account_label`
+- `identity_class`
+- `enabled_capabilities`
+- `selected_for_capabilities`
+- `readiness`
+- `next_action`
+- `missing_fields_count`
+- `has_runtime_error`
+
+**POST /api/config/accounts**
+
+用途：创建账号，或更新账号的基础信息。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+顶层字段：
+
+- `account`
+- `set_defaults`
+- `clear_defaults`
+- `policy_patch`
+- `config`
+
+`account` 字段：
+
+- `account_key`
+- `provider_kind`
+- `external_account_id`
+- `account_label`
+- `identity_class`
+- `enabled_capabilities`
+
+`config` 字段和 `POST /api/config/accounts/:account_key/config` 的请求体结构相同。
+
+成功响应：`200 application/json`
+
+返回体是账号详情对象。
+
+**GET /api/config/accounts/:account_key**
+
+用途：读取单个账号详情和可编辑字段。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+返回体结构：
+
+- `account`
+- `assessment`
+- `fields`
+
+**POST /api/config/accounts/:account_key/config**
+
+用途：保存单个账号的配置字段。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
 
 ```json
 {
   "fields": {
-    "field_key": "value"
+    "tenant_id": "xxx",
+    "client_id": "xxx"
   },
-  "clear_fields": ["another_field"]
+  "clear_fields": [
+    "old_secret"
+  ]
 }
 ```
 
-- **响应**：
-  - 成功：`200 OK`，返回保存后的账户详情
-  - 校验失败：`400 Bad Request`
+成功响应：`200 application/json`
 
-### POST /api/config/accounts/:account_key/probe
+返回体是更新后的账号详情对象。
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **路径参数**：
-  - `account_key`
-- **响应**：
-  - 成功：`200 OK`
-  - 失败：`400 Bad Request`
-- **响应体**：
-  - `account_key`
-  - `provider_kind`
-  - `configured`
-  - `disposition`
-  - `reason`
+**POST /api/config/accounts/:account_key/probe**
 
-### POST /api/config/accounts/:account_key/revoke
+用途：检查这个账号现在能不能正常使用。
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：可为空；非空时支持：
+鉴权：`配对码 + CSRF`
+
+请求体：无。
+
+成功响应：`200 application/json`
+
+返回体字段：
+
+- `account_key`
+- `provider_kind`
+- `configured`
+- `disposition`
+- `reason`
+
+**POST /api/config/accounts/:account_key/revoke**
+
+用途：撤销这个账号，并可选清理运行中的状态。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
 
 ```json
 {
@@ -387,321 +665,696 @@
 }
 ```
 
-- **响应**：
-  - 成功：`200 OK`
-  - 失败：`400 Bad Request`
+请求体也可以留空；留空时默认等同于 `true`。
 
-### DELETE /api/config/accounts/:account_key
-
-- **鉴权**：已激活 + 配对码 + CSRF
-- **路径参数**：
-  - `account_key`
-- **响应**：
-  - 成功：`200 OK`
-  - 失败：`400 Bad Request`
-- **成功响应**：
+成功响应：`200 application/json`
 
 ```json
 {
   "ok": true,
-  "account_key": "mail-work",
+  "account_key": "mail-main",
+  "cleared_runtime_status": true
+}
+```
+
+**DELETE /api/config/accounts/:account_key**
+
+用途：删除这个账号。
+
+鉴权：`配对码 + CSRF`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true,
+  "account_key": "mail-main",
   "deleted": true
 }
 ```
 
-### GET /api/config/hardware
+## 内容、会话、技能与维护接口
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：`HardwareSegment`
+**GET /api/soul**
 
-### POST /api/config/hardware
+用途：读取系统文本。
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：完整 `HardwareSegment`
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 校验失败：`400 Bad Request`
+鉴权：`已激活`
 
-### GET /api/config/audio
+成功响应：`200 text/plain`
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：`AudioSegment`
+返回体就是原始文本内容。
 
-### POST /api/config/audio
+**POST /api/soul**
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：完整 `AudioSegment`
-- **响应**：
-  - 成功：`200 OK`
-  - 校验失败：`400 Bad Request`
-- **成功响应**：
+用途：保存系统文本。
+
+鉴权：`配对码 + CSRF`
+
+请求体支持两种形式：
+
+- `text/plain`：直接传原始文本
+- `application/json`：`{"content":"..."}`
+
+成功响应：`200 application/json`
 
 ```json
-{ "ok": true, "restart_required": true }
+{
+  "ok": true
+}
 ```
 
-### GET /api/config/display
+**GET /api/user**
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
+用途：读取用户文本。
 
-### POST /api/config/display
+鉴权：`已激活`
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **响应**：
-  - 成功：`200 OK`
-  - 校验失败：`400 Bad Request`
+成功响应：`200 text/plain`
 
-## 文本配置
+**POST /api/user**
 
-### GET /api/soul
+用途：保存用户文本。
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **Content-Type**：`text/plain`
+鉴权：`配对码 + CSRF`
 
-### POST /api/soul
+请求体和 `POST /api/soul` 相同。
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求体**：纯文本，或 JSON `{"content":"..."}`，长度上限 32KB
-- **响应**：
-  - 成功：`200 OK`
-  - 参数错误：`400 Bad Request`
-  - 写入失败：`500 Internal Server Error`
+成功响应：`200 application/json`
 
-### GET /api/user
+```json
+{
+  "ok": true
+}
+```
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **Content-Type**：`text/plain`
+**GET /api/sessions**
 
-### POST /api/user
+用途：列出会话，或读取单个会话最近消息。
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求体**：纯文本，或 JSON `{"content":"..."}`，长度上限 32KB
-- **响应**：
-  - 成功：`200 OK`
-  - 参数错误：`400 Bad Request`
-  - 写入失败：`500 Internal Server Error`
+鉴权：`已激活`
 
-## 会话、记忆与工具
+查询参数：
 
-### GET /api/sessions
+- 列表模式：`page`、`limit`
+- 单会话模式：`chat_id`
 
-- **鉴权**：已激活
-- **查询参数**：
-  - 列表模式：`page`、`limit`
-  - 详情模式：`chat_id` 或 `name`
-- **响应**：`200 OK`
+列表模式成功响应：`200 application/json`
 
-### DELETE /api/sessions?chat_id=...
+```json
+{
+  "items": [
+    "chat-1",
+    "chat-2"
+  ],
+  "total": 2,
+  "page": 1,
+  "limit": 20,
+  "total_pages": 1
+}
+```
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **查询参数**：
-  - `chat_id`：必填
-- **响应**：
-  - 成功：`200 OK`
-  - 参数错误：`400 Bad Request`
+单会话模式成功响应：`200 application/json`
 
-### GET /api/memory/status
+返回体是最近消息数组。
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：memory operator 状态对象
+**DELETE /api/sessions**
 
-### GET /api/tools
+用途：删除一个会话。
 
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：工具列表数组
+鉴权：`配对码 + CSRF`
 
-## Skills
+查询参数：`chat_id`
 
-### GET /api/skills
+成功响应：`200 application/json`
 
-- **鉴权**：已激活
-- **查询参数**：
-  - `name`：可选
-- **响应**：
-  - 无 `name`：`200 OK`，返回技能列表与顺序
-  - 有 `name`：`200 OK`，返回技能文本；不存在时 `404 Not Found`
+```json
+{
+  "ok": true
+}
+```
 
-### POST /api/skills
+**GET /api/memory/status**
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：
-  - 启用/禁用：`{"name":"x","enabled":true}`
-  - 写入内容：`{"name":"x","content":"..."}`
-  - 更新顺序：`{"order":["a","b"]}`
-- **响应**：
-  - 成功：`200 OK`
-  - 参数错误：`400 Bad Request`
-  - 处理失败：`500 Internal Server Error`
+用途：读取记忆状态；需要时，也可以带目标会话做深度检查。
 
-### DELETE /api/skills?name=xxx
+鉴权：`已激活`
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **查询参数**：
-  - `name`：必填
-- **响应**：
-  - 成功：`200 OK`
-  - 参数错误：`400 Bad Request`
-  - 不存在：`404 Not Found`
+常用查询参数：
 
-### POST /api/skills/import
+- `chat_id`
+- `channel`
+- `query`
+- `run_id`
+- `deep=1`
+- `snapshot_mode=full_restore`
+- `memory_system_kind=esp_compact`
+- `memory_system_kind=linux_full`
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **请求头**：`Content-Type: application/json`
-- **请求体**：
+默认模式成功响应：`200 application/json`
+
+返回体顶层字段：
+
+- `memory_system_kind`
+- `memory_len`
+- `soul_len`
+- `user_len`
+- `long_term_count`
+- `continuity_capsule_count`
+- `stores`
+- `personality`
+- `continuity_tooling`
+- `continuity_capsules`
+- `task_execution`
+- `learning`
+- `diagnosis`
+- `operator_surface`
+
+当带 `deep=1` 且给出 `chat_id` 时，还会多一个 `inspection` 字段。
+
+特殊情况：
+
+- `403`：当前这次深度检查要先调用 `POST /api/operator/window`。
+
+**POST /api/memory/maintenance**
+
+用途：提交记忆维护任务。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+```json
+{
+  "action": "run_repair_plan",
+  "chat_id": "chat-1",
+  "channel": "qq_channel"
+}
+```
+
+`action` 当前公开值：
+
+- `run_repair_plan`
+- `rebuild_continuity_snapshot`
+- `reconcile_relationship_governance`
+- `replay_recovery`
+- `refresh_operator_digest`
+
+成功响应：`202 application/json`
+
+返回体至少包含：
+
+- `accepted`
+- `delivery`
+
+**GET /api/tools**
+
+用途：读取当前可用工具列表。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+```json
+[
+  {
+    "name": "web_search",
+    "i18n_key": "tools.web_search"
+  }
+]
+```
+
+**GET /api/capability_packages**
+
+用途：读取能力包状态。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+返回体顶层字段：
+
+- `installed`
+- `enabled`
+- `active_now`
+- `workflow_count`
+- `skill_fragment_count`
+- `policy_overlay_count`
+- `asset_count`
+- `packages`
+
+`packages` 中每一项包含：
+
+- `package_id`
+- `version`
+- `display_name`
+- `enabled`
+- `compatible_now`
+- `requirements_satisfied`
+- `workflow_count`
+- `skill_fragment_count`
+- `policy_count`
+- `asset_count`
+- `required_capabilities`
+- `missing_capabilities`
+- `channel_compatibility`
+- `rollback_available`
+
+**POST /api/capability_packages**
+
+用途：安装、启用、停用、卸载或回退能力包。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+启用、停用、卸载、回退：
+
+```json
+{
+  "op": "enable",
+  "package_id": "package_id"
+}
+```
+
+安装：
+
+```json
+{
+  "op": "install",
+  "payload": {
+    "manifest": {
+      "package_id": "package_id",
+      "version": "1.0.0",
+      "display_name": "Package name"
+    },
+    "skills": [],
+    "workflows": [],
+    "policies": [],
+    "assets": [],
+    "enable_on_install": true
+  }
+}
+```
+
+`op` 当前公开值：
+
+- `install`
+- `enable`
+- `disable`
+- `uninstall`
+- `rollback`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true,
+  "outcome": {}
+}
+```
+
+**GET /api/skills**
+
+用途：列出技能，或读取单个技能内容。
+
+鉴权：`已激活`
+
+查询参数：
+
+- 不带 `name`：返回列表
+- 带 `name`：返回单个技能内容
+
+列表模式成功响应：`200 application/json`
+
+```json
+{
+  "skills": [
+    {
+      "name": "example",
+      "enabled": true
+    }
+  ],
+  "order": [
+    "example"
+  ]
+}
+```
+
+单技能模式成功响应：`200 text/plain`
+
+返回体就是技能文件内容。
+
+**POST /api/skills**
+
+用途：写技能内容、启用或停用技能、调整技能顺序。
+
+鉴权：`配对码 + CSRF`
+
+请求体支持三种形式：
+
+写内容：
+
+```json
+{
+  "name": "example",
+  "content": "# Skill"
+}
+```
+
+启用或停用：
+
+```json
+{
+  "name": "example",
+  "enabled": false
+}
+```
+
+调整顺序：
+
+```json
+{
+  "order": [
+    "example",
+    "another"
+  ]
+}
+```
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+**DELETE /api/skills**
+
+用途：删除一个技能。
+
+鉴权：`配对码 + CSRF`
+
+查询参数：`name`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+常见失败：
+
+- `404`：技能不存在。
+
+**POST /api/skills/import**
+
+用途：从 URL 导入技能。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
 
 ```json
 {
   "url": "https://example.com/skill.md",
-  "name": "skill-name"
+  "name": "imported-skill"
 }
 ```
 
-- **响应**：
-  - 成功：`200 OK`
-  - 参数错误：`400 Bad Request`
-  - 拉取失败：`502 Bad Gateway` 或 `500 Internal Server Error`
-
-## 健康与运维
-
-### GET /api/health
-
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：轻量健康状态对象，包含 `wifi`、`last_error`、`display`、`audio` 等字段
-
-### GET /api/diagnose
-
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：诊断结果数组，每项包含：
-  - `severity`
-  - `category`
-  - `message`
-
-### GET /api/operator/status
-
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：operator 运行态状态对象
-
-### GET /api/metrics
-
-- **鉴权**：已激活
-- **查询参数**：
-  - `format=prometheus`：可选
-- **响应**：
-  - 默认：`200 OK`，JSON
-  - `format=prometheus`：`200 OK`，Prometheus 文本
-
-### GET /api/resource
-
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：资源、队列、压力、预算相关状态对象
-
-### GET /api/system_info
-
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：设备与构建信息摘要
-
-### GET /api/channel_connectivity
-
-- **鉴权**：已激活
-- **响应**：`200 OK`
-- **响应体**：通道连通性状态对象
-
-### POST /api/restart
-
-- **鉴权**：已激活 + 配对码 + CSRF
-- **响应**：
-  - 成功：`200 OK`，随后设备重启
-  - 节流或错误：`400` / `500`
-
-### GET /api/ota/check
-
-- **鉴权**：已激活
-- **前提**：固件启用了 `ota`
-- **查询参数**：
-  - `channel`：可选，默认 `stable`
-- **响应**：`200 OK`
-- **响应体**：
-  - `current_version`
-  - `latest_version`
-  - `update_available`
-  - `url`
-  - `release_notes`
-  - `error`
-
-### POST /api/ota
-
-- **鉴权**：已激活 + 配对码 + CSRF
-- **前提**：固件启用了 `ota`
-- **请求头**：`Content-Type: application/json`
-- **请求体**：
+成功响应：`200 application/json`
 
 ```json
-{ "url": "https://example.com/firmware.bin" }
+{
+  "ok": true
+}
 ```
 
-- **响应**：
-  - 成功：`200 OK`，随后执行 OTA 并重启
-  - 参数错误：`400 Bad Request`
-  - 下载、校验或写入失败：`500 Internal Server Error`
+## 状态与运维接口
 
-### POST /api/config_reset
+**GET /api/health**
 
-- **鉴权**：已激活 + 配对码 + CSRF
-- **响应**：
-  - 成功：`200 OK`，`{"ok": true}`
-  - 失败：`500 Internal Server Error`
+用途：读取轻量状态摘要。
 
-## Webhook 与平台回调
+鉴权：`已激活`
 
-### POST /api/webhook
+成功响应：`200 application/json`
 
-- **鉴权**：已激活 + 配对码 + CSRF；并要求 webhook token
-- **请求体**：UTF-8 文本，上限 4KB
-- **响应**：
-  - 成功：`200 OK`
-  - token 错误：`401 Unauthorized`
-  - webhook 未启用：`403 Forbidden`
-  - 参数错误：`400` / `413`
-  - 队列满：`503 Service Unavailable`
+返回体顶层字段：
 
-### 平台回调接口
+- `wifi`
+- `last_error`
+- `display`
+- `audio`
+- `workflow`
 
-以下接口不使用设备自己的配对码与 CSRF：
+**GET /api/operator/status**
+
+用途：读取完整运维状态。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+返回体顶层字段：
+
+- `platform_contract`
+- `build_package`
+- `operator_surface`
+- `reply_pipeline`
+- `delivery_diagnosis`
+- `system_diagnosis`
+- `memory_operator_surface`
+- `workflow`
+- `programmable_reasoning`
+- `os_closure`
+- `initiative`
+- `presence`
+- `runtime_mode`
+- `soul_kernel`
+- `capability_planes`
+
+**GET /api/metrics**
+
+用途：读取指标快照。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+返回体是指标对象，常见字段包括：
+
+- `messages_in`
+- `messages_out`
+- `llm_calls`
+- `llm_errors`
+- `tool_calls`
+- `tool_errors`
+- `llm_last_ms`
+- `e2e_last_ms`
+
+**GET /api/metrics?format=prometheus**
+
+用途：用 Prometheus 文本格式读取指标。
+
+鉴权：`已激活`
+
+成功响应：`200 text/plain`
+
+**GET /api/resource**
+
+用途：读取资源快照。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+返回体顶层字段：
+
+- `pressure`
+- `tls_fragmentation_risk`
+- `storage_contention_risk`
+- `heap_free_internal`
+- `heap_free_spiram`
+- `heap_largest_block_internal`
+- `active_http_count`
+- `active_wss_count`
+- `active_agent_tasks`
+- `inbound_depth`
+- `outbound_depth`
+- `budget`
+- `session_count`
+- `storage_used_kb`
+- `storage_total_kb`
+
+**GET /api/diagnose**
+
+用途：读取诊断结果。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+返回体是诊断结果数组。
+
+**GET /api/system_info**
+
+用途：读取设备基础信息。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+常见字段：
+
+- `product_name`
+- `current_time`
+- `firmware_version`
+- `board_id`
+- `ota_available`
+- `locale`
+- `lan_ip`
+- `workflow`
+- `programmable_reasoning`
+- `storage_media`
+
+**GET /api/channel_connectivity**
+
+用途：检查当前通道连接状态。
+
+鉴权：`已激活`
+
+成功响应：`200 application/json`
+
+返回体顶层字段：
+
+- `channels`
+
+**POST /api/operator/window**
+
+用途：打开临时运维窗口，让受保护的运维接口可访问。
+
+鉴权：`配对码 + CSRF`
+
+成功响应：`200 application/json`
+
+返回体字段：
+
+- `opened`
+- `operator_window`
+- `windowed_endpoints`
+
+**POST /api/restart**
+
+用途：重启设备。
+
+鉴权：`配对码 + CSRF`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+**POST /api/config_reset**
+
+用途：清空当前配置并回到未激活状态。
+
+鉴权：`配对码 + CSRF`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+**GET /api/ota/check**
+
+用途：检查是否有更新。
+
+鉴权：`已激活`
+
+可选查询参数：`channel`
+不传时默认用 `stable`。
+
+成功响应：`200 application/json`
+
+返回体字段：
+
+- `current_version`
+- `update_available`
+- `latest_version`
+- `url`
+- `release_notes`
+- `error`
+
+不同情况下，不一定会同时出现所有字段。
+
+**POST /api/ota**
+
+用途：开始更新。
+
+鉴权：`配对码 + CSRF`
+
+请求体：`application/json`
+
+```json
+{
+  "url": "https://example.com/beetle.bin"
+}
+```
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+## 回调接口
+
+**POST /api/webhook**
+
+用途：接收自定义 webhook 消息。
+
+鉴权：`配对码 + CSRF`
+
+额外校验：
+
+- `X-Webhook-Token`
+- 或查询参数 `token`
+
+请求体：原始文本内容。
+
+成功响应：`200 application/json`
+
+```json
+{
+  "ok": true
+}
+```
+
+常见失败：
+
+- `401`：Webhook token 不对。
+- `403`：Webhook 没开启，或没有配置 token。
+- `413`：内容太长。
+- `503`：消息队列已满。
+
+**平台回调接口**
+
+这些接口直接接收平台回调请求。请求体、签名和校验规则以各平台要求为准：
 
 - `POST /api/feishu/event`
 - `POST /api/dingtalk/webhook`
 - `GET /api/wecom/webhook`
 - `POST /api/wecom/webhook`
 - `POST /api/webhook/qq`
-
-## 板子 IP 获取
-
-- 连接设备热点 **Beetle**：使用 `http://192.168.4.1`
-- 设备已连入局域网：使用路由器分配给设备的 IP
-
-## 配置页归属
-
-设备固件自带：
-
-- `GET /wifi`
-- `GET /pairing`
-- `GET /common.css`
-- `GET /common.js`
-
-也可以使用仓库中的 `configure-ui`，或自定义前端调用同一套 HTTP 接口。

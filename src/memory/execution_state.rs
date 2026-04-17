@@ -130,6 +130,7 @@ pub(crate) struct ProvisionalExecutionStateInput<'a> {
     pub(crate) channel: &'a str,
     pub(crate) user_content: &'a str,
     pub(crate) reply_content: &'a str,
+    pub(crate) reply_requests_input: bool,
     pub(crate) tool_calls: u32,
     pub(crate) now_secs: u64,
     pub(crate) turn_observation: Option<&'a TurnObservationLedger>,
@@ -286,17 +287,29 @@ pub(crate) fn seed_execution_state_from_turn(
     if user_content.is_empty() || reply_content.is_empty() {
         return Ok(false);
     }
+    let reply_requests_input = input.reply_requests_input;
     let mut candidate = ExecutionState {
-        status: if input
-            .turn_observation
-            .and_then(|observation| observation.blocker.as_ref())
-            .is_some()
+        status: if reply_requests_input
+            || input
+                .turn_observation
+                .and_then(|observation| observation.blocker.as_ref())
+                .is_some()
         {
             ExecutionStatus::Blocked
         } else {
             ExecutionStatus::Active
         },
         goal: normalize_field(user_content, EXECUTION_STATE_GOAL_MAX_CHARS),
+        blocker: if reply_requests_input {
+            normalize_field(reply_content, EXECUTION_STATE_FIELD_MAX_CHARS)
+        } else {
+            String::new()
+        },
+        next_action: if reply_requests_input {
+            normalize_field(reply_content, EXECUTION_STATE_FIELD_MAX_CHARS)
+        } else {
+            String::new()
+        },
         last_output: if should_capture_last_output(reply_content) {
             normalize_field(reply_content, EXECUTION_STATE_FIELD_MAX_CHARS)
         } else {
@@ -309,6 +322,7 @@ pub(crate) fn seed_execution_state_from_turn(
         tighten_execution_state_with_recent_observation(&mut candidate, Some(observation));
     }
     if input.tool_calls == 0
+        && !reply_requests_input
         && !execution_state_has_pending_work(&candidate)
         && field_specificity_score(&candidate.goal) < MIN_STRONG_STATE_FIELD_SCORE
     {
@@ -754,7 +768,9 @@ fn merge_execution_state(
         return normalize_execution_state(next, now_secs);
     };
     if same_execution_focus(existing, &next) {
-        if next.goal.is_empty() {
+        if next.goal.is_empty()
+            || field_specificity_score(&next.goal) < MIN_STRONG_STATE_FIELD_SCORE
+        {
             next.goal = existing.goal.clone();
         }
         if next.progress.is_empty() {
@@ -1917,6 +1933,7 @@ mod tests {
                 channel: "qq_channel",
                 user_content: "帮我配置 QQ 邮箱账户",
                 reply_content: "我先检查当前邮件状态，然后继续配置。",
+                reply_requests_input: false,
                 tool_calls: 1,
                 now_secs: 77,
                 turn_observation: Some(&TurnObservationLedger {
@@ -1975,6 +1992,7 @@ mod tests {
                 channel: "qq_channel",
                 user_content: "好",
                 reply_content: "继续处理中。",
+                reply_requests_input: false,
                 tool_calls: 0,
                 now_secs: 12,
                 turn_observation: None,
@@ -1986,6 +2004,49 @@ mod tests {
         let stored = execution_store.get("chat-1").unwrap().unwrap();
         assert_eq!(stored.goal, "配置 QQ 邮箱账户");
         assert_eq!(stored.next_action, "补认证信息并继续配置");
+    }
+
+    #[test]
+    fn provisional_seed_persists_blocked_state_for_input_request_reply() {
+        let execution_store = StubExecutionStateStore {
+            entries: Mutex::new(HashMap::from([(
+                "chat-1".to_string(),
+                ExecutionState {
+                    status: ExecutionStatus::Active,
+                    goal: "配置 QQ 邮箱账户".to_string(),
+                    progress: "已经确认 IMAP/SMTP 入口".to_string(),
+                    next_action: "继续补账户凭据".to_string(),
+                    updated_at: 11,
+                    ..ExecutionState::default()
+                },
+            )])),
+            clears: Mutex::new(0),
+        };
+        let seeded = seed_execution_state_from_turn(
+            &execution_store,
+            ProvisionalExecutionStateInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续",
+                reply_content: "请先提供 QQ 邮箱的授权码，我才能继续配置。",
+                reply_requests_input: true,
+                tool_calls: 0,
+                now_secs: 12,
+                turn_observation: None,
+            },
+        )
+        .unwrap();
+
+        assert!(seeded);
+        let stored = execution_store.get("chat-1").unwrap().unwrap();
+        assert_eq!(stored.status, ExecutionStatus::Blocked);
+        assert_eq!(stored.goal, "配置 QQ 邮箱账户");
+        assert_eq!(stored.blocker, "请先提供 QQ 邮箱的授权码，我才能继续配置。");
+        assert_eq!(
+            stored.next_action,
+            "请先提供 QQ 邮箱的授权码，我才能继续配置。"
+        );
     }
 
     #[test]

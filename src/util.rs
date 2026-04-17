@@ -995,7 +995,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 16 KB | ← heartbeat + thread/runtime snapshots + cron/self-runtime
+// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 64 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
@@ -1076,9 +1076,13 @@ pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 pub const STACK_HTTP_ROUTE_WORKER: usize = 32 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
-/// 该线程不走 TLS，但当前 steady-state 已包含 thread/runtime snapshot 与 cron 自治链，
-/// 不能继续沿用早期 6-8KB 预算。
+/// ESP 侧仍需抠 internal SRAM，保留 16KB；非 ESP 目标虽然不走 TLS，
+/// 但现在已直接承接 delayed-task / write-back / cron 自治链，Linux/host
+/// 不能继续沿用旧的 16KB 预算。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_BG_TIMER: usize = 16 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_BG_TIMER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `restart_defer`：HTTP/CLI 触发的延迟重启线程。
 /// 该线程会做 continuity snapshot 导出、serde、SPIFFS 写回与最终 restart，
@@ -1329,6 +1333,17 @@ mod scrub_credentials_tests {
         let mut out = String::new();
         push_json_string_escaped(&mut out, "a\"\n\t\\b");
         assert_eq!(out, "\"a\\\"\\n\\t\\\\b\"");
+    }
+}
+
+#[cfg(test)]
+mod thread_stack_budget_tests {
+    use super::*;
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn bg_timer_uses_host_stack_budget() {
+        assert_eq!(STACK_BG_TIMER, LINUX_RUSTLS_THREAD_STACK);
     }
 }
 

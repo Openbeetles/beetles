@@ -1303,10 +1303,7 @@ mod tests {
             provider: "imap_smtp".to_string(),
         });
         let remote = OfficeCapabilityRemoteRuntime::new(
-            StubProviderRegistry::new([(
-                "imap_smtp".to_string(),
-                Arc::new(StubProvider),
-            )]),
+            StubProviderRegistry::new([("imap_smtp".to_string(), Arc::new(StubProvider))]),
             store.clone(),
             runtime,
             "mail_provider",
@@ -1330,10 +1327,7 @@ mod tests {
             provider: "imap_smtp".to_string(),
         });
         let remote = OfficeCapabilityRemoteRuntime::new(
-            StubProviderRegistry::new([(
-                "imap_smtp".to_string(),
-                Arc::new(StubProvider),
-            )]),
+            StubProviderRegistry::new([("imap_smtp".to_string(), Arc::new(StubProvider))]),
             store.clone(),
             runtime,
             "mail_provider",

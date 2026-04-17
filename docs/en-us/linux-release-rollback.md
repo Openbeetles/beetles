@@ -1,52 +1,26 @@
-# Linux Agent OS and Package Status
+# Linux Deploy and Rollback
 
 **English** | [中文](../zh-cn/linux-release-rollback.md) | [Doc index](../README.md)
 
-This page describes how Beetle Agent OS is installed, packaged, and rolled back on Linux.
+This page keeps to the deployment and rollback flow that actually exists on Linux today.
 
-This page is for Linux deployment, packaging, and rollback work, not for first-time setup.
+## Common paths after deploy
 
-It is relevant if you are:
-
-- running Beetle on Linux
-- packaging Beetle for Linux
-- managing Linux deployment and rollback
-
-## Current State
-
-- the Linux path already has an independent runtime chain and service-style CLI entrypoints
-- its correct positioning is "a long-running Agent service on low-end Linux SBCs", not a desktop app and not merely a board helper program
-- packaging, service templates, and rollback layout already exist
-- but it should not yet be described as a fully general Linux product shape; the current target is an embedded Linux service lifecycle, not broad distro integration
-
-## If You Are Deploying Manually
-
-Release tarballs include:
-
-- `README.txt`
-- a sample `beetle.service`
-- a sample `beetle.init` with Debian/LSB headers for SysV compatibility paths
-
-A common manual layout is:
-
-- `/opt/beetle/releases/<version>/`
-- a `current` symlink pointing to the active version
-- state stored under `BEETLE_STATE_ROOT` or the default Linux state path
-
-Follow the `README.txt` shipped inside the bundle.
-Today, `./build.sh --deploy-linux` maintains this layout on the target:
+The current deploy script maintains these paths:
 
 - `/opt/beetle/releases/<release>/`
-- `/opt/beetle/current` pointing to the active release
-- `/opt/beetle/beetle` as a compatibility shortcut to the active binary
-- `/var/lib/beetle` as the default state directory
+- `/opt/beetle/current`
+- `/opt/beetle/rollback`
+- `/usr/local/bin/beetle`
+- `/var/lib/beetle`
 
-For non-root deploy accounts:
+In practice:
 
-- the default remote build directory lives under that user's home, for example `/home/beetle/beetle-build`
-- writing `/opt/beetle`, `/var/lib/beetle`, and `/etc/systemd/system` requires remote `sudo`
+- `current` points to the active release
+- `rollback` points to the previous rollback candidate
+- `/usr/local/bin/beetle` is the global command entry
 
-### Service entrypoint and release contract
+## Runtime entrypoints
 
 The Linux service entrypoint is:
 
@@ -56,61 +30,47 @@ The execution-plane entrypoint is:
 
 - `beetle agent`
 
-That means:
+If you use `systemd`, `ExecStart` should point to:
 
-- manual foreground supervisor start should use `beetle supervise`
-- the final `systemd` `ExecStart` should point to `.../beetle supervise`
-- `/opt/beetle/current/beetle` is always the active release binary
-- startup banners now explicitly label `[supervisor]` or `[agent]` so the control-plane process and the execution-plane child are easy to distinguish in logs
-- heartbeat `uptime_secs` now means **beetle process uptime**, not raw Linux host `/proc/uptime`
+- `/opt/beetle/current/beetle supervise`
 
-If a device still has an old unit file or an entrypoint without `supervise`, that is not a broken binary. It is **drift between the service template and the CLI contract**.
+## The three deploy modes
 
-### `current`, `rollback`, and `pending_validation`
+`./build.sh --deploy-linux` currently offers three modes:
 
-`./build.sh --deploy-linux` now maintains:
+1. `Quick deploy`
+   Replace the binary only
+2. `Full deploy`
+   Refresh the binary and service install content
+3. `Smart update`
+   Replace the binary and restart the existing service when appropriate
 
-- `/opt/beetle/current`: the active release
-- `/opt/beetle/rollback`: the previous rollback candidate
-- `/var/lib/beetle/runtime/linux_release/state.json`: Linux rollout state
-- `/var/lib/beetle/runtime/state_schema.json`: state-root schema version
+If a release changes the service entrypoint or service files, do not rely on `Smart update` alone.
 
-Each newly deployed release first enters:
+## How rollback works
+
+A new release first enters:
 
 - `pending_validation`
 
-That means:
+If it stays healthy, it becomes the stable release.
+If it fails quickly and repeatedly during the validation window, Beetle prefers to roll back to `rollback`.
 
-- the new release has become `current`
-- the supervisor watches it through the quick-failure window
-- if it survives, the release is marked `steady`
-- if it fails repeatedly during validation, the supervisor flips `current` back to `rollback`, then exits so the outer service manager restarts Beetle from the rolled-back symlink
+## Where to look during manual checks
 
-### About `smart update`
+- active release: `/opt/beetle/current`
+- rollback candidate: `/opt/beetle/rollback`
+- release state: `/var/lib/beetle/runtime/linux_release/state.json`
+- global command: `/usr/local/bin/beetle`
 
-The deployment modes should be understood as follows:
+## Direct commands
 
-- Quick deploy: replace the binary only; do not touch service state
-- Smart update: replace the binary and restart or preserve an existing service when appropriate; **it does not proactively refresh an old unit file**
-- Full deploy: refresh the binary, service/init templates, and install metadata together
+- show release status: `beetle release status`
+- request rollback: `beetle release rollback`
 
-Therefore:
+## Direct takeaways
 
-- if a release changes the service entrypoint, unit contents, or environment-file contract, do not rely on `smart update` alone
-- use **Full deploy**, or refresh `/etc/systemd/system/beetle.service` explicitly
-
-## CI and Rollback
-
-- releases include checksums and provenance
-- installation and rollback on the target machine are your responsibility
-- CI does not simulate on-machine rollback behavior
-
-On Linux, what really needs rollback is not just one ELF file, but one runtime unit:
-
-- the binary
-- the service/unit template
-- the state-directory contract
-- the `current` / `rollback` symlink targets
-- the rollout state
-
-Only when those move together does Beetle behave like a first-class Linux service instead of "a board program copied onto Linux".
+- The Linux path now runs as a long-running service
+- The real startup entrypoint is `beetle supervise`
+- Rollback is not just swapping one file; it switches back to the previous release layout
+- For hardware setup, do not follow old Linux-only hardware examples; go straight to [hardware-device-config.md](hardware-device-config.md)

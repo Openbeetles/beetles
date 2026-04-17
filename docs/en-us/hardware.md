@@ -1,56 +1,62 @@
-# Hardware and Board Notes
+# Hardware and Boards
 
 **English** | [中文](../zh-cn/hardware.md) | [Doc index](../README.md)
 
-This page covers three practical topics:
+This page keeps to the practical facts you need when choosing hardware.
 
-1. which ESP32-S3 boards are supported
-2. what the Linux Agent OS currently provides
-3. where to look when something goes wrong
+## Current board presets
 
-## ESP32-S3 Supported Boards
+The repo currently ships these board presets:
 
 | BOARD | Flash | PSRAM | Notes |
 |------|-------|-------|------|
-| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
-| `esp32-s3-16mb` | 16MB | 8MB | Default preset |
-| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
+| `esp32-s3-8mb` | 8MB | 8MB | ESP32-S3 |
+| `esp32-s3-16mb` | 16MB | 8MB | ESP32-S3 |
+| `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
+| `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
-- only **ESP32-S3 with PSRAM** is supported by the board presets in this repo
+## How to choose
 
-## Linux Agent OS Status
+- If your main goal is device control and sensors, choose ESP32-S3
+- If you want a higher-end ESP board path, look at ESP32-P4
+- If you want broader expansion and longer-running work, choose Linux
 
-The Linux Agent OS is stable.
+## Common hardware work in Beetle
 
-- channels, memory, tools, and the config/API surface are part of that stable path
-- it is the better fit for fuller Agent OS capabilities, deployment, and integration work
+- GPIO devices
+- PWM devices
+- analog input
+- DHT
+- I2C devices and I2C sensors
+- SPI displays
 
-## Choosing a platform
+Read these next:
 
-- Choose ESP32-S3 when local hardware control is the main goal.
-- Choose Linux when you want fuller Beetle capability and easier integration.
-- Choose ESP32-P4 when you need a higher-end ESP setup.
+- hardware control config: [hardware-device-config.md](hardware-device-config.md)
+- display setup: [display.md](display.md)
 
-## Common Status Checks
+## Extra direction on Linux
 
-| Where | What you learn |
-|-------|----------------|
-| Config UI | Best first stop for normal users |
-| `GET /api/health` | Overall device status |
-| serial logs | Boot info, heartbeat, and warnings |
+Linux also exposes hardware discovery.
+Right now the public discovery path is for USB, with common categories such as:
 
-If you need exact field definitions, read [config-api.md](config-api.md).
+- audio input
+- audio output
+- camera
+- serial
+- HID
 
-## Hardware Device Config
+## Where to check first when something is wrong
 
-If you want the agent to control LEDs, relays, buzzers, sensors, or PWM devices, read:
+- the config UI: check whether the device was found and whether settings were saved
+- [config-api.md](config-api.md): only when you need to inspect the API directly
+- serial or service logs: for boot failure, config failure, or hardware init failure
 
-- [hardware-device-config.md](hardware-device-config.md)
-- [tools.md](tools.md) for `device_control`
-
-## Common Problems
+## Common problems
 
 - `spiffs partition could not be found`
-  Use the project's board preset and partition table.
-- Linux is online but Beetle looks unreachable
-  Make sure you are opening the device's current LAN address.
+  This usually means the wrong board preset or partition table was used.
+- Beetle starts but hardware features do not appear
+  Check that the related config is present and the hardware is actually attached.
+- The screen turns on but looks wrong
+  Go straight to [display.md](display.md).

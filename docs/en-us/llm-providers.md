@@ -1,41 +1,15 @@
-# LLM Providers
+# LLM Setup
 
 [中文](../zh-cn/llm-providers.md) | **English** | [Doc index](../README.md)
 
-This page explains the LLM settings in `config/llm.json`.
+This page answers two practical questions:
 
-It focuses on three questions:
+1. which `provider` values Beetle supports now
+2. how Beetle chooses between multiple sources
 
-1. Which `provider` values are supported?
-2. When can `api_url` be empty?
-3. How are primary and backup sources chosen?
+## Supported `provider` values
 
-## Quick Summary
-
-- Beetle supports multiple LLM sources.
-- You can edit them in the config UI or in `config/llm.json`.
-- Some providers are handled as OpenAI-compatible clients.
-- You can configure a primary source and one or more backups.
-
-## Supported Provider IDs
-
-| Provider ID | Client path | Notes |
-|-------------|-------------|------|
-| `openai` | OpenAI-compatible client | Standard OpenAI path |
-| `openai_compatible` | OpenAI-compatible client | Generic compatible endpoint |
-| `gemini` | OpenAI-compatible client | Vendor-specific handling inside the client |
-| `glm` | OpenAI-compatible client | Zhipu GLM |
-| `qwen` | OpenAI-compatible client | Qwen |
-| `deepseek` | OpenAI-compatible client | DeepSeek |
-| `moonshot` | OpenAI-compatible client | Moonshot |
-| `ollama` | OpenAI-compatible client | Usually local/self-hosted |
-| `anthropic` | Anthropic client | Uses Claude Messages API |
-
-## Important `api_url` Rules
-
-### When `api_url` may be empty
-
-These provider IDs may use an empty `api_url`:
+Current code supports:
 
 - `openai`
 - `openai_compatible`
@@ -45,28 +19,45 @@ These provider IDs may use an empty `api_url`:
 - `deepseek`
 - `moonshot`
 - `ollama`
-
-### When `api_url` must be present
-
 - `anthropic`
-- any unknown provider ID
 
-For `anthropic`, a non-empty `api_url` is treated as the full Messages endpoint URL.
+## How to fill `api_url`
 
-## How multiple sources are picked
+If you want the built-in default endpoint, these can usually leave `api_url` empty:
 
-When more than one source is configured, Beetle first tries your preferred source. If that source is unavailable, it moves on to the next one.
+- `openai`
+- `gemini`
+- `glm`
+- `qwen`
+- `deepseek`
+- `moonshot`
+- `ollama`
+- `anthropic`
 
-The practical rule is:
+If you use your own endpoint, proxy, or hosted service, set `api_url` to that address.
 
-1. try the source you marked as highest priority
-2. if you set a second preferred source, try that next
-3. then continue through the remaining usable sources in list order
+For `openai_compatible`, you will usually want to fill in the actual compatible endpoint you are using.
 
-You do not need to switch sources manually during normal use.
-Just set the order you want.
+## How Beetle picks between sources
 
-## Minimal Examples
+Beetle can keep more than one LLM source at the same time.
+
+By default, it tries them in the order they appear in `llm_sources`.
+
+If you set these fields:
+
+- `llm_router_source_index`
+- `llm_worker_source_index`
+
+then the order becomes:
+
+1. try `llm_router_source_index` first
+2. try `llm_worker_source_index` next
+3. then continue through the rest of the usable list
+
+You do not need to switch sources manually in chat.
+
+## Minimal examples
 
 ### One source
 
@@ -83,7 +74,7 @@ Just set the order you want.
 }
 ```
 
-### Multiple sources with fallback
+### Multiple sources
 
 ```json
 {
@@ -95,25 +86,26 @@ Just set the order you want.
       "api_url": ""
     },
     {
-      "provider": "glm",
+      "provider": "qwen",
       "api_key": "...",
-      "model": "glm-4-flash",
+      "model": "qwen-plus",
       "api_url": ""
     },
     {
       "provider": "ollama",
-      "api_key": "ollama",
-      "model": "qwen2",
+      "api_key": "local",
+      "model": "qwen2.5",
       "api_url": "http://192.168.1.100:11434/v1"
     }
-  ]
+  ],
+  "llm_router_source_index": 0,
+  "llm_worker_source_index": 1
 }
 ```
 
-## Ollama Notes
+## Direct takeaways
 
-- Use `provider: "ollama"`
-- `api_url` is usually `http://<host>:11434/v1`
-- `api_key` can be any non-empty placeholder if the server ignores it
-
-Vendor model names change over time. Treat model names in examples as examples, not guarantees.
+- `llm_sources` must not be empty
+- every source needs at least `provider`, `api_key`, and `model`
+- for local Ollama, the common address is `http://<host>:11434/v1`
+- model names in examples are only examples

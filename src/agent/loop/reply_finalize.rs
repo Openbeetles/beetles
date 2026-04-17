@@ -196,15 +196,6 @@ pub(super) fn finalize_turn(
             };
             (s, false, false, true)
         }
-        WorkerOutcome::Delivered(s) => {
-            let cow = truncate_content_to_max(&s, MAX_CONTENT_LEN);
-            let s = if let Cow::Borrowed(_) = &cow {
-                s
-            } else {
-                cow.into_owned()
-            };
-            (s, false, true, false)
-        }
     };
 
     if !is_interrupt && apply_finalizer {
@@ -448,6 +439,7 @@ pub(super) fn complete_turn(
             .important_message_store
             .set_important_offset_from_end(&msg.chat_id, 1);
     }
+    let reply_requests_input = looks_like_truthful_blocker_or_input_request(&reply_content);
     let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
         && matches!(
@@ -477,6 +469,13 @@ pub(super) fn complete_turn(
                     | crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
                     | crate::agent::request_semantics::ResumeRelation::ResumeActiveTaskRun
             )
+            || (reply_requests_input
+                && matches!(
+                    request_semantics.action_family,
+                    crate::agent::request_semantics::ActionFamily::ActionRequest
+                        | crate::agent::request_semantics::ActionFamily::ActiveAction
+                        | crate::agent::request_semantics::ActionFamily::TaskExecution
+                ))
             || matches!(reply_surface, ReplySurface::TaskExecution)
             || turn_observation
                 .as_ref()
@@ -492,6 +491,7 @@ pub(super) fn complete_turn(
                 channel: msg.channel.as_ref(),
                 user_content: &msg.content,
                 reply_content: &reply_content,
+                reply_requests_input,
                 tool_calls: worker_latency.tool_calls,
                 now_secs,
                 turn_observation: turn_observation.as_ref(),
@@ -565,26 +565,13 @@ pub(super) fn complete_turn(
             .flatten();
         } else if keep_interactive_task_run {
             if let Some(state) = seeded_execution_state.as_ref() {
-                let mut durable_state = state.clone();
-                if looks_like_truthful_blocker_or_input_request(&reply_content)
-                    && durable_state.status == crate::memory::ExecutionStatus::Active
-                {
-                    durable_state.status = crate::memory::ExecutionStatus::Blocked;
-                    if durable_state.blocker.trim().is_empty() {
-                        durable_state.blocker = if !durable_state.next_action.trim().is_empty() {
-                            durable_state.next_action.clone()
-                        } else {
-                            reply_content.trim().to_string()
-                        };
-                    }
-                }
                 match crate::task_execution::upsert_interactive_action_run_record(
                     config.runtime.task_run_store.as_ref(),
                     active_task_run.as_ref(),
                     msg.channel.as_ref(),
                     msg.chat_id.as_ref(),
                     &msg.content,
-                    &durable_state,
+                    state,
                     now_secs,
                 ) {
                     Ok(record) => {
@@ -663,6 +650,8 @@ pub(super) fn complete_turn(
 
     if delivered
         && !super::background_jobs::enqueue_post_reply_maintenance_job(
+            config.runtime.active_work_store.as_ref(),
+            config.runtime.execution_state_store.as_ref(),
             config.runtime.detached_work_store.as_ref(),
             system_inbound_tx,
             &msg,
@@ -685,6 +674,8 @@ pub(super) fn complete_turn(
         && crate::memory::enqueue_self_runtime_post_reply(
             system_inbound_tx,
             config.runtime.detached_work_store.as_ref(),
+            config.runtime.active_work_store.as_ref(),
+            config.runtime.execution_state_store.as_ref(),
             config.runtime.self_continuity_store.as_ref(),
             config.runtime.autonomy_strategy_store.as_ref(),
             config.runtime.self_authored_core_store.as_ref(),
