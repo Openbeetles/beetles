@@ -231,6 +231,14 @@ impl Tool for MessageTool {
             })
             .with_approval_granted(true))
     }
+
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"target":"current","delivery_kind":"supplemental","content":"hi"}"#,
+            r#"{"target":"explicit","channel":"telegram","chat_id":"demo","delivery_kind":"supplemental","content":"hi"}"#,
+            r#"{"target":"current","delivery_kind":"primary","content":"hi"}"#,
+        ]
+    }
 }
 
 #[cfg(test)]

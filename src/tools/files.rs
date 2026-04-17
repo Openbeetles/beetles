@@ -197,6 +197,14 @@ impl Tool for FilesTool {
         Ok(shape)
     }
 
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"path":"skills","mode":"list"}"#,
+            r#"{"path":"skills/demo.md","mode":"read"}"#,
+            r#"{"path":"skills/demo.md","mode":"delete"}"#,
+        ]
+    }
+
     fn capability_contract(&self) -> ToolCapabilityContract {
         ToolCapabilityContract::required(&[
             crate::orchestrator::RUNTIME_CAPABILITY_STORAGE_STATE_FS,

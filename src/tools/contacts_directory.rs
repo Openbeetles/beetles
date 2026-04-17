@@ -397,6 +397,15 @@ impl Tool for ContactsDirectoryTool {
         })
     }
 
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"op":"status"}"#,
+            r#"{"op":"lookup","query":"alice"}"#,
+            r#"{"op":"upsert","display_name":"Alice"}"#,
+            r#"{"op":"delete","id":"demo"}"#,
+        ]
+    }
+
     fn requires_network_for(&self, args: &str) -> Result<bool> {
         let obj = parse_tool_args(args, "tool_contacts_directory_network")?;
         let op = obj

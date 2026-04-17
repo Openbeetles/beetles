@@ -66,6 +66,20 @@ impl ToolEffectClass {
                 | Self::SystemControl
         )
     }
+
+    pub fn conservative_rank(self) -> u8 {
+        match self {
+            Self::ReadOnly => 0,
+            Self::HardwareRead => 1,
+            Self::HostInspection => 2,
+            Self::PersistentStateWrite => 3,
+            Self::VisibleOutbound => 4,
+            Self::ConfigWrite => 5,
+            Self::HardwareActuation => 6,
+            Self::HostExecution => 7,
+            Self::SystemControl => 8,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,7 +103,7 @@ impl ToolRiskLevel {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolApprovalMode {
     #[default]
@@ -127,6 +141,16 @@ impl ToolRollbackKind {
             Self::ConfigRestore => "config_restore",
             Self::ReplayableMutation => "replayable_mutation",
             Self::Irreversible => "irreversible",
+        }
+    }
+
+    pub fn conservative_rank(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::CompensatingWrite => 1,
+            Self::ReplayableMutation => 2,
+            Self::ConfigRestore => 3,
+            Self::Irreversible => 4,
         }
     }
 }
@@ -307,6 +331,34 @@ impl ToolExecutionShape {
     pub fn with_rollback_kind(mut self, rollback_kind: ToolRollbackKind) -> Self {
         self.rollback_kind = rollback_kind;
         self
+    }
+}
+
+pub fn conservative_merge_execution_shapes(
+    left: ToolExecutionShape,
+    right: ToolExecutionShape,
+) -> ToolExecutionShape {
+    let effect_class =
+        if right.effect_class.conservative_rank() > left.effect_class.conservative_rank() {
+            right.effect_class
+        } else {
+            left.effect_class
+        };
+    let risk_level = left.risk_level.max(right.risk_level);
+    let approval_mode = left.approval_mode.max(right.approval_mode);
+    let rollback_kind =
+        if right.rollback_kind.conservative_rank() > left.rollback_kind.conservative_rank() {
+            right.rollback_kind
+        } else {
+            left.rollback_kind
+        };
+    ToolExecutionShape {
+        operation: left.operation,
+        effect_class,
+        risk_level,
+        approval_mode,
+        approval_granted: matches!(approval_mode, ToolApprovalMode::Automatic),
+        rollback_kind,
     }
 }
 

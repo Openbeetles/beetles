@@ -197,4 +197,13 @@ impl Tool for SystemControlTool {
                 .with_approval_granted(confirm),
         })
     }
+
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"op":"status"}"#,
+            r#"{"op":"storage_usage"}"#,
+            r#"{"op":"tool_emergency_stop"}"#,
+            r#"{"op":"request_restart"}"#,
+        ]
+    }
 }

@@ -181,4 +181,12 @@ impl Tool for NetworkScanTool {
             .with_effect_class(effect_class)
             .with_risk_level(risk_level))
     }
+
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"op":"wifi_status"}"#,
+            r#"{"op":"wifi_scan"}"#,
+            r#"{"op":"connectivity_check","host":"example.com"}"#,
+        ]
+    }
 }

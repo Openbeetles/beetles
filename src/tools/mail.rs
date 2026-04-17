@@ -822,6 +822,16 @@ impl Tool for MailTool {
         })
     }
 
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"op":"provider_status"}"#,
+            r#"{"op":"list"}"#,
+            r#"{"op":"get"}"#,
+            r#"{"op":"send"}"#,
+            r#"{"op":"draft"}"#,
+        ]
+    }
+
     fn requires_network_for(&self, args: &str) -> Result<bool> {
         let obj = parse_tool_args(args, "tool_mail_network")?;
         let op = obj

@@ -398,9 +398,9 @@ fn intent_summary(kind: ProgrammableReasoningIntentKind) -> &'static str {
 fn intent_preferred_tools(kind: ProgrammableReasoningIntentKind) -> Vec<String> {
     match kind {
         ProgrammableReasoningIntentKind::MemoryQuery => vec!["lua_memory_query".to_string()],
-        ProgrammableReasoningIntentKind::CapabilityBridge
-        | ProgrammableReasoningIntentKind::CapabilityAtomsExchange => {
-            vec!["lua_tool_bridge".to_string()]
+        ProgrammableReasoningIntentKind::CapabilityBridge => vec!["lua_tool_bridge".to_string()],
+        ProgrammableReasoningIntentKind::CapabilityAtomsExchange => {
+            vec!["capability_atoms_exchange".to_string()]
         }
         ProgrammableReasoningIntentKind::EngineeringSynthesis => {
             vec!["lua_query".to_string()]
@@ -557,10 +557,10 @@ mod tests {
             ProgrammableReasoningStrategy::RequireNativeToolRound
         );
         assert!(intent.runtime_grounding_required);
-        assert!(!intent
-            .preferred_tools
-            .iter()
-            .any(|tool| tool == "lua_query"));
+        assert_eq!(
+            intent.preferred_tools,
+            vec!["capability_atoms_exchange".to_string()]
+        );
     }
 
     #[test]

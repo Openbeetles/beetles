@@ -17,6 +17,8 @@ pub mod board_info;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub mod calendar;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod capability_atoms_exchange;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -164,6 +166,8 @@ pub use board_info::BoardInfoTool;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use calendar::CalendarTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use capability_atoms_exchange::CapabilityAtomsExchangeTool;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -265,7 +269,8 @@ pub use office_status::OfficeStatusTool;
 ))]
 pub use pdf_read::PdfReadTool;
 pub use policy::{
-    ToolApprovalMode, ToolEffectClass, ToolExecutionShape, ToolRiskLevel, ToolRollbackKind,
+    conservative_merge_execution_shapes, ToolApprovalMode, ToolEffectClass, ToolExecutionShape,
+    ToolRiskLevel, ToolRollbackKind,
 };
 pub use policy::{ToolExposure, ToolMetadata, ToolPolicyContext};
 pub use private_garden::PrivateGardenTool;
@@ -573,6 +578,31 @@ pub trait Tool: Send + Sync {
     /// 单次执行的治理形状。默认沿用静态元数据；危险工具可按 args 动态提升风险、要求显式确认等。
     fn execution_shape(&self, _args: &str) -> Result<ToolExecutionShape> {
         Ok(self.metadata().default_execution_shape(self.name()))
+    }
+    /// 动态治理分支的代表性示例；registry catalog/bridge 会用它们计算保守包络。
+    /// Tools with dynamic execution_shape branches should expose representative JSON args here.
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// catalog/bridge 面向上层规划时使用的保守治理形状；默认由 metadata + governance_examples 聚合得出。
+    fn catalog_execution_shape(&self) -> ToolExecutionShape {
+        let mut shape = self.metadata().default_execution_shape(self.name());
+        for args in self.governance_examples() {
+            match self.execution_shape(args) {
+                Ok(example_shape) => {
+                    shape = conservative_merge_execution_shapes(shape, example_shape);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[tool_contract] governance example failed tool={} args={} err={}",
+                        self.name(),
+                        args,
+                        error
+                    );
+                }
+            }
+        }
+        shape
     }
     /// 该工具是否需要网络（HTTP/TLS）；orchestrator 在高压力时拒绝网络工具。
     /// Whether this tool requires network (HTTP/TLS); orchestrator denies network tools under high pressure.

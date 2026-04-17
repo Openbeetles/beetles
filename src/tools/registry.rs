@@ -356,7 +356,7 @@ impl ToolRegistry {
         let mut out = Vec::with_capacity(self.tools.len());
         for (name, entry) in &self.tools {
             let metadata = entry.metadata;
-            let shape = metadata.default_execution_shape(name);
+            let shape = entry.tool.catalog_execution_shape();
             let breaker_tripped = governance
                 .as_ref()
                 .and_then(|state| {
@@ -416,7 +416,7 @@ impl ToolRegistry {
             if !self.is_entry_llm_visible(entry, name, policy, overlay_set.as_ref()) {
                 continue;
             }
-            let shape = entry.metadata.default_execution_shape(name);
+            let shape = entry.tool.catalog_execution_shape();
             out.push(ToolBridgeCatalogEntry {
                 name: (*name).to_string(),
                 description: entry.llm_spec.description.to_string(),
@@ -458,7 +458,7 @@ impl ToolRegistry {
                 allow_when_degraded: false,
             };
         };
-        let default_shape = entry.metadata.default_execution_shape(name);
+        let default_shape = entry.tool.catalog_execution_shape();
         if !self.is_llm_tool_visible(name, policy) {
             return ToolBridgeProposalAssessment {
                 tool_name: name.to_string(),
@@ -1051,6 +1051,9 @@ fn register_audio_tools(
 #[inline(never)]
 fn register_host_only_tools(
     registry: &mut ToolRegistry,
+    #[cfg(target_os = "linux")] skill_storage: &Arc<
+        dyn crate::platform::SkillStorage + Send + Sync,
+    >,
     #[cfg(target_os = "linux")] long_term_memory_store: &Arc<
         dyn crate::memory::LongTermMemoryStore + Send + Sync,
     >,
@@ -1079,6 +1082,10 @@ fn register_host_only_tools(
     )));
     #[cfg(target_os = "linux")]
     registry.register(Box::new(super::LuaToolBridgeTool::default()));
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(super::CapabilityAtomsExchangeTool::new(
+        Arc::clone(skill_storage),
+    )));
 }
 
 pub fn build_default_registry(
@@ -1115,6 +1122,7 @@ pub fn build_default_registry(
     ))]
     register_host_only_tools(
         &mut registry,
+        &services.skill_storage,
         &services.long_term_memory_store,
         &services.continuity_capsule_store,
     );
@@ -1130,7 +1138,7 @@ pub fn build_default_registry(
 mod tests {
     use super::*;
     use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore};
-    use crate::tools::{ToolExposure, ToolMetadata};
+    use crate::tools::{ToolExecutionShape, ToolExposure, ToolMetadata};
     use std::sync::Mutex;
 
     static RUNTIME_CAPABILITY_TEST_GUARD: Mutex<()> = Mutex::new(());
@@ -1353,6 +1361,7 @@ mod tests {
     struct ExplicitIntentTool;
 
     struct SemanticFailureTool;
+    struct DynamicGovernanceTool;
 
     impl Tool for ExplicitIntentTool {
         fn name(&self) -> &'static str {
@@ -1403,8 +1412,58 @@ mod tests {
         }
     }
 
+    impl Tool for DynamicGovernanceTool {
+        fn name(&self) -> &'static str {
+            "dynamic_governance"
+        }
+
+        fn description(&self) -> &str {
+            "dynamic governance sample tool"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_system_ingress(false)
+        }
+
+        fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
+            let obj = crate::tools::parse_tool_args(args, "dynamic_governance_tool")?;
+            let op = obj
+                .get("op")
+                .and_then(|value| value.as_str())
+                .unwrap_or("inspect");
+            Ok(match op {
+                "write" => self
+                    .metadata()
+                    .default_execution_shape("write")
+                    .with_effect_class(ToolEffectClass::PersistentStateWrite)
+                    .with_risk_level(ToolRiskLevel::Medium)
+                    .with_approval_mode(ToolApprovalMode::ExplicitIntent)
+                    .with_approval_granted(false)
+                    .with_rollback_kind(ToolRollbackKind::CompensatingWrite),
+                _ => self.metadata().default_execution_shape("inspect"),
+            })
+        }
+
+        fn governance_examples(&self) -> &'static [&'static str] {
+            &[r#"{"op":"inspect"}"#, r#"{"op":"write"}"#]
+        }
+    }
+
     #[derive(Default)]
     struct MemoryStateFs {
+        files: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+    }
+
+    #[derive(Default)]
+    struct StubSkillStorage {
         files: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
     }
 
@@ -1457,6 +1516,43 @@ mod tests {
                 }
             }
             Ok(names.into_iter().collect())
+        }
+    }
+
+    impl crate::platform::SkillStorage for StubSkillStorage {
+        fn list_names(&self) -> Result<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keys()
+                .cloned()
+                .collect())
+        }
+
+        fn read(&self, name: &str) -> Result<Vec<u8>> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::config("registry_test_skill_storage_read", "missing"))
+        }
+
+        fn write(&self, name: &str, content: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(name.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(name);
+            Ok(())
         }
     }
 
@@ -1635,6 +1731,17 @@ mod tests {
         assert!(ctx.tool_registry.get("lua_state_machine_checker").is_some());
     }
 
+    #[test]
+    fn default_registry_registers_capability_atoms_exchange_tool() {
+        let mut registry = ToolRegistry::new();
+        let skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync> =
+            Arc::new(StubSkillStorage::default());
+        registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
+            skill_storage,
+        )));
+        assert!(registry.get("capability_atoms_exchange").is_some());
+    }
+
     #[cfg(feature = "capability_office")]
     #[test]
     fn default_registry_registers_documents_tool() {
@@ -1717,6 +1824,165 @@ mod tests {
             .map(|entry| entry.name)
             .collect::<Vec<_>>();
         assert_eq!(system_names, vec!["visible".to_string()]);
+    }
+
+    #[test]
+    fn tool_catalog_uses_governance_examples_to_compute_conservative_shape() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DynamicGovernanceTool));
+
+        let catalog_entry = registry
+            .tool_catalog()
+            .expect("tool catalog")
+            .into_iter()
+            .find(|entry| entry.name == "dynamic_governance")
+            .expect("dynamic_governance entry");
+        assert_eq!(catalog_entry.effect_class, "persistent_state_write");
+        assert_eq!(catalog_entry.risk_level, "medium");
+        assert_eq!(catalog_entry.approval_mode, "explicit_intent");
+
+        let bridge_entry = registry
+            .tool_bridge_catalog_for_policy(&ToolPolicyContext::new(
+                crate::bus::IngressKind::User,
+                "telegram",
+            ))
+            .into_iter()
+            .find(|entry| entry.name == "dynamic_governance")
+            .expect("dynamic_governance bridge entry");
+        assert_eq!(
+            bridge_entry.effect_class,
+            ToolEffectClass::PersistentStateWrite
+        );
+        assert_eq!(bridge_entry.risk_level, ToolRiskLevel::Medium);
+        assert_eq!(bridge_entry.approval_mode, ToolApprovalMode::ExplicitIntent);
+    }
+
+    #[test]
+    fn capability_atoms_exchange_catalog_reports_governed_write_and_stays_out_of_system_ingress() {
+        let mut registry = ToolRegistry::new();
+        let skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync> =
+            Arc::new(StubSkillStorage::default());
+        registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
+            Arc::clone(&skill_storage),
+        )));
+        let catalog_entry = registry
+            .tool_catalog()
+            .expect("tool catalog")
+            .into_iter()
+            .find(|entry| entry.name == "capability_atoms_exchange")
+            .expect("capability_atoms_exchange catalog entry");
+        assert_eq!(catalog_entry.effect_class, "persistent_state_write");
+        assert_eq!(catalog_entry.risk_level, "medium");
+        assert_eq!(catalog_entry.approval_mode, "explicit_intent");
+        assert!(catalog_entry.llm_visible_user);
+        assert!(!catalog_entry.llm_visible_system);
+        assert!(!catalog_entry.llm_visible_internal_system);
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let user_bridge_entry = registry
+            .tool_bridge_catalog_for_policy(&user)
+            .into_iter()
+            .find(|entry| entry.name == "capability_atoms_exchange")
+            .expect("capability_atoms_exchange bridge entry");
+        assert_eq!(
+            user_bridge_entry.effect_class,
+            crate::tools::ToolEffectClass::PersistentStateWrite
+        );
+        assert_eq!(
+            user_bridge_entry.approval_mode,
+            crate::tools::ToolApprovalMode::ExplicitIntent
+        );
+
+        let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
+        let system_names = registry
+            .tool_bridge_catalog_for_policy(&system)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert!(!system_names
+            .iter()
+            .any(|name| name == "capability_atoms_exchange"));
+    }
+
+    #[test]
+    fn capability_atoms_exchange_import_requires_explicit_confirm_in_assessment() {
+        let mut registry = ToolRegistry::new();
+        let skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync> =
+            Arc::new(StubSkillStorage::default());
+        registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
+            skill_storage,
+        )));
+        let registry = registry.with_execution_governance(Arc::new(ToolExecutionGovernance::new(
+            Arc::new(MemoryStateFs::default()),
+        )));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+
+        let denied = registry.assess_tool_request_proposal(
+            "capability_atoms_exchange",
+            &serde_json::json!({
+                "op": "import",
+                "envelope": {"version":1}
+            }),
+            &policy,
+        );
+        assert_eq!(denied.decision, ToolBridgeProposalDecision::Denied);
+        assert!(denied.summary.contains("explicit_intent_required"));
+
+        let allowed = registry
+            .assess_llm_execution(
+                "capability_atoms_exchange",
+                r#"{"op":"import","confirm":true,"envelope":{"version":1}}"#,
+                &policy,
+            )
+            .expect("assess import");
+        let permit = match allowed {
+            ToolExecutionGateDecision::Allow(permit) => permit,
+            other => panic!("expected allow, got {other:?}"),
+        };
+        assert_eq!(
+            permit.shape().approval_mode,
+            crate::tools::ToolApprovalMode::ExplicitIntent
+        );
+        assert!(permit.shape().approval_granted);
+    }
+
+    #[test]
+    fn production_tools_with_dynamic_execution_shape_declare_contract_truth_source() {
+        let tools_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools");
+        let mut missing = Vec::new();
+        for entry in std::fs::read_dir(&tools_dir).expect("read tools dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if matches!(
+                file_name,
+                "mod.rs"
+                    | "registry.rs"
+                    | "policy.rs"
+                    | "execution_governance.rs"
+                    | "state_file_guard.rs"
+                    | "http_bridge.rs"
+            ) {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("read tool source");
+            if content.contains("fn execution_shape(")
+                && !content.contains("fn governance_examples(")
+                && !content.contains("fn catalog_execution_shape(")
+            {
+                missing.push(file_name.to_string());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "dynamic execution_shape tools missing governance truth source: {missing:?}"
+        );
     }
 
     #[test]

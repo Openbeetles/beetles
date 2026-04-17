@@ -44,6 +44,7 @@ pub struct ProgrammableReasoningUsageAnalytics {
     pub recent_total_events: usize,
     pub recent_total_attempts: usize,
     pub recent_attention_events: usize,
+    pub recent_governance_holds: usize,
     pub recent_succeeded: usize,
     pub recent_failed: usize,
     pub recent_denied: usize,
@@ -461,7 +462,7 @@ pub fn summarize_programmable_reasoning_operator(
     snapshot: &ProgrammableReasoningOperatorSnapshot,
 ) -> String {
     format!(
-        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} atoms_total={} atoms_local={} atoms_pending={} atoms_adopted={} | demos={} recent_events={} tool_attempts={} arena_revised={} arena_hold={} attention={} branch_replays={} arena_replays={} doctrine_replays={} genome_replays={} capability_atom_replays={}",
+        "{} | backend={:?} | execution_enabled={} | runtime_skills={} validated={} pending_crystals={} promoted_crystals={} rejected_crystals={} | doctrine_stable={} doctrine_pending={} genome_lineages={} genome_retired={} genome_diffs={} atoms_total={} atoms_local={} atoms_pending={} atoms_adopted={} | demos={} recent_events={} tool_attempts={} governance_holds={} arena_revised={} arena_hold={} attention={} branch_replays={} arena_replays={} doctrine_replays={} genome_replays={} capability_atom_replays={}",
         programmable_reasoning_stage_label(snapshot.stage),
         snapshot.runtime_contract.execution_backend,
         snapshot.runtime_contract.execution_enabled,
@@ -482,6 +483,7 @@ pub fn summarize_programmable_reasoning_operator(
         snapshot.product_surface.demo_scenarios.len(),
         snapshot.usage_analytics.recent_total_events,
         snapshot.usage_analytics.recent_total_attempts,
+        snapshot.usage_analytics.recent_governance_holds,
         snapshot.adversarial_arena.summary.revised,
         snapshot.adversarial_arena.summary.held_for_clarification,
         snapshot.maintenance_digest.attention_event_count,

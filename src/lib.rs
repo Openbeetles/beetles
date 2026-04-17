@@ -188,6 +188,8 @@ pub use reasoning::{
     StateMachineTransition, StateNodeRole, ToolRequestProposal, ToolRequestResult,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use tools::CapabilityAtomsExchangeTool;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaDatasheetDistillTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tools::LuaMemoryQueryTool;

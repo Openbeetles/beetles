@@ -313,6 +313,16 @@ impl Tool for OfficeConfigTool {
                 .with_rollback_kind(ToolRollbackKind::None),
         })
     }
+
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[
+            r#"{"op":"inspect"}"#,
+            r#"{"op":"draft_accounts"}"#,
+            r#"{"op":"commit_accounts"}"#,
+            r#"{"op":"commit_credentials"}"#,
+            r#"{"op":"revoke"}"#,
+        ]
+    }
 }
 
 fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()> {

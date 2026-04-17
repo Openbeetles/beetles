@@ -156,6 +156,10 @@ impl Tool for ModelConfigTool {
                 .with_rollback_kind(ToolRollbackKind::None),
         })
     }
+
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[r#"{"op":"get"}"#, r#"{"op":"set"}"#]
+    }
 }
 
 /// Recursively strip api_key fields from JSON value.

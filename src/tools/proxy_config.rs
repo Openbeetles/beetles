@@ -161,4 +161,8 @@ impl Tool for ProxyConfigTool {
                 .with_rollback_kind(ToolRollbackKind::None),
         })
     }
+
+    fn governance_examples(&self) -> &'static [&'static str] {
+        &[r#"{"op":"get"}"#, r#"{"op":"set"}"#, r#"{"op":"clear"}"#]
+    }
 }

@@ -327,4 +327,8 @@ impl Tool for DeviceControlTool {
                 ToolRollbackKind::None
             }))
     }
+
+    fn catalog_execution_shape(&self) -> ToolExecutionShape {
+        self.metadata().default_execution_shape(self.name())
+    }
 }

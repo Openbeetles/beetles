@@ -353,7 +353,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.key_memory_count,
     ));
     out.push_str(&format!(
-        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n  programmable_reasoning_product_headline: {}\n  programmable_reasoning_demo_scenarios: {}\n  programmable_reasoning_doctrine_headline: {}\n  programmable_reasoning_genome_headline: {}\n  programmable_reasoning_tension_headline: {}\n  programmable_reasoning_recent_events: {}\n  programmable_reasoning_digest_status: {}\n  programmable_reasoning_branch_replays: {}\n  programmable_reasoning_arena_replays: {}\n",
+        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n  programmable_reasoning_product_headline: {}\n  programmable_reasoning_demo_scenarios: {}\n  programmable_reasoning_doctrine_headline: {}\n  programmable_reasoning_genome_headline: {}\n  programmable_reasoning_tension_headline: {}\n  programmable_reasoning_recent_events: {}\n  programmable_reasoning_governance_holds: {}\n  programmable_reasoning_digest_status: {}\n  programmable_reasoning_branch_replays: {}\n  programmable_reasoning_arena_replays: {}\n  programmable_reasoning_doctrine_replays: {}\n  programmable_reasoning_genome_replays: {}\n  programmable_reasoning_capability_atom_replays: {}\n",
         match snapshot.programmable_reasoning.stage {
             crate::ProgrammableReasoningStage::ConstitutionOnly => "constitution_only",
             crate::ProgrammableReasoningStage::TaskScriptingBaseline => "task_scripting_baseline",
@@ -395,9 +395,28 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.programmable_reasoning.inspection.genome.headline,
         snapshot.programmable_reasoning.inspection.tension.headline,
         snapshot.programmable_reasoning.timeline.recent_events.len(),
+        snapshot
+            .programmable_reasoning
+            .usage_analytics
+            .recent_governance_holds,
         snapshot.programmable_reasoning.maintenance_digest.status,
         snapshot.programmable_reasoning.replay.recent_branch_replays.len(),
         snapshot.programmable_reasoning.replay.recent_arena_replays.len(),
+        snapshot
+            .programmable_reasoning
+            .replay
+            .recent_doctrine_replays
+            .len(),
+        snapshot
+            .programmable_reasoning
+            .replay
+            .recent_genome_replays
+            .len(),
+        snapshot
+            .programmable_reasoning
+            .replay
+            .recent_capability_atom_replays
+            .len(),
     ));
     out.push_str(&format!(
         "  workflow_recent_records: {}\n  workflow_executed: {}\n  workflow_deferred: {}\n  workflow_suppressed: {}\n  workflow_no_trigger: {}\n  workflow_failed: {}\n",
@@ -676,6 +695,9 @@ fn build_programmable_reasoning_usage_analytics(
                             }
                         }
                     }
+                    ProgrammableReasoningRecordBucket::GovernanceHold => {
+                        usage.recent_governance_holds += 1;
+                    }
                     ProgrammableReasoningRecordBucket::Failed => {
                         usage.recent_failed += 1;
                         if let Some(tool_name) = record.tool_name.as_deref() {
@@ -704,6 +726,12 @@ fn build_programmable_reasoning_usage_analytics(
             }
             ProgrammableReasoningActivityKind::TurnStage
             | ProgrammableReasoningActivityKind::AssetLifecycle => {
+                if matches!(
+                    status_bucket,
+                    ProgrammableReasoningRecordBucket::GovernanceHold
+                ) {
+                    usage.recent_governance_holds += 1;
+                }
                 let entry = stage_counts
                     .entry(record.activity_name.clone())
                     .or_default();
@@ -1039,7 +1067,7 @@ fn programmable_reasoning_doctrine_activity_record(
         detail: summarize_runtime_skill_doctrine_replay(record),
         attention_required: record.revision_pending,
         bucket: if record.revision_pending {
-            ProgrammableReasoningRecordBucket::Failed
+            ProgrammableReasoningRecordBucket::GovernanceHold
         } else {
             ProgrammableReasoningRecordBucket::Succeeded
         },
@@ -1085,7 +1113,7 @@ fn programmable_reasoning_capability_atom_activity_record(
         detail: summarize_capability_atom_replay(record),
         attention_required,
         bucket: if attention_required {
-            ProgrammableReasoningRecordBucket::Denied
+            ProgrammableReasoningRecordBucket::GovernanceHold
         } else {
             ProgrammableReasoningRecordBucket::Succeeded
         },
@@ -1242,6 +1270,7 @@ fn summarize_capability_atom_replay(record: &crate::skills::CapabilityAtomRecord
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProgrammableReasoningRecordBucket {
     Succeeded,
+    GovernanceHold,
     Failed,
     Denied,
     ResourceDenied,
@@ -1438,6 +1467,7 @@ fn is_programmable_reasoning_tool(tool_name: &str) -> bool {
         "lua_query"
             | "lua_memory_query"
             | "lua_tool_bridge"
+            | "capability_atoms_exchange"
             | "lua_datasheet_distill"
             | "lua_register_table_helper"
             | "lua_protocol_frame_helper"
@@ -2161,6 +2191,9 @@ mod tests {
         assert_eq!(usage.recent_total_events, 3);
         assert_eq!(usage.recent_total_attempts, 0);
         assert_eq!(usage.recent_attention_events, 1);
+        assert_eq!(usage.recent_governance_holds, 1);
+        assert_eq!(usage.recent_failed, 0);
+        assert_eq!(usage.recent_denied, 0);
         assert!(usage.tool_counts.is_empty());
         assert!(usage.stage_counts.iter().any(|entry| entry.stage_name
             == "doctrine_genome_evolution"
@@ -2197,6 +2230,154 @@ mod tests {
         assert!(digest
             .headline
             .contains("3 recent programmable reasoning events, 1 need attention"));
+    }
+
+    #[test]
+    fn render_operator_status_text_reports_full_programmable_reasoning_replay_surface() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        use crate::memory::{
+            build_turn_ledger_start, TurnAdversarialArenaClaimLedger, TurnAdversarialArenaLedger,
+            TurnCounterfactualBranchLedger, TurnCounterfactualLedger,
+            TurnCounterfactualSnapshotLedger, TurnLedgerStatus,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let topic = format!("operator_status_text_replay_{unique}");
+        let chat_id = format!("operator-status-text-{unique}");
+        let skill_name = crate::skills::runtime_skill_name_for_topic(&topic);
+
+        crate::skills::upsert_runtime_skill(
+            ctx.platform.skill_storage().as_ref(),
+            &crate::skills::RuntimeSkillWrite {
+                name: skill_name.clone(),
+                topic: topic.clone(),
+                title: "Operator text replay".to_string(),
+                summary: "Keep doctrine, genome, and capability replay visible in text mode."
+                    .to_string(),
+                content: "1. inspect doctrine\n2. record lineage\n3. sync atom".to_string(),
+                citations: vec!["transcript:chat#message=1".to_string()],
+                source_chat_id: Some(chat_id.clone()),
+                observed_at: 6_300_000_000,
+            },
+        )
+        .expect("write runtime skill");
+        crate::skills::record_runtime_skill_outcomes(
+            ctx.platform.skill_storage().as_ref(),
+            std::slice::from_ref(&skill_name),
+            crate::skills::RuntimeSkillReuseOutcome::Succeeded,
+            6_300_000_100,
+            "validated doctrine",
+        )
+        .expect("record runtime skill outcome");
+        crate::skills::sync_capability_atoms_from_runtime_skills(
+            ctx.platform.skill_storage().as_ref(),
+            6_300_000_200,
+        )
+        .expect("sync capability atoms");
+
+        ctx.session_store
+            .append(&chat_id, "user", "replay the programmable reasoning turn")
+            .expect("write session");
+
+        let mut branch_ledger = build_turn_ledger_start(
+            "req-operator-text-branch",
+            "qq_channel",
+            IngressKind::User,
+            "Replay the programmable reasoning turn",
+            6_300_000_300_000,
+        );
+        branch_ledger.status = TurnLedgerStatus::Answered;
+        branch_ledger.updated_at_ms = 6_300_000_300_120;
+        branch_ledger.finished_at_ms = 6_300_000_300_120;
+        branch_ledger.counterfactual = Some(TurnCounterfactualLedger {
+            summary: "Compared guarded tool execution against a direct reply.".to_string(),
+            snapshot: TurnCounterfactualSnapshotLedger {
+                reasoning_kind: "counterfactual_sandbox".to_string(),
+                reasoning_strategy: "branch_compare".to_string(),
+                confidence: 91,
+                ..TurnCounterfactualSnapshotLedger::default()
+            },
+            selected_branch: TurnCounterfactualBranchLedger {
+                branch: "guarded_tool".to_string(),
+                score: 89,
+                summary: "Tool path preserved replayability.".to_string(),
+                ..TurnCounterfactualBranchLedger::default()
+            },
+            alternatives: vec![TurnCounterfactualBranchLedger {
+                branch: "direct_reply".to_string(),
+                score: 35,
+                summary: "Direct reply would hide the reasoning trail.".to_string(),
+                ..TurnCounterfactualBranchLedger::default()
+            }],
+        });
+        ctx.platform
+            .turn_ledger_store()
+            .set(&chat_id, &branch_ledger)
+            .expect("write branch ledger");
+
+        let mut arena_ledger = build_turn_ledger_start(
+            "req-operator-text-arena",
+            "qq_channel",
+            IngressKind::User,
+            "Adjudicate the programmable reasoning replay",
+            6_300_000_300_200,
+        );
+        arena_ledger.status = TurnLedgerStatus::Answered;
+        arena_ledger.updated_at_ms = 6_300_000_300_360;
+        arena_ledger.finished_at_ms = 6_300_000_300_360;
+        arena_ledger.adversarial_arena = Some(TurnAdversarialArenaLedger {
+            subject_kind: "capability_atom".to_string(),
+            disposition: "approve".to_string(),
+            summary: "Arena approved the exchange-ready atom.".to_string(),
+            winner: TurnAdversarialArenaClaimLedger {
+                role: "defender".to_string(),
+                label: "defender".to_string(),
+                evidence_score: 86,
+                summary: "The atom preserved audited lineage.".to_string(),
+                ..TurnAdversarialArenaClaimLedger::default()
+            },
+            defender: TurnAdversarialArenaClaimLedger {
+                role: "defender".to_string(),
+                label: "defender".to_string(),
+                evidence_score: 86,
+                summary: "Adopt the verified capability atom.".to_string(),
+                ..TurnAdversarialArenaClaimLedger::default()
+            },
+            attacker: TurnAdversarialArenaClaimLedger {
+                role: "attacker".to_string(),
+                label: "attacker".to_string(),
+                evidence_score: 51,
+                summary: "Requested more local evidence.".to_string(),
+                ..TurnAdversarialArenaClaimLedger::default()
+            },
+        });
+        ctx.platform
+            .turn_ledger_store()
+            .set(&format!("{chat_id}-arena"), &arena_ledger)
+            .expect("write arena ledger");
+
+        let config = ctx.config();
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: ctx.platform.as_ref(),
+            tool_registry: ctx.tool_registry.as_ref(),
+        })
+        .expect("operator status");
+        let rendered = render_operator_status_text(&snapshot);
+
+        assert!(rendered.contains("programmable_reasoning_branch_replays: "));
+        assert!(rendered.contains("programmable_reasoning_arena_replays: "));
+        assert!(rendered.contains("programmable_reasoning_doctrine_replays: "));
+        assert!(rendered.contains("programmable_reasoning_genome_replays: "));
+        assert!(rendered.contains("programmable_reasoning_capability_atom_replays: "));
     }
 
     #[test]
