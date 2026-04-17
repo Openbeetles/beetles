@@ -197,6 +197,21 @@ mod tests {
             parsed["programmable_reasoning"]["execution_enabled"].as_bool(),
             Some(cfg!(target_os = "linux"))
         );
+        assert!(parsed["programmable_reasoning"]
+            .get("product_headline")
+            .is_some());
+        assert_eq!(
+            parsed["programmable_reasoning"]["demo_scenario_count"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            parsed["programmable_reasoning"]["inspection_ready"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            parsed["programmable_reasoning"]["replay_ready"].as_bool(),
+            Some(true)
+        );
         assert!(parsed.get("initiative").is_none());
         assert!(parsed.get("presence").is_none());
         assert!(parsed.get("runtime_mode").is_none());

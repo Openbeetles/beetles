@@ -12,7 +12,9 @@ use crate::platform::memory_operator_surface::{
     build_memory_operator_surface_with_capabilities, render_memory_operator_surface_text,
     MemoryOperatorSurfaceSummary,
 };
-use crate::reasoning::summarize_programmable_reasoning_operator;
+use crate::reasoning::{
+    programmable_reasoning_inspection_views, summarize_programmable_reasoning_operator,
+};
 use crate::runtime;
 use crate::skills::{
     build_capability_atom_operator_summary, build_runtime_skill_doctrine_snapshot,
@@ -199,6 +201,16 @@ pub fn build_operator_status(
         &programmable_reasoning.usage_analytics,
         &programmable_reasoning.timeline,
     );
+    programmable_reasoning.replay = build_programmable_reasoning_replay_inspection(
+        input.platform.session_store().as_ref(),
+        input.platform.turn_ledger_store().as_ref(),
+    )?;
+    programmable_reasoning.inspection = programmable_reasoning_inspection_views(
+        &programmable_reasoning.doctrine,
+        &programmable_reasoning.genome,
+        &programmable_reasoning.adversarial_arena,
+        &programmable_reasoning.maintenance_digest,
+    );
     programmable_reasoning.operator_summary =
         summarize_programmable_reasoning_operator(&programmable_reasoning);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -311,7 +323,7 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.key_memory_count,
     ));
     out.push_str(&format!(
-        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n  programmable_reasoning_recent_events: {}\n  programmable_reasoning_digest_status: {}\n",
+        "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n  programmable_reasoning_product_headline: {}\n  programmable_reasoning_demo_scenarios: {}\n  programmable_reasoning_doctrine_headline: {}\n  programmable_reasoning_genome_headline: {}\n  programmable_reasoning_tension_headline: {}\n  programmable_reasoning_recent_events: {}\n  programmable_reasoning_digest_status: {}\n  programmable_reasoning_branch_replays: {}\n  programmable_reasoning_arena_replays: {}\n",
         match snapshot.programmable_reasoning.stage {
             crate::ProgrammableReasoningStage::ConstitutionOnly => "constitution_only",
             crate::ProgrammableReasoningStage::TaskScriptingBaseline => "task_scripting_baseline",
@@ -343,8 +355,19 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             crate::ProgrammableReasoningExecutionBackend::LuaSandbox => "lua_sandbox",
         },
         snapshot.programmable_reasoning.operator_summary,
+        snapshot.programmable_reasoning.product_surface.headline,
+        snapshot
+            .programmable_reasoning
+            .product_surface
+            .demo_scenarios
+            .len(),
+        snapshot.programmable_reasoning.inspection.doctrine.headline,
+        snapshot.programmable_reasoning.inspection.genome.headline,
+        snapshot.programmable_reasoning.inspection.tension.headline,
         snapshot.programmable_reasoning.timeline.recent_events.len(),
         snapshot.programmable_reasoning.maintenance_digest.status,
+        snapshot.programmable_reasoning.replay.recent_branch_replays.len(),
+        snapshot.programmable_reasoning.replay.recent_arena_replays.len(),
     ));
     out.push_str(&format!(
         "  workflow_recent_records: {}\n  workflow_executed: {}\n  workflow_deferred: {}\n  workflow_suppressed: {}\n  workflow_no_trigger: {}\n  workflow_failed: {}\n",
@@ -596,6 +619,121 @@ fn build_programmable_reasoning_maintenance_digest(
         last_event_status: last_event.map(|event| event.status.clone()),
         attention_tools,
     }
+}
+
+const PROGRAMMABLE_REASONING_REPLAY_LEDGER_LIMIT_PER_CHAT: usize = 4;
+const PROGRAMMABLE_REASONING_BRANCH_REPLAY_LIMIT: usize = 6;
+const PROGRAMMABLE_REASONING_ARENA_REPLAY_LIMIT: usize = 6;
+
+fn build_programmable_reasoning_replay_inspection(
+    session_store: &dyn crate::memory::SessionStore,
+    turn_ledger_store: &dyn crate::memory::TurnLedgerStore,
+) -> crate::error::Result<crate::ProgrammableReasoningReplayInspection> {
+    let mut chat_ids = session_store.list_chat_ids()?;
+    chat_ids.sort();
+    chat_ids.dedup();
+
+    let mut branch_replays = Vec::new();
+    let mut arena_replays = Vec::new();
+
+    for chat_id in chat_ids {
+        let ledgers = turn_ledger_store.list_recent(
+            &chat_id,
+            PROGRAMMABLE_REASONING_REPLAY_LEDGER_LIMIT_PER_CHAT,
+        )?;
+        for ledger in ledgers {
+            if let Some(record) = branch_replay_record_from_ledger(&chat_id, &ledger) {
+                branch_replays.push(record);
+            }
+            if let Some(record) = arena_replay_record_from_ledger(&chat_id, &ledger) {
+                arena_replays.push(record);
+            }
+        }
+    }
+
+    branch_replays.sort_by(|left, right| {
+        right
+            .recorded_at_ms
+            .cmp(&left.recorded_at_ms)
+            .then_with(|| left.chat_id.cmp(&right.chat_id))
+            .then_with(|| left.selected_branch.cmp(&right.selected_branch))
+    });
+    arena_replays.sort_by(|left, right| {
+        right
+            .recorded_at_ms
+            .cmp(&left.recorded_at_ms)
+            .then_with(|| left.chat_id.cmp(&right.chat_id))
+            .then_with(|| left.winner.cmp(&right.winner))
+    });
+
+    let branch_replays_retained = branch_replays.len();
+    let arena_replays_retained = arena_replays.len();
+    branch_replays.truncate(PROGRAMMABLE_REASONING_BRANCH_REPLAY_LIMIT);
+    arena_replays.truncate(PROGRAMMABLE_REASONING_ARENA_REPLAY_LIMIT);
+
+    Ok(crate::ProgrammableReasoningReplayInspection {
+        branch_replays_retained,
+        recent_branch_replays: branch_replays,
+        arena_replays_retained,
+        recent_arena_replays: arena_replays,
+    })
+}
+
+fn branch_replay_record_from_ledger(
+    chat_id: &str,
+    ledger: &crate::memory::TurnLedger,
+) -> Option<crate::ProgrammableReasoningBranchReplayRecord> {
+    let counterfactual = ledger.counterfactual.as_ref()?;
+    if !counterfactual.is_meaningful() {
+        return None;
+    }
+    let rejected_branches = counterfactual
+        .alternatives
+        .iter()
+        .filter(|branch| branch.is_meaningful())
+        .filter_map(|branch| {
+            let label = branch.branch.trim();
+            (!label.is_empty()).then(|| label.to_string())
+        })
+        .collect::<Vec<_>>();
+    Some(crate::ProgrammableReasoningBranchReplayRecord {
+        recorded_at_ms: crate::memory::turn_ledger_observed_at_ms(ledger),
+        channel: ledger.channel.clone(),
+        chat_id: chat_id.to_string(),
+        user_preview: ledger.user_preview.clone(),
+        reasoning_strategy: counterfactual
+            .snapshot
+            .reasoning_strategy
+            .trim()
+            .to_string(),
+        selected_branch: counterfactual.selected_branch.branch.trim().to_string(),
+        selected_branch_score: counterfactual.selected_branch.score,
+        rejected_branches,
+        outcome: ledger.status.label().to_string(),
+        summary: counterfactual.summary.trim().to_string(),
+    })
+}
+
+fn arena_replay_record_from_ledger(
+    chat_id: &str,
+    ledger: &crate::memory::TurnLedger,
+) -> Option<crate::ProgrammableReasoningArenaReplayRecord> {
+    let arena = ledger.adversarial_arena.as_ref()?;
+    if !arena.is_meaningful() {
+        return None;
+    }
+    Some(crate::ProgrammableReasoningArenaReplayRecord {
+        recorded_at_ms: crate::memory::turn_ledger_observed_at_ms(ledger),
+        channel: ledger.channel.clone(),
+        chat_id: chat_id.to_string(),
+        user_preview: ledger.user_preview.clone(),
+        subject_kind: arena.subject_kind.trim().to_string(),
+        disposition: arena.disposition.trim().to_string(),
+        winner: arena.winner.label.trim().to_string(),
+        attacker: arena.attacker.label.trim().to_string(),
+        defender: arena.defender.label.trim().to_string(),
+        summary: arena.summary.trim().to_string(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1163,6 +1301,197 @@ mod tests {
                 crystals.promoted_candidates,
                 crystals.rejected_candidates
             )));
+        assert_eq!(
+            snapshot
+                .programmable_reasoning
+                .product_surface
+                .demo_scenarios
+                .len(),
+            3
+        );
+        assert_eq!(
+            snapshot
+                .programmable_reasoning
+                .inspection
+                .doctrine
+                .stable_clauses,
+            snapshot.programmable_reasoning.doctrine.stable_clauses
+        );
+        assert_eq!(
+            snapshot
+                .programmable_reasoning
+                .inspection
+                .genome
+                .active_lineages,
+            snapshot.programmable_reasoning.genome.active_lineages
+        );
+        assert!(!snapshot
+            .programmable_reasoning
+            .inspection
+            .doctrine
+            .headline
+            .is_empty());
+        assert!(!snapshot
+            .programmable_reasoning
+            .inspection
+            .genome
+            .headline
+            .is_empty());
+        assert!(!snapshot
+            .programmable_reasoning
+            .inspection
+            .doctrine
+            .highlighted_topics
+            .is_empty());
+        assert!(!snapshot
+            .programmable_reasoning
+            .inspection
+            .genome
+            .highlighted_skills
+            .is_empty());
+    }
+
+    #[test]
+    fn build_operator_status_exposes_programmable_reasoning_replay_views() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        use crate::memory::{
+            build_turn_ledger_start, TurnAdversarialArenaClaimLedger, TurnAdversarialArenaLedger,
+            TurnCounterfactualBranchLedger, TurnCounterfactualLedger,
+            TurnCounterfactualSnapshotLedger, TurnLedgerStatus,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        let config = AppConfig::load_from_env();
+        let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let tool_registry = crate::tools::ToolRegistry::new();
+        let chat_branch = format!("replay-branch-{unique}");
+        let chat_arena = format!("replay-arena-{unique}");
+
+        platform
+            .session_store()
+            .append(&chat_branch, "user", "compile the reasoning replay")
+            .expect("write branch session");
+        platform
+            .session_store()
+            .append(&chat_arena, "user", "adjudicate the replay claim")
+            .expect("write arena session");
+
+        let mut branch_ledger = build_turn_ledger_start(
+            "req-branch",
+            "qq_channel",
+            IngressKind::User,
+            "Compile the reasoning replay",
+            4_300_000_000_000,
+        );
+        branch_ledger.status = TurnLedgerStatus::Answered;
+        branch_ledger.updated_at_ms = 4_300_000_000_120;
+        branch_ledger.finished_at_ms = 4_300_000_000_120;
+        branch_ledger.reason = "branch replay".to_string();
+        branch_ledger.counterfactual = Some(TurnCounterfactualLedger {
+            summary: "Compared ask-clarify and execute-native-tool branches.".to_string(),
+            snapshot: TurnCounterfactualSnapshotLedger {
+                reasoning_kind: "intent_compiler".to_string(),
+                reasoning_strategy: "branch_compare".to_string(),
+                confidence: 92,
+                ..TurnCounterfactualSnapshotLedger::default()
+            },
+            selected_branch: TurnCounterfactualBranchLedger {
+                branch: "execute_native_tool".to_string(),
+                score: 91,
+                summary: "Tool execution has enough grounding.".to_string(),
+                ..TurnCounterfactualBranchLedger::default()
+            },
+            alternatives: vec![TurnCounterfactualBranchLedger {
+                branch: "ask_for_clarification".to_string(),
+                score: 44,
+                summary: "Clarification would slow a grounded action.".to_string(),
+                ..TurnCounterfactualBranchLedger::default()
+            }],
+        });
+        platform
+            .turn_ledger_store()
+            .set(&chat_branch, &branch_ledger)
+            .expect("write branch ledger");
+
+        let mut arena_ledger = build_turn_ledger_start(
+            "req-arena",
+            "telegram",
+            IngressKind::User,
+            "Adjudicate the replay claim",
+            4_300_000_000_220,
+        );
+        arena_ledger.status = TurnLedgerStatus::Answered;
+        arena_ledger.updated_at_ms = 4_300_000_000_360;
+        arena_ledger.finished_at_ms = 4_300_000_000_360;
+        arena_ledger.reason = "arena replay".to_string();
+        arena_ledger.adversarial_arena = Some(TurnAdversarialArenaLedger {
+            subject_kind: "tool_request".to_string(),
+            disposition: "revise".to_string(),
+            summary: "The defender kept the tool round but revised the safety boundary."
+                .to_string(),
+            winner: TurnAdversarialArenaClaimLedger {
+                role: "defender".to_string(),
+                label: "defender".to_string(),
+                evidence_score: 88,
+                summary: "Grounding was strong enough for a guarded tool round.".to_string(),
+                ..TurnAdversarialArenaClaimLedger::default()
+            },
+            defender: TurnAdversarialArenaClaimLedger {
+                role: "defender".to_string(),
+                label: "defender".to_string(),
+                evidence_score: 88,
+                summary: "Kept the tool round with a narrower safety boundary.".to_string(),
+                ..TurnAdversarialArenaClaimLedger::default()
+            },
+            attacker: TurnAdversarialArenaClaimLedger {
+                role: "attacker".to_string(),
+                label: "attacker".to_string(),
+                evidence_score: 63,
+                summary: "Argued the tool round was too eager.".to_string(),
+                ..TurnAdversarialArenaClaimLedger::default()
+            },
+        });
+        platform
+            .turn_ledger_store()
+            .set(&chat_arena, &arena_ledger)
+            .expect("write arena ledger");
+
+        let snapshot = build_operator_status(OperatorStatusInput {
+            config: &config,
+            platform: platform.as_ref(),
+            tool_registry: &tool_registry,
+        })
+        .expect("operator status");
+
+        let replay = snapshot.programmable_reasoning.replay;
+        assert!(replay.branch_replays_retained >= 1);
+        assert!(!replay.recent_branch_replays.is_empty());
+        assert_eq!(replay.recent_branch_replays[0].chat_id, chat_branch);
+        assert_eq!(
+            replay.recent_branch_replays[0].selected_branch,
+            "execute_native_tool"
+        );
+        assert_eq!(
+            replay.recent_branch_replays[0].rejected_branches,
+            vec!["ask_for_clarification".to_string()]
+        );
+        assert_eq!(
+            replay.recent_branch_replays[0].reasoning_strategy,
+            "branch_compare"
+        );
+        assert!(replay.arena_replays_retained >= 1);
+        assert!(!replay.recent_arena_replays.is_empty());
+        assert_eq!(replay.recent_arena_replays[0].chat_id, chat_arena);
+        assert_eq!(replay.recent_arena_replays[0].disposition, "revise");
+        assert_eq!(replay.recent_arena_replays[0].winner, "defender");
+        assert_eq!(replay.recent_arena_replays[0].attacker, "attacker");
     }
 
     fn reasoning_shape(tool_name: &str) -> ToolExecutionShape {

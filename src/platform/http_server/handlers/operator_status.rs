@@ -111,6 +111,32 @@ mod tests {
             .get("total")
             .is_some());
         assert!(parsed["programmable_reasoning"]
+            .get("product_surface")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["product_surface"]
+            .get("headline")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["product_surface"]
+            .get("demo_scenarios")
+            .is_some());
+        assert!(parsed["programmable_reasoning"].get("inspection").is_some());
+        assert!(parsed["programmable_reasoning"]["inspection"]
+            .get("doctrine")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["inspection"]
+            .get("genome")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["inspection"]
+            .get("tension")
+            .is_some());
+        assert!(parsed["programmable_reasoning"].get("replay").is_some());
+        assert!(parsed["programmable_reasoning"]["replay"]
+            .get("recent_branch_replays")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]["replay"]
+            .get("recent_arena_replays")
+            .is_some());
+        assert!(parsed["programmable_reasoning"]
             .get("maintenance_digest")
             .is_some());
         assert!(parsed["programmable_reasoning"]["maintenance_digest"]

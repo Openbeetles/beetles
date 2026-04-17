@@ -66,9 +66,14 @@ pub use memory_query::{
     MEMORY_QUERY_MAX_LONG_TERM_LIMIT,
 };
 pub use operator::{
-    programmable_reasoning_operator_snapshot, programmable_reasoning_system_info_summary,
-    summarize_programmable_reasoning_operator, ProgrammableReasoningMaintenanceDigest,
-    ProgrammableReasoningOperatorSnapshot, ProgrammableReasoningSystemInfoSummary,
+    programmable_reasoning_inspection_views, programmable_reasoning_operator_snapshot,
+    programmable_reasoning_system_info_summary, summarize_programmable_reasoning_operator,
+    ProgrammableReasoningArenaReplayRecord, ProgrammableReasoningBranchReplayRecord,
+    ProgrammableReasoningDemoScenario, ProgrammableReasoningDoctrineInspection,
+    ProgrammableReasoningGenomeInspection, ProgrammableReasoningInspectionViews,
+    ProgrammableReasoningMaintenanceDigest, ProgrammableReasoningOperatorSnapshot,
+    ProgrammableReasoningProductSurface, ProgrammableReasoningReplayInspection,
+    ProgrammableReasoningSystemInfoSummary, ProgrammableReasoningTensionInspection,
     ProgrammableReasoningTimeline, ProgrammableReasoningTimelineEvent,
     ProgrammableReasoningToolUsageSummary, ProgrammableReasoningUsageAnalytics,
 };
