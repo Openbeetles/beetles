@@ -25,7 +25,7 @@ const ARCHIVE_SEARCH_EXCERPT_LEN: usize = 220;
 const ARCHIVE_GET_EXCERPT_LEN: usize = 320;
 const ARCHIVE_TRACE_MAX_MATCHED_TERMS: usize = 4;
 #[cfg(target_os = "linux")]
-const ARCHIVE_INDEX_VERSION: u32 = 1;
+const ARCHIVE_INDEX_VERSION: u32 = 2;
 #[cfg(target_os = "linux")]
 const REL_PATH_ARCHIVE_INDEX: &str = "memory/archive_index.sqlite3";
 
@@ -110,6 +110,8 @@ pub struct ArchiveRecordLocator {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_index: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_name: Option<String>,
@@ -120,11 +122,21 @@ pub struct ArchiveRecordLocator {
 impl ArchiveRecordLocator {
     pub fn record_id(&self) -> String {
         match self.source {
-            ArchiveRecordSource::Transcript => format!(
-                "transcript|{}|{}",
-                self.chat_id.as_deref().unwrap_or_default(),
-                self.message_index.unwrap_or_default()
-            ),
+            ArchiveRecordSource::Transcript => {
+                if let Some(message_id) = self.message_id.as_deref() {
+                    format!(
+                        "transcript|{}|msg|{}",
+                        self.chat_id.as_deref().unwrap_or_default(),
+                        message_id
+                    )
+                } else {
+                    format!(
+                        "transcript|{}|{}",
+                        self.chat_id.as_deref().unwrap_or_default(),
+                        self.message_index.unwrap_or_default()
+                    )
+                }
+            }
             ArchiveRecordSource::DailyNote => {
                 format!(
                     "daily_note|{}",
@@ -141,11 +153,21 @@ impl ArchiveRecordLocator {
 
     pub fn citation(&self) -> String {
         match self.source {
-            ArchiveRecordSource::Transcript => format!(
-                "transcript:{}#message={}",
-                self.chat_id.as_deref().unwrap_or("unknown"),
-                self.message_index.unwrap_or_default()
-            ),
+            ArchiveRecordSource::Transcript => {
+                if let Some(message_id) = self.message_id.as_deref() {
+                    format!(
+                        "transcript:{}#message_id={}",
+                        self.chat_id.as_deref().unwrap_or("unknown"),
+                        message_id
+                    )
+                } else {
+                    format!(
+                        "transcript:{}#message={}",
+                        self.chat_id.as_deref().unwrap_or("unknown"),
+                        self.message_index.unwrap_or_default()
+                    )
+                }
+            }
             ArchiveRecordSource::DailyNote => format!(
                 "daily_note:{}",
                 self.note_name.as_deref().unwrap_or("unknown")
@@ -164,11 +186,18 @@ impl ArchiveRecordLocator {
         match head {
             "transcript" => {
                 let chat_id = parts.next()?.trim();
-                let message_index = parts.next()?.trim().parse::<usize>().ok()?;
+                let identity = parts.next()?.trim();
+                let (message_id, message_index) = if identity == "msg" {
+                    let message_id = parts.next()?.trim();
+                    (Some(message_id.to_string()), None)
+                } else {
+                    (None, identity.parse::<usize>().ok())
+                };
                 Some(Self {
                     source: ArchiveRecordSource::Transcript,
                     chat_id: Some(chat_id.to_string()),
-                    message_index: Some(message_index),
+                    message_id,
+                    message_index,
                     note_name: None,
                     req_id: None,
                 })
@@ -178,6 +207,7 @@ impl ArchiveRecordLocator {
                 Some(Self {
                     source: ArchiveRecordSource::DailyNote,
                     chat_id: None,
+                    message_id: None,
                     message_index: None,
                     note_name: Some(note_name.to_string()),
                     req_id: None,
@@ -189,6 +219,7 @@ impl ArchiveRecordLocator {
                 Some(Self {
                     source: ArchiveRecordSource::TurnLog,
                     chat_id: Some(chat_id.to_string()),
+                    message_id: None,
                     message_index: None,
                     note_name: None,
                     req_id: Some(req_id.to_string()),
@@ -310,12 +341,15 @@ struct ArchiveSearchCandidate {
 struct ArchiveSourceSignature {
     sessions_files: u64,
     sessions_bytes: u64,
-    sessions_latest_mtime: u64,
+    sessions_latest_mtime_ns: u64,
+    sessions_fingerprint: u64,
     daily_files: u64,
     daily_bytes: u64,
-    daily_latest_mtime: u64,
+    daily_latest_mtime_ns: u64,
+    daily_fingerprint: u64,
     turn_log_bytes: u64,
-    turn_log_mtime: u64,
+    turn_log_mtime_ns: u64,
+    turn_log_fingerprint: u64,
 }
 
 #[derive(Default)]
@@ -370,7 +404,7 @@ pub fn search_archive_records_detailed(
         ),
     }
     let candidates =
-        collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query);
+        collect_live_archive_candidates(session_store, memory_store, turn_ledger_store, query)?;
     let candidate_sources = candidates
         .iter()
         .map(|candidate| candidate.source)
@@ -448,7 +482,7 @@ pub(crate) fn maintain_archive_search_backend(
                     sources: &[],
                     limit: 1,
                 },
-            );
+            )?;
             archive_sqlite_rebuild(&mut conn, &live, &signature)?;
         }
         Ok(needs_rebuild)
@@ -467,17 +501,23 @@ fn collect_live_archive_candidates(
     memory_store: &dyn MemoryStore,
     turn_ledger_store: &dyn TurnLedgerStore,
     query: ArchiveSearchQuery<'_>,
-) -> Vec<ArchiveSearchCandidate> {
+) -> Result<Vec<ArchiveSearchCandidate>> {
     let mut candidates = Vec::new();
     let source_filter = query.sources;
-    let chat_ids =
-        collect_archive_chat_ids(session_store, query.preferred_chat_id, query.chat_id_filter);
+    let needs_chat_ids = source_filter.is_empty()
+        || source_filter.contains(&ArchiveRecordSource::Transcript)
+        || source_filter.contains(&ArchiveRecordSource::TurnLog);
+    let chat_ids = if needs_chat_ids {
+        collect_archive_chat_ids(session_store, query.preferred_chat_id, query.chat_id_filter)?
+    } else {
+        Vec::new()
+    };
 
     if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::Transcript) {
         for chat_id in &chat_ids {
             let messages = session_store
-                .load_recent(chat_id, MAX_SESSION_ENTRIES)
-                .unwrap_or_default();
+                .load_recent_records(chat_id, MAX_SESSION_ENTRIES)
+                .map_err(|error| error.with_stage("archive_search_transcript"))?;
             for (index, message) in messages.iter().enumerate() {
                 let content = message.content.trim();
                 if content.is_empty() {
@@ -487,6 +527,7 @@ fn collect_live_archive_candidates(
                 let locator = ArchiveRecordLocator {
                     source: ArchiveRecordSource::Transcript,
                     chat_id: Some(chat_id.clone()),
+                    message_id: Some(message.message_id.clone()),
                     message_index: Some(index),
                     note_name: None,
                     req_id: None,
@@ -514,11 +555,11 @@ fn collect_live_archive_candidates(
     if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::DailyNote) {
         for name in memory_store
             .list_daily_note_names(usize::MAX)
-            .unwrap_or_default()
+            .map_err(|error| error.with_stage("archive_search_daily_notes"))?
         {
-            let Ok(content) = memory_store.get_daily_note(&name) else {
-                continue;
-            };
+            let content = memory_store
+                .get_daily_note(&name)
+                .map_err(|error| error.with_stage("archive_search_daily_note_read"))?;
             let content = content.trim();
             if content.is_empty() {
                 continue;
@@ -531,6 +572,7 @@ fn collect_live_archive_candidates(
             let locator = ArchiveRecordLocator {
                 source: ArchiveRecordSource::DailyNote,
                 chat_id: None,
+                message_id: None,
                 message_index: None,
                 note_name: Some(name.clone()),
                 req_id: None,
@@ -552,7 +594,10 @@ fn collect_live_archive_candidates(
 
     if source_filter.is_empty() || source_filter.contains(&ArchiveRecordSource::TurnLog) {
         for chat_id in &chat_ids {
-            let Ok(Some(ledger)) = turn_ledger_store.get(chat_id) else {
+            let Some(ledger) = turn_ledger_store
+                .get(chat_id)
+                .map_err(|error| error.with_stage("archive_search_turn_log"))?
+            else {
                 continue;
             };
             let content = render_turn_log_content(&ledger);
@@ -563,6 +608,7 @@ fn collect_live_archive_candidates(
             let locator = ArchiveRecordLocator {
                 source: ArchiveRecordSource::TurnLog,
                 chat_id: Some(chat_id.clone()),
+                message_id: None,
                 message_index: None,
                 note_name: None,
                 req_id: Some(ledger.req_id.clone()),
@@ -586,7 +632,7 @@ fn collect_live_archive_candidates(
         }
     }
 
-    candidates
+    Ok(candidates)
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -620,12 +666,21 @@ fn search_archive_records_from_sqlite_detailed(
         return Ok(None);
     }
     if archive_sqlite_needs_rebuild(&conn, &signature)? {
-        let live = collect_live_archive_candidates(
+        let live = match collect_live_archive_candidates(
             session_store,
             memory_store,
             turn_ledger_store,
             query.raw,
-        );
+        ) {
+            Ok(live) => live,
+            Err(error) => {
+                log::warn!(
+                    "[archive_search] sqlite rebuild skipped due to live corpus error: {}",
+                    error
+                );
+                return Ok(None);
+            }
+        };
         archive_sqlite_rebuild(&mut conn, &live, &signature)?;
     }
     let candidates = query_archive_candidates_sqlite(&conn, query, terms)?;
@@ -682,6 +737,7 @@ fn ensure_archive_sqlite_schema(conn: &Connection) -> Result<()> {
             record_id TEXT PRIMARY KEY,
             source TEXT NOT NULL,
             chat_id TEXT,
+            message_id TEXT,
             message_index INTEGER,
             note_name TEXT,
             req_id TEXT,
@@ -703,6 +759,18 @@ fn ensure_archive_sqlite_schema(conn: &Connection) -> Result<()> {
         );",
     )
     .map_err(|e| crate::error::Error::config("archive_index", e.to_string()))
+    ?;
+    match conn.execute(
+        "ALTER TABLE archive_documents ADD COLUMN message_id TEXT",
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if error.to_string().contains("duplicate column name") => Ok(()),
+        Err(error) => Err(crate::error::Error::config(
+            "archive_index",
+            error.to_string(),
+        )),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -754,13 +822,14 @@ fn archive_sqlite_rebuild(
         let cues = candidate.cues.join("\n");
         tx.execute(
             "INSERT INTO archive_documents (
-                record_id, source, chat_id, message_index, note_name, req_id,
+                record_id, source, chat_id, message_id, message_index, note_name, req_id,
                 title, content, cues, observed_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 candidate.locator.record_id(),
                 candidate.source.label(),
                 candidate.locator.chat_id.as_deref(),
+                candidate.locator.message_id.as_deref(),
                 candidate.locator.message_index.map(|value| value as i64),
                 candidate.locator.note_name.as_deref(),
                 candidate.locator.req_id.as_deref(),
@@ -814,7 +883,7 @@ fn query_archive_candidates_sqlite(
         if let Some(match_expr) = archive_sqlite_match_expression(terms) {
             let mut stmt = conn
                 .prepare(
-                    "SELECT d.record_id, d.source, d.chat_id, d.message_index, d.note_name, d.req_id,
+                    "SELECT d.record_id, d.source, d.chat_id, d.message_id, d.message_index, d.note_name, d.req_id,
                             d.title, d.content, d.cues, d.observed_at, bm25(archive_documents_fts, 6.0, 1.5, 1.0) as rank
                      FROM archive_documents_fts
                      JOIN archive_documents d ON d.rowid = archive_documents_fts.rowid
@@ -840,7 +909,7 @@ fn query_archive_candidates_sqlite(
     }
     let mut stmt = conn
         .prepare(
-            "SELECT record_id, source, chat_id, message_index, note_name, req_id,
+            "SELECT record_id, source, chat_id, message_id, message_index, note_name, req_id,
                     title, content, cues, observed_at, 0.0 as rank
              FROM archive_documents
              ORDER BY observed_at DESC, rowid DESC
@@ -877,25 +946,26 @@ fn map_archive_sqlite_candidate_row(
     let locator = ArchiveRecordLocator {
         source,
         chat_id: chat_id.clone(),
+        message_id: row.get::<_, Option<String>>(3)?,
         message_index: row
-            .get::<_, Option<i64>>(3)?
+            .get::<_, Option<i64>>(4)?
             .and_then(|value| usize::try_from(value).ok()),
-        note_name: row.get::<_, Option<String>>(4)?,
-        req_id: row.get::<_, Option<String>>(5)?,
+        note_name: row.get::<_, Option<String>>(5)?,
+        req_id: row.get::<_, Option<String>>(6)?,
     };
-    let title = row.get::<_, String>(6)?;
-    let content = row.get::<_, String>(7)?;
+    let title = row.get::<_, String>(7)?;
+    let content = row.get::<_, String>(8)?;
     let cues = row
-        .get::<_, String>(8)?
+        .get::<_, String>(9)?
         .lines()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect::<Vec<_>>();
     let observed_at = row
-        .get::<_, Option<i64>>(9)?
+        .get::<_, Option<i64>>(10)?
         .and_then(|value| u64::try_from(value).ok());
-    let rank = row.get::<_, f64>(10).unwrap_or(0.0);
+    let rank = row.get::<_, f64>(11).unwrap_or(0.0);
     let sqlite_fts_score = if rank > 0.0 {
         ((1.0 / (1.0 + rank)) * 64.0).round().max(0.0) as u32
     } else {
@@ -969,53 +1039,94 @@ fn build_archive_source_signature() -> Result<ArchiveSourceSignature> {
     Ok(ArchiveSourceSignature {
         sessions_files: sessions.0,
         sessions_bytes: sessions.1,
-        sessions_latest_mtime: sessions.2,
+        sessions_latest_mtime_ns: sessions.2,
+        sessions_fingerprint: sessions.3,
         daily_files: daily.0,
         daily_bytes: daily.1,
-        daily_latest_mtime: daily.2,
+        daily_latest_mtime_ns: daily.2,
+        daily_fingerprint: daily.3,
         turn_log_bytes: turn_logs.1,
-        turn_log_mtime: turn_logs.2,
+        turn_log_mtime_ns: turn_logs.2,
+        turn_log_fingerprint: turn_logs.3,
     })
 }
 
 #[cfg(target_os = "linux")]
-fn scan_path_signature(path: &Path) -> Result<(u64, u64, u64)> {
+fn scan_path_signature(path: &Path) -> Result<(u64, u64, u64, u64)> {
     if !path.exists() {
-        return Ok((0, 0, 0));
+        return Ok((0, 0, 0, 0));
     }
     let meta = std::fs::metadata(path).map_err(|e| crate::error::Error::io("archive_index", e))?;
     if meta.is_file() {
-        return Ok((1, meta.len(), modified_unix_secs(&meta)));
+        return Ok((
+            1,
+            meta.len(),
+            modified_unix_nanos(&meta),
+            file_content_fingerprint(path)?,
+        ));
     }
     let mut files = 0u64;
     let mut bytes = 0u64;
     let mut latest = 0u64;
-    for entry in std::fs::read_dir(path).map_err(|e| crate::error::Error::io("archive_index", e))? {
-        let entry = entry.map_err(|e| crate::error::Error::io("archive_index", e))?;
+    let mut fingerprint = 0xcbf29ce484222325u64;
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|e| crate::error::Error::io("archive_index", e))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| crate::error::Error::io("archive_index", e))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let entry_path = entry.path();
         let meta = entry
             .metadata()
             .map_err(|e| crate::error::Error::io("archive_index", e))?;
         if meta.is_dir() {
-            let nested = scan_path_signature(&entry.path())?;
+            let nested = scan_path_signature(&entry_path)?;
             files = files.saturating_add(nested.0);
             bytes = bytes.saturating_add(nested.1);
             latest = latest.max(nested.2);
+            archive_signature_hash_update(&mut fingerprint, &nested.3.to_le_bytes());
         } else {
             files = files.saturating_add(1);
             bytes = bytes.saturating_add(meta.len());
-            latest = latest.max(modified_unix_secs(&meta));
+            let modified_ns = modified_unix_nanos(&meta);
+            latest = latest.max(modified_ns);
+            let file_name = entry.file_name();
+            archive_signature_hash_update(&mut fingerprint, file_name.to_string_lossy().as_bytes());
+            archive_signature_hash_update(&mut fingerprint, &meta.len().to_le_bytes());
+            archive_signature_hash_update(&mut fingerprint, &modified_ns.to_le_bytes());
+            archive_signature_hash_update(
+                &mut fingerprint,
+                &file_content_fingerprint(&entry_path)?.to_le_bytes(),
+            );
         }
     }
-    Ok((files, bytes, latest))
+    Ok((files, bytes, latest, fingerprint))
 }
 
 #[cfg(target_os = "linux")]
-fn modified_unix_secs(meta: &std::fs::Metadata) -> u64 {
+fn modified_unix_nanos(meta: &std::fs::Metadata) -> u64 {
     meta.modified()
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn archive_signature_hash_update(hash: &mut u64, bytes: &[u8]) {
+    const FNV_PRIME: u64 = 0x100000001b3;
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn file_content_fingerprint(path: &Path) -> Result<u64> {
+    let bytes = std::fs::read(path).map_err(|e| crate::error::Error::io("archive_index", e))?;
+    let mut hash = 0xcbf29ce484222325u64;
+    archive_signature_hash_update(&mut hash, &bytes);
+    Ok(hash)
 }
 
 fn score_archive_candidates(
@@ -1565,11 +1676,17 @@ pub fn get_archive_record(
             let Some(chat_id) = locator.chat_id.as_deref() else {
                 return Ok(None);
             };
-            let Some(index) = locator.message_index else {
-                return Ok(None);
+            let messages = session_store.load_recent_records(chat_id, MAX_SESSION_ENTRIES)?;
+            let message = if let Some(message_id) = locator.message_id.as_deref() {
+                messages
+                    .iter()
+                    .find(|message| message.message_id == message_id)
+            } else if let Some(index) = locator.message_index {
+                messages.get(index)
+            } else {
+                None
             };
-            let messages = session_store.load_recent(chat_id, MAX_SESSION_ENTRIES)?;
-            let Some(message) = messages.get(index) else {
+            let Some(message) = message else {
                 return Ok(None);
             };
             let content = message.content.trim();
@@ -1714,14 +1831,16 @@ fn collect_archive_chat_ids(
     session_store: &dyn SessionStore,
     preferred_chat_id: Option<&str>,
     chat_id_filter: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     if let Some(chat_id) = chat_id_filter
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return vec![chat_id.to_string()];
+        return Ok(vec![chat_id.to_string()]);
     }
-    let mut chat_ids = session_store.list_chat_ids().unwrap_or_default();
+    let mut chat_ids = session_store
+        .list_chat_ids()
+        .map_err(|error| error.with_stage("archive_search_chat_ids"))?;
     if let Some(preferred_chat_id) = preferred_chat_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1729,7 +1848,7 @@ fn collect_archive_chat_ids(
         chat_ids.retain(|chat_id| chat_id != preferred_chat_id);
         chat_ids.insert(0, preferred_chat_id.to_string());
     }
-    chat_ids
+    Ok(chat_ids)
 }
 
 fn render_turn_log_content(ledger: &TurnLedger) -> String {
@@ -2118,6 +2237,154 @@ mod tests {
     }
 
     #[test]
+    fn transcript_locator_survives_recent_window_shift() {
+        let session_store = StubSessionStore::default();
+        session_store
+            .chats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                "chat-a".to_string(),
+                vec![
+                    SessionMessage {
+                        role: "user".to_string(),
+                        content: "消息一".to_string(),
+                    },
+                    SessionMessage {
+                        role: "assistant".to_string(),
+                        content: "需要长期定位的消息".to_string(),
+                    },
+                    SessionMessage {
+                        role: "user".to_string(),
+                        content: "消息三".to_string(),
+                    },
+                ],
+            );
+        let memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+
+        let hit = search_archive_records(
+            &session_store,
+            &memory_store,
+            &turn_ledger_store,
+            ArchiveSearchQuery {
+                query: "长期 定位",
+                preferred_chat_id: Some("chat-a"),
+                chat_id_filter: Some("chat-a"),
+                sources: &[ArchiveRecordSource::Transcript],
+                limit: 2,
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.title.contains("ASSISTANT"))
+        .expect("transcript hit");
+
+        session_store
+            .chats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                "chat-a".to_string(),
+                vec![
+                    SessionMessage {
+                        role: "assistant".to_string(),
+                        content: "需要长期定位的消息".to_string(),
+                    },
+                    SessionMessage {
+                        role: "user".to_string(),
+                        content: "消息三".to_string(),
+                    },
+                    SessionMessage {
+                        role: "assistant".to_string(),
+                        content: "新消息".to_string(),
+                    },
+                ],
+            );
+
+        let record = get_archive_record(
+            &session_store,
+            &memory_store,
+            &turn_ledger_store,
+            &hit.locator,
+            Some("定位"),
+            512,
+        )
+        .unwrap()
+        .expect("record after window shift");
+
+        assert_eq!(record.record_id, hit.record_id);
+        assert!(record.content.contains("需要长期定位的消息"));
+    }
+
+    struct FailingListSessionStore;
+
+    impl SessionStore for FailingListSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            unreachable!()
+        }
+
+        fn load_recent(&self, _chat_id: &str, _n: usize) -> Result<Vec<SessionMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            unreachable!()
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Err(crate::error::Error::config(
+                "archive_search_test",
+                "session listing unavailable",
+            ))
+        }
+    }
+
+    #[test]
+    fn search_archive_records_surfaces_session_listing_failures() {
+        let memory_store = StubMemoryStore::default();
+        let turn_ledger_store = StubTurnLedgerStore::default();
+
+        let error = search_archive_records(
+            &FailingListSessionStore,
+            &memory_store,
+            &turn_ledger_store,
+            ArchiveSearchQuery {
+                query: "anything",
+                preferred_chat_id: None,
+                chat_id_filter: None,
+                sources: &[ArchiveRecordSource::Transcript],
+                limit: 2,
+            },
+        )
+        .expect_err("archive search should surface store failure");
+
+        assert_eq!(error.stage(), "archive_search_chat_ids");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn archive_source_signature_changes_on_same_length_rewrite() {
+        let root = std::env::temp_dir().join(format!(
+            "archive_signature_rewrite_{}_{}",
+            std::process::id(),
+            crate::util::current_unix_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let path = root.join("same-len.txt");
+        std::fs::write(&path, b"abc123").expect("seed file");
+        let first = scan_path_signature(&root).expect("first signature");
+
+        std::fs::write(&path, b"xyz789").expect("rewrite file");
+        let second = scan_path_signature(&root).expect("second signature");
+
+        assert_ne!(first.3, second.3);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn get_turn_log_checks_req_id() {
         let session_store = StubSessionStore::default();
         let memory_store = StubMemoryStore::default();
@@ -2146,6 +2413,7 @@ mod tests {
             &ArchiveRecordLocator {
                 source: ArchiveRecordSource::TurnLog,
                 chat_id: Some("chat-a".to_string()),
+                message_id: None,
                 message_index: None,
                 note_name: None,
                 req_id: Some("req-2".to_string()),

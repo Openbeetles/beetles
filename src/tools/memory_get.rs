@@ -124,6 +124,12 @@ fn parse_locator(obj: &serde_json::Map<String, Value>) -> Result<ArchiveRecordLo
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let message_id = obj
+        .get("message_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let message_index = obj
         .get("message_index")
         .and_then(Value::as_u64)
@@ -142,7 +148,9 @@ fn parse_locator(obj: &serde_json::Map<String, Value>) -> Result<ArchiveRecordLo
         .map(str::to_string);
 
     let valid = match source {
-        ArchiveRecordSource::Transcript => chat_id.is_some() && message_index.is_some(),
+        ArchiveRecordSource::Transcript => {
+            chat_id.is_some() && (message_id.is_some() || message_index.is_some())
+        }
         ArchiveRecordSource::DailyNote => note_name.is_some(),
         ArchiveRecordSource::TurnLog => chat_id.is_some(),
     };
@@ -156,6 +164,7 @@ fn parse_locator(obj: &serde_json::Map<String, Value>) -> Result<ArchiveRecordLo
     Ok(ArchiveRecordLocator {
         source,
         chat_id,
+        message_id,
         message_index,
         note_name,
         req_id,

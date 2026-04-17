@@ -303,6 +303,7 @@ mod tests {
         let locator = ArchiveRecordLocator {
             source,
             chat_id: Some("chat-1".to_string()),
+            message_id: None,
             message_index: Some(0),
             note_name: None,
             req_id: None,

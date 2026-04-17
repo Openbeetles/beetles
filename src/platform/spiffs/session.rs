@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    SessionMessage, SessionStore, MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN,
-    REL_PATH_SESSIONS_DIR,
+    SessionMessage, SessionMessageRecord, SessionStore, MAX_SESSION_ENTRIES,
+    MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -13,6 +13,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::platform::psram_vec::PsramVec;
@@ -26,6 +27,8 @@ const TAG: &str = "platform::spiffs::session";
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const SESSION_FILE_EXT: &str = ".jsonl";
 const CHAT_ID_HEADER_PREFIX: &str = "# chat_id: ";
+const SESSION_MESSAGE_ID_PREFIX: &str = "msg_";
+static SESSION_MESSAGE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn fnv1a_hash(s: &str) -> u32 {
     let mut h: u32 = 2166136261;
@@ -68,15 +71,61 @@ fn session_path(chat_id: &str) -> Result<(PathBuf, bool)> {
     Ok((p, write_header))
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct StoredSessionMessage {
+    #[serde(default)]
+    message_id: String,
+    role: String,
+    content: String,
+}
+
+impl StoredSessionMessage {
+    fn new(role: &str, content: &str) -> Self {
+        Self {
+            message_id: next_session_message_id(),
+            role: role.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    fn from_session_message(message: &SessionMessage) -> Self {
+        Self::new(message.role.as_str(), message.content.as_str())
+    }
+
+    fn to_session_message(&self) -> SessionMessage {
+        SessionMessage {
+            role: self.role.clone(),
+            content: self.content.clone(),
+        }
+    }
+
+    fn to_session_record(&self) -> SessionMessageRecord {
+        SessionMessageRecord {
+            message_id: self.message_id.clone(),
+            role: self.role.clone(),
+            content: self.content.clone(),
+        }
+    }
+}
+
+fn next_session_message_id() -> String {
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0);
+    let counter = SESSION_MESSAGE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{SESSION_MESSAGE_ID_PREFIX}{now_nanos:016x}{counter:08x}")
+}
+
 enum ParsedJsonlLine {
     Ignored,
-    Message(SessionMessage),
-    RepairedMessage(SessionMessage),
+    Message(StoredSessionMessage),
+    RepairedMessage(StoredSessionMessage),
     Invalid,
 }
 
 struct SessionFileSnapshot {
-    messages: VecDeque<SessionMessage>,
+    messages: VecDeque<StoredSessionMessage>,
     message_count: usize,
     malformed_lines: usize,
     has_data: bool,
@@ -138,17 +187,29 @@ fn parse_jsonl_line(line: &str) -> ParsedJsonlLine {
     if line.is_empty() || line.starts_with('#') {
         return ParsedJsonlLine::Ignored;
     }
-    match serde_json::from_str::<SessionMessage>(line) {
-        Ok(m) => ParsedJsonlLine::Message(m),
+    match serde_json::from_str::<StoredSessionMessage>(line) {
+        Ok(message) => normalize_parsed_message(message),
         Err(_) => {
-            let mut iter = serde_json::Deserializer::from_str(line).into_iter::<SessionMessage>();
+            let mut iter =
+                serde_json::Deserializer::from_str(line).into_iter::<StoredSessionMessage>();
             match iter.next() {
-                Some(Ok(m)) => ParsedJsonlLine::RepairedMessage(m),
+                Some(Ok(message)) => normalize_parsed_message(message),
                 Some(Err(_)) => ParsedJsonlLine::Invalid,
                 None => ParsedJsonlLine::Ignored,
             }
         }
     }
+}
+
+fn normalize_parsed_message(mut message: StoredSessionMessage) -> ParsedJsonlLine {
+    if message.role.trim().is_empty() && message.content.trim().is_empty() {
+        return ParsedJsonlLine::Ignored;
+    }
+    if message.message_id.trim().is_empty() {
+        message.message_id = next_session_message_id();
+        return ParsedJsonlLine::RepairedMessage(message);
+    }
+    ParsedJsonlLine::Message(message)
 }
 
 /// 从文件首行解析 "# chat_id: <id>"，非该格式返回 None。
@@ -365,7 +426,7 @@ fn append_session_lines_unlocked(
 fn build_session_body<'a>(
     chat_id: &str,
     write_header: bool,
-    messages: impl IntoIterator<Item = &'a SessionMessage>,
+    messages: impl IntoIterator<Item = &'a StoredSessionMessage>,
 ) -> Result<String> {
     let mut body = String::new();
     if write_header {
@@ -388,8 +449,11 @@ fn load_session_snapshot_unlocked(
     write_header: bool,
     repair_mode: SessionRepairMode,
 ) -> Result<SessionFileSnapshot> {
-    let existing_buf =
-        read_existing_file_unlocked(path).unwrap_or_else(|_| PsramVec::from(Vec::new()));
+    let existing_buf = if path.exists() {
+        read_existing_file_unlocked(path)?
+    } else {
+        PsramVec::from(Vec::new())
+    };
     let snapshot = scan_session_file(&existing_buf);
     if snapshot.needs_repair {
         match repair_mode {
@@ -450,7 +514,7 @@ const RECENT_CACHE_CHAT_LIMIT: usize = 16;
 pub struct SpiffsSessionStore {
     counts: Mutex<HashMap<String, SessionAppendState>>,
     chat_ids: Mutex<Option<Vec<String>>>,
-    recent: Mutex<HashMap<String, VecDeque<SessionMessage>>>,
+    recent: Mutex<HashMap<String, VecDeque<StoredSessionMessage>>>,
 }
 
 impl Default for SpiffsSessionStore {
@@ -484,10 +548,7 @@ impl SpiffsSessionStore {
         ensure_sessions_dir_exists("session_list")?;
         let names = match list_dir(&p) {
             Ok(n) => n,
-            Err(e) => {
-                log::warn!("[{}] list_dir {:?} failed: {}", TAG, p, e);
-                return Ok(Vec::new());
-            }
+            Err(error) => return Err(error.with_stage("session_list")),
         };
         let mut resolved: Vec<String> = Vec::with_capacity(MAX_LIST_CHAT_IDS.min(names.len()));
         for name in names {
@@ -525,9 +586,9 @@ impl SpiffsSessionStore {
     }
 
     fn upsert_recent_cache(
-        recent_cache: &mut HashMap<String, VecDeque<SessionMessage>>,
+        recent_cache: &mut HashMap<String, VecDeque<StoredSessionMessage>>,
         chat_id: &str,
-        recent: VecDeque<SessionMessage>,
+        recent: VecDeque<StoredSessionMessage>,
     ) {
         if !recent_cache.contains_key(chat_id) && recent_cache.len() >= RECENT_CACHE_CHAT_LIMIT {
             if let Some(evict_key) = recent_cache.keys().next().cloned() {
@@ -553,9 +614,13 @@ impl SessionStore for SpiffsSessionStore {
         if new_messages.is_empty() {
             return Ok(());
         }
-        let mut lines = Vec::with_capacity(new_messages.len());
-        for msg in new_messages {
-            let line = serde_json::to_string(msg)
+        let stored_messages = new_messages
+            .iter()
+            .map(StoredSessionMessage::from_session_message)
+            .collect::<Vec<_>>();
+        let mut lines = Vec::with_capacity(stored_messages.len());
+        for message in &stored_messages {
+            let line = serde_json::to_string(message)
                 .map_err(|e| Error::config("session_append", e.to_string()))?;
             if line.len() > MAX_SESSION_MESSAGE_LEN {
                 return Err(Error::config(
@@ -610,11 +675,11 @@ impl SessionStore for SpiffsSessionStore {
                     &lines,
                 )?;
                 if let Some(recent) = recent_cache.get_mut(chat_id) {
-                    for msg in new_messages {
+                    for message in &stored_messages {
                         if recent.len() == MAX_SESSION_ENTRIES {
                             recent.pop_front();
                         }
-                        recent.push_back(msg.clone());
+                        recent.push_back(message.clone());
                     }
                 }
                 counts.insert(
@@ -651,7 +716,7 @@ impl SessionStore for SpiffsSessionStore {
                 loaded
             };
             for msg in new_messages {
-                messages.push_back(msg.clone());
+                messages.push_back(StoredSessionMessage::from_session_message(msg));
             }
             while messages.len() > MAX_SESSION_ENTRIES {
                 messages.pop_front();
@@ -685,7 +750,11 @@ impl SessionStore for SpiffsSessionStore {
             .cloned()
         {
             let start = recent.len().saturating_sub(cap);
-            return Ok(recent.into_iter().skip(start).collect());
+            return Ok(recent
+                .into_iter()
+                .skip(start)
+                .map(|message| message.to_session_message())
+                .collect());
         }
         let recent = with_fs_lock(|| {
             let snapshot = load_session_snapshot_unlocked(
@@ -705,7 +774,38 @@ impl SessionStore for SpiffsSessionStore {
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
         }
-        Ok(recent.into_iter().collect())
+        Ok(recent
+            .into_iter()
+            .map(|message| message.to_session_message())
+            .collect())
+    }
+
+    fn load_recent_records(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessageRecord>> {
+        let (path, write_header) = session_path(chat_id)?;
+        let cap = n.min(MAX_SESSION_ENTRIES);
+        if cap == 0 {
+            return Ok(Vec::new());
+        }
+        let recent = with_fs_lock(|| {
+            let snapshot = load_session_snapshot_unlocked(
+                &path,
+                chat_id,
+                write_header,
+                SessionRepairMode::Immediate,
+            )?;
+            let start = snapshot.messages.len().saturating_sub(cap);
+            Ok(snapshot
+                .messages
+                .into_iter()
+                .skip(start)
+                .collect::<VecDeque<_>>())
+        })?;
+        let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+        Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
+        Ok(recent
+            .into_iter()
+            .map(|message| message.to_session_record())
+            .collect())
     }
 
     fn message_count(&self, chat_id: &str) -> Result<usize> {
@@ -858,15 +958,16 @@ mod tests {
     use super::{
         load_session_snapshot_unlocked, scan_session_file, session_path,
         write_session_body_unlocked, SessionAppendState, SessionRepairMode, SpiffsSessionStore,
+        StoredSessionMessage, SESSION_MESSAGE_ID_PREFIX,
     };
     use crate::memory::{SessionMessage, SessionStore};
 
     #[test]
     fn counts_only_message_lines() {
         let raw = br#"# chat_id: demo
-{"role":"user","content":"hello"}
+{"message_id":"msg_seed_user","role":"user","content":"hello"}
 
-{"role":"assistant","content":"world"}
+{"message_id":"msg_seed_assistant","role":"assistant","content":"world"}
 "#;
         let snapshot = scan_session_file(raw);
         assert_eq!(snapshot.message_count, 2);
@@ -875,7 +976,7 @@ mod tests {
 
     #[test]
     fn repairs_non_json_payload_lines() {
-        let raw = b"note\n# chat_id: demo\n{\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n";
+        let raw = b"note\n# chat_id: demo\n{\"message_id\":\"msg_seed\",\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n";
         let snapshot = scan_session_file(raw);
         assert_eq!(snapshot.message_count, 1);
         assert!(snapshot.needs_repair);
@@ -900,8 +1001,12 @@ mod tests {
             role: "assistant".to_string(),
             content: "world".to_string(),
         };
-        let first_line = serde_json::to_string(&first).expect("line");
-        let second_line = serde_json::to_string(&second).expect("line");
+        let seeded_first = StoredSessionMessage {
+            message_id: "msg_seeded_first".to_string(),
+            role: first.role.clone(),
+            content: first.content.clone(),
+        };
+        let first_line = serde_json::to_string(&seeded_first).expect("line");
 
         write_session_body_unlocked(&path, first_line.as_bytes()).expect("seed file");
         store
@@ -922,13 +1027,21 @@ mod tests {
             .expect("append");
 
         let raw = std::fs::read(&path).expect("read");
-        assert_eq!(
-            String::from_utf8_lossy(&raw),
-            format!("{first_line}\n{second_line}\n")
-        );
         let snapshot = scan_session_file(&raw);
         assert_eq!(snapshot.message_count, 2);
         assert_eq!(snapshot.malformed_lines, 0);
+        let raw_text = String::from_utf8_lossy(&raw);
+        let lines = raw_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], first_line);
+        let appended: StoredSessionMessage =
+            serde_json::from_str(lines[1]).expect("appended session line");
+        assert_eq!(appended.role, "assistant");
+        assert_eq!(appended.content, "world");
+        assert!(appended.message_id.starts_with(SESSION_MESSAGE_ID_PREFIX));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -959,6 +1072,38 @@ mod tests {
         )
         .expect("snapshot");
         assert!(snapshot.needs_repair);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_recent_records_repairs_legacy_messages_with_stable_ids() {
+        let store = SpiffsSessionStore::new();
+        let chat_id = format!("load-records-repair-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let legacy =
+            b"{\"role\":\"user\",\"content\":\"ok\"}\n{\"role\":\"assistant\",\"content\":\"still-ok\"}\n";
+        write_session_body_unlocked(&path, legacy).expect("seed legacy file");
+
+        let first = store
+            .load_recent_records(&chat_id, 8)
+            .expect("first load recent records");
+        let second = store
+            .load_recent_records(&chat_id, 8)
+            .expect("second load recent records");
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(first, second);
+        assert!(first
+            .iter()
+            .all(|record| record.message_id.starts_with(SESSION_MESSAGE_ID_PREFIX)));
+
+        let repaired = std::fs::read_to_string(&path).expect("read repaired session");
+        assert!(repaired.contains("\"message_id\":\"msg_"));
 
         let _ = std::fs::remove_file(&path);
     }

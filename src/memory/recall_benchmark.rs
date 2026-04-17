@@ -714,7 +714,15 @@ mod tests {
                 plane: RecallPlane::Archive,
                 report: archive_report,
                 relevant_candidate_ids: vec![
-                    format!("transcript|chat-a|0"),
+                    format!(
+                        "transcript|chat-a|msg|{}",
+                        crate::memory::synthesize_session_message_id(
+                            "chat-a",
+                            "user",
+                            "please fix my network setup",
+                            1,
+                        )
+                    ),
                     format!("daily_note|2026-04-06.md"),
                 ],
                 expected_top_candidate_id: None,

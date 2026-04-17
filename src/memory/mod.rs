@@ -675,6 +675,84 @@ pub struct SessionMessage {
     pub content: String,
 }
 
+/// 带稳定 message_id 的会话消息记录。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionMessageRecord {
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+}
+
+impl SessionMessageRecord {
+    pub fn into_message(self) -> SessionMessage {
+        SessionMessage {
+            role: self.role,
+            content: self.content,
+        }
+    }
+
+    pub fn as_message(&self) -> SessionMessage {
+        SessionMessage {
+            role: self.role.clone(),
+            content: self.content.clone(),
+        }
+    }
+}
+
+const SESSION_MESSAGE_ID_FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const SESSION_MESSAGE_ID_FNV_PRIME: u64 = 0x100000001b3;
+
+fn session_message_id_hash_update(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(SESSION_MESSAGE_ID_FNV_PRIME);
+    }
+}
+
+pub(crate) fn synthesize_session_message_id(
+    chat_id: &str,
+    role: &str,
+    content: &str,
+    occurrence: u32,
+) -> String {
+    let mut hash = SESSION_MESSAGE_ID_FNV_OFFSET;
+    session_message_id_hash_update(&mut hash, chat_id.as_bytes());
+    session_message_id_hash_update(&mut hash, &[0]);
+    session_message_id_hash_update(&mut hash, role.as_bytes());
+    session_message_id_hash_update(&mut hash, &[0]);
+    session_message_id_hash_update(&mut hash, content.as_bytes());
+    session_message_id_hash_update(&mut hash, &[0]);
+    session_message_id_hash_update(&mut hash, &occurrence.to_le_bytes());
+    format!("legacy_{hash:016x}")
+}
+
+pub(crate) fn synthesize_session_message_records(
+    chat_id: &str,
+    messages: Vec<SessionMessage>,
+) -> Vec<SessionMessageRecord> {
+    let mut seen = std::collections::HashMap::<(String, String), u32>::new();
+    messages
+        .into_iter()
+        .map(|message| {
+            let key = (message.role.clone(), message.content.clone());
+            let occurrence = seen
+                .entry(key)
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
+            SessionMessageRecord {
+                message_id: synthesize_session_message_id(
+                    chat_id,
+                    message.role.as_str(),
+                    message.content.as_str(),
+                    *occurrence,
+                ),
+                role: message.role,
+                content: message.content,
+            }
+        })
+        .collect()
+}
+
 /// 按 chat_id 的会话存储。实现由 platform 注入（如 SpiffsSessionStore）。
 pub trait SessionStore: Send + Sync {
     fn append(&self, chat_id: &str, role: &str, content: &str) -> Result<()>;
@@ -686,6 +764,12 @@ pub trait SessionStore: Send + Sync {
         Ok(())
     }
     fn load_recent(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessage>>;
+    /// 返回最近 N 条消息及其稳定 message_id。
+    /// 默认实现会从 `load_recent` 合成 legacy 稳定 id；持久化实现应覆写为真正持久主键。
+    fn load_recent_records(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessageRecord>> {
+        self.load_recent(chat_id, n)
+            .map(|messages| synthesize_session_message_records(chat_id, messages))
+    }
     /// 返回当前会话消息条数（不含可选头注释）。默认实现回退到 `load_recent(MAX_SESSION_ENTRIES)`。
     /// Implementations should override with an O(file-scan) fast path when possible.
     fn message_count(&self, chat_id: &str) -> Result<usize> {

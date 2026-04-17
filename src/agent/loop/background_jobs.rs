@@ -149,12 +149,19 @@ fn build_system_llm_ctx<'a>(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DetachedJobRunDisposition {
+    Completed,
+    RetryLater { reason: &'static str, delay_ms: u64 },
+    PermanentDrop { reason: &'static str },
+}
+
 fn run_long_term_memory_refresh_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
     msg: &PcMsg,
-) {
+) -> DetachedJobRunDisposition {
     let locale = (config.resolve_locale)();
     let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
     let outcome = run_long_term_memory_refresh(
@@ -192,15 +199,23 @@ fn run_long_term_memory_refresh_job(
                     changed_count
                 );
             }
+            DetachedJobRunDisposition::Completed
         }
         LongTermMemoryRefreshOutcome::Failed { error, .. } => {
             log::warn!("[agent_memory] refresh failed: {}", error);
+            DetachedJobRunDisposition::RetryLater {
+                reason: "long_term_memory_refresh_failed",
+                delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+            }
         }
-        LongTermMemoryRefreshOutcome::Deferred { .. } => {}
+        LongTermMemoryRefreshOutcome::Deferred { .. } => DetachedJobRunDisposition::RetryLater {
+            reason: "long_term_memory_refresh_deferred",
+            delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+        },
     }
 }
 
-fn run_idle_memory_forge_job(config: &AgentLoopConfig, msg: &PcMsg) {
+fn run_idle_memory_forge_job(config: &AgentLoopConfig, msg: &PcMsg) -> DetachedJobRunDisposition {
     match crate::reasoning::run_idle_memory_forge_background_job(
         config.runtime.long_term_memory_store.as_ref(),
         config.runtime.continuity_capsule_store.as_ref(),
@@ -221,8 +236,15 @@ fn run_idle_memory_forge_job(config: &AgentLoopConfig, msg: &PcMsg) {
                     msg.chat_id
                 );
             }
+            DetachedJobRunDisposition::Completed
         }
-        Err(error) => log::warn!("[idle_memory_forge] failed for {}: {}", msg.chat_id, error),
+        Err(error) => {
+            log::warn!("[idle_memory_forge] failed for {}: {}", msg.chat_id, error);
+            DetachedJobRunDisposition::RetryLater {
+                reason: "idle_memory_forge_failed",
+                delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+            }
+        }
     }
 }
 
@@ -232,7 +254,7 @@ fn run_post_reply_maintenance_job(
     config: &AgentLoopConfig,
     _system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
-) {
+) -> DetachedJobRunDisposition {
     let payload: PostReplyMaintenanceJobPayload = match serde_json::from_str(&msg.content) {
         Ok(payload) => payload,
         Err(error) => {
@@ -241,7 +263,9 @@ fn run_post_reply_maintenance_job(
                 msg.chat_id,
                 error
             );
-            return;
+            return DetachedJobRunDisposition::PermanentDrop {
+                reason: "post_reply_payload_invalid",
+            };
         }
     };
     let locale = (config.resolve_locale)();
@@ -306,6 +330,12 @@ fn run_post_reply_maintenance_job(
             }
         },
     );
+    let maintenance_failed = maintenance_outcome.summary_result.is_err()
+        || maintenance_outcome.execution_state_result.is_err()
+        || maintenance_outcome.task_learning_outcome.is_err()
+        || maintenance_outcome.continuity_capsule_outcome.is_err()
+        || maintenance_outcome.extraction_request_outcome
+            == LongTermMemoryRefreshRequestOutcome::RequestFailed;
     match maintenance_outcome.summary_result {
         Ok(SessionSummaryRefreshOutcome::Updated { used_fallback }) => {
             if used_fallback {
@@ -356,6 +386,13 @@ fn run_post_reply_maintenance_job(
         Ok(_) => {}
         Err(ref error) => log::warn!("[agent_continuity_capsule] failed: {}", error),
     }
+    if maintenance_failed {
+        return DetachedJobRunDisposition::RetryLater {
+            reason: "post_reply_maintenance_incomplete",
+            delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+        };
+    }
+    DetachedJobRunDisposition::Completed
 }
 
 fn run_self_runtime_job(
@@ -364,7 +401,7 @@ fn run_self_runtime_job(
     config: &AgentLoopConfig,
     _system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
-) {
+) -> DetachedJobRunDisposition {
     let payload: crate::memory::SelfRuntimeJobPayload = match serde_json::from_str(&msg.content) {
         Ok(payload) => payload,
         Err(error) => {
@@ -373,7 +410,9 @@ fn run_self_runtime_job(
                 msg.chat_id,
                 error
             );
-            return;
+            return DetachedJobRunDisposition::PermanentDrop {
+                reason: "self_runtime_payload_invalid",
+            };
         }
     };
     let locale = (config.resolve_locale)();
@@ -431,6 +470,17 @@ fn run_self_runtime_job(
         boundary_persona_result,
         outer_voice_result,
     } = *outcome;
+    let self_runtime_failed = world_sense_result.is_err()
+        || autonomy_strategy_result.is_err()
+        || inner_life_result.is_err()
+        || private_doc_result.is_err()
+        || self_model_result.is_err()
+        || self_authored_core_result.is_err()
+        || self_continuity_result.is_err()
+        || task_learning_result.is_err()
+        || private_garden_result.is_err()
+        || boundary_persona_result.is_err()
+        || outer_voice_result.is_err();
     if let Some(decision) = decision.as_ref() {
         log::info!(
             "[self_runtime] {} trigger={:?} inner_life={} private_docs={} private_docs_action={} self_model={} self_authored_core={} self_continuity={} private_garden={} private_garden_action={} boundary_persona={} outer_voice={} boundary_flush={} boundary_reason={:?} factual_refresh={} factual_action={} inner_life_intent={:?} private_docs_intent={:?} self_model_intent={:?} self_authored_core_intent={:?} self_continuity_intent={:?} private_garden_intent={:?} boundary_persona_intent={:?} outer_voice_intent={:?} factual_reconcile_intent={:?}",
@@ -612,6 +662,13 @@ fn run_self_runtime_job(
         Ok(crate::memory::BoundaryPersonaRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_boundary_persona] failed: {}", error),
     }
+    if self_runtime_failed {
+        return DetachedJobRunDisposition::RetryLater {
+            reason: "self_runtime_incomplete",
+            delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+        };
+    }
+    DetachedJobRunDisposition::Completed
 }
 
 fn append_operator_maintenance_workflow_audit(
@@ -764,7 +821,7 @@ fn run_operator_maintenance_job(
     config: &AgentLoopConfig,
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
-) {
+) -> DetachedJobRunDisposition {
     let request: crate::runtime::OperatorMaintenanceRequest =
         match serde_json::from_str(&msg.content) {
             Ok(request) => request,
@@ -774,7 +831,9 @@ fn run_operator_maintenance_job(
                     msg.chat_id,
                     error
                 );
-                return;
+                return DetachedJobRunDisposition::PermanentDrop {
+                    reason: "operator_maintenance_payload_invalid",
+                };
             }
         };
     let now_secs = crate::util::current_unix_secs();
@@ -790,7 +849,7 @@ fn run_operator_maintenance_job(
                     "operator_target_unavailable",
                     crate::runtime::WorkflowEffect::Noop,
                 );
-                return;
+                return DetachedJobRunDisposition::Completed;
             };
             if crate::memory::enqueue_self_runtime_operator_request(
                 system_inbound_tx,
@@ -804,6 +863,7 @@ fn run_operator_maintenance_job(
                     "operator_repair_dispatched",
                     crate::runtime::WorkflowEffect::RunRepairPass,
                 );
+                DetachedJobRunDisposition::Completed
             } else {
                 append_operator_maintenance_workflow_audit(
                     &request,
@@ -811,16 +871,23 @@ fn run_operator_maintenance_job(
                     "operator_repair_enqueue_failed",
                     crate::runtime::WorkflowEffect::Noop,
                 );
+                DetachedJobRunDisposition::RetryLater {
+                    reason: "operator_repair_enqueue_failed",
+                    delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                }
             }
         }
         crate::runtime::OperatorMaintenanceAction::RebuildContinuitySnapshot => {
             match rebuild_operator_continuity_snapshots(config, &request, now_secs) {
-                Ok(0) => append_operator_maintenance_workflow_audit(
-                    &request,
-                    crate::runtime::WorkflowDisposition::NoTrigger,
-                    "operator_snapshot_target_unavailable",
-                    crate::runtime::WorkflowEffect::Noop,
-                ),
+                Ok(0) => {
+                    append_operator_maintenance_workflow_audit(
+                        &request,
+                        crate::runtime::WorkflowDisposition::NoTrigger,
+                        "operator_snapshot_target_unavailable",
+                        crate::runtime::WorkflowEffect::Noop,
+                    );
+                    DetachedJobRunDisposition::Completed
+                }
                 Ok(count) => {
                     log::info!(
                         "[operator_maintenance] continuity snapshots rebuilt count={}",
@@ -832,6 +899,7 @@ fn run_operator_maintenance_job(
                         "operator_snapshot_rebuilt",
                         crate::runtime::WorkflowEffect::PersistRecoveryIntent,
                     );
+                    DetachedJobRunDisposition::Completed
                 }
                 Err(error) => {
                     log::warn!("[operator_maintenance] snapshot rebuild failed: {}", error);
@@ -841,6 +909,10 @@ fn run_operator_maintenance_job(
                         "operator_snapshot_rebuild_failed",
                         crate::runtime::WorkflowEffect::Noop,
                     );
+                    DetachedJobRunDisposition::RetryLater {
+                        reason: "operator_snapshot_rebuild_failed",
+                        delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                    }
                 }
             }
         }
@@ -856,6 +928,7 @@ fn run_operator_maintenance_job(
                     "operator_recovery_replayed",
                     crate::runtime::WorkflowEffect::ReplayRecovery,
                 );
+                DetachedJobRunDisposition::Completed
             } else {
                 append_operator_maintenance_workflow_audit(
                     &request,
@@ -863,6 +936,7 @@ fn run_operator_maintenance_job(
                     "operator_recovery_already_steady",
                     crate::runtime::WorkflowEffect::Noop,
                 );
+                DetachedJobRunDisposition::Completed
             }
         }
         crate::runtime::OperatorMaintenanceAction::RefreshOperatorDigest => {
@@ -883,6 +957,7 @@ fn run_operator_maintenance_job(
                         "operator_digest_refreshed",
                         crate::runtime::WorkflowEffect::Noop,
                     );
+                    DetachedJobRunDisposition::Completed
                 }
                 Err(error) => {
                     log::warn!("[operator_maintenance] digest refresh failed: {}", error);
@@ -892,6 +967,10 @@ fn run_operator_maintenance_job(
                         "operator_digest_refresh_failed",
                         crate::runtime::WorkflowEffect::Noop,
                     );
+                    DetachedJobRunDisposition::RetryLater {
+                        reason: "operator_digest_refresh_failed",
+                        delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                    }
                 }
             }
         }
@@ -906,28 +985,25 @@ pub(super) fn try_run_lane_background_job(
     config: &AgentLoopConfig,
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
-) -> bool {
+) -> DetachedJobRunDisposition {
     if super::is_long_term_memory_refresh_job(msg) {
-        run_long_term_memory_refresh_job(http, worker_llm, config, msg);
-        return true;
+        return run_long_term_memory_refresh_job(http, worker_llm, config, msg);
     }
     if super::is_post_reply_maintenance_job(msg) {
-        run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
-        return true;
+        return run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
     }
     if super::is_idle_memory_forge_job(msg) {
-        run_idle_memory_forge_job(config, msg);
-        return true;
+        return run_idle_memory_forge_job(config, msg);
     }
     if super::is_self_runtime_job(msg) {
-        run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
-        return true;
+        return run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
     }
     if super::is_operator_maintenance_job(msg) {
-        run_operator_maintenance_job(config, system_inbound_tx, msg);
-        return true;
+        return run_operator_maintenance_job(config, system_inbound_tx, msg);
     }
-    false
+    DetachedJobRunDisposition::PermanentDrop {
+        reason: "unknown_detached_job",
+    }
 }
 
 fn detached_workflow_identity(
@@ -1032,6 +1108,48 @@ fn reschedule_detached_work(
                 key.kind,
                 error
             );
+        }
+    }
+}
+
+fn apply_detached_job_run_disposition(
+    store: &dyn crate::agent::DetachedWorkStore,
+    key: &crate::agent::DetachedWorkKey,
+    revision: u64,
+    disposition: DetachedJobRunDisposition,
+) {
+    match disposition {
+        DetachedJobRunDisposition::Completed => {
+            if let Err(error) = store.finish(key, revision) {
+                log::warn!(
+                    "[agent] detached work finish failed channel={} chat_id={} kind={:?}: {}",
+                    key.owner_channel,
+                    key.owner_chat_id,
+                    key.kind,
+                    error
+                );
+            }
+        }
+        DetachedJobRunDisposition::RetryLater { reason, delay_ms } => {
+            reschedule_detached_work(store, key, revision, reason, delay_ms);
+        }
+        DetachedJobRunDisposition::PermanentDrop { reason } => {
+            log::warn!(
+                "[agent] detached work dropped channel={} chat_id={} kind={:?} reason={}",
+                key.owner_channel,
+                key.owner_chat_id,
+                key.kind,
+                reason
+            );
+            if let Err(error) = store.finish(key, revision) {
+                log::warn!(
+                    "[agent] detached work drop-finish failed channel={} chat_id={} kind={:?}: {}",
+                    key.owner_channel,
+                    key.owner_chat_id,
+                    key.kind,
+                    error
+                );
+            }
         }
     }
 }
@@ -1160,20 +1278,12 @@ fn run_detached_background_work_wake(
     };
     let _agent_task_guard = crate::orchestrator::begin_agent_task();
     let _maintenance_scope = crate::runtime::BackgroundMaintenanceGuard::enter();
-    let _ = try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &record.job);
-    if let Err(error) = config
-        .runtime
-        .detached_work_store
-        .finish(&wake.key, wake.revision)
-    {
-        log::warn!(
-            "[agent] detached work finish failed channel={} chat_id={} kind={:?}: {}",
-            wake.key.owner_channel,
-            wake.key.owner_chat_id,
-            wake.key.kind,
-            error
-        );
-    }
+    apply_detached_job_run_disposition(
+        config.runtime.detached_work_store.as_ref(),
+        &wake.key,
+        wake.revision,
+        try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &record.job),
+    );
     metrics::record_system_message_done(false);
 }
 
@@ -1314,5 +1424,187 @@ pub(super) fn handle_admission_reject(
     if should_log {
         log::warn!("[agent] inbound rejected: {}", reason);
         *low_mem_defer_log = Some((Arc::from(reason), now));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{
+        DetachedJobKind, DetachedWorkKey, DetachedWorkRecord, DetachedWorkState, DetachedWorkStore,
+        DetachedWorkUpsertOutcome,
+    };
+    use crate::bus::PcMsg;
+    use crate::error::Result;
+    use crate::runtime::system_work::{CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct StubDetachedWorkStore {
+        entries: Mutex<HashMap<String, DetachedWorkRecord>>,
+    }
+
+    impl DetachedWorkStore for StubDetachedWorkStore {
+        fn get(&self, key: &DetachedWorkKey) -> Result<Option<DetachedWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key.storage_key())
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<DetachedWorkRecord>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+
+        fn upsert(
+            &self,
+            key: &DetachedWorkKey,
+            job: &PcMsg,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<DetachedWorkUpsertOutcome> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let next = DetachedWorkRecord {
+                key: key.clone(),
+                job: job.clone(),
+                state: DetachedWorkState::Pending,
+                wake_at_ms,
+                revision: 1,
+                last_reason: reason.to_string(),
+                updated_at_ms: 1,
+            };
+            entries.insert(key.storage_key(), next.clone());
+            Ok(DetachedWorkUpsertOutcome {
+                changed: true,
+                record: next,
+            })
+        }
+
+        fn mark_queued(&self, key: &DetachedWorkKey, revision: u64) -> Result<bool> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(false);
+            };
+            if record.revision != revision || record.state != DetachedWorkState::Pending {
+                return Ok(false);
+            }
+            record.state = DetachedWorkState::Queued;
+            Ok(true)
+        }
+
+        fn claim_running(
+            &self,
+            key: &DetachedWorkKey,
+            revision: u64,
+        ) -> Result<Option<DetachedWorkRecord>> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision
+                || !matches!(
+                    record.state,
+                    DetachedWorkState::Pending | DetachedWorkState::Queued
+                )
+            {
+                return Ok(None);
+            }
+            record.state = DetachedWorkState::Running;
+            Ok(Some(record.clone()))
+        }
+
+        fn reschedule(
+            &self,
+            key: &DetachedWorkKey,
+            revision: u64,
+            wake_at_ms: u64,
+            reason: &str,
+        ) -> Result<Option<DetachedWorkRecord>> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(record) = entries.get_mut(&key.storage_key()) else {
+                return Ok(None);
+            };
+            if record.revision != revision {
+                return Ok(None);
+            }
+            record.revision = record.revision.saturating_add(1);
+            record.state = DetachedWorkState::Pending;
+            record.wake_at_ms = wake_at_ms;
+            record.last_reason = reason.to_string();
+            Ok(Some(record.clone()))
+        }
+
+        fn finish(&self, key: &DetachedWorkKey, revision: u64) -> Result<()> {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if entries
+                .get(&key.storage_key())
+                .is_some_and(|record| record.revision == revision)
+            {
+                entries.remove(&key.storage_key());
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retry_later_keeps_detached_work_record() {
+        let store = StubDetachedWorkStore::default();
+        let key =
+            DetachedWorkKey::new("qq_channel", "chat-1", DetachedJobKind::SelfRuntimeIdleTick);
+        let job = PcMsg::new_system(CHANNEL_SELF_RUNTIME, "chat-1", "{}").expect("job");
+        let stored = store
+            .upsert(&key, &job, 10, "seeded")
+            .expect("upsert")
+            .record;
+
+        apply_detached_job_run_disposition(
+            &store,
+            &key,
+            stored.revision,
+            DetachedJobRunDisposition::RetryLater {
+                reason: "temporary_failure",
+                delay_ms: 50,
+            },
+        );
+
+        let record = store.get(&key).expect("load").expect("record");
+        assert_eq!(record.state, DetachedWorkState::Pending);
+        assert_eq!(record.last_reason, "temporary_failure");
+        assert!(record.revision > stored.revision);
+    }
+
+    #[test]
+    fn permanent_drop_removes_detached_work_record() {
+        let store = StubDetachedWorkStore::default();
+        let key = DetachedWorkKey::new(
+            "qq_channel",
+            "chat-1",
+            DetachedJobKind::PostReplyMaintenance,
+        );
+        let job = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", "{}").expect("job");
+        let stored = store
+            .upsert(&key, &job, 10, "seeded")
+            .expect("upsert")
+            .record;
+
+        apply_detached_job_run_disposition(
+            &store,
+            &key,
+            stored.revision,
+            DetachedJobRunDisposition::PermanentDrop {
+                reason: "invalid_payload",
+            },
+        );
+
+        assert!(store.get(&key).expect("load").is_none());
     }
 }
