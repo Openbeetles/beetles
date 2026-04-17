@@ -633,6 +633,110 @@ mod tests {
     }
 
     #[test]
+    fn prompt_memory_records_unreadable_world_snapshot_commitments_as_health_issues() {
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            memory_system_kind: MemorySystemKind::LinuxFull,
+            system_max_len: 4096,
+            now_secs: 1,
+            participation_plan: PromptParticipationPlan::full(),
+            recent_messages_limit: 6,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &StubSessionStore::default(),
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &StubSessionSummaryStore::default(),
+            long_term_memory_store: &StubLongTermMemoryStore::default(),
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &ErrorRemindAtStore,
+            task_store: &ErrorTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert!(context.world_snapshot_text.is_none());
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("world_snapshot_reminders")));
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("world_snapshot_tasks")));
+    }
+
+    #[test]
+    fn prompt_memory_records_unreadable_turn_ledger_layers_as_health_issues() {
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            memory_system_kind: MemorySystemKind::LinuxFull,
+            system_max_len: 4096,
+            now_secs: 1,
+            participation_plan: PromptParticipationPlan::full(),
+            recent_messages_limit: 6,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &StubSessionStore::default(),
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &StubSessionSummaryStore::default(),
+            long_term_memory_store: &StubLongTermMemoryStore::default(),
+            execution_state_store: &StubExecutionStateStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &ErrorTurnLedgerStore,
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert!(context.recent_turn_observation_text.is_none());
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("recent_persona_evidence")));
+        assert!(context
+            .memory_health_issues
+            .iter()
+            .any(|issue| issue.contains("recent_turn_ledger")));
+    }
+
+    #[test]
     fn embedded_first_user_turn_keeps_governed_recall_but_skips_private_depth_and_background() {
         let session_store = StubSessionStore {
             recent: Mutex::new(vec![SessionMessage {
@@ -1184,6 +1288,8 @@ mod tests {
         list_recent_calls: AtomicU32,
     }
 
+    struct ErrorTurnLedgerStore;
+
     impl CountingTurnLedgerStore {
         fn list_recent_calls(&self) -> u32 {
             self.list_recent_calls.load(Ordering::Relaxed)
@@ -1275,6 +1381,40 @@ mod tests {
         fn list_recent(&self, _chat_id: &str, _limit: usize) -> Result<Vec<TurnLedger>> {
             self.list_recent_calls.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
+        }
+    }
+
+    impl TurnLedgerStore for ErrorTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Err(crate::error::Error::config(
+                "turn_ledger_read",
+                "ledger unreadable",
+            ))
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, _chat_id: &str, _limit: usize) -> Result<Vec<TurnLedger>> {
+            Err(crate::error::Error::config(
+                "turn_ledger_history_read",
+                "history unreadable",
+            ))
+        }
+
+        fn recent_persona_evidence(
+            &self,
+            _chat_id: &str,
+        ) -> Result<Option<crate::memory::RecentPersonaEvidence>> {
+            Err(crate::error::Error::config(
+                "recent_persona_evidence_read",
+                "evidence unreadable",
+            ))
         }
     }
 
@@ -2110,12 +2250,77 @@ mod tests {
         }
     }
 
+    struct ErrorRemindAtStore;
+
+    impl crate::memory::RemindAtStore for ErrorRemindAtStore {
+        fn get(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _id: &str,
+        ) -> Result<Option<crate::reminder::ReminderItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _reminder: &crate::reminder::ReminderItem) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<crate::reminder::ReminderItem>> {
+            Ok(None)
+        }
+
+        fn list_upcoming(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _now_unix_secs: u64,
+            _limit: usize,
+        ) -> Result<Vec<crate::reminder::ReminderItem>> {
+            Err(crate::error::Error::config(
+                "world_snapshot_reminders",
+                "store unreadable",
+            ))
+        }
+    }
+
     #[derive(Default)]
     struct StubTaskStore;
 
     impl TaskStore for StubTaskStore {
         fn list(&self, _channel: &str, _chat_id: &str, _query: TaskQuery) -> Result<Vec<TaskItem>> {
             Ok(Vec::new())
+        }
+
+        fn get(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<Option<TaskItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _task: &TaskItem) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn claim_due(&self, _now_unix_secs: u64, _limit: usize) -> Result<Vec<TaskItem>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct ErrorTaskStore;
+
+    impl TaskStore for ErrorTaskStore {
+        fn list(&self, _channel: &str, _chat_id: &str, _query: TaskQuery) -> Result<Vec<TaskItem>> {
+            Err(crate::error::Error::config(
+                "world_snapshot_tasks",
+                "store unreadable",
+            ))
         }
 
         fn get(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<Option<TaskItem>> {

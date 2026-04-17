@@ -176,14 +176,34 @@ pub(super) fn load_self_runtime_state(
     } else {
         self_continuity
     };
-    let world_snapshot = build_world_snapshot(WorldSnapshotContext {
+    let world_snapshot_ctx = WorldSnapshotContext {
         chat_id,
         source_channel: &active_relationship_channel,
         now_secs: payload.now_secs,
         self_continuity: self_continuity.as_ref(),
         remind_store: ctx.remind_store,
         task_store: ctx.task_store,
-    });
+    };
+    let world_snapshot_reminders = match load_world_snapshot_reminders(world_snapshot_ctx) {
+        Ok(reminders) => Some(reminders),
+        Err(error) => {
+            load_health.record("world_snapshot_reminders", &error);
+            None
+        }
+    };
+    let world_snapshot_tasks = match load_world_snapshot_tasks(world_snapshot_ctx) {
+        Ok(tasks) => Some(tasks),
+        Err(error) => {
+            load_health.record("world_snapshot_tasks", &error);
+            None
+        }
+    };
+    let world_snapshot = match (&world_snapshot_reminders, &world_snapshot_tasks) {
+        (Some(reminders), Some(tasks)) => {
+            build_world_snapshot_from_commitments(world_snapshot_ctx, reminders, tasks)
+        }
+        _ => build_world_snapshot_from_commitments(world_snapshot_ctx, &[], &[]),
+    };
     let recent = load_list_store("recent_transcript", &mut load_health, || {
         ctx.session_store.load_recent(
             chat_id,

@@ -4,6 +4,7 @@ use crate::bus::IngressKind;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy};
 use crate::orchestrator::PressureLevel;
+use crate::reminder::ReminderItem;
 use crate::task::{TaskPriority, TaskQuery, TaskStatus, TaskStore};
 use crate::util::{epoch_to_ymdhms, scrub_credentials, truncate_content_to_max, weekday_name};
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,7 @@ impl WorldSense {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct WorldSnapshotContext<'a> {
     pub chat_id: &'a str,
     pub source_channel: &'a str,
@@ -160,39 +162,49 @@ impl WorldSensePolicy {
     }
 }
 
-pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
+pub(crate) fn load_world_snapshot_reminders(
+    ctx: WorldSnapshotContext<'_>,
+) -> Result<Vec<ReminderItem>> {
+    let source_channel = normalize_channel(ctx.source_channel);
+    if source_channel.is_empty() {
+        return Ok(Vec::new());
+    }
+    ctx.remind_store.list_upcoming(
+        source_channel.as_ref(),
+        ctx.chat_id,
+        ctx.now_secs,
+        WORLD_REMINDER_PREVIEW_LIMIT,
+    )
+}
+
+pub(crate) fn load_world_snapshot_tasks(
+    ctx: WorldSnapshotContext<'_>,
+) -> Result<Vec<crate::task::TaskItem>> {
+    let source_channel = normalize_channel(ctx.source_channel);
+    if source_channel.is_empty() {
+        return Ok(Vec::new());
+    }
+    ctx.task_store.list(
+        source_channel.as_ref(),
+        ctx.chat_id,
+        TaskQuery {
+            include_completed: false,
+            limit: WORLD_TASK_QUERY_LIMIT,
+            ..TaskQuery::default()
+        },
+    )
+}
+
+pub(crate) fn build_world_snapshot_from_commitments(
+    ctx: WorldSnapshotContext<'_>,
+    reminders: &[ReminderItem],
+    tasks: &[crate::task::TaskItem],
+) -> WorldSnapshot {
     let resource = crate::orchestrator::snapshot();
     let (_, _, _, hour, _, _) = epoch_to_ymdhms(ctx.now_secs);
     let weekday = weekday_name(ctx.now_secs / 86400).to_string();
     let day_phase = describe_day_phase(hour).to_string();
     let source_channel = normalize_channel(ctx.source_channel).to_string();
-    let reminders = if source_channel.is_empty() {
-        Vec::new()
-    } else {
-        ctx.remind_store
-            .list_upcoming(
-                source_channel.as_str(),
-                ctx.chat_id,
-                ctx.now_secs,
-                WORLD_REMINDER_PREVIEW_LIMIT,
-            )
-            .unwrap_or_default()
-    };
-    let tasks = if source_channel.is_empty() {
-        Vec::new()
-    } else {
-        ctx.task_store
-            .list(
-                source_channel.as_str(),
-                ctx.chat_id,
-                TaskQuery {
-                    include_completed: false,
-                    limit: WORLD_TASK_QUERY_LIMIT,
-                    ..TaskQuery::default()
-                },
-            )
-            .unwrap_or_default()
-    };
     let open_tasks = tasks
         .iter()
         .filter(|task| task.status == TaskStatus::Open)
@@ -276,6 +288,14 @@ pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> WorldSnapshot {
         user_idle_secs,
         autonomy_idle_secs,
     }
+}
+
+pub fn build_world_snapshot(ctx: WorldSnapshotContext<'_>) -> Result<WorldSnapshot> {
+    let reminders = load_world_snapshot_reminders(ctx)?;
+    let tasks = load_world_snapshot_tasks(ctx)?;
+    Ok(build_world_snapshot_from_commitments(
+        ctx, &reminders, &tasks,
+    ))
 }
 
 pub fn render_world_snapshot_block(snapshot: &WorldSnapshot, max_len: usize) -> Option<String> {

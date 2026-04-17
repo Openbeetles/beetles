@@ -66,6 +66,7 @@ pub enum InitiativeSuppressionReason {
     ExactDueSignalPending,
     CooldownActive,
     NoUsefulTrigger,
+    CommitmentStoreUnreadable,
 }
 
 impl InitiativeSuppressionReason {
@@ -81,6 +82,7 @@ impl InitiativeSuppressionReason {
             Self::ExactDueSignalPending => "exact_due_signal_pending",
             Self::CooldownActive => "cooldown_active",
             Self::NoUsefulTrigger => "no_useful_trigger",
+            Self::CommitmentStoreUnreadable => "commitment_store_unreadable",
         }
     }
 }
@@ -537,34 +539,49 @@ pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> In
         &resource,
         idle_enabled,
     );
-    let signal = if pre_signal_decision.is_none() {
-        target.as_ref().map(|target| {
-            let remind_store = platform.remind_at_store();
-            let task_store = platform.task_store();
-            let world = build_world_snapshot(WorldSnapshotContext {
-                chat_id: target.chat_id.as_str(),
-                source_channel: target.channel.as_str(),
-                now_secs,
-                self_continuity: continuity.as_ref(),
-                remind_store: remind_store.as_ref(),
-                task_store: task_store.as_ref(),
-            });
-            build_signal(&world)
-        })
+    let signal_result = if pre_signal_decision.is_none() {
+        target
+            .as_ref()
+            .map(|target| {
+                let remind_store = platform.remind_at_store();
+                let task_store = platform.task_store();
+                build_world_snapshot(WorldSnapshotContext {
+                    chat_id: target.chat_id.as_str(),
+                    source_channel: target.channel.as_str(),
+                    now_secs,
+                    self_continuity: continuity.as_ref(),
+                    remind_store: remind_store.as_ref(),
+                    task_store: task_store.as_ref(),
+                })
+                .map(|world| build_signal(&world))
+            })
+            .transpose()
     } else {
-        None
+        Ok(None)
     };
-    let decision = pre_signal_decision.unwrap_or_else(|| {
-        decide_initiative(
-            target.as_ref(),
-            presence.state,
-            presence.runtime_mode,
-            &resource,
-            signal.as_ref(),
-            idle_enabled,
-            now_secs,
-        )
-    });
+    let signal_unreadable = signal_result.is_err();
+    let signal = signal_result.ok().flatten();
+    let decision = if signal_unreadable {
+        InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "initiative_commitment_store_unreadable",
+            suppression_reason: Some(InitiativeSuppressionReason::CommitmentStoreUnreadable),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        }
+    } else {
+        pre_signal_decision.unwrap_or_else(|| {
+            decide_initiative(
+                target.as_ref(),
+                presence.state,
+                presence.runtime_mode,
+                &resource,
+                signal.as_ref(),
+                idle_enabled,
+                now_secs,
+            )
+        })
+    };
     let locale = locale_from_store(platform.config_store().as_ref());
     let message_preview = signal
         .as_ref()

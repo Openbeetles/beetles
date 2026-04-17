@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 
 use super::{
     board_subject_scope_id, build_archive_evidence_block, build_continuity_recall_query,
-    build_self_state, build_world_snapshot, collect_private_targets, decide_prompt_recall_route,
-    derive_relationship_constitution, inspect_continuity_capsule_recall,
-    load_recent_persona_evidence, memory_capability_profile, memory_policy,
+    build_self_state, build_world_snapshot_from_commitments, collect_private_targets,
+    decide_prompt_recall_route, derive_relationship_constitution,
+    inspect_continuity_capsule_recall, load_recent_persona_evidence, load_world_snapshot_reminders,
+    load_world_snapshot_tasks, memory_capability_profile, memory_policy,
     parse_explicit_long_term_slot_query, private_garden_scope_id, recall_long_term_memory_block,
     relationship_scope_id, render_autonomy_strategy_block, render_continuity_capsule_block,
     render_exact_long_term_memory_block, render_execution_state_block, render_inner_life_block,
@@ -510,14 +511,33 @@ pub(crate) fn load_private_projection_stage(
         .participation_plan
         .load_l2_background_governance
         .then(|| {
-            let world_snapshot = build_world_snapshot(WorldSnapshotContext {
+            let world_snapshot_ctx = WorldSnapshotContext {
                 chat_id: params.chat_id,
                 source_channel: params.current_channel,
                 now_secs: params.now_secs,
                 self_continuity: constitutional.self_continuity.as_deref(),
                 remind_store: params.remind_store,
                 task_store: params.task_store,
-            });
+            };
+            let reminders = match load_world_snapshot_reminders(world_snapshot_ctx) {
+                Ok(reminders) => Some(reminders),
+                Err(error) => {
+                    health.record("world_snapshot_reminders", &error);
+                    None
+                }
+            };
+            let tasks = match load_world_snapshot_tasks(world_snapshot_ctx) {
+                Ok(tasks) => Some(tasks),
+                Err(error) => {
+                    health.record("world_snapshot_tasks", &error);
+                    None
+                }
+            };
+            let (Some(reminders), Some(tasks)) = (reminders, tasks) else {
+                return None;
+            };
+            let world_snapshot =
+                build_world_snapshot_from_commitments(world_snapshot_ctx, &reminders, &tasks);
             render_world_snapshot_block(
                 &world_snapshot,
                 memory_policy(seed.profile).world_sense.snapshot_max_len,

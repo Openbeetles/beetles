@@ -196,8 +196,10 @@ fn recent_persona_evidence_path(chat_id: &str) -> Result<PathBuf> {
 fn load_ledger_from_path(path: &Path) -> Result<Option<TurnLedger>> {
     let buf = match read_file(path) {
         Ok(buf) => buf,
-        Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(None),
-        Err(error) => return Err(error),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.with_stage("turn_ledger_read")),
     };
     if buf.is_empty() {
         return Ok(None);
@@ -210,8 +212,10 @@ fn load_ledger_from_path(path: &Path) -> Result<Option<TurnLedger>> {
 fn load_history_from_path(path: &Path) -> Result<Vec<TurnLedger>> {
     let buf = match read_file(path) {
         Ok(buf) => buf,
-        Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(Vec::new()),
-        Err(error) => return Err(error),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.with_stage("turn_ledger_history_read")),
     };
     if buf.is_empty() {
         return Ok(Vec::new());
@@ -224,8 +228,10 @@ fn load_history_from_path(path: &Path) -> Result<Vec<TurnLedger>> {
 fn load_recent_persona_evidence_from_path(path: &Path) -> Result<Option<RecentPersonaEvidence>> {
     let buf = match read_file(path) {
         Ok(buf) => buf,
-        Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(None),
-        Err(error) => return Err(error),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.with_stage("recent_persona_evidence_read")),
     };
     if buf.is_empty() {
         return Ok(None);
@@ -362,7 +368,7 @@ fn ignore_missing_remove(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        history_path, history_rel_path, ledger_rel_path, recent_persona_evidence_path,
+        history_path, history_rel_path, ledger_path, ledger_rel_path, recent_persona_evidence_path,
         LEDGER_FILE_EXT,
     };
     use crate::bus::IngressKind;
@@ -483,6 +489,81 @@ mod tests {
         assert!(loaded.is_none());
 
         let _ = super::remove_file(&legacy_path);
+        store.clear(&chat_id).unwrap();
+    }
+
+    #[test]
+    fn get_reports_unreadable_ledger_instead_of_silent_none() {
+        let store = super::SpiffsTurnLedgerStore::new();
+        let chat_id = format!(
+            "turn-ledger-unreadable-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        store.clear(&chat_id).unwrap();
+        let path = ledger_path(&chat_id).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+
+        let err = store
+            .get(&chat_id)
+            .expect_err("directory-backed ledger must fail");
+        assert_eq!(err.stage(), "turn_ledger_read");
+
+        let _ = std::fs::remove_dir_all(&path);
+        store.clear(&chat_id).unwrap();
+    }
+
+    #[test]
+    fn list_recent_reports_unreadable_history_instead_of_empty() {
+        let store = super::SpiffsTurnLedgerStore::new();
+        let chat_id = format!(
+            "turn-history-unreadable-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        store.clear(&chat_id).unwrap();
+        let path = history_path(&chat_id).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+
+        let err = store
+            .list_recent(&chat_id, 4)
+            .expect_err("directory-backed history must fail");
+        assert_eq!(err.stage(), "turn_ledger_history_read");
+
+        let _ = std::fs::remove_dir_all(&path);
+        store.clear(&chat_id).unwrap();
+    }
+
+    #[test]
+    fn recent_persona_evidence_reports_unreadable_sidecar_instead_of_falling_back() {
+        let store = super::SpiffsTurnLedgerStore::new();
+        let chat_id = format!(
+            "recent-persona-unreadable-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        store.clear(&chat_id).unwrap();
+        let path = recent_persona_evidence_path(&chat_id).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+
+        let err = store
+            .recent_persona_evidence(&chat_id)
+            .expect_err("directory-backed evidence sidecar must fail");
+        assert_eq!(err.stage(), "recent_persona_evidence_read");
+
+        let _ = std::fs::remove_dir_all(&path);
         store.clear(&chat_id).unwrap();
     }
 }

@@ -415,6 +415,9 @@ pub use world_sense::{
     WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSnapshot, WorldSnapshotContext,
     WORLD_SENSE_SYSTEM_PROMPT, WORLD_SENSE_TOTAL_CHAR_LIMIT,
 };
+pub(crate) use world_sense::{
+    build_world_snapshot_from_commitments, load_world_snapshot_reminders, load_world_snapshot_tasks,
+};
 pub(crate) use write_coordination::whole_record_lease_advanced;
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。

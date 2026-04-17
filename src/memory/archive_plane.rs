@@ -233,29 +233,45 @@ fn build_archive_fallback_block(
         }
     }
     if appended == 0 {
-        if let Ok(Some(ledger)) = turn_ledger_store.get(chat_id) {
-            let mut preview = [
-                (!ledger.reason.trim().is_empty())
-                    .then(|| format!("reason={}", ledger.reason.trim())),
-                (!ledger.user_preview.trim().is_empty())
-                    .then(|| format!("user={}", ledger.user_preview.trim())),
-                (!ledger.reply_preview.trim().is_empty())
-                    .then(|| format!("reply={}", ledger.reply_preview.trim())),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-            if let Some(observation_summary) = ledger.observation.as_ref().and_then(|observation| {
-                render_turn_observation_ledger_block(observation, 220)
-                    .map(|block| block.lines().skip(1).collect::<Vec<_>>().join(" | "))
-            }) {
-                preview.push(format!("observation={observation_summary}"));
+        match turn_ledger_store.get(chat_id) {
+            Ok(Some(ledger)) => {
+                let mut preview = [
+                    (!ledger.reason.trim().is_empty())
+                        .then(|| format!("reason={}", ledger.reason.trim())),
+                    (!ledger.user_preview.trim().is_empty())
+                        .then(|| format!("user={}", ledger.user_preview.trim())),
+                    (!ledger.reply_preview.trim().is_empty())
+                        .then(|| format!("reply={}", ledger.reply_preview.trim())),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+                if let Some(observation_summary) =
+                    ledger.observation.as_ref().and_then(|observation| {
+                        render_turn_observation_ledger_block(observation, 220)
+                            .map(|block| block.lines().skip(1).collect::<Vec<_>>().join(" | "))
+                    })
+                {
+                    preview.push(format!("observation={observation_summary}"));
+                }
+                let preview = preview.join("; ");
+                if !preview.is_empty() {
+                    let line = format!(
+                        "- [turn log] {} (fallback execution log)",
+                        truncate_content_to_max(&preview, 160)
+                    );
+                    if out.len().saturating_add(line.len()).saturating_add(1) <= block_max_len {
+                        out.push_str(&line);
+                        out.push('\n');
+                        appended += 1;
+                    }
+                }
             }
-            let preview = preview.join("; ");
-            if !preview.is_empty() {
+            Ok(None) => {}
+            Err(error) => {
                 let line = format!(
-                    "- [turn log] {} (fallback execution log)",
-                    truncate_content_to_max(&preview, 160)
+                    "- [turn log] unavailable (fallback degraded: {})",
+                    error.stage()
                 );
                 if out.len().saturating_add(line.len()).saturating_add(1) <= block_max_len {
                     out.push_str(&line);

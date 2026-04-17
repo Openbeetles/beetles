@@ -1,6 +1,6 @@
 //! SPIFFS / state-root backed task store.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::task::{
     filter_tasks, normalize_task_item, TaskItem, TaskQuery, TaskStore, REL_PATH_TASKS,
 };
@@ -26,9 +26,13 @@ pub struct SpiffsTaskStore {
 
 impl SpiffsTaskStore {
     pub fn new() -> Self {
+        Self::new_with_path(full_path)
+    }
+
+    fn new_with_path(path_fn: fn() -> PathBuf) -> Self {
         Self {
             store: CachedJsonFileStore::new(
-                full_path,
+                path_fn,
                 load_json_or_default,
                 "task_store_cache_lock",
                 "task_store_cache",
@@ -42,20 +46,6 @@ impl SpiffsTaskStore {
         self.store
             .with_cached_mut(|_| Ok(StoreOp::clean(())))
             .map(|_| ())
-    }
-
-    fn trim_if_needed(map: &mut HashMap<String, StoredTaskItem>) {
-        while map.len() > MAX_TASK_ITEMS {
-            let remove_id = map
-                .iter()
-                .min_by_key(|(_, item)| item.0.updated_at)
-                .map(|(id, _)| id.clone());
-            if let Some(id) = remove_id {
-                map.remove(&id);
-            } else {
-                break;
-            }
-        }
     }
 }
 
@@ -92,8 +82,13 @@ impl TaskStore for SpiffsTaskStore {
             if map.get(&next_item.0.id) == Some(&next_item) {
                 return Ok(StoreOp::clean(false));
             }
+            if !map.contains_key(&next_item.0.id) && map.len() >= MAX_TASK_ITEMS {
+                return Err(Error::config(
+                    "task_store_capacity",
+                    format!("task store full (max {MAX_TASK_ITEMS})"),
+                ));
+            }
             map.insert(next_item.0.id.clone(), next_item);
-            Self::trim_if_needed(map);
             Ok(StoreOp::dirty(true))
         })?;
         if changed {
@@ -171,5 +166,95 @@ impl TaskStore for SpiffsTaskStore {
                     .min(),
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::TaskStore;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_store_path() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("beetle-task-store-{unique}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root.join("tasks.json")
+        })
+        .clone()
+    }
+
+    fn reset_test_store() {
+        let path = test_store_path();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+    }
+
+    fn task(id: &str, updated_at: u64) -> TaskItem {
+        TaskItem {
+            id: id.to_string(),
+            channel: "qq_channel".to_string(),
+            chat_id: "chat-1".to_string(),
+            title: format!("task-{id}"),
+            updated_at,
+            ..TaskItem::default()
+        }
+    }
+
+    #[test]
+    fn task_store_rejects_new_entry_when_capacity_is_exhausted() {
+        reset_test_store();
+        let store = SpiffsTaskStore::new_with_path(test_store_path);
+        for idx in 0..MAX_TASK_ITEMS {
+            store
+                .upsert(&task(&format!("task-{idx}"), idx as u64 + 1))
+                .unwrap();
+        }
+
+        let err = store
+            .upsert(&task("overflow", 9_999))
+            .expect_err("new task beyond capacity must fail");
+        assert_eq!(err.stage(), "task_store_capacity");
+        assert!(store
+            .get("qq_channel", "chat-1", "overflow")
+            .unwrap()
+            .is_none());
+        let retained = (0..MAX_TASK_ITEMS)
+            .filter(|idx| {
+                store
+                    .get("qq_channel", "chat-1", &format!("task-{idx}"))
+                    .unwrap()
+                    .is_some()
+            })
+            .count();
+        assert_eq!(retained, MAX_TASK_ITEMS);
+    }
+
+    #[test]
+    fn task_store_allows_updating_existing_entry_at_capacity() {
+        reset_test_store();
+        let store = SpiffsTaskStore::new_with_path(test_store_path);
+        for idx in 0..MAX_TASK_ITEMS {
+            store
+                .upsert(&task(&format!("task-{idx}"), idx as u64 + 1))
+                .unwrap();
+        }
+
+        let mut updated = task("task-0", 9_999);
+        updated.detail = "updated".to_string();
+        store.upsert(&updated).unwrap();
+
+        let loaded = store
+            .get("qq_channel", "chat-1", "task-0")
+            .unwrap()
+            .expect("updated task");
+        assert_eq!(loaded.detail, "updated");
+        assert_eq!(loaded.updated_at, 9_999);
     }
 }
