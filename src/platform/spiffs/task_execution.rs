@@ -144,8 +144,10 @@ where
 {
     let buf = match read_file(path) {
         Ok(buf) => buf,
-        Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(None),
-        Err(error) => return Err(error),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.with_stage(stage)),
     };
     if buf.is_empty() {
         return Ok(None);
@@ -155,8 +157,14 @@ where
         .map_err(|error| Error::config(stage, error.to_string()))
 }
 
-fn list_dir_optional(path: &Path) -> Vec<String> {
-    list_dir(path).unwrap_or_default()
+fn list_dir_optional(path: &Path, stage: &'static str) -> Result<Vec<String>> {
+    match list_dir(path) {
+        Ok(entries) => Ok(entries),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Vec::new())
+        }
+        Err(error) => Err(error.with_stage(stage)),
+    }
 }
 
 pub struct SpiffsTaskRunStore {
@@ -282,14 +290,18 @@ impl TaskArtifactStore for SpiffsTaskArtifactStore {
 
     fn list_for_run(&self, run_id: &str, limit: usize) -> Result<Vec<TaskArtifactRecord>> {
         let names = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            list_dir_optional(&state_path_join(REL_DIR_TASK_ARTIFACT_FILES))
-                .into_iter()
-                .filter(|name| name.starts_with(run_id))
-                .collect::<Vec<_>>()
+            list_dir_optional(
+                &state_path_join(REL_DIR_TASK_ARTIFACT_FILES),
+                "task_artifact_list_dir",
+            )?
+            .into_iter()
+            .filter(|name| name.starts_with(run_id))
+            .collect::<Vec<_>>()
         } else {
-            list_dir_optional(&state_path_join(format!(
-                "{REL_DIR_TASK_ARTIFACT_FILES}/{run_id}"
-            )))
+            list_dir_optional(
+                &state_path_join(format!("{REL_DIR_TASK_ARTIFACT_FILES}/{run_id}")),
+                "task_artifact_list_dir",
+            )?
         };
         let mut out = Vec::new();
         for name in names.into_iter().take(limit.max(1)) {
@@ -342,9 +354,14 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
         let path = ledger_file_path(run_id);
         ensure_parent_dir(&path, "task_execution_ledger_dir")?;
         let mut existing = String::new();
-        if let Ok(buf) = super::read_file_to_vec(&path) {
-            existing = String::from_utf8(buf)
-                .map_err(|error| Error::config("task_execution_ledger_utf8", error.to_string()))?;
+        match super::read_file_to_vec(&path) {
+            Ok(buf) => {
+                existing = String::from_utf8(buf).map_err(|error| {
+                    Error::config("task_execution_ledger_utf8", error.to_string())
+                })?;
+            }
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.with_stage("task_execution_ledger_read")),
         }
         let line = serde_json::to_string(entry)
             .map_err(|error| Error::config("task_execution_ledger_write", error.to_string()))?;
@@ -360,8 +377,10 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
         let path = ledger_file_path(run_id);
         let buf = match super::read_file_to_vec(&path) {
             Ok(buf) => buf,
-            Err(Error::Io { .. }) | Err(Error::Other { .. }) => return Ok(Vec::new()),
-            Err(error) => return Err(error),
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error.with_stage("task_execution_ledger_read")),
         };
         if buf.is_empty() {
             return Ok(Vec::new());
@@ -500,6 +519,9 @@ impl TaskLearningStore for SpiffsTaskLearningStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn esp_paths_stay_short_enough() {
@@ -534,5 +556,51 @@ mod tests {
         let line = serde_json::to_string(&entry).unwrap();
         let parsed: TaskExecutionLedgerEntry = serde_json::from_str(&line).unwrap();
         assert_eq!(parsed.sequence, 1);
+    }
+
+    fn test_root() -> &'static PathBuf {
+        static ROOT: OnceLock<PathBuf> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("beetle-task-execution-store-{unique}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        })
+    }
+
+    fn test_path(name: &str) -> PathBuf {
+        test_root().join(name)
+    }
+
+    fn reset_test_path(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn read_optional_json_only_treats_not_found_as_missing() {
+        let path = test_path("not-json-dir");
+        reset_test_path(&path);
+        std::fs::write(&path, b"blocking file").unwrap();
+
+        let error = read_optional_json::<TaskRunRecord>(&path, "task_run_read")
+            .expect_err("unreadable file must not be treated as missing");
+        assert_eq!(error.stage(), "task_run_read");
+    }
+
+    #[test]
+    fn list_dir_optional_only_treats_not_found_as_empty() {
+        let path = test_path("not-a-directory");
+        reset_test_path(&path);
+        std::fs::write(&path, b"blocking file").unwrap();
+
+        let error = list_dir_optional(&path, "task_artifact_list_dir")
+            .expect_err("non-directory path must not be treated as empty");
+        assert_eq!(error.stage(), "task_artifact_list_dir");
     }
 }

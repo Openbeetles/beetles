@@ -19,7 +19,7 @@ use super::{
     SessionSummaryStore, SharedMemoryWriteOutcome, SharedMemoryWriteSource,
 };
 
-const CONTINUITY_SNAPSHOT_VERSION: u32 = 4;
+const CONTINUITY_SNAPSHOT_VERSION: u32 = 5;
 const BOOTSTRAP_MAX_FACTS: usize = 16;
 const FULL_RESTORE_MAX_FACTS: usize = 48;
 const PERSONALITY_GOVERNANCE_ACTIVE_WINDOW_SECS: u64 = 7 * 86_400;
@@ -84,6 +84,8 @@ pub struct ContinuitySnapshot {
     pub manifest: ContinuitySnapshotManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_message_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub long_term_memory: Vec<LongTermMemoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,11 +162,14 @@ pub fn export_continuity_snapshot(
     exported_at: u64,
 ) -> Result<ContinuitySnapshot> {
     let subject_id = board_subject_scope_id();
-    let summary_text = ctx
+    let (summary_text, summary_message_count) = ctx
         .session_summary_store
         .get_with_count(chat_id)?
-        .map(|(summary, _)| summary)
-        .filter(|summary| !summary.trim().is_empty());
+        .map_or((None, None), |(summary, count)| {
+            let summary = (!summary.trim().is_empty()).then_some(summary);
+            let count = summary.as_ref().map(|_| count);
+            (summary, count)
+        });
     let self_model = ctx.self_model_store.get(subject_id)?;
     let self_authored_core = ctx.self_authored_core_store.get(subject_id)?;
     let core_revision_ledger = ctx.core_revision_ledger_store.get(subject_id)?;
@@ -196,6 +201,7 @@ pub fn export_continuity_snapshot(
         subject_id: subject_id.to_string(),
         manifest: ContinuitySnapshotManifest::default(),
         summary_text,
+        summary_message_count,
         long_term_memory,
         self_model,
         self_authored_core,
@@ -272,14 +278,31 @@ pub fn import_continuity_snapshot(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        ctx.session_summary_store
-            .set(target_chat_id, summary_text)?;
-        outcome.summary_restored = true;
-        outcome.decisions.push(import_decision(
-            "session_summary",
-            "restored",
-            "snapshot summary imported into target chat",
-        ));
+        let local_summary = ctx.session_summary_store.get_with_count(target_chat_id)?;
+        let should_restore = match (snapshot.summary_message_count, local_summary.as_ref()) {
+            (_, None) => true,
+            (Some(snapshot_count), Some((_, local_count))) => snapshot_count >= *local_count,
+            (None, Some(_)) => false,
+        };
+        if should_restore {
+            ctx.session_summary_store.set_with_count(
+                target_chat_id,
+                summary_text,
+                snapshot.summary_message_count.unwrap_or(0),
+            )?;
+            outcome.summary_restored = true;
+            outcome.decisions.push(import_decision(
+                "session_summary",
+                "restored",
+                "snapshot summary is newer than local state or local state was missing",
+            ));
+        } else {
+            outcome.decisions.push(import_decision(
+                "session_summary",
+                "skipped",
+                "local session summary is newer than the snapshot",
+            ));
+        }
     } else {
         outcome.decisions.push(import_decision(
             "session_summary",
@@ -1275,7 +1298,17 @@ mod tests {
         }
 
         fn set(&self, _chat_id: &str, summary: &str) -> Result<()> {
-            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some((summary.to_string(), 1));
+            self.set_with_count(_chat_id, summary, 0)
+        }
+
+        fn set_with_count(
+            &self,
+            _chat_id: &str,
+            summary: &str,
+            message_count: usize,
+        ) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((summary.to_string(), message_count));
             Ok(())
         }
 
@@ -1520,6 +1553,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.long_term_memory.len(), 2);
+        assert_eq!(snapshot.summary_message_count, Some(3));
         assert!(snapshot
             .long_term_memory
             .iter()
@@ -1544,6 +1578,7 @@ mod tests {
             subject_id: board_subject_scope_id().to_string(),
             manifest: ContinuitySnapshotManifest::default(),
             summary_text: None,
+            summary_message_count: None,
             long_term_memory: vec![sample_entry(LongTermMemoryKind::Profile, "owner_profile")],
             self_model: Some(SelfModel {
                 continuity_anchor: "same line".to_string(),
@@ -1700,6 +1735,7 @@ mod tests {
                 subject_id: board_subject_scope_id().to_string(),
                 manifest: ContinuitySnapshotManifest::default(),
                 summary_text: Some("stable summary".to_string()),
+                summary_message_count: Some(12),
                 long_term_memory: Vec::new(),
                 self_model: None,
                 self_authored_core: None,
@@ -1714,11 +1750,55 @@ mod tests {
         .unwrap();
         assert!(outcome.summary_restored);
         assert_eq!(
-            summary_store
-                .get_with_count("chat-new")
-                .unwrap()
-                .map(|(value, _)| value),
-            Some("stable summary".to_string())
+            summary_store.get_with_count("chat-new").unwrap(),
+            Some(("stable summary".to_string(), 12))
+        );
+    }
+
+    #[test]
+    fn full_restore_import_does_not_override_newer_local_summary() {
+        let summary_store = StubSummaryStore::default();
+        summary_store
+            .set_with_count("chat-new", "newer local summary", 18)
+            .unwrap();
+        let outcome = import_continuity_snapshot(
+            ContinuitySnapshotImportContext {
+                long_term_memory_store: &StubLongTermMemoryStore::default(),
+                session_summary_store: &summary_store,
+                execution_state_store: &StubExecutionStateStore::default(),
+                self_model_store: &StubSelfModelStore::default(),
+                self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+                core_revision_ledger_store: &StubCoreRevisionLedgerStore::default(),
+                self_continuity_store: &StubSelfContinuityStore::default(),
+                relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+                relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            },
+            "chat-new",
+            &ContinuitySnapshot {
+                version: CONTINUITY_SNAPSHOT_VERSION,
+                exported_at: 20,
+                mode: ContinuitySnapshotMode::Bootstrap,
+                chat_id: "chat-old".to_string(),
+                subject_id: board_subject_scope_id().to_string(),
+                manifest: ContinuitySnapshotManifest::default(),
+                summary_text: Some("older snapshot summary".to_string()),
+                summary_message_count: Some(11),
+                long_term_memory: Vec::new(),
+                self_model: None,
+                self_authored_core: None,
+                core_revision_ledger: None,
+                self_continuity: None,
+                relationship_constitution: None,
+                relationship_portfolio: None,
+                execution_state: None,
+            },
+            ContinuitySnapshotImportMode::BootstrapImport,
+        )
+        .unwrap();
+        assert!(!outcome.summary_restored);
+        assert_eq!(
+            summary_store.get_with_count("chat-new").unwrap(),
+            Some(("newer local summary".to_string(), 18))
         );
     }
 

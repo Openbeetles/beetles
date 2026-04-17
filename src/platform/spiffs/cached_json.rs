@@ -35,7 +35,7 @@ impl<R> StoreOp<R> {
 pub(crate) struct CachedJsonFileStore<T> {
     cache: Mutex<Option<T>>,
     path_fn: fn() -> PathBuf,
-    load_fn: fn(&PathBuf) -> T,
+    load_fn: fn(&PathBuf, &'static str) -> Result<T>,
     stage_cache_lock: &'static str,
     stage_cache: &'static str,
     stage_persist: &'static str,
@@ -47,7 +47,7 @@ where
 {
     pub(crate) fn new(
         path_fn: fn() -> PathBuf,
-        load_fn: fn(&PathBuf) -> T,
+        load_fn: fn(&PathBuf, &'static str) -> Result<T>,
         stage_cache_lock: &'static str,
         stage_cache: &'static str,
         stage_persist: &'static str,
@@ -71,7 +71,7 @@ where
             .lock()
             .map_err(|e| Error::config(self.stage_cache_lock, e.to_string()))?;
         if guard.is_none() {
-            *guard = Some(self.load_from_disk());
+            *guard = Some(self.load_from_disk()?);
         }
         let value = guard
             .as_mut()
@@ -83,8 +83,8 @@ where
         Ok(op.result)
     }
 
-    fn load_from_disk(&self) -> T {
-        (self.load_fn)(&(self.path_fn)())
+    fn load_from_disk(&self) -> Result<T> {
+        (self.load_fn)(&(self.path_fn)(), self.stage_cache)
     }
 
     fn persist(&self, value: &T) -> Result<()> {
@@ -94,13 +94,19 @@ where
     }
 }
 
-pub(crate) fn load_json_or_default<T>(path: &PathBuf) -> T
+pub(crate) fn load_json_or_default<T>(path: &PathBuf, stage: &'static str) -> Result<T>
 where
     T: Default + DeserializeOwned,
 {
     match read_file(path) {
-        Ok(buf) if buf.len() > 2 => serde_json::from_slice(&buf).unwrap_or_default(),
-        _ => T::default(),
+        Ok(buf) if buf.len() > 2 => {
+            serde_json::from_slice(&buf).map_err(|error| Error::config(stage, error.to_string()))
+        }
+        Ok(_) => Ok(T::default()),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(T::default())
+        }
+        Err(error) => Err(error.with_stage(stage)),
     }
 }
 
@@ -165,5 +171,62 @@ where
             }
             Ok(StoreOp::clean(()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_store_path() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("beetle-cached-json-{unique}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root.join("cached.json")
+        })
+        .clone()
+    }
+
+    fn reset_test_store(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn corrupt_cached_json_does_not_downgrade_into_empty_writeback() {
+        let path = test_store_path();
+        reset_test_store(&path);
+        super::super::write_file(&path, br#"{"chat-1": }"#).unwrap();
+
+        let store = ChatScopedCachedJsonMapStore::<u32>::new(
+            test_store_path,
+            "cached_json_test_lock",
+            "cached_json_test_cache",
+            "cached_json_test_persist",
+            8,
+        );
+
+        let load_error = store
+            .get_cloned("chat-1")
+            .expect_err("corrupt cache must error");
+        assert_eq!(load_error.stage(), "cached_json_test_cache");
+
+        let set_error = store
+            .set_owned("chat-2", 7)
+            .expect_err("mutating a corrupt cache must fail closed");
+        assert_eq!(set_error.stage(), "cached_json_test_cache");
+
+        let bytes = std::fs::read(&path).expect("read original bytes");
+        assert_eq!(bytes, br#"{"chat-1": }"#);
     }
 }

@@ -123,11 +123,12 @@ fn collect_maintenance_baseline(
     let initial_summary_snapshot =
         load_session_summary_snapshot(ctx.session_summary_store, input.chat_id);
     let execution_state = ctx.execution_state_store.get(input.chat_id);
-    let summary_should_refresh = super::should_refresh_session_summary(
-        after_count,
-        initial_summary_snapshot.last_summary_count,
-        input.memory_profile,
-    );
+    let summary_should_refresh = initial_summary_snapshot.read_error.is_none()
+        && super::should_refresh_session_summary(
+            after_count,
+            initial_summary_snapshot.last_summary_count,
+            input.memory_profile,
+        );
     let execution_should_refresh = execution_state
         .as_ref()
         .map(|state| {

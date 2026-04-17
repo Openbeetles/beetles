@@ -3,6 +3,7 @@
 
 use crate::error::Result;
 use crate::memory::{ImportantMessageStore, REL_PATH_IMPORTANT_MESSAGE};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -33,18 +34,36 @@ impl SpiffsImportantMessageStore {
         }
     }
 
-    fn load_map_from_disk(path: &PathBuf) -> HashMap<String, u32> {
+    fn load_map_from_disk(path: &PathBuf, stage: &'static str) -> Result<HashMap<String, u32>> {
         let buf = match read_file(path) {
             Ok(buf) => buf,
-            Err(_) => return HashMap::new(),
+            Err(crate::error::Error::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(HashMap::new());
+            }
+            Err(error) => return Err(error.with_stage(stage)),
         };
         if buf.len() <= 2 {
-            return HashMap::new();
+            return Ok(HashMap::new());
         }
         if let Ok(map) = serde_json::from_slice::<HashMap<String, u32>>(&buf) {
-            return map;
+            return Ok(map);
         }
-        HashMap::new()
+        #[derive(Deserialize)]
+        struct LegacyImportantMessage {
+            #[serde(rename = "chat_id")]
+            _chat_id: String,
+            #[serde(rename = "offset_from_end")]
+            _offset_from_end: u32,
+        }
+        if serde_json::from_slice::<LegacyImportantMessage>(&buf).is_ok() {
+            return Ok(HashMap::new());
+        }
+        Err(crate::error::Error::config(
+            stage,
+            "invalid important message cache json",
+        ))
     }
 }
 

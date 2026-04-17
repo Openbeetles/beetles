@@ -32,6 +32,7 @@ pub struct SessionSummaryRefreshContext<'a> {
 pub(crate) struct SessionSummarySnapshot {
     pub summary_text: Option<String>,
     pub last_summary_count: usize,
+    pub read_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +106,7 @@ pub(crate) fn load_session_summary_snapshot(
             SessionSummarySnapshot {
                 summary_text: Some(summary_text),
                 last_summary_count: count,
+                read_error: None,
             }
         }),
         Err(error) => {
@@ -113,7 +115,11 @@ pub(crate) fn load_session_summary_snapshot(
                 chat_id,
                 error
             );
-            SessionSummarySnapshot::default()
+            SessionSummarySnapshot {
+                summary_text: None,
+                last_summary_count: 0,
+                read_error: Some(error.to_string()),
+            }
         }
     }
 }
@@ -128,6 +134,9 @@ pub(crate) fn run_session_summary_refresh_with_snapshot(
     snapshot: SessionSummarySnapshot,
     recent_override: Option<&[SessionMessage]>,
 ) -> Result<(SessionSummaryRefreshOutcome, SessionSummarySnapshot)> {
+    if snapshot.read_error.is_some() {
+        return Ok((SessionSummaryRefreshOutcome::Skipped, snapshot));
+    }
     let policy = memory_policy(profile).session_summary;
     if !should_refresh_session_summary(current_count, snapshot.last_summary_count, profile) {
         return Ok((SessionSummaryRefreshOutcome::Skipped, snapshot));
@@ -182,6 +191,7 @@ pub(crate) fn run_session_summary_refresh_with_snapshot(
         SessionSummarySnapshot {
             summary_text: Some(summary),
             last_summary_count: current_count,
+            read_error: None,
         },
     ))
 }
@@ -504,5 +514,60 @@ mod tests {
         let stored = summary_store.get("chat-1").unwrap().unwrap();
         assert!(stored.contains("user: 最近在做 memory maintenance 收口"));
         assert!(stored.contains("assistant: 这轮会把 session summary 从 loop 拆走"));
+    }
+
+    #[test]
+    fn refresh_runner_skips_when_summary_store_is_unreadable() {
+        struct FailingSummaryStore;
+        impl SessionSummaryStore for FailingSummaryStore {
+            fn get(&self, _chat_id: &str) -> Result<Option<String>> {
+                Err(crate::error::Error::config(
+                    "session_summary_read",
+                    "summary store unreadable",
+                ))
+            }
+
+            fn set(&self, _chat_id: &str, _summary: &str) -> Result<()> {
+                panic!("set must not be called when summary store is unreadable");
+            }
+
+            fn get_with_count(&self, _chat_id: &str) -> Result<Option<(String, usize)>> {
+                Err(crate::error::Error::config(
+                    "session_summary_read",
+                    "summary store unreadable",
+                ))
+            }
+        }
+
+        let session_store = StubSessionStore {
+            recent: vec![SessionMessage {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            }],
+        };
+        let mut http = DummyHttpClient;
+        let llm = FixedLlmClient {
+            response: Some(LlmResponse {
+                content: "fresh summary".to_string(),
+                stop_reason: StopReason::EndTurn,
+                tool_calls: None,
+            }),
+            fail_message: None,
+        };
+
+        let outcome = run_session_summary_refresh(
+            &mut http,
+            &llm,
+            SessionSummaryRefreshContext {
+                session_store: &session_store,
+                session_summary_store: &FailingSummaryStore,
+            },
+            "chat-1",
+            20,
+            MemoryProfile::Embedded,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionSummaryRefreshOutcome::Skipped);
     }
 }

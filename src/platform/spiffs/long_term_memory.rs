@@ -21,29 +21,45 @@ fn full_path() -> PathBuf {
 
 pub struct SpiffsLongTermMemoryStore {
     cache: Mutex<Option<Vec<LongTermMemoryEntry>>>,
+    path_fn: fn() -> PathBuf,
 }
 
 impl SpiffsLongTermMemoryStore {
     pub fn new() -> Self {
         Self {
             cache: Mutex::new(None),
+            path_fn: full_path,
         }
     }
 
-    fn load_entries_from_disk() -> Vec<LongTermMemoryEntry> {
-        match read_file(full_path()) {
+    #[cfg(test)]
+    fn with_path_fn(path_fn: fn() -> PathBuf) -> Self {
+        Self {
+            cache: Mutex::new(None),
+            path_fn,
+        }
+    }
+
+    fn load_entries_from_disk(&self) -> Result<Vec<LongTermMemoryEntry>> {
+        match read_file((self.path_fn)()) {
             Ok(buf) => {
                 if buf.len() <= 2 {
-                    Vec::new()
+                    Ok(Vec::new())
                 } else {
                     serde_json::from_slice::<Vec<LongTermMemoryEntry>>(&buf)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter_map(canonicalize_long_term_memory_entry)
-                        .collect()
+                        .map_err(|error| Error::config("long_term_memory_load", error.to_string()))
+                        .map(|entries| {
+                            entries
+                                .into_iter()
+                                .filter_map(canonicalize_long_term_memory_entry)
+                                .collect()
+                        })
                 }
             }
-            Err(_) => Vec::new(),
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Vec::new())
+            }
+            Err(error) => Err(error.with_stage("long_term_memory_load")),
         }
     }
 
@@ -56,21 +72,21 @@ impl SpiffsLongTermMemoryStore {
             .lock()
             .map_err(|e| Error::config("long_term_memory_cache_lock", e.to_string()))?;
         if guard.is_none() {
-            *guard = Some(Self::load_entries_from_disk());
+            *guard = Some(self.load_entries_from_disk()?);
         }
         let entries = guard
             .as_mut()
             .ok_or_else(|| Error::config("long_term_memory_cache", "cache not initialized"))?;
         if govern_long_term_memory_entries(entries, crate::util::current_unix_secs()) {
-            Self::persist(entries)?;
+            self.persist(entries)?;
         }
         f(entries)
     }
 
-    fn persist(entries: &[LongTermMemoryEntry]) -> Result<()> {
+    fn persist(&self, entries: &[LongTermMemoryEntry]) -> Result<()> {
         let json = serde_json::to_vec(entries)
             .map_err(|e| Error::config("long_term_memory_persist", e.to_string()))?;
-        write_file(full_path(), &json)
+        write_file((self.path_fn)(), &json)
     }
 }
 
@@ -113,7 +129,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
 
             if changed {
                 entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-                Self::persist(entries)?;
+                self.persist(entries)?;
             }
             Ok(changed_count)
         })
@@ -174,7 +190,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                 }
             }
             if touched {
-                Self::persist(entries)?;
+                self.persist(entries)?;
             }
             Ok(out)
         })
@@ -192,7 +208,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                     entry.clone()
                 });
             if touched {
-                Self::persist(entries)?;
+                self.persist(entries)?;
             }
             Ok(item)
         })
@@ -223,7 +239,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
             });
             out.truncate(normalized.limit);
             if touched {
-                Self::persist(entries)?;
+                self.persist(entries)?;
             }
             Ok(out)
         })
@@ -245,7 +261,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
             entries.retain(|entry| entry.id != id);
             let removed = before != entries.len();
             if removed {
-                Self::persist(entries)?;
+                self.persist(entries)?;
             }
             Ok(removed)
         })
@@ -260,5 +276,48 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
 
     fn count(&self) -> Result<usize> {
         self.with_entries_mut(|entries| Ok(entries.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_store_path() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("beetle-long-term-memory-{unique}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root.join("long_term_memories.json")
+        })
+        .clone()
+    }
+
+    fn reset_test_store(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn corrupt_long_term_memory_file_fails_closed_without_overwrite() {
+        let path = test_store_path();
+        reset_test_store(&path);
+        super::super::write_file(&path, br#"{"entries": }"#).unwrap();
+
+        let store = SpiffsLongTermMemoryStore::with_path_fn(test_store_path);
+        let load_error = store.list(8).expect_err("corrupt memory file must error");
+        assert_eq!(load_error.stage(), "long_term_memory_load");
+
+        let bytes = std::fs::read(&path).expect("read original bytes");
+        assert_eq!(bytes, br#"{"entries": }"#);
     }
 }

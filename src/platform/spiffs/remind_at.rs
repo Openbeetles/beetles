@@ -23,14 +23,14 @@ struct LegacyRemindEntry {
     context: String,
 }
 
-fn load_reminders_or_default(path: &PathBuf) -> Vec<ReminderItem> {
+fn load_reminders_or_default(path: &PathBuf, stage: &'static str) -> Result<Vec<ReminderItem>> {
     match read_file(path) {
         Ok(buf) if buf.len() > 2 => {
             if let Ok(items) = serde_json::from_slice::<Vec<ReminderItem>>(&buf) {
-                return items;
+                return Ok(items);
             }
             if let Ok(items) = serde_json::from_slice::<Vec<LegacyRemindEntry>>(&buf) {
-                return items
+                return Ok(items
                     .into_iter()
                     .enumerate()
                     .filter_map(|(index, legacy)| {
@@ -44,11 +44,20 @@ fn load_reminders_or_default(path: &PathBuf) -> Vec<ReminderItem> {
                         })
                         .ok()
                     })
-                    .collect();
+                    .collect());
             }
-            Vec::new()
+            Err(crate::error::Error::config(
+                stage,
+                "invalid reminder cache json",
+            ))
         }
-        _ => Vec::new(),
+        Ok(_) => Ok(Vec::new()),
+        Err(crate::error::Error::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(Vec::new())
+        }
+        Err(error) => Err(error.with_stage(stage)),
     }
 }
 

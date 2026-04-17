@@ -36,20 +36,28 @@ impl SpiffsContinuityCapsuleStore {
         }
     }
 
-    fn load_entries_from_disk(&self) -> Vec<ContinuityCapsule> {
+    fn load_entries_from_disk(&self) -> Result<Vec<ContinuityCapsule>> {
         match read_file((self.path_fn)()) {
             Ok(buf) => {
                 if buf.len() <= 2 {
-                    Vec::new()
+                    Ok(Vec::new())
                 } else {
                     serde_json::from_slice::<Vec<ContinuityCapsule>>(&buf)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter_map(canonicalize_continuity_capsule)
-                        .collect()
+                        .map_err(|error| {
+                            Error::config("continuity_capsule_load", error.to_string())
+                        })
+                        .map(|entries| {
+                            entries
+                                .into_iter()
+                                .filter_map(canonicalize_continuity_capsule)
+                                .collect()
+                        })
                 }
             }
-            Err(_) => Vec::new(),
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Vec::new())
+            }
+            Err(error) => Err(error.with_stage("continuity_capsule_load")),
         }
     }
 
@@ -62,7 +70,7 @@ impl SpiffsContinuityCapsuleStore {
             .lock()
             .map_err(|error| Error::config("continuity_capsule_cache_lock", error.to_string()))?;
         if guard.is_none() {
-            *guard = Some(self.load_entries_from_disk());
+            *guard = Some(self.load_entries_from_disk()?);
         }
         let entries = guard
             .as_mut()
@@ -175,5 +183,19 @@ mod tests {
         let reloaded = store_reload.list(8).unwrap();
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded[0].summary, "close P4-B1");
+    }
+
+    #[test]
+    fn corrupt_capsule_file_fails_closed_without_overwrite() {
+        let path = test_store_path();
+        reset_test_store(&path);
+        super::super::write_file(&path, br#"{"capsules": }"#).unwrap();
+
+        let store = SpiffsContinuityCapsuleStore::with_path_fn(test_store_path);
+        let load_error = store.list(8).expect_err("corrupt capsule file must error");
+        assert_eq!(load_error.stage(), "continuity_capsule_load");
+
+        let bytes = std::fs::read(&path).expect("read original bytes");
+        assert_eq!(bytes, br#"{"capsules": }"#);
     }
 }

@@ -319,6 +319,8 @@ pub struct TaskWorkspaceInspection {
     pub ledger: Vec<TaskExecutionLedgerEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub learning_records: Vec<TaskLearningRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage_errors: Vec<String>,
 }
 
 pub trait TaskLearningStore: Send + Sync {
@@ -1475,30 +1477,36 @@ pub fn inspect_task_workspace(
     chat_id: &str,
     run_id: Option<&str>,
 ) -> TaskWorkspaceInspection {
-    let run = run_id
-        .and_then(|run_id| task_run_store.get(run_id).ok().flatten())
-        .or_else(|| {
-            task_run_store
-                .list_active_for_chat(channel, chat_id, 1)
-                .ok()
-                .and_then(|mut runs| {
-                    runs.drain(..).find(|record| {
-                        record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
-                    })
-                })
-        })
-        .or_else(|| {
-            task_run_store
-                .list_recent(MAX_TASK_OPERATOR_RECENT_RUNS)
-                .ok()
-                .and_then(|runs| {
-                    runs.into_iter().find(|record| {
-                        record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
-                            && record.run.source_channel == channel
-                            && record.run.source_chat_id == chat_id
-                    })
-                })
-        });
+    let mut storage_errors = Vec::new();
+    let mut run = None;
+    if let Some(run_id) = run_id {
+        match task_run_store.get(run_id) {
+            Ok(found) => run = found,
+            Err(error) => storage_errors.push(format!("task_run_read:{error}")),
+        }
+    }
+    if run.is_none() {
+        match task_run_store.list_active_for_chat(channel, chat_id, 1) {
+            Ok(mut runs) => {
+                run = runs.drain(..).find(|record| {
+                    record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
+                });
+            }
+            Err(error) => storage_errors.push(format!("task_run_active_lookup:{error}")),
+        }
+    }
+    if run.is_none() {
+        match task_run_store.list_recent(MAX_TASK_OPERATOR_RECENT_RUNS) {
+            Ok(runs) => {
+                run = runs.into_iter().find(|record| {
+                    record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
+                        && record.run.source_channel == channel
+                        && record.run.source_chat_id == chat_id
+                });
+            }
+            Err(error) => storage_errors.push(format!("task_run_recent_lookup:{error}")),
+        }
+    }
     let resolved_run_id = run
         .as_ref()
         .map(|record| record.run.run_id.clone())
@@ -1506,23 +1514,38 @@ pub fn inspect_task_workspace(
     let artifacts = if resolved_run_id.is_empty() {
         Vec::new()
     } else {
-        task_artifact_store
-            .list_for_run(&resolved_run_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
-            .unwrap_or_default()
+        match task_artifact_store.list_for_run(&resolved_run_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
+        {
+            Ok(records) => records,
+            Err(error) => {
+                storage_errors.push(format!("task_artifact_list:{error}"));
+                Vec::new()
+            }
+        }
     };
     let ledger = if resolved_run_id.is_empty() {
         Vec::new()
     } else {
-        task_execution_ledger_store
-            .list(&resolved_run_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
-            .unwrap_or_default()
+        match task_execution_ledger_store.list(&resolved_run_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
+        {
+            Ok(records) => records,
+            Err(error) => {
+                storage_errors.push(format!("task_execution_ledger_list:{error}"));
+                Vec::new()
+            }
+        }
     };
     let learning_records = if resolved_run_id.is_empty() {
         Vec::new()
     } else {
-        task_learning_store
-            .list_for_run(&resolved_run_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
-            .unwrap_or_default()
+        match task_learning_store.list_for_run(&resolved_run_id, MAX_TASK_LEARNING_RECORDS_PER_CHAT)
+        {
+            Ok(records) => records,
+            Err(error) => {
+                storage_errors.push(format!("task_learning_list:{error}"));
+                Vec::new()
+            }
+        }
     };
     TaskWorkspaceInspection {
         channel: channel.to_string(),
@@ -1532,6 +1555,7 @@ pub fn inspect_task_workspace(
         artifacts,
         ledger,
         learning_records,
+        storage_errors,
     }
 }
 
@@ -1548,13 +1572,21 @@ pub fn render_task_workspace_inspection_markdown(inspection: &TaskWorkspaceInspe
         }
     ));
     out.push_str("\n## Workspace\n");
+    if !inspection.storage_errors.is_empty() {
+        out.push_str("\n## Storage Errors\n");
+        for error in &inspection.storage_errors {
+            out.push_str(&format!("- {error}\n"));
+        }
+    }
     if let Some(run) = inspection.run.as_ref() {
         if let Some(block) = super::render_task_workspace_block(run, &inspection.artifacts, 1400) {
             out.push_str(block.trim());
             out.push('\n');
         }
-    } else {
+    } else if inspection.storage_errors.is_empty() {
         out.push_str("- No matching task run.\n");
+    } else {
+        out.push_str("- Task workspace unavailable because one or more backing stores failed.\n");
     }
     out.push_str("\n## Ledger\n");
     if inspection.ledger.is_empty() {
@@ -2873,5 +2905,110 @@ mod tests {
             record.learning_id == "tl_promoted"
                 && record.candidate_state == Some(TaskLearningCandidateState::Promoted)
         }));
+    }
+
+    #[test]
+    fn inspect_task_workspace_surfaces_storage_errors_instead_of_faking_empty_workspace() {
+        let now_secs = crate::util::ymdhms_to_epoch(2026, 4, 17, 10, 0, 0);
+        let run_store = StubTaskRunStore::new(vec![make_run_record(
+            "tr_workspace",
+            TaskRunStatus::Running,
+            now_secs,
+        )]);
+
+        struct FailingArtifactStore;
+        impl TaskArtifactStore for FailingArtifactStore {
+            fn put(&self, _record: &TaskArtifactRecord) -> Result<()> {
+                Ok(())
+            }
+            fn list_for_run(
+                &self,
+                _run_id: &str,
+                _limit: usize,
+            ) -> Result<Vec<TaskArtifactRecord>> {
+                Err(Error::config(
+                    "task_artifact_read",
+                    "artifact store unreadable",
+                ))
+            }
+            fn delete(&self, _run_id: &str, _artifact_id: &str) -> Result<bool> {
+                Ok(false)
+            }
+        }
+
+        struct FailingLedgerStore;
+        impl TaskExecutionLedgerStore for FailingLedgerStore {
+            fn append(&self, _run_id: &str, _entry: &TaskExecutionLedgerEntry) -> Result<()> {
+                Ok(())
+            }
+            fn list(&self, _run_id: &str, _limit: usize) -> Result<Vec<TaskExecutionLedgerEntry>> {
+                Err(Error::config(
+                    "task_execution_ledger_read",
+                    "ledger unreadable",
+                ))
+            }
+        }
+
+        struct FailingLearningStore;
+        impl TaskLearningStore for FailingLearningStore {
+            fn get(&self, _learning_id: &str) -> Result<Option<TaskLearningRecord>> {
+                Ok(None)
+            }
+            fn upsert(&self, _record: &TaskLearningRecord) -> Result<()> {
+                Ok(())
+            }
+            fn list_recent(&self, _limit: usize) -> Result<Vec<TaskLearningRecord>> {
+                Ok(Vec::new())
+            }
+            fn list_for_chat(
+                &self,
+                _channel: &str,
+                _chat_id: &str,
+                _limit: usize,
+            ) -> Result<Vec<TaskLearningRecord>> {
+                Ok(Vec::new())
+            }
+            fn list_for_run(
+                &self,
+                _run_id: &str,
+                _limit: usize,
+            ) -> Result<Vec<TaskLearningRecord>> {
+                Err(Error::config(
+                    "task_learning_read",
+                    "learning store unreadable",
+                ))
+            }
+        }
+
+        let inspection = inspect_task_workspace(
+            &run_store,
+            &FailingArtifactStore,
+            &FailingLedgerStore,
+            &FailingLearningStore,
+            "qq_channel",
+            "chat-1",
+            Some("tr_workspace"),
+        );
+
+        assert_eq!(inspection.run_id, "tr_workspace");
+        assert!(inspection.run.is_some());
+        assert_eq!(inspection.artifacts.len(), 0);
+        assert_eq!(inspection.ledger.len(), 0);
+        assert_eq!(inspection.learning_records.len(), 0);
+        assert!(inspection
+            .storage_errors
+            .iter()
+            .any(|value| value.contains("task_artifact_list:")));
+        assert!(inspection
+            .storage_errors
+            .iter()
+            .any(|value| value.contains("task_execution_ledger_list:")));
+        assert!(inspection
+            .storage_errors
+            .iter()
+            .any(|value| value.contains("task_learning_list:")));
+        let markdown = render_task_workspace_inspection_markdown(&inspection);
+        assert!(markdown.contains("## Storage Errors"));
+        assert!(markdown.contains("task_execution_ledger_list:"));
     }
 }
