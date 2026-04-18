@@ -107,7 +107,23 @@ export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
   border: "none",
+  backgroundImage: [
+    "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 40%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 52%, transparent) 0%, transparent 58%)",
+  ].join(", "),
   boxShadow: "var(--os3d-content-plate-stack)",
+  isolation: "isolate",
+} as const
+
+/**
+ * 页面首屏/刷新中的 loading 壳层：保留版式与间距，但去掉正式卡片阴影，
+ * 避免数据未就绪时整屏先闪出一层“空壳厚卡”。
+ */
+export const CONFIG_PANEL_LOADING_SX = {
+  borderRadius: "var(--radius-card)",
+  bgcolor: "transparent",
+  border: "none",
+  boxShadow: "none",
   isolation: "isolate",
 } as const
 
@@ -118,9 +134,47 @@ export const DASHBOARD_CARD_SURFACE_SX = {
   bgcolor: "var(--card)",
   borderRadius: "var(--radius-card)",
   border: "none",
+  backgroundImage: [
+    "linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 42%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 44%, transparent) 0%, transparent 62%)",
+  ].join(", "),
   boxShadow: "var(--os3d-content-plate-stack)",
   isolation: "isolate",
   overflow: "hidden",
+} as const
+
+/**
+ * 表单/设置区内部的二级模块：比主面板更紧、更清爽，读作控制面板里的独立设置簇。
+ */
+export const FORM_SECTION_MODULE_SX = {
+  borderRadius: "calc(var(--radius-card) - 2px)",
+  bgcolor: "color-mix(in srgb, var(--surface) 58%, var(--card))",
+  backgroundImage: [
+    "linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, transparent 46%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 38%, transparent) 0%, transparent 100%)",
+  ].join(", "),
+  boxShadow: "var(--os3d-section-module-stack)",
+  border: "none",
+  overflow: "hidden",
+  isolation: "isolate",
+} as const
+
+/** 二级模块头：轻抬起的标题条，强调结构分组而不是网页 sticky strip。 */
+export const FORM_SECTION_MODULE_HEADER_SX = {
+  px: 2,
+  py: 1.35,
+  bgcolor: "color-mix(in srgb, var(--card) 72%, var(--surface))",
+  backgroundImage:
+    "linear-gradient(180deg, color-mix(in srgb, #fff 22%, transparent) 0%, transparent 78%)",
+  boxShadow: "var(--os3d-section-module-header-stack)",
+} as const
+
+/** 二级模块正文：保持轻微井感，让字段区和标题条有清晰前后层次。 */
+export const FORM_SECTION_MODULE_BODY_SX = {
+  px: 2,
+  pt: 2,
+  pb: 2,
+  bgcolor: "color-mix(in srgb, var(--card) 74%, var(--form-group-well))",
 } as const
 
 /**

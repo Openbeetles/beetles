@@ -76,7 +76,7 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
         sx={{
           ...CONFIG_PANEL_SX,
           flexShrink: 0,
-          width: { xs: "100%", md: 236 },
+          width: { xs: "100%", md: 244 },
           boxSizing: "border-box",
           /** 与 SettingsSection 主卡片一致，避免左右视觉「多一层 padding」 */
           p: PANEL_SECTION_PADDING,
@@ -94,89 +94,111 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
             display: "flex",
             flexDirection: "column",
             borderRadius: "var(--radius-control)",
-            bgcolor: "color-mix(in srgb, var(--foreground) 1.2%, var(--card))",
+            bgcolor: "color-mix(in srgb, var(--surface) 74%, var(--card))",
+            backgroundImage:
+              "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 54%)",
             boxShadow: "var(--os3d-subnav-track-recess)",
             overflow: "hidden",
           }}
         >
-        <List
-          disablePadding
-          sx={{
-            display: { xs: "flex", md: "block" },
-            flexDirection: { xs: "row", md: "column" },
-            flexWrap: { xs: "nowrap", md: "wrap" },
-            overflowX: { xs: "auto", md: "visible" },
-            gap: { xs: 0.5, md: 0.25 },
-            flex: { md: 1 },
-            minHeight: 0,
-            scrollbarWidth: "thin",
-            WebkitOverflowScrolling: "touch",
-            scrollPaddingInline: { xs: 1, md: 0 },
-          }}
-        >
-          {items.map((item) => (
-            <ListItem key={item.segment} disablePadding sx={{ flexShrink: 0 }}>
-              <ListItemButton
-                selected={tab === item.segment}
-                aria-current={tab === item.segment ? "page" : undefined}
-                onClick={() => goTo(item.segment)}
-                sx={{
-                  py: { xs: 1, md: 1.125 },
-                  px: { xs: 1.5, md: 1.25 },
-                  width: { xs: "auto", md: "100%" },
-                  whiteSpace: { xs: "nowrap", md: "normal" },
-                  borderRadius: "var(--radius-control)",
+          <List
+            disablePadding
+            sx={{
+              display: { xs: "flex", md: "block" },
+              flexDirection: { xs: "row", md: "column" },
+              flexWrap: { xs: "nowrap", md: "wrap" },
+              overflowX: { xs: "auto", md: "visible" },
+              gap: { xs: 0.625, md: 0.5 },
+              flex: { md: 1 },
+              minHeight: 0,
+              p: 0.75,
+              scrollbarWidth: "thin",
+              WebkitOverflowScrolling: "touch",
+              scrollPaddingInline: { xs: 1, md: 0 },
+            }}
+          >
+            {items.map((item) => (
+              <ListItem key={item.segment} disablePadding sx={{ flexShrink: 0 }}>
+                <ListItemButton
+                  selected={tab === item.segment}
+                  aria-current={tab === item.segment ? "page" : undefined}
+                  onClick={() => goTo(item.segment)}
+                  sx={{
+                    position: "relative",
+                    py: { xs: 1, md: 1.125 },
+                    px: { xs: 1.5, md: 1.375 },
+                    width: { xs: "auto", md: "100%" },
+                    whiteSpace: { xs: "nowrap", md: "normal" },
+                    borderRadius: "var(--radius-control)",
+                    border: "1px solid transparent",
+                    backgroundImage:
+                      "linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 100%)",
                   transition:
-                    "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth)",
-                  "&.Mui-selected": {
-                    boxShadow: [
-                      "inset 3px 0 0 0 var(--primary)",
-                      "var(--os3d-chip-lift-stack)",
-                    ].join(", "),
+                    "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), border-color var(--transition-duration) var(--ease-out-smooth)",
+                  "&:hover": {
                     backgroundColor:
-                      "color-mix(in srgb, var(--primary) 9%, transparent)",
-                  },
-                  "&.Mui-selected:hover": {
+                      "color-mix(in srgb, var(--foreground) 3.5%, var(--card))",
+                    borderColor:
+                      "color-mix(in srgb, var(--border) 18%, transparent)",
+                      boxShadow: "var(--os3d-control-soft-lift-stack)",
+                    },
+                    "&.Mui-selected": {
+                    borderColor:
+                      "color-mix(in srgb, var(--primary) 22%, var(--border))",
                     backgroundColor:
-                      "color-mix(in srgb, var(--primary) 12%, transparent)",
+                      "color-mix(in srgb, var(--primary) 11%, var(--card))",
+                    boxShadow: "var(--os3d-selection-pill-stack)",
                   },
-                  "@media (prefers-reduced-motion: reduce)": {
-                    transition: "none",
-                  },
-                }}
-              >
-                {item.iconSrc ? (
-                  <ListItemIcon
-                    sx={{
-                      minWidth: { xs: 36, md: 40 },
-                      color: "inherit",
-                      opacity: tab === item.segment ? 1 : 0.88,
-                    }}
-                  >
-                    <Box
+                    "&.Mui-selected:hover": {
+                      backgroundColor:
+                        "color-mix(in srgb, var(--primary) 13%, var(--card))",
+                    },
+                    "@media (prefers-reduced-motion: reduce)": {
+                      transition: "none",
+                    },
+                  }}
+                >
+                  {item.iconSrc ? (
+                    <ListItemIcon
                       sx={{
-                        width: { xs: 26, md: 28 },
-                        height: { xs: 26, md: 28 },
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
+                        minWidth: { xs: 42, md: 44 },
+                        color: "inherit",
+                        opacity: tab === item.segment ? 1 : 0.88,
                       }}
                     >
-                      <Os3dIcon src={item.iconSrc} variant="inline" />
-                    </Box>
-                  </ListItemIcon>
-                ) : null}
-                <ListItemText
-                  primary={item.label}
-                  primaryTypographyProps={{
-                    fontWeight: tab === item.segment ? 700 : 600,
-                    fontSize: "var(--font-size-body-sm)",
-                  }}
-                />
-              </ListItemButton>
-            </ListItem>
-          ))}
-        </List>
+                      <Box
+                        sx={{
+                          width: { xs: 32, md: 34 },
+                          height: { xs: 32, md: 34 },
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          borderRadius: "var(--radius-chip)",
+                          bgcolor:
+                            tab === item.segment
+                              ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
+                              : "color-mix(in srgb, var(--card) 72%, transparent)",
+                          boxShadow:
+                            tab === item.segment
+                              ? "var(--os3d-control-soft-lift-stack)"
+                              : "none",
+                        }}
+                      >
+                        <Os3dIcon src={item.iconSrc} variant="inline" />
+                      </Box>
+                    </ListItemIcon>
+                  ) : null}
+                  <ListItemText
+                    primary={item.label}
+                    primaryTypographyProps={{
+                      fontWeight: tab === item.segment ? 700 : 600,
+                      fontSize: "var(--font-size-body-sm)",
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            ))}
+          </List>
         </Box>
       </Box>
       <Box

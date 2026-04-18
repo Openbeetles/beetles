@@ -5,10 +5,13 @@ import type { SxProps, Theme } from "@mui/material/styles";
 import type { PropsWithChildren, ReactNode } from "react";
 import {
   CONFIG_PANEL_SX,
+  CONFIG_PANEL_LOADING_SX,
   PANEL_SECTION_PADDING,
   TEXT_BODY_TERTIARY_SX,
   TEXT_SECTION_TITLE_SX,
 } from "../theme/panelStyles";
+
+type SettingsSectionSurfaceTone = "default" | "loading";
 
 interface SettingsSectionProps {
   icon: ReactNode;
@@ -28,6 +31,8 @@ interface SettingsSectionProps {
   pinHeader?: boolean;
   /** 合并到最外层卡片容器（便于与 `PAGE_COLUMN_FILL_SX` 等组合） */
   sx?: SxProps<Theme>;
+  /** loading 刷新态不应复用正式卡片阴影。 */
+  surfaceTone?: SettingsSectionSurfaceTone;
 }
 
 export function SettingsSection({
@@ -38,10 +43,14 @@ export function SettingsSection({
   belowTitleRow,
   pinHeader = false,
   sx: sxProp,
+  surfaceTone = "default",
   children,
 }: PropsWithChildren<SettingsSectionProps>) {
   const titleRowMb = belowTitleRow ? 1 : description ? 1 : 2;
   const belowRowMb = description ? 1 : 2;
+  const loadingSurface = surfaceTone === "loading";
+  const surfaceSx =
+    surfaceTone === "loading" ? CONFIG_PANEL_LOADING_SX : CONFIG_PANEL_SX;
 
   const headerBlock = (
     <>
@@ -63,9 +72,12 @@ export function SettingsSection({
               justifyContent: "center",
               flexShrink: 0,
               borderRadius: "var(--radius-chip)",
-              backgroundColor:
-                "color-mix(in srgb, var(--foreground) 4%, transparent)",
-              boxShadow: "var(--os3d-pedestal-lift-stack)",
+              backgroundColor: loadingSurface
+                ? "transparent"
+                : "color-mix(in srgb, var(--foreground) 4%, transparent)",
+              boxShadow: loadingSurface
+                ? "none"
+                : "var(--os3d-pedestal-lift-stack)",
             }}
           >
             {icon}
@@ -91,7 +103,7 @@ export function SettingsSection({
     return (
       <Box
         sx={{
-          ...CONFIG_PANEL_SX,
+          ...surfaceSx,
           p: PANEL_SECTION_PADDING,
           display: "flex",
           flexDirection: "column",
@@ -122,7 +134,7 @@ export function SettingsSection({
   return (
     <Box
       sx={{
-        ...CONFIG_PANEL_SX,
+        ...surfaceSx,
         p: PANEL_SECTION_PADDING,
         ...sxProp,
       }}

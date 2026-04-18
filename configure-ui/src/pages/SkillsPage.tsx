@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import CircularProgress from "@mui/material/CircularProgress";
 import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import type { DialogProps } from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -18,7 +19,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
-import ListItemText from "@mui/material/ListItemText";
+import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
@@ -34,6 +35,7 @@ import {
   SectionLoadingSkeleton,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
+import { SkillMonogramBadge } from "../components/SkillMonogramBadge";
 import { SettingsSection } from "../components/SettingsSection";
 import { OS_ICON_DIALOG, OS_ICON_NAV } from "../config/osIcons";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
@@ -59,6 +61,59 @@ import { CONTENT_MAX_WIDTH } from "../config/layout";
 import "./skillsMdEditor.css";
 
 const MAX_CONTENT = 32 * 1024;
+const SKILL_NAME_PREFIXES = ["runtime_skill__", "runtime_skill_", "skill__", "skill_"];
+const SKILL_UPPERCASE_TOKENS = new Set([
+  "ai",
+  "api",
+  "cli",
+  "cpu",
+  "dns",
+  "gpu",
+  "http",
+  "https",
+  "json",
+  "llm",
+  "mdx",
+  "os",
+  "pdf",
+  "ssh",
+  "sql",
+  "sse",
+  "tcp",
+  "tts",
+  "udp",
+  "ui",
+  "url",
+  "yaml",
+  "xml",
+]);
+
+function stripSkillNamePrefix(name: string): string {
+  return SKILL_NAME_PREFIXES.find((prefix) => name.startsWith(prefix))
+    ? name.slice(
+        SKILL_NAME_PREFIXES.find((prefix) => name.startsWith(prefix))!.length,
+      )
+    : name;
+}
+
+function formatSkillToken(token: string): string {
+  if (!token) return token;
+  const lower = token.toLowerCase();
+  if (SKILL_UPPERCASE_TOKENS.has(lower)) return lower.toUpperCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function humanizeSkillName(name: string): string {
+  const trimmed = stripSkillNamePrefix(name);
+  const tokens = trimmed.split(/[_-]+/).filter(Boolean);
+  if (tokens.length === 0) return name;
+  return tokens.map(formatSkillToken).join(" ");
+}
+
+function skillKind(name: string): "runtime" | "custom" {
+  return name.startsWith("runtime_skill") ? "runtime" : "custom";
+}
+
 const SkillRichEditor = lazy(async () => {
   const mod = await import("./skillRichEditor");
   return { default: mod.SkillRichEditor };
@@ -274,16 +329,39 @@ export function SkillsPage() {
     .filter((s): s is SkillItem => !!s);
   const missingFromOrder = skills.filter((s) => !displayOrder.includes(s.name));
   const listToShow = [...orderedSkills, ...missingFromOrder];
+  const enabledCount = listToShow.filter((skill) => skill.enabled).length;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert message={listState.error || null} onRetry={loadList} />
       <SettingsSection
         pinHeader
+        surfaceTone={listState.loading ? "loading" : "default"}
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_NAV["/skills"]} />}
         label={t("skills.sectionList")}
         description={t("skills.sectionListDesc")}
+        belowTitleRow={
+          !listState.loading && listToShow.length > 0 ? (
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip
+                size="small"
+                label={t("skills.summaryTotal", { count: listToShow.length })}
+              />
+              <Chip
+                size="small"
+                label={t("skills.summaryEnabled", { count: enabledCount })}
+                sx={{
+                  color: "var(--primary)",
+                  borderColor:
+                    "color-mix(in srgb, var(--primary) 18%, var(--border))",
+                  backgroundColor:
+                    "color-mix(in srgb, var(--primary) 6%, var(--card))",
+                }}
+              />
+            </Stack>
+          ) : null
+        }
         accessory={
           <Button
             size="small"
@@ -314,66 +392,232 @@ export function SkillsPage() {
           />
         ) : (
           <List
-            dense
             disablePadding
             sx={{
-              display: "flex",
-              flexDirection: "column",
-              gap: LAYOUT_TOKENS.spacingInlineTight,
+              display: "grid",
+              gap: 1.5,
+              width: "100%",
+              pr: 0.5,
+              alignContent: "start",
+              gridTemplateColumns: {
+                xs: "minmax(0, 1fr)",
+                xl: "repeat(2, minmax(0, 1fr))",
+              },
             }}
           >
             {listToShow.map((skill) => (
-              <ListItem
-                key={skill.name}
-                sx={{
-                  ...SETTINGS_SECTION_LIST_ROW_SX,
-                  display: "flex",
-                  gap: LAYOUT_TOKENS.spacingInlineTight,
-                }}
-                secondaryAction={
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                    <IconButton
-                      size="small"
-                      onClick={() => openEdit(skill.name)}
-                      sx={{ color: TEXT_COLOR.tertiary }}
-                      aria-label={t("common.edit")}
+              <ListItem key={skill.name} disablePadding sx={{ display: "block" }}>
+                <Box
+                  sx={{
+                    ...SETTINGS_SECTION_LIST_ROW_SX,
+                    px: 2,
+                    py: 1.5,
+                    display: "grid",
+                    gridTemplateColumns: {
+                      xs: "minmax(0, 1fr)",
+                      sm: "minmax(0, 1fr) auto",
+                    },
+                    columnGap: 1.5,
+                    rowGap: 1,
+                    alignItems: "center",
+                    minHeight: 92,
+                    backgroundColor:
+                      "color-mix(in srgb, var(--surface) 78%, var(--card))",
+                    backgroundImage:
+                      "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+                    border:
+                      "1px solid color-mix(in srgb, #fff 52%, var(--border))",
+                    boxShadow: "var(--os3d-section-module-stack)",
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1.5,
+                      minWidth: 0,
+                    }}
+                  >
+                    <SkillMonogramBadge name={skill.name} />
+                    <Box
+                      sx={{
+                        minWidth: 0,
+                        display: "grid",
+                        gap: 0.5,
+                        alignContent: "center",
+                      }}
                     >
-                      <EditOutlined fontSize="small" />
-                    </IconButton>
-                    <IconButton
-                      size="small"
-                      onClick={() => requestDelete(skill.name)}
-                      sx={{ color: TEXT_COLOR.tertiary }}
-                      aria-label={t("common.remove")}
+                      <Box
+                        sx={{
+                          minWidth: 0,
+                        }}
+                      >
+                        <Typography
+                          title={humanizeSkillName(skill.name)}
+                          sx={{
+                            ...TEXT_SUBSECTION_TITLE_SX,
+                            minWidth: 0,
+                            color: "var(--text-primary)",
+                            fontSize: "1.03125rem",
+                            fontWeight: 700,
+                            lineHeight: 1.28,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {humanizeSkillName(skill.name)}
+                        </Typography>
+                      </Box>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.625,
+                          minWidth: 0,
+                        }}
+                      >
+                        <Box
+                          component="span"
+                          sx={{
+                            flexShrink: 0,
+                            px: 0.65,
+                            py: 0.28,
+                            borderRadius: 999,
+                            fontSize: "0.72rem",
+                            fontWeight: 700,
+                            letterSpacing: "0.02em",
+                            lineHeight: 1,
+                            color:
+                              skillKind(skill.name) === "runtime"
+                                ? "color-mix(in srgb, var(--primary) 76%, var(--text-secondary))"
+                                : "color-mix(in srgb, var(--accent) 74%, var(--text-secondary))",
+                            backgroundColor:
+                              skillKind(skill.name) === "runtime"
+                                ? "color-mix(in srgb, var(--primary) 8%, var(--surface))"
+                                : "color-mix(in srgb, var(--accent) 10%, var(--surface))",
+                            border:
+                              skillKind(skill.name) === "runtime"
+                                ? "1px solid color-mix(in srgb, var(--primary) 14%, var(--border))"
+                                : "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
+                            boxShadow:
+                              "inset 0 1px 0 color-mix(in srgb, #fff 70%, transparent)",
+                          }}
+                        >
+                          {t(
+                            skillKind(skill.name) === "runtime"
+                              ? "skills.kindRuntime"
+                              : "skills.kindCustom",
+                          )}
+                        </Box>
+                        <Typography
+                          title={skill.name}
+                          sx={{
+                            minWidth: 0,
+                            flex: "1 1 auto",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.76rem",
+                            lineHeight: 1.35,
+                            color: "var(--text-tertiary)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {skill.name}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Box>
+
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "flex-end",
+                      gap: 0.625,
+                      flexShrink: 0,
+                      minWidth: 108,
+                      gridColumn: { xs: "1 / -1", sm: "auto" },
+                      justifySelf: "end",
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.125,
+                        px: 0.3,
+                        py: 0.25,
+                        borderRadius: "calc(var(--radius-control) + 2px)",
+                        border:
+                          "1px solid color-mix(in srgb, #fff 42%, var(--border))",
+                        backgroundColor:
+                          "color-mix(in srgb, var(--surface) 84%, var(--card))",
+                        backgroundImage:
+                          "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 100%)",
+                        boxShadow: "var(--os3d-control-soft-lift-stack)",
+                      }}
                     >
-                      <DeleteOutlined fontSize="small" />
-                    </IconButton>
+                      <IconButton
+                        size="small"
+                        onClick={() => openEdit(skill.name)}
+                        sx={{
+                          color: TEXT_COLOR.secondary,
+                          width: 28,
+                          height: 28,
+                          "&:hover": {
+                            color: TEXT_COLOR.primary,
+                            backgroundColor:
+                              "color-mix(in srgb, var(--foreground) 4%, transparent)",
+                          },
+                        }}
+                        aria-label={t("common.edit")}
+                      >
+                        <EditOutlined fontSize="small" />
+                      </IconButton>
+                      <IconButton
+                        size="small"
+                        onClick={() => requestDelete(skill.name)}
+                        sx={{
+                          color:
+                            "color-mix(in srgb, var(--semantic-danger) 74%, var(--foreground))",
+                          width: 28,
+                          height: 28,
+                          "&:hover": {
+                            color: "var(--semantic-danger)",
+                            backgroundColor:
+                              "color-mix(in srgb, var(--semantic-danger) 8%, transparent)",
+                          },
+                        }}
+                        aria-label={t("common.remove")}
+                      >
+                        <DeleteOutlined fontSize="small" />
+                      </IconButton>
+                    </Box>
                     <Switch
                       checked={skill.enabled}
                       onChange={(_, checked) =>
                         handleToggleEnabled(skill.name, checked)
                       }
                       size="small"
+                      inputProps={{
+                        "aria-label": t(
+                          skill.enabled
+                            ? "skills.disableSkill"
+                            : "skills.enableSkill",
+                          { name: skill.name },
+                        ),
+                      }}
                       sx={{
+                        ml: 0.125,
                         "& .MuiSwitch-switchBase": {
                           borderRadius: "var(--radius-control)",
                         },
                       }}
                     />
                   </Box>
-                }
-              >
-                <ListItemText
-                  primary={skill.name}
-                  slotProps={{
-                    primary: {
-                      sx: {
-                        ...TEXT_SUBSECTION_TITLE_SX,
-                        fontFamily: "var(--font-mono)",
-                      },
-                    },
-                  }}
-                />
+                </Box>
               </ListItem>
             ))}
           </List>

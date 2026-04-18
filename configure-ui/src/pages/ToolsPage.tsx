@@ -28,56 +28,91 @@ import { LAYOUT_TOKENS } from "../config/themeTokens";
 
 export function ToolsPage() {
   const { t } = useTranslation();
-  const { api, ready } = useDeviceApi();
+  const { api, ready, deviceConnected, connectionChecking } = useDeviceApi();
   const [state, setState] = useState(
     createAsyncState<ToolInfo[]>([]),
   );
+  const [unsupportedEndpoint, setUnsupportedEndpoint] = useState(false);
 
   const load = useCallback(async () => {
-    if (!ready) return;
+    if (!ready || !deviceConnected) return;
     setState((prev) => ({ ...prev, loading: true, error: "" }));
+    setUnsupportedEndpoint(false);
     const res = await api.tools.list();
     if (res.ok && res.data) {
+      setUnsupportedEndpoint(false);
       setState({ loading: false, error: "", data: res.data });
     } else {
-      let nextError = res.error ?? ""
+      let nextError = res.error ?? "";
+      let nextUnsupported = false;
       if (nextError === "Not Found" || nextError === "not found") {
-        const probe = await api.device.probe()
-        const inventory = probe.ok ? parseRootInventory(probe.data) : null
+        const probe = await api.device.probe();
+        const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/tools")) {
-          nextError = t("tools.unsupportedEndpoint")
+          nextUnsupported = true;
+          nextError = "";
         }
       }
+      setUnsupportedEndpoint(nextUnsupported);
       setState((prev) => ({
         ...prev,
         loading: false,
         error: nextError,
       }));
     }
-  }, [api.device, api.tools, ready, t]);
+  }, [api.device, api.tools, deviceConnected, ready]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !deviceConnected) {
+      queueMicrotask(() => {
+        setUnsupportedEndpoint(false);
+        setState(createAsyncState<ToolInfo[]>([]));
+      });
+      return;
+    }
     const id = window.setTimeout(() => {
       void load();
     }, 0);
     return () => window.clearTimeout(id);
-  }, [ready, load]);
+  }, [deviceConnected, ready, load]);
+
+  const showConnectionLoading = ready && connectionChecking && !deviceConnected;
+  const showConnectState = !showConnectionLoading && (!ready || !deviceConnected);
+  const inlineError = showConnectState || unsupportedEndpoint ? null : state.error || null;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={state.error || null} onRetry={load} />
+      <InlineAlert message={inlineError} onRetry={load} />
       <SettingsSection
         pinHeader
+        surfaceTone={state.loading ? "loading" : "default"}
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_NAV["/tools"]} />}
         label={t("tools.sectionMain")}
         description={t("tools.sectionMainDesc")}
       >
-        {state.loading ? (
+        {showConnectionLoading ? (
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>
+        ) : showConnectState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/tools"]} variant="inline" />}
+            title={ready ? t("device.connectFirst") : t("device.bannerNeedDevice")}
+            description={t("tools.connectDesc")}
+          />
+        ) : state.loading ? (
+          <PanelStateLoading>
+            <SectionLoadingSkeleton />
+          </PanelStateLoading>
+        ) : unsupportedEndpoint ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/tools"]} variant="inline" />}
+            title={t("tools.unsupportedTitle")}
+            description={t("tools.unsupportedDesc")}
+          />
         ) : state.error ? null : state.data.length === 0 ? (
           <PanelStateBlock
             tone="neutral"

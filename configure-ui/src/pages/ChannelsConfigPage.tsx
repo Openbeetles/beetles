@@ -8,6 +8,7 @@ import TextField from "@mui/material/TextField";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormLoadingSkeleton,
+  PanelStateBlock,
   PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
@@ -20,11 +21,10 @@ import { OS_ICON_NAV } from "../config/osIcons";
 import {
   PAGE_COLUMN_FILL_SX,
   PAGE_STACK_OUTER_SX,
-  TEXT_BODY_TERTIARY_SX,
 } from "../theme/panelStyles";
-import Typography from "@mui/material/Typography";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
+import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { useRevealedPasswordFields } from "../hooks/useRevealedPassword";
@@ -55,11 +55,17 @@ function validateChannels(
 
 export function ChannelsConfigPage() {
   const { t } = useTranslation();
+  const { ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
   const { config, loadConfig, saveChannels, loading, error } = useConfig();
   const { setDirty } = useUnsaved();
   const [form, setForm] = useSyncedNullableState<AppConfig>(config);
   const saveFeedback = useSaveFeedback(t);
-  useConfigPageLoad({ hasConfig: config !== null, loading, loadConfig });
+  useConfigPageLoad({
+    hasConfig: config !== null,
+    loading,
+    loadConfig,
+    canLoad: ready && deviceConnected,
+  });
 
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
@@ -103,6 +109,7 @@ export function ChannelsConfigPage() {
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
           pinHeader
+          surfaceTone="loading"
           sx={{ flex: 1, minHeight: 0 }}
           icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} />}
           label={t("config.sectionChannels")}
@@ -116,10 +123,17 @@ export function ChannelsConfigPage() {
   }
 
   const saveDisabled = saveFeedback.status === "saving" || !form;
+  const showConnectionLoading =
+    !form && !loading && ready && connectionChecking && !deviceConnected;
+  const showConnectState =
+    !form && !loading && !showConnectionLoading && (!ready || !deviceConnected);
+  const showPairingState =
+    !form && !loading && ready && deviceConnected && !hasPairing;
+  const inlineError = showConnectState || showPairingState ? null : error;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={error} onRetry={loadConfig} />
+      <InlineAlert message={inlineError} onRetry={loadConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
@@ -151,10 +165,31 @@ export function ChannelsConfigPage() {
           ) : null
         }
       >
-        {!form ? (
-          <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, py: 2 }}>
-            {t("config.hintSaveNeedDevice")}
-          </Typography>
+        {showConnectionLoading ? (
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
+        ) : showConnectState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} variant="inline" />}
+            title={ready ? t("device.connectFirst") : t("device.bannerNeedDevice")}
+            description={t("config.connectDesc")}
+          />
+        ) : showPairingState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} variant="inline" />}
+            title={t("device.pairingCodeRequired")}
+            description={t("config.needPairingDesc")}
+          />
+        ) : !form ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/channels-config"]} variant="inline" />}
+            title={t("config.unavailableTitle")}
+            description={t("config.unavailableDesc")}
+          />
         ) : (
           <>
         <SettingsRow

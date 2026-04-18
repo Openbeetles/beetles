@@ -57,7 +57,7 @@ function KvList({ items }: { items: Array<[string, unknown]> }) {
 
 export function SystemLogsPage() {
   const { t } = useTranslation();
-  const { api, ready } = useDeviceApi();
+  const { api, ready, deviceConnected, connectionChecking } = useDeviceApi();
   const [logsState, setLogsState] = useState(
     createAsyncState<{
       health: HealthData | null;
@@ -71,7 +71,7 @@ export function SystemLogsPage() {
   );
 
   const loadLogs = useCallback(() => {
-    if (!ready) return;
+    if (!ready || !deviceConnected) return;
     setLogsState((prev) => ({ ...prev, loading: true, error: "" }));
     Promise.all([api.system.health(), api.system.metrics(), api.system.diagnose()])
       .then(([healthRes, metricsRes, diagnoseRes]) => {
@@ -95,10 +95,10 @@ export function SystemLogsPage() {
       .catch(() =>
         setLogsState((prev) => ({ ...prev, loading: false, error: "config.errorNetwork" })),
       );
-  }, [api.system, ready]);
+  }, [api.system, deviceConnected, ready]);
 
   useEffect(() => {
-    if (!ready) {
+    if (!ready || !deviceConnected) {
       queueMicrotask(() => {
         setLogsState(createAsyncState({ health: null, metrics: null, diagnose: [] }));
       });
@@ -108,29 +108,37 @@ export function SystemLogsPage() {
       void loadLogs();
     }, 0);
     return () => window.clearTimeout(id);
-  }, [ready, loadLogs]);
+  }, [deviceConnected, ready, loadLogs]);
 
   const severityColor = (s: string) => {
     if (s === "ok") return "var(--semantic-success)";
     if (s === "warn") return "var(--semantic-warning)";
     return "var(--semantic-danger)";
   };
+  const showConnectionLoading = ready && connectionChecking && !deviceConnected;
+  const showConnectState = !showConnectionLoading && (!ready || !deviceConnected);
+  const inlineError = showConnectState ? null : logsState.error || null;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={logsState.error || null} onRetry={loadLogs} />
+      <InlineAlert message={inlineError} onRetry={loadLogs} />
       <SettingsSection
         pinHeader
+        surfaceTone={logsState.loading ? "loading" : "default"}
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_NAV["/system-logs"]} />}
         label={t("systemLogs.sectionLogs")}
       >
-        {!ready ? (
+        {showConnectionLoading ? (
+          <PanelStateLoading>
+            <SectionLoadingSkeleton />
+          </PanelStateLoading>
+        ) : showConnectState ? (
           <PanelStateBlock
-            tone="warning"
-            size="compact"
+            tone="neutral"
             icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} variant="inline" />}
-            title={t("device.connectFirst")}
+            title={ready ? t("device.connectFirst") : t("device.bannerNeedDevice")}
+            description={t("systemLogs.connectDesc")}
           />
         ) : logsState.loading ? (
           <PanelStateLoading>
@@ -213,13 +221,17 @@ export function SystemLogsPage() {
                 </List>
               </Box>
             )}
-            {!logsState.data.health && logsState.data.diagnose.length === 0 && !logsState.loading && ready && (
+            {!logsState.data.health &&
+            logsState.data.diagnose.length === 0 &&
+            !logsState.loading &&
+            !logsState.error &&
+            ready ? (
               <PanelStateBlock
                 tone="neutral"
                 icon={<Os3dIcon src={OS_ICON_NAV["/system-logs"]} />}
                 title={t("systemLogs.emptyLogs")}
               />
-            )}
+            ) : null}
           </Box>
         )}
       </SettingsSection>

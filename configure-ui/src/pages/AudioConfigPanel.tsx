@@ -398,6 +398,7 @@ export function AudioConfigPanel() {
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
           pinHeader
+          surfaceTone="loading"
           sx={{ flex: 1, minHeight: 0 }}
           icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.audio} />}
           label={t('audioConfig.sectionMain')}

@@ -238,6 +238,14 @@ const LIGHT_PAGE_BACKGROUND = '#e8eef5'
 /** 壳层 / 次级表面：比画布略亮、偏冷，仍属青灰白 */
 const LIGHT_SURFACE_COOL = '#f6f9fd'
 
+/** 浅色文字层级：secondary 用于正文辅助，tertiary 用于 id / metadata，必须明显分层。 */
+const LIGHT_TEXT_SECONDARY = '#5f6f86'
+const LIGHT_TEXT_TERTIARY = '#8a97aa'
+
+/** 深色文字层级：secondary 仍可读，tertiary 退到 metadata 级，避免整页一片同亮度。 */
+const DARK_TEXT_SECONDARY = '#b2bfd0'
+const DARK_TEXT_TERTIARY = '#8794a8'
+
 const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
   light: {
     blue: {
@@ -245,7 +253,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#2d3142',
       card: '#ffffff',
       surface: LIGHT_SURFACE_COOL,
-      muted: '#64748b',
+      muted: LIGHT_TEXT_TERTIARY,
       border: '#dbe4ec',
       primary: '#3b82f6',
       primarySoft: 'rgba(59, 130, 246, 0.06)',
@@ -258,7 +266,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#64748b',
+      foregroundSoft: LIGHT_TEXT_SECONDARY,
       borderSubtle: '#edf2f6',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
@@ -271,7 +279,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#2d3142',
       card: '#ffffff',
       surface: LIGHT_SURFACE_COOL,
-      muted: '#64748b',
+      muted: LIGHT_TEXT_TERTIARY,
       border: '#dbe4ec',
       primary: '#14b8a6',
       primarySoft: 'rgba(20, 184, 166, 0.06)',
@@ -284,7 +292,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#64748b',
+      foregroundSoft: LIGHT_TEXT_SECONDARY,
       borderSubtle: '#edf2f6',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
@@ -297,7 +305,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#2d3142',
       card: '#ffffff',
       surface: '#f7f5ff',
-      muted: '#64748b',
+      muted: LIGHT_TEXT_TERTIARY,
       border: '#ebe7f3',
       primary: '#6d28d9',
       primarySoft: 'rgba(109, 40, 217, 0.08)',
@@ -310,7 +318,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#64748b',
+      foregroundSoft: LIGHT_TEXT_SECONDARY,
       borderSubtle: '#f5f3fb',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
@@ -323,7 +331,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#2d3142',
       card: '#ffffff',
       surface: LIGHT_SURFACE_COOL,
-      muted: '#64748b',
+      muted: LIGHT_TEXT_TERTIARY,
       border: '#dbe4ec',
       primary: '#c43030',
       primarySoft: 'rgba(196, 48, 48, 0.06)',
@@ -336,7 +344,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#64748b',
+      foregroundSoft: LIGHT_TEXT_SECONDARY,
       borderSubtle: '#edf2f6',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
@@ -351,7 +359,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#e2e8f0',
       card: '#1a1d24',
       surface: '#22262e',
-      muted: '#94a3b8',
+      muted: DARK_TEXT_TERTIARY,
       border: '#2c3340',
       primary: '#60a5fa',
       primarySoft: 'rgba(59, 130, 246, 0.10)',
@@ -364,7 +372,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#94a3b8',
+      foregroundSoft: DARK_TEXT_SECONDARY,
       borderSubtle: '#1a1e26',
       shadowSubtle:
         '0 18px 40px -26px color-mix(in srgb, #000 38%, transparent)',
@@ -377,7 +385,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#e2e8f0',
       card: '#1a1d24',
       surface: '#22262e',
-      muted: '#94a3b8',
+      muted: DARK_TEXT_TERTIARY,
       border: '#2c3340',
       primary: '#2dd4bf',
       primarySoft: 'rgba(20, 184, 166, 0.10)',
@@ -390,7 +398,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#94a3b8',
+      foregroundSoft: DARK_TEXT_SECONDARY,
       borderSubtle: '#1a1e26',
       shadowSubtle:
         '0 18px 40px -26px color-mix(in srgb, #000 38%, transparent)',
@@ -403,7 +411,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#e8e4f5',
       card: '#161024',
       surface: '#1c1530',
-      muted: '#94a3b8',
+      muted: DARK_TEXT_TERTIARY,
       border: '#302448',
       primary: '#a78bfa',
       primarySoft: 'rgba(167, 139, 250, 0.12)',
@@ -416,7 +424,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#94a3b8',
+      foregroundSoft: DARK_TEXT_SECONDARY,
       borderSubtle: '#221830',
       shadowSubtle:
         '0 18px 40px -26px color-mix(in srgb, #000 40%, transparent)',
@@ -429,7 +437,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       foreground: '#e2e8f0',
       card: '#1a1d24',
       surface: '#22262e',
-      muted: '#94a3b8',
+      muted: DARK_TEXT_TERTIARY,
       border: '#2c3340',
       primary: '#ef7a7a',
       primarySoft: 'rgba(196, 48, 48, 0.08)',
@@ -442,7 +450,7 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
-      foregroundSoft: '#94a3b8',
+      foregroundSoft: DARK_TEXT_SECONDARY,
       borderSubtle: '#1a1e26',
       shadowSubtle:
         '0 18px 40px -26px color-mix(in srgb, #000 38%, transparent)',

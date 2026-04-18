@@ -74,9 +74,15 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
     }
   };
 
+  const chromeCapsuleSx = {
+    border: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+    backgroundColor: "color-mix(in srgb, var(--card) 62%, transparent)",
+    boxShadow: "var(--os3d-control-soft-lift-stack)",
+  } as const;
+
   const captionBtnSx = {
     flexShrink: 0,
-    width: 48,
+    width: 56,
     height: TOP_BAR_MIN_HEIGHT,
     maxHeight: TOP_BAR_MIN_HEIGHT,
     borderRadius: 0,
@@ -86,7 +92,7 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
     transition:
       "background-color var(--transition-duration) var(--ease-out-smooth), color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-emphasized)",
     "&:hover:not(:disabled)": {
-      backgroundColor: "color-mix(in srgb, var(--card) 54%, transparent)",
+      backgroundColor: "transparent",
       color: "var(--foreground)",
       boxShadow: "none",
     },
@@ -128,16 +134,13 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
               flexShrink: 0,
               p: 0.625,
               borderRadius: "var(--radius-control)",
-              border: "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
-              backgroundColor:
-                "color-mix(in srgb, var(--card) 62%, var(--surface))",
-              boxShadow: "none",
+              ...chromeCapsuleSx,
               transition:
                 "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized)",
               "&:hover": {
                 backgroundColor:
-                  "color-mix(in srgb, var(--card) 74%, var(--surface))",
-                boxShadow: "var(--os3d-pedestal-lift-stack)",
+                  "color-mix(in srgb, var(--primary) 8%, var(--card))",
+                boxShadow: "var(--os3d-selection-pill-stack)",
                 transform: "translateY(-0.5px)",
               },
               "&:active": {
@@ -164,7 +167,20 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
           sx={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center" }}
           data-tauri-drag-region={macTauriWindow ? "" : undefined}
         >
-          <PageHeader title={title} />
+          <Box
+            sx={{
+              minWidth: 0,
+              maxWidth: "100%",
+              px: { xs: 1.125, sm: 1.25 },
+              py: 0.625,
+              borderRadius: "var(--radius-search-pill)",
+              ...chromeCapsuleSx,
+              backgroundImage:
+                "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+            }}
+          >
+            <PageHeader title={title} />
+          </Box>
         </Box>
       </Stack>
       <Stack
@@ -184,11 +200,21 @@ export function TopBar({ onOpenSettings }: TopBarProps) {
           >
             <Box
               sx={{
-                width: "var(--icon-size-md)",
-                height: "var(--icon-size-md)",
+                width: 34,
+                height: 34,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
+                borderRadius: "var(--radius-chip)",
+                ...chromeCapsuleSx,
+                transition:
+                  "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-emphasized), transform var(--transition-duration) var(--ease-emphasized)",
+                ".MuiIconButton-root:hover &": {
+                  backgroundColor:
+                    "color-mix(in srgb, var(--primary) 8%, var(--card))",
+                  boxShadow: "var(--os3d-selection-pill-stack)",
+                  transform: "translateY(-0.5px)",
+                },
               }}
             >
               <Os3dIcon src={OS_ICON_SHELL.preferences} variant="inline" />

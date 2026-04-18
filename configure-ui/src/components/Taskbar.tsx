@@ -37,7 +37,7 @@ const START_MENU_NAV_ITEMS = NAV_ITEMS.filter(
 const START_MENU_GAP_PX = 18;
 const DOCK_MAGNIFY_SCALE = [1.26, 1.14, 1.06];
 const DOCK_MAGNIFY_LIFT_PX = [14, 7, 2];
-const START_MENU_TILE_MIN_HEIGHT = 112;
+const START_MENU_TILE_MIN_HEIGHT = 120;
 
 function getDockMotion(index: number, hoveredIndex: number | null) {
   if (hoveredIndex === null) {
@@ -247,15 +247,17 @@ export function Taskbar() {
             backgroundColor:
               startOpen
                 ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
-                : "color-mix(in srgb, var(--card) 84%, transparent)",
+                : "color-mix(in srgb, var(--card) 76%, var(--surface))",
+            backgroundImage:
+              "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
             boxShadow: startOpen
-              ? "var(--os3d-chip-lift-stack)"
-              : "var(--os3d-pedestal-lift-stack)",
+              ? "var(--os3d-selection-pill-stack)"
+              : "var(--os3d-control-soft-lift-stack)",
             transition:
               "background-color var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, transform var(--transition-duration) var(--ease-emphasized), box-shadow var(--transition-duration) var(--ease-emphasized)",
             "&:hover": {
               backgroundColor:
-                "color-mix(in srgb, var(--primary) 12%, var(--card))",
+                "color-mix(in srgb, var(--primary) 9%, var(--card))",
               borderColor:
                 "color-mix(in srgb, var(--primary) 28%, var(--border))",
               transform: "translateY(-1px)",
@@ -304,13 +306,13 @@ export function Taskbar() {
               overflow: "hidden",
               borderRadius: "var(--radius-card)",
               border:
-                "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+                "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
               boxShadow: "var(--os3d-start-panel-stack)",
               backgroundColor:
-                "color-mix(in srgb, var(--card) 95%, transparent)",
+                "color-mix(in srgb, var(--card) 94%, transparent)",
               backgroundImage: [
-                "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 26%)",
-                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 46%, transparent) 0%, transparent 48%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 20%, transparent) 0%, transparent 24%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 58%, transparent) 0%, transparent 54%)",
                 "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 3.5%, transparent) 0%, transparent 100%)",
               ].join(", "),
               backdropFilter: "saturate(1.12) blur(var(--shell-chrome-blur))",
@@ -375,7 +377,7 @@ export function Taskbar() {
               py: 1.5,
               borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
               background:
-                "linear-gradient(180deg, color-mix(in srgb, #fff 12%, var(--surface)) 0%, color-mix(in srgb, var(--surface) 58%, var(--card)) 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 14%, var(--surface)) 0%, color-mix(in srgb, var(--surface) 66%, var(--card)) 100%)",
               boxShadow:
                 "inset 0 1px 0 color-mix(in srgb, #fff 42%, transparent)",
             }}
@@ -430,10 +432,13 @@ export function Taskbar() {
                         borderRadius: "var(--radius-control)",
                         color: "var(--semantic-danger)",
                         border: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
-                        backgroundColor: "color-mix(in srgb, var(--card) 60%, transparent)",
+                        backgroundColor:
+                          "color-mix(in srgb, var(--card) 70%, var(--surface))",
+                        boxShadow: "var(--os3d-control-soft-lift-stack)",
                         "&:hover:not(:disabled)": {
                           backgroundColor:
                             "color-mix(in srgb, var(--semantic-danger) 8%, var(--card))",
+                          boxShadow: "var(--os3d-selection-pill-stack)",
                         },
                         "&:disabled": { opacity: 0.55 },
                       }}
@@ -467,6 +472,8 @@ export function Taskbar() {
               display: "flex",
               flexDirection: "column",
               gap: 1.5,
+              background:
+                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 22%, transparent) 0%, transparent 100%)",
             }}
           >
             {/* 宽幅「连接」磁贴 */}
@@ -497,21 +504,19 @@ export function Taskbar() {
                 alignItems: "center",
                 gap: 1.25,
                 backgroundColor: deviceConnected
-                  ? "color-mix(in srgb, var(--semantic-success) 8%, var(--card))"
-                  : "color-mix(in srgb, var(--semantic-danger) 8%, var(--card))",
-                borderLeftWidth: "var(--accent-line-width)",
-                borderLeftColor: deviceConnected
-                  ? "var(--semantic-success)"
-                  : "var(--semantic-danger)",
-                boxShadow: "var(--os3d-chip-lift-stack)",
+                  ? "color-mix(in srgb, var(--semantic-success) 7%, var(--card))"
+                  : "color-mix(in srgb, var(--semantic-danger) 7%, var(--card))",
+                backgroundImage:
+                  "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+                boxShadow: "var(--os3d-selection-pill-stack)",
                 transition:
                   "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), box-shadow var(--transition-duration) var(--ease-emphasized)",
                 "&:hover": {
                   backgroundColor: deviceConnected
-                    ? "color-mix(in srgb, var(--semantic-success) 10%, var(--card))"
-                    : "color-mix(in srgb, var(--semantic-danger) 10%, var(--card))",
+                    ? "color-mix(in srgb, var(--semantic-success) 9%, var(--card))"
+                    : "color-mix(in srgb, var(--semantic-danger) 9%, var(--card))",
                   transform: "translateY(-0.5px)",
-                  boxShadow: "var(--os3d-pedestal-lift-stack)",
+                  boxShadow: "var(--os3d-chip-lift-stack)",
                 },
                 "&:active": {
                   transform: "translateY(0)",
@@ -657,21 +662,23 @@ export function Taskbar() {
                         active && allowNav
                           ? "color-mix(in srgb, var(--primary) 28%, transparent)"
                           : "color-mix(in srgb, var(--border) 16%, transparent)",
-                      p: 1.75,
+                      p: 1.5,
                       display: "flex",
                       flexDirection: "column",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      textAlign: "center",
-                      gap: 1.25,
+                      alignItems: "stretch",
+                      justifyContent: "flex-start",
+                      textAlign: "left",
+                      gap: 1.125,
                       textDecoration: "none",
                       color: "inherit",
                       backgroundColor: active && allowNav ? activeBg : idleBg,
+                      backgroundImage:
+                        "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
                       cursor: allowNav ? "pointer" : "default",
                       opacity: allowNav ? 1 : 0.72,
                       boxShadow: active && allowNav
-                        ? "var(--os3d-chip-lift-stack)"
-                        : "var(--os3d-pedestal-lift-stack)",
+                        ? "var(--os3d-selection-pill-stack)"
+                        : "var(--os3d-control-soft-lift-stack)",
                       transition:
                         "background-color var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-emphasized)",
                       "&:hover": allowNav
@@ -701,8 +708,18 @@ export function Taskbar() {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 54,
-                        height: 54,
+                        width: 62,
+                        height: 62,
+                        borderRadius: "calc(var(--radius-card) - 2px)",
+                        alignSelf: "flex-start",
+                        bgcolor:
+                          active && allowNav
+                            ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
+                            : "color-mix(in srgb, var(--card) 74%, var(--surface))",
+                        boxShadow:
+                          active && allowNav
+                            ? "var(--os3d-selection-pill-stack)"
+                            : "var(--os3d-control-soft-lift-stack)",
                         "& svg, & img": {
                           width: "100%",
                           height: "100%",
@@ -718,6 +735,7 @@ export function Taskbar() {
                         fontWeight: active ? 700 : 600,
                         lineHeight: 1.3,
                         fontSize: "var(--font-size-body-sm)",
+                        mt: 0.25,
                         display: "-webkit-box",
                         WebkitLineClamp: 2,
                         WebkitBoxOrient: "vertical",

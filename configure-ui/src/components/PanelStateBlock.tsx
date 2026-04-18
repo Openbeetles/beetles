@@ -4,7 +4,10 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { useTranslation } from "react-i18next";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
-import { PANEL_STATE_AREA_SX, TEXT_BODY_TERTIARY_SX } from "../theme/panelStyles";
+import {
+  PANEL_STATE_AREA_SX,
+  TEXT_BODY_TERTIARY_SX,
+} from "../theme/panelStyles";
 
 /** 与 InlineAlert / DisconnectedCacheOverlay 对齐的语义色带。 */
 export type PanelStateTone = "neutral" | "warning" | "danger";
@@ -70,8 +73,18 @@ export function PanelStateHeroRow({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: TONE_WELL[tone],
-        boxShadow: "var(--os3d-pedestal-lift-stack)",
+        backgroundColor:
+          layout === "stack" && tone === "neutral"
+            ? "color-mix(in srgb, var(--surface) 74%, var(--card))"
+            : TONE_WELL[tone],
+        backgroundImage:
+          layout === "stack"
+            ? "linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, transparent 100%)"
+            : undefined,
+        boxShadow:
+          layout === "stack"
+            ? "var(--os3d-control-soft-lift-stack)"
+            : "var(--os3d-pedestal-lift-stack)",
       }}
     >
       <Box sx={{ width: inner, height: inner }}>{icon}</Box>
@@ -110,6 +123,7 @@ export function PanelStateHeroRow({
             lineHeight: "var(--line-height-relaxed)",
             color: "var(--text-tertiary)",
             whiteSpace: "pre-line",
+            ...(layout === "stack" ? { maxWidth: "34ch", mx: "auto" } : {}),
           }}
         >
           {description}
@@ -143,6 +157,11 @@ export interface PanelStateBlockProps {
   /** 次要操作（空列表引导按钮等） */
   actions?: ReactNode;
   size?: "default" | "compact";
+  /**
+   * `empty`：空列表/缺失内容的静态占位；`notice`：连接前/警告/错误类提示。
+   * Omit to derive from tone + size.
+   */
+  presentation?: "empty" | "notice";
   /** 透传给外层，便于测试或 aria */
   id?: string;
 }
@@ -158,9 +177,16 @@ export function PanelStateBlock({
   description,
   actions,
   size = "default",
+  presentation,
   id,
 }: PanelStateBlockProps) {
   const compact = size === "compact";
+  const resolvedPresentation =
+    presentation ?? (compact ? "notice" : tone === "neutral" ? "empty" : "notice");
+  const emptyPresentation = resolvedPresentation === "empty";
+  const accentEdge =
+    resolvedPresentation === "notice" && tone !== "neutral";
+
   return (
     <Box
       id={id}
@@ -171,15 +197,29 @@ export function PanelStateBlock({
         ...(compact
           ? { minHeight: "auto", py: 2 }
           : { py: 2.5 }),
-        px: 2,
+        px: emptyPresentation ? 2.5 : 2,
         borderRadius: "var(--radius-card)",
         border: "none",
-        borderLeft: `${LAYOUT_TOKENS.accentLineWidth}px solid ${TONE_BORDER[tone]}`,
-        backgroundColor: "var(--input-idle-well)",
-        boxShadow: [
-          "0 6px 20px -8px color-mix(in srgb, var(--foreground) 8%, transparent)",
-          "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
-        ].join(", "),
+        ...(accentEdge
+          ? {
+              borderLeft: `${LAYOUT_TOKENS.accentLineWidth}px solid ${TONE_BORDER[tone]}`,
+            }
+          : {}),
+        backgroundColor: emptyPresentation
+          ? "color-mix(in srgb, var(--surface) 68%, var(--card))"
+          : "var(--input-idle-well)",
+        backgroundImage: emptyPresentation
+          ? [
+              "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 48%)",
+              "linear-gradient(180deg, color-mix(in srgb, var(--surface) 32%, transparent) 0%, transparent 100%)",
+            ].join(", ")
+          : undefined,
+        boxShadow: emptyPresentation
+          ? "var(--os3d-section-module-stack)"
+          : [
+              "0 6px 20px -8px color-mix(in srgb, var(--foreground) 8%, transparent)",
+              "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
+            ].join(", "),
         boxSizing: "border-box",
       }}
     >
@@ -189,6 +229,7 @@ export function PanelStateBlock({
         title={title}
         description={description}
         size={size}
+        layout={emptyPresentation ? "stack" : "row"}
       />
       {actions ? (
         <Box
@@ -197,7 +238,7 @@ export function PanelStateBlock({
             display: "flex",
             flexWrap: "wrap",
             gap: 1,
-            justifyContent: "flex-start",
+            justifyContent: emptyPresentation ? "center" : "flex-start",
           }}
         >
           {actions}

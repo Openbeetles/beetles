@@ -104,6 +104,54 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
     "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 2.2%, transparent)",
   ].join(", ");
 
+  const controlSoftLift = dark
+    ? [
+        "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)",
+        "0 8px 18px -12px color-mix(in srgb, #000 34%, transparent)",
+        "0 2px 5px -3px color-mix(in srgb, #000 22%, transparent)",
+      ].join(", ")
+    : [
+        "inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent)",
+        "0 12px 24px -16px color-mix(in srgb, var(--foreground) 9%, transparent)",
+        "0 3px 8px -5px color-mix(in srgb, var(--foreground) 5%, transparent)",
+      ].join(", ");
+
+  const selectionPill = dark
+    ? [
+        "inset 0 1px 0 color-mix(in srgb, var(--foreground) 12%, transparent)",
+        "0 10px 24px -12px color-mix(in srgb, #000 38%, transparent)",
+        "0 4px 10px -4px color-mix(in srgb, var(--primary) 18%, transparent)",
+      ].join(", ")
+    : [
+        "inset 0 1px 0 color-mix(in srgb, #fff 86%, transparent)",
+        "0 16px 30px -18px color-mix(in srgb, var(--primary) 24%, transparent)",
+        "0 4px 10px -6px color-mix(in srgb, var(--foreground) 6%, transparent)",
+      ].join(", ");
+
+  const sectionModule = dark
+    ? [
+        "inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent)",
+        "inset 0 -1px 0 color-mix(in srgb, #000 16%, transparent)",
+        "0 14px 30px -22px color-mix(in srgb, #000 38%, transparent)",
+        "0 4px 10px -8px color-mix(in srgb, #000 22%, transparent)",
+      ].join(", ")
+    : [
+        "inset 0 1px 0 color-mix(in srgb, #fff 82%, transparent)",
+        "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 2.6%, transparent)",
+        "0 18px 36px -26px color-mix(in srgb, var(--foreground) 8%, transparent)",
+        "0 4px 10px -8px color-mix(in srgb, var(--foreground) 4%, transparent)",
+      ].join(", ");
+
+  const sectionModuleHeader = dark
+    ? [
+        "inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent)",
+        "inset 0 -1px 0 color-mix(in srgb, #000 20%, transparent)",
+      ].join(", ")
+    : [
+        "inset 0 1px 0 color-mix(in srgb, #fff 44%, transparent)",
+        "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 3.2%, transparent)",
+      ].join(", ");
+
   return {
     "--os3d-icon-filter-default": iconDefault,
     "--os3d-icon-filter-dock": iconDock,
@@ -138,6 +186,10 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
     ].join(", "),
 
     "--os3d-content-plate-stack": dark ? plateDark : plateLight,
+    "--os3d-control-soft-lift-stack": controlSoftLift,
+    "--os3d-selection-pill-stack": selectionPill,
+    "--os3d-section-module-stack": sectionModule,
+    "--os3d-section-module-header-stack": sectionModuleHeader,
 
     /**
      * 开始菜单 / Launch panel：比普通内容板更悬浮，远距阴影更大，
@@ -188,7 +240,10 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
           "inset 0 2px 6px color-mix(in srgb, #000 11%, transparent)",
           "inset 0 1px 0 color-mix(in srgb, var(--foreground) 3%, transparent)",
         ].join(", ")
-      : "inset 0 2px 5px color-mix(in srgb, var(--foreground) 4%, transparent)",
+      : [
+          "inset 0 4px 10px color-mix(in srgb, var(--foreground) 5%, transparent)",
+          "inset 0 1px 0 color-mix(in srgb, #fff 34%, transparent)",
+        ].join(", "),
 
     "--os3d-banner-ribbon-stack": [
       "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5.5%, transparent)",

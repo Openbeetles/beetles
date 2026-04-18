@@ -40,6 +40,7 @@ export function SoulUserSoulPanel() {
       <InlineAlert message={soulAlert} onRetry={retryLoadSoul} />
       <SettingsSection
         pinHeader
+        surfaceTone={soulState.loading ? "loading" : "default"}
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_NAV["/soul-user"]} />}
         label={t("soulUser.sectionSoul")}

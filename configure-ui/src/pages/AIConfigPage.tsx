@@ -21,6 +21,7 @@ import { OS_ICON_NAV } from "../config/osIcons";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateBlock,
   PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
@@ -36,6 +37,7 @@ import {
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
+import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useSyncedState } from "../hooks/useSyncedState";
 import { useUnsaved } from "../hooks/useUnsaved";
@@ -159,13 +161,19 @@ function validateSources(
 
 export function AIConfigPage() {
   const { t } = useTranslation();
+  const { ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
   const { config, loadConfig, saveLlm, loading, error } = useConfig();
   const { setDirty } = useUnsaved();
   const [removeSourceIndex, setRemoveSourceIndex] = useState<number | null>(null);
   const saveFeedback = useSaveFeedback(t);
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
-  useConfigPageLoad({ hasConfig: config !== null, loading, loadConfig });
+  useConfigPageLoad({
+    hasConfig: config !== null,
+    loading,
+    loadConfig,
+    canLoad: ready && deviceConnected,
+  });
   const syncedDraft = useMemo<LlmDraftState>(() => {
     if (!config) {
       return {
@@ -280,6 +288,7 @@ export function AIConfigPage() {
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
           pinHeader
+          surfaceTone="loading"
           sx={{ flex: 1, minHeight: 0 }}
           icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} />}
           label={t("config.sectionLlm")}
@@ -293,10 +302,17 @@ export function AIConfigPage() {
   }
 
   const saveDisabled = !config || saveFeedback.status === "saving";
+  const showConnectionLoading =
+    !config && !loading && ready && connectionChecking && !deviceConnected;
+  const showConnectState =
+    !config && !loading && !showConnectionLoading && (!ready || !deviceConnected);
+  const showPairingState =
+    !config && !loading && ready && deviceConnected && !hasPairing;
+  const inlineError = showConnectState || showPairingState ? null : error;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={error} onRetry={loadConfig} />
+      <InlineAlert message={inlineError} onRetry={loadConfig} />
       <ConfirmDialog
         open={removeSourceIndex != null}
         onClose={() => setRemoveSourceIndex(null)}
@@ -338,11 +354,32 @@ export function AIConfigPage() {
           ) : null
         }
       >
-        {!config && !loading && (
-          <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, pb: 2 }}>
-            {t("config.hintSaveNeedDevice")}
-          </Typography>
-        )}
+        {showConnectionLoading ? (
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
+        ) : showConnectState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} variant="inline" />}
+            title={ready ? t("device.connectFirst") : t("device.bannerNeedDevice")}
+            description={t("config.connectDesc")}
+          />
+        ) : showPairingState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} variant="inline" />}
+            title={t("device.pairingCodeRequired")}
+            description={t("config.needPairingDesc")}
+          />
+        ) : !config ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} variant="inline" />}
+            title={t("config.unavailableTitle")}
+            description={t("config.unavailableDesc")}
+          />
+        ) : (
         <Stack spacing={0}>
           <FormControlLabel
             control={
@@ -547,6 +584,7 @@ export function AIConfigPage() {
             </Box>
           </FormSectionSubCollapsible>
         </Stack>
+        )}
       </SettingsSection>
     </Box>
   );

@@ -378,12 +378,14 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             },
           },
           outlined: {
-            backgroundColor: 'color-mix(in srgb, var(--card) 74%, transparent)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 76%, var(--surface))',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 100%)',
             borderColor: 'color-mix(in srgb, var(--primary) 14%, var(--border))',
-            boxShadow: 'var(--os3d-pedestal-lift-stack)',
+            boxShadow: 'var(--os3d-control-soft-lift-stack)',
             '&:hover': {
               borderColor: 'color-mix(in srgb, var(--primary) 24%, var(--border))',
-              backgroundColor: 'color-mix(in srgb, var(--primary) 4%, transparent)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 5%, var(--card))',
               transform: 'translateY(-0.5px)',
             },
             '&:active': { transform: 'translateY(0)' },
@@ -488,9 +490,9 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R,
-            backgroundColor: 'var(--input-idle-well)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 50%, var(--surface))',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 76%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 76%)',
             /** 静止：输入沉在浅槽；聚焦：略抬起，与凹底形成对照 */
             boxShadow: 'var(--os3d-micro-well-stack)',
             transition:
@@ -510,7 +512,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
               backgroundColor: 'var(--card)',
               backgroundImage:
                 'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 72%)',
-              boxShadow: 'var(--os3d-pedestal-lift-stack)',
+              boxShadow: 'var(--os3d-control-soft-lift-stack)',
               '& .MuiOutlinedInput-notchedOutline': {
                 borderColor: 'color-mix(in srgb, var(--primary) 22%, var(--border))',
                 borderWidth: 1,
@@ -547,10 +549,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             transition: 'background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, color var(--transition-duration) ease',
           },
           outlined: {
+            backgroundColor: 'color-mix(in srgb, var(--card) 72%, var(--surface))',
             borderColor: 'color-mix(in srgb, var(--border) 18%, transparent)',
-            boxShadow: 'var(--os3d-chip-lift-stack)',
+            boxShadow: 'var(--os3d-control-soft-lift-stack)',
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 3%, transparent)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 3%, var(--card))',
               borderColor: 'color-mix(in srgb, var(--border) 28%, transparent)',
               color: 'var(--primary)',
             },
@@ -870,7 +873,9 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             gap: LAYOUT_TOKENS.toggleGroupGap,
             padding: '5px',
             borderRadius: 'var(--radius-control)',
-            backgroundColor: 'var(--form-group-well)',
+            backgroundColor: 'color-mix(in srgb, var(--surface) 72%, var(--card))',
+            backgroundImage:
+              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 100%)',
             boxShadow: 'var(--os3d-micro-well-stack)',
           },
           grouped: {
@@ -883,21 +888,22 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             paddingBottom: LAYOUT_TOKENS.toggleButtonPaddingY,
             transition:
               'background-color var(--transition-duration) ease, color var(--transition-duration) ease, border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease',
-            backgroundColor: 'transparent',
+            backgroundColor: 'color-mix(in srgb, var(--card) 72%, transparent)',
             color: 'var(--muted)',
+            boxShadow: 'var(--os3d-control-soft-lift-stack)',
             '&.Mui-selected': {
-              backgroundColor: 'var(--primary-soft)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 8%, var(--card))',
               color: 'var(--primary)',
               borderColor: 'color-mix(in srgb, var(--primary) 24%, var(--border))',
-              boxShadow: 'var(--os3d-chip-lift-stack)',
+              boxShadow: 'var(--os3d-selection-pill-stack)',
               position: 'relative',
               zIndex: 1,
               '&:hover': {
-                backgroundColor: 'color-mix(in srgb, var(--primary) 6%, var(--primary-soft))',
+                backgroundColor: 'color-mix(in srgb, var(--primary) 10%, var(--card))',
               },
             },
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--foreground) 3%, transparent)',
+              backgroundColor: 'color-mix(in srgb, var(--foreground) 3%, var(--card))',
               color: 'var(--foreground)',
             },
           },

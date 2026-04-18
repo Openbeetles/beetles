@@ -29,19 +29,21 @@ export function SectionSubTitleRow({
       <Box
         aria-hidden
         sx={{
-          width: "var(--accent-line-width)",
+          width: accentStretch ? 8 : 7,
           flexShrink: 0,
-          borderRadius: "var(--radius-chip)",
-          bgcolor: "var(--primary)",
-          ...(accentStretch
-            ? {
-                alignSelf: "stretch",
-                minHeight: "var(--icon-container-md)",
-              }
-            : {
-                height: "var(--icon-container-sm)",
-                alignSelf: "center",
-              }),
+          height: accentStretch ? 18 : 14,
+          borderRadius: 999,
+          backgroundColor:
+            "color-mix(in srgb, var(--primary) 16%, var(--surface))",
+          backgroundImage:
+            "linear-gradient(180deg, color-mix(in srgb, #fff 42%, transparent) 0%, transparent 100%)",
+          border:
+            "1px solid color-mix(in srgb, var(--primary) 14%, var(--border))",
+          boxShadow: [
+            "inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent)",
+            "0 8px 14px -12px color-mix(in srgb, var(--primary) 42%, transparent)",
+          ].join(", "),
+          alignSelf: "center",
         }}
       />
       <Typography

@@ -6,6 +6,11 @@ import ExpandLess from "@mui/icons-material/ExpandLess";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { SectionSubTitleRow } from "./SectionSubTitleRow";
+import {
+  FORM_SECTION_MODULE_BODY_SX,
+  FORM_SECTION_MODULE_HEADER_SX,
+  FORM_SECTION_MODULE_SX,
+} from "../../theme/panelStyles";
 
 interface FormSectionSubCollapsibleProps {
   title: string;
@@ -29,11 +34,8 @@ export function FormSectionSubCollapsible({
   return (
     <Box
       sx={{
-        "&:not(:first-of-type)": { mt: 2 },
-        border: "none",
-        borderRadius: "var(--radius-control)",
-        overflow: "hidden",
-        bgcolor: "var(--form-group-well)",
+        "&:not(:first-of-type)": { mt: 2.5 },
+        ...FORM_SECTION_MODULE_SX,
       }}
     >
       <Box
@@ -41,16 +43,14 @@ export function FormSectionSubCollapsible({
         type="button"
         onClick={() => setOpen((o) => !o)}
         sx={{
+          ...FORM_SECTION_MODULE_HEADER_SX,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           width: "100%",
-          p: 1.5,
+          gap: 1,
           border: 0,
-          /** 与下方内容区错层：可读作「折叠头 / 把手条」 */
-          backgroundColor:
-            "color-mix(in srgb, var(--foreground) 3.5%, var(--form-group-well))",
-          borderBottom: "1px solid var(--form-outline-rest)",
+          boxShadow: "var(--os3d-section-module-header-stack)",
           cursor: "pointer",
           color: "var(--foreground)",
           font: "inherit",
@@ -92,7 +92,8 @@ export function FormSectionSubCollapsible({
               borderRadius: "var(--radius-chip)",
               flexShrink: 0,
               color: "var(--primary)",
-              bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
+              bgcolor: "color-mix(in srgb, var(--primary) 10%, var(--card))",
+              boxShadow: "var(--os3d-control-soft-lift-stack)",
               transition:
                 "background-color var(--transition-duration) ease, color var(--transition-duration) ease",
             }}
@@ -110,14 +111,10 @@ export function FormSectionSubCollapsible({
         <Box
           id={collapseId}
           sx={{
-            px: 2,
-            pt: 2,
-            pb: 2,
+            ...FORM_SECTION_MODULE_BODY_SX,
             display: "flex",
             flexDirection: "column",
             gap: 2,
-            /** 与头部分离：内层略亮，表单项区域更易扫读 */
-            bgcolor: "var(--input-idle-well)",
           }}
         >
           {children}

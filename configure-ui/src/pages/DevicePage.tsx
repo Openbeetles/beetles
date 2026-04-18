@@ -41,6 +41,7 @@ import {
   pressureLabelKey,
 } from "./deviceHomeViewModel";
 import {
+  CONFIG_PANEL_LOADING_SX,
   DASHBOARD_CARD_BODY_SX,
   DASHBOARD_CARD_HEADER_ROW_SX,
   DASHBOARD_CARD_SURFACE_SX,
@@ -211,6 +212,7 @@ export function DevicePage() {
     () => buildDeviceSummaryFields(systemInfo, healthData, runtimeStatusKey),
     [systemInfo, healthData, runtimeStatusKey],
   );
+  const dashboardReady = Boolean(healthData && resourceData && metricsData);
 
   useEffect(() => {
     setDirty(connectionDraftDirty);
@@ -731,6 +733,45 @@ export function DevicePage() {
     </Box>
   );
 
+  const renderDashboardLoadingState = () => (
+    <Box
+      sx={{
+        ...CONFIG_PANEL_LOADING_SX,
+        minHeight: 220,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        gap: 2,
+        px: { xs: 2.5, sm: 3 },
+        py: { xs: 3, sm: 4 },
+      }}
+    >
+      <Typography variant="subtitle2" sx={TEXT_DASHBOARD_CARD_TITLE_SX}>
+        {t("device.pageTitle")}
+      </Typography>
+      <Typography
+        sx={{
+          fontSize: "var(--font-size-h4)",
+          fontWeight: 700,
+          lineHeight: "var(--line-height-snug)",
+          color: "var(--text-primary)",
+        }}
+      >
+        {t("device.systemStatusLoading")}
+      </Typography>
+      <SectionLoadProgress
+        loading={!healthError}
+        idleHint={t("device.systemStatusLoading")}
+      />
+      {healthError && !healthLoading ? (
+        <InlineAlert
+          message={`${t("device.systemStatusLoadFail")}: ${healthError}`}
+          onRetry={reloadHealth}
+        />
+      ) : null}
+    </Box>
+  );
+
   const renderConnectionCard = () => (
     <DashboardCard
       title={t("device.sectionConnection")}
@@ -1001,6 +1042,16 @@ export function DevicePage() {
     >
       {!deviceConnected ? (
         renderSetupCard()
+      ) : !dashboardReady ? (
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            gap: DASHBOARD_HOME_GRID_GAP,
+          }}
+        >
+          {renderDashboardLoadingState()}
+        </Box>
       ) : (
         <Box
           sx={{
@@ -1043,100 +1094,69 @@ export function DevicePage() {
               {renderConnectionCard()}
             </Box>
 
-            {/* If loading or error, show them in the remaining space */}
-            {!healthData || !resourceData || !metricsData ? (
-              <Box
-                sx={{
-                  gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" },
-                  gridRow: { xs: "span 1", lg: "span 1" },
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: LAYOUT_TOKENS.spacingSectionStack,
-                  justifyContent: "center",
-                }}
+            {/* Row 2: Device Details (4) + Channels (8) */}
+            <Box
+              sx={{
+                gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
+                gridRow: { xs: "span 2", lg: "span 2" },
+              }}
+            >
+              <DashboardCard
+                title={t("device.sectionDeviceInfo")}
+                icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceInfo} variant="tile" />}
               >
-                <SectionLoadProgress
-                  loading={healthLoading}
-                  idleHint={
-                    !healthData ? t("device.systemStatusLoading") : undefined
-                  }
-                />
-                {healthError && !healthData && !healthLoading && (
-                  <InlineAlert
-                    message={`${t("device.systemStatusLoadFail")}: ${healthError}`}
-                    onRetry={reloadHealth}
-                  />
-                )}
-              </Box>
-            ) : (
-              <>
-                {/* Row 2: Device Details (4) + Channels (8) */}
                 <Box
                   sx={{
-                    gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
-                    gridRow: { xs: "span 2", lg: "span 2" },
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 0,
+                    "& > *:not(:last-of-type)": {
+                      borderBottom: "var(--divider-row)",
+                    },
                   }}
                 >
-                  <DashboardCard
-                    title={t("device.sectionDeviceInfo")}
-                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceInfo} variant="tile" />}
-                  >
-                    <Box
-                      sx={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 0,
-                        "& > *:not(:last-of-type)": {
-                          borderBottom: "var(--divider-row)",
-                        },
-                      }}
-                    >
-                      {deviceSummaryFields.map((field) => (
-                        <StatRow
-                          key={field.id}
-                          label={t(field.labelKey)}
-                          value={renderSummaryFieldValue(
-                            field.value,
-                            field.valueKind,
-                          )}
-                        />
-                      ))}
-                    </Box>
-                  </DashboardCard>
-                </Box>
-
-                <Box
-                  sx={{
-                    gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" },
-                    gridRow: { xs: "span 2", lg: "span 2" },
-                  }}
-                >
-                  <DashboardCard
-                    title={t("device.sectionChannelConnectivity")}
-                    icon={<Os3dIcon src={OS_ICON_DASHBOARD.channels} variant="tile" />}
-                  >
-                    <ChannelConnectivityPanel
-                      channels={channelList}
-                      loading={channelLoading}
-                      error={channelError}
-                      onRetry={reloadChannelConnectivity}
-                      channelLabel={(id) =>
-                        t(`device.${channelNameKey[id] ?? id}`)
-                      }
-                      t={t}
+                  {deviceSummaryFields.map((field) => (
+                    <StatRow
+                      key={field.id}
+                      label={t(field.labelKey)}
+                      value={renderSummaryFieldValue(
+                        field.value,
+                        field.valueKind,
+                      )}
                     />
-                  </DashboardCard>
+                  ))}
                 </Box>
+              </DashboardCard>
+            </Box>
 
-                <SystemStatusPanel
-                  healthData={healthData}
-                  resourceData={resourceData}
-                  metricsData={metricsData}
-                  runtimeKind={runtimeKind}
+            <Box
+              sx={{
+                gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" },
+                gridRow: { xs: "span 2", lg: "span 2" },
+              }}
+            >
+              <DashboardCard
+                title={t("device.sectionChannelConnectivity")}
+                icon={<Os3dIcon src={OS_ICON_DASHBOARD.channels} variant="tile" />}
+              >
+                <ChannelConnectivityPanel
+                  channels={channelList}
+                  loading={channelLoading}
+                  error={channelError}
+                  onRetry={reloadChannelConnectivity}
+                  channelLabel={(id) => t(`device.${channelNameKey[id] ?? id}`)}
                   t={t}
                 />
-              </>
-            )}
+              </DashboardCard>
+            </Box>
+
+            <SystemStatusPanel
+              healthData={healthData!}
+              resourceData={resourceData!}
+              metricsData={metricsData!}
+              runtimeKind={runtimeKind}
+              t={t}
+            />
           </Box>
         </Box>
       )}

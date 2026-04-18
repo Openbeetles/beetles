@@ -10,6 +10,7 @@ import SaveRounded from "@mui/icons-material/SaveRounded";
 import WifiFind from "@mui/icons-material/WifiFind";
 import {
   FormLoadingSkeleton,
+  PanelStateBlock,
   PanelStateLoading,
   FormSectionSub,
   InlineAlert,
@@ -67,7 +68,7 @@ function validateSystem(
 export function SystemConfigPage() {
   const { t } = useTranslation();
   const { baseUrl } = useDevice();
-  const { api } = useDeviceApi();
+  const { api, ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
   const { config, loadConfig, saveSystem, loading, error } = useConfig();
   const { setDirty } = useUnsaved();
   const [form, setForm] = useSyncedNullableState<AppConfig>(config);
@@ -94,7 +95,12 @@ export function SystemConfigPage() {
     }
   };
 
-  useConfigPageLoad({ hasConfig: config !== null, loading, loadConfig });
+  useConfigPageLoad({
+    hasConfig: config !== null,
+    loading,
+    loadConfig,
+    canLoad: ready && deviceConnected,
+  });
 
   const update = (key: keyof AppConfig, value: string | number) => {
     setDirty(true);
@@ -126,6 +132,7 @@ export function SystemConfigPage() {
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
           pinHeader
+          surfaceTone="loading"
           sx={{ flex: 1, minHeight: 0 }}
           icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} />}
           label={t("config.sectionSystem")}
@@ -149,10 +156,17 @@ export function SystemConfigPage() {
       form.session_max_messages > SESSION_MAX)
       ? t("config.validation.sessionMaxMessages")
       : "";
+  const showConnectionLoading =
+    !form && !loading && ready && connectionChecking && !deviceConnected;
+  const showConnectState =
+    !form && !loading && !showConnectionLoading && (!ready || !deviceConnected);
+  const showPairingState =
+    !form && !loading && ready && deviceConnected && !hasPairing;
+  const inlineError = showConnectState || showPairingState ? null : error;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={error} onRetry={loadConfig} />
+      <InlineAlert message={inlineError} onRetry={loadConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
@@ -184,10 +198,31 @@ export function SystemConfigPage() {
           ) : null
         }
       >
-        {!form ? (
-          <Typography variant="body2" sx={{ ...TEXT_BODY_TERTIARY_SX, py: 2 }}>
-            {t("config.hintSaveNeedDevice")}
-          </Typography>
+        {showConnectionLoading ? (
+          <PanelStateLoading>
+            <FormLoadingSkeleton />
+          </PanelStateLoading>
+        ) : showConnectState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} variant="inline" />}
+            title={ready ? t("device.connectFirst") : t("device.bannerNeedDevice")}
+            description={t("config.connectDesc")}
+          />
+        ) : showPairingState ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} variant="inline" />}
+            title={t("device.pairingCodeRequired")}
+            description={t("config.needPairingDesc")}
+          />
+        ) : !form ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} variant="inline" />}
+            title={t("config.unavailableTitle")}
+            description={t("config.unavailableDesc")}
+          />
         ) : (
           <>
         <FormSectionSub title={t("config.wifi")}>

@@ -18,7 +18,12 @@ import {
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
+import {
+  endpointSupportedByInventory,
+  parseRootInventory,
+} from "../api/rootInventory";
 import { OS_ICON_NAV } from "../config/osIcons";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { localizeAccountProviderName } from "../i18n/providerDisplay";
 import type { AccountCapability, AccountSummary } from "../types/accountConfig";
@@ -35,6 +40,53 @@ const CAPABILITIES: AccountCapability[] = [
   "documents",
   "contacts_directory",
 ];
+
+const ACCOUNT_FILTER_GROUP_SX = {
+  flexWrap: "wrap",
+  gap: 0.375,
+  p: 0.25,
+  borderRadius: "var(--radius-control)",
+  bgcolor: "color-mix(in srgb, var(--surface) 76%, var(--card))",
+  backgroundImage:
+    "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+  boxShadow: [
+    "inset 0 1px 0 color-mix(in srgb, #fff 44%, transparent)",
+    "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 3%, transparent)",
+  ].join(", "),
+  "& .MuiToggleButtonGroup-grouped": {
+    minHeight: LAYOUT_TOKENS.buttonMinHeightSmall,
+    px: 1.25,
+    py: 0,
+    border: "1px solid transparent",
+    borderRadius: "calc(var(--radius-control) - 1px) !important",
+    backgroundColor: "transparent",
+    backgroundImage: "none",
+    boxShadow: "none",
+    fontSize: "var(--font-size-caption)",
+    fontWeight: 600,
+    lineHeight: 1,
+    color: "color-mix(in srgb, var(--foreground) 72%, transparent)",
+    "&:hover": {
+      backgroundColor: "color-mix(in srgb, var(--foreground) 3%, var(--card))",
+      color: "var(--foreground)",
+      boxShadow: "none",
+    },
+    "&.Mui-selected": {
+      backgroundColor: "color-mix(in srgb, var(--primary) 6%, var(--card))",
+      backgroundImage:
+        "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 100%)",
+      color: "var(--primary)",
+      borderColor: "color-mix(in srgb, var(--primary) 16%, transparent)",
+      boxShadow: [
+        "inset 0 1px 0 color-mix(in srgb, #fff 54%, transparent)",
+        "0 1px 2px color-mix(in srgb, var(--foreground) 3.5%, transparent)",
+      ].join(", "),
+      "&:hover": {
+        backgroundColor: "color-mix(in srgb, var(--primary) 8%, var(--card))",
+      },
+    },
+  },
+} as const;
 
 type AccountsDialogState =
   | { kind: "closed" }
@@ -62,6 +114,7 @@ export function AccountsPage() {
   const [items, setItems] = useState<AccountSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [unsupportedEndpoint, setUnsupportedEndpoint] = useState(false);
   const [dialog, setDialog] = useState<AccountsDialogState>({ kind: "closed" });
 
   const filters = useMemo(() => {
@@ -73,15 +126,27 @@ export function AccountsPage() {
     if (!ready) return;
     setLoading(true);
     setError("");
+    setUnsupportedEndpoint(false);
     const res = await api.config.accounts.list(filters);
     if (res.ok && res.data) {
       setItems(res.data.items);
     } else {
-      setError(res.error ?? t("accounts.loadFailed"));
+      let nextError = res.error ?? t("accounts.loadFailed");
+      let nextUnsupported = false;
+      if (nextError === "Not Found" || nextError === "not found") {
+        const probe = await api.device.probe();
+        const inventory = probe.ok ? parseRootInventory(probe.data) : null;
+        if (!endpointSupportedByInventory(inventory, "GET /api/config/accounts")) {
+          nextUnsupported = true;
+          nextError = "";
+        }
+      }
+      setUnsupportedEndpoint(nextUnsupported);
+      setError(nextError);
       setItems([]);
     }
     setLoading(false);
-  }, [api.config.accounts, filters, ready, t]);
+  }, [api.config.accounts, api.device, filters, ready, t]);
 
   useEffect(() => {
     if (!ready) return;
@@ -110,6 +175,7 @@ export function AccountsPage() {
       <InlineAlert message={error || null} onRetry={load} />
       <SettingsSection
         pinHeader
+        surfaceTone={loading ? "loading" : "default"}
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_NAV["/accounts"]} />}
         label={t("accounts.sectionTitle")}
@@ -119,7 +185,7 @@ export function AccountsPage() {
             variant="contained"
             size="small"
             startIcon={<AddRounded />}
-            disabled={!hasPairing || showConnectHint}
+            disabled={!hasPairing || showConnectHint || unsupportedEndpoint}
             onClick={() => setDialog({ kind: "create" })}
           >
             {t("accounts.addAccount")}
@@ -139,6 +205,13 @@ export function AccountsPage() {
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>
+        ) : unsupportedEndpoint ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/accounts"]} variant="inline" />}
+            title={t("accounts.unsupportedTitle")}
+            description={t("accounts.unsupportedDesc")}
+          />
         ) : (
           <Stack spacing={2} sx={{ width: "100%" }}>
             <Box
@@ -157,14 +230,7 @@ export function AccountsPage() {
                   if (v != null) setCapFilter(v);
                 }}
                 aria-label={t("accounts.filterByCapability")}
-                sx={{
-                  flexWrap: "wrap",
-                  gap: 0.5,
-                  bgcolor: "var(--form-group-well)",
-                  boxShadow: "var(--os3d-micro-well-stack)",
-                  p: 0.5,
-                  borderRadius: "var(--radius-control)",
-                }}
+                sx={ACCOUNT_FILTER_GROUP_SX}
               >
                 <ToggleButton value="all">{t("accounts.filterAll")}</ToggleButton>
                 {CAPABILITIES.map((c) => (

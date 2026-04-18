@@ -27,6 +27,68 @@ import {
   type UserReplyLength,
 } from "../../util/soulUserFormat";
 
+const SOUL_OPTION_CHIP_SX = {
+  height: 32,
+  borderRadius: "calc(var(--radius-chip) + 1px)",
+  fontWeight: 600,
+  fontSize: "var(--font-size-label)",
+  borderColor: "color-mix(in srgb, var(--border) 18%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--card) 78%, var(--surface))",
+  boxShadow: "var(--os3d-control-soft-lift-stack)",
+  "& .MuiChip-label": {
+    px: 1.15,
+  },
+  "&:hover": {
+    backgroundColor: "color-mix(in srgb, var(--primary) 4%, var(--card))",
+    borderColor: "color-mix(in srgb, var(--border) 28%, transparent)",
+  },
+} as const;
+
+const SOUL_OPTION_CHIP_SELECTED_SX = {
+  color: "color-mix(in srgb, var(--primary) 82%, var(--foreground))",
+  backgroundColor: "color-mix(in srgb, var(--primary) 9%, var(--card))",
+  borderColor: "color-mix(in srgb, var(--primary) 20%, var(--border))",
+  boxShadow: "var(--os3d-selection-pill-stack)",
+  "&:hover": {
+    backgroundColor: "color-mix(in srgb, var(--primary) 11%, var(--card))",
+    borderColor: "color-mix(in srgb, var(--primary) 24%, var(--border))",
+  },
+} as const;
+
+const SOUL_RADIO_OPTION_SX = {
+  m: 0,
+  px: 0.9,
+  py: 0.3,
+  borderRadius: "calc(var(--radius-control) + 1px)",
+  border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--card) 78%, var(--surface))",
+  boxShadow: "var(--os3d-control-soft-lift-stack)",
+  transition:
+    "background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease",
+  "& .MuiFormControlLabel-label": {
+    fontSize: "var(--font-size-body-sm)",
+    fontWeight: 600,
+    color: "var(--text-secondary)",
+  },
+  "& .MuiRadio-root": {
+    p: 0.45,
+    mr: 0.375,
+  },
+  "&:hover": {
+    backgroundColor: "color-mix(in srgb, var(--primary) 4%, var(--card))",
+    borderColor: "color-mix(in srgb, var(--border) 28%, transparent)",
+  },
+  "&:has(.MuiRadio-root.Mui-checked)": {
+    backgroundColor: "color-mix(in srgb, var(--primary) 8%, var(--card))",
+    borderColor: "color-mix(in srgb, var(--primary) 22%, var(--border))",
+    boxShadow: "var(--os3d-selection-pill-stack)",
+  },
+  "&:has(.MuiRadio-root.Mui-checked) .MuiFormControlLabel-label": {
+    color: "color-mix(in srgb, var(--primary) 80%, var(--foreground))",
+    fontWeight: 700,
+  },
+} as const;
+
 export function ChipSelectRow({
   label,
   keys,
@@ -62,11 +124,10 @@ export function ChipSelectRow({
               key={key}
               label={t(`${i18nPrefix}.${key}`)}
               onClick={() => onToggle(key)}
-              variant={on ? "filled" : "outlined"}
-              color={on ? "primary" : "default"}
+              variant="outlined"
               sx={{
-                borderColor: "var(--border)",
-                ...(!on ? { bgcolor: "transparent" } : {}),
+                ...SOUL_OPTION_CHIP_SX,
+                ...(on ? SOUL_OPTION_CHIP_SELECTED_SX : null),
               }}
             />
           );
@@ -119,21 +180,25 @@ export function SoulFormBody({
                 value="none"
                 control={<Radio size="small" />}
                 label={t("soulUser.soulTone.none")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="colloquial"
                 control={<Radio size="small" />}
                 label={t("soulUser.soulTone.colloquial")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="formal"
                 control={<Radio size="small" />}
                 label={t("soulUser.soulTone.formal")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="flex"
                 control={<Radio size="small" />}
                 label={t("soulUser.soulTone.flex")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
             </RadioGroup>
           </FormControl>
@@ -237,16 +302,19 @@ export function UserFormBody({
                 value="zh"
                 control={<Radio size="small" />}
                 label={t("soulUser.userLang.zh")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="en"
                 control={<Radio size="small" />}
                 label={t("soulUser.userLang.en")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="any"
                 control={<Radio size="small" />}
                 label={t("soulUser.userLang.any")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
             </RadioGroup>
           </FormControl>
@@ -269,16 +337,19 @@ export function UserFormBody({
                 value="short"
                 control={<Radio size="small" />}
                 label={t("soulUser.userReply.short")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="medium"
                 control={<Radio size="small" />}
                 label={t("soulUser.userReply.medium")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
               <FormControlLabel
                 value="long"
                 control={<Radio size="small" />}
                 label={t("soulUser.userReply.long")}
+                sx={SOUL_RADIO_OPTION_SX}
               />
             </RadioGroup>
           </FormControl>

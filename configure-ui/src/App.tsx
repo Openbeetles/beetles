@@ -100,9 +100,12 @@ function RouteFallback() {
   return (
     <Box
       sx={{
-        minHeight: 240,
+        minHeight: '100vh',
+        width: '100%',
         display: 'grid',
         placeItems: 'center',
+        backgroundColor: 'var(--background)',
+        backgroundImage: 'none',
       }}
     >
       <CircularProgress size={28} />
