@@ -34,10 +34,10 @@ impl PreReplyGovernanceMode {
 }
 
 #[inline(never)]
-pub(super) fn prepare_turn<'a>(
+pub(super) fn prepare_turn(
     worker_llm: &(dyn LlmClient + Send + Sync),
-    msg: &'a crate::bus::PcMsg,
-    request_plan: &AgentRequestPlan<'a>,
+    msg: &crate::bus::PcMsg,
+    has_tools: bool,
     request_semantics: crate::agent::request_semantics::RequestSemantics,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
@@ -46,12 +46,11 @@ pub(super) fn prepare_turn<'a>(
     let mut session = Box::new(super::worker_context_stages::WorkerPrepareSession::new(
         Instant::now(),
     ));
-    super::worker_context_stages::compute_prepare_runtime(&mut session, msg, config, request_plan);
+    super::worker_context_stages::compute_prepare_runtime(&mut session, msg, config, has_tools);
     super::worker_context_stages::run_prepare_mental_privacy(
         &mut session,
         worker_llm,
         msg,
-        request_semantics,
         config,
         tool_ctx,
     );
@@ -66,7 +65,6 @@ pub(super) fn prepare_turn<'a>(
     super::worker_context_stages::finalize_prepare_context(
         msg,
         config,
-        request_plan,
         request_semantics,
         session,
         latency,

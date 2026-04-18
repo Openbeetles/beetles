@@ -33,12 +33,31 @@ pub(crate) struct AgentRequestPlan<'a> {
 }
 
 impl<'a> AgentRequestPlan<'a> {
+    #[cfg(test)]
     pub(crate) fn build(
         msg: &'a PcMsg,
         registry: &ToolRegistry,
         worker_llm: &(dyn LlmClient + Send + Sync),
         strategy: super::strategy::AgentRunStrategy,
         semantics: RequestSemantics,
+    ) -> Self {
+        Self::build_for_prepared_turn(
+            msg,
+            registry,
+            worker_llm,
+            strategy,
+            semantics,
+            ReplySurface::for_prepared_turn(msg.ingress, semantics, false),
+        )
+    }
+
+    pub(crate) fn build_for_prepared_turn(
+        msg: &'a PcMsg,
+        registry: &ToolRegistry,
+        worker_llm: &(dyn LlmClient + Send + Sync),
+        strategy: super::strategy::AgentRunStrategy,
+        semantics: RequestSemantics,
+        reply_surface: ReplySurface,
     ) -> Self {
         let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
         let tool_specs = registry.tool_specs_for_llm(&tool_policy);
@@ -50,7 +69,6 @@ impl<'a> AgentRequestPlan<'a> {
                 ToolCallSupport::PromptGuided => ToolCallMode::PromptGuided,
             }
         };
-        let reply_surface = ReplySurface::for_turn(msg.ingress, semantics);
         Self {
             tool_policy,
             tool_specs,
@@ -540,7 +558,7 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                resume_relation: ResumeRelation::SupplyActiveActionInput,
+                resume_relation: ResumeRelation::ResumeActiveAction,
                 confidence: 92,
             },
         );

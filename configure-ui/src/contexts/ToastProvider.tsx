@@ -28,38 +28,57 @@ const VARIANT_STYLES: Record<ToastVariant, { bg: string; border: string; color: 
   },
 }
 
+interface ToastState {
+  id: number
+  open: boolean
+  message: string
+  variant: ToastVariant
+  position: ToastPosition
+  autoHideDuration: number
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false)
-  const [message, setMessage] = useState('')
-  const [variant, setVariant] = useState<ToastVariant>('success')
-  const [position, setPosition] = useState<ToastPosition>('top-center')
-  const [autoHideDuration, setAutoHideDuration] = useState(3000)
+  const [toast, setToast] = useState<ToastState>({
+    id: 0,
+    open: false,
+    message: '',
+    variant: 'success',
+    position: 'top-center',
+    autoHideDuration: 3000,
+  })
 
   const showToast = useCallback((msg: string, options?: ToastOptions) => {
-    setMessage(msg)
-    setVariant(options?.variant ?? 'success')
-    setPosition(options?.position ?? 'top-center')
-    setAutoHideDuration(options?.autoHideDuration ?? 3000)
-    setOpen(true)
+    setToast((prev) => ({
+      id: prev.id + 1,
+      open: true,
+      message: msg,
+      variant: options?.variant ?? 'success',
+      position: options?.position ?? 'top-center',
+      autoHideDuration: options?.autoHideDuration ?? 3000,
+    }))
   }, [])
 
   const value = { showToast }
 
-  const style = VARIANT_STYLES[variant]
+  const style = VARIANT_STYLES[toast.variant]
 
   return (
     <ToastContext.Provider value={value}>
       {children}
       <Snackbar
-        open={open}
-        onClose={() => setOpen(false)}
-        autoHideDuration={autoHideDuration}
-        anchorOrigin={POSITION_MAP[position]}
-        message={message}
+        key={toast.id}
+        open={toast.open}
+        onClose={(_, reason) => {
+          if (reason === 'clickaway') return
+          setToast((prev) => ({ ...prev, open: false }))
+        }}
+        autoHideDuration={toast.autoHideDuration}
+        anchorOrigin={POSITION_MAP[toast.position]}
+        message={toast.message}
         slotProps={{
           content: {
-            role: variant === 'error' ? 'alert' : 'status',
-            'aria-live': variant === 'error' ? 'assertive' : 'polite',
+            role: toast.variant === 'error' ? 'alert' : 'status',
+            'aria-live': toast.variant === 'error' ? 'assertive' : 'polite',
           },
         }}
         sx={{

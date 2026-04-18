@@ -127,7 +127,13 @@ pub fn handle_webhook(
             if let (Some(id), Some(ch), Some(content)) = (msg_id, chat_id, content) {
                 if !ch.is_empty() && !content.is_empty() {
                     cache_msg_id(&msg_id_cache, &ch, &id)?;
-                    let msg = super::build_inbound_message(&ch, &content)?;
+                    let msg = super::build_inbound_message(
+                        &ch,
+                        &content,
+                        crate::bus::MessageTransport::Webhook,
+                        Some(&id),
+                        None,
+                    )?;
                     inbound_tx.send(msg).map_err(|e| Error::Other {
                         source: Box::new(e),
                         stage: "qq_inbound_send",
@@ -189,6 +195,9 @@ mod tests {
         assert_eq!(msg.channel.as_ref(), "qq_channel");
         assert_eq!(msg.chat_id.as_ref(), "c2c:user-openid-42");
         assert_eq!(msg.content, "hello");
+        assert_eq!(msg.source_transport, crate::bus::MessageTransport::Webhook);
+        assert_eq!(msg.platform_message_id, "msg-1");
+        assert_eq!(msg.inbound_dedup_key, "qq_message:msg-1");
         let cached = cache.lock().unwrap();
         assert_eq!(
             cached.get("c2c:user-openid-42").map(|(id, _)| id.as_str()),

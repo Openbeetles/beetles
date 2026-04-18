@@ -85,11 +85,11 @@ fn record_prompt_memory_health_issue(
 }
 
 #[inline(never)]
-pub(super) fn compute_prepare_runtime<'a>(
+pub(super) fn compute_prepare_runtime(
     session: &mut WorkerPrepareSession,
-    msg: &'a crate::bus::PcMsg,
+    msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
-    request_plan: &AgentRequestPlan<'a>,
+    has_tools: bool,
 ) {
     let prepare_trace_enabled = cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
         && msg.ingress == IngressKind::User;
@@ -133,7 +133,6 @@ pub(super) fn compute_prepare_runtime<'a>(
         process_memory_kb: snapshot.process_memory_kb,
     };
     log_prepare_stage(prepare_trace_enabled, msg, "runtime_snapshot_ready");
-    let has_tools = request_plan.has_tools();
     log_prepare_stage(prepare_trace_enabled, msg, "skill_descriptions_start");
     let skill_descriptions_len = {
         let skill_descriptions = (config.get_skill_descriptions)();
@@ -209,7 +208,6 @@ pub(super) fn run_prepare_mental_privacy(
     session: &mut WorkerPrepareSession,
     worker_llm: &(dyn LlmClient + Send + Sync),
     msg: &crate::bus::PcMsg,
-    request_semantics: crate::agent::request_semantics::RequestSemantics,
     config: &AgentLoopConfig,
     tool_ctx: &mut HttpClientToolContext<'_>,
 ) {
@@ -245,7 +243,7 @@ pub(super) fn run_prepare_mental_privacy(
                 channel: &msg.channel,
                 chat_id: &msg.chat_id,
                 user_content: &msg.content,
-                public_disclosure_surface: request_semantics.is_public_surface(),
+                public_disclosure_surface: msg.is_group,
                 now_secs: runtime_stage.runtime.now_secs,
             },
         ) {
@@ -305,6 +303,7 @@ pub(super) fn load_prepare_prompt_memory(
         session_summary_store: config.runtime.session_summary_store.as_ref(),
         long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
         execution_state_store: config.runtime.execution_state_store.as_ref(),
+        active_work_store: config.runtime.active_work_store.as_ref(),
         task_run_store: config.runtime.task_run_store.as_ref(),
         task_artifact_store: config.runtime.task_artifact_store.as_ref(),
         task_learning_store: config.runtime.task_learning_store.as_ref(),
@@ -728,10 +727,9 @@ pub(super) fn enrich_prepare_governance(
 }
 
 #[inline(never)]
-pub(super) fn finalize_prepare_context<'a>(
-    msg: &'a crate::bus::PcMsg,
+pub(super) fn finalize_prepare_context(
+    msg: &crate::bus::PcMsg,
     config: &AgentLoopConfig,
-    request_plan: &AgentRequestPlan<'a>,
     request_semantics: crate::agent::request_semantics::RequestSemantics,
     mut session: Box<WorkerPrepareSession>,
     latency: &mut WorkerLatency,
@@ -884,12 +882,6 @@ pub(super) fn finalize_prepare_context<'a>(
         }
     }
     latency.context_ms = session.context_start.elapsed().as_millis();
-    let shaped_request_plan = request_plan
-        .clone()
-        .with_programmable_reasoning_intent(programmable_reasoning_intent.as_ref())
-        .with_counterfactual_analysis(counterfactual_analysis.as_ref())
-        .with_adversarial_arena_adjudication(adversarial_arena_adjudication.as_ref());
-    shaped_request_plan.apply_system_prompt(&mut system, runtime_stage.budget.system_prompt_max);
     let system_scratch = String::with_capacity(
         system
             .len()

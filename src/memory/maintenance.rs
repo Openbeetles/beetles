@@ -2,6 +2,7 @@
 //! Shared post-reply memory maintenance orchestration.
 
 use super::continuity_capsule::PostReplyContinuityInput;
+use crate::agent::{load_active_work_for_chat, ActiveWorkStore};
 use crate::bus::IngressKind;
 use crate::error::Result;
 use crate::llm::{LlmClient, LlmHttpClient};
@@ -34,6 +35,7 @@ pub struct PostReplyMemoryMaintenanceContext<'a> {
     pub memory_store: &'a dyn MemoryStore,
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub active_work_store: &'a dyn ActiveWorkStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
     pub extraction_state_store: &'a dyn LongTermMemoryExtractionStateStore,
@@ -474,8 +476,9 @@ fn run_continuity_capsule_maintenance(
     input: &PostReplyMemoryMaintenanceInput<'_>,
     summary_text: Option<&str>,
 ) -> Result<ContinuityCapsuleMaintenanceOutcome> {
-    let execution_state = ctx.execution_state_store.get(input.chat_id)?;
     let active_run = active_task_run_for_chat(ctx.task_run_store, input.channel, input.chat_id)?;
+    let active_work =
+        load_active_work_for_chat(ctx.active_work_store, active_run.as_ref(), input.chat_id)?;
     let recent_run = if active_run.is_some() {
         None
     } else {
@@ -485,7 +488,11 @@ fn run_continuity_capsule_maintenance(
             .find(|record| {
                 record.run.source_channel == input.channel
                     && record.run.source_chat_id == input.chat_id
-                    && record.run.status.is_terminal()
+                    && matches!(
+                        record.run.status,
+                        crate::task_execution::TaskRunStatus::Completed
+                            | crate::task_execution::TaskRunStatus::PartialComplete
+                    )
                     && input.now_secs.saturating_sub(record.run.updated_at)
                         <= CONTINUITY_CAPSULE_RECENT_RUN_WINDOW_SECS
             })
@@ -506,7 +513,7 @@ fn run_continuity_capsule_maintenance(
     };
     let drafts = build_post_reply_continuity_drafts(PostReplyContinuityInput {
         run: selected_run.as_ref(),
-        execution_state: execution_state.as_ref(),
+        active_work: active_work.as_ref(),
         chat_id: input.chat_id,
         channel: input.channel,
         now_secs: input.now_secs,
@@ -531,13 +538,13 @@ fn run_continuity_capsule_maintenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{ActiveWorkRecord, ActiveWorkStore};
     use crate::error::Result;
     use crate::llm::{LlmModelCompat, LlmResponse, Message, StopReason, ToolChoicePolicy};
     use crate::memory::{
         ExecutionState, ExecutionStateStore, LongTermMemoryExtractionState,
-        LongTermMemoryExtractionStateStore, MemoryStore, PrivateDocStore, PrivateDocWorkspace,
-        PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore, SelfModel, SelfModelStore,
-        SessionMessage, SessionSummaryStore, TurnLedger, TurnLedgerStore,
+        LongTermMemoryExtractionStateStore, MemoryStore, PrivateGardenDoc, PrivateGardenDocRecord,
+        PrivateGardenStore, SessionMessage, SessionSummaryStore, TurnLedger, TurnLedgerStore,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -721,46 +728,39 @@ mod tests {
     }
 
     #[derive(Default)]
-    #[allow(dead_code)]
-    struct StubSelfModelStore {
-        state: Mutex<Option<SelfModel>>,
+    struct StubActiveWorkStore {
+        record: Mutex<Option<ActiveWorkRecord>>,
     }
 
-    impl SelfModelStore for StubSelfModelStore {
-        fn get(&self, _chat_id: &str) -> Result<Option<SelfModel>> {
-            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    impl ActiveWorkStore for StubActiveWorkStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<ActiveWorkRecord>> {
+            Ok(self
+                .record
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
         }
 
-        fn set(&self, _chat_id: &str, model: &SelfModel) -> Result<()> {
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(model.clone());
+        fn set(&self, _chat_id: &str, record: &ActiveWorkRecord) -> Result<()> {
+            *self.record.lock().unwrap_or_else(|e| e.into_inner()) = Some(record.clone());
             Ok(())
         }
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.record.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Ok(())
         }
     }
 
-    #[derive(Default)]
-    #[allow(dead_code)]
-    struct StubPrivateDocStore {
-        state: Mutex<Option<PrivateDocWorkspace>>,
-    }
-
-    impl PrivateDocStore for StubPrivateDocStore {
-        fn get(&self, _chat_id: &str) -> Result<Option<PrivateDocWorkspace>> {
-            Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
-        }
-
-        fn set(&self, _chat_id: &str, workspace: &PrivateDocWorkspace) -> Result<()> {
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(workspace.clone());
-            Ok(())
-        }
-
-        fn clear(&self, _chat_id: &str) -> Result<()> {
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            Ok(())
+    fn stub_active_work_store_from_state(
+        state: &ExecutionState,
+        user_request: &str,
+    ) -> StubActiveWorkStore {
+        StubActiveWorkStore {
+            record: Mutex::new(ActiveWorkRecord::from_interactive_execution_state(
+                state,
+                user_request,
+            )),
         }
     }
 
@@ -1210,6 +1210,7 @@ mod tests {
                 memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &long_term_memory_store,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
@@ -1285,6 +1286,7 @@ mod tests {
                 memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &long_term_memory_store,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
@@ -1375,6 +1377,7 @@ mod tests {
                 memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &long_term_memory_store,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
@@ -1540,6 +1543,7 @@ mod tests {
                 memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &long_term_memory_store,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
@@ -1651,6 +1655,15 @@ mod tests {
                 },
             }],
         };
+        let active_work_store = {
+            let state = execution_state_store
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("execution state");
+            stub_active_work_store_from_state(&state, "继续把 continuity capsule 收口")
+        };
 
         let outcome = run_continuity_capsule_maintenance(
             &PostReplyMemoryMaintenanceContext {
@@ -1658,6 +1671,7 @@ mod tests {
                 memory_store: &StubMemoryStore,
                 session_summary_store: &StubSessionSummaryStore::default(),
                 execution_state_store: &execution_state_store,
+                active_work_store: &active_work_store,
                 long_term_memory_store: &StubLongTermMemoryStore,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &StubExtractionStateStore::default(),
@@ -1707,11 +1721,104 @@ mod tests {
         assert!(stored[0]
             .provenance_refs
             .iter()
-            .any(|value| value == "execution_state"));
+            .any(|value| value == "foreground_work"));
+        assert!(stored[0]
+            .provenance_refs
+            .iter()
+            .any(|value| value == "foreground_status=active"));
         assert!(stored[0]
             .provenance_refs
             .iter()
             .any(|value| value == "summary_snapshot"));
+    }
+
+    #[test]
+    fn post_reply_maintenance_ignores_recent_failed_run_for_continuity_capsule() {
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let task_run_store = StubTaskRunStore {
+            active: Vec::new(),
+            recent: vec![crate::task_execution::TaskRunRecord {
+                run: crate::task_execution::TaskRun {
+                    run_id: "run-failed".to_string(),
+                    kind: crate::task_execution::TaskRunKind::TaskExecution,
+                    source_channel: "qq_channel".to_string(),
+                    source_chat_id: "chat-1".to_string(),
+                    user_request: "继续把 continuity capsule 收口".to_string(),
+                    title: "Continuity capsule productionization".to_string(),
+                    status: crate::task_execution::TaskRunStatus::Failed,
+                    current_step_id: "s01".to_string(),
+                    planner_reason: String::new(),
+                    final_summary: String::new(),
+                    failure_reason: "tool path failed".to_string(),
+                    plan_revision: 1,
+                    created_at: 60,
+                    updated_at: 95,
+                    finished_at: 95,
+                },
+                plan: crate::task_execution::TaskPlan {
+                    goal: "Land continuity capsule productionization".to_string(),
+                    completion_definition: "maintenance and recall use one continuity contract"
+                        .to_string(),
+                    risk_notes: Vec::new(),
+                    ordered_steps: vec![crate::task_execution::TaskStep {
+                        step_id: "s01".to_string(),
+                        title: "Unify sources".to_string(),
+                        instruction: "Do not let failed runs leak into continuity capsules"
+                            .to_string(),
+                        status: crate::task_execution::TaskStepStatus::Failed,
+                        tool_budget: 3,
+                        retry_budget: 1,
+                        expected_artifacts: Vec::new(),
+                        review_criteria: Vec::new(),
+                        attempt_count: 1,
+                        last_result_summary: "tool path failed".to_string(),
+                        last_review_summary: String::new(),
+                        started_at: 80,
+                        finished_at: 95,
+                    }],
+                },
+            }],
+        };
+
+        let outcome = run_continuity_capsule_maintenance(
+            &PostReplyMemoryMaintenanceContext {
+                session_store: &StubSessionStore::default(),
+                memory_store: &StubMemoryStore,
+                session_summary_store: &StubSessionSummaryStore::default(),
+                execution_state_store: &StubExecutionStateStore::default(),
+                active_work_store: &StubActiveWorkStore::default(),
+                long_term_memory_store: &StubLongTermMemoryStore,
+                continuity_capsule_store: &continuity_capsule_store,
+                extraction_state_store: &StubExtractionStateStore::default(),
+                turn_ledger_store: &StubTurnLedgerStore,
+                skill_storage: &StubSkillStorage::default(),
+                task_run_store: &task_run_store,
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
+            },
+            &PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续把 continuity capsule 收口",
+                reply_content: "这轮先修 active work continuity",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 1,
+                external_content_used: false,
+                prompt_recall_intent: PromptRecallIntent::Mixed,
+                runtime_skill_selected_ids: Vec::new(),
+                task_learning_selected_ids: Vec::new(),
+                reuse_outcome: RuntimeSkillReuseOutcome::Neutral,
+                reuse_outcome_note: "",
+                now_secs: 100,
+            },
+            Some("Failed runs must not leak into continuity capsules"),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.drafted, 0);
+        assert!(continuity_capsule_store.list(8).unwrap().is_empty());
     }
 
     #[test]
@@ -1813,6 +1920,7 @@ mod tests {
                 memory_store: &StubMemoryStore,
                 session_summary_store: &StubSessionSummaryStore::default(),
                 execution_state_store: &StubExecutionStateStore::default(),
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &StubLongTermMemoryStore,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &StubExtractionStateStore::default(),
@@ -1911,7 +2019,7 @@ mod tests {
         };
         let drafts = build_post_reply_continuity_drafts(PostReplyContinuityInput {
             run: Some(&run),
-            execution_state: None,
+            active_work: None,
             chat_id: "chat-1",
             channel: "qq_channel",
             now_secs: 30,
@@ -2016,6 +2124,7 @@ mod tests {
                 memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &long_term_memory_store,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
@@ -2102,6 +2211,7 @@ mod tests {
                 memory_store: &memory_store,
                 session_summary_store: &summary_store,
                 execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
                 long_term_memory_store: &long_term_memory_store,
                 continuity_capsule_store: &continuity_capsule_store,
                 extraction_state_store: &extraction_state_store,
@@ -2189,6 +2299,7 @@ mod tests {
                     memory_store: &memory_store,
                     session_summary_store: &summary_store,
                     execution_state_store: &execution_state_store,
+                    active_work_store: &StubActiveWorkStore::default(),
                     long_term_memory_store: &long_term_memory_store,
                     continuity_capsule_store: &continuity_capsule_store,
                     extraction_state_store: &extraction_state_store,

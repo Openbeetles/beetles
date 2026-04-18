@@ -149,6 +149,11 @@ pub fn derive_recent_persona_evidence(
         return None;
     }
     relevant.truncate(max_meaningful_turns);
+    let promotable_growth = relevant
+        .iter()
+        .copied()
+        .filter(|ledger| ledger_supports_promotable_persona_growth(ledger))
+        .collect::<Vec<_>>();
     let sampled_turns = relevant.len();
     let meaningful_turns = sampled_turns;
     let updated_at = relevant
@@ -158,7 +163,7 @@ pub fn derive_recent_persona_evidence(
         .unwrap_or(0)
         / 1000;
     let repeated_priority_order = most_common_vec(
-        relevant
+        promotable_growth
             .iter()
             .filter_map(|ledger| ledger.persona.as_ref()?.priority.as_ref())
             .map(|priority| priority.priority_order.as_slice())
@@ -183,7 +188,7 @@ pub fn derive_recent_persona_evidence(
             .map(|priority| priority.initiative_posture.as_str()),
     );
     let repeated_relationship_posture = most_common_text(
-        relevant
+        promotable_growth
             .iter()
             .filter_map(|ledger| ledger.persona.as_ref()?.priority.as_ref())
             .map(|priority| priority.relationship_posture.as_str()),
@@ -196,7 +201,8 @@ pub fn derive_recent_persona_evidence(
             .unwrap_or("")
     }));
     let repeated_disclosure_action = most_common_text(relevant.iter().filter_map(|ledger| {
-        ledger
+        ledger_supports_promotable_persona_growth(ledger)
+            .then_some(ledger)?
             .persona
             .as_ref()?
             .disclosure
@@ -222,6 +228,18 @@ pub fn derive_recent_persona_evidence(
         updated_at,
     };
     evidence.is_meaningful().then_some(evidence)
+}
+
+fn ledger_supports_promotable_persona_growth(ledger: &TurnLedger) -> bool {
+    ledger.ingress == IngressKind::User
+        && ledger.status == super::TurnLedgerStatus::Answered
+        && ledger.final_reply_delivered
+        && !ledger.final_answer_recovered
+        && !ledger.canonical_reply_source.trim().is_empty()
+        && ledger
+            .persona
+            .as_ref()
+            .is_some_and(|persona| persona.pressure != TurnPersonaPressureLevel::Critical)
 }
 
 pub fn render_recent_persona_evidence_block(
@@ -507,9 +525,13 @@ mod tests {
         TurnLedger {
             ingress: IngressKind::User,
             status: TurnLedgerStatus::Answered,
+            reason: "final_answer".to_string(),
+            outbound_source: "reply".to_string(),
+            canonical_reply_source: "final_answer".to_string(),
             started_at_ms: 1_000,
             updated_at_ms: 2_000,
             finished_at_ms: 2_000,
+            final_reply_delivered: true,
             persona: Some(TurnPersonaLedger {
                 disclosure: Some(TurnPersonaDisclosureLedger {
                     request_kind: "boundary_touch".to_string(),
@@ -612,6 +634,31 @@ mod tests {
         assert_eq!(growth_supported.promotable_growth_signal_count(), 2);
         assert!(growth_supported.has_promotable_growth_signals());
         assert_eq!(growth_supported.promotable_growth_updated_at(), 77);
+    }
+
+    #[test]
+    fn failed_recovered_or_critical_turns_do_not_count_as_promotable_growth() {
+        let mut failed_copy = build_persona_ledger("brief", TurnPersonaPressureLevel::Normal);
+        failed_copy.reason = "chat_failure_copy".to_string();
+        failed_copy.outbound_source = "chat-failure".to_string();
+        failed_copy.canonical_reply_source = String::new();
+
+        let mut recovered = build_persona_ledger("brief", TurnPersonaPressureLevel::Normal);
+        recovered.reason = "final_recovery".to_string();
+        recovered.canonical_reply_source = "final_recovery".to_string();
+        recovered.final_answer_recovered = true;
+
+        let critical = build_persona_ledger("brief", TurnPersonaPressureLevel::Critical);
+
+        let evidence = derive_recent_persona_evidence(&[failed_copy, recovered, critical], 12)
+            .expect("recent persona evidence");
+
+        assert!(evidence.repeated_priority_order.is_empty());
+        assert!(evidence.repeated_relationship_posture.is_empty());
+        assert!(evidence.repeated_disclosure_action.is_empty());
+        assert_eq!(evidence.promotable_growth_signal_count(), 0);
+        assert!(!evidence.has_promotable_growth_signals());
+        assert!(evidence.has_operational_trace_signals());
     }
 
     struct FastPathStore {

@@ -261,6 +261,7 @@ pub(super) fn execute_tool_use_round(
     let mut round_failure_summary = ToolFailureSummary::default();
     let mut omitted_evidence_count = 0usize;
     let mut used_external_content = false;
+    let mut successful_tool_names = Vec::with_capacity(tool_calls.len());
 
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
 
@@ -285,6 +286,7 @@ pub(super) fn execute_tool_use_round(
         }
         if execution.call_succeeded {
             round_tool_success = true;
+            successful_tool_names.push(tc.name.clone());
         }
 
         let call_key = hash_tool_call(&tc.name, &tc.input);
@@ -325,6 +327,7 @@ pub(super) fn execute_tool_use_round(
         round_failure_summary,
         used_external_content,
         omitted_evidence_count,
+        successful_tool_names,
     }
 }
 

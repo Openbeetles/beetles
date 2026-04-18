@@ -1,6 +1,8 @@
 //! Agent 运行策略：按平台选择轻量或增强链路。
 //! Internal agent strategy helpers for platform-specific behavior.
 
+use crate::agent::final_reply::reply_has_concrete_anchor;
+
 /// 内部运行策略：ESP 保持轻量，Linux 启用额外 planning / reflection 增强。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentRunStrategy {
@@ -23,20 +25,100 @@ pub(crate) fn final_answer_followup(
         return None;
     }
     let recent_successful_round = recent_successful_round?;
-    if !content_looks_like_process_transcript(content) {
+    let content_is_transcript = content_looks_like_process_transcript(content);
+    let content_is_incomplete = content_looks_like_incomplete_tool_answer(content);
+    if !content_is_transcript && !content_is_incomplete {
         return None;
     }
     Some(
         if recent_successful_round.successful_calls == recent_successful_round.total_calls {
-            "[SYSTEM] Your draft reads like an execution transcript instead of a final user-facing answer. Do not show step logs or future-plan sections. Rewrite the answer using only the completed results already present in this conversation."
+            if content_is_transcript {
+                "[SYSTEM] Your draft reads like an execution transcript instead of a final user-facing answer. Do not show step logs or future-plan sections. Rewrite the answer using only the completed results already present in this conversation."
                 .to_string()
-        } else {
+            } else {
+                "[SYSTEM] Your draft is not yet a final user-facing answer. Using only the completed results already present in this conversation, write the actual answer now. Do not greet, do not narrate future steps, and do not output progress logs."
+                    .to_string()
+            }
+        } else if content_is_transcript {
             format!(
                 "[SYSTEM] Your draft reads like an execution transcript instead of a final user-facing answer. You already have {} useful result(s) in context. Rewrite the answer around those completed results only, and remove step logs or future-plan sections.",
                 recent_successful_round.successful_calls
             )
+        } else {
+            format!(
+                "[SYSTEM] Your draft is not yet a final user-facing answer. You already have {} useful result(s) in context. Rewrite the answer around those completed results only, without greetings, future-step narration, or progress logs.",
+                recent_successful_round.successful_calls
+            )
         },
     )
+}
+
+fn content_looks_like_incomplete_tool_answer(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty()
+        || content_has_input_or_boundary_signal(trimmed)
+        || reply_has_concrete_anchor(trimmed)
+    {
+        return false;
+    }
+    looks_like_future_action_narration(trimmed)
+        || content_looks_like_generic_greeting(trimmed)
+        || trimmed.chars().count() < 24
+}
+
+fn content_has_input_or_boundary_signal(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    content.contains("请先提供")
+        || content.contains("请提供")
+        || content.contains("请把")
+        || content.contains("请发")
+        || content.contains("无法继续")
+        || content.contains("不能继续")
+        || content.contains("不对外公开")
+        || content.contains("内部")
+        || lower.contains("please provide")
+        || lower.contains("please send")
+        || lower.contains("cannot continue")
+        || lower.contains("can't continue")
+        || lower.contains("internal")
+}
+
+fn looks_like_future_action_narration(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    [
+        "我先整理",
+        "我先检查",
+        "我先看看",
+        "我先处理",
+        "让我继续",
+        "让我先",
+        "现在我先",
+        "继续配置",
+        "继续处理",
+    ]
+    .iter()
+    .any(|prefix| content.starts_with(prefix))
+        || [
+            "let me ",
+            "i need to ",
+            "now i need to ",
+            "i will ",
+            "i'll ",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+fn content_looks_like_generic_greeting(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    content.starts_with("你好")
+        || content.starts_with("您好")
+        || content.contains("很高兴见到你")
+        || content.contains("有什么我可以帮你")
+        || lower.starts_with("hello")
+        || lower.starts_with("hi")
+        || lower.contains("how can i help")
+        || lower.contains("glad to see you")
 }
 
 pub(crate) fn empty_final_answer_followup(
@@ -190,14 +272,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn final_answer_followup_skips_generic_wrapups_without_structural_artifacts() {
+    fn final_answer_followup_skips_grounded_direct_answers_without_structural_artifacts() {
         let followup = final_answer_followup(
             AgentRunStrategy::LinuxEnhanced,
             Some(SuccessfulToolRoundSummary {
                 total_calls: 2,
                 successful_calls: 2,
             }),
-            "我先给你一个简短总结，供你参考。",
+            "这里是简短总结：当前版本是 1.2.3。",
         );
         assert!(followup.is_none());
     }
@@ -227,6 +309,29 @@ mod tests {
             "当前版本是 1.2.3。",
         );
         assert!(followup.is_none());
+    }
+
+    #[test]
+    fn final_answer_followup_rewrites_short_or_future_action_tool_drafts() {
+        let short = final_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 1,
+                successful_calls: 1,
+            }),
+            "你好！",
+        );
+        assert!(short.is_some());
+
+        let future = final_answer_followup(
+            AgentRunStrategy::LinuxEnhanced,
+            Some(SuccessfulToolRoundSummary {
+                total_calls: 1,
+                successful_calls: 1,
+            }),
+            "我先整理一下当前状态。",
+        );
+        assert!(future.is_some());
     }
 
     #[test]

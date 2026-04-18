@@ -1,3 +1,4 @@
+use crate::agent::{load_active_work_for_chat, ActiveWorkRecord};
 use crate::task_execution::{
     active_task_run_for_chat, build_task_recall_bundle, render_task_workspace_block, TaskRunRecord,
 };
@@ -18,7 +19,7 @@ use super::{
     render_relationship_portfolio_block, render_self_continuity_block, render_self_model_block,
     render_self_state_block, render_turn_observation_ledger_block, render_work_continuity_block,
     render_world_sense_block, render_world_snapshot_block, ContinuityCapsuleRecallInspectionInput,
-    ContinuityCapsuleScopeKind, ExecutionState, MemoryProfile, PromptMemoryContextParams,
+    ContinuityCapsuleScopeKind, MemoryProfile, PromptMemoryContextParams,
     PromptRecallRouterDecision, RecallPlane, RecallQuery, RecallSelectionReport, SessionMessage,
     WorldSnapshotContext, MAX_WORK_CONTINUITY_BLOCK_LEN,
 };
@@ -36,7 +37,7 @@ pub(crate) struct PromptContextSeed {
 pub(crate) struct PromptSessionStage {
     pub recent_messages: Vec<SessionMessage>,
     pub summary_text: Option<String>,
-    pub execution_state: Option<Box<ExecutionState>>,
+    pub active_work: Option<Box<ActiveWorkRecord>>,
     pub work_continuity_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub active_task_run: Option<Box<TaskRunRecord>>,
@@ -237,22 +238,6 @@ pub(crate) fn load_session_stage(
             .filter(|summary| !summary.is_empty())
         })
         .flatten();
-    let execution_state = params
-        .participation_plan
-        .load_l1_session
-        .then(|| {
-            load_optional_with_health(health, "execution_state", || {
-                params.execution_state_store.get(params.chat_id)
-            })
-            .map(Box::new)
-        })
-        .flatten();
-    let execution_state_text = execution_state.as_ref().and_then(|state| {
-        render_execution_state_block(
-            state,
-            memory_policy(seed.profile).execution_state.render_max_len,
-        )
-    });
     let active_task_run = params
         .participation_plan
         .load_l1_session
@@ -267,17 +252,34 @@ pub(crate) fn load_session_stage(
             .map(Box::new)
         })
         .flatten();
-    let work_continuity_text = super::build_work_continuity_record(
-        active_task_run.as_deref(),
-        execution_state.as_deref(),
-        summary_text.as_deref(),
-    )
-    .and_then(|record| {
-        render_work_continuity_block(
-            &record,
-            params.system_max_len.min(MAX_WORK_CONTINUITY_BLOCK_LEN),
+    let active_work = params
+        .participation_plan
+        .load_l1_session
+        .then(|| {
+            load_optional_with_health(health, "active_work", || {
+                load_active_work_for_chat(
+                    params.active_work_store,
+                    active_task_run.as_deref(),
+                    params.chat_id,
+                )
+            })
+            .map(Box::new)
+        })
+        .flatten();
+    let execution_state_text = active_work.as_ref().and_then(|record| {
+        render_execution_state_block(
+            &record.execution_state_projection(),
+            memory_policy(seed.profile).execution_state.render_max_len,
         )
     });
+    let work_continuity_text =
+        super::build_work_continuity_record(active_work.as_deref(), summary_text.as_deref())
+            .and_then(|record| {
+                render_work_continuity_block(
+                    &record,
+                    params.system_max_len.min(MAX_WORK_CONTINUITY_BLOCK_LEN),
+                )
+            });
     let task_workspace_text = active_task_run.as_ref().and_then(|record| {
         let artifacts = load_vec_with_health(health, "task_artifacts", || {
             params
@@ -300,7 +302,7 @@ pub(crate) fn load_session_stage(
     Box::new(PromptSessionStage {
         recent_messages,
         summary_text,
-        execution_state,
+        active_work,
         work_continuity_text,
         execution_state_text,
         active_task_run,
@@ -724,7 +726,7 @@ pub(crate) fn load_governed_memory_stage(
         params.user_query,
         session.summary_text.as_deref(),
         &session.recent_messages,
-        session.execution_state.as_deref(),
+        session.active_work.as_deref(),
         session.active_task_run.as_deref(),
     );
     let (continuity_capsule_report, continuity_capsules) = if seed.governed_memory_enabled {
@@ -894,8 +896,8 @@ pub(crate) fn load_governed_memory_stage(
     });
     let recall_router = decide_prompt_recall_route(super::recall_router::PromptRecallRouterInput {
         user_query: params.user_query,
-        has_execution_state: session.execution_state_text.is_some(),
-        has_active_task: session.active_task_run.is_some(),
+        has_active_continuity: session.active_work.is_some(),
+        has_active_task_run: session.active_task_run.is_some(),
         shared_factual_report: &shared_factual_recall_report,
         continuity_capsule_report: &continuity_capsule_report,
         archive_report: &archive_recall_report,

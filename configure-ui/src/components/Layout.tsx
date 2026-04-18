@@ -153,6 +153,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
 
   const showUnsavedDialog = dirty && pendingPath != null;
   const useImmersiveMainSurface = location.pathname === "/device";
+  const showDeviceBanner = location.pathname !== "/device";
 
   const handleUnsavedConfirm = useCallback(() => {
     setDirty(false);
@@ -312,13 +313,13 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               boxShadow: "none",
             }}
           >
-            <TopBar onOpenSettings={onOpenSettings} />
-            <DeviceBanner />
+            <TopBar />
+            {showDeviceBanner ? <DeviceBanner /> : null}
           </Box>
           <MainSurface immersive={useImmersiveMainSurface}>
             <ShellPageTransition />
           </MainSurface>
-          <Taskbar />
+          <Taskbar onOpenSettings={onOpenSettings} />
         </Box>
       </Box>
     </NavBlockerContext.Provider>

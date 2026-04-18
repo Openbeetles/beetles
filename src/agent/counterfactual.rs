@@ -612,7 +612,6 @@ fn execution_preference_label(preference: ExecutionPreference) -> &'static str {
 fn action_family_label(family: ActionFamily) -> &'static str {
     match family {
         ActionFamily::Conversation => "conversation",
-        ActionFamily::ActionRequest => "action_request",
         ActionFamily::ActiveAction => "active_action",
         ActionFamily::TaskExecution => "task_execution",
     }
@@ -656,7 +655,7 @@ mod tests {
                 evidence_need: EvidenceNeed::HostTool,
                 disclosure_surface: super::super::request_semantics::DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
-                action_family: ActionFamily::ActionRequest,
+                action_family: ActionFamily::ActiveAction,
                 resume_relation: super::super::request_semantics::ResumeRelation::IndependentTurn,
                 confidence: 88,
             },

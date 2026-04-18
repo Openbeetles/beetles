@@ -96,7 +96,6 @@ pub fn enqueue_self_runtime_post_reply(
     _system_inbound_tx: &SystemInboundTx,
     detached_work_store: &dyn DetachedWorkStore,
     active_work_store: &dyn crate::agent::ActiveWorkStore,
-    execution_state_store: &dyn crate::memory::ExecutionStateStore,
     self_continuity_store: &dyn SelfContinuityStore,
     autonomy_strategy_store: &dyn AutonomyStrategyStore,
     self_authored_core_store: &dyn SelfAuthoredCoreStore,
@@ -109,11 +108,7 @@ pub fn enqueue_self_runtime_post_reply(
     external_content_used: bool,
 ) -> bool {
     let now_secs = current_unix_secs();
-    match crate::agent::has_meaningful_foreground_work_for_chat(
-        active_work_store,
-        execution_state_store,
-        chat_id,
-    ) {
+    match crate::agent::has_meaningful_foreground_work_for_chat(active_work_store, chat_id) {
         Ok(true) => {
             append_self_runtime_workflow_audit(
                 SelfRuntimeTrigger::PostReply,
@@ -992,27 +987,6 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StubExecutionStateStore {
-        value: Mutex<Option<crate::memory::ExecutionState>>,
-    }
-
-    impl crate::memory::ExecutionStateStore for StubExecutionStateStore {
-        fn get(&self, _chat_id: &str) -> Result<Option<crate::memory::ExecutionState>> {
-            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
-        }
-
-        fn set(&self, _chat_id: &str, state: &crate::memory::ExecutionState) -> Result<()> {
-            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
-            Ok(())
-        }
-
-        fn clear(&self, _chat_id: &str) -> Result<()> {
-            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            Ok(())
-        }
-    }
-
-    #[derive(Default)]
     struct StubAutonomyStrategyStore {
         value: Mutex<Option<AutonomyStrategy>>,
     }
@@ -1215,7 +1189,6 @@ mod tests {
             &system_inbound_tx,
             &detached_work_store,
             &StubActiveWorkStore::default(),
-            &StubExecutionStateStore::default(),
             &StubSelfContinuityStore::default(),
             &StubAutonomyStrategyStore::default(),
             &StubSelfAuthoredCoreStore,
@@ -1258,21 +1231,21 @@ mod tests {
         let active_work_store = StubActiveWorkStore::with_value(crate::agent::ActiveWorkRecord {
             kind: crate::agent::ActiveWorkKind::InteractiveAction,
             title: "配置 QQ 邮箱账户".to_string(),
-            state: crate::memory::ExecutionState {
-                status: crate::memory::ExecutionStatus::Blocked,
-                goal: "配置 QQ 邮箱账户".to_string(),
-                blocker: "缺少 SMTP 授权码".to_string(),
-                next_action: "等待用户补充 SMTP 授权码".to_string(),
-                updated_at: 7,
-                ..crate::memory::ExecutionState::default()
-            },
+            status: crate::agent::ForegroundWorkStatus::AwaitingUser,
+            continuity_open: true,
+            blocks_background_llm: true,
+            progress_summary: String::new(),
+            blocker: "缺少 SMTP 授权码".to_string(),
+            next_action: "等待用户补充 SMTP 授权码".to_string(),
+            recent_outcome: String::new(),
+            active_artifact_refs: Vec::new(),
+            updated_at: 7,
         });
 
         let scheduled = enqueue_self_runtime_post_reply(
             &system_inbound_tx,
             &detached_work_store,
             &active_work_store,
-            &StubExecutionStateStore::default(),
             &StubSelfContinuityStore::default(),
             &StubAutonomyStrategyStore::default(),
             &StubSelfAuthoredCoreStore,
@@ -1298,29 +1271,19 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_self_runtime_post_reply_skips_when_pending_execution_state_exists() {
+    fn enqueue_self_runtime_post_reply_ignores_execution_state_projection_without_foreground_work()
+    {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
         let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
-        let execution_state_store = StubExecutionStateStore {
-            value: Mutex::new(Some(crate::memory::ExecutionState {
-                status: crate::memory::ExecutionStatus::Blocked,
-                goal: "配置 QQ 邮箱账户".to_string(),
-                blocker: "缺少 SMTP 授权码".to_string(),
-                next_action: "等待用户补充 SMTP 授权码".to_string(),
-                updated_at: 7,
-                ..crate::memory::ExecutionState::default()
-            })),
-        };
 
         let scheduled = enqueue_self_runtime_post_reply(
             &system_inbound_tx,
             &detached_work_store,
             &StubActiveWorkStore::default(),
-            &execution_state_store,
             &StubSelfContinuityStore::default(),
             &StubAutonomyStrategyStore::default(),
             &StubSelfAuthoredCoreStore,
@@ -1333,16 +1296,23 @@ mod tests {
             false,
         );
 
-        assert!(!scheduled);
+        assert!(scheduled);
         let key = DetachedWorkKey::new(
             "qq_channel",
             "chat-a",
             DetachedJobKind::SelfRuntimePostReply,
         );
-        assert!(detached_work_store.get(&key).expect("load").is_none());
+        let stored = detached_work_store
+            .get(&key)
+            .expect("load")
+            .expect("scheduled detached work");
+        assert_eq!(stored.state, DetachedWorkState::Pending);
         let audit = workflow_audit_snapshot(4);
-        assert_eq!(audit.summary.no_trigger, 1);
-        assert_eq!(audit.recent_records[0].rationale, "foreground_work_active");
+        assert_eq!(audit.summary.deferred, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimePostReply
+        );
     }
 
     #[test]

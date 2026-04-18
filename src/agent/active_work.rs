@@ -3,17 +3,15 @@
 
 use crate::bus::PcMsg;
 use crate::error::Result;
-use crate::memory::{
-    execution_state_has_pending_work, render_execution_state_block,
-    should_resume_active_execution_state, ExecutionState, ExecutionStateStore, ExecutionStatus,
-};
+use crate::memory::{should_resume_active_execution_state, ExecutionState, ExecutionStatus};
 use crate::orchestrator::snapshot as orchestrator_snapshot;
 use crate::runtime::system_work::{
     CHANNEL_IDLE_MEMORY_FORGE, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE,
     CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
 };
-use crate::task_execution::{current_or_next_step, TaskRunKind, TaskRunRecord, TaskRunStatus};
-use crate::util::truncate_content_to_max;
+use crate::task_execution::{
+    current_or_next_step, TaskRunRecord, TaskRunStatus, TaskStep, TaskStepStatus,
+};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::HashMap;
@@ -28,94 +26,169 @@ pub enum ActiveWorkKind {
     TaskExecution,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForegroundWorkStatus {
+    Running,
+    AwaitingUser,
+    Suspended,
+    Completed,
+    Aborted,
+    FailedTerminal,
+}
+
+impl ForegroundWorkStatus {
+    pub const fn continuity_open(self) -> bool {
+        matches!(self, Self::Running | Self::AwaitingUser | Self::Suspended)
+    }
+
+    pub const fn default_blocks_background_llm(self) -> bool {
+        matches!(self, Self::Running | Self::AwaitingUser)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "active",
+            Self::AwaitingUser => "awaiting_user",
+            Self::Suspended => "suspended",
+            Self::Completed => "completed",
+            Self::Aborted => "aborted",
+            Self::FailedTerminal => "failed_terminal",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveWorkRecord {
     pub kind: ActiveWorkKind,
     #[serde(default)]
     pub title: String,
-    pub state: ExecutionState,
+    pub status: ForegroundWorkStatus,
+    #[serde(default)]
+    pub continuity_open: bool,
+    #[serde(default)]
+    pub blocks_background_llm: bool,
+    #[serde(default)]
+    pub progress_summary: String,
+    #[serde(default)]
+    pub blocker: String,
+    #[serde(default)]
+    pub next_action: String,
+    #[serde(default)]
+    pub recent_outcome: String,
+    #[serde(default)]
+    pub active_artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub updated_at: u64,
 }
 
 impl ActiveWorkRecord {
     pub fn is_meaningful(&self) -> bool {
-        self.state.status != ExecutionStatus::Done && self.state.is_meaningful()
+        self.continuity_open
+            && (!self.title.trim().is_empty()
+                || !self.progress_summary.trim().is_empty()
+                || !self.blocker.trim().is_empty()
+                || !self.next_action.trim().is_empty()
+                || !self.recent_outcome.trim().is_empty()
+                || !self.active_artifact_refs.is_empty())
     }
 
     pub(crate) fn should_resume(&self, user_content: &str) -> bool {
-        self.state.status != ExecutionStatus::Done
-            && should_resume_active_execution_state(&self.state, user_content)
+        self.continuity_open
+            && should_resume_active_execution_state(
+                &self.execution_state_projection(),
+                user_content,
+            )
+    }
+
+    pub(crate) fn blocks_background_llm(&self) -> bool {
+        self.continuity_open && self.blocks_background_llm
+    }
+
+    pub(crate) fn execution_state_projection(&self) -> ExecutionState {
+        ExecutionState {
+            status: foreground_status_to_execution_status(self.status),
+            goal: self.title.clone(),
+            progress: self.progress_summary.clone(),
+            blocker: self.blocker.clone(),
+            next_action: self.next_action.clone(),
+            last_output: self.recent_outcome.clone(),
+            updated_at: self.updated_at,
+            ..ExecutionState::default()
+        }
     }
 
     pub(crate) fn from_task_run(record: &TaskRunRecord) -> Option<Self> {
-        let mut state = ExecutionState {
-            status: task_run_status_to_execution_status(record.run.status),
-            goal: record.plan.goal.clone(),
-            updated_at: record.run.updated_at,
-            ..ExecutionState::default()
-        };
-        if let Some(step) = current_or_next_step(record) {
-            if !step.last_result_summary.trim().is_empty() {
-                state.progress = step.last_result_summary.clone();
-            } else if !step.title.trim().is_empty() {
-                state.progress = format!("Current step: {}", step.title);
-            }
-            if !step.instruction.trim().is_empty() {
-                state.next_action = step.instruction.clone();
-            } else if !step.title.trim().is_empty() {
-                state.next_action = step.title.clone();
-            }
-            if !step.last_review_summary.trim().is_empty() {
-                state
-                    .latest_observations
-                    .push(step.last_review_summary.clone());
-            }
-            if !step.title.trim().is_empty() {
-                state.next_best_actions.push(step.title.clone());
-            }
-        }
-        if !record.run.final_summary.trim().is_empty() {
-            state.last_output = record.run.final_summary.clone();
-        }
-        if !record.run.failure_reason.trim().is_empty() {
-            state.blocker = record.run.failure_reason.clone();
-        }
-        if state.goal.trim().is_empty() {
-            state.goal = record.run.user_request.clone();
-        }
-        let title = if record.run.title.trim().is_empty() {
-            state.goal.clone()
-        } else {
-            record.run.title.clone()
-        };
+        let step = current_or_next_step(record);
+        let status = foreground_status_from_task_run(record, step);
+        let title = first_non_empty([
+            Some(record.run.title.as_str()),
+            Some(record.plan.goal.as_str()),
+            Some(record.run.user_request.as_str()),
+        ]);
         let candidate = Self {
-            kind: match record.run.kind {
-                TaskRunKind::InteractiveAction => ActiveWorkKind::InteractiveAction,
-                TaskRunKind::TaskExecution => ActiveWorkKind::TaskExecution,
-            },
+            kind: ActiveWorkKind::TaskExecution,
             title,
-            state,
+            status,
+            continuity_open: status.continuity_open(),
+            blocks_background_llm: status.default_blocks_background_llm(),
+            progress_summary: first_non_empty([
+                step.map(|value| value.last_result_summary.as_str()),
+                step.and_then(task_step_progress_fallback),
+            ]),
+            blocker: first_non_empty([
+                Some(record.run.failure_reason.as_str()),
+                step.and_then(task_step_blocker_fallback),
+            ]),
+            next_action: if status.continuity_open() {
+                first_non_empty([
+                    step.map(|value| value.instruction.as_str()),
+                    step.map(|value| value.title.as_str()),
+                ])
+            } else {
+                String::new()
+            },
+            recent_outcome: first_non_empty([
+                Some(record.run.final_summary.as_str()),
+                step.and_then(task_step_recent_outcome_fallback),
+            ]),
+            active_artifact_refs: step
+                .map(|value| {
+                    value
+                        .expected_artifacts
+                        .iter()
+                        .map(|item| item.trim().to_string())
+                        .filter(|item| !item.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            updated_at: record.run.updated_at,
         };
         candidate.is_meaningful().then_some(candidate)
     }
 
-    pub(crate) fn from_execution_state(state: &ExecutionState) -> Option<Self> {
-        if state.status == ExecutionStatus::Done || !execution_state_has_pending_work(state) {
-            return None;
-        }
-        let title = if !state.goal.trim().is_empty() {
-            state.goal.clone()
-        } else if !state.next_action.trim().is_empty() {
-            state.next_action.clone()
-        } else if !state.blocker.trim().is_empty() {
-            state.blocker.clone()
-        } else {
-            return None;
-        };
-        Some(Self {
+    pub(crate) fn from_interactive_execution_state(
+        state: &ExecutionState,
+        user_request: &str,
+    ) -> Option<Self> {
+        let status = foreground_status_from_execution_state(state);
+        let candidate = Self {
             kind: ActiveWorkKind::InteractiveAction,
-            title,
-            state: state.clone(),
-        })
+            title: first_non_empty([Some(state.goal.as_str()), Some(user_request)]),
+            status,
+            continuity_open: status.continuity_open(),
+            blocks_background_llm: status.default_blocks_background_llm(),
+            progress_summary: first_non_empty([
+                Some(state.progress.as_str()),
+                Some(state.last_output.as_str()),
+            ]),
+            blocker: first_non_empty([Some(state.blocker.as_str())]),
+            next_action: first_non_empty([Some(state.next_action.as_str())]),
+            recent_outcome: first_non_empty([Some(state.last_output.as_str())]),
+            active_artifact_refs: Vec::new(),
+            updated_at: state.updated_at,
+        };
+        candidate.is_meaningful().then_some(candidate)
     }
 }
 
@@ -127,18 +200,11 @@ pub trait ActiveWorkStore: Send + Sync {
 
 pub(crate) fn has_meaningful_foreground_work_for_chat(
     active_work_store: &dyn ActiveWorkStore,
-    execution_state_store: &dyn ExecutionStateStore,
     chat_id: &str,
 ) -> Result<bool> {
-    if active_work_store
+    Ok(active_work_store
         .get(chat_id)?
-        .is_some_and(|record| record.is_meaningful())
-    {
-        return Ok(true);
-    }
-    Ok(execution_state_store
-        .get(chat_id)?
-        .is_some_and(|state| execution_state_has_pending_work(&state)))
+        .is_some_and(|record| record.blocks_background_llm()))
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -292,8 +358,8 @@ pub(crate) struct ActiveWorkSyncInput<'a> {
     pub(crate) chat_id: &'a str,
     pub(crate) request_semantics: crate::agent::request_semantics::RequestSemantics,
     pub(crate) reply_surface: crate::agent::reply_surface::ReplySurface,
+    pub(crate) interactive_work: Option<&'a ActiveWorkRecord>,
     pub(crate) active_task_run: Option<&'a TaskRunRecord>,
-    pub(crate) execution_state: Option<&'a ExecutionState>,
 }
 
 pub(crate) fn load_active_work_for_chat(
@@ -309,26 +375,6 @@ pub(crate) fn load_active_work_for_chat(
     Ok(active_task_run.and_then(ActiveWorkRecord::from_task_run))
 }
 
-pub(crate) fn render_active_work_block(
-    record: &ActiveWorkRecord,
-    max_len: usize,
-) -> Option<String> {
-    let kind = match record.kind {
-        ActiveWorkKind::InteractiveAction => "interactive_action",
-        ActiveWorkKind::TaskExecution => "task_execution",
-    };
-    let mut out = String::from("## Active Work\n");
-    out.push_str(&format!("Kind: {}\n", kind));
-    if !record.title.trim().is_empty() {
-        out.push_str(&format!("Title: {}\n", record.title.trim()));
-    }
-    if let Some(state_block) = render_execution_state_block(&record.state, max_len) {
-        out.push_str(&state_block);
-    }
-    let rendered = truncate_content_to_max(out.trim(), max_len).into_owned();
-    (!rendered.trim().is_empty()).then_some(rendered)
-}
-
 pub(crate) fn sync_active_work_after_turn(
     store: &dyn ActiveWorkStore,
     input: ActiveWorkSyncInput<'_>,
@@ -338,7 +384,7 @@ pub(crate) fn sync_active_work_after_turn(
 
     if matches!(
         input.request_semantics.resume_relation,
-        ResumeRelation::DenyOrCancelActiveAction | ResumeRelation::SwitchToNewRequest
+        ResumeRelation::DenyOrCancelActiveAction
     ) {
         return store.clear(input.chat_id);
     }
@@ -347,22 +393,7 @@ pub(crate) fn sync_active_work_after_turn(
             .active_task_run
             .and_then(ActiveWorkRecord::from_task_run)
     } else {
-        let keep_interactive_work = should_keep_interactive_action_work(input.request_semantics);
-        input
-            .active_task_run
-            .filter(|record| {
-                keep_interactive_work && record.run.kind == TaskRunKind::InteractiveAction
-            })
-            .and_then(ActiveWorkRecord::from_task_run)
-            .or_else(|| {
-                keep_interactive_work
-                    .then(|| {
-                        input
-                            .execution_state
-                            .and_then(ActiveWorkRecord::from_execution_state)
-                    })
-                    .flatten()
-            })
+        input.interactive_work.cloned()
     };
     if let Some(record) = next {
         store.set(input.chat_id, &record)
@@ -376,24 +407,18 @@ pub(crate) fn should_keep_interactive_action_work(
 ) -> bool {
     use crate::agent::request_semantics::{ActionFamily, ResumeRelation};
 
-    matches!(
-        semantics.action_family,
-        ActionFamily::ActionRequest | ActionFamily::ActiveAction
-    ) || matches!(
-        semantics.resume_relation,
-        ResumeRelation::ConfirmActiveAction
-            | ResumeRelation::SupplyActiveActionInput
-            | ResumeRelation::ResumeActiveAction
-    )
+    matches!(semantics.action_family, ActionFamily::ActiveAction)
+        || matches!(
+            semantics.resume_relation,
+            ResumeRelation::ResumeActiveAction
+        )
 }
 
 pub fn live_foreground_state_for_chat(
     active_work_store: &dyn ActiveWorkStore,
-    execution_state_store: &dyn ExecutionStateStore,
     chat_id: &str,
 ) -> Result<LiveForegroundState> {
-    let has_foreground_work =
-        has_meaningful_foreground_work_for_chat(active_work_store, execution_state_store, chat_id)?;
+    let has_foreground_work = has_meaningful_foreground_work_for_chat(active_work_store, chat_id)?;
     let snap = orchestrator_snapshot();
     Ok(LiveForegroundState {
         has_foreground_work,
@@ -472,13 +497,102 @@ pub fn current_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn task_run_status_to_execution_status(status: TaskRunStatus) -> ExecutionStatus {
-    match status {
-        TaskRunStatus::Planning | TaskRunStatus::Running => ExecutionStatus::Active,
-        TaskRunStatus::Blocked | TaskRunStatus::Failed => ExecutionStatus::Blocked,
-        TaskRunStatus::Completed | TaskRunStatus::PartialComplete | TaskRunStatus::Aborted => {
-            ExecutionStatus::Done
+fn foreground_status_from_task_run(
+    record: &TaskRunRecord,
+    step: Option<&TaskStep>,
+) -> ForegroundWorkStatus {
+    match record.run.status {
+        TaskRunStatus::Planning | TaskRunStatus::Running => ForegroundWorkStatus::Running,
+        TaskRunStatus::Blocked => {
+            if !record.run.failure_reason.trim().is_empty()
+                || step.is_some_and(|value| {
+                    matches!(
+                        value.status,
+                        TaskStepStatus::Blocked | TaskStepStatus::Failed
+                    ) && !value.last_review_summary.trim().is_empty()
+                })
+            {
+                ForegroundWorkStatus::AwaitingUser
+            } else {
+                ForegroundWorkStatus::Suspended
+            }
         }
+        TaskRunStatus::Failed => ForegroundWorkStatus::FailedTerminal,
+        TaskRunStatus::Aborted => ForegroundWorkStatus::Aborted,
+        TaskRunStatus::Completed | TaskRunStatus::PartialComplete => {
+            ForegroundWorkStatus::Completed
+        }
+    }
+}
+
+fn foreground_status_from_execution_state(state: &ExecutionState) -> ForegroundWorkStatus {
+    match state.status {
+        ExecutionStatus::Active => ForegroundWorkStatus::Running,
+        ExecutionStatus::Blocked => {
+            if !state.blocker.trim().is_empty() || !state.next_action.trim().is_empty() {
+                ForegroundWorkStatus::AwaitingUser
+            } else {
+                ForegroundWorkStatus::Suspended
+            }
+        }
+        ExecutionStatus::Done => ForegroundWorkStatus::Completed,
+    }
+}
+
+fn foreground_status_to_execution_status(status: ForegroundWorkStatus) -> ExecutionStatus {
+    match status {
+        ForegroundWorkStatus::Running | ForegroundWorkStatus::Suspended => ExecutionStatus::Active,
+        ForegroundWorkStatus::AwaitingUser => ExecutionStatus::Blocked,
+        ForegroundWorkStatus::Completed
+        | ForegroundWorkStatus::Aborted
+        | ForegroundWorkStatus::FailedTerminal => ExecutionStatus::Done,
+    }
+}
+
+fn first_non_empty<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    parts
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
+fn task_step_progress_fallback(step: &TaskStep) -> Option<&str> {
+    if !step.last_review_summary.trim().is_empty() {
+        Some(step.last_review_summary.as_str())
+    } else if !step.title.trim().is_empty() {
+        Some(step.title.as_str())
+    } else {
+        None
+    }
+}
+
+fn task_step_blocker_fallback(step: &TaskStep) -> Option<&str> {
+    if matches!(
+        step.status,
+        TaskStepStatus::Blocked | TaskStepStatus::Failed
+    ) {
+        if !step.last_review_summary.trim().is_empty() {
+            Some(step.last_review_summary.as_str())
+        } else if !step.title.trim().is_empty() {
+            Some(step.title.as_str())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn task_step_recent_outcome_fallback(step: &TaskStep) -> Option<&str> {
+    if !step.last_result_summary.trim().is_empty() {
+        Some(step.last_result_summary.as_str())
+    } else if step.status.is_terminal() && !step.last_review_summary.trim().is_empty() {
+        Some(step.last_review_summary.as_str())
+    } else {
+        None
     }
 }
 
@@ -491,8 +605,7 @@ mod tests {
         RequestSemantics, ResumeRelation,
     };
     use crate::task_execution::{
-        build_interactive_action_run_record, TaskPlan, TaskRun, TaskRunKind, TaskRunStatus,
-        TaskStep, TaskStepStatus,
+        TaskPlan, TaskRun, TaskRunKind, TaskRunStatus, TaskStep, TaskStepStatus,
     };
     use std::sync::Mutex;
 
@@ -727,12 +840,15 @@ mod tests {
         let stored = ActiveWorkRecord {
             kind: ActiveWorkKind::InteractiveAction,
             title: "查看系统状态".to_string(),
-            state: ExecutionState {
-                goal: "查看当前系统状态".to_string(),
-                next_action: "执行 office_status".to_string(),
-                updated_at: 5,
-                ..ExecutionState::default()
-            },
+            status: ForegroundWorkStatus::Running,
+            continuity_open: true,
+            blocks_background_llm: true,
+            progress_summary: String::new(),
+            blocker: String::new(),
+            next_action: "执行 office_status".to_string(),
+            recent_outcome: String::new(),
+            active_artifact_refs: Vec::new(),
+            updated_at: 5,
         };
         store.set("chat-1", &stored).expect("store");
 
@@ -765,17 +881,20 @@ mod tests {
     }
 
     #[test]
-    fn sync_clears_active_work_on_switch_request() {
+    fn sync_clears_active_work_on_cancel_request() {
         let store = MemoryActiveWorkStore::default();
         let record = ActiveWorkRecord {
             kind: ActiveWorkKind::InteractiveAction,
             title: "QQ 邮箱配置".to_string(),
-            state: ExecutionState {
-                goal: "配置 QQ 邮箱账户".to_string(),
-                next_action: "补认证信息".to_string(),
-                updated_at: 1,
-                ..ExecutionState::default()
-            },
+            status: ForegroundWorkStatus::Running,
+            continuity_open: true,
+            blocks_background_llm: true,
+            progress_summary: String::new(),
+            blocker: String::new(),
+            next_action: "补认证信息".to_string(),
+            recent_outcome: String::new(),
+            active_artifact_refs: Vec::new(),
+            updated_at: 1,
         };
         store.set("chat-1", &record).expect("store");
 
@@ -784,12 +903,12 @@ mod tests {
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
                 request_semantics: semantics(
-                    ActionFamily::ActionRequest,
-                    ResumeRelation::SwitchToNewRequest,
+                    ActionFamily::ActiveAction,
+                    ResumeRelation::DenyOrCancelActiveAction,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
+                interactive_work: None,
                 active_task_run: None,
-                execution_state: None,
             },
         )
         .expect("sync");
@@ -798,44 +917,39 @@ mod tests {
     }
 
     #[test]
-    fn sync_promotes_action_execution_state_but_not_plain_conversation() {
+    fn sync_keeps_interactive_foreground_work_but_not_plain_conversation() {
         let store = MemoryActiveWorkStore::default();
-        let state = ExecutionState {
-            status: ExecutionStatus::Blocked,
-            goal: "配置 QQ 邮箱账户".to_string(),
-            progress: "账户草案已创建".to_string(),
+        let interactive_work = ActiveWorkRecord {
+            kind: ActiveWorkKind::InteractiveAction,
+            title: "配置 QQ 邮箱账户".to_string(),
+            status: ForegroundWorkStatus::AwaitingUser,
+            continuity_open: true,
+            blocks_background_llm: true,
+            progress_summary: "账户草案已创建".to_string(),
             blocker: "缺少 provider_kind".to_string(),
             next_action: "补认证信息".to_string(),
+            recent_outcome: String::new(),
+            active_artifact_refs: Vec::new(),
             updated_at: 7,
-            ..ExecutionState::default()
         };
-        let interactive_run = build_interactive_action_run_record(
-            "run-2",
-            "qq_channel",
-            "chat-1",
-            "配置 QQ 邮箱",
-            &state,
-            7,
-        )
-        .expect("interactive run");
 
         sync_active_work_after_turn(
             &store,
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
                 request_semantics: semantics(
-                    ActionFamily::ActionRequest,
+                    ActionFamily::ActiveAction,
                     ResumeRelation::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
-                active_task_run: Some(&interactive_run),
-                execution_state: Some(&state),
+                interactive_work: Some(&interactive_work),
+                active_task_run: None,
             },
         )
         .expect("sync");
         let record = store.get("chat-1").expect("get").expect("record");
         assert_eq!(record.kind, ActiveWorkKind::InteractiveAction);
-        assert_eq!(record.state.blocker, "缺少 provider_kind");
+        assert_eq!(record.blocker, "缺少 provider_kind");
 
         sync_active_work_after_turn(
             &store,
@@ -846,8 +960,8 @@ mod tests {
                     ResumeRelation::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::PublicRuntime,
+                interactive_work: None,
                 active_task_run: None,
-                execution_state: Some(&state),
             },
         )
         .expect("sync");
@@ -855,37 +969,25 @@ mod tests {
     }
 
     #[test]
-    fn sync_falls_back_to_execution_state_when_interactive_run_is_not_materialized() {
+    fn sync_does_not_materialize_foreground_work_from_execution_state_projection() {
         let store = MemoryActiveWorkStore::default();
-        let state = ExecutionState {
-            status: ExecutionStatus::Blocked,
-            goal: "配置 QQ 邮箱账户".to_string(),
-            progress: "账户草案已创建".to_string(),
-            blocker: "缺少 SMTP 授权码".to_string(),
-            next_action: "等待用户补充 SMTP 授权码".to_string(),
-            updated_at: 9,
-            ..ExecutionState::default()
-        };
 
         sync_active_work_after_turn(
             &store,
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
                 request_semantics: semantics(
-                    ActionFamily::ActionRequest,
+                    ActionFamily::ActiveAction,
                     ResumeRelation::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
+                interactive_work: None,
                 active_task_run: None,
-                execution_state: Some(&state),
             },
         )
         .expect("sync");
 
-        let record = store.get("chat-1").expect("get").expect("record");
-        assert_eq!(record.kind, ActiveWorkKind::InteractiveAction);
-        assert_eq!(record.title, "配置 QQ 邮箱账户");
-        assert_eq!(record.state.blocker, "缺少 SMTP 授权码");
+        assert!(store.get("chat-1").expect("get").is_none());
     }
 
     #[test]

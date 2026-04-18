@@ -1,6 +1,7 @@
 //! Working-recall inspection for operator diagnostics.
 //! 工作级 recall 巡检：统一查看 canonical factual recall、archive query 报告与 prompt selector 结果。
 
+use crate::agent::{load_active_work_for_chat, ActiveWorkStore};
 use crate::platform::SkillStorage;
 use crate::task_execution::{
     active_task_run_for_chat, build_task_recall_bundle, TaskLearningStore, TaskRunStore,
@@ -19,10 +20,9 @@ use super::{
     select_archive_hits_for_prompt_with_report, ArchivePromptSelectionReport, ArchiveSearchHit,
     ArchiveSearchQuery, ArchiveSearchQueryReport, ContinuityCapsule,
     ContinuityCapsuleRecallInspectionInput, ContinuityCapsuleScopeKind, ContinuityCapsuleStore,
-    CrossPlaneRerankInput, CrossPlaneRerankResult, ExecutionStateStore, LongTermMemoryStore,
-    MemoryProfile, MemoryStore, PromptRecallIntent, RecallPlane, RecallQuery,
-    RecallSelectionReport, SessionMessage, SessionStore, SharedFactualPlaneSnapshot,
-    TurnLedgerStore, MAX_WORK_CONTINUITY_BLOCK_LEN,
+    CrossPlaneRerankInput, CrossPlaneRerankResult, LongTermMemoryStore, MemoryProfile, MemoryStore,
+    PromptRecallIntent, RecallPlane, RecallQuery, RecallSelectionReport, SessionMessage,
+    SessionStore, SharedFactualPlaneSnapshot, TurnLedgerStore, MAX_WORK_CONTINUITY_BLOCK_LEN,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,7 +80,7 @@ pub struct WorkingRecallInspectionInput<'a> {
     pub session_store: &'a dyn SessionStore,
     pub memory_store: &'a dyn MemoryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
-    pub execution_state_store: Option<&'a dyn ExecutionStateStore>,
+    pub active_work_store: Option<&'a dyn ActiveWorkStore>,
     pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: Option<&'a dyn SkillStorage>,
@@ -164,25 +164,23 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
         }
         _ => None,
     };
-    let execution_state = input
-        .execution_state_store
-        .and_then(|store| store.get(input.chat_id).ok().flatten());
-    let work_continuity_text = build_work_continuity_record(
-        active_task_run.as_ref(),
-        execution_state.as_ref(),
-        input.summary_text,
-    )
-    .and_then(|record| {
-        render_work_continuity_block(
-            &record,
-            input.system_max_len.min(MAX_WORK_CONTINUITY_BLOCK_LEN),
-        )
+    let active_work = input.active_work_store.and_then(|store| {
+        load_active_work_for_chat(store, active_task_run.as_ref(), input.chat_id)
+            .ok()
+            .flatten()
     });
+    let work_continuity_text =
+        build_work_continuity_record(active_work.as_ref(), input.summary_text).and_then(|record| {
+            render_work_continuity_block(
+                &record,
+                input.system_max_len.min(MAX_WORK_CONTINUITY_BLOCK_LEN),
+            )
+        });
     let continuity_query = build_continuity_recall_query(
         input.query,
         input.summary_text,
         input.recent,
-        execution_state.as_ref(),
+        active_work.as_ref(),
         active_task_run.as_ref(),
     );
     let (continuity_capsule_report, continuity_capsules) =
@@ -284,8 +282,8 @@ pub fn inspect_working_recall(input: WorkingRecallInspectionInput<'_>) -> Workin
     let prompt_recall_intent =
         decide_prompt_recall_route(super::recall_router::PromptRecallRouterInput {
             user_query: input.query,
-            has_execution_state: false,
-            has_active_task: active_task_run.is_some(),
+            has_active_continuity: active_work.is_some(),
+            has_active_task_run: active_task_run.is_some(),
             shared_factual_report: &shared_factual_report,
             continuity_capsule_report: &continuity_capsule_report,
             archive_report: &archive_recall_report,
@@ -869,7 +867,7 @@ mod tests {
             session_store: &session_store,
             memory_store: &memory_store,
             long_term_memory_store: &StubLongTermMemoryStore,
-            execution_state_store: None,
+            active_work_store: None,
             continuity_capsule_store: &continuity_capsule_store,
             turn_ledger_store: &StubTurnLedgerStore,
             skill_storage: None,

@@ -34,6 +34,7 @@ const PUBLIC_GUILD_MESSAGES_INTENT: u64 = 1 << 30;
 /// 群聊与私聊 intent（GROUP_AT_MESSAGE_CREATE + C2C_MESSAGE_CREATE）
 const GROUP_AND_C2C_INTENT: u64 = 1 << 25;
 const QQ_TOKEN_REFRESH_SKEW_SECS: u64 = 60;
+const DEDUP_CACHE_CAPACITY: usize = 64;
 
 pub struct QqWsLoopConfig {
     pub app_id: String,
@@ -73,6 +74,35 @@ struct QqGatewayData {
 struct QqGatewayAuthor {
     #[serde(default)]
     user_openid: Option<String>,
+}
+
+struct DeduplicateRing {
+    ids: Vec<String>,
+    pos: usize,
+    cap: usize,
+}
+
+impl DeduplicateRing {
+    fn new(cap: usize) -> Self {
+        Self {
+            ids: Vec::with_capacity(cap),
+            pos: 0,
+            cap,
+        }
+    }
+
+    fn contains_or_insert(&mut self, id: &str) -> bool {
+        if self.ids.iter().any(|existing| existing == id) {
+            return true;
+        }
+        if self.ids.len() < self.cap {
+            self.ids.push(id.to_string());
+        } else {
+            self.ids[self.pos] = id.to_string();
+        }
+        self.pos = (self.pos + 1) % self.cap.max(1);
+        false
+    }
 }
 
 fn build_identify_payload(token: &str) -> Vec<u8> {
@@ -142,6 +172,7 @@ struct QqWssDriver {
     shared_token_cache: SharedQqTokenCache,
     last_seq: Option<u64>,
     msg_id_cache: QqMsgIdCache,
+    dedup: DeduplicateRing,
 }
 
 impl QqWssDriver {
@@ -158,6 +189,7 @@ impl QqWssDriver {
             shared_token_cache,
             last_seq: None,
             msg_id_cache,
+            dedup: DeduplicateRing::new(DEDUP_CACHE_CAPACITY),
         }
     }
 
@@ -262,9 +294,23 @@ impl WssGatewayDriver for QqWssDriver {
                             if let (Some(ch), Some(content)) = (channel_id, content) {
                                 if !ch.is_empty() && !content.is_empty() {
                                     if let Some(mid) = msg_id {
+                                        if self.dedup.contains_or_insert(mid) {
+                                            log::info!(
+                                                "[{}] duplicate QQ inbound msg_id={} ignored",
+                                                TAG,
+                                                mid
+                                            );
+                                            return Ok(WssRecvAction::Dispatch(None));
+                                        }
                                         self.cache_msg_id(ch, mid);
                                     }
-                                    if let Ok(msg) = super::build_inbound_message(ch, content) {
+                                    if let Ok(msg) = super::build_inbound_message(
+                                        ch,
+                                        content,
+                                        crate::bus::MessageTransport::Wss,
+                                        msg_id,
+                                        None,
+                                    ) {
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -281,10 +327,23 @@ impl WssGatewayDriver for QqWssDriver {
                                 if !gid.is_empty() && !content.is_empty() {
                                     let chat_id = format!("group:{}", gid);
                                     if let Some(mid) = msg_id {
+                                        if self.dedup.contains_or_insert(mid) {
+                                            log::info!(
+                                                "[{}] duplicate QQ inbound msg_id={} ignored",
+                                                TAG,
+                                                mid
+                                            );
+                                            return Ok(WssRecvAction::Dispatch(None));
+                                        }
                                         self.cache_msg_id(&chat_id, mid);
                                     }
-                                    if let Ok(msg) = super::build_inbound_message(&chat_id, content)
-                                    {
+                                    if let Ok(msg) = super::build_inbound_message(
+                                        &chat_id,
+                                        content,
+                                        crate::bus::MessageTransport::Wss,
+                                        msg_id,
+                                        None,
+                                    ) {
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -302,10 +361,23 @@ impl WssGatewayDriver for QqWssDriver {
                                 if !uid.is_empty() && !content.is_empty() {
                                     let chat_id = format!("c2c:{}", uid);
                                     if let Some(mid) = msg_id {
+                                        if self.dedup.contains_or_insert(mid) {
+                                            log::info!(
+                                                "[{}] duplicate QQ inbound msg_id={} ignored",
+                                                TAG,
+                                                mid
+                                            );
+                                            return Ok(WssRecvAction::Dispatch(None));
+                                        }
                                         self.cache_msg_id(&chat_id, mid);
                                     }
-                                    if let Ok(msg) = super::build_inbound_message(&chat_id, content)
-                                    {
+                                    if let Ok(msg) = super::build_inbound_message(
+                                        &chat_id,
+                                        content,
+                                        crate::bus::MessageTransport::Wss,
+                                        msg_id,
+                                        None,
+                                    ) {
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -368,7 +440,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn group_dispatch_message_is_marked_as_group() {
+    fn group_dispatch_message_is_marked_as_group_and_duplicate_wss_dispatch_is_ignored() {
         let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
         let mut driver = QqWssDriver::new(
             "app".to_string(),
@@ -395,5 +467,14 @@ mod tests {
         };
         assert_eq!(msg.chat_id.as_ref(), "group:group-openid-42");
         assert!(msg.is_group);
+        assert_eq!(msg.source_transport, crate::bus::MessageTransport::Wss);
+        assert_eq!(msg.platform_message_id, "msg-1");
+        assert_eq!(msg.inbound_dedup_key, "qq_message:msg-1");
+
+        let duplicate = driver
+            .on_recv(payload.to_string().as_bytes())
+            .expect("recv duplicate action");
+
+        assert!(matches!(duplicate, WssRecvAction::Dispatch(None)));
     }
 }

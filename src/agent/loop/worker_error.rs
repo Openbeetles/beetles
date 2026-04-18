@@ -99,6 +99,15 @@ pub(super) fn handle_worker_path_error(
 
     match PcMsg::new_outbound_reply_to(msg, tr(user_message, loc)) {
         Ok(reply) => {
+            turn_ledger.reason = normalize_turn_reason("chat_failure_copy");
+            turn_ledger.outbound_source = normalize_turn_reason("chat-failure");
+            turn_ledger.canonical_reply_source.clear();
+            persist_turn_ledger(
+                config.runtime.turn_ledger_store.as_ref(),
+                &relationship_id,
+                turn_ledger,
+                "error_reply",
+            );
             metrics::record_internal_error_copy_suppressed();
             let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
         }

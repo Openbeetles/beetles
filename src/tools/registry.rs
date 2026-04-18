@@ -797,6 +797,7 @@ fn register_core_tools(
         Arc::clone(&services.continuity_capsule_store),
         Arc::clone(&services.session_summary_store),
         Arc::clone(&services.execution_state_store),
+        Arc::clone(&services.active_work_store),
         Arc::clone(&services.self_model_store),
         Arc::clone(&services.self_authored_core_store),
         Arc::clone(&services.core_revision_ledger_store),

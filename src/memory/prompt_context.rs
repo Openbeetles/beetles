@@ -247,6 +247,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub session_summary_store: &'a dyn SessionSummaryStore,
     pub long_term_memory_store: &'a dyn LongTermMemoryStore,
     pub execution_state_store: &'a dyn ExecutionStateStore,
+    pub active_work_store: &'a dyn crate::agent::ActiveWorkStore,
     pub task_run_store: &'a dyn TaskRunStore,
     pub task_artifact_store: &'a dyn TaskArtifactStore,
     pub task_learning_store: &'a dyn TaskLearningStore,
@@ -375,6 +376,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{ActiveWorkRecord, ActiveWorkStore};
     use crate::error::{Error, Result};
     use crate::memory::{
         AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
@@ -581,6 +583,7 @@ mod tests {
             session_summary_store: &ErrorSessionSummaryStore,
             long_term_memory_store: &StubLongTermMemoryStore::default(),
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -650,6 +653,7 @@ mod tests {
             session_summary_store: &StubSessionSummaryStore::default(),
             long_term_memory_store: &StubLongTermMemoryStore::default(),
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -702,6 +706,7 @@ mod tests {
             session_summary_store: &StubSessionSummaryStore::default(),
             long_term_memory_store: &StubLongTermMemoryStore::default(),
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -845,6 +850,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &long_term_memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -902,6 +908,7 @@ mod tests {
             session_summary_store: &StubSessionSummaryStore::default(),
             long_term_memory_store: &StubLongTermMemoryStore::default(),
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -979,6 +986,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &long_term_memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -1053,6 +1061,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &long_term_memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -1133,6 +1142,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &long_term_memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -1671,6 +1681,43 @@ mod tests {
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubActiveWorkStore {
+        record: Mutex<Option<ActiveWorkRecord>>,
+    }
+
+    impl ActiveWorkStore for StubActiveWorkStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<ActiveWorkRecord>> {
+            Ok(self
+                .record
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
+        }
+
+        fn set(&self, _chat_id: &str, record: &ActiveWorkRecord) -> Result<()> {
+            *self.record.lock().unwrap_or_else(|e| e.into_inner()) = Some(record.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.record.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    fn stub_active_work_store_from_state(
+        state: &ExecutionState,
+        user_request: &str,
+    ) -> StubActiveWorkStore {
+        StubActiveWorkStore {
+            record: Mutex::new(ActiveWorkRecord::from_interactive_execution_state(
+                state,
+                user_request,
+            )),
         }
     }
 
@@ -2454,6 +2501,15 @@ mod tests {
                 ..ExecutionState::default()
             })),
         };
+        let active_work_store = {
+            let state = execution_state_store
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("execution state");
+            stub_active_work_store_from_state(&state, "嗯?")
+        };
         let self_model_store = StubSelfModelStore {
             model: Mutex::new(Some(SelfModel {
                 continuity_anchor: "我还是同一个 beetle".to_string(),
@@ -2614,6 +2670,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &active_work_store,
             task_run_store: &task_run_store,
             task_artifact_store: &task_artifact_store,
             task_learning_store: &StubTaskLearningStore,
@@ -2858,6 +2915,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &task_artifact_store,
             task_learning_store: &StubTaskLearningStore,
@@ -3048,6 +3106,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &task_artifact_store,
             task_learning_store: &StubTaskLearningStore,
@@ -3179,6 +3238,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &task_artifact_store,
             task_learning_store: &StubTaskLearningStore,
@@ -3286,6 +3346,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &task_artifact_store,
             task_learning_store: &StubTaskLearningStore,
@@ -3363,6 +3424,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &task_artifact_store,
             task_learning_store: &StubTaskLearningStore,
@@ -3490,6 +3552,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -3550,6 +3613,21 @@ mod tests {
                 last_output: String::new(),
                 updated_at: 5,
                 ..ExecutionState::default()
+            })),
+        };
+        let active_work_store = StubActiveWorkStore {
+            record: Mutex::new(Some(ActiveWorkRecord {
+                kind: crate::agent::ActiveWorkKind::InteractiveAction,
+                title: "Close replay substrate loop".to_string(),
+                status: crate::agent::ForegroundWorkStatus::Running,
+                continuity_open: true,
+                blocks_background_llm: true,
+                progress_summary: "continue the replay substrate work".to_string(),
+                blocker: String::new(),
+                next_action: "Continue the current task chain.".to_string(),
+                recent_outcome: String::new(),
+                active_artifact_refs: Vec::new(),
+                updated_at: 5,
             })),
         };
         let task_run_store = StubActiveTaskRunStore {
@@ -3628,6 +3706,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &active_work_store,
             task_run_store: &task_run_store,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -3662,8 +3741,9 @@ mod tests {
         assert!(capsule_pos < workspace_pos);
         assert!(!active.contains("## Execution State"));
         assert!(active.contains("Focus: Close replay substrate loop"));
-        assert!(active.contains("Progress: turn observation 已写入 ledger"));
-        assert!(active.contains("Next: 接入 active task prompt"));
+        assert!(active.contains("Progress: continue the replay substrate work"));
+        assert!(active.contains("Next: Continue the current task chain."));
+        assert!(!active.contains("Progress: turn observation 已写入 ledger"));
         assert!(active.contains("Final outcome: final_recovery"));
         assert!(active.contains("Tool path: tool_recovery"));
         assert!(!context
@@ -3758,6 +3838,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -3859,6 +3940,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -4110,6 +4192,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &execution_state_store,
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &task_run_store,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -4218,6 +4301,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -4310,6 +4394,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,
@@ -4402,6 +4487,7 @@ mod tests {
             session_summary_store: &summary_store,
             long_term_memory_store: &memory_store,
             execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
             task_run_store: &StubTaskRunStore,
             task_artifact_store: &StubTaskArtifactStore,
             task_learning_store: &StubTaskLearningStore,

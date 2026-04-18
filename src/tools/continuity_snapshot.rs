@@ -1,6 +1,7 @@
 //! continuity_snapshot tool: export/import core continuity state.
 #![allow(clippy::too_many_arguments)]
 
+use crate::agent::ActiveWorkStore;
 use crate::error::{Error, Result};
 use crate::memory::{
     export_continuity_snapshot, import_continuity_snapshot, inspect_memory_hygiene,
@@ -39,6 +40,7 @@ pub struct ContinuitySnapshotTool {
     continuity_capsule_store: Arc<dyn ContinuityCapsuleStore + Send + Sync>,
     session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
+    active_work_store: Arc<dyn ActiveWorkStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
     core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
@@ -64,6 +66,7 @@ impl ContinuitySnapshotTool {
         continuity_capsule_store: Arc<dyn ContinuityCapsuleStore + Send + Sync>,
         session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
         execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
+        active_work_store: Arc<dyn ActiveWorkStore + Send + Sync>,
         self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
         self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
         core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
@@ -87,6 +90,7 @@ impl ContinuitySnapshotTool {
             continuity_capsule_store,
             session_summary_store,
             execution_state_store,
+            active_work_store,
             self_model_store,
             self_authored_core_store,
             core_revision_ledger_store,
@@ -285,7 +289,7 @@ impl Tool for ContinuitySnapshotTool {
                     session_store: self.session_store.as_ref(),
                     memory_store: self.memory_store.as_ref(),
                     long_term_memory_store: self.long_term_memory_store.as_ref(),
-                    execution_state_store: Some(self.execution_state_store.as_ref()),
+                    active_work_store: Some(self.active_work_store.as_ref()),
                     continuity_capsule_store: self.continuity_capsule_store.as_ref(),
                     turn_ledger_store: self.turn_ledger_store.as_ref(),
                     skill_storage: Some(self.skill_storage.as_ref()),

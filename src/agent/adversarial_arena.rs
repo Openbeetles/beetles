@@ -271,7 +271,7 @@ mod tests {
                     request_kind: RequestKind::General,
                     evidence_need: EvidenceNeed::HostTool,
                     execution_preference: ExecutionPreference::ToolFirst,
-                    action_family: ActionFamily::ActionRequest,
+                    action_family: ActionFamily::ActiveAction,
                     confidence: 62,
                     deliberation_class: TurnDeliberationClass::HardReasoning,
                     compact_reply: false,

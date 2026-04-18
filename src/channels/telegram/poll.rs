@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::bus::{InboundTx, OutboundTx, PcMsg, MAX_CONTENT_LEN};
+use crate::bus::{InboundTx, MessageTransport, OutboundTx, PcMsg, MAX_CONTENT_LEN};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
@@ -260,6 +260,10 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
                     .unwrap_or(0),
+                source_transport: MessageTransport::Poll,
+                platform_message_id: msg.message_id.to_string(),
+                platform_event_id: String::new(),
+                inbound_dedup_key: format!("telegram_message:{}", msg.message_id),
                 is_group,
             };
             let mut enqueued = false;

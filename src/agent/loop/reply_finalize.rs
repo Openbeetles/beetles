@@ -1,7 +1,6 @@
 use super::*;
 use crate::agent::active_work::should_keep_interactive_action_work;
 use crate::agent::final_reply::reply_has_concrete_anchor;
-use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 use crate::memory::EmotionSignalStore;
 
 pub(super) struct FinalizedTurn {
@@ -86,7 +85,10 @@ fn looks_like_future_action_narration(content: &str) -> bool {
     let trimmed = content.trim();
     let lower = trimmed.to_ascii_lowercase();
     [
-        "我先",
+        "我先整理",
+        "我先检查",
+        "我先看看",
+        "我先处理",
         "我需要",
         "让我",
         "现在我需要",
@@ -109,18 +111,12 @@ fn looks_like_future_action_narration(content: &str) -> bool {
 
 fn should_apply_truth_guard(
     strategy: AgentRunStrategy,
-    request_semantics: crate::agent::request_semantics::RequestSemantics,
     delivery: &DeliveryReport,
     any_tool_used: bool,
     external_content_used: bool,
     reply_content: &str,
 ) -> bool {
     if strategy != AgentRunStrategy::LinuxEnhanced
-        || request_semantics.execution_preference != ExecutionPreference::ToolFirst
-        || !matches!(
-            request_semantics.action_family,
-            ActionFamily::ActionRequest | ActionFamily::ActiveAction | ActionFamily::TaskExecution
-        )
         || any_tool_used
         || external_content_used
         || delivery.planner_progress_updates_sent > 0
@@ -204,7 +200,6 @@ pub(super) fn finalize_turn(
     if !is_interrupt
         && should_apply_truth_guard(
             config.strategy,
-            request_semantics,
             &delivery,
             any_tool_used,
             external_content_used,
@@ -440,13 +435,14 @@ pub(super) fn complete_turn(
             .set_important_offset_from_end(&msg.chat_id, 1);
     }
     let reply_requests_input = looks_like_truthful_blocker_or_input_request(&reply_content);
+    let keep_interactive_work =
+        should_keep_interactive_action_work(request_semantics) || reply_requests_input;
     let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
-        && matches!(
+        && (matches!(
             request_semantics.resume_relation,
             crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
-                | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
-        );
+        ) || (!keep_interactive_work && reply_surface != ReplySurface::TaskExecution));
     let now_secs = super::now_unix_ms() / 1000;
     if clear_execution_state {
         if let Err(error) = config.runtime.execution_state_store.clear(&msg.chat_id) {
@@ -459,23 +455,14 @@ pub(super) fn complete_turn(
     }
     let should_seed_execution_state = delivered
         && msg.ingress == IngressKind::User
-        && request_semantics.disclosure_surface
-            != crate::agent::request_semantics::DisclosureSurface::Private
+        && reply_surface != ReplySurface::PrivateBoundary
         && (worker_latency.tool_calls > 0
             || matches!(
                 request_semantics.resume_relation,
-                crate::agent::request_semantics::ResumeRelation::ConfirmActiveAction
-                    | crate::agent::request_semantics::ResumeRelation::SupplyActiveActionInput
-                    | crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
+                crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
                     | crate::agent::request_semantics::ResumeRelation::ResumeActiveTaskRun
             )
-            || (reply_requests_input
-                && matches!(
-                    request_semantics.action_family,
-                    crate::agent::request_semantics::ActionFamily::ActionRequest
-                        | crate::agent::request_semantics::ActionFamily::ActiveAction
-                        | crate::agent::request_semantics::ActionFamily::TaskExecution
-                ))
+            || reply_requests_input
             || matches!(reply_surface, ReplySurface::TaskExecution)
             || turn_observation
                 .as_ref()
@@ -518,42 +505,15 @@ pub(super) fn complete_turn(
         )
         .ok()
         .flatten();
-        let keep_interactive_task_run = seeded_execution_state
+        let interactive_work = seeded_execution_state
             .as_ref()
             .is_some_and(crate::memory::execution_state_has_pending_work)
-            && should_keep_interactive_action_work(request_semantics)
-            && active_task_run.as_ref().is_none_or(|record| {
-                record.run.kind == crate::task_execution::TaskRunKind::InteractiveAction
-            })
+            && keep_interactive_work
             && reply_surface != ReplySurface::TaskExecution;
         if matches!(
             request_semantics.resume_relation,
             crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
-                | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest
         ) {
-            if let Some(run) = active_task_run.as_ref() {
-                let reason = if request_semantics.resume_relation
-                    == crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
-                {
-                    "cancelled by the user"
-                } else {
-                    "superseded by a newer user request"
-                };
-                if let Err(error) = crate::task_execution::finalize_foreground_task_run(
-                    config.runtime.task_run_store.as_ref(),
-                    run,
-                    crate::task_execution::TaskRunStatus::Aborted,
-                    &reply_content,
-                    reason,
-                    now_secs,
-                ) {
-                    log::warn!(
-                        "[task_execution] failed to abort foreground run chat_id={}: {}",
-                        msg.chat_id,
-                        error
-                    );
-                }
-            }
             active_task_run = None;
         } else if reply_surface == ReplySurface::TaskExecution {
             active_task_run = active_task_run_for_chat(
@@ -563,48 +523,6 @@ pub(super) fn complete_turn(
             )
             .ok()
             .flatten();
-        } else if keep_interactive_task_run {
-            if let Some(state) = seeded_execution_state.as_ref() {
-                match crate::task_execution::upsert_interactive_action_run_record(
-                    config.runtime.task_run_store.as_ref(),
-                    active_task_run.as_ref(),
-                    msg.channel.as_ref(),
-                    msg.chat_id.as_ref(),
-                    &msg.content,
-                    state,
-                    now_secs,
-                ) {
-                    Ok(record) => {
-                        active_task_run = Some(record);
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "[task_execution] failed to materialize interactive action run chat_id={}: {}",
-                            msg.chat_id,
-                            error
-                        );
-                        active_task_run = None;
-                    }
-                }
-            }
-        } else if let Some(run) = active_task_run.as_ref().filter(|record| {
-            record.run.kind == crate::task_execution::TaskRunKind::InteractiveAction
-        }) {
-            if let Err(error) = crate::task_execution::finalize_foreground_task_run(
-                config.runtime.task_run_store.as_ref(),
-                run,
-                crate::task_execution::TaskRunStatus::Completed,
-                &reply_content,
-                "",
-                now_secs,
-            ) {
-                log::warn!(
-                    "[task_execution] failed to complete interactive action run chat_id={}: {}",
-                    msg.chat_id,
-                    error
-                );
-            }
-            active_task_run = None;
         }
         if let Err(error) = crate::agent::sync_active_work_after_turn(
             config.runtime.active_work_store.as_ref(),
@@ -612,8 +530,18 @@ pub(super) fn complete_turn(
                 chat_id: &msg.chat_id,
                 request_semantics,
                 reply_surface,
+                interactive_work: if interactive_work {
+                    seeded_execution_state.as_ref().and_then(|state| {
+                        crate::agent::ActiveWorkRecord::from_interactive_execution_state(
+                            state,
+                            &msg.content,
+                        )
+                    })
+                } else {
+                    None
+                }
+                .as_ref(),
                 active_task_run: active_task_run.as_ref(),
-                execution_state: seeded_execution_state.as_ref(),
             },
         ) {
             log::warn!(
@@ -651,7 +579,6 @@ pub(super) fn complete_turn(
     if delivered
         && !super::background_jobs::enqueue_post_reply_maintenance_job(
             config.runtime.active_work_store.as_ref(),
-            config.runtime.execution_state_store.as_ref(),
             config.runtime.detached_work_store.as_ref(),
             system_inbound_tx,
             &msg,
@@ -675,7 +602,6 @@ pub(super) fn complete_turn(
             system_inbound_tx,
             config.runtime.detached_work_store.as_ref(),
             config.runtime.active_work_store.as_ref(),
-            config.runtime.execution_state_store.as_ref(),
             config.runtime.self_continuity_store.as_ref(),
             config.runtime.autonomy_strategy_store.as_ref(),
             config.runtime.self_authored_core_store.as_ref(),
@@ -713,12 +639,7 @@ pub(super) fn complete_turn(
 
     let total_ms = msg_start.elapsed().as_millis();
     let post_reply_ms = total_ms.saturating_sub(reply_handoff_ms);
-    turn_ledger.status = if is_interrupt {
-        TurnLedgerStatus::Interrupted
-    } else {
-        TurnLedgerStatus::Answered
-    };
-    turn_ledger.reason = normalize_turn_reason(if is_interrupt {
+    let canonical_reply_source = if is_interrupt {
         "interrupt"
     } else if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
@@ -728,7 +649,24 @@ pub(super) fn complete_turn(
         "final_recovery"
     } else {
         "final_answer"
-    });
+    };
+    let outbound_source = if reply_already_delivered || delivery.current_primary_delivered {
+        "current_primary"
+    } else if streamed && delivered {
+        "stream_edit"
+    } else if delivered {
+        "reply"
+    } else {
+        ""
+    };
+    turn_ledger.status = if is_interrupt {
+        TurnLedgerStatus::Interrupted
+    } else {
+        TurnLedgerStatus::Answered
+    };
+    turn_ledger.reason = normalize_turn_reason(canonical_reply_source);
+    turn_ledger.outbound_source = normalize_turn_reason(outbound_source);
+    turn_ledger.canonical_reply_source = normalize_turn_reason(canonical_reply_source);
     turn_ledger.reply_preview = normalize_turn_preview(&reply_content);
     turn_ledger.updated_at_ms = super::now_unix_ms();
     turn_ledger.finished_at_ms = turn_ledger.updated_at_ms;

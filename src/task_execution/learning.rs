@@ -1166,9 +1166,6 @@ pub fn build_task_recall_bundle(
     if max_len < MIN_TASK_RECALL_BLOCK_LEN {
         return None;
     }
-    if active_run.run.kind != crate::task_execution::TaskRunKind::TaskExecution {
-        return None;
-    }
     let step_title = current_or_next_step(active_run)
         .map(|step| step.title.as_str())
         .unwrap_or("");
@@ -1488,9 +1485,7 @@ pub fn inspect_task_workspace(
     if run.is_none() {
         match task_run_store.list_active_for_chat(channel, chat_id, 1) {
             Ok(mut runs) => {
-                run = runs.drain(..).find(|record| {
-                    record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
-                });
+                run = runs.drain(..).next();
             }
             Err(error) => storage_errors.push(format!("task_run_active_lookup:{error}")),
         }
@@ -1499,9 +1494,7 @@ pub fn inspect_task_workspace(
         match task_run_store.list_recent(MAX_TASK_OPERATOR_RECENT_RUNS) {
             Ok(runs) => {
                 run = runs.into_iter().find(|record| {
-                    record.run.kind == crate::task_execution::TaskRunKind::TaskExecution
-                        && record.run.source_channel == channel
-                        && record.run.source_chat_id == chat_id
+                    record.run.source_channel == channel && record.run.source_chat_id == chat_id
                 });
             }
             Err(error) => storage_errors.push(format!("task_run_recent_lookup:{error}")),

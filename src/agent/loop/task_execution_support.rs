@@ -1,44 +1,50 @@
 use super::*;
 
-pub(super) fn should_consider_task_execution(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FormalTaskAdmission {
+    None,
+    ResumeActiveRun,
+    ConsiderNewRun,
+}
+
+pub(super) fn decide_formal_task_admission(
     msg: &crate::bus::PcMsg,
     has_tools: bool,
     pressure: crate::orchestrator::PressureLevel,
+    deliberation_class: crate::memory::TurnDeliberationClass,
     request_semantics: crate::agent::request_semantics::RequestSemantics,
-) -> bool {
+    reply_surface: crate::agent::reply_surface::ReplySurface,
+    has_active_run: bool,
+) -> FormalTaskAdmission {
     if msg.ingress != IngressKind::User || msg.is_group {
-        return false;
+        return FormalTaskAdmission::None;
     }
     if matches!(pressure, crate::orchestrator::PressureLevel::Critical) {
-        return false;
+        return FormalTaskAdmission::None;
     }
-    if request_semantics.action_family
-        == crate::agent::request_semantics::ActionFamily::TaskExecution
-        || request_semantics.resume_relation
+    if has_active_run
+        && request_semantics.resume_relation
             == crate::agent::request_semantics::ResumeRelation::ResumeActiveTaskRun
     {
-        return true;
+        return FormalTaskAdmission::ResumeActiveRun;
     }
-    if !matches!(
-        request_semantics.execution_preference,
-        crate::agent::request_semantics::ExecutionPreference::ToolFirst
-    ) {
-        return false;
+    if reply_surface != crate::agent::reply_surface::ReplySurface::GovernedConversation {
+        return FormalTaskAdmission::None;
     }
-    if !has_durable_run_shape(msg, has_tools) {
-        return false;
+    if request_semantics.action_family
+        == crate::agent::request_semantics::ActionFamily::ActiveAction
+        || request_semantics.resume_relation
+            == crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
+    {
+        return FormalTaskAdmission::None;
     }
-    matches!(
-        (
-            request_semantics.action_family,
-            request_semantics.resume_relation,
-        ),
-        (
-            crate::agent::request_semantics::ActionFamily::ActionRequest,
-            crate::agent::request_semantics::ResumeRelation::IndependentTurn
-                | crate::agent::request_semantics::ResumeRelation::SwitchToNewRequest,
-        )
-    )
+    if deliberation_class == crate::memory::TurnDeliberationClass::HardReasoning
+        && has_durable_run_shape(msg, has_tools)
+    {
+        FormalTaskAdmission::ConsiderNewRun
+    } else {
+        FormalTaskAdmission::None
+    }
 }
 
 fn has_durable_run_shape(msg: &crate::bus::PcMsg, has_tools: bool) -> bool {
@@ -145,10 +151,12 @@ pub(super) fn append_task_execution_ledger_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::reply_surface::ReplySurface;
     use crate::agent::request_semantics::{
         ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
         RequestSemantics, ResumeRelation,
     };
+    use crate::memory::TurnDeliberationClass;
 
     fn semantics(
         action_family: ActionFamily,
@@ -170,142 +178,61 @@ mod tests {
     fn short_turn_with_active_action_resume_semantics_is_rejected() {
         let msg =
             crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActiveAction,
-                ResumeRelation::ResumeActiveAction,
-                ExecutionPreference::ToolFirst,
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::Standard,
+                semantics(
+                    ActionFamily::ActiveAction,
+                    ResumeRelation::ResumeActiveAction,
+                    ExecutionPreference::ToolFirst,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
             ),
-        ));
+            FormalTaskAdmission::None
+        );
     }
 
     #[test]
-    fn short_turn_with_task_execution_semantics_is_accepted() {
+    fn short_turn_with_task_execution_resume_semantics_is_only_accepted_for_active_formal_run() {
         let msg =
             crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
-        assert!(should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::TaskExecution,
-                ResumeRelation::ResumeActiveTaskRun,
-                ExecutionPreference::ToolFirst,
+        let semantics = semantics(
+            ActionFamily::TaskExecution,
+            ResumeRelation::ResumeActiveTaskRun,
+            ExecutionPreference::ToolFirst,
+        );
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::Standard,
+                semantics,
+                ReplySurface::GovernedConversation,
+                false,
             ),
-        ));
+            FormalTaskAdmission::None
+        );
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::Standard,
+                semantics,
+                ReplySurface::GovernedConversation,
+                true,
+            ),
+            FormalTaskAdmission::ResumeActiveRun
+        );
     }
 
     #[test]
-    fn short_turn_with_action_request_semantics_is_rejected_without_durable_shape() {
-        let msg = crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "配一下 QQ 邮箱", false)
-            .expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActionRequest,
-                ResumeRelation::IndependentTurn,
-                ExecutionPreference::ToolFirst,
-            ),
-        ));
-    }
-
-    #[test]
-    fn short_turn_with_confirm_active_action_semantics_is_rejected() {
-        let msg =
-            crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "行", false).expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActiveAction,
-                ResumeRelation::ConfirmActiveAction,
-                ExecutionPreference::ToolFirst,
-            ),
-        ));
-    }
-
-    #[test]
-    fn short_turn_with_supply_active_action_input_semantics_is_rejected() {
-        let msg = crate::bus::PcMsg::new_inbound(
-            "qq_channel",
-            "chat-1",
-            "授权码是 hqvqcibpdvqgbdba",
-            false,
-        )
-        .expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActiveAction,
-                ResumeRelation::SupplyActiveActionInput,
-                ExecutionPreference::ToolFirst,
-            ),
-        ));
-    }
-
-    #[test]
-    fn short_turn_with_cancel_active_action_semantics_is_rejected() {
-        let msg = crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "先别配了", false)
-            .expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActiveAction,
-                ResumeRelation::DenyOrCancelActiveAction,
-                ExecutionPreference::AnswerDirect,
-            ),
-        ));
-    }
-
-    #[test]
-    fn short_turn_with_switch_to_new_request_semantics_is_rejected_without_durable_shape() {
-        let msg = crate::bus::PcMsg::new_inbound(
-            "qq_channel",
-            "chat-1",
-            "别配邮箱了，改成配 Telegram",
-            false,
-        )
-        .expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActionRequest,
-                ResumeRelation::SwitchToNewRequest,
-                ExecutionPreference::ToolFirst,
-            ),
-        ));
-    }
-
-    #[test]
-    fn short_turn_without_action_semantics_still_rejects() {
-        let msg =
-            crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
-        assert!(!should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::Conversation,
-                ResumeRelation::IndependentTurn,
-                ExecutionPreference::AnswerDirect,
-            ),
-        ));
-    }
-
-    #[test]
-    fn structured_action_request_semantics_enters_durable_run_consideration() {
+    fn structured_action_request_semantics_alone_no_longer_enters_formal_task_consideration() {
         let msg = crate::bus::PcMsg::new_inbound(
             "qq_channel",
             "chat-1",
@@ -313,20 +240,124 @@ mod tests {
             false,
         )
         .expect("message");
-        assert!(should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActionRequest,
-                ResumeRelation::IndependentTurn,
-                ExecutionPreference::ToolFirst,
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::Standard,
+                semantics(
+                    ActionFamily::ActiveAction,
+                    ResumeRelation::IndependentTurn,
+                    ExecutionPreference::ToolFirst,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
             ),
-        ));
+            FormalTaskAdmission::None
+        );
     }
 
     #[test]
-    fn structured_switch_request_semantics_enters_durable_run_consideration() {
+    fn medium_interactive_request_without_durable_multi_step_shape_stays_out_of_formal_task() {
+        let msg = crate::bus::PcMsg::new_inbound(
+            "qq_channel",
+            "chat-1",
+            "帮我看看邮箱里最新一封邮件",
+            false,
+        )
+        .expect("message");
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::HardReasoning,
+                semantics(
+                    ActionFamily::Conversation,
+                    ResumeRelation::IndependentTurn,
+                    ExecutionPreference::ToolFirst,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
+            ),
+            FormalTaskAdmission::None
+        );
+    }
+
+    #[test]
+    fn hard_reasoning_with_durable_shape_enters_durable_run_consideration() {
+        let msg = crate::bus::PcMsg::new_inbound(
+            "qq_channel",
+            "chat-1",
+            "帮我整理一套迁移方案：\n1. 盘点现有 QQ 邮箱配置\n2. 生成迁移步骤\n3. 记录风险和回滚办法",
+            false,
+        )
+        .expect("message");
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::HardReasoning,
+                semantics(
+                    ActionFamily::Conversation,
+                    ResumeRelation::IndependentTurn,
+                    ExecutionPreference::AnswerDirect,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
+            ),
+            FormalTaskAdmission::ConsiderNewRun
+        );
+    }
+
+    #[test]
+    fn short_turn_even_with_hard_reasoning_is_rejected_without_durable_shape() {
+        let msg = crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "配一下 QQ 邮箱", false)
+            .expect("message");
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::HardReasoning,
+                semantics(
+                    ActionFamily::Conversation,
+                    ResumeRelation::IndependentTurn,
+                    ExecutionPreference::AnswerDirect,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
+            ),
+            FormalTaskAdmission::None
+        );
+    }
+
+    #[test]
+    fn short_turn_without_action_semantics_still_rejects() {
+        let msg =
+            crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Normal,
+                TurnDeliberationClass::Standard,
+                semantics(
+                    ActionFamily::Conversation,
+                    ResumeRelation::IndependentTurn,
+                    ExecutionPreference::AnswerDirect,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
+            ),
+            FormalTaskAdmission::None
+        );
+    }
+
+    #[test]
+    fn critical_pressure_blocks_new_durable_run_admission() {
         let msg = crate::bus::PcMsg::new_inbound(
             "qq_channel",
             "chat-1",
@@ -334,15 +365,21 @@ mod tests {
             false,
         )
         .expect("message");
-        assert!(should_consider_task_execution(
-            &msg,
-            true,
-            crate::orchestrator::PressureLevel::Normal,
-            semantics(
-                ActionFamily::ActionRequest,
-                ResumeRelation::SwitchToNewRequest,
-                ExecutionPreference::ToolFirst,
+        assert_eq!(
+            decide_formal_task_admission(
+                &msg,
+                true,
+                crate::orchestrator::PressureLevel::Critical,
+                TurnDeliberationClass::HardReasoning,
+                semantics(
+                    ActionFamily::Conversation,
+                    ResumeRelation::IndependentTurn,
+                    ExecutionPreference::AnswerDirect,
+                ),
+                ReplySurface::GovernedConversation,
+                false,
             ),
-        ));
+            FormalTaskAdmission::None
+        );
     }
 }

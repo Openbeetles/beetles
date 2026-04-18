@@ -1464,7 +1464,7 @@ fn summarize_adversarial_arena_activity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::IngressKind;
+    use crate::bus::{IngressKind, PcMsg};
     use crate::config::AppConfig;
     use crate::error::Error;
     use crate::memory::{SessionMessage, SessionStore, TurnLedger, TurnLedgerStore};
@@ -1993,13 +1993,15 @@ mod tests {
             )
             .expect("write session");
 
-        let mut ledger = build_turn_ledger_start(
-            "req-turn-activity",
+        let mut ledger_msg = PcMsg::new_inbound(
             "qq_channel",
-            IngressKind::User,
+            &chat_id,
             "Decide whether to inspect memory or ask first",
-            4_400_000_000_000,
-        );
+            false,
+        )
+        .expect("turn activity message");
+        ledger_msg.req_id = Some("req-turn-activity".to_string());
+        let mut ledger = build_turn_ledger_start(&ledger_msg, 4_400_000_000_000);
         ledger.status = TurnLedgerStatus::Answered;
         ledger.updated_at_ms = 4_400_000_000_150;
         ledger.finished_at_ms = 4_400_000_000_150;
@@ -2350,13 +2352,15 @@ mod tests {
             .append(&chat_id, "user", "replay the programmable reasoning turn")
             .expect("write session");
 
-        let mut branch_ledger = build_turn_ledger_start(
-            "req-operator-text-branch",
+        let mut branch_msg = PcMsg::new_inbound(
             "qq_channel",
-            IngressKind::User,
+            &chat_id,
             "Replay the programmable reasoning turn",
-            6_300_000_300_000,
-        );
+            false,
+        )
+        .expect("operator branch message");
+        branch_msg.req_id = Some("req-operator-text-branch".to_string());
+        let mut branch_ledger = build_turn_ledger_start(&branch_msg, 6_300_000_300_000);
         branch_ledger.status = TurnLedgerStatus::Answered;
         branch_ledger.updated_at_ms = 6_300_000_300_120;
         branch_ledger.finished_at_ms = 6_300_000_300_120;
@@ -2386,13 +2390,15 @@ mod tests {
             .set(&chat_id, &branch_ledger)
             .expect("write branch ledger");
 
-        let mut arena_ledger = build_turn_ledger_start(
-            "req-operator-text-arena",
+        let mut arena_msg = PcMsg::new_inbound(
             "qq_channel",
-            IngressKind::User,
+            &chat_id,
             "Adjudicate the programmable reasoning replay",
-            6_300_000_300_200,
-        );
+            false,
+        )
+        .expect("operator arena message");
+        arena_msg.req_id = Some("req-operator-text-arena".to_string());
+        let mut arena_ledger = build_turn_ledger_start(&arena_msg, 6_300_000_300_200);
         arena_ledger.status = TurnLedgerStatus::Answered;
         arena_ledger.updated_at_ms = 6_300_000_300_360;
         arena_ledger.finished_at_ms = 6_300_000_300_360;
@@ -2777,13 +2783,15 @@ mod tests {
             .append(&chat_arena, "user", "adjudicate the replay claim")
             .expect("write arena session");
 
-        let mut branch_ledger = build_turn_ledger_start(
-            "req-branch",
+        let mut branch_msg = PcMsg::new_inbound(
             "qq_channel",
-            IngressKind::User,
+            &chat_branch,
             "Compile the reasoning replay",
-            4_300_000_000_000,
-        );
+            false,
+        )
+        .expect("branch message");
+        branch_msg.req_id = Some("req-branch".to_string());
+        let mut branch_ledger = build_turn_ledger_start(&branch_msg, 4_300_000_000_000);
         branch_ledger.status = TurnLedgerStatus::Answered;
         branch_ledger.updated_at_ms = 4_300_000_000_120;
         branch_ledger.finished_at_ms = 4_300_000_000_120;
@@ -2813,13 +2821,15 @@ mod tests {
             .set(&chat_branch, &branch_ledger)
             .expect("write branch ledger");
 
-        let mut arena_ledger = build_turn_ledger_start(
-            "req-arena",
+        let mut arena_msg = PcMsg::new_inbound(
             "telegram",
-            IngressKind::User,
+            &chat_arena,
             "Adjudicate the replay claim",
-            4_300_000_000_220,
-        );
+            false,
+        )
+        .expect("arena message");
+        arena_msg.req_id = Some("req-arena".to_string());
+        let mut arena_ledger = build_turn_ledger_start(&arena_msg, 4_300_000_000_220);
         arena_ledger.status = TurnLedgerStatus::Answered;
         arena_ledger.updated_at_ms = 4_300_000_000_360;
         arena_ledger.finished_at_ms = 4_300_000_000_360;

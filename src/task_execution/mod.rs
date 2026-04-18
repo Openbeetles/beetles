@@ -4,12 +4,9 @@
 mod learning;
 
 use crate::error::{Error, Result};
-use crate::memory::{ExecutionState, ExecutionStatus};
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 pub(crate) use learning::retrieve_task_learning_hits_with_backend;
 pub use learning::{
@@ -78,7 +75,6 @@ impl TaskRunStatus {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskRunKind {
-    InteractiveAction,
     #[default]
     TaskExecution,
 }
@@ -482,206 +478,6 @@ pub fn build_task_run_record(
     })
 }
 
-fn interactive_action_step_title(state: &ExecutionState) -> String {
-    if !state.next_action.trim().is_empty() {
-        truncate_content_to_max(state.next_action.trim(), MAX_TASK_STEP_TITLE_CHARS).into_owned()
-    } else if !state.goal.trim().is_empty() {
-        truncate_content_to_max(state.goal.trim(), MAX_TASK_STEP_TITLE_CHARS).into_owned()
-    } else {
-        "continue active action".to_string()
-    }
-}
-
-fn interactive_action_step_instruction(state: &ExecutionState, user_request: &str) -> String {
-    if !state.next_action.trim().is_empty() {
-        truncate_content_to_max(state.next_action.trim(), MAX_TASK_STEP_INSTRUCTION_CHARS)
-            .into_owned()
-    } else if !state.blocker.trim().is_empty() {
-        let blocker_instruction = format!("Resolve blocker: {}", state.blocker.trim());
-        truncate_content_to_max(&blocker_instruction, MAX_TASK_STEP_INSTRUCTION_CHARS).into_owned()
-    } else if !state.goal.trim().is_empty() {
-        let goal_instruction = format!("Continue the active action for: {}", state.goal.trim());
-        truncate_content_to_max(&goal_instruction, MAX_TASK_STEP_INSTRUCTION_CHARS).into_owned()
-    } else {
-        truncate_content_to_max(user_request.trim(), MAX_TASK_STEP_INSTRUCTION_CHARS).into_owned()
-    }
-}
-
-fn interactive_action_completion_definition(state: &ExecutionState, user_request: &str) -> String {
-    if !state.next_action.trim().is_empty() {
-        let completion = format!(
-            "Advance until this next action is resolved: {}",
-            state.next_action.trim()
-        );
-        truncate_content_to_max(&completion, MAX_TASK_COMPLETION_DEFINITION_CHARS).into_owned()
-    } else if !state.blocker.trim().is_empty() {
-        let completion = format!(
-            "Resolve this blocker before continuing: {}",
-            state.blocker.trim()
-        );
-        truncate_content_to_max(&completion, MAX_TASK_COMPLETION_DEFINITION_CHARS).into_owned()
-    } else if !state.goal.trim().is_empty() {
-        let completion = format!("Reach the next stable result for: {}", state.goal.trim());
-        truncate_content_to_max(&completion, MAX_TASK_COMPLETION_DEFINITION_CHARS).into_owned()
-    } else {
-        let completion = format!("Reach a stable result for: {}", user_request.trim());
-        truncate_content_to_max(&completion, MAX_TASK_COMPLETION_DEFINITION_CHARS).into_owned()
-    }
-}
-
-fn interactive_action_summary(state: &ExecutionState) -> String {
-    if !state.last_output.trim().is_empty() {
-        truncate_content_to_max(state.last_output.trim(), MAX_TASK_ARTIFACT_SUMMARY_CHARS)
-            .into_owned()
-    } else if !state.progress.trim().is_empty() {
-        truncate_content_to_max(state.progress.trim(), MAX_TASK_ARTIFACT_SUMMARY_CHARS).into_owned()
-    } else {
-        String::new()
-    }
-}
-
-fn generate_interactive_action_run_id(
-    source_channel: &str,
-    source_chat_id: &str,
-    user_request: &str,
-    now_secs: u64,
-) -> String {
-    let mut hasher = DefaultHasher::new();
-    source_channel.hash(&mut hasher);
-    source_chat_id.hash(&mut hasher);
-    user_request.hash(&mut hasher);
-    let short = hasher.finish() & 0xffff;
-    let ts = now_secs & 0x00ff_ffff_ffff;
-    format!("ir{ts:010x}{short:04x}")
-}
-
-pub fn build_interactive_action_run_record(
-    run_id: &str,
-    source_channel: &str,
-    source_chat_id: &str,
-    user_request: &str,
-    state: &ExecutionState,
-    now_secs: u64,
-) -> Result<TaskRunRecord> {
-    let goal = if !state.goal.trim().is_empty() {
-        truncate_content_to_max(state.goal.trim(), MAX_TASK_GOAL_CHARS).into_owned()
-    } else {
-        truncate_content_to_max(user_request.trim(), MAX_TASK_GOAL_CHARS).into_owned()
-    };
-    let title = truncate_content_to_max(
-        if goal.is_empty() {
-            user_request.trim()
-        } else {
-            goal.as_str()
-        },
-        MAX_TASK_TITLE_CHARS,
-    )
-    .into_owned();
-    let step_title = interactive_action_step_title(state);
-    let step_instruction = interactive_action_step_instruction(state, user_request);
-    let step_status = match state.status {
-        ExecutionStatus::Blocked => TaskStepStatus::Blocked,
-        ExecutionStatus::Done => TaskStepStatus::Passed,
-        ExecutionStatus::Active => TaskStepStatus::Running,
-    };
-    let run_status = match state.status {
-        ExecutionStatus::Blocked => TaskRunStatus::Blocked,
-        ExecutionStatus::Done => TaskRunStatus::Completed,
-        ExecutionStatus::Active => TaskRunStatus::Running,
-    };
-    let summary = interactive_action_summary(state);
-    let blocker = truncate_content_to_max(state.blocker.trim(), MAX_TASK_REASON_CHARS).into_owned();
-    let current_step_id = if run_status.is_active() {
-        "s01".to_string()
-    } else {
-        String::new()
-    };
-    Ok(TaskRunRecord {
-        run: TaskRun {
-            run_id: normalize_fixed_id(run_id, MAX_TASK_RUN_ID_CHARS, "task_run_id")?,
-            kind: TaskRunKind::InteractiveAction,
-            source_channel: normalize_inline(source_channel, 32),
-            source_chat_id: normalize_inline(source_chat_id, 160),
-            user_request: normalize_multiline(user_request, MAX_TASK_STEP_INSTRUCTION_CHARS),
-            title,
-            status: run_status,
-            current_step_id,
-            planner_reason: truncate_content_to_max(state.progress.trim(), MAX_TASK_REASON_CHARS)
-                .into_owned(),
-            final_summary: if run_status == TaskRunStatus::Completed {
-                summary.clone()
-            } else {
-                String::new()
-            },
-            failure_reason: blocker.clone(),
-            plan_revision: 1,
-            created_at: now_secs,
-            updated_at: now_secs,
-            finished_at: if run_status.is_active() { 0 } else { now_secs },
-        },
-        plan: TaskPlan {
-            goal,
-            completion_definition: interactive_action_completion_definition(state, user_request),
-            risk_notes: Vec::new(),
-            ordered_steps: vec![TaskStep {
-                step_id: "s01".to_string(),
-                title: step_title,
-                instruction: step_instruction,
-                status: step_status,
-                tool_budget: 1,
-                retry_budget: 1,
-                expected_artifacts: Vec::new(),
-                review_criteria: Vec::new(),
-                attempt_count: 0,
-                last_result_summary: summary,
-                last_review_summary: blocker,
-                started_at: now_secs,
-                finished_at: if run_status.is_active() { 0 } else { now_secs },
-            }],
-        },
-    })
-}
-
-pub fn upsert_interactive_action_run_record(
-    task_run_store: &dyn TaskRunStore,
-    active_run: Option<&TaskRunRecord>,
-    source_channel: &str,
-    source_chat_id: &str,
-    user_request: &str,
-    state: &ExecutionState,
-    now_secs: u64,
-) -> Result<TaskRunRecord> {
-    let run_id = active_run
-        .filter(|record| record.run.kind == TaskRunKind::InteractiveAction)
-        .map(|record| record.run.run_id.clone())
-        .unwrap_or_else(|| {
-            generate_interactive_action_run_id(
-                source_channel,
-                source_chat_id,
-                user_request,
-                now_secs,
-            )
-        });
-    let mut record = build_interactive_action_run_record(
-        &run_id,
-        source_channel,
-        source_chat_id,
-        active_run
-            .map(|record| record.run.user_request.as_str())
-            .unwrap_or(user_request),
-        state,
-        now_secs,
-    )?;
-    if let Some(existing) =
-        active_run.filter(|record| record.run.kind == TaskRunKind::InteractiveAction)
-    {
-        record.run.created_at = existing.run.created_at;
-        record.run.plan_revision = existing.run.plan_revision.saturating_add(1);
-    }
-    task_run_store.upsert(&record)?;
-    Ok(record)
-}
-
 pub fn finalize_foreground_task_run(
     task_run_store: &dyn TaskRunStore,
     record: &TaskRunRecord,
@@ -801,9 +597,6 @@ pub fn render_task_workspace_block(
     artifacts: &[TaskArtifactRecord],
     max_len: usize,
 ) -> Option<String> {
-    if record.run.kind != TaskRunKind::TaskExecution {
-        return None;
-    }
     let mut out = String::new();
     out.push_str("## Task Workspace\n");
     out.push_str("An active task run exists in the task workspace plane.\n");
@@ -869,7 +662,6 @@ pub fn build_task_execution_operator_snapshot(
     for record in task_run_store
         .list_recent(MAX_TASK_OPERATOR_RECENT_RUNS.saturating_mul(2))?
         .into_iter()
-        .filter(|record| record.run.kind == TaskRunKind::TaskExecution)
         .take(MAX_TASK_OPERATOR_RECENT_RUNS)
     {
         let artifact_count = task_artifact_store
@@ -1033,7 +825,6 @@ fn normalize_fixed_id(value: &str, max_chars: usize, stage: &'static str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{ExecutionState, ExecutionStatus};
 
     #[test]
     fn planner_decision_requires_steps_for_task_runs() {
@@ -1113,32 +904,5 @@ mod tests {
         .unwrap();
         assert!(rendered.contains("Current step"));
         assert!(rendered.contains("Recent artifacts"));
-    }
-
-    #[test]
-    fn interactive_action_run_stays_active_when_blocked() {
-        let record = build_interactive_action_run_record(
-            "tr0001abcd0002",
-            "qq",
-            "chat-1",
-            "配置 QQ 邮箱",
-            &ExecutionState {
-                status: ExecutionStatus::Blocked,
-                goal: "配置 QQ 邮箱账户".to_string(),
-                progress: "账户草案已创建".to_string(),
-                blocker: "缺少 provider_kind".to_string(),
-                next_action: "请用户补充 provider_kind".to_string(),
-                updated_at: 12,
-                ..ExecutionState::default()
-            },
-            12,
-        )
-        .expect("interactive action record");
-
-        assert_eq!(record.run.kind, TaskRunKind::InteractiveAction);
-        assert_eq!(record.run.status, TaskRunStatus::Blocked);
-        assert!(record.run.status.is_active());
-        assert_eq!(record.run.failure_reason, "缺少 provider_kind");
-        assert!(render_task_workspace_block(&record, &[], 512).is_none());
     }
 }

@@ -1,7 +1,7 @@
 //! 最近一轮执行账本：记录对话最近一次请求的执行与交付摘要。
 //! Latest turn ledger: execution and delivery summary for the most recent request.
 
-use crate::bus::IngressKind;
+use crate::bus::{IngressKind, MessageTransport, PcMsg};
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
@@ -637,6 +637,14 @@ pub struct TurnLedger {
     #[serde(default)]
     pub ingress: IngressKind,
     #[serde(default)]
+    pub source_transport: MessageTransport,
+    #[serde(default)]
+    pub platform_message_id: String,
+    #[serde(default)]
+    pub platform_event_id: String,
+    #[serde(default)]
+    pub inbound_dedup_key: String,
+    #[serde(default)]
     pub user_preview: String,
     #[serde(default)]
     pub reply_preview: String,
@@ -644,6 +652,10 @@ pub struct TurnLedger {
     pub status: TurnLedgerStatus,
     #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub outbound_source: String,
+    #[serde(default)]
+    pub canonical_reply_source: String,
     #[serde(default)]
     pub started_at_ms: u64,
     #[serde(default)]
@@ -706,18 +718,16 @@ pub trait TurnLedgerStore: Send + Sync {
     }
 }
 
-pub fn build_turn_ledger_start(
-    req_id: &str,
-    channel: &str,
-    ingress: IngressKind,
-    user_content: &str,
-    started_at_ms: u64,
-) -> TurnLedger {
+pub fn build_turn_ledger_start(msg: &PcMsg, started_at_ms: u64) -> TurnLedger {
     TurnLedger {
-        req_id: req_id.to_string(),
-        channel: channel.to_string(),
-        ingress,
-        user_preview: normalize_turn_preview(user_content),
+        req_id: msg.req_id.clone().unwrap_or_default(),
+        channel: msg.channel.to_string(),
+        ingress: msg.ingress,
+        source_transport: msg.source_transport,
+        platform_message_id: msg.platform_message_id.clone(),
+        platform_event_id: msg.platform_event_id.clone(),
+        inbound_dedup_key: msg.inbound_dedup_key.clone(),
+        user_preview: normalize_turn_preview(&msg.content),
         started_at_ms,
         updated_at_ms: started_at_ms,
         status: TurnLedgerStatus::Running,
@@ -1160,19 +1170,30 @@ mod tests {
 
     #[test]
     fn build_turn_ledger_start_keeps_compact_user_preview() {
-        let ledger = build_turn_ledger_start(
-            "req-1",
+        let mut msg = crate::bus::PcMsg::new_inbound(
             "qq_channel",
-            IngressKind::User,
+            "chat-1",
             "  这是一个很长的输入\n\n需要被压成预览  ",
-            123,
-        );
+            false,
+        )
+        .expect("message");
+        msg.req_id = Some("req-1".to_string());
+        msg.source_transport = crate::bus::MessageTransport::Wss;
+        msg.platform_message_id = "msg-1".to_string();
+        msg.platform_event_id = "evt-1".to_string();
+        msg.inbound_dedup_key = "qq_message:msg-1".to_string();
+
+        let ledger = build_turn_ledger_start(&msg, 123);
         assert_eq!(ledger.req_id, "req-1");
         assert_eq!(ledger.channel, "qq_channel");
         assert_eq!(ledger.status, TurnLedgerStatus::Running);
         assert_eq!(ledger.user_preview, "这是一个很长的输入\n\n需要被压成预览");
         assert_eq!(ledger.started_at_ms, 123);
         assert_eq!(ledger.updated_at_ms, 123);
+        assert_eq!(ledger.source_transport, crate::bus::MessageTransport::Wss);
+        assert_eq!(ledger.platform_message_id, "msg-1");
+        assert_eq!(ledger.platform_event_id, "evt-1");
+        assert_eq!(ledger.inbound_dedup_key, "qq_message:msg-1");
     }
 
     #[test]

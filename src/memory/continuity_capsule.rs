@@ -1,6 +1,7 @@
 //! Continuity capsule plane: compact work-continuation contracts.
 //! 连续性 capsule 平面：保存“做到哪、为什么停、下一步是什么”的紧凑工作续接合同。
 
+use crate::agent::ActiveWorkRecord;
 use crate::error::Result;
 use crate::task_execution::{
     current_or_next_step, TaskArtifactRecord, TaskLearningRecord, TaskLearningRoute, TaskRunRecord,
@@ -17,8 +18,8 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use super::{
-    ExecutionState, ExecutionStatus, RecallCandidate, RecallPlane, RecallQuery,
-    RecallScoreBreakdown, RecallSelectionReport, SessionMessage,
+    RecallCandidate, RecallPlane, RecallQuery, RecallScoreBreakdown, RecallSelectionReport,
+    SessionMessage,
 };
 
 pub const REL_PATH_CONTINUITY_CAPSULES: &str = "memory/continuity_capsules.json";
@@ -44,7 +45,7 @@ const CONTINUITY_CAPSULE_INDEX_CANDIDATE_LIMIT: usize = 24;
 
 pub(crate) struct PostReplyContinuityInput<'a> {
     pub run: Option<&'a TaskRunRecord>,
-    pub execution_state: Option<&'a ExecutionState>,
+    pub active_work: Option<&'a ActiveWorkRecord>,
     pub chat_id: &'a str,
     pub channel: &'a str,
     pub now_secs: u64,
@@ -368,7 +369,7 @@ pub(crate) fn build_post_reply_continuity_drafts(
     if let Some(run) = input.run {
         return build_task_continuity_capsule_drafts(
             run,
-            input.execution_state,
+            input.active_work,
             input.chat_id,
             input.channel,
             input.now_secs,
@@ -377,10 +378,10 @@ pub(crate) fn build_post_reply_continuity_drafts(
         );
     }
     input
-        .execution_state
-        .and_then(|state| {
-            build_execution_continuity_capsule_draft(
-                state,
+        .active_work
+        .and_then(|record| {
+            build_active_work_continuity_capsule_draft(
+                record,
                 input.chat_id,
                 input.channel,
                 input.now_secs,
@@ -393,7 +394,7 @@ pub(crate) fn build_post_reply_continuity_drafts(
 
 fn build_task_continuity_capsule_drafts(
     run: &TaskRunRecord,
-    execution_state: Option<&ExecutionState>,
+    active_work: Option<&ActiveWorkRecord>,
     chat_id: &str,
     channel: &str,
     now_secs: u64,
@@ -401,19 +402,19 @@ fn build_task_continuity_capsule_drafts(
     learning_records: &[TaskLearningRecord],
 ) -> Vec<ContinuityCapsuleDraft> {
     let topic = first_non_empty(&[
+        active_work
+            .map(|record| record.title.as_str())
+            .unwrap_or(""),
         run.run.title.as_str(),
         run.plan.goal.as_str(),
-        execution_state
-            .map(|state| state.goal.as_str())
-            .unwrap_or(""),
     ]);
     if topic.is_empty() {
         return Vec::new();
     }
     let step = current_or_next_step(run);
     let summary = first_non_empty(&[
-        execution_state
-            .map(|state| state.progress.as_str())
+        active_work
+            .map(|record| record.progress_summary.as_str())
             .unwrap_or(""),
         step.map(|value| value.last_result_summary.as_str())
             .unwrap_or(""),
@@ -423,8 +424,8 @@ fn build_task_continuity_capsule_drafts(
     let outcome = if is_terminal {
         first_non_empty(&[
             run.run.final_summary.as_str(),
-            execution_state
-                .map(|state| state.last_output.as_str())
+            active_work
+                .map(|record| record.recent_outcome.as_str())
                 .unwrap_or(""),
             step.map(|value| value.last_result_summary.as_str())
                 .unwrap_or(""),
@@ -436,8 +437,8 @@ fn build_task_continuity_capsule_drafts(
         String::new()
     } else {
         first_non_empty(&[
-            execution_state
-                .map(|state| state.next_action.as_str())
+            active_work
+                .map(|record| record.next_action.as_str())
                 .unwrap_or(""),
             step.map(|value| value.instruction.as_str()).unwrap_or(""),
         ])
@@ -445,8 +446,8 @@ fn build_task_continuity_capsule_drafts(
     let mut unresolved = Vec::new();
     push_compact(
         &mut unresolved,
-        execution_state
-            .map(|state| state.blocker.as_str())
+        active_work
+            .map(|record| record.blocker.as_str())
             .unwrap_or(""),
     );
     push_compact(&mut unresolved, run.run.failure_reason.as_str());
@@ -522,59 +523,49 @@ fn build_task_continuity_capsule_drafts(
     }]
 }
 
-fn build_execution_continuity_capsule_draft(
-    state: &ExecutionState,
+fn build_active_work_continuity_capsule_draft(
+    active_work: &ActiveWorkRecord,
     chat_id: &str,
     channel: &str,
     now_secs: u64,
     summary_text: Option<&str>,
 ) -> Option<ContinuityCapsuleDraft> {
-    let topic = first_non_empty(&[state.goal.as_str()]);
+    if !active_work.continuity_open {
+        return None;
+    }
+    let topic = first_non_empty(&[active_work.title.as_str()]);
     if topic.is_empty() {
         return None;
     }
-    let is_done = state.status == ExecutionStatus::Done;
     let mut provenance_refs = vec![
         "source=post_reply_maintenance".to_string(),
-        "execution_state".to_string(),
+        "foreground_work".to_string(),
+        format!("foreground_status={}", active_work.status.label()),
     ];
     if summary_text.is_some() {
         provenance_refs.push("summary_snapshot".to_string());
     }
     Some(ContinuityCapsuleDraft {
-        kind: if is_done {
-            ContinuityCapsuleKind::TaskResolution
-        } else {
-            ContinuityCapsuleKind::HandoffState
-        },
+        kind: ContinuityCapsuleKind::HandoffState,
         scope_kind: ContinuityCapsuleScopeKind::Chat,
         scope_id: chat_id.to_string(),
         source_chat_id: chat_id.to_string(),
         source_channel: channel.to_string(),
         run_id: String::new(),
         topic,
-        summary: first_non_empty(&[state.progress.as_str(), summary_text.unwrap_or_default()]),
-        outcome: if is_done {
-            first_non_empty(&[state.last_output.as_str()])
-        } else {
-            String::new()
-        },
+        summary: first_non_empty(&[
+            active_work.progress_summary.as_str(),
+            summary_text.unwrap_or_default(),
+        ]),
+        outcome: String::new(),
         decisions: Vec::new(),
-        next_step: if is_done {
-            String::new()
-        } else {
-            first_non_empty(&[state.next_action.as_str()])
-        },
-        unresolved: non_empty_list(&[state.blocker.as_str()]),
+        next_step: first_non_empty(&[active_work.next_action.as_str()]),
+        unresolved: non_empty_list(&[active_work.blocker.as_str()]),
         artifact_refs: Vec::new(),
         provenance_refs,
         source: ContinuityCapsuleSource::PostReplyMaintenance,
-        status: if is_done {
-            ContinuityCapsuleStatus::Done
-        } else {
-            ContinuityCapsuleStatus::Active
-        },
-        observed_at: now_secs,
+        status: ContinuityCapsuleStatus::Active,
+        observed_at: active_work.updated_at.max(now_secs),
     })
 }
 

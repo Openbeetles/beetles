@@ -1,8 +1,10 @@
 //! Reply surface contract selection for user-visible answers.
 //! 统一回复面合同：把“这轮该怎么交付”升级成正式类型，而不是散落标签。
 
-use super::request_semantics::{ActionFamily, DisclosureSurface, EvidenceNeed, RequestSemantics};
+use super::request_semantics::{ActionFamily, DisclosureSurface, RequestSemantics};
+use crate::agent::final_reply::reply_has_concrete_anchor;
 use crate::bus::IngressKind;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SurfaceEvidencePolicy {
@@ -30,7 +32,6 @@ pub(crate) enum SurfaceFinalizationPolicy {
     InternalOnly,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReplySurface {
     PublicRuntime,
@@ -41,25 +42,44 @@ pub(crate) enum ReplySurface {
 }
 
 impl ReplySurface {
-    pub(crate) fn for_turn(ingress: IngressKind, semantics: RequestSemantics) -> Self {
+    pub(crate) fn for_prepared_turn(
+        ingress: IngressKind,
+        semantics: RequestSemantics,
+        privacy_boundary_hit: bool,
+    ) -> Self {
         if ingress != IngressKind::User {
             return Self::InternalOnly;
         }
         if semantics.action_family == ActionFamily::TaskExecution {
             return Self::TaskExecution;
         }
-        if semantics.disclosure_surface == DisclosureSurface::Private {
+        if privacy_boundary_hit || semantics.disclosure_surface == DisclosureSurface::Private {
             return Self::PrivateBoundary;
         }
-        if semantics.disclosure_surface == DisclosureSurface::Public
-            && matches!(
-                semantics.evidence_need,
-                EvidenceNeed::PublicRuntime | EvidenceNeed::HostTool
-            )
-        {
-            return Self::PublicRuntime;
-        }
         Self::GovernedConversation
+    }
+
+    pub(crate) fn promote_for_runtime_tools(
+        self,
+        successful_tool_names: &BTreeSet<String>,
+        external_content_used: bool,
+        draft_content: &str,
+    ) -> Self {
+        if self != Self::GovernedConversation
+            || external_content_used
+            || successful_tool_names.is_empty()
+            || !runtime_tool_draft_supports_public_surface(draft_content)
+        {
+            return self;
+        }
+        if successful_tool_names
+            .iter()
+            .all(|tool_name| is_public_runtime_tool(tool_name))
+        {
+            Self::PublicRuntime
+        } else {
+            self
+        }
     }
 
     pub(crate) fn evidence_policy(self) -> SurfaceEvidencePolicy {
@@ -128,10 +148,7 @@ impl ReplySurface {
 
     pub(crate) fn accepts_tool_evidence(self, tool_name: &str) -> bool {
         match self.evidence_policy() {
-            SurfaceEvidencePolicy::PublicRuntimeAuthority => matches!(
-                tool_name,
-                "board_info" | "process" | "network" | "network_scan" | "system_control"
-            ),
+            SurfaceEvidencePolicy::PublicRuntimeAuthority => is_public_runtime_tool(tool_name),
             SurfaceEvidencePolicy::GovernedConversationContext
             | SurfaceEvidencePolicy::PrivateBoundaryContext
             | SurfaceEvidencePolicy::TaskWorkspaceAuthority => true,
@@ -148,6 +165,73 @@ impl ReplySurface {
             Self::InternalOnly => "internal_only",
         }
     }
+}
+
+fn runtime_tool_draft_supports_public_surface(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty()
+        || looks_like_boundary_or_input_request(trimmed)
+        || looks_like_future_action_narration(trimmed)
+    {
+        return false;
+    }
+    reply_has_concrete_anchor(trimmed)
+}
+
+fn is_public_runtime_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "board_info" | "process" | "network" | "network_scan" | "system_control"
+    )
+}
+
+fn looks_like_boundary_or_input_request(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    content.contains('?')
+        || content.contains('？')
+        || content.contains("请先提供")
+        || content.contains("请提供")
+        || content.contains("请把")
+        || content.contains("请发")
+        || content.contains("无法继续")
+        || content.contains("不能继续")
+        || content.contains("内部")
+        || content.contains("不对外公开")
+        || content.contains("不公开")
+        || lower.contains("please provide")
+        || lower.contains("please send")
+        || lower.contains("cannot continue")
+        || lower.contains("can't continue")
+        || lower.contains("internal")
+        || lower.contains("not disclose")
+        || lower.contains("not public")
+}
+
+fn looks_like_future_action_narration(content: &str) -> bool {
+    let trimmed = content.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    [
+        "我先整理",
+        "我先检查",
+        "我先看看",
+        "我先处理",
+        "让我继续",
+        "让我先",
+        "现在我先",
+        "继续配置",
+        "继续处理",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
+        || [
+            "let me ",
+            "i need to ",
+            "now i need to ",
+            "i will ",
+            "i'll ",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -174,31 +258,74 @@ mod tests {
     }
 
     #[test]
-    fn public_runtime_surface_maps_from_public_runtime_evidence() {
-        let surface = ReplySurface::for_turn(
+    fn public_runtime_is_not_selected_from_request_semantics_alone() {
+        let surface = ReplySurface::for_prepared_turn(
             IngressKind::User,
             semantics(DisclosureSurface::Public, EvidenceNeed::PublicRuntime),
+            false,
         );
-        assert_eq!(surface, ReplySurface::PublicRuntime);
+        assert_eq!(surface, ReplySurface::GovernedConversation);
     }
 
     #[test]
-    fn private_boundary_surface_maps_from_private_disclosure() {
-        let surface = ReplySurface::for_turn(
+    fn internal_only_surface_maps_from_system_ingress() {
+        let surface = ReplySurface::for_prepared_turn(
+            IngressKind::System,
+            semantics(DisclosureSurface::Public, EvidenceNeed::PublicRuntime),
+            false,
+        );
+        assert_eq!(surface, ReplySurface::InternalOnly);
+        assert_eq!(surface.as_str(), "internal_only");
+    }
+
+    #[test]
+    fn private_boundary_surface_maps_from_governance_hit() {
+        let surface = ReplySurface::for_prepared_turn(
             IngressKind::User,
-            semantics(DisclosureSurface::Private, EvidenceNeed::CanonicalMemory),
+            semantics(DisclosureSurface::Governed, EvidenceNeed::CanonicalMemory),
+            true,
         );
         assert_eq!(surface, ReplySurface::PrivateBoundary);
     }
 
     #[test]
-    fn internal_only_surface_maps_from_system_ingress() {
-        let surface = ReplySurface::for_turn(
-            IngressKind::System,
-            semantics(DisclosureSurface::Public, EvidenceNeed::PublicRuntime),
+    fn public_runtime_surface_is_promoted_only_after_runtime_tools_succeed() {
+        let mut successful_tool_names = BTreeSet::new();
+        successful_tool_names.insert("board_info".to_string());
+        let surface = ReplySurface::GovernedConversation.promote_for_runtime_tools(
+            &successful_tool_names,
+            false,
+            "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。",
         );
-        assert_eq!(surface, ReplySurface::InternalOnly);
-        assert_eq!(surface.as_str(), "internal_only");
+        assert_eq!(surface, ReplySurface::PublicRuntime);
+
+        successful_tool_names.insert("mail".to_string());
+        let surface = ReplySurface::GovernedConversation.promote_for_runtime_tools(
+            &successful_tool_names,
+            false,
+            "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。",
+        );
+        assert_eq!(surface, ReplySurface::GovernedConversation);
+    }
+
+    #[test]
+    fn public_runtime_surface_does_not_promote_vague_or_boundary_tool_drafts() {
+        let mut successful_tool_names = BTreeSet::new();
+        successful_tool_names.insert("board_info".to_string());
+
+        let vague = ReplySurface::GovernedConversation.promote_for_runtime_tools(
+            &successful_tool_names,
+            false,
+            "我先整理一下当前状态。",
+        );
+        assert_eq!(vague, ReplySurface::GovernedConversation);
+
+        let boundary = ReplySurface::GovernedConversation.promote_for_runtime_tools(
+            &successful_tool_names,
+            false,
+            "系统信息属于内部运行机制，这部分内容不对外公开。",
+        );
+        assert_eq!(boundary, ReplySurface::GovernedConversation);
     }
 
     #[test]

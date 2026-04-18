@@ -22,8 +22,8 @@ pub use active_work::{
     classify_background_job_disposition, idle_self_runtime_scheduler_block_reason_with_live_state,
     live_foreground_state_for_chat, ActiveWorkKind, ActiveWorkRecord, ActiveWorkStore,
     BackgroundDisposition, DetachedJobKind, DetachedWorkKey, DetachedWorkRecord, DetachedWorkState,
-    DetachedWorkStore, DetachedWorkUpsertOutcome, DetachedWorkWake, LiveForegroundState,
-    REL_PATH_ACTIVE_WORKS, REL_PATH_DETACHED_WORKS,
+    DetachedWorkStore, DetachedWorkUpsertOutcome, DetachedWorkWake, ForegroundWorkStatus,
+    LiveForegroundState, REL_PATH_ACTIVE_WORKS, REL_PATH_DETACHED_WORKS,
 };
 pub(crate) use active_work::{
     current_unix_ms, due_detached_work_records, has_meaningful_foreground_work_for_chat,

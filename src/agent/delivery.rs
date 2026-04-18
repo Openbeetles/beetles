@@ -5,12 +5,9 @@ use crate::memory::MemorySystemKind;
 use crate::metrics;
 use crate::tools::{ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
 
 const EDIT_THROTTLE_MS: u64 = 500;
 const MAX_EDIT_FAILURES: u8 = 3;
-const MAX_QUEUED_VISIBLE_UPDATES: u8 = 4;
 const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
@@ -53,7 +50,7 @@ pub(crate) struct DeliverySession<'a> {
 enum DeliveryMode<'a> {
     Silent,
     Edit(EditDelivery<'a>),
-    Queued(QueuedDelivery<'a>),
+    Queued(QueuedDelivery),
 }
 
 struct EditDelivery<'a> {
@@ -68,16 +65,9 @@ struct EditDelivery<'a> {
     report: DeliveryReport,
 }
 
-struct QueuedDelivery<'a> {
-    outbound_tx: &'a OutboundTx,
-    channel: &'a std::sync::Arc<str>,
-    chat_id: &'a std::sync::Arc<str>,
-    is_group: bool,
-    req_id: &'a str,
+struct QueuedDelivery {
     lifecycle: DeliveryLifecycle,
-    last_visible_text: String,
     report: DeliveryReport,
-    shared: Arc<QueuedDeliveryShared>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,10 +86,6 @@ impl DeliveryLifecycle {
 pub(crate) enum ToolIntentDelivery {
     Suppressed,
     VisibleUpdate,
-}
-
-struct QueuedDeliveryShared {
-    visible_updates_sent: AtomicU8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,17 +160,8 @@ impl<'a> DeliverySession<'a> {
             })
         } else {
             DeliveryMode::Queued(QueuedDelivery {
-                outbound_tx,
-                channel: &msg.channel,
-                chat_id: &msg.chat_id,
-                is_group: msg.is_group,
-                req_id,
                 lifecycle: DeliveryLifecycle::Open,
-                last_visible_text: String::new(),
                 report: DeliveryReport::default(),
-                shared: Arc::new(QueuedDeliveryShared {
-                    visible_updates_sent: AtomicU8::new(0),
-                }),
             })
         };
         Self {
@@ -211,6 +188,15 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
+    fn emit_supplemental_visible_update(&mut self, text: &str, kind: VisibleUpdateKind) {
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => delivery.force_visible_update(text, kind),
+            // Append-only channels cannot retract these mid-turn status pulses. Treat them as
+            // internal telemetry only and reserve user-visible delivery for the canonical reply.
+            DeliveryMode::Queued(_) | DeliveryMode::Silent => {}
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn emit_progress(&mut self, content: &str) {
         if !self.policy.supports_current_supplemental {
@@ -220,15 +206,7 @@ impl<'a> DeliverySession<'a> {
         if text.is_empty() {
             return;
         }
-        match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, VisibleUpdateKind::PlannerProgress)
-            }
-            DeliveryMode::Queued(ref mut delivery) => {
-                delivery.emit(&text, VisibleUpdateKind::PlannerProgress)
-            }
-            DeliveryMode::Silent => {}
-        }
+        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::PlannerProgress);
     }
 
     pub(crate) fn emit_task_planner_progress(&mut self) {
@@ -242,15 +220,7 @@ impl<'a> DeliverySession<'a> {
         if text.is_empty() {
             return;
         }
-        match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, VisibleUpdateKind::PlannerProgress)
-            }
-            DeliveryMode::Queued(ref mut delivery) => {
-                delivery.emit(&text, VisibleUpdateKind::PlannerProgress)
-            }
-            DeliveryMode::Silent => {}
-        }
+        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::PlannerProgress);
     }
 
     pub(crate) fn emit_tool_progress(&mut self, name: &str, index: usize, total: usize) {
@@ -266,15 +236,7 @@ impl<'a> DeliverySession<'a> {
         if text.is_empty() {
             return;
         }
-        match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, VisibleUpdateKind::ToolProgress)
-            }
-            DeliveryMode::Queued(ref mut delivery) => {
-                delivery.emit(&text, VisibleUpdateKind::ToolProgress)
-            }
-            DeliveryMode::Silent => {}
-        }
+        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::ToolProgress);
     }
 
     pub(crate) fn emit_task_action_progress(&mut self, kind: TaskActionProgressKind) {
@@ -288,15 +250,7 @@ impl<'a> DeliverySession<'a> {
         if text.is_empty() {
             return;
         }
-        match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, VisibleUpdateKind::ActionProgress)
-            }
-            DeliveryMode::Queued(ref mut delivery) => {
-                delivery.emit(&text, VisibleUpdateKind::ActionProgress)
-            }
-            DeliveryMode::Silent => {}
-        }
+        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::ActionProgress);
     }
 
     pub(crate) fn emit_foreground_work_resumed(&mut self) {
@@ -314,15 +268,7 @@ impl<'a> DeliverySession<'a> {
         if text.is_empty() {
             return;
         }
-        match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, VisibleUpdateKind::TerminalProgress)
-            }
-            DeliveryMode::Queued(ref mut delivery) => {
-                delivery.emit(&text, VisibleUpdateKind::TerminalProgress)
-            }
-            DeliveryMode::Silent => {}
-        }
+        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::TerminalProgress);
     }
 
     pub(crate) fn emit_foreground_work_blocked(&mut self) {
@@ -342,8 +288,8 @@ impl<'a> DeliverySession<'a> {
                 delivery.force_visible_update(&text, VisibleUpdateKind::PartialDraft)
             }
             // Non-edit channels cannot revise previously sent text, so exposing ToolUse-time
-            // assistant drafts here tends to leak unfinished step plans to the user.
-            // Keep queued delivery runtime-controlled: typed progress updates + final answer.
+            // drafts or mid-turn status copy here would leak unfinished plans. Reserve queued
+            // delivery for the canonical final answer only.
             DeliveryMode::Queued(_) => {}
             DeliveryMode::Silent => {}
         }
@@ -576,68 +522,13 @@ impl<'a> EditDelivery<'a> {
     }
 }
 
-impl<'a> QueuedDelivery<'a> {
-    fn emit(&mut self, content: &str, kind: VisibleUpdateKind) {
-        if self.lifecycle.is_closed() {
-            return;
-        }
-        let normalized = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
-        if normalized.is_empty() || normalized == self.last_visible_text {
-            return;
-        }
-        record_visible_update_kind(&mut self.report, kind);
-        if !self.try_claim_visible_slot() {
-            return;
-        }
-        match send_visible_update(
-            self.outbound_tx,
-            self.channel,
-            self.chat_id,
-            self.is_group,
-            self.req_id,
-            &normalized,
-        ) {
-            Ok(()) => {
-                self.last_visible_text = normalized;
-                self.report.visible_text_updates_sent =
-                    self.report.visible_text_updates_sent.saturating_add(1);
-            }
-            Err(()) => {
-                self.shared
-                    .visible_updates_sent
-                    .fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-    }
-
+impl QueuedDelivery {
     fn finalize(&mut self) -> bool {
         match self.lifecycle {
             DeliveryLifecycle::Finalized => false,
             DeliveryLifecycle::Open => {
                 self.lifecycle = DeliveryLifecycle::Finalized;
                 false
-            }
-        }
-    }
-
-    fn try_claim_visible_slot(&self) -> bool {
-        loop {
-            let current = self.shared.visible_updates_sent.load(Ordering::Relaxed);
-            if current >= MAX_QUEUED_VISIBLE_UPDATES {
-                return false;
-            }
-            if self
-                .shared
-                .visible_updates_sent
-                .compare_exchange(
-                    current,
-                    current.saturating_add(1),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                return true;
             }
         }
     }
@@ -751,58 +642,6 @@ fn normalize_visible_update(content: &str, max_chars: usize) -> String {
     truncate_content_to_max(content.trim(), max_chars)
         .trim()
         .to_string()
-}
-
-fn send_visible_update(
-    outbound_tx: &OutboundTx,
-    channel: &std::sync::Arc<str>,
-    chat_id: &std::sync::Arc<str>,
-    is_group: bool,
-    req_id: &str,
-    content: &str,
-) -> std::result::Result<(), ()> {
-    let msg = match PcMsg::new_outbound_for_chat(
-        channel,
-        chat_id,
-        content,
-        Some(req_id.to_string()),
-        is_group,
-    ) {
-        Ok(msg) => msg,
-        Err(error) => {
-            log::error!(
-                "[agent_delivery] visible update rejected channel={} chat_id={}: {}",
-                channel,
-                chat_id,
-                error
-            );
-            return Err(());
-        }
-    };
-    match outbound_tx.try_send(msg) {
-        Ok(()) => {
-            metrics::record_message_out();
-            Ok(())
-        }
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::warn!(
-                "[agent_delivery] visible update dropped: outbound queue full channel={} chat_id={}",
-                channel,
-                chat_id
-            );
-            Err(())
-        }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::error!(
-                "[agent_delivery] visible update dropped: outbound disconnected channel={} chat_id={}",
-                channel,
-                chat_id
-            );
-            Err(())
-        }
-    }
 }
 
 fn send_visible_update_explicit(
@@ -957,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_emits_distinct_updates_with_cap() {
+    fn queued_delivery_suppresses_test_progress_for_current_chat() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -979,11 +818,8 @@ mod tests {
         delivery.emit_progress("第四步");
         delivery.emit_progress("第五步");
 
-        let mut contents = Vec::new();
-        while let Ok(msg) = outbound_rx.try_recv() {
-            contents.push(msg.content);
-        }
-        assert_eq!(contents, vec!["第一步", "第三步", "第四步", "第五步"]);
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report(), DeliveryReport::default());
     }
 
     #[test]
@@ -1245,38 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_tool_progress_uses_typed_progress_copy() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        delivery.emit_tool_progress("board_info", 0, 1);
-
-        let outbound = outbound_rx.try_recv().expect("tool pulse");
-        assert_eq!(outbound.content, "正在执行 board_info，继续推进 🪲");
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                progress_updates_sent: 1,
-                tool_progress_updates_sent: 1,
-                visible_text_updates_sent: 1,
-                ..DeliveryReport::default()
-            }
-        );
-    }
-
-    #[test]
-    fn queued_delivery_task_planner_progress_uses_typed_progress_contract() {
+    fn queued_delivery_suppresses_structured_progress_contracts_for_current_chat() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1292,84 +1097,16 @@ mod tests {
         );
 
         delivery.emit_task_planner_progress();
-
-        let outbound = outbound_rx.try_recv().expect("planner pulse");
-        assert_eq!(outbound.content, "正在判断当前动作路径，继续推进 🪲");
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                progress_updates_sent: 1,
-                planner_progress_updates_sent: 1,
-                visible_text_updates_sent: 1,
-                ..DeliveryReport::default()
-            }
-        );
-    }
-
-    #[test]
-    fn queued_delivery_task_action_progress_uses_typed_progress_contract() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        delivery.emit_task_action_progress(TaskActionProgressKind::Resumed);
-
-        let outbound = outbound_rx.try_recv().expect("action pulse");
-        assert_eq!(outbound.content, "已恢复当前任务，继续推进 🪲");
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                progress_updates_sent: 1,
-                action_progress_updates_sent: 1,
-                visible_text_updates_sent: 1,
-                ..DeliveryReport::default()
-            }
-        );
-    }
-
-    #[test]
-    fn queued_delivery_started_action_progress_uses_action_progress_contract() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
+        delivery.emit_tool_progress("board_info", 0, 1);
         delivery.emit_task_action_progress(TaskActionProgressKind::Started);
+        delivery.emit_task_terminal_progress(TaskTerminalProgressKind::PartialComplete);
 
-        let outbound = outbound_rx.try_recv().expect("action pulse");
-        assert_eq!(outbound.content, "已进入任务执行，继续推进 🪲");
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                progress_updates_sent: 1,
-                action_progress_updates_sent: 1,
-                visible_text_updates_sent: 1,
-                ..DeliveryReport::default()
-            }
-        );
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report(), DeliveryReport::default());
     }
 
     #[test]
-    fn action_progress_reports_no_implicit_presence_pulses() {
+    fn queued_delivery_action_progress_stays_without_presence_pulses() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1385,72 +1122,10 @@ mod tests {
         );
 
         delivery.emit_foreground_work_resumed();
-
-        let outbound = outbound_rx.try_recv().expect("action pulse");
-        assert_eq!(outbound.content, "已恢复当前任务，继续推进 🪲");
-        assert_eq!(delivery.report().presence_pulses_sent, 0);
-        assert_eq!(delivery.report().action_progress_updates_sent, 1);
-    }
-
-    #[test]
-    fn queued_delivery_task_terminal_progress_uses_typed_progress_contract() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
-        delivery.emit_task_terminal_progress(TaskTerminalProgressKind::PartialComplete);
-
-        let outbound = outbound_rx.try_recv().expect("terminal pulse");
-        assert_eq!(outbound.content, "当前任务已部分完成，正在整理结果 🪲");
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                progress_updates_sent: 1,
-                terminal_progress_updates_sent: 1,
-                visible_text_updates_sent: 1,
-                ..DeliveryReport::default()
-            }
-        );
-    }
-
-    #[test]
-    fn queued_delivery_foreground_work_blocked_uses_terminal_progress_contract() {
-        let _guard = delayed_task_test_lock();
-        reset_delayed_tasks();
-        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
-        let mut delivery = DeliverySession::new(
-            &msg,
-            "req-1",
-            &outbound_tx,
-            None,
-            Some(capability_entry("qq_channel", true, true, false)),
-            MemorySystemKind::LinuxFull,
-            UiLocale::Zh,
-        );
-
         delivery.emit_foreground_work_blocked();
 
-        let outbound = outbound_rx.try_recv().expect("terminal pulse");
-        assert_eq!(outbound.content, "当前任务已阻塞，正在整理结果 🪲");
-        assert_eq!(
-            delivery.report(),
-            DeliveryReport {
-                progress_updates_sent: 1,
-                terminal_progress_updates_sent: 1,
-                visible_text_updates_sent: 1,
-                ..DeliveryReport::default()
-            }
-        );
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().presence_pulses_sent, 0);
+        assert_eq!(delivery.report(), DeliveryReport::default());
     }
 }

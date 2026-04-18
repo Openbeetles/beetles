@@ -10,6 +10,29 @@ use std::sync::Arc;
 pub use crate::constants::{DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 pub use crate::util::{truncate_content_to_max, truncate_to_byte_len};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageTransport {
+    #[default]
+    Unknown,
+    Wss,
+    Webhook,
+    Poll,
+    Internal,
+}
+
+impl MessageTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Wss => "wss",
+            Self::Webhook => "webhook",
+            Self::Poll => "poll",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 /// 总线消息。入队前需校验 `content.len() <= MAX_CONTENT_LEN`。可序列化供 pending_retry 持久化。
 /// channel/chat_id 用 Arc<str> 减少 clone 开销。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +57,18 @@ pub struct PcMsg {
     /// 消息入队时间（Unix ms）；用于排队等待时延与 cron 端到端时延基线。
     #[serde(default = "current_unix_ms")]
     pub enqueue_ts_ms: u64,
+    /// 入站 transport 来源，仅用于 provenance / dedup / audit。
+    #[serde(default)]
+    pub source_transport: MessageTransport,
+    /// 平台侧消息 ID（若有）。
+    #[serde(default)]
+    pub platform_message_id: String,
+    /// 平台侧事件 ID（若有）。
+    #[serde(default)]
+    pub platform_event_id: String,
+    /// 入站去重键（若有）。
+    #[serde(default)]
+    pub inbound_dedup_key: String,
     /// 是否来自群组（group/supergroup）；用于 system 注入与 SILENT 约定。
     pub is_group: bool,
 }
@@ -84,7 +119,10 @@ impl PcMsg {
         chat_id: impl Into<String>,
         content: impl Into<String>,
     ) -> Result<Self> {
-        Self::new_inbound_with_ingress(channel, chat_id, content, false, IngressKind::System)
+        let mut msg =
+            Self::new_inbound_with_ingress(channel, chat_id, content, false, IngressKind::System)?;
+        msg.source_transport = MessageTransport::Internal;
+        Ok(msg)
     }
 
     /// 入站消息用；与 `new` 相同但可指定 is_group（群聊/话题群为 true）。
@@ -123,6 +161,10 @@ impl PcMsg {
             req_id: None,
             ingress,
             enqueue_ts_ms: current_unix_ms(),
+            source_transport: MessageTransport::Unknown,
+            platform_message_id: String::new(),
+            platform_event_id: String::new(),
+            inbound_dedup_key: String::new(),
             is_group,
         })
     }
@@ -153,19 +195,46 @@ impl PcMsg {
             req_id,
             ingress: IngressKind::User,
             enqueue_ts_ms: current_unix_ms(),
+            source_transport: MessageTransport::Unknown,
+            platform_message_id: String::new(),
+            platform_event_id: String::new(),
+            inbound_dedup_key: String::new(),
             is_group,
         })
     }
 
     /// 基于当前入站消息构造回给同一会话的出站消息，保留群聊语义与 req_id。
     pub fn new_outbound_reply_to(source: &PcMsg, content: impl Into<String>) -> Result<Self> {
-        Self::new_outbound_for_chat(
+        let mut reply = Self::new_outbound_for_chat(
             &source.channel,
             &source.chat_id,
             content,
             source.req_id.clone(),
             source.is_group,
-        )
+        )?;
+        reply.copy_inbound_provenance_from(source);
+        Ok(reply)
+    }
+
+    pub fn with_inbound_provenance(
+        mut self,
+        source_transport: MessageTransport,
+        platform_message_id: impl Into<String>,
+        platform_event_id: impl Into<String>,
+        inbound_dedup_key: impl Into<String>,
+    ) -> Self {
+        self.source_transport = source_transport;
+        self.platform_message_id = platform_message_id.into();
+        self.platform_event_id = platform_event_id.into();
+        self.inbound_dedup_key = inbound_dedup_key.into();
+        self
+    }
+
+    fn copy_inbound_provenance_from(&mut self, source: &PcMsg) {
+        self.source_transport = source.source_transport;
+        self.platform_message_id = source.platform_message_id.clone();
+        self.platform_event_id = source.platform_event_id.clone();
+        self.inbound_dedup_key = source.inbound_dedup_key.clone();
     }
 }
 
@@ -320,6 +389,10 @@ mod tests {
         let mut inbound = PcMsg::new_inbound("qq_channel", "group:chat-1", "hello", true)
             .expect("inbound message");
         inbound.req_id = Some("req-1".to_string());
+        inbound.source_transport = MessageTransport::Wss;
+        inbound.platform_message_id = "msg-1".to_string();
+        inbound.platform_event_id = "evt-1".to_string();
+        inbound.inbound_dedup_key = "qq_message:msg-1".to_string();
 
         let outbound = PcMsg::new_outbound_reply_to(&inbound, "world").expect("outbound reply");
 
@@ -329,6 +402,10 @@ mod tests {
         assert_eq!(outbound.req_id.as_deref(), Some("req-1"));
         assert_eq!(outbound.ingress, IngressKind::User);
         assert!(outbound.is_group);
+        assert_eq!(outbound.source_transport, MessageTransport::Wss);
+        assert_eq!(outbound.platform_message_id, "msg-1");
+        assert_eq!(outbound.platform_event_id, "evt-1");
+        assert_eq!(outbound.inbound_dedup_key, "qq_message:msg-1");
     }
 
     #[test]

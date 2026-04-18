@@ -227,9 +227,7 @@ fn select_intent_strategy(
             || input.active_task_context_present
             || matches!(
                 input.request_semantics.action_family,
-                ActionFamily::ActionRequest
-                    | ActionFamily::ActiveAction
-                    | ActionFamily::TaskExecution
+                ActionFamily::ActiveAction | ActionFamily::TaskExecution
             ))
     {
         let kind = select_structured_tool_reasoning_kind(input);
@@ -536,7 +534,7 @@ mod tests {
             request_semantics: semantics(
                 EvidenceNeed::HostTool,
                 ExecutionPreference::ToolFirst,
-                ActionFamily::ActionRequest,
+                ActionFamily::ActiveAction,
             ),
             deliberation_gate: &TurnDeliberationGate {
                 class: crate::memory::TurnDeliberationClass::HardReasoning,

@@ -38,6 +38,7 @@ const START_MENU_GAP_PX = 18;
 const DOCK_MAGNIFY_SCALE = [1.26, 1.14, 1.06];
 const DOCK_MAGNIFY_LIFT_PX = [14, 7, 2];
 const START_MENU_TILE_MIN_HEIGHT = 120;
+const TASKBAR_TRAY_CONTROL_SIZE = 36;
 
 function getDockMotion(index: number, hoveredIndex: number | null) {
   if (hoveredIndex === null) {
@@ -95,7 +96,12 @@ function collectStartMenuFocusables(root: HTMLElement | null): HTMLElement[] {
 }
 
 /** Windows 风格任务栏：Beetle OS 徽标为「开始」、中部固定快捷方式、右侧托盘（连接状态）。 */
-export function Taskbar() {
+interface TaskbarProps {
+  onOpenSettings?: () => void;
+}
+
+/** Windows 风格任务栏：Beetle OS 徽标为「开始」、中部固定快捷方式、右侧托盘（连接状态）。 */
+export function Taskbar({ onOpenSettings }: TaskbarProps) {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
@@ -122,6 +128,27 @@ export function Taskbar() {
   const canNavigate = (path: string) =>
     path === "/device" || (deviceConnected && !needDeviceHint);
   const startOpen = Boolean(startAnchor);
+  const trayControlSurfaceSx = {
+    border: "1px solid var(--border-subtle)",
+    boxShadow: "var(--os3d-pedestal-lift-stack)",
+    borderRadius: "var(--radius-chip)",
+    backgroundColor: "var(--surface)",
+    transition:
+      "background-color var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-emphasized), transform var(--transition-duration) var(--ease-emphasized)",
+    "&:hover": {
+      backgroundColor: "color-mix(in srgb, var(--primary) 8%, var(--surface))",
+      borderColor: "color-mix(in srgb, var(--primary) 26%, var(--border))",
+      boxShadow: "var(--os3d-selection-pill-stack)",
+      transform: "translateY(-0.5px)",
+    },
+    "&:active": {
+      transform: "translateY(0)",
+    },
+    "@media (prefers-reduced-motion: reduce)": {
+      transition: "none",
+      "&:hover": { transform: "none" },
+    },
+  } as const;
 
   const closeStart = () => setStartAnchor(null);
 
@@ -946,6 +973,29 @@ export function Taskbar() {
           maxWidth: { xs: 120, sm: 200 },
         }}
       >
+        {onOpenSettings ? (
+          <Tooltip title={t("settings.open")} placement="top">
+            <IconButton
+              size="small"
+              onClick={onOpenSettings}
+              aria-label={t("settings.open")}
+              sx={{
+                ...trayControlSurfaceSx,
+                flexShrink: 0,
+                width: TASKBAR_TRAY_CONTROL_SIZE,
+                height: TASKBAR_TRAY_CONTROL_SIZE,
+                color: "var(--foreground)",
+                p: 0.375,
+              }}
+            >
+              <Os3dIcon
+                src={OS_ICON_SHELL.preferences}
+                variant="inline"
+                sx={{ width: 24, height: 24 }}
+              />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         <Tooltip
           title={
             deviceConnected && baseUrl
@@ -969,14 +1019,12 @@ export function Taskbar() {
             }}
             aria-label={t("device.pageTitle")}
             sx={{
-              border: "1px solid var(--border-subtle)",
-              boxShadow: "var(--os3d-pedestal-lift-stack)",
-              borderRadius: "var(--radius-chip)",
-              px: 1,
-              py: 0.5,
+              ...trayControlSurfaceSx,
+              px: 1.1,
+              py: 0,
+              minHeight: TASKBAR_TRAY_CONTROL_SIZE,
               minWidth: 0,
               maxWidth: "100%",
-              backgroundColor: "var(--surface)",
               cursor: "pointer",
               font: "inherit",
               color: "inherit",
@@ -1003,6 +1051,7 @@ export function Taskbar() {
                 fontFamily: "var(--font-mono)",
                 fontSize: "var(--font-size-caption)",
                 color: "var(--text-tertiary)",
+                lineHeight: 1,
               }}
             >
               {deviceConnected && baseUrl

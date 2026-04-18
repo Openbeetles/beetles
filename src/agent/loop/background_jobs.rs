@@ -25,7 +25,6 @@ fn append_post_reply_workflow_audit(
 
 pub(super) fn enqueue_post_reply_maintenance_job(
     active_work_store: &dyn crate::agent::ActiveWorkStore,
-    execution_state_store: &dyn crate::memory::ExecutionStateStore,
     detached_work_store: &dyn crate::agent::DetachedWorkStore,
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
@@ -41,7 +40,6 @@ pub(super) fn enqueue_post_reply_maintenance_job(
     let _ = system_inbound_tx;
     match crate::agent::has_meaningful_foreground_work_for_chat(
         active_work_store,
-        execution_state_store,
         msg.chat_id.as_ref(),
     ) {
         Ok(true) => {
@@ -312,6 +310,7 @@ fn run_post_reply_maintenance_job(
             memory_store: config.runtime.memory_store.as_ref(),
             session_summary_store: config.runtime.session_summary_store.as_ref(),
             execution_state_store: config.runtime.execution_state_store.as_ref(),
+            active_work_store: config.runtime.active_work_store.as_ref(),
             long_term_memory_store: config.runtime.long_term_memory_store.as_ref(),
             continuity_capsule_store: config.runtime.continuity_capsule_store.as_ref(),
             extraction_state_store: config
@@ -1113,7 +1112,6 @@ fn detached_work_defer_reason(
     }
     let live = crate::agent::live_foreground_state_for_chat(
         config.runtime.active_work_store.as_ref(),
-        config.runtime.execution_state_store.as_ref(),
         key.owner_chat_id.as_str(),
     )?;
     Ok(
@@ -1471,7 +1469,7 @@ mod tests {
     };
     use crate::bus::PcMsg;
     use crate::error::Result;
-    use crate::memory::{ExecutionState, ExecutionStatus, PromptRecallIntent};
+    use crate::memory::PromptRecallIntent;
     use crate::runtime::system_work::{CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME};
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -1612,27 +1610,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct StubExecutionStateStore {
-        value: Mutex<Option<ExecutionState>>,
-    }
-
-    impl crate::memory::ExecutionStateStore for StubExecutionStateStore {
-        fn get(&self, _chat_id: &str) -> Result<Option<ExecutionState>> {
-            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
-        }
-
-        fn set(&self, _chat_id: &str, state: &ExecutionState) -> Result<()> {
-            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
-            Ok(())
-        }
-
-        fn clear(&self, _chat_id: &str) -> Result<()> {
-            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            Ok(())
-        }
-    }
-
     #[test]
     fn retry_later_keeps_detached_work_record() {
         let store = StubDetachedWorkStore::default();
@@ -1693,23 +1670,22 @@ mod tests {
             value: Mutex::new(Some(ActiveWorkRecord {
                 kind: ActiveWorkKind::InteractiveAction,
                 title: "配置 QQ 邮箱账户".to_string(),
-                state: ExecutionState {
-                    status: ExecutionStatus::Blocked,
-                    goal: "配置 QQ 邮箱账户".to_string(),
-                    blocker: "缺少 SMTP 授权码".to_string(),
-                    next_action: "等待用户补充 SMTP 授权码".to_string(),
-                    updated_at: 9,
-                    ..ExecutionState::default()
-                },
+                status: crate::agent::ForegroundWorkStatus::AwaitingUser,
+                continuity_open: true,
+                blocks_background_llm: true,
+                progress_summary: String::new(),
+                blocker: "缺少 SMTP 授权码".to_string(),
+                next_action: "等待用户补充 SMTP 授权码".to_string(),
+                recent_outcome: String::new(),
+                active_artifact_refs: Vec::new(),
+                updated_at: 9,
             })),
         };
-        let execution_state_store = StubExecutionStateStore::default();
         let (system_inbound_tx, _system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
 
         let scheduled = enqueue_post_reply_maintenance_job(
             &active_work_store,
-            &execution_state_store,
             &store,
             &system_inbound_tx,
             &msg,
@@ -1733,25 +1709,14 @@ mod tests {
     }
 
     #[test]
-    fn post_reply_maintenance_is_not_scheduled_while_pending_execution_state_exists() {
+    fn post_reply_maintenance_is_not_blocked_by_execution_state_projection_alone() {
         let store = StubDetachedWorkStore::default();
         let active_work_store = StubActiveWorkStore::default();
-        let execution_state_store = StubExecutionStateStore {
-            value: Mutex::new(Some(ExecutionState {
-                status: ExecutionStatus::Blocked,
-                goal: "配置 QQ 邮箱账户".to_string(),
-                blocker: "缺少 SMTP 授权码".to_string(),
-                next_action: "等待用户补充 SMTP 授权码".to_string(),
-                updated_at: 9,
-                ..ExecutionState::default()
-            })),
-        };
         let (system_inbound_tx, _system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
 
         let scheduled = enqueue_post_reply_maintenance_job(
             &active_work_store,
-            &execution_state_store,
             &store,
             &system_inbound_tx,
             &msg,
@@ -1765,12 +1730,12 @@ mod tests {
             "final_answer",
         );
 
-        assert!(!scheduled);
+        assert!(scheduled);
         let key = DetachedWorkKey::new(
             "qq_channel",
             "chat-1",
             DetachedJobKind::PostReplyMaintenance,
         );
-        assert!(store.get(&key).expect("load").is_none());
+        assert!(store.get(&key).expect("load").is_some());
     }
 }
