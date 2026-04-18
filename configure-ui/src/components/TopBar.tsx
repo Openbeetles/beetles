@@ -6,35 +6,62 @@ import Tooltip from "@mui/material/Tooltip";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { BeetleIcon } from "./BeetleIcon";
+import { Os3dIcon } from "./Os3dIcon";
 import { PageHeader } from "./PageHeader";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { TOP_BAR_MIN_HEIGHT } from "../config/layout";
+import { NAV_ITEMS } from "../config/navItems";
 import { SHELL_TITLEBAR_CHROME_SX } from "../theme/shellChromeSurface";
-import { isMacTauriWindow } from "../runtime/desktopEnvironment";
+import {
+  isMacTauriWindow,
+  isTauriRuntime,
+} from "../runtime/desktopEnvironment";
 
-const PATH_TO_META: Record<string, { titleKey: string }> = {
-  "/device": { titleKey: "device.pageTitle" },
+const NAV_ICON_BY_PATH = Object.fromEntries(
+  NAV_ITEMS.map((item) => [item.path, item.iconSrc]),
+) as Record<string, string>;
+
+const PATH_TO_META: Record<string, { titleKey: string; iconSrc: string }> = {
+  "/device": {
+    titleKey: "device.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/device"],
+  },
   "/device-config": {
     titleKey: "deviceConfig.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/device-config"],
   },
   "/ai-config": {
     titleKey: "aiConfig.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/ai-config"],
   },
   "/channels-config": {
     titleKey: "channelsConfig.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/channels-config"],
   },
   "/system-config": {
     titleKey: "systemConfig.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/system-config"],
   },
   "/system-logs": {
     titleKey: "systemLogs.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/system-logs"],
   },
   "/soul-user": {
     titleKey: "soulUser.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/soul-user"],
   },
-  "/skills": { titleKey: "skills.pageTitle" },
-  "/tools": { titleKey: "tools.pageTitle" },
-  "/accounts": { titleKey: "accounts.pageTitle" },
+  "/skills": {
+    titleKey: "skills.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/skills"],
+  },
+  "/tools": {
+    titleKey: "tools.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/tools"],
+  },
+  "/accounts": {
+    titleKey: "accounts.pageTitle",
+    iconSrc: NAV_ICON_BY_PATH["/accounts"],
+  },
 };
 
 function metaForPathname(pathname: string) {
@@ -54,11 +81,28 @@ export function TopBar() {
   const navBlocker = useContext(NavBlockerContext);
   const location = useLocation();
   const [brandIconHovered, setBrandIconHovered] = useState(false);
+  const desktopShellWindow = isTauriRuntime();
   const macTauriWindow = isMacTauriWindow();
-  const titlebarPaddingTop = macTauriWindow ? 1.5 : 0;
-  const chromeControlPadding = macTauriWindow ? 0.5 : 0.625;
-  const chromeLabelPaddingY = macTauriWindow ? 0.5 : 0.625;
-  const chromeRowPaddingY = macTauriWindow ? 0.25 : 0.5;
+  const titlebarMinHeight = macTauriWindow
+    ? 40
+    : desktopShellWindow
+      ? 48
+      : TOP_BAR_MIN_HEIGHT;
+  const titlebarPaddingTop = 0;
+  const chromeControlPadding = desktopShellWindow ? 0.25 : 0.625;
+  const chromeLabelPaddingY = desktopShellWindow ? 0 : 0.625;
+  const chromeRowPaddingY = desktopShellWindow ? 0 : 0.5;
+  const chromeRowSpacing = desktopShellWindow ? 0.75 : 1.25;
+  const brandIconSize = macTauriWindow
+    ? 16
+    : desktopShellWindow
+      ? 18
+      : "var(--icon-size-lg)";
+  const desktopTitleRailHeight = macTauriWindow ? 28 : titlebarMinHeight;
+  const desktopTitleRailOffsetTop = macTauriWindow ? 4 : 0;
+  const desktopTitleIconObjectPosition = macTauriWindow
+    ? "50% 43%"
+    : undefined;
 
   const pathname = location.pathname;
   const meta = metaForPathname(pathname);
@@ -78,17 +122,23 @@ export function TopBar() {
     boxShadow: "var(--os3d-control-soft-lift-stack)",
   } as const;
 
+  const macTitlebarLaneInset = "88px";
+
   return (
     <Box
       component="header"
       sx={{
         flexShrink: 0,
-        minHeight: TOP_BAR_MIN_HEIGHT,
+        minHeight: titlebarMinHeight,
         display: "flex",
         alignItems: "stretch",
         justifyContent: "flex-start",
-        pl: { xs: 2, sm: 3 },
-        pr: { xs: 2, sm: 3 },
+        pl: macTauriWindow
+          ? macTitlebarLaneInset
+          : desktopShellWindow
+            ? "16px"
+            : { xs: 2, sm: 3 },
+        pr: desktopShellWindow ? "16px" : { xs: 2, sm: 3 },
         pt: titlebarPaddingTop,
         position: "relative",
         ...SHELL_TITLEBAR_CHROME_SX,
@@ -100,68 +150,113 @@ export function TopBar() {
       <Stack
         direction="row"
         alignItems="center"
-        spacing={1.25}
-        sx={{ minWidth: 0, flex: 1, py: chromeRowPaddingY, pr: 1 }}
+        spacing={chromeRowSpacing}
+        sx={{
+          minWidth: 0,
+          flex: 1,
+          py: chromeRowPaddingY,
+          pr: 1,
+          ...(desktopShellWindow
+            ? {
+                alignSelf: "flex-start",
+                minHeight: desktopTitleRailHeight,
+                mt: `${desktopTitleRailOffsetTop}px`,
+              }
+            : null),
+        }}
       >
-        <Tooltip title={t("nav.brandHome")}>
-          <IconButton
-            size="small"
-            onClick={handleWindowIconClick}
-            onMouseEnter={() => setBrandIconHovered(true)}
-            onMouseLeave={() => setBrandIconHovered(false)}
-            aria-label={t("nav.brandHome")}
-            sx={{
-              flexShrink: 0,
-              p: chromeControlPadding,
-              borderRadius: "var(--radius-control)",
-              ...chromeCapsuleSx,
-              transition:
-                "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized)",
-              "&:hover": {
-                backgroundColor:
-                  "color-mix(in srgb, var(--primary) 8%, var(--card))",
-                boxShadow: "var(--os3d-selection-pill-stack)",
-                transform: "translateY(-0.5px)",
-              },
-              "&:active": {
-                transform: "translateY(0)",
-              },
-              "@media (prefers-reduced-motion: reduce)": {
-                "&:hover": { transform: "none" },
-                transition: "none",
-              },
-            }}
-          >
-            <BeetleIcon
-              aria-hidden
-              animationActive={brandIconHovered}
+        {desktopShellWindow ? (
+          <Tooltip title={title}>
+            <Box
               sx={{
-                width: "var(--icon-size-lg)",
-                height: "var(--icon-size-lg)",
-                borderRadius: "calc(var(--radius-control) - 2px)",
+                flexShrink: 0,
+                width: brandIconSize,
+                height: brandIconSize,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
               }}
-            />
-          </IconButton>
-        </Tooltip>
-        <Box
-          sx={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center" }}
-          data-tauri-drag-region={macTauriWindow ? "" : undefined}
-        >
+              data-tauri-drag-region={macTauriWindow ? "" : undefined}
+            >
+              {meta?.iconSrc ? (
+                <Os3dIcon
+                  src={meta.iconSrc}
+                  variant="titlebar"
+                  sx={{
+                    width: brandIconSize,
+                    height: brandIconSize,
+                    objectPosition: desktopTitleIconObjectPosition,
+                  }}
+                />
+              ) : null}
+            </Box>
+          </Tooltip>
+        ) : (
+          <Tooltip title={t("nav.brandHome")}>
+            <IconButton
+              size="small"
+              onClick={handleWindowIconClick}
+              onMouseEnter={() => setBrandIconHovered(true)}
+              onMouseLeave={() => setBrandIconHovered(false)}
+              aria-label={t("nav.brandHome")}
+              sx={{
+                flexShrink: 0,
+                p: chromeControlPadding,
+                borderRadius: "var(--radius-control)",
+                ...chromeCapsuleSx,
+                color: "var(--foreground-soft)",
+                transition:
+                  "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-emphasized)",
+                "&:hover": {
+                  backgroundColor:
+                    "color-mix(in srgb, var(--primary) 8%, var(--card))",
+                  boxShadow: "var(--os3d-selection-pill-stack)",
+                  transform: "translateY(-0.5px)",
+                },
+                "&:active": {
+                  transform: "translateY(0)",
+                },
+                "@media (prefers-reduced-motion: reduce)": {
+                  "&:hover": { transform: "none" },
+                  transition: "none",
+                },
+              }}
+            >
+              <BeetleIcon
+                aria-hidden
+                animationActive={brandIconHovered}
+                sx={{
+                  width: "var(--icon-size-lg)",
+                  height: "var(--icon-size-lg)",
+                  borderRadius: "calc(var(--radius-control) - 2px)",
+                }}
+              />
+            </IconButton>
+          </Tooltip>
+        )}
+        {desktopShellWindow ? (
+          <Box sx={{ flex: 1 }} data-tauri-drag-region={macTauriWindow ? "" : undefined} />
+        ) : (
           <Box
-            sx={{
-              minWidth: 0,
-              maxWidth: "100%",
-              px: { xs: 1.125, sm: 1.25 },
-              py: chromeLabelPaddingY,
-              borderRadius: "var(--radius-search-pill)",
-              ...chromeCapsuleSx,
-              backgroundImage:
-                "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
-            }}
+            sx={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center" }}
+            data-tauri-drag-region={macTauriWindow ? "" : undefined}
           >
-            <PageHeader title={title} />
+            <Box
+              sx={{
+                minWidth: 0,
+                maxWidth: "100%",
+                px: { xs: 1.125, sm: 1.25 },
+                py: chromeLabelPaddingY,
+                borderRadius: "var(--radius-search-pill)",
+                ...chromeCapsuleSx,
+                backgroundImage:
+                  "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+              }}
+            >
+              <PageHeader title={title} />
+            </Box>
           </Box>
-        </Box>
+        )}
       </Stack>
     </Box>
   );

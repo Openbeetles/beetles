@@ -108,8 +108,8 @@ export const CONFIG_PANEL_SX = {
   bgcolor: "var(--card)",
   border: "none",
   backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 40%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 52%, transparent) 0%, transparent 58%)",
+    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 6%, transparent) 34%, transparent 76%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 40%, transparent) 0%, transparent 68%)",
   ].join(", "),
   boxShadow: "var(--os3d-content-plate-stack)",
   isolation: "isolate",
@@ -135,8 +135,8 @@ export const DASHBOARD_CARD_SURFACE_SX = {
   borderRadius: "var(--radius-card)",
   border: "none",
   backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 42%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 44%, transparent) 0%, transparent 62%)",
+    "linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 34%, transparent 80%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 34%, transparent) 0%, transparent 70%)",
   ].join(", "),
   boxShadow: "var(--os3d-content-plate-stack)",
   isolation: "isolate",
@@ -148,10 +148,10 @@ export const DASHBOARD_CARD_SURFACE_SX = {
  */
 export const FORM_SECTION_MODULE_SX = {
   borderRadius: "calc(var(--radius-card) - 2px)",
-  bgcolor: "color-mix(in srgb, var(--surface) 58%, var(--card))",
+  bgcolor: "color-mix(in srgb, var(--surface) 42%, var(--card))",
   backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, transparent 46%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 38%, transparent) 0%, transparent 100%)",
+    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 40%, transparent 88%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 28%, transparent) 0%, transparent 100%)",
   ].join(", "),
   boxShadow: "var(--os3d-section-module-stack)",
   border: "none",
@@ -163,9 +163,9 @@ export const FORM_SECTION_MODULE_SX = {
 export const FORM_SECTION_MODULE_HEADER_SX = {
   px: 2,
   py: 1.35,
-  bgcolor: "color-mix(in srgb, var(--card) 72%, var(--surface))",
+  bgcolor: "color-mix(in srgb, var(--card) 78%, var(--surface))",
   backgroundImage:
-    "linear-gradient(180deg, color-mix(in srgb, #fff 22%, transparent) 0%, transparent 78%)",
+    "linear-gradient(180deg, color-mix(in srgb, #fff 24%, transparent) 0%, color-mix(in srgb, #fff 8%, transparent) 48%, transparent 84%)",
   boxShadow: "var(--os3d-section-module-header-stack)",
 } as const
 
@@ -174,7 +174,7 @@ export const FORM_SECTION_MODULE_BODY_SX = {
   px: 2,
   pt: 2,
   pb: 2,
-  bgcolor: "color-mix(in srgb, var(--card) 74%, var(--form-group-well))",
+  bgcolor: "color-mix(in srgb, var(--card) 82%, var(--form-group-well))",
 } as const
 
 /**
@@ -209,7 +209,7 @@ export const DASHBOARD_CARD_HEADER_ROW_SX = {
   justifyContent: "space-between",
   px: 2.5,
   py: 2,
-  bgcolor: "color-mix(in srgb, var(--foreground) 2.5%, transparent)",
+  bgcolor: "color-mix(in srgb, var(--foreground) 1.8%, transparent)",
   /** 与正文区分界：内阴影代替 hairline border */
   borderBottom: "none",
   boxShadow: "var(--os3d-dashboard-card-header-lip)",

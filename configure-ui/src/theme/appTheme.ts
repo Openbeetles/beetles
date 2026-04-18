@@ -272,8 +272,8 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           body: {
             backgroundColor: 'var(--background)',
             backgroundImage: [
-              'radial-gradient(circle at top, color-mix(in srgb, #fff 26%, transparent) 0%, transparent 38%)',
-              'linear-gradient(180deg, color-mix(in srgb, var(--surface) 46%, var(--background)) 0%, var(--background) 30%, color-mix(in srgb, var(--background) 96%, var(--foreground)) 100%)',
+              'radial-gradient(ellipse at top, color-mix(in srgb, #fff 24%, transparent) 0%, color-mix(in srgb, #fff 8%, transparent) 24%, transparent 48%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--surface) 40%, var(--background)) 0%, var(--background) 34%, color-mix(in srgb, var(--background) 98%, var(--foreground)) 100%)',
             ].join(', '),
             color: 'var(--foreground)',
             WebkitFontSmoothing: 'antialiased',
@@ -321,12 +321,12 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             backgroundColor: 'var(--primary)',
             color: 'var(--primary-fg)',
             border: 'none',
-            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 10%, transparent)',
+            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 8%, transparent)',
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 94%, white)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 96%, white)',
             },
             '&:active': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 88%, white)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 90%, white)',
               borderTopColor: 'transparent',
             },
           },
@@ -337,14 +337,14 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           containedPrimary: {
             boxShadow: 'var(--os3d-primary-button-stack)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 16%, transparent) 0%, color-mix(in srgb, var(--primary-fg) 5%, transparent) 42%, transparent 76%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 14%, transparent) 0%, color-mix(in srgb, var(--primary-fg) 4%, transparent) 54%, transparent 88%)',
             '&:hover': {
               boxShadow: 'var(--os3d-primary-button-stack-hover)',
-              transform: 'translateY(-0.5px)',
+              transform: 'translateY(-0.25px)',
             },
             '&:active': {
               boxShadow: 'var(--os3d-primary-button-stack-active)',
-              transform: 'translateY(0.25px)',
+              transform: 'translateY(0.15px)',
             },
             '&.Mui-disabled': {
               boxShadow: 'none',
@@ -356,20 +356,20 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           containedError: {
             backgroundColor: 'var(--semantic-danger)',
             color: 'var(--primary-fg)',
-            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 9%, transparent)',
+            borderTop: '1px solid color-mix(in srgb, var(--primary-fg) 8%, transparent)',
             boxShadow: 'var(--os3d-danger-button-stack)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 14%, transparent) 0%, color-mix(in srgb, var(--primary-fg) 5%, transparent) 42%, transparent 76%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 12%, transparent) 0%, color-mix(in srgb, var(--primary-fg) 4%, transparent) 54%, transparent 88%)',
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 90%, black)',
+              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 92%, black)',
               boxShadow: 'var(--os3d-danger-button-stack-hover)',
-              transform: 'translateY(-0.5px)',
+              transform: 'translateY(-0.25px)',
             },
             '&:active': {
-              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 84%, black)',
+              backgroundColor: 'color-mix(in srgb, var(--semantic-danger) 86%, black)',
               borderTopColor: 'transparent',
               boxShadow: 'var(--os3d-danger-button-stack-active)',
-              transform: 'translateY(0.25px)',
+              transform: 'translateY(0.15px)',
             },
             '&.Mui-disabled': {
               boxShadow: 'none',
@@ -378,15 +378,15 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             },
           },
           outlined: {
-            backgroundColor: 'color-mix(in srgb, var(--card) 76%, var(--surface))',
+            backgroundColor: 'color-mix(in srgb, var(--card) 68%, var(--surface))',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 100%)',
-            borderColor: 'color-mix(in srgb, var(--primary) 14%, var(--border))',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 52%, transparent 100%)',
+            borderColor: 'color-mix(in srgb, var(--primary) 10%, var(--border))',
             boxShadow: 'var(--os3d-control-soft-lift-stack)',
             '&:hover': {
-              borderColor: 'color-mix(in srgb, var(--primary) 24%, var(--border))',
-              backgroundColor: 'color-mix(in srgb, var(--primary) 5%, var(--card))',
-              transform: 'translateY(-0.5px)',
+              borderColor: 'color-mix(in srgb, var(--primary) 18%, var(--border))',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 4%, var(--card))',
+              transform: 'translateY(-0.25px)',
             },
             '&:active': { transform: 'translateY(0)' },
           },
@@ -427,7 +427,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             boxShadow: 'none',
             border: 'none',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 58%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 42%, transparent 84%)',
           },
         },
       },
@@ -435,11 +435,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 12%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--border) 8%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 58%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 36%, transparent 86%)',
           },
         },
       },
@@ -490,9 +490,9 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             borderRadius: R,
-            backgroundColor: 'color-mix(in srgb, var(--card) 50%, var(--surface))',
+            backgroundColor: 'color-mix(in srgb, var(--card) 58%, var(--surface))',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 76%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 44%, transparent 86%)',
             /** 静止：输入沉在浅槽；聚焦：略抬起，与凹底形成对照 */
             boxShadow: 'var(--os3d-micro-well-stack)',
             transition:
@@ -511,10 +511,10 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '&.Mui-focused': {
               backgroundColor: 'var(--card)',
               backgroundImage:
-                'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 72%)',
+                'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 48%, transparent 84%)',
               boxShadow: 'var(--os3d-control-soft-lift-stack)',
               '& .MuiOutlinedInput-notchedOutline': {
-                borderColor: 'color-mix(in srgb, var(--primary) 22%, var(--border))',
+                borderColor: 'color-mix(in srgb, var(--primary) 16%, var(--border))',
                 borderWidth: 1,
               },
             },
@@ -549,12 +549,12 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             transition: 'background-color var(--transition-duration) ease, border-color var(--transition-duration) ease, color var(--transition-duration) ease',
           },
           outlined: {
-            backgroundColor: 'color-mix(in srgb, var(--card) 72%, var(--surface))',
-            borderColor: 'color-mix(in srgb, var(--border) 18%, transparent)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 64%, var(--surface))',
+            borderColor: 'color-mix(in srgb, var(--border) 14%, transparent)',
             boxShadow: 'var(--os3d-control-soft-lift-stack)',
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 3%, var(--card))',
-              borderColor: 'color-mix(in srgb, var(--border) 28%, transparent)',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 2.5%, var(--card))',
+              borderColor: 'color-mix(in srgb, var(--border) 20%, transparent)',
               color: 'var(--primary)',
             },
           },
@@ -750,11 +750,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           paper: {
             marginTop: 1,
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
-            backgroundColor: 'color-mix(in srgb, var(--card) 96%, transparent)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 92%, transparent)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 40%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 38%, transparent 84%)',
             paddingTop: 8,
             paddingBottom: 8,
           },
@@ -764,11 +764,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           paper: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 14%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
-            backgroundColor: 'color-mix(in srgb, var(--card) 94%, transparent)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 90%, transparent)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 46%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 40%, transparent 86%)',
           },
         },
       },
@@ -776,11 +776,11 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           paper: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 14%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
             boxShadow: 'var(--os3d-content-plate-stack)',
             backgroundColor: 'var(--card)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 50%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 38%, transparent 86%)',
           },
         },
       },
@@ -873,13 +873,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             gap: LAYOUT_TOKENS.toggleGroupGap,
             padding: '5px',
             borderRadius: 'var(--radius-control)',
-            backgroundColor: 'color-mix(in srgb, var(--surface) 72%, var(--card))',
+            backgroundColor: 'color-mix(in srgb, var(--surface) 62%, var(--card))',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 100%)',
+              'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 50%, transparent 100%)',
             boxShadow: 'var(--os3d-micro-well-stack)',
           },
           grouped: {
-            border: '1px solid color-mix(in srgb, var(--border) 12%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--border) 9%, transparent)',
             borderRadius: 'var(--radius-control) !important',
             textTransform: 'none',
             fontWeight: 600,
@@ -888,22 +888,22 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             paddingBottom: LAYOUT_TOKENS.toggleButtonPaddingY,
             transition:
               'background-color var(--transition-duration) ease, color var(--transition-duration) ease, border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease',
-            backgroundColor: 'color-mix(in srgb, var(--card) 72%, transparent)',
+            backgroundColor: 'color-mix(in srgb, var(--card) 64%, transparent)',
             color: 'var(--muted)',
             boxShadow: 'var(--os3d-control-soft-lift-stack)',
             '&.Mui-selected': {
-              backgroundColor: 'color-mix(in srgb, var(--primary) 8%, var(--card))',
+              backgroundColor: 'color-mix(in srgb, var(--primary) 6%, var(--card))',
               color: 'var(--primary)',
-              borderColor: 'color-mix(in srgb, var(--primary) 24%, var(--border))',
+              borderColor: 'color-mix(in srgb, var(--primary) 16%, var(--border))',
               boxShadow: 'var(--os3d-selection-pill-stack)',
               position: 'relative',
               zIndex: 1,
               '&:hover': {
-                backgroundColor: 'color-mix(in srgb, var(--primary) 10%, var(--card))',
+                backgroundColor: 'color-mix(in srgb, var(--primary) 7%, var(--card))',
               },
             },
             '&:hover': {
-              backgroundColor: 'color-mix(in srgb, var(--foreground) 3%, var(--card))',
+              backgroundColor: 'color-mix(in srgb, var(--foreground) 2%, var(--card))',
               color: 'var(--foreground)',
             },
           },

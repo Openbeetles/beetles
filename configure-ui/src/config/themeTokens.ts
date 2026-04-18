@@ -8,11 +8,11 @@ export type ThemeBrand = 'blue' | 'teal' | 'logo' | 'firmware'
  */
 export const LAYOUT_TOKENS = {
   /** 控件圆角（按钮、输入框、Toggle 等） */
-  radiusControl: 8,
+  radiusControl: 10,
   /** 卡片/抽屉/弹层圆角 */
-  radiusCard: 12,
+  radiusCard: 16,
   /** 小控件圆角（Chip、IconButton、Tooltip） */
-  radiusChip: 6,
+  radiusChip: 10,
   /** 强调动效曲线 */
   easeEmphasized: 'cubic-bezier(0.22, 1, 0.36, 1)',
   /** 平滑缓动曲线 */
@@ -233,14 +233,14 @@ export const THEME_BRAND_KEYS: ThemeBrand[] = ['logo', 'blue', 'teal', 'firmware
 /**
  * 浅色模式页面画布：浅青灰（非纯白、非暖灰），清爽耐看；`card` 仍为白以托内容。
  */
-const LIGHT_PAGE_BACKGROUND = '#e8eef5'
+const LIGHT_PAGE_BACKGROUND = '#eef4f9'
 
 /** 壳层 / 次级表面：比画布略亮、偏冷，仍属青灰白 */
-const LIGHT_SURFACE_COOL = '#f6f9fd'
+const LIGHT_SURFACE_COOL = '#fbfdff'
 
 /** 浅色文字层级：secondary 用于正文辅助，tertiary 用于 id / metadata，必须明显分层。 */
-const LIGHT_TEXT_SECONDARY = '#5f6f86'
-const LIGHT_TEXT_TERTIARY = '#8a97aa'
+const LIGHT_TEXT_SECONDARY = '#66778d'
+const LIGHT_TEXT_TERTIARY = '#95a3b5'
 
 /** 深色文字层级：secondary 仍可读，tertiary 退到 metadata 级，避免整页一片同亮度。 */
 const DARK_TEXT_SECONDARY = '#b2bfd0'
