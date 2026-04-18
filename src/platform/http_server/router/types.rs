@@ -3,7 +3,7 @@
 
 use crate::bus::InboundTx;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use crate::channels::QqMsgIdCache;
+use crate::channels::{QqInboundDedupStore, QqMsgIdCache};
 
 /// 与 webhook、QQ 回调相关的跨 handler 资源。
 /// Cross-handler resources for webhooks and QQ callbacks.
@@ -12,6 +12,8 @@ pub struct RouterEnv {
     pub inbound_tx: InboundTx,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_msg_id_cache: QqMsgIdCache,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub qq_inbound_dedup_store: QqInboundDedupStore,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_webhook_enabled: bool,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -30,6 +32,7 @@ impl RouterEnv {
     pub fn new(
         inbound_tx: InboundTx,
         qq_msg_id_cache: QqMsgIdCache,
+        qq_inbound_dedup_store: QqInboundDedupStore,
         qq_webhook_enabled: bool,
         qq_app_id: String,
         qq_secret: String,
@@ -37,6 +40,7 @@ impl RouterEnv {
         Self {
             inbound_tx,
             qq_msg_id_cache,
+            qq_inbound_dedup_store,
             qq_webhook_enabled,
             qq_app_id,
             qq_secret,

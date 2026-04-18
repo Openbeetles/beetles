@@ -2429,13 +2429,13 @@ mod tests {
     #[test]
     fn render_turn_log_content_includes_observation_summary() {
         let content = render_turn_log_content(&TurnLedger {
-            reason: "final_recovery".to_string(),
+            reason: "surface_finalization".to_string(),
             user_preview: "帮我继续查一下网络问题".to_string(),
             reply_preview: "我先给你恢复结论".to_string(),
             observation: Some(crate::memory::TurnObservationLedger {
                 execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
                 deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
-                final_outcome: "final_recovery".to_string(),
+                final_outcome: "surface_finalization".to_string(),
                 pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
                 mode: crate::memory::TurnModeSnapshotLedger {
                     current_mode: "normal".to_string(),
@@ -2443,11 +2443,10 @@ mod tests {
                     allow_idle_self_runtime: true,
                 },
                 tool_path: crate::memory::TurnToolPathLedger {
-                    path: "tool_recovery".to_string(),
+                    path: "surface_finalization".to_string(),
                     tool_calls: 2,
                     react_rounds: 2,
                     current_primary_delivered: false,
-                    final_answer_recovered: true,
                 },
                 blocker: Some(crate::memory::TurnBlockerLedger {
                     kind: "retryable".to_string(),
@@ -2458,10 +2457,10 @@ mod tests {
             ..TurnLedger::default()
         });
 
-        assert!(content.contains("reason=final_recovery"));
+        assert!(content.contains("reason=surface_finalization"));
         assert!(content.contains("observation="));
         assert!(content.contains("Execution class: tool_assisted"));
-        assert!(content.contains("Tool path: tool_recovery"));
+        assert!(content.contains("Tool path: surface_finalization"));
         assert!(content.contains("Blocker: retryable 1/1"));
     }
 }

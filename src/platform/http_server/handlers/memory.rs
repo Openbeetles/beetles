@@ -855,7 +855,7 @@ mod tests {
                 observation: Some(crate::memory::TurnObservationLedger {
                     execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
                     deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-                    final_outcome: "final_recovery".to_string(),
+                    final_outcome: "surface_finalization".to_string(),
                     pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
                     mode: crate::memory::TurnModeSnapshotLedger {
                         current_mode: "normal".to_string(),
@@ -863,11 +863,10 @@ mod tests {
                         allow_idle_self_runtime: true,
                     },
                     tool_path: crate::memory::TurnToolPathLedger {
-                        path: "tool_recovery".to_string(),
+                        path: "surface_finalization".to_string(),
                         tool_calls: 2,
                         react_rounds: 2,
                         current_primary_delivered: false,
-                        final_answer_recovered: true,
                     },
                     blocker: Some(crate::memory::TurnBlockerLedger {
                         kind: "retryable".to_string(),
@@ -904,7 +903,6 @@ mod tests {
                         tool_calls: 1,
                         react_rounds: 1,
                         current_primary_delivered: false,
-                        final_answer_recovered: false,
                     },
                     blocker: Some(crate::memory::TurnBlockerLedger {
                         kind: "retryable".to_string(),
@@ -923,7 +921,7 @@ mod tests {
                 observation: Some(crate::memory::TurnObservationLedger {
                     execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
                     deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-                    final_outcome: "final_recovery".to_string(),
+                    final_outcome: "surface_finalization".to_string(),
                     pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
                     mode: crate::memory::TurnModeSnapshotLedger {
                         current_mode: "normal".to_string(),
@@ -931,11 +929,10 @@ mod tests {
                         allow_idle_self_runtime: true,
                     },
                     tool_path: crate::memory::TurnToolPathLedger {
-                        path: "tool_recovery".to_string(),
+                        path: "surface_finalization".to_string(),
                         tool_calls: 2,
                         react_rounds: 2,
                         current_primary_delivered: false,
-                        final_answer_recovered: true,
                     },
                     blocker: Some(crate::memory::TurnBlockerLedger {
                         kind: "capability".to_string(),
@@ -972,7 +969,6 @@ mod tests {
                         tool_calls: 0,
                         react_rounds: 1,
                         current_primary_delivered: true,
-                        final_answer_recovered: false,
                     },
                     blocker: None,
                 }),

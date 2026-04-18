@@ -2,7 +2,9 @@
 //! 统一回复面合同：把“这轮该怎么交付”升级成正式类型，而不是散落标签。
 
 use super::request_semantics::{ActionFamily, DisclosureSurface, RequestSemantics};
-use crate::agent::final_reply::reply_has_concrete_anchor;
+use crate::agent::final_reply::{
+    reply_has_concrete_anchor, reply_looks_like_future_action_narration,
+};
 use crate::bus::IngressKind;
 use std::collections::BTreeSet;
 
@@ -27,7 +29,6 @@ pub(crate) enum SurfaceGovernancePolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SurfaceFinalizationPolicy {
     StructuredJson,
-    DirectOrRecovery,
     TaskFinisher,
     InternalOnly,
 }
@@ -104,20 +105,38 @@ impl ReplySurface {
 
     pub(crate) fn finalization_policy(self) -> SurfaceFinalizationPolicy {
         match self {
-            Self::PublicRuntime | Self::PrivateBoundary => {
+            Self::PublicRuntime | Self::GovernedConversation | Self::PrivateBoundary => {
                 SurfaceFinalizationPolicy::StructuredJson
             }
-            Self::GovernedConversation => SurfaceFinalizationPolicy::DirectOrRecovery,
             Self::TaskExecution => SurfaceFinalizationPolicy::TaskFinisher,
             Self::InternalOnly => SurfaceFinalizationPolicy::InternalOnly,
         }
     }
 
-    pub(crate) fn requires_structured_finalization_after_tool_success(self) -> bool {
-        matches!(
+    pub(crate) fn should_run_structured_finalization_after_tool_round(
+        self,
+        draft_content: &str,
+    ) -> bool {
+        if !matches!(
             self.finalization_policy(),
             SurfaceFinalizationPolicy::StructuredJson
-        )
+        ) {
+            return false;
+        }
+        let trimmed = draft_content.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        match self {
+            Self::PublicRuntime => {
+                reply_looks_like_future_action_narration(trimmed)
+                    || !reply_has_concrete_anchor(trimmed)
+            }
+            Self::GovernedConversation | Self::PrivateBoundary => {
+                reply_looks_like_future_action_narration(trimmed)
+            }
+            Self::TaskExecution | Self::InternalOnly => false,
+        }
     }
 
     pub(crate) fn allows_mental_privacy_review(self) -> bool {
@@ -171,7 +190,7 @@ fn runtime_tool_draft_supports_public_surface(content: &str) -> bool {
     let trimmed = content.trim();
     if trimmed.is_empty()
         || looks_like_boundary_or_input_request(trimmed)
-        || looks_like_future_action_narration(trimmed)
+        || reply_looks_like_future_action_narration(trimmed)
     {
         return false;
     }
@@ -207,39 +226,12 @@ fn looks_like_boundary_or_input_request(content: &str) -> bool {
         || lower.contains("not public")
 }
 
-fn looks_like_future_action_narration(content: &str) -> bool {
-    let trimmed = content.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    [
-        "我先整理",
-        "我先检查",
-        "我先看看",
-        "我先处理",
-        "让我继续",
-        "让我先",
-        "现在我先",
-        "继续配置",
-        "继续处理",
-    ]
-    .iter()
-    .any(|prefix| trimmed.starts_with(prefix))
-        || [
-            "let me ",
-            "i need to ",
-            "now i need to ",
-            "i will ",
-            "i'll ",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
-        ResumeRelation,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
+        ForegroundControlDecision, RequestKind,
     };
 
     fn semantics(
@@ -252,7 +244,7 @@ mod tests {
             disclosure_surface,
             execution_preference: ExecutionPreference::AnswerDirect,
             action_family: ActionFamily::Conversation,
-            resume_relation: ResumeRelation::IndependentTurn,
+            foreground_control: ForegroundControlDecision::IndependentTurn,
             confidence: 100,
         }
     }
@@ -344,6 +336,12 @@ mod tests {
             SurfaceFinalizationPolicy::StructuredJson
         );
         assert!(!surface.allows_mental_privacy_review());
+        assert!(surface.should_run_structured_finalization_after_tool_round("系统状态正常。"));
+        assert!(
+            !surface.should_run_structured_finalization_after_tool_round(
+                "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。"
+            )
+        );
     }
 
     #[test]
@@ -373,9 +371,17 @@ mod tests {
         );
         assert_eq!(
             governed.finalization_policy(),
-            SurfaceFinalizationPolicy::DirectOrRecovery
+            SurfaceFinalizationPolicy::StructuredJson
         );
         assert!(governed.allows_mental_privacy_review());
+        assert!(
+            governed.should_run_structured_finalization_after_tool_round("我先整理一下当前状态。")
+        );
+        assert!(
+            !governed.should_run_structured_finalization_after_tool_round(
+                "当前主机 beetle 在线，可继续配置 QQ 邮箱。"
+            )
+        );
 
         let task = ReplySurface::TaskExecution;
         assert_eq!(
@@ -388,6 +394,7 @@ mod tests {
         );
         assert!(task.allows_mental_privacy_review());
         assert!(task.allows_memory_grounding_block());
+        assert!(!task.should_run_structured_finalization_after_tool_round("当前任务正在继续。"));
     }
 
     #[test]

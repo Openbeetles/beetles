@@ -10,7 +10,6 @@ use super::{TurnDeliberationClass, TurnExecutionClass, TurnLedger, TurnLedgerSto
 pub enum IntelligenceReplayAlertCode {
     SubjectStateCoverageLow,
     HardTurnUnderclassified,
-    RecoveryOverused,
     ToolLoopWithoutPrimaryDelivery,
 }
 
@@ -39,7 +38,6 @@ pub struct IntelligenceReplayInspection {
     pub subject_state_coverage_percent: u8,
     pub observation_coverage_percent: u8,
     pub hard_reasoning_percent: u8,
-    pub final_recovery_percent: u8,
     pub blocker_percent: u8,
     pub current_primary_delivery_percent: u8,
     pub latest_governance_mode: String,
@@ -95,15 +93,6 @@ fn analyze_intelligence_replay(
             })
         })
         .count();
-    let final_recovery_turns = turns
-        .iter()
-        .filter(|ledger| {
-            ledger
-                .observation
-                .as_ref()
-                .is_some_and(|observation| observation.final_outcome.trim() == "final_recovery")
-        })
-        .count();
     let blocker_turns = turns
         .iter()
         .filter(|ledger| {
@@ -155,15 +144,6 @@ fn analyze_intelligence_replay(
             ),
         });
     }
-    if meaningful_turns >= 4 && final_recovery_turns * 100 >= meaningful_turns * 40 {
-        alerts.push(IntelligenceReplayAlert {
-            code: IntelligenceReplayAlertCode::RecoveryOverused,
-            message: format!(
-                "final recovery is used on {}% of recent meaningful turns",
-                percent(final_recovery_turns, meaningful_turns)
-            ),
-        });
-    }
     if tool_assisted_turns >= 3 && blocker_turns >= 2 && current_primary_delivery_turns == 0 {
         alerts.push(IntelligenceReplayAlert {
             code: IntelligenceReplayAlertCode::ToolLoopWithoutPrimaryDelivery,
@@ -178,7 +158,6 @@ fn analyze_intelligence_replay(
         subject_state_coverage_percent: percent(subject_state_turns, meaningful_turns),
         observation_coverage_percent: percent(observation_turns, total_turns),
         hard_reasoning_percent: percent(hard_reasoning_turns, meaningful_turns),
-        final_recovery_percent: percent(final_recovery_turns, meaningful_turns),
         blocker_percent: percent(blocker_turns, meaningful_turns),
         current_primary_delivery_percent: percent(current_primary_delivery_turns, meaningful_turns),
         latest_governance_mode: latest_subject
@@ -307,11 +286,10 @@ mod tests {
                     allow_idle_self_runtime: true,
                 },
                 tool_path: TurnToolPathLedger {
-                    path: "tool_recovery".to_string(),
+                    path: "surface_finalization".to_string(),
                     tool_calls: 2,
                     react_rounds: 2,
                     current_primary_delivered,
-                    final_answer_recovered: final_outcome == "final_recovery",
                 },
                 blocker: blocker_kind.map(|kind| TurnBlockerLedger {
                     kind: kind.to_string(),
@@ -332,7 +310,7 @@ mod tests {
                     None,
                     None,
                     TurnDeliberationClass::Standard,
-                    "final_recovery",
+                    "surface_finalization",
                     Some("retryable"),
                     false,
                 ),
@@ -350,7 +328,7 @@ mod tests {
                     None,
                     None,
                     TurnDeliberationClass::Standard,
-                    "final_recovery",
+                    "surface_finalization",
                     Some("capability"),
                     false,
                 ),
@@ -382,9 +360,5 @@ mod tests {
             .alerts
             .iter()
             .any(|alert| { alert.code == IntelligenceReplayAlertCode::HardTurnUnderclassified }));
-        assert!(inspection
-            .alerts
-            .iter()
-            .any(|alert| { alert.code == IntelligenceReplayAlertCode::RecoveryOverused }));
     }
 }

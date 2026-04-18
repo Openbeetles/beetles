@@ -119,6 +119,7 @@ pub fn run(
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
     msg_id_cache: crate::channels::QqMsgIdCache,
+    inbound_dedup_store: crate::channels::QqInboundDedupStore,
     qq_webhook_enabled: bool,
     qq_app_id: String,
     qq_secret: String,
@@ -142,6 +143,7 @@ pub fn run(
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),
         msg_id_cache.clone(),
+        inbound_dedup_store.clone(),
         qq_webhook_enabled,
         qq_app_id,
         qq_secret,

@@ -778,7 +778,7 @@ mod tests {
             &[String::from("runtime_skill__release_patch_flow")],
             RuntimeSkillReuseOutcome::Mismatch,
             320,
-            "final_recovery",
+            "surface_finalization",
         )
         .unwrap();
         let revision_pending_report = inspect_runtime_skill_recall(

@@ -1181,6 +1181,7 @@ pub fn dispatch(
                 &env.qq_secret,
                 &env.inbound_tx,
                 Arc::clone(&env.qq_msg_id_cache),
+                Arc::clone(&env.qq_inbound_dedup_store),
             ) {
                 Ok(handlers::qq_webhook::QqWebhookOutcome::UrlVerification {
                     plain_token,
@@ -1297,9 +1298,11 @@ mod tests {
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         {
             let qq_msg_id_cache = Arc::new(Mutex::new(HashMap::new()));
+            let qq_inbound_dedup_store = Arc::new(Mutex::new(HashMap::new()));
             RouterEnv::new(
                 inbound_tx,
                 qq_msg_id_cache,
+                qq_inbound_dedup_store,
                 false,
                 String::new(),
                 String::new(),

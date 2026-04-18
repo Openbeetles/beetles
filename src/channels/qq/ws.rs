@@ -10,7 +10,7 @@ use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
-use super::msg_id::{cache_msg_id, QqMsgIdCache};
+use super::msg_id::{cache_msg_id, consume_inbound_dedup_key, QqInboundDedupStore, QqMsgIdCache};
 use super::token::{
     cached_qq_token_value, clear_shared_cached_qq_token, ensure_cached_qq_token,
     fetch_and_cache_qq_token, invalidate_cached_qq_token, load_shared_cached_qq_token,
@@ -40,6 +40,7 @@ pub struct QqWsLoopConfig {
     pub app_id: String,
     pub client_secret: String,
     pub msg_id_cache: QqMsgIdCache,
+    pub inbound_dedup_store: QqInboundDedupStore,
     pub shared_token_cache: SharedQqTokenCache,
 }
 
@@ -172,6 +173,7 @@ struct QqWssDriver {
     shared_token_cache: SharedQqTokenCache,
     last_seq: Option<u64>,
     msg_id_cache: QqMsgIdCache,
+    inbound_dedup_store: QqInboundDedupStore,
     dedup: DeduplicateRing,
 }
 
@@ -180,6 +182,7 @@ impl QqWssDriver {
         app_id: String,
         client_secret: String,
         msg_id_cache: QqMsgIdCache,
+        inbound_dedup_store: QqInboundDedupStore,
         shared_token_cache: SharedQqTokenCache,
     ) -> Self {
         Self {
@@ -189,6 +192,7 @@ impl QqWssDriver {
             shared_token_cache,
             last_seq: None,
             msg_id_cache,
+            inbound_dedup_store,
             dedup: DeduplicateRing::new(DEDUP_CACHE_CAPACITY),
         }
     }
@@ -311,6 +315,14 @@ impl WssGatewayDriver for QqWssDriver {
                                         msg_id,
                                         None,
                                     ) {
+                                        if consume_inbound_dedup_key(
+                                            &self.inbound_dedup_store,
+                                            &msg.inbound_dedup_key,
+                                        )
+                                        .unwrap_or(false)
+                                        {
+                                            return Ok(WssRecvAction::Dispatch(None));
+                                        }
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -344,6 +356,14 @@ impl WssGatewayDriver for QqWssDriver {
                                         msg_id,
                                         None,
                                     ) {
+                                        if consume_inbound_dedup_key(
+                                            &self.inbound_dedup_store,
+                                            &msg.inbound_dedup_key,
+                                        )
+                                        .unwrap_or(false)
+                                        {
+                                            return Ok(WssRecvAction::Dispatch(None));
+                                        }
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -378,6 +398,14 @@ impl WssGatewayDriver for QqWssDriver {
                                         msg_id,
                                         None,
                                     ) {
+                                        if consume_inbound_dedup_key(
+                                            &self.inbound_dedup_store,
+                                            &msg.inbound_dedup_key,
+                                        )
+                                        .unwrap_or(false)
+                                        {
+                                            return Ok(WssRecvAction::Dispatch(None));
+                                        }
                                         return Ok(WssRecvAction::Dispatch(Some(msg)));
                                     }
                                 }
@@ -428,6 +456,7 @@ pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
         config.app_id,
         config.client_secret,
         config.msg_id_cache,
+        config.inbound_dedup_store,
         config.shared_token_cache,
     );
     run_wss_gateway_loop(TAG, driver, inbound_tx, pending_retry, create_http, connect);
@@ -442,10 +471,12 @@ mod tests {
     #[test]
     fn group_dispatch_message_is_marked_as_group_and_duplicate_wss_dispatch_is_ignored() {
         let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        let dedup_store: QqInboundDedupStore = Arc::new(Mutex::new(HashMap::new()));
         let mut driver = QqWssDriver::new(
             "app".to_string(),
             "secret".to_string(),
             cache,
+            dedup_store,
             crate::channels::qq::new_shared_qq_token_cache(),
         );
         let payload = serde_json::json!({
@@ -473,6 +504,74 @@ mod tests {
 
         let duplicate = driver
             .on_recv(payload.to_string().as_bytes())
+            .expect("recv duplicate action");
+
+        assert!(matches!(duplicate, WssRecvAction::Dispatch(None)));
+    }
+
+    #[test]
+    fn duplicate_after_webhook_dispatch_is_ignored_by_wss_driver() {
+        let secret = "qq-test-secret";
+        let timestamp = "1711936800";
+        let body = serde_json::json!({
+            "op": 0,
+            "t": "C2C_MESSAGE_CREATE",
+            "d": {
+                "id": "msg-shared-1",
+                "content": "hello",
+                "author": {
+                    "user_openid": "user-openid-42"
+                }
+            }
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let signature = super::super::signature::sign_qq_url_verify(
+            secret,
+            timestamp,
+            std::str::from_utf8(&body_bytes).unwrap(),
+        )
+        .unwrap();
+        let (inbound_tx, inbound_rx, _) = crate::bus::new_inbound_channel(4);
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        let dedup_store: QqInboundDedupStore = Arc::new(Mutex::new(HashMap::new()));
+
+        super::super::handle_webhook(
+            &body_bytes,
+            Some(timestamp),
+            Some(&signature),
+            "",
+            secret,
+            &inbound_tx,
+            Arc::clone(&cache),
+            Arc::clone(&dedup_store),
+        )
+        .expect("webhook dispatch");
+        let webhook_msg = inbound_rx.try_recv().expect("webhook inbound");
+        assert_eq!(webhook_msg.platform_message_id, "msg-shared-1");
+
+        let mut driver = QqWssDriver::new(
+            "app".to_string(),
+            "secret".to_string(),
+            cache,
+            dedup_store,
+            crate::channels::qq::new_shared_qq_token_cache(),
+        );
+        let duplicate = driver
+            .on_recv(
+                serde_json::json!({
+                    "op": 0,
+                    "t": "C2C_MESSAGE_CREATE",
+                    "d": {
+                        "id": "msg-shared-1",
+                        "content": "hello",
+                        "author": {
+                            "user_openid": "user-openid-42"
+                        }
+                    }
+                })
+                .to_string()
+                .as_bytes(),
+            )
             .expect("recv duplicate action");
 
         assert!(matches!(duplicate, WssRecvAction::Dispatch(None)));

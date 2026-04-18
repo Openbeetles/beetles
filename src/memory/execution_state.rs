@@ -84,6 +84,15 @@ pub struct ExecutionState {
     pub updated_at: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExecutionStateFollowupIntent {
+    Independent,
+    Continue,
+    Revise,
+    Supersede,
+    ExplicitStop,
+}
+
 impl ExecutionState {
     pub fn is_meaningful(&self) -> bool {
         !self.goal.trim().is_empty()
@@ -247,32 +256,99 @@ pub fn render_execution_state_block(state: &ExecutionState, max_len: usize) -> O
     (!capped.trim().is_empty()).then_some(capped)
 }
 
-pub(crate) fn should_resume_active_execution_state(
+pub(crate) fn classify_active_execution_state_followup(
     state: &ExecutionState,
     user_content: &str,
-) -> bool {
+) -> ExecutionStateFollowupIntent {
     let Some(state) = normalize_execution_state(state.clone(), state.updated_at) else {
-        return false;
+        return ExecutionStateFollowupIntent::Independent;
     };
     if !should_persist_execution_state(&state) {
-        return false;
+        return ExecutionStateFollowupIntent::Independent;
     }
     let user_content = normalize_field(user_content, EXECUTION_STATE_GOAL_MAX_CHARS);
     if user_content.is_empty() {
-        return false;
+        return ExecutionStateFollowupIntent::Independent;
     }
-    if focus_strings_match(&user_content, &state.goal)
+    let focus_match = focus_strings_match(&user_content, &state.goal)
         || focus_strings_match(&user_content, &state.progress)
+        || focus_strings_match(&user_content, &state.blocker)
         || focus_strings_match(&user_content, &state.next_action)
+        || focus_strings_match(&user_content, &state.last_output)
+        || state
+            .active_constraints
+            .iter()
+            .any(|item| focus_strings_match(&user_content, item))
+        || state
+            .open_questions
+            .iter()
+            .any(|item| focus_strings_match(&user_content, item))
+        || state
+            .latest_observations
+            .iter()
+            .any(|item| focus_strings_match(&user_content, item))
         || state
             .next_best_actions
             .iter()
-            .any(|item| focus_strings_match(&user_content, item))
-    {
-        return true;
+            .any(|item| focus_strings_match(&user_content, item));
+    let specificity = field_specificity_score(&user_content);
+    let explicit_stop = looks_like_explicit_stop_control_turn(&user_content);
+    let hard_cancel = looks_like_explicit_cancel_control_turn(&user_content);
+    let stripped_specificity =
+        field_specificity_score(&strip_explicit_stop_control_markers(&user_content));
+    let has_pending_work = execution_state_has_pending_work(&state);
+
+    if focus_match {
+        return if specificity >= MIN_FIELD_SPECIFICITY_SCORE {
+            ExecutionStateFollowupIntent::Revise
+        } else if has_pending_work {
+            ExecutionStateFollowupIntent::Continue
+        } else {
+            ExecutionStateFollowupIntent::Independent
+        };
     }
-    field_specificity_score(&user_content) < MIN_FIELD_SPECIFICITY_SCORE
-        && execution_state_has_pending_work(&state)
+    if hard_cancel && !focus_match {
+        return ExecutionStateFollowupIntent::ExplicitStop;
+    }
+    if explicit_stop && stripped_specificity < MIN_FIELD_SPECIFICITY_SCORE {
+        return ExecutionStateFollowupIntent::ExplicitStop;
+    }
+    if has_pending_work && specificity < MIN_FIELD_SPECIFICITY_SCORE {
+        return ExecutionStateFollowupIntent::Continue;
+    }
+    if specificity >= MIN_FIELD_SPECIFICITY_SCORE {
+        return ExecutionStateFollowupIntent::Supersede;
+    }
+    ExecutionStateFollowupIntent::Independent
+}
+
+fn looks_like_explicit_stop_control_turn(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    content.contains("取消")
+        || content.contains("先别")
+        || content.contains("算了")
+        || content.contains("停下")
+        || content.contains("别弄了")
+        || lower.contains("cancel")
+        || lower.contains("stop")
+        || lower.contains("never mind")
+}
+
+fn looks_like_explicit_cancel_control_turn(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    content.contains("取消") || lower.contains("cancel")
+}
+
+fn strip_explicit_stop_control_markers(content: &str) -> String {
+    let mut normalized = content.to_string();
+    for marker in ["取消", "先别", "算了", "停下", "别弄了"] {
+        normalized = normalized.replace(marker, "");
+    }
+    let mut lower = normalized.to_ascii_lowercase();
+    for marker in ["cancel", "stop", "never mind"] {
+        lower = lower.replace(marker, "");
+    }
+    lower
 }
 
 pub(crate) fn seed_execution_state_from_turn(
@@ -582,11 +658,6 @@ fn build_recent_observation_working_set(
         grounding
             .next_best_actions
             .push("deliver current primary answer before more tool work".to_string());
-    }
-    if observation.tool_path.final_answer_recovered {
-        grounding
-            .next_best_actions
-            .push("treat the recovered answer as the current stable conclusion".to_string());
     }
     if let Some(blocker) = observation.blocker.as_ref() {
         let hint = match blocker.kind.trim() {
@@ -1900,12 +1971,18 @@ mod tests {
             ..ExecutionState::default()
         };
 
-        assert!(should_resume_active_execution_state(&state, "继续"));
-        assert!(should_resume_active_execution_state(&state, "继续配置邮箱"));
-        assert!(!should_resume_active_execution_state(
-            &state,
-            "今天天气怎么样"
-        ));
+        assert_eq!(
+            classify_active_execution_state_followup(&state, "继续"),
+            ExecutionStateFollowupIntent::Continue
+        );
+        assert_eq!(
+            classify_active_execution_state_followup(&state, "继续配置邮箱"),
+            ExecutionStateFollowupIntent::Revise
+        );
+        assert_eq!(
+            classify_active_execution_state_followup(&state, "今天天气怎么样"),
+            ExecutionStateFollowupIntent::Supersede
+        );
     }
 
     #[test]
@@ -1918,8 +1995,14 @@ mod tests {
             ..ExecutionState::default()
         };
 
-        assert!(!should_resume_active_execution_state(&state, "继续"));
-        assert!(!should_resume_active_execution_state(&state, "谢谢"));
+        assert_eq!(
+            classify_active_execution_state_followup(&state, "继续"),
+            ExecutionStateFollowupIntent::Independent
+        );
+        assert_eq!(
+            classify_active_execution_state_followup(&state, "谢谢"),
+            ExecutionStateFollowupIntent::Independent
+        );
     }
 
     #[test]
@@ -1951,7 +2034,6 @@ mod tests {
                         tool_calls: 1,
                         react_rounds: 1,
                         current_primary_delivered: false,
-                        final_answer_recovered: false,
                     },
                     blocker: None,
                 }),
@@ -2087,7 +2169,7 @@ mod tests {
             Some(&TurnObservationLedger {
                 execution_class: TurnExecutionClass::ToolAssisted,
                 deliberation_class: TurnDeliberationClass::HardReasoning,
-                final_outcome: "final_recovery".to_string(),
+                final_outcome: "surface_finalization".to_string(),
                 pressure: TurnPersonaPressureLevel::Cautious,
                 mode: TurnModeSnapshotLedger {
                     current_mode: "normal".to_string(),
@@ -2095,11 +2177,10 @@ mod tests {
                     allow_idle_self_runtime: true,
                 },
                 tool_path: TurnToolPathLedger {
-                    path: "tool_recovery".to_string(),
+                    path: "surface_finalization".to_string(),
                     tool_calls: 2,
                     react_rounds: 2,
                     current_primary_delivered: false,
-                    final_answer_recovered: true,
                 },
                 blocker: Some(TurnBlockerLedger {
                     kind: "retryable".to_string(),
@@ -2111,7 +2192,7 @@ mod tests {
         );
 
         assert!(input.contains("## Latest Turn Observation"));
-        assert!(input.contains("Tool path: tool_recovery"));
+        assert!(input.contains("Tool path: surface_finalization"));
         assert!(input.contains("## Recent Conversation"));
     }
 
@@ -2148,7 +2229,7 @@ mod tests {
                     observation: Some(TurnObservationLedger {
                         execution_class: TurnExecutionClass::ToolAssisted,
                         deliberation_class: TurnDeliberationClass::HardReasoning,
-                        final_outcome: "final_recovery".to_string(),
+                        final_outcome: "surface_finalization".to_string(),
                         pressure: TurnPersonaPressureLevel::Cautious,
                         mode: TurnModeSnapshotLedger {
                             current_mode: "normal".to_string(),
@@ -2156,11 +2237,10 @@ mod tests {
                             allow_idle_self_runtime: true,
                         },
                         tool_path: TurnToolPathLedger {
-                            path: "tool_recovery".to_string(),
+                            path: "surface_finalization".to_string(),
                             tool_calls: 2,
                             react_rounds: 2,
                             current_primary_delivered: false,
-                            final_answer_recovered: true,
                         },
                         blocker: Some(TurnBlockerLedger {
                             kind: "retryable".to_string(),
@@ -2205,7 +2285,7 @@ mod tests {
         assert!(stored
             .latest_observations
             .iter()
-            .any(|item| item.contains("tool_recovery")));
+            .any(|item| item.contains("surface_finalization")));
         assert!(stored
             .latest_observations
             .iter()

@@ -1,8 +1,6 @@
 use super::driver::current_turn_scope_start;
 use super::*;
 
-const STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX: &str = "\n\n## Structured finalization correction\nThe previous structured finalization reply collapsed to empty after internal-artifact stripping. Do not output JSON, markdown fences, tool evidence tags, XML-like blocks, or system markers. Write a plain, non-empty, user-facing answer grounded only in the completed tool results already present in this conversation.";
-
 pub(super) struct ExecutedTurn {
     pub(super) outcome: WorkerOutcome,
     pub(super) telemetry: WorkerRunTelemetry,
@@ -13,7 +11,9 @@ fn foreground_action_progress_kind_for_turn(
     has_resumeable_work: bool,
     has_tools: bool,
 ) -> Option<crate::agent::delivery::TaskActionProgressKind> {
-    use crate::agent::request_semantics::{ExecutionPreference, ResumeRelation};
+    use crate::agent::request_semantics::{
+        ActionFamily, ExecutionPreference, ForegroundControlDecision,
+    };
 
     if !has_tools
         || !has_resumeable_work
@@ -21,13 +21,16 @@ fn foreground_action_progress_kind_for_turn(
     {
         return None;
     }
-    match request_semantics.resume_relation {
-        ResumeRelation::ResumeActiveAction => {
-            Some(crate::agent::delivery::TaskActionProgressKind::Resumed)
-        }
-        ResumeRelation::IndependentTurn
-        | ResumeRelation::DenyOrCancelActiveAction
-        | ResumeRelation::ResumeActiveTaskRun => None,
+    if matches!(request_semantics.action_family, ActionFamily::ActiveAction)
+        && matches!(
+            request_semantics.foreground_control,
+            ForegroundControlDecision::ContinueActiveWork
+                | ForegroundControlDecision::ReviseActiveWork
+        )
+    {
+        Some(crate::agent::delivery::TaskActionProgressKind::Resumed)
+    } else {
+        None
     }
 }
 
@@ -66,12 +69,6 @@ fn should_emit_regular_foreground_blocked_progress(
         && delivery.report().action_progress_updates_sent > 0
         && delivery.report().terminal_progress_updates_sent == 0
         && super::reply_finalize::looks_like_truthful_blocker_or_input_request(content)
-}
-
-fn surface_finalization_collapses_after_cleanup(strategy: AgentRunStrategy, content: &str) -> bool {
-    finalize_user_visible_reply(strategy, content)
-        .trim()
-        .is_empty()
 }
 
 /// 完整 context + worker LLM + ReAct 循环，返回执行结果与 telemetry。
@@ -123,7 +120,6 @@ pub(super) fn execute_turn(
     let request_semantics = super::super::request_semantics::RequestSemantics::compile_for_turn(
         super::super::request_semantics::RequestSemanticsCompileInput {
             msg,
-            has_tools,
             active_work: active_work.as_ref(),
         },
     );
@@ -155,9 +151,6 @@ pub(super) fn execute_turn(
         mut runtime_carry,
         subject_state,
         soul_feedback_projection,
-        programmable_reasoning_intent,
-        counterfactual_analysis,
-        adversarial_arena_adjudication,
         system,
         mut messages,
         mut system_scratch,
@@ -167,6 +160,8 @@ pub(super) fn execute_turn(
         prompt_memory_system_budget,
         pressure,
         request_semantics,
+        active_task_context_present,
+        governed_memory_evidence_present,
         mental_privacy_adjudication,
         persona_priority_adjudication,
     } = super::turn_prepare::prepare_turn(
@@ -184,6 +179,67 @@ pub(super) fn execute_turn(
         request_semantics,
         mental_privacy_adjudication.is_some(),
     );
+    let foreground_control = active_work
+        .as_ref()
+        .filter(|_| msg.ingress == IngressKind::User)
+        .map(|work| work.foreground_control_for_user_turn(&msg.content))
+        .unwrap_or(crate::agent::request_semantics::ForegroundControlDecision::IndependentTurn);
+    let request_semantics =
+        request_semantics.apply_foreground_control(active_work.as_ref(), foreground_control);
+    let request_semantics = request_semantics.apply_reasoning_contract(
+        crate::agent::request_semantics::compile_reasoning_contract(
+            crate::agent::request_semantics::ReasoningContractCompileInput {
+                msg,
+                has_tools,
+                deliberation_class: deliberation_gate.class,
+                reply_surface,
+                request_semantics,
+                active_task_context_present,
+                governed_memory_evidence_present,
+            },
+        ),
+    );
+    let programmable_reasoning_intent =
+        crate::agent::reasoning_intent::compile_programmable_reasoning_intent(
+            crate::agent::reasoning_intent::ProgrammableReasoningIntentInput {
+                strategy: config.strategy,
+                runtime_contract: crate::programmable_reasoning_runtime_contract(),
+                request_semantics,
+                deliberation_gate: &deliberation_gate,
+                has_tools,
+                active_task_context_present,
+                governed_memory_evidence_present,
+            },
+        );
+    let programmable_reasoning_intent = programmable_reasoning_intent
+        .is_meaningful()
+        .then_some(programmable_reasoning_intent);
+    let counterfactual_analysis = crate::agent::counterfactual::compile_counterfactual_analysis(
+        crate::agent::counterfactual::CounterfactualAnalysisInput {
+            strategy: config.strategy,
+            runtime_contract: crate::programmable_reasoning_runtime_contract(),
+            request_semantics,
+            deliberation_gate: &deliberation_gate,
+            reasoning_intent: programmable_reasoning_intent.as_ref(),
+            has_tools,
+            active_task_context_present,
+            governed_memory_evidence_present,
+        },
+    );
+    let counterfactual_analysis = counterfactual_analysis
+        .is_meaningful()
+        .then_some(counterfactual_analysis);
+    let adversarial_arena_adjudication =
+        crate::agent::adversarial_arena::compile_turn_strategy_adjudication(
+            crate::agent::adversarial_arena::TurnStrategyArenaInput {
+                strategy: config.strategy,
+                runtime_contract: crate::programmable_reasoning_runtime_contract(),
+                counterfactual_analysis: counterfactual_analysis.as_ref(),
+            },
+        );
+    let adversarial_arena_adjudication = adversarial_arena_adjudication
+        .is_meaningful()
+        .then_some(adversarial_arena_adjudication);
     let request_plan = AgentRequestPlan::build_for_prepared_turn(
         msg,
         registry,
@@ -192,9 +248,9 @@ pub(super) fn execute_turn(
         request_semantics,
         reply_surface,
     )
-    .with_programmable_reasoning_intent(programmable_reasoning_intent.as_deref())
-    .with_counterfactual_analysis(counterfactual_analysis.as_deref())
-    .with_adversarial_arena_adjudication(adversarial_arena_adjudication.as_deref());
+    .with_programmable_reasoning_intent(programmable_reasoning_intent.as_ref())
+    .with_counterfactual_analysis(counterfactual_analysis.as_ref())
+    .with_adversarial_arena_adjudication(adversarial_arena_adjudication.as_ref());
     request_plan.apply_system_prompt(
         &mut system,
         crate::orchestrator::current_budget().system_prompt_max,
@@ -240,12 +296,11 @@ pub(super) fn execute_turn(
     let mut tool_result_user_content = String::with_capacity(1024);
     let mut round_evidence_lines = Vec::with_capacity(MAX_TOOL_EVIDENCE_ITEMS);
     let mut successful_tool_names = std::collections::BTreeSet::new();
+    let mut any_tool_round_executed = false;
     let mut any_tool_used = false;
     let mut external_content_used = false;
     let mut effective_reply_surface = reply_surface;
-    let mut recent_tool_round = RecentToolRoundState::default();
     let mut used_surface_finalization = false;
-    let mut used_final_answer_recovery = false;
 
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
@@ -352,28 +407,17 @@ pub(super) fn execute_turn(
 
         if response.stop_reason == StopReason::EndTurn {
             let content = response.content;
-            let delivery_report = delivery.report();
-            let primary_reply_already_delivered = delivery_report.current_primary_delivered;
-            let tool_visible_reply_sent = delivery_report.tool_visible_updates_sent > 0;
             effective_reply_surface = reply_surface.promote_for_runtime_tools(
                 &successful_tool_names,
                 external_content_used,
                 &content,
             );
-            if any_tool_used
-                && effective_reply_surface.requires_structured_finalization_after_tool_success()
+            if any_tool_round_executed
+                && effective_reply_surface
+                    .should_run_structured_finalization_after_tool_round(&content)
             {
-                if !content.trim().is_empty() {
-                    metrics::record_tool_succeeded_final_drift();
-                    log::info!(
-                        "[reply_surface] tool succeeded but final drift detected surface={} channel={} chat_id={}",
-                        effective_reply_surface.as_str(),
-                        msg.channel,
-                        msg.chat_id
-                    );
-                }
                 used_surface_finalization = true;
-                let structured_reply = run_surface_finalization_round(
+                final_content = run_surface_finalization_round(
                     worker_llm,
                     &mut tool_ctx,
                     &system,
@@ -382,83 +426,6 @@ pub(super) fn execute_turn(
                     effective_reply_surface,
                     &content,
                     recovery_suffix_for_gate(&deliberation_gate),
-                    config.llm_stream,
-                    &mut latency,
-                    &mut system_scratch,
-                )?;
-                if surface_finalization_collapses_after_cleanup(config.strategy, &structured_reply)
-                {
-                    log::warn!(
-                        "[reply_surface] structured finalization collapsed after cleanup surface={} channel={} chat_id={}",
-                        effective_reply_surface.as_str(),
-                        msg.channel,
-                        msg.chat_id
-                    );
-                    used_final_answer_recovery = true;
-                    let mut recovery_suffix =
-                        recovery_suffix_for_gate(&deliberation_gate).to_string();
-                    recovery_suffix.push_str(STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX);
-                    final_content = run_final_answer_recovery_round(
-                        worker_llm,
-                        &mut tool_ctx,
-                        &system,
-                        &messages,
-                        current_turn_scope_start,
-                        structured_reply.as_str(),
-                        recovery_suffix.as_str(),
-                        config.llm_stream,
-                        &mut latency,
-                        &mut system_scratch,
-                    )?;
-                } else {
-                    final_content = structured_reply;
-                }
-                break;
-            }
-            if let Some(followup) = empty_final_answer_followup(
-                config.strategy,
-                any_tool_used && !primary_reply_already_delivered && !tool_visible_reply_sent,
-                &content,
-            ) {
-                if any_tool_used {
-                    used_final_answer_recovery = true;
-                    let mut recovery_suffix =
-                        recovery_suffix_for_gate(&deliberation_gate).to_string();
-                    recovery_suffix.push_str("\n\n## EndTurn correction\n");
-                    recovery_suffix.push_str(followup);
-                    final_content = run_final_answer_recovery_round(
-                        worker_llm,
-                        &mut tool_ctx,
-                        &system,
-                        &messages,
-                        current_turn_scope_start,
-                        &content,
-                        recovery_suffix.as_str(),
-                        config.llm_stream,
-                        &mut latency,
-                        &mut system_scratch,
-                    )?;
-                    break;
-                }
-            }
-            if let Some(recovery_suffix) = resolve_end_turn_followup(EndTurnFollowupContext {
-                strategy: config.strategy,
-                any_tool_used,
-                recent_tool_round: &recent_tool_round,
-                messages: &messages,
-                content: &content,
-            }) {
-                used_final_answer_recovery = true;
-                let mut combined_suffix = recovery_suffix_for_gate(&deliberation_gate).to_string();
-                combined_suffix.push_str(recovery_suffix.as_str());
-                final_content = run_final_answer_recovery_round(
-                    worker_llm,
-                    &mut tool_ctx,
-                    &system,
-                    &messages,
-                    current_turn_scope_start,
-                    &content,
-                    combined_suffix.as_str(),
                     config.llm_stream,
                     &mut latency,
                     &mut system_scratch,
@@ -478,6 +445,7 @@ pub(super) fn execute_turn(
                 final_content = response.content;
                 break;
             }
+            any_tool_round_executed = true;
             if !response.content.trim().is_empty() && response.content.trim() != "[tool_use]" {
                 mark_ttft_if_visible(&mut latency, worker_start, &response.content);
                 delivery.emit_partial(&response.content);
@@ -515,13 +483,7 @@ pub(super) fn execute_turn(
                 any_tool_used = true;
             }
             successful_tool_names.extend(tool_round_output.successful_tool_names);
-            let round_failure_summary = tool_round_output.round_failure_summary;
             external_content_used |= tool_round_output.used_external_content;
-            recent_tool_round.record_round(
-                tool_calls.len(),
-                tool_round_output.round_tool_success,
-                round_failure_summary,
-            );
             let evidence_block = (!round_evidence_lines.is_empty()).then(|| {
                 render_surface_evidence_block(
                     effective_reply_surface,
@@ -583,67 +545,35 @@ pub(super) fn execute_turn(
         final_content = content;
         break;
     }
-    if final_content.trim().is_empty() && any_tool_used {
+    if !used_surface_finalization
+        && any_tool_round_executed
+        && reply_surface
+            .promote_for_runtime_tools(
+                &successful_tool_names,
+                external_content_used,
+                final_content.as_str(),
+            )
+            .should_run_structured_finalization_after_tool_round(final_content.as_str())
+    {
         effective_reply_surface = reply_surface.promote_for_runtime_tools(
             &successful_tool_names,
             external_content_used,
             final_content.as_str(),
         );
-        if effective_reply_surface.requires_structured_finalization_after_tool_success() {
-            used_surface_finalization = true;
-            let structured_reply = run_surface_finalization_round(
-                worker_llm,
-                &mut tool_ctx,
-                &system,
-                &messages,
-                current_turn_scope_start,
-                effective_reply_surface,
-                final_content.as_str(),
-                recovery_suffix_for_gate(&deliberation_gate),
-                config.llm_stream,
-                &mut latency,
-                &mut system_scratch,
-            )?;
-            if surface_finalization_collapses_after_cleanup(config.strategy, &structured_reply) {
-                log::warn!(
-                    "[reply_surface] structured finalization collapsed after cleanup surface={} channel={} chat_id={}",
-                    effective_reply_surface.as_str(),
-                    msg.channel,
-                    msg.chat_id
-                );
-                used_final_answer_recovery = true;
-                let mut recovery_suffix = recovery_suffix_for_gate(&deliberation_gate).to_string();
-                recovery_suffix.push_str(STRUCTURED_FINALIZATION_EMPTY_RECOVERY_SUFFIX);
-                final_content = run_final_answer_recovery_round(
-                    worker_llm,
-                    &mut tool_ctx,
-                    &system,
-                    &messages,
-                    current_turn_scope_start,
-                    structured_reply.as_str(),
-                    recovery_suffix.as_str(),
-                    config.llm_stream,
-                    &mut latency,
-                    &mut system_scratch,
-                )?;
-            } else {
-                final_content = structured_reply;
-            }
-        } else {
-            used_final_answer_recovery = true;
-            final_content = run_final_answer_recovery_round(
-                worker_llm,
-                &mut tool_ctx,
-                &system,
-                &messages,
-                current_turn_scope_start,
-                final_content.as_str(),
-                recovery_suffix_for_gate(&deliberation_gate),
-                config.llm_stream,
-                &mut latency,
-                &mut system_scratch,
-            )?;
-        }
+        used_surface_finalization = true;
+        final_content = run_surface_finalization_round(
+            worker_llm,
+            &mut tool_ctx,
+            &system,
+            &messages,
+            current_turn_scope_start,
+            effective_reply_surface,
+            final_content.as_str(),
+            recovery_suffix_for_gate(&deliberation_gate),
+            config.llm_stream,
+            &mut latency,
+            &mut system_scratch,
+        )?;
     }
     if any_tool_used && !used_surface_finalization {
         effective_reply_surface = reply_surface.promote_for_runtime_tools(
@@ -658,13 +588,12 @@ pub(super) fn execute_turn(
     {
         metrics::record_empty_final_blocked();
         return Err(crate::error::Error::config(
-            "final_reply_empty",
+            crate::agent::final_reply::ReplyContractBreachKind::ProducerEmpty.stage(),
             format!(
-                "reply_surface={} any_tool_used={} used_surface_finalization={} used_final_answer_recovery={}",
+                "reply_surface={} any_tool_used={} used_surface_finalization={}",
                 effective_reply_surface.as_str(),
                 any_tool_used,
-                used_surface_finalization,
-                used_final_answer_recovery
+                used_surface_finalization
             ),
         ));
     }
@@ -687,7 +616,6 @@ pub(super) fn execute_turn(
             any_tool_used,
             external_content_used,
             used_surface_finalization,
-            used_final_answer_recovery,
             task_execution_used: false,
             pressure,
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
@@ -697,9 +625,9 @@ pub(super) fn execute_turn(
             prompt_recall_intent: runtime_carry.prompt_recall_intent,
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,
             task_learning_selected_ids: runtime_carry.task_recall_selected_ids,
-            programmable_reasoning_intent: programmable_reasoning_intent.map(|value| *value),
-            counterfactual_analysis: counterfactual_analysis.map(|value| *value),
-            adversarial_arena_adjudication: adversarial_arena_adjudication.map(|value| *value),
+            programmable_reasoning_intent,
+            counterfactual_analysis,
+            adversarial_arena_adjudication,
             subject_state: subject_state.map(|value| *value),
             soul_feedback_projection: soul_feedback_projection.map(|value| *value),
             mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),

@@ -4,7 +4,9 @@
 
 use super::adversarial_arena::render_adversarial_arena_guidance_block;
 use super::counterfactual::{render_counterfactual_guidance_block, CounterfactualAnalysis};
-use super::reasoning_intent::ProgrammableReasoningIntent;
+use super::reasoning_intent::{
+    render_programmable_reasoning_intent_block, ProgrammableReasoningIntent,
+};
 use super::reply_surface::ReplySurface;
 use super::request_semantics::RequestSemantics;
 use crate::bus::PcMsg;
@@ -199,6 +201,18 @@ impl<'a> AgentRequestPlan<'a> {
                 max_len,
             );
         }
+        if let Some(reasoning_intent) = self
+            .programmable_reasoning_intent
+            .as_ref()
+            .and_then(|intent| render_programmable_reasoning_intent_block(intent, max_len))
+        {
+            let _ = crate::agent::context::append_capped_section(
+                system,
+                "\n\n",
+                &reasoning_intent,
+                max_len,
+            );
+        }
         if matches!(self.tool_call_mode, ToolCallMode::PromptGuided) {
             append_tool_fallback_instructions(system, max_len, &self.tool_specs);
         }
@@ -224,8 +238,8 @@ mod tests {
         ProgrammableReasoningIntent, ProgrammableReasoningIntentKind, ProgrammableReasoningStrategy,
     };
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
-        RequestSemantics, ResumeRelation,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
+        ForegroundControlDecision, RequestKind, RequestSemantics,
     };
     use crate::agent::AgentRunStrategy;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
@@ -255,7 +269,7 @@ mod tests {
             disclosure_surface: DisclosureSurface::Governed,
             execution_preference,
             action_family: ActionFamily::Conversation,
-            resume_relation: ResumeRelation::IndependentTurn,
+            foreground_control: ForegroundControlDecision::IndependentTurn,
             confidence: 90,
         }
     }
@@ -509,7 +523,7 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                resume_relation: ResumeRelation::ResumeActiveAction,
+                foreground_control: ForegroundControlDecision::ContinueActiveWork,
                 confidence: 100,
             },
         );
@@ -534,7 +548,7 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::TaskExecution,
-                resume_relation: ResumeRelation::ResumeActiveTaskRun,
+                foreground_control: ForegroundControlDecision::ContinueActiveWork,
                 confidence: 100,
             },
         );
@@ -558,7 +572,7 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                resume_relation: ResumeRelation::ResumeActiveAction,
+                foreground_control: ForegroundControlDecision::ReviseActiveWork,
                 confidence: 92,
             },
         );

@@ -258,7 +258,6 @@ pub(super) fn execute_tool_use_round(
 ) -> ToolUseRoundExecutionOutput {
     let mut truncated = false;
     let mut round_tool_success = false;
-    let mut round_failure_summary = ToolFailureSummary::default();
     let mut omitted_evidence_count = 0usize;
     let mut used_external_content = false;
     let mut successful_tool_names = Vec::with_capacity(tool_calls.len());
@@ -270,9 +269,7 @@ pub(super) fn execute_tool_use_round(
 
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
         let result_view = execution.result_owned.as_str();
-        if let Some(kind) = execution.failure_kind {
-            round_failure_summary.record(kind);
-        } else if config.strategy == AgentRunStrategy::LinuxEnhanced {
+        if execution.failure_kind.is_none() && config.strategy == AgentRunStrategy::LinuxEnhanced {
             used_external_content |= tool_result_uses_external_content(&tc.name, result_view);
             if request_plan.reply_surface().accepts_tool_evidence(&tc.name)
                 && round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS
@@ -324,7 +321,6 @@ pub(super) fn execute_tool_use_round(
     ToolUseRoundExecutionOutput {
         truncated,
         round_tool_success,
-        round_failure_summary,
         used_external_content,
         omitted_evidence_count,
         successful_tool_names,

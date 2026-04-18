@@ -2840,7 +2840,7 @@ mod tests {
             &[String::from("runtime_skill__release_patch_flow")],
             RuntimeSkillReuseOutcome::Mismatch,
             260,
-            "final_recovery",
+            "surface_finalization",
         )
         .unwrap();
 
@@ -2854,7 +2854,7 @@ mod tests {
         assert_eq!(record.revision_count, 1);
         assert!(record.revision_pending);
         assert_eq!(record.last_outcome_at, Some(260));
-        assert_eq!(record.last_outcome_note, "final_recovery");
+        assert_eq!(record.last_outcome_note, "surface_finalization");
     }
 
     #[test]

@@ -164,9 +164,12 @@ fn build_router_env(config: &AppConfig) -> RouterEnv {
     let (inbound_tx, _inbound_rx, _inbound_depth) =
         new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
     let qq_msg_id_cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+    let qq_inbound_dedup_store: crate::channels::QqInboundDedupStore =
+        Arc::new(Mutex::new(HashMap::new()));
     RouterEnv::new(
         inbound_tx,
         qq_msg_id_cache,
+        qq_inbound_dedup_store,
         false,
         config.qq_channel_app_id.clone(),
         config.qq_channel_secret.clone(),

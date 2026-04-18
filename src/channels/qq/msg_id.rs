@@ -8,6 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// msg_id cache type: chat_id -> (msg_id, unix_ts).
 /// msg_id 缓存类型：chat_id -> (msg_id, unix_ts)。
 pub type QqMsgIdCache = Arc<Mutex<HashMap<String, (String, u64)>>>;
+/// Shared inbound dedup cache: inbound_dedup_key -> unix_ts.
+/// 共享入站去重缓存：inbound_dedup_key -> unix_ts。
+pub type QqInboundDedupStore = Arc<Mutex<HashMap<String, u64>>>;
 
 /// Passive reply msg_id retention window in seconds.
 /// 被动回复 msg_id 保留时长（秒）。
@@ -16,6 +19,12 @@ const QQ_MSG_ID_TTL_SECS: u64 = 300;
 /// Hard cap for cached msg_id entries.
 /// msg_id 缓存最大条目数。
 const QQ_MSG_ID_CACHE_MAX: usize = 64;
+/// Shared inbound dedup retention window in seconds.
+/// 共享入站去重缓存保留时长（秒）。
+const QQ_INBOUND_DEDUP_TTL_SECS: u64 = 300;
+/// Hard cap for shared inbound dedup entries.
+/// 共享入站去重缓存最大条目数。
+const QQ_INBOUND_DEDUP_MAX: usize = 256;
 
 fn qq_now_unix_secs() -> u64 {
     SystemTime::now()
@@ -28,12 +37,29 @@ fn prune_msg_id_cache_locked(cache: &mut HashMap<String, (String, u64)>, now: u6
     cache.retain(|_, (_, ts)| now.saturating_sub(*ts) <= QQ_MSG_ID_TTL_SECS);
 }
 
+fn prune_inbound_dedup_locked(cache: &mut HashMap<String, u64>, now: u64) {
+    cache.retain(|_, ts| now.saturating_sub(*ts) <= QQ_INBOUND_DEDUP_TTL_SECS);
+}
+
 fn evict_oldest_msg_id_entries_locked(cache: &mut HashMap<String, (String, u64)>) {
     while cache.len() > QQ_MSG_ID_CACHE_MAX {
         let Some(oldest_key) = cache
             .iter()
             .min_by_key(|(_, (_, ts))| *ts)
             .map(|(chat_id, _)| chat_id.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest_key);
+    }
+}
+
+fn evict_oldest_inbound_dedup_locked(cache: &mut HashMap<String, u64>) {
+    while cache.len() > QQ_INBOUND_DEDUP_MAX {
+        let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, ts)| *ts)
+            .map(|(dedup_key, _)| dedup_key.clone())
         else {
             break;
         };
@@ -83,6 +109,30 @@ pub(crate) fn pop_msg_id(cache: &QqMsgIdCache, chat_id: &str) -> Option<String> 
         .and_then(|mut c| pop_msg_id_locked(&mut c, chat_id, now))
 }
 
+/// Consumes an inbound dedup key and reports whether it has already been seen.
+/// 消费入站 dedup key；若已见过则返回 true。
+pub fn consume_inbound_dedup_key(
+    store: &QqInboundDedupStore,
+    dedup_key: &str,
+) -> crate::error::Result<bool> {
+    let normalized = dedup_key.trim();
+    if normalized.is_empty() {
+        return Ok(false);
+    }
+    let now = qq_now_unix_secs();
+    let mut guard = store.lock().map_err(|e| crate::error::Error::Other {
+        source: Box::new(std::io::Error::other(e.to_string())),
+        stage: "qq_inbound_dedup_lock",
+    })?;
+    prune_inbound_dedup_locked(&mut guard, now);
+    if guard.contains_key(normalized) {
+        return Ok(true);
+    }
+    guard.insert(normalized.to_string(), now);
+    evict_oldest_inbound_dedup_locked(&mut guard);
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +175,23 @@ mod tests {
         let expired = pop_msg_id_locked(&mut cache, "expired", 100 + QQ_MSG_ID_TTL_SECS + 1);
         assert_eq!(expired, None);
         assert!(!cache.contains_key("expired"));
+    }
+
+    #[test]
+    fn inbound_dedup_store_rejects_seen_key_until_ttl_expires() {
+        let store: QqInboundDedupStore = Arc::new(Mutex::new(HashMap::new()));
+
+        assert!(!consume_inbound_dedup_key(&store, "qq_message:msg-1").expect("first"));
+        assert!(consume_inbound_dedup_key(&store, "qq_message:msg-1").expect("duplicate"));
+
+        let now = qq_now_unix_secs();
+        let mut guard = store.lock().unwrap();
+        guard.insert(
+            "qq_message:msg-1".to_string(),
+            now.saturating_sub(QQ_INBOUND_DEDUP_TTL_SECS + 1),
+        );
+        drop(guard);
+
+        assert!(!consume_inbound_dedup_key(&store, "qq_message:msg-1").expect("expired"));
     }
 }

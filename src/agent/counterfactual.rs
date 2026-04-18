@@ -620,6 +620,7 @@ fn action_family_label(family: ActionFamily) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::request_semantics::ForegroundControlDecision;
     use crate::{ProgrammableReasoningExecutionBackend, ProgrammableReasoningStage};
 
     fn linux_runtime_contract() -> ProgrammableReasoningRuntimeContract {
@@ -656,7 +657,7 @@ mod tests {
                 disclosure_surface: super::super::request_semantics::DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                resume_relation: super::super::request_semantics::ResumeRelation::IndependentTurn,
+                foreground_control: ForegroundControlDecision::IndependentTurn,
                 confidence: 88,
             },
             deliberation_gate: &hard_gate(),
@@ -696,7 +697,7 @@ mod tests {
                 disclosure_surface: super::super::request_semantics::DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::MemoryFirst,
                 action_family: ActionFamily::Conversation,
-                resume_relation: super::super::request_semantics::ResumeRelation::IndependentTurn,
+                foreground_control: ForegroundControlDecision::IndependentTurn,
                 confidence: 83,
             },
             deliberation_gate: &TurnDeliberationGate {

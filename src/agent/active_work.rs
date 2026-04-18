@@ -1,9 +1,13 @@
 //! Formal foreground active-work contract for the current chat.
 //! 对当前会话前台主工作面的正式合同。
 
+use crate::agent::request_semantics::ForegroundControlDecision;
 use crate::bus::PcMsg;
 use crate::error::Result;
-use crate::memory::{should_resume_active_execution_state, ExecutionState, ExecutionStatus};
+use crate::memory::{
+    classify_active_execution_state_followup, ExecutionState, ExecutionStateFollowupIntent,
+    ExecutionStatus,
+};
 use crate::orchestrator::snapshot as orchestrator_snapshot;
 use crate::runtime::system_work::{
     CHANNEL_IDLE_MEMORY_FORGE, CHANNEL_LONG_TERM_MEMORY_REFRESH, CHANNEL_OPERATOR_MAINTENANCE,
@@ -93,12 +97,27 @@ impl ActiveWorkRecord {
                 || !self.active_artifact_refs.is_empty())
     }
 
-    pub(crate) fn should_resume(&self, user_content: &str) -> bool {
-        self.continuity_open
-            && should_resume_active_execution_state(
-                &self.execution_state_projection(),
-                user_content,
-            )
+    pub(crate) fn foreground_control_for_user_turn(
+        &self,
+        user_content: &str,
+    ) -> ForegroundControlDecision {
+        if !self.continuity_open {
+            return ForegroundControlDecision::IndependentTurn;
+        }
+        match classify_active_execution_state_followup(
+            &self.execution_state_projection(),
+            user_content,
+        ) {
+            ExecutionStateFollowupIntent::Independent => ForegroundControlDecision::IndependentTurn,
+            ExecutionStateFollowupIntent::Continue => ForegroundControlDecision::ContinueActiveWork,
+            ExecutionStateFollowupIntent::Revise => ForegroundControlDecision::ReviseActiveWork,
+            ExecutionStateFollowupIntent::Supersede => {
+                ForegroundControlDecision::SupersedeActiveWork
+            }
+            ExecutionStateFollowupIntent::ExplicitStop => {
+                ForegroundControlDecision::CancelOrAbortActiveWork
+            }
+        }
     }
 
     pub(crate) fn blocks_background_llm(&self) -> bool {
@@ -380,11 +399,10 @@ pub(crate) fn sync_active_work_after_turn(
     input: ActiveWorkSyncInput<'_>,
 ) -> Result<()> {
     use crate::agent::reply_surface::ReplySurface;
-    use crate::agent::request_semantics::ResumeRelation;
 
     if matches!(
-        input.request_semantics.resume_relation,
-        ResumeRelation::DenyOrCancelActiveAction
+        input.request_semantics.foreground_control,
+        ForegroundControlDecision::CancelOrAbortActiveWork
     ) {
         return store.clear(input.chat_id);
     }
@@ -405,13 +423,9 @@ pub(crate) fn sync_active_work_after_turn(
 pub(crate) fn should_keep_interactive_action_work(
     semantics: crate::agent::request_semantics::RequestSemantics,
 ) -> bool {
-    use crate::agent::request_semantics::{ActionFamily, ResumeRelation};
+    use crate::agent::request_semantics::ActionFamily;
 
     matches!(semantics.action_family, ActionFamily::ActiveAction)
-        || matches!(
-            semantics.resume_relation,
-            ResumeRelation::ResumeActiveAction
-        )
 }
 
 pub fn live_foreground_state_for_chat(
@@ -601,8 +615,8 @@ mod tests {
     use super::*;
     use crate::agent::reply_surface::ReplySurface;
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
-        RequestSemantics, ResumeRelation,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
+        ForegroundControlDecision, RequestKind, RequestSemantics,
     };
     use crate::task_execution::{
         TaskPlan, TaskRun, TaskRunKind, TaskRunStatus, TaskStep, TaskStepStatus,
@@ -780,14 +794,17 @@ mod tests {
         }
     }
 
-    fn semantics(action_family: ActionFamily, resume_relation: ResumeRelation) -> RequestSemantics {
+    fn semantics(
+        action_family: ActionFamily,
+        foreground_control: ForegroundControlDecision,
+    ) -> RequestSemantics {
         RequestSemantics {
             request_kind: RequestKind::General,
             evidence_need: EvidenceNeed::HostTool,
             disclosure_surface: DisclosureSurface::Governed,
             execution_preference: ExecutionPreference::ToolFirst,
             action_family,
-            resume_relation,
+            foreground_control,
             confidence: 100,
         }
     }
@@ -877,7 +894,10 @@ mod tests {
 
         assert_eq!(loaded.kind, ActiveWorkKind::TaskExecution);
         assert_eq!(loaded.title, "QQ 邮箱配置");
-        assert!(loaded.should_resume("继续"));
+        assert_eq!(
+            loaded.foreground_control_for_user_turn("继续"),
+            ForegroundControlDecision::ContinueActiveWork
+        );
     }
 
     #[test]
@@ -904,7 +924,7 @@ mod tests {
                 chat_id: "chat-1",
                 request_semantics: semantics(
                     ActionFamily::ActiveAction,
-                    ResumeRelation::DenyOrCancelActiveAction,
+                    ForegroundControlDecision::CancelOrAbortActiveWork,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
                 interactive_work: None,
@@ -939,7 +959,7 @@ mod tests {
                 chat_id: "chat-1",
                 request_semantics: semantics(
                     ActionFamily::ActiveAction,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
                 interactive_work: Some(&interactive_work),
@@ -957,7 +977,7 @@ mod tests {
                 chat_id: "chat-1",
                 request_semantics: semantics(
                     ActionFamily::Conversation,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::PublicRuntime,
                 interactive_work: None,
@@ -978,7 +998,7 @@ mod tests {
                 chat_id: "chat-1",
                 request_semantics: semantics(
                     ActionFamily::ActiveAction,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                 ),
                 reply_surface: ReplySurface::GovernedConversation,
                 interactive_work: None,

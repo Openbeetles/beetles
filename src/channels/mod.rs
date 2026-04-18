@@ -31,8 +31,8 @@ pub use feishu::{
 pub use feishu::{handle_http_event, FeishuEventResponse};
 pub use http_client::ChannelHttpClient;
 pub use qq::{
-    flush_qq_channel_sends, new_shared_qq_token_cache, run_qq_sender_loop, QqMsgIdCache,
-    SharedQqTokenCache,
+    flush_qq_channel_sends, new_shared_qq_token_cache, run_qq_sender_loop, QqInboundDedupStore,
+    QqMsgIdCache, SharedQqTokenCache,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use qq::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};

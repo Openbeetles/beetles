@@ -234,7 +234,6 @@ fn ledger_supports_promotable_persona_growth(ledger: &TurnLedger) -> bool {
     ledger.ingress == IngressKind::User
         && ledger.status == super::TurnLedgerStatus::Answered
         && ledger.final_reply_delivered
-        && !ledger.final_answer_recovered
         && !ledger.canonical_reply_source.trim().is_empty()
         && ledger
             .persona
@@ -637,20 +636,15 @@ mod tests {
     }
 
     #[test]
-    fn failed_recovered_or_critical_turns_do_not_count_as_promotable_growth() {
+    fn failed_or_critical_turns_do_not_count_as_promotable_growth() {
         let mut failed_copy = build_persona_ledger("brief", TurnPersonaPressureLevel::Normal);
         failed_copy.reason = "chat_failure_copy".to_string();
         failed_copy.outbound_source = "chat-failure".to_string();
         failed_copy.canonical_reply_source = String::new();
 
-        let mut recovered = build_persona_ledger("brief", TurnPersonaPressureLevel::Normal);
-        recovered.reason = "final_recovery".to_string();
-        recovered.canonical_reply_source = "final_recovery".to_string();
-        recovered.final_answer_recovered = true;
-
         let critical = build_persona_ledger("brief", TurnPersonaPressureLevel::Critical);
 
-        let evidence = derive_recent_persona_evidence(&[failed_copy, recovered, critical], 12)
+        let evidence = derive_recent_persona_evidence(&[failed_copy, critical], 12)
             .expect("recent persona evidence");
 
         assert!(evidence.repeated_priority_order.is_empty());

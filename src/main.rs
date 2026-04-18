@@ -119,6 +119,7 @@ struct PreparedRuntimeAssembly {
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     bus: RuntimeBus,
     qq_msg_id_cache: beetle::channels::QqMsgIdCache,
+    qq_inbound_dedup_store: beetle::channels::QqInboundDedupStore,
     qq_token_cache: beetle::channels::SharedQqTokenCache,
     registry: Arc<beetle::ToolRegistry>,
     baidu_token_cache: Option<Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
@@ -157,6 +158,8 @@ struct HttpServerSpawnContext {
     llm_stream_enabled: bool,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     msg_id_cache: beetle::channels::QqMsgIdCache,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    inbound_dedup_store: beetle::channels::QqInboundDedupStore,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     qq_webhook_enabled: bool,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -300,6 +303,8 @@ fn spawn_http_config_server(
             ctx.inbound_tx,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.msg_id_cache,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            ctx.inbound_dedup_store,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.qq_webhook_enabled,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -2295,6 +2300,8 @@ fn prepare_runtime_assembly(
     );
 
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+    let qq_inbound_dedup_store: beetle::channels::QqInboundDedupStore =
+        Arc::new(Mutex::new(HashMap::new()));
     let qq_token_cache = beetle::channels::new_shared_qq_token_cache();
     #[allow(unused_variables)]
     let (mut registry, baidu_token_cache) = beetle::build_default_registry(&config, &runtime);
@@ -2404,6 +2411,7 @@ fn prepare_runtime_assembly(
         skill_prompt_cache,
         bus,
         qq_msg_id_cache,
+        qq_inbound_dedup_store,
         qq_token_cache,
         registry,
         baidu_token_cache,
@@ -2439,6 +2447,8 @@ fn start_support_planes(
             llm_stream_enabled: assembly.config.llm_stream,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             msg_id_cache: Arc::clone(&assembly.qq_msg_id_cache),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            inbound_dedup_store: Arc::clone(&assembly.qq_inbound_dedup_store),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             qq_webhook_enabled: !assembly.config.qq_channel_app_id.trim().is_empty()
                 && !assembly.config.qq_channel_secret.trim().is_empty(),
@@ -2612,6 +2622,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                     let qq_id = c.app_id.clone();
                     let qq_sec = c.app_secret.clone();
                     let qq_cache_ws = Arc::clone(&assembly.qq_msg_id_cache);
+                    let qq_inbound_dedup_ws = Arc::clone(&assembly.qq_inbound_dedup_store);
                     let qq_token_cache_ws = assembly.qq_token_cache.clone();
                     let qq_pending = Arc::clone(&assembly.runtime.pending_retry_store);
                     let http_factory = assembly
@@ -2629,6 +2640,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                                     app_id: qq_id,
                                     client_secret: qq_sec,
                                     msg_id_cache: qq_cache_ws,
+                                    inbound_dedup_store: qq_inbound_dedup_ws,
                                     shared_token_cache: qq_token_cache_ws,
                                 },
                                 qq_tx,

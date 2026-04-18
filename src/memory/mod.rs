@@ -123,9 +123,9 @@ pub use core_revision_ledger::{
     CoreRevisionRecordChange, CoreRevisionTimelineEntry,
 };
 pub(crate) use execution_state::{
-    execution_state_has_pending_work, run_execution_state_refresh_with_state,
-    seed_execution_state_from_turn, should_refresh_execution_state,
-    should_resume_active_execution_state, ProvisionalExecutionStateInput,
+    classify_active_execution_state_followup, execution_state_has_pending_work,
+    run_execution_state_refresh_with_state, seed_execution_state_from_turn,
+    should_refresh_execution_state, ExecutionStateFollowupIntent, ProvisionalExecutionStateInput,
 };
 pub use execution_state::{
     render_execution_state_block, run_execution_state_refresh, ExecutionState,

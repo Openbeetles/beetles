@@ -14,7 +14,7 @@ mod webhook;
 
 mod ws;
 
-pub use msg_id::QqMsgIdCache;
+pub use msg_id::{QqInboundDedupStore, QqMsgIdCache};
 pub use send::{check_connectivity, flush_qq_channel_sends, run_qq_sender_loop};
 pub use token::{new_shared_qq_token_cache, SharedQqTokenCache};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

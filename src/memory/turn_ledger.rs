@@ -163,8 +163,6 @@ pub struct TurnToolPathLedger {
     pub react_rounds: u32,
     #[serde(default)]
     pub current_primary_delivered: bool,
-    #[serde(default)]
-    pub final_answer_recovered: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,7 +214,6 @@ impl TurnObservationLedger {
             || self.tool_path.tool_calls > 0
             || self.tool_path.react_rounds > 0
             || self.tool_path.current_primary_delivered
-            || self.tool_path.final_answer_recovered
             || self.blocker.is_some()
     }
 }
@@ -669,8 +666,6 @@ pub struct TurnLedger {
     #[serde(default)]
     pub any_tool_used: bool,
     #[serde(default)]
-    pub final_answer_recovered: bool,
-    #[serde(default)]
     pub final_reply_delivered: bool,
     #[serde(default)]
     pub reply_handoff_ms: u64,
@@ -914,11 +909,10 @@ pub fn render_turn_observation_ledger_block(
     if observation.tool_path.tool_calls > 0 || observation.tool_path.react_rounds > 0 {
         let _ = writeln!(
             out,
-            "Tool stats: calls={} rounds={} current_primary_delivered={} final_answer_recovered={}",
+            "Tool stats: calls={} rounds={} current_primary_delivered={}",
             observation.tool_path.tool_calls,
             observation.tool_path.react_rounds,
             observation.tool_path.current_primary_delivered,
-            observation.tool_path.final_answer_recovered
         );
     }
     if let Some(blocker) = observation.blocker.as_ref() {
@@ -1219,7 +1213,7 @@ mod tests {
             &TurnObservationLedger {
                 execution_class: TurnExecutionClass::ToolAssisted,
                 deliberation_class: TurnDeliberationClass::HardReasoning,
-                final_outcome: "final_recovery".to_string(),
+                final_outcome: "surface_finalization".to_string(),
                 pressure: TurnPersonaPressureLevel::Cautious,
                 mode: TurnModeSnapshotLedger {
                     current_mode: "normal".to_string(),
@@ -1227,11 +1221,10 @@ mod tests {
                     allow_idle_self_runtime: true,
                 },
                 tool_path: TurnToolPathLedger {
-                    path: "tool_recovery".to_string(),
+                    path: "surface_finalization".to_string(),
                     tool_calls: 3,
                     react_rounds: 2,
                     current_primary_delivered: false,
-                    final_answer_recovered: true,
                 },
                 blocker: Some(TurnBlockerLedger {
                     kind: "retryable".to_string(),
@@ -1248,8 +1241,8 @@ mod tests {
         assert!(rendered.contains("Deliberation: hard_reasoning"));
         assert!(rendered.contains("Mode: normal"));
         assert!(rendered.contains("Pressure: cautious"));
-        assert!(rendered.contains("Tool path: tool_recovery"));
-        assert!(rendered.contains("Final outcome: final_recovery"));
+        assert!(rendered.contains("Tool path: surface_finalization"));
+        assert!(rendered.contains("Final outcome: surface_finalization"));
         assert!(rendered.contains("Blocker: retryable 2/2"));
     }
 

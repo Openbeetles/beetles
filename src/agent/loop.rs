@@ -18,22 +18,18 @@ mod worker_error;
 mod worker_governance;
 
 use super::delivery::{DeliveryReport, DeliverySession, ToolIntentDelivery};
-use super::final_reply::finalize_user_visible_reply;
 use super::reasoning_intent::ProgrammableReasoningIntent;
 use super::reply_surface::ReplySurface;
 use super::request_plan::AgentRequestPlan;
 use super::request_semantics::RequestSemantics;
 use super::soul_feedback::{build_turn_soul_feedback_ledger, SoulFeedbackProjection};
-use super::strategy::{
-    empty_final_answer_followup, final_answer_followup, repeated_answer_followup, AgentRunStrategy,
-    SuccessfulToolRoundSummary,
-};
+use super::strategy::AgentRunStrategy;
 use super::subject_state::{
     build_turn_subject_state_ledger, compile_subject_state, render_subject_state_block,
     SubjectState, SubjectStateCompileInput,
 };
 use super::tool_outcome::{
-    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment, ToolFailureSummary,
+    classify_tool_error, denied_tool_assessment, unavailable_tool_assessment,
 };
 use super::StreamEditor;
 use crate::agent::context::{
@@ -109,8 +105,7 @@ use std::time::{Duration, Instant};
 use self::background_jobs::run_background_job_with_accounting;
 use self::delivery_handoff::deliver_turn;
 use self::driver::{
-    prepare_system_with_suffix, recv_next_agent_msg, resolve_end_turn_followup,
-    run_final_answer_recovery_round, run_surface_finalization_round,
+    prepare_system_with_suffix, recv_next_agent_msg, run_surface_finalization_round,
 };
 use self::ingress_admission::admit_turn;
 use self::reply_finalize::{complete_turn, finalize_turn};
@@ -153,7 +148,6 @@ const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
 const POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS: usize = 768;
 const POST_REPLY_MAINTENANCE_DELAY_MS: u64 = 1_500;
-const FINAL_RECOVERY_SYSTEM_SUFFIX: &str = "\n\n## Final delivery\nThe tool-execution budget for this turn is exhausted. Do not call any tool. Using only the completed tool results and current conclusions already present in this conversation, produce the final user-facing answer now. Do not output execution transcripts, numbered step logs, or future-step sections.";
 const TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX: &str = "\n\n## Task Execution Planner\nDecide whether the latest user request should stay on the normal reply path or enter the formal task-execution path. Return JSON only with fields: route, reason, title, goal, completion_definition, risk_notes, steps. route must be one of direct_reply, start_run, resume_run. When route is direct_reply, leave goal/completion_definition/steps empty. When route starts or resumes a run, steps must be an ordered array of 1-6 objects with title, instruction, tool_budget, retry_budget, expected_artifacts, review_criteria. Do not answer the user. Do not call tools in this planner step.";
 const TASK_EXECUTION_REVIEW_SYSTEM_SUFFIX: &str = "\n\n## Task Step Reviewer\nReview the just-finished task step and decide whether the run should pass the step, retry the same step, revise the remaining plan, abort the run, or finish partially. Return JSON only with fields: decision, summary, artifact_summary, revised_steps, durable_facts, reusable_procedures, evidence_only, transient_artifact_ids. decision must be one of pass, retry_step, revise_plan, abort_run, partial_complete. Only provide revised_steps when decision is revise_plan. durable_facts / reusable_procedures / evidence_only are arrays of objects with topic, summary, content, and optional memory_kind for durable_facts. durable_facts are only for canonical long-term facts that deserve governed shared memory. reusable_procedures are only for methods that might become runtime skills after repeated success. evidence_only is for supporting evidence that should enter archive but not canonical memory. transient_artifact_ids lists workspace artifact ids that should be pruned after review because they are low-value scratch output. Do not call tools in this review step.";
 const TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX: &str = "\n\n## Task Run Finisher\nUsing only the governed task workspace, completed step outputs, and current conclusions, write the final user-facing reply for this task run. Do not call tools. Do not output execution transcripts, internal step ids, or future-plan boilerplate. If the run is partial or blocked, say exactly what was completed and what remains blocked.";
@@ -494,7 +488,6 @@ struct WorkerLatency {
     request_semantics_ms: u128,
     surface_finalize_ms: u128,
     mental_privacy_review_ms: u128,
-    final_recovery_ms: u128,
     llm_round_total_ms: u128,
     tool_exec_ms: u128,
     session_write_ms: u128,
@@ -510,7 +503,6 @@ struct WorkerRunTelemetry {
     any_tool_used: bool,
     external_content_used: bool,
     used_surface_finalization: bool,
-    used_final_answer_recovery: bool,
     task_execution_used: bool,
     pressure: crate::orchestrator::PressureLevel,
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
@@ -548,8 +540,6 @@ fn build_turn_observation_ledger(
     } else if telemetry.any_tool_used {
         if telemetry.used_surface_finalization {
             "surface_finalization"
-        } else if telemetry.used_final_answer_recovery {
-            "tool_recovery"
         } else if telemetry.delivery.current_primary_delivered {
             "tool_primary_delivery"
         } else {
@@ -578,7 +568,6 @@ fn build_turn_observation_ledger(
             tool_calls: telemetry.latency.tool_calls,
             react_rounds: telemetry.latency.react_rounds,
             current_primary_delivered: telemetry.delivery.current_primary_delivered,
-            final_answer_recovered: telemetry.used_final_answer_recovery,
         },
         blocker: None,
     };
@@ -589,9 +578,6 @@ struct PreparedWorkerConversation {
     runtime_carry: Box<PromptRuntimeCarry>,
     subject_state: Option<Box<SubjectState>>,
     soul_feedback_projection: Option<Box<SoulFeedbackProjection>>,
-    programmable_reasoning_intent: Option<Box<ProgrammableReasoningIntent>>,
-    counterfactual_analysis: Option<Box<crate::agent::counterfactual::CounterfactualAnalysis>>,
-    adversarial_arena_adjudication: Option<Box<crate::reasoning::AdversarialArenaAdjudication>>,
     system: String,
     messages: Vec<Message>,
     system_scratch: String,
@@ -601,6 +587,8 @@ struct PreparedWorkerConversation {
     prompt_memory_system_budget: usize,
     pressure: crate::orchestrator::PressureLevel,
     request_semantics: RequestSemantics,
+    active_task_context_present: bool,
+    governed_memory_evidence_present: bool,
     mental_privacy_adjudication: Option<Box<crate::memory::MentalPrivacyDisclosureAdjudication>>,
     persona_priority_adjudication: Option<Box<PersonaPriorityAdjudication>>,
 }
@@ -614,7 +602,6 @@ struct ToolCallExecutionResult {
 struct ToolUseRoundExecutionOutput {
     truncated: bool,
     round_tool_success: bool,
-    round_failure_summary: ToolFailureSummary,
     used_external_content: bool,
     omitted_evidence_count: usize,
     successful_tool_names: Vec<String>,
@@ -1565,7 +1552,7 @@ fn log_agent_latency_summary(
 ) {
     if total_ms >= latency_warn_ms {
         log::warn!(
-            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} final_recovery_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
             worker_lane_tag,
             req_id,
             channel,
@@ -1577,7 +1564,6 @@ fn log_agent_latency_summary(
             worker_latency.request_semantics_ms,
             worker_latency.surface_finalize_ms,
             worker_latency.mental_privacy_review_ms,
-            worker_latency.final_recovery_ms,
             worker_latency.llm_round_total_ms,
             worker_latency.tool_exec_ms,
             worker_latency.session_write_ms,
@@ -1594,7 +1580,7 @@ fn log_agent_latency_summary(
         );
     } else {
         log::info!(
-            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} final_recovery_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
             worker_lane_tag,
             req_id,
             channel,
@@ -1606,7 +1592,6 @@ fn log_agent_latency_summary(
             worker_latency.request_semantics_ms,
             worker_latency.surface_finalize_ms,
             worker_latency.mental_privacy_review_ms,
-            worker_latency.final_recovery_ms,
             worker_latency.llm_round_total_ms,
             worker_latency.tool_exec_ms,
             worker_latency.session_write_ms,
@@ -1653,37 +1638,6 @@ struct AdmissionDeferContext<'a> {
 /// run_worker_path 返回：当前轮 canonical final reply text。
 pub enum WorkerOutcome {
     Content(String),
-}
-
-#[derive(Default)]
-struct RecentToolRoundState {
-    successful_round: Option<SuccessfulToolRoundSummary>,
-}
-
-impl RecentToolRoundState {
-    fn record_round(
-        &mut self,
-        total_calls: usize,
-        round_had_success: bool,
-        failure_summary: ToolFailureSummary,
-    ) {
-        if round_had_success {
-            self.successful_round = Some(SuccessfulToolRoundSummary {
-                total_calls,
-                successful_calls: total_calls.saturating_sub(failure_summary.failed_calls),
-            });
-            return;
-        }
-        self.successful_round = None;
-    }
-}
-
-struct EndTurnFollowupContext<'a> {
-    strategy: AgentRunStrategy,
-    any_tool_used: bool,
-    recent_tool_round: &'a RecentToolRoundState,
-    messages: &'a [Message],
-    content: &'a str,
 }
 
 /// Agent 循环的存储与运行参数，由 main 构建并传入 run_agent_loop，减少参数数量。
@@ -2043,8 +1997,8 @@ fn run_agent_loop_main(
 mod tests {
     use super::*;
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
-        ResumeRelation,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
+        ForegroundControlDecision, RequestKind,
     };
     use crate::agent::DetachedWorkStore;
     use crate::error::Result;
@@ -2169,48 +2123,6 @@ mod tests {
             _body: &[u8],
         ) -> Result<(u16, ResponseBody)> {
             Ok((200, ResponseBody::Heap(Vec::new())))
-        }
-    }
-
-    #[derive(Clone)]
-    struct ObservedRecoveryRequest {
-        system: String,
-        tool_count: usize,
-        message_count: usize,
-        last_message_role: Option<String>,
-        last_message_content: Option<String>,
-    }
-
-    struct RecoveryStubLlm {
-        observed: Arc<Mutex<Vec<ObservedRecoveryRequest>>>,
-        response: LlmResponse,
-    }
-
-    impl LlmClient for RecoveryStubLlm {
-        fn model_compat(&self) -> LlmModelCompat {
-            LlmModelCompat::default()
-        }
-
-        fn chat(
-            &self,
-            _http: &mut dyn LlmHttpClient,
-            system: &str,
-            messages: &[Message],
-            tools: Option<&[crate::llm::ToolSpec]>,
-            _tool_choice: ToolChoicePolicy,
-        ) -> Result<LlmResponse> {
-            let last_message = messages.last();
-            self.observed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(ObservedRecoveryRequest {
-                    system: system.to_string(),
-                    tool_count: tools.map_or(0, |specs| specs.len()),
-                    message_count: messages.len(),
-                    last_message_role: last_message.map(|message| message.role.to_string()),
-                    last_message_content: last_message.map(|message| message.content.clone()),
-                });
-            Ok(self.response.clone())
         }
     }
 
@@ -3583,7 +3495,6 @@ mod tests {
         expected_streamed: bool,
         expected_current_primary_delivered: bool,
         expected_outcome_fragment: &'static str,
-        expect_final_recovery: bool,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3594,7 +3505,6 @@ mod tests {
         tool_calls: u32,
         streamed: bool,
         current_primary_delivered: bool,
-        final_recovery_used: bool,
         outcome_fragment_present: bool,
         passed: bool,
     }
@@ -3633,9 +3543,6 @@ mod tests {
         )
         .expect("benchmark execute turn");
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        let final_recovery_used = observed
-            .iter()
-            .any(|request| request.system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
         let WorkerOutcome::Content(outcome_text) = outcome;
         let llm_calls = observed.len();
         let outcome_fragment_present = outcome_text.contains(case.expected_outcome_fragment);
@@ -3645,7 +3552,6 @@ mod tests {
             && telemetry.streamed == case.expected_streamed
             && telemetry.delivery.current_primary_delivered
                 == case.expected_current_primary_delivered
-            && final_recovery_used == case.expect_final_recovery
             && outcome_fragment_present;
         AgentTurnBenchmarkResult {
             case_name: case.name,
@@ -3654,7 +3560,6 @@ mod tests {
             tool_calls: telemetry.latency.tool_calls,
             streamed: telemetry.streamed,
             current_primary_delivered: telemetry.delivery.current_primary_delivered,
-            final_recovery_used,
             outcome_fragment_present,
             passed,
         }
@@ -3885,35 +3790,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_end_turn_followup_prefers_final_recovery_after_tool_success() {
-        let _worker_llm = RecoveryStubLlm {
-            observed: Arc::new(Mutex::new(Vec::new())),
-            response: LlmResponse {
-                content: String::new(),
-                stop_reason: StopReason::EndTurn,
-                tool_calls: None,
-            },
-        };
-        let mut recent_tool_round = RecentToolRoundState::default();
-        recent_tool_round.record_round(1, true, ToolFailureSummary::default());
-        let messages = vec![Message {
-            role: Cow::Borrowed("assistant"),
-            content: "当前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。".to_string(),
-        }];
-
-        let recovery_suffix = resolve_end_turn_followup(EndTurnFollowupContext {
-            strategy: AgentRunStrategy::LinuxEnhanced,
-            any_tool_used: true,
-            recent_tool_round: &recent_tool_round,
-            messages: &messages,
-            content: "当前结论是查看 /tmp/result.json，然后按 phase_b 继续执行。",
-        })
-        .expect("recovery suffix");
-
-        assert!(recovery_suffix.contains("EndTurn correction"));
-    }
-
-    #[test]
     fn compact_early_tool_rounds_keeps_assistant_tail_context() {
         let mut messages = vec![
             Message {
@@ -3983,202 +3859,6 @@ mod tests {
         ];
         compact_early_tool_rounds(&mut messages, 1);
         assert_eq!(messages[2].content, original);
-    }
-
-    #[test]
-    fn final_answer_recovery_round_disables_tools_and_uses_recovery_suffix() {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let llm = RecoveryStubLlm {
-            observed: Arc::clone(&observed),
-            response: LlmResponse {
-                content: "最终答案".to_string(),
-                stop_reason: StopReason::EndTurn,
-                tool_calls: None,
-            },
-        };
-        let mut http = DummyPlatformHttp;
-        let config = test_agent_loop_config();
-        let mut tool_ctx = HttpClientToolContext {
-            http: &mut http,
-            chat_id: Some(Arc::from("chat-1")),
-            ingress: crate::bus::IngressKind::User,
-            channel: Some(Arc::from("qq_channel")),
-            tool_registry: None,
-            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
-            supports_current_chat_outbound_message: false,
-            supports_explicit_outbound_message: false,
-            outbound_message_budget: 0,
-            outbound_message_count: 0,
-            locale: UiLocale::Zh,
-        };
-        let messages = vec![Message {
-            role: Cow::Borrowed("user"),
-            content: concat!(
-                "Tool results:\n",
-                "<tool_result id=\"call_1\" tool=\"get_time\" status=\"ok\">\n",
-                "2026-04-01T06:45:39Z\n",
-                "</tool_result>\n",
-            )
-            .to_string(),
-        }];
-        let mut latency = WorkerLatency::default();
-        let mut system_scratch = String::new();
-        let recovery_suffix = recovery_suffix_for_gate(&TurnDeliberationGate {
-            class: crate::memory::TurnDeliberationClass::HardReasoning,
-            compact_reply: false,
-            prefer_explicit_blocker: true,
-            rationale: vec!["test".to_string()],
-        });
-
-        let content = run_final_answer_recovery_round(
-            &llm,
-            &mut tool_ctx,
-            "base system",
-            &messages,
-            0,
-            "",
-            recovery_suffix,
-            false,
-            &mut latency,
-            &mut system_scratch,
-        )
-        .expect("recovery round should succeed");
-
-        assert_eq!(content, "最终答案");
-        assert_eq!(latency.react_rounds, 1);
-        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(observed.len(), 1);
-        assert_eq!(observed[0].tool_count, 0);
-        assert_eq!(observed[0].message_count, 1);
-        assert!(observed[0].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX));
-        assert!(observed[0].system.contains("## Deliberation recovery"));
-    }
-
-    #[test]
-    fn final_answer_recovery_round_carries_current_assistant_draft_into_context() {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let llm = RecoveryStubLlm {
-            observed: Arc::clone(&observed),
-            response: LlmResponse {
-                content: "修正后的最终答案".to_string(),
-                stop_reason: StopReason::EndTurn,
-                tool_calls: None,
-            },
-        };
-        let mut http = DummyPlatformHttp;
-        let config = test_agent_loop_config();
-        let mut tool_ctx = HttpClientToolContext {
-            http: &mut http,
-            chat_id: Some(Arc::from("chat-1")),
-            ingress: crate::bus::IngressKind::User,
-            channel: Some(Arc::from("qq_channel")),
-            tool_registry: None,
-            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
-            supports_current_chat_outbound_message: false,
-            supports_explicit_outbound_message: false,
-            outbound_message_budget: 0,
-            outbound_message_count: 0,
-            locale: UiLocale::Zh,
-        };
-        let messages = vec![Message {
-            role: Cow::Borrowed("user"),
-            content: "请直接给结论".to_string(),
-        }];
-        let mut latency = WorkerLatency::default();
-        let mut system_scratch = String::new();
-
-        let _ = run_final_answer_recovery_round(
-            &llm,
-            &mut tool_ctx,
-            "base system",
-            &messages,
-            0,
-            "我来总结一下当前情况。",
-            "\n\n## EndTurn correction\n直接回答最终结论。",
-            false,
-            &mut latency,
-            &mut system_scratch,
-        )
-        .expect("recovery round should succeed");
-
-        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(observed.len(), 1);
-        assert_eq!(observed[0].message_count, 2);
-        assert_eq!(observed[0].last_message_role.as_deref(), Some("assistant"));
-        assert_eq!(
-            observed[0].last_message_content.as_deref(),
-            Some("我来总结一下当前情况。")
-        );
-    }
-
-    #[test]
-    fn final_answer_recovery_round_scopes_context_to_current_turn() {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let llm = RecoveryStubLlm {
-            observed: Arc::clone(&observed),
-            response: LlmResponse {
-                content: "当前轮最终答案".to_string(),
-                stop_reason: StopReason::EndTurn,
-                tool_calls: None,
-            },
-        };
-        let mut http = DummyPlatformHttp;
-        let config = test_agent_loop_config();
-        let mut tool_ctx = HttpClientToolContext {
-            http: &mut http,
-            chat_id: Some(Arc::from("chat-1")),
-            ingress: crate::bus::IngressKind::User,
-            channel: Some(Arc::from("qq_channel")),
-            tool_registry: None,
-            channel_capability_registry: Arc::clone(&config.channel_capability_registry),
-            supports_current_chat_outbound_message: false,
-            supports_explicit_outbound_message: false,
-            outbound_message_budget: 0,
-            outbound_message_count: 0,
-            locale: UiLocale::Zh,
-        };
-        let messages = vec![
-            Message {
-                role: Cow::Borrowed("user"),
-                content: "旧问题".to_string(),
-            },
-            Message {
-                role: Cow::Borrowed("assistant"),
-                content: "旧答复".to_string(),
-            },
-            Message {
-                role: Cow::Borrowed("user"),
-                content: "请继续当前邮件配置".to_string(),
-            },
-            Message {
-                role: Cow::Borrowed("user"),
-                content: "Tool results:\n<tool_result id=\"call_1\" tool=\"office_status\" status=\"ok\">...</tool_result>".to_string(),
-            },
-        ];
-        let mut latency = WorkerLatency::default();
-        let mut system_scratch = String::new();
-
-        let _ = run_final_answer_recovery_round(
-            &llm,
-            &mut tool_ctx,
-            "base system",
-            &messages,
-            2,
-            "",
-            "\n\n## EndTurn correction\n只基于当前请求和当前工具结果回答。",
-            false,
-            &mut latency,
-            &mut system_scratch,
-        )
-        .expect("recovery round should succeed");
-
-        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(observed.len(), 1);
-        assert_eq!(observed[0].message_count, 2);
-        assert_eq!(
-            observed[0].last_message_content.as_deref(),
-            Some("Tool results:\n<tool_result id=\"call_1\" tool=\"office_status\" status=\"ok\">...</tool_result>")
-        );
     }
 
     #[test]
@@ -4623,7 +4303,6 @@ mod tests {
             any_tool_used: true,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
@@ -4691,7 +4370,7 @@ mod tests {
             observed.is_empty(),
             "public operational observability replies should bypass mental privacy review"
         );
-        assert_eq!(finalized.reply_content, reply);
+        assert_eq!(finalized.reply.visible_text, reply);
         assert!(!finalized.mental_privacy_review.applied);
     }
 
@@ -4724,7 +4403,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
@@ -4793,7 +4471,7 @@ mod tests {
             "governed replies without a disclosure adjudication hit should skip the full review round"
         );
         assert!(!finalized.mental_privacy_review.applied);
-        assert_eq!(finalized.reply_content, "这是受治理的普通答复。");
+        assert_eq!(finalized.reply.visible_text, "这是受治理的普通答复。");
     }
 
     #[test]
@@ -4825,7 +4503,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: true,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
@@ -4865,7 +4542,7 @@ mod tests {
             finalized.mental_privacy_review.action,
             crate::memory::MentalPrivacyShareAction::AllowSummary
         );
-        assert!(!finalized.reply_content.trim().is_empty());
+        assert!(!finalized.reply.visible_text.trim().is_empty());
     }
 
     #[test]
@@ -4897,7 +4574,6 @@ mod tests {
             any_tool_used: true,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: true,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
@@ -4930,7 +4606,7 @@ mod tests {
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 1);
-        assert!(!finalized.reply_content.trim().is_empty());
+        assert!(!finalized.reply.visible_text.trim().is_empty());
     }
 
     #[test]
@@ -4949,7 +4625,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: true,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
@@ -5020,11 +4695,11 @@ mod tests {
             Err(err) => err,
         };
 
-        assert_eq!(err.stage(), "final_reply_empty_after_finalize");
+        assert_eq!(err.stage(), "artifact_only_reply");
     }
 
     #[test]
-    fn finalize_turn_returns_program_error_when_governed_reply_washes_empty() {
+    fn finalize_turn_returns_contract_error_when_governed_reply_contains_internal_artifact() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(Vec::new()),
         };
@@ -5039,7 +4714,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
@@ -5065,18 +4739,18 @@ mod tests {
             &msg,
             UiLocale::Zh,
             Instant::now(),
-            WorkerOutcome::Content("[SYSTEM] hidden".to_string()),
+            WorkerOutcome::Content("这是答复。\n[SYSTEM] hidden".to_string()),
             telemetry,
         ) {
             Ok(_) => panic!("empty governed reply must fail closed"),
             Err(err) => err,
         };
 
-        assert_eq!(err.stage(), "final_reply_empty_after_finalize");
+        assert_eq!(err.stage(), "internal_artifact_reply");
     }
 
     #[test]
-    fn finalize_turn_returns_program_error_when_task_execution_reply_washes_empty() {
+    fn finalize_turn_returns_contract_error_when_task_execution_reply_is_artifact_only() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(Vec::new()),
         };
@@ -5091,7 +4765,6 @@ mod tests {
             any_tool_used: true,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: true,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
@@ -5129,7 +4802,7 @@ mod tests {
             Err(err) => err,
         };
 
-        assert_eq!(err.stage(), "final_reply_empty_after_finalize");
+        assert_eq!(err.stage(), "artifact_only_reply");
     }
 
     #[test]
@@ -5149,7 +4822,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
@@ -5160,7 +4832,7 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                resume_relation: ResumeRelation::ResumeActiveAction,
+                foreground_control: ForegroundControlDecision::ContinueActiveWork,
                 confidence: 90,
             },
             reply_surface: ReplySurface::GovernedConversation,
@@ -5189,7 +4861,7 @@ mod tests {
         .expect("finalize turn");
 
         assert_eq!(
-            finalized.reply_content,
+            finalized.reply.visible_text,
             "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。"
         );
     }
@@ -5211,7 +4883,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             task_execution_used: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
@@ -5222,7 +4893,7 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                resume_relation: ResumeRelation::ResumeActiveAction,
+                foreground_control: ForegroundControlDecision::ContinueActiveWork,
                 confidence: 90,
             },
             reply_surface: ReplySurface::GovernedConversation,
@@ -5250,7 +4921,7 @@ mod tests {
         )
         .expect("finalize turn");
 
-        assert_eq!(finalized.reply_content, "当前还缺授权码，无法继续。");
+        assert_eq!(finalized.reply.visible_text, "当前还缺授权码，无法继续。");
     }
 
     #[test]
@@ -5300,7 +4971,7 @@ mod tests {
 
         self::worker_error::handle_worker_path_error(
             crate::error::Error::config(
-                "final_reply_empty_after_finalize",
+                "artifact_only_reply",
                 "reply_surface=governed_conversation",
             ),
             AGENT_LOOP_TAG,
@@ -5352,7 +5023,7 @@ mod tests {
         let turn_ledger = build_turn_ledger_start(&msg, 1);
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
-            reply_content: "好的，继续。".to_string(),
+            reply: crate::agent::final_reply::CanonicalReply::new("好的，继续。".to_string()),
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -5371,7 +5042,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::GovernedConversation,
@@ -5507,7 +5177,9 @@ mod tests {
         };
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
-            reply_content: "这轮先把治理快照带进任务回复。".to_string(),
+            reply: crate::agent::final_reply::CanonicalReply::new(
+                "这轮先把治理快照带进任务回复。".to_string(),
+            ),
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -5526,7 +5198,6 @@ mod tests {
             any_tool_used: true,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::TaskExecution,
@@ -5721,7 +5392,6 @@ mod tests {
         let WorkerOutcome::Content(delivered) = outcome;
         assert_eq!(delivered, "你好！很高兴见到你。有什么我可以帮你的吗？");
         assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
-        assert!(!telemetry.used_final_answer_recovery);
         assert!(!telemetry.used_surface_finalization);
     }
 
@@ -5741,11 +5411,6 @@ mod tests {
                 },
                 LlmResponse {
                     content: "系统状态正常。".to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"public_runtime","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#.to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -5776,7 +5441,7 @@ mod tests {
         .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert!(observed.len() >= 3, "{observed:#?}");
+        assert_eq!(observed.len(), 2, "{observed:#?}");
         assert!(
             observed
                 .iter()
@@ -5813,7 +5478,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: r#"{"surface":"public_runtime","reply":"继续配置：当前主机状态可用，可以继续推进邮箱配置。"}"#.to_string(),
+                    content: r#"{"surface":"governed_conversation","reply":"继续配置：当前主机状态可用，可以继续推进邮箱配置。"}"#.to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -5863,7 +5528,7 @@ mod tests {
         .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert!(observed.len() >= 3, "{observed:#?}");
+        assert_eq!(observed.len(), 3, "{observed:#?}");
         assert!(
             observed
                 .iter()
@@ -6083,7 +5748,7 @@ mod tests {
         )
         .expect("finalize turn");
 
-        let delivered = finalized.reply_content;
+        let delivered = finalized.reply.visible_text;
         assert_eq!(
             delivered,
             "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。"
@@ -6188,17 +5853,6 @@ mod tests {
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
-                LlmResponse {
-                    content: r#"{"reply":"开始切换并配置 Telegram。"}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"public_runtime","reply":"开始切换并配置 Telegram。"}"#
-                        .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
             ]),
             observed: Arc::clone(&observed),
         };
@@ -6253,7 +5907,7 @@ mod tests {
             executed.telemetry.delivery.terminal_progress_updates_sent,
             0
         );
-        assert_eq!(observed.len(), 3, "{observed:#?}");
+        assert_eq!(observed.len(), 2, "{observed:#?}");
         assert!(
             observed
                 .iter()
@@ -6291,7 +5945,9 @@ mod tests {
         let turn_ledger = build_turn_ledger_start(&msg, 1);
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
-            reply_content: "我先检查当前邮件状态，然后继续配置。".to_string(),
+            reply: crate::agent::final_reply::CanonicalReply::new(
+                "我先检查当前邮件状态，然后继续配置。".to_string(),
+            ),
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6313,7 +5969,6 @@ mod tests {
                     tool_calls: 1,
                     react_rounds: 1,
                     current_primary_delivered: false,
-                    final_answer_recovered: false,
                 },
                 blocker: None,
             }),
@@ -6331,7 +5986,6 @@ mod tests {
             any_tool_used: true,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::GovernedConversation,
@@ -6404,7 +6058,7 @@ mod tests {
         let blocker = "请先提供 QQ 邮箱的授权码，我才能继续配置。".to_string();
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
-            reply_content: blocker.clone(),
+            reply: crate::agent::final_reply::CanonicalReply::new(blocker.clone()),
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6423,7 +6077,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::GovernedConversation,
@@ -6507,7 +6160,9 @@ mod tests {
         let turn_ledger = build_turn_ledger_start(&msg, 1);
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
-            reply_content: "好，当前配置动作先取消。".to_string(),
+            reply: crate::agent::final_reply::CanonicalReply::new(
+                "好，当前配置动作先取消。".to_string(),
+            ),
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6526,7 +6181,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             request_semantics: RequestSemantics {
                 request_kind: crate::agent::request_semantics::RequestKind::General,
@@ -6535,8 +6189,8 @@ mod tests {
                 execution_preference:
                     crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
                 action_family: crate::agent::request_semantics::ActionFamily::ActiveAction,
-                resume_relation:
-                    crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction,
+                foreground_control:
+                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork,
                 confidence: 100,
             },
             reply_surface: ReplySurface::GovernedConversation,
@@ -6585,7 +6239,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_empty_draft_after_tool_use_uses_final_answer_recovery() {
+    fn execute_turn_empty_draft_after_tool_use_uses_structured_finalization() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
@@ -6603,7 +6257,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。".to_string(),
+                    content: r#"{"surface":"governed_conversation","reply":"系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"}"#.to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -6637,13 +6291,12 @@ mod tests {
             delivered,
             "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
         );
-        assert!(telemetry.used_final_answer_recovery);
-        assert!(!telemetry.used_surface_finalization);
-        assert_eq!(telemetry.reply_surface, ReplySurface::PublicRuntime);
+        assert!(telemetry.used_surface_finalization);
+        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
     }
 
     #[test]
-    fn execute_turn_tool_backed_future_action_draft_uses_final_recovery() {
+    fn execute_turn_tool_backed_future_action_draft_uses_structured_finalization() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(vec![
                 LlmResponse {
@@ -6661,7 +6314,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
+                    content: r#"{"surface":"governed_conversation","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#
                         .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
@@ -6696,13 +6349,13 @@ mod tests {
             delivered,
             "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
         );
-        assert!(telemetry.used_final_answer_recovery);
-        assert!(!telemetry.used_surface_finalization);
+        assert!(telemetry.used_surface_finalization);
         assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
     }
 
     #[test]
-    fn execute_turn_office_account_ambiguity_uses_final_recovery_for_minimal_confirmation() {
+    fn execute_turn_office_account_ambiguity_uses_structured_finalization_for_minimal_confirmation()
+    {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![
@@ -6721,7 +6374,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"}"#
                         .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
@@ -6758,12 +6411,7 @@ mod tests {
         assert!(
             observed[2]
                 .system
-                .contains("account selection is ambiguous"),
-            "{:#?}",
-            observed[2]
-        );
-        assert!(
-            observed[2].system.contains(FINAL_RECOVERY_SYSTEM_SUFFIX),
+                .contains("## Governed Conversation Finalization"),
             "{:#?}",
             observed[2]
         );
@@ -6772,7 +6420,7 @@ mod tests {
             "{:#?}",
             observed[1]
         );
-        assert!(telemetry.used_final_answer_recovery);
+        assert!(telemetry.used_surface_finalization);
         assert_eq!(telemetry.latency.tool_calls, 1);
     }
 
@@ -6814,7 +6462,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"}"#
                         .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
@@ -6952,8 +6600,8 @@ mod tests {
             ActionFamily::ActiveAction
         );
         assert_eq!(
-            second_telemetry.request_semantics.resume_relation,
-            ResumeRelation::ResumeActiveAction
+            second_telemetry.request_semantics.foreground_control,
+            ForegroundControlDecision::ReviseActiveWork
         );
         assert_eq!(second_telemetry.latency.tool_calls, 1);
         let seen_args = seen_args.lock().unwrap_or_else(|e| e.into_inner());
@@ -7009,7 +6657,9 @@ mod tests {
         let turn_ledger = build_turn_ledger_start(&msg, 1);
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
-            reply_content: "好，当前配置动作先取消。".to_string(),
+            reply: crate::agent::final_reply::CanonicalReply::new(
+                "好，当前配置动作先取消。".to_string(),
+            ),
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -7028,7 +6678,6 @@ mod tests {
             any_tool_used: false,
             external_content_used: false,
             used_surface_finalization: false,
-            used_final_answer_recovery: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             request_semantics: RequestSemantics {
                 request_kind: crate::agent::request_semantics::RequestKind::General,
@@ -7037,8 +6686,8 @@ mod tests {
                 execution_preference:
                     crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
                 action_family: crate::agent::request_semantics::ActionFamily::ActiveAction,
-                resume_relation:
-                    crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction,
+                foreground_control:
+                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork,
                 confidence: 100,
             },
             reply_surface: ReplySurface::GovernedConversation,
@@ -7084,6 +6733,160 @@ mod tests {
             .runtime
             .active_work_store
             .get("chat-cancel-run")
+            .expect("get active work")
+            .is_none());
+    }
+
+    #[test]
+    fn complete_turn_aborts_active_task_run_for_cancel_turn() {
+        let config = test_agent_loop_config();
+        let now_secs = 9;
+        let planner_decision = crate::task_execution::TaskPlannerDecision {
+            route: crate::task_execution::TaskExecutionRoute::StartRun,
+            reason: "durable multi-step work".to_string(),
+            title: "QQ 邮箱配置".to_string(),
+            goal: "配置 QQ 邮箱账户".to_string(),
+            completion_definition: "账户已保存并通过校验".to_string(),
+            risk_notes: Vec::new(),
+            steps: vec![crate::task_execution::TaskPlannerStepDraft {
+                title: "补认证信息".to_string(),
+                instruction: "写入 provider_kind 并补认证凭据".to_string(),
+                tool_budget: 1,
+                retry_budget: 1,
+                expected_artifacts: Vec::new(),
+                review_criteria: Vec::new(),
+            }],
+        };
+        let record = crate::task_execution::build_task_run_record(
+            "run-cancel-task",
+            "qq_channel",
+            "chat-cancel-task-run",
+            "帮我配置 QQ 邮箱账户",
+            &planner_decision,
+            now_secs,
+        )
+        .expect("task run");
+        config
+            .runtime
+            .task_run_store
+            .upsert(&record)
+            .expect("seed active task run");
+        config
+            .runtime
+            .active_work_store
+            .set(
+                "chat-cancel-task-run",
+                &crate::agent::ActiveWorkRecord {
+                    kind: crate::agent::ActiveWorkKind::TaskExecution,
+                    title: "QQ 邮箱配置".to_string(),
+                    status: crate::agent::ForegroundWorkStatus::Running,
+                    continuity_open: true,
+                    blocks_background_llm: true,
+                    progress_summary: "账户草案已创建".to_string(),
+                    blocker: String::new(),
+                    next_action: "补认证信息".to_string(),
+                    recent_outcome: String::new(),
+                    active_artifact_refs: Vec::new(),
+                    updated_at: now_secs,
+                },
+            )
+            .expect("seed active work");
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut msg =
+            PcMsg::new_inbound("qq_channel", "chat-cancel-task-run", "算了，先停下", false)
+                .expect("message");
+        msg.req_id = Some("req-cancel-task-run".to_string());
+        let turn_ledger = build_turn_ledger_start(&msg, 1);
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply: crate::agent::final_reply::CanonicalReply::new(
+                "好，我先停下当前这条正式任务。".to_string(),
+            ),
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: None,
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "好，我先停下当前这条正式任务。".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "好，我先停下当前这条正式任务。".to_string(),
+            worker_latency: WorkerLatency::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            used_surface_finalization: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            request_semantics: RequestSemantics {
+                request_kind: crate::agent::request_semantics::RequestKind::General,
+                evidence_need: crate::agent::request_semantics::EvidenceNeed::None,
+                disclosure_surface: crate::agent::request_semantics::DisclosureSurface::Governed,
+                execution_preference:
+                    crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
+                action_family: crate::agent::request_semantics::ActionFamily::TaskExecution,
+                foreground_control:
+                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork,
+                confidence: 100,
+            },
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            programmable_reasoning_intent: None,
+            counterfactual_analysis: None,
+            adversarial_arena_adjudication: None,
+            subject_state: None,
+            soul_feedback_projection: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg: msg.clone(),
+                loc: UiLocale::Zh,
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger,
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            finalized,
+            delivery_handoff::DeliveryHandoff {
+                delivered: true,
+                outbound_enqueue_ms: 0,
+                reply_handoff_ms: 1,
+            },
+        );
+
+        let settled = config
+            .runtime
+            .task_run_store
+            .get("run-cancel-task")
+            .expect("get task run")
+            .expect("stored task run");
+        assert_eq!(
+            settled.run.status,
+            crate::task_execution::TaskRunStatus::Aborted
+        );
+        assert!(!settled.run.failure_reason.is_empty());
+        assert!(config
+            .runtime
+            .active_work_store
+            .get("chat-cancel-task-run")
             .expect("get active work")
             .is_none());
     }
@@ -7229,8 +7032,7 @@ mod tests {
             },
             any_tool_used: true,
             external_content_used: false,
-            used_surface_finalization: false,
-            used_final_answer_recovery: true,
+            used_surface_finalization: true,
             task_execution_used: false,
             soul_feedback_projection: None,
             pressure: crate::orchestrator::PressureLevel::Cautious,
@@ -7281,7 +7083,7 @@ mod tests {
             persona_priority_adjudication: None,
         };
 
-        let observation = build_turn_observation_ledger("final_recovery", false, &telemetry)
+        let observation = build_turn_observation_ledger("surface_finalization", false, &telemetry)
             .expect("observation");
 
         assert_eq!(
@@ -7292,7 +7094,7 @@ mod tests {
             observation.deliberation_class,
             crate::memory::TurnDeliberationClass::HardReasoning
         );
-        assert_eq!(observation.final_outcome, "final_recovery");
+        assert_eq!(observation.final_outcome, "surface_finalization");
         assert_eq!(
             observation.pressure,
             crate::memory::TurnPersonaPressureLevel::Cautious
@@ -7300,11 +7102,10 @@ mod tests {
         assert_eq!(observation.mode.current_mode, "normal");
         assert!(observation.mode.allow_non_voice_outbound);
         assert!(observation.mode.allow_idle_self_runtime);
-        assert_eq!(observation.tool_path.path, "tool_recovery");
+        assert_eq!(observation.tool_path.path, "surface_finalization");
         assert_eq!(observation.tool_path.tool_calls, 2);
         assert_eq!(observation.tool_path.react_rounds, 3);
         assert!(observation.tool_path.current_primary_delivered);
-        assert!(observation.tool_path.final_answer_recovered);
         assert!(observation.blocker.is_none());
     }
 
@@ -7328,7 +7129,6 @@ mod tests {
                 expected_streamed: false,
                 expected_current_primary_delivered: false,
                 expected_outcome_fragment: "直接答复",
-                expect_final_recovery: false,
             },
             AgentTurnBenchmarkCase {
                 name: "message primary request stays on canonical reply path",
@@ -7359,10 +7159,9 @@ mod tests {
                 expected_streamed: false,
                 expected_current_primary_delivered: false,
                 expected_outcome_fragment: "规范主回复",
-                expect_final_recovery: false,
             },
             AgentTurnBenchmarkCase {
-                name: "final recovery remains single extra llm round",
+                name: "structured finalization remains single extra llm round",
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "兜底收尾", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
@@ -7379,12 +7178,13 @@ mod tests {
                         }]),
                     },
                     LlmResponse {
-                        content: String::new(),
+                        content: "先整理一下当前状态。".to_string(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: None,
                     },
                     LlmResponse {
-                        content: "最终收尾".to_string(),
+                        content: r#"{"surface":"governed_conversation","reply":"最终收尾"}"#
+                            .to_string(),
                         stop_reason: StopReason::EndTurn,
                         tool_calls: None,
                     },
@@ -7395,7 +7195,6 @@ mod tests {
                 expected_streamed: false,
                 expected_current_primary_delivered: false,
                 expected_outcome_fragment: "最终收尾",
-                expect_final_recovery: true,
             },
             AgentTurnBenchmarkCase {
                 name: "linux enhanced direct reply stays single main llm turn",
@@ -7414,7 +7213,6 @@ mod tests {
                 expected_streamed: false,
                 expected_current_primary_delivered: false,
                 expected_outcome_fragment: "直接答复",
-                expect_final_recovery: false,
             },
         ];
 

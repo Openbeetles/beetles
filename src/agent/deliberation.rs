@@ -66,10 +66,7 @@ pub(crate) fn compile_turn_deliberation_gate(
     let prior_blocker = input
         .recent_observation
         .and_then(|observation| observation.blocker.as_ref())
-        .is_some()
-        || input
-            .recent_observation
-            .is_some_and(|observation| observation.final_outcome.trim() == "final_recovery");
+        .is_some();
     if prior_blocker {
         rationale.push("recent_blocker_or_recovery".to_string());
     }
@@ -314,7 +311,7 @@ mod tests {
             recent_observation: Some(&TurnObservationLedger {
                 execution_class: crate::memory::TurnExecutionClass::ToolAssisted,
                 deliberation_class: TurnDeliberationClass::Standard,
-                final_outcome: "final_recovery".to_string(),
+                final_outcome: "surface_finalization".to_string(),
                 pressure: crate::memory::TurnPersonaPressureLevel::Cautious,
                 mode: TurnModeSnapshotLedger {
                     current_mode: "normal".to_string(),
@@ -322,11 +319,10 @@ mod tests {
                     allow_idle_self_runtime: true,
                 },
                 tool_path: crate::memory::TurnToolPathLedger {
-                    path: "tool_recovery".to_string(),
+                    path: "surface_finalization".to_string(),
                     tool_calls: 2,
                     react_rounds: 3,
                     current_primary_delivered: false,
-                    final_answer_recovered: true,
                 },
                 blocker: Some(TurnBlockerLedger {
                     kind: "retryable".to_string(),

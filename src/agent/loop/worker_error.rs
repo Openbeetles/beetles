@@ -1,10 +1,7 @@
 use super::*;
 
 fn worker_path_error_uses_maintenance_copy(error: &crate::error::Error) -> bool {
-    !matches!(
-        error.stage(),
-        "final_reply_empty" | "final_reply_empty_after_finalize"
-    )
+    !crate::agent::final_reply::is_reply_contract_breach_stage(error.stage())
 }
 
 #[cold]

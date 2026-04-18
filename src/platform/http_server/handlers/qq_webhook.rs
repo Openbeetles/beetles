@@ -24,6 +24,7 @@ pub fn post(
     secret: &str,
     inbound_tx: &crate::bus::InboundTx,
     cache: crate::channels::QqMsgIdCache,
+    inbound_dedup_store: crate::channels::QqInboundDedupStore,
 ) -> Result<QqWebhookOutcome, ApiResponse> {
     let loc = locale_from_store(store);
     if body.len() > QQ_WEBHOOK_BODY_MAX {
@@ -32,7 +33,14 @@ pub fn post(
     }
 
     match crate::channels::handle_webhook(
-        body, ts_header, sig_header, app_id, secret, inbound_tx, cache,
+        body,
+        ts_header,
+        sig_header,
+        app_id,
+        secret,
+        inbound_tx,
+        cache,
+        inbound_dedup_store,
     ) {
         Ok(crate::channels::QqHandlerResult::UrlVerification {
             plain_token,

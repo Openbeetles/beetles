@@ -16,31 +16,6 @@ pub(crate) struct ToolFailureAssessment {
     pub(crate) hint: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ToolFailureSummary {
-    pub(crate) failed_calls: usize,
-    pub(crate) retryable_failures: usize,
-    pub(crate) permanent_failures: usize,
-    pub(crate) capability_failures: usize,
-}
-
-impl ToolFailureSummary {
-    pub(crate) fn record(&mut self, kind: ToolFailureKind) {
-        self.failed_calls = self.failed_calls.saturating_add(1);
-        match kind {
-            ToolFailureKind::Retryable => {
-                self.retryable_failures = self.retryable_failures.saturating_add(1);
-            }
-            ToolFailureKind::Permanent => {
-                self.permanent_failures = self.permanent_failures.saturating_add(1);
-            }
-            ToolFailureKind::Capability => {
-                self.capability_failures = self.capability_failures.saturating_add(1);
-            }
-        }
-    }
-}
-
 pub(crate) fn unavailable_tool_assessment() -> ToolFailureAssessment {
     ToolFailureAssessment {
         kind: ToolFailureKind::Capability,

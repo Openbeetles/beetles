@@ -3665,7 +3665,7 @@ mod tests {
                     observation: Some(TurnObservationLedger {
                         execution_class: TurnExecutionClass::ToolAssisted,
                         deliberation_class: TurnDeliberationClass::HardReasoning,
-                        final_outcome: "final_recovery".to_string(),
+                        final_outcome: "surface_finalization".to_string(),
                         pressure: TurnPersonaPressureLevel::Cautious,
                         mode: TurnModeSnapshotLedger {
                             current_mode: "normal".to_string(),
@@ -3673,11 +3673,10 @@ mod tests {
                             allow_idle_self_runtime: true,
                         },
                         tool_path: TurnToolPathLedger {
-                            path: "tool_recovery".to_string(),
+                            path: "surface_finalization".to_string(),
                             tool_calls: 2,
                             react_rounds: 2,
                             current_primary_delivered: false,
-                            final_answer_recovered: true,
                         },
                         blocker: Some(TurnBlockerLedger {
                             kind: "retryable".to_string(),
@@ -3744,8 +3743,8 @@ mod tests {
         assert!(active.contains("Progress: continue the replay substrate work"));
         assert!(active.contains("Next: Continue the current task chain."));
         assert!(!active.contains("Progress: turn observation 已写入 ledger"));
-        assert!(active.contains("Final outcome: final_recovery"));
-        assert!(active.contains("Tool path: tool_recovery"));
+        assert!(active.contains("Final outcome: surface_finalization"));
+        assert!(active.contains("Tool path: surface_finalization"));
         assert!(!context
             .governed_memory_evidence_text
             .as_deref()

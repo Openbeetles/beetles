@@ -84,7 +84,6 @@ pub struct ReplyPipelineOperatorSummary {
     pub tool_exec_last_ms: u64,
     pub surface_finalize_last_ms: u64,
     pub mental_privacy_review_last_ms: u64,
-    pub final_recovery_last_ms: u64,
     pub dispatch_send_fail_total: u64,
     pub outbound_enqueue_fail_total: u64,
     pub dominant_stage: &'static str,
@@ -94,8 +93,7 @@ impl ReplyPipelineOperatorSummary {
     fn from_metrics(metrics: &crate::metrics::MetricsSnapshot) -> Self {
         let finalization_total_ms = metrics
             .surface_finalize_last_ms
-            .saturating_add(metrics.mental_privacy_review_last_ms)
-            .saturating_add(metrics.final_recovery_last_ms);
+            .saturating_add(metrics.mental_privacy_review_last_ms);
         let dominant_stage = if metrics.dispatch_send_fail > 0 || metrics.outbound_enqueue_fail > 0
         {
             "delivery_failure"
@@ -118,7 +116,6 @@ impl ReplyPipelineOperatorSummary {
             tool_exec_last_ms: metrics.tool_exec_last_ms,
             surface_finalize_last_ms: metrics.surface_finalize_last_ms,
             mental_privacy_review_last_ms: metrics.mental_privacy_review_last_ms,
-            final_recovery_last_ms: metrics.final_recovery_last_ms,
             dispatch_send_fail_total: metrics.dispatch_send_fail,
             outbound_enqueue_fail_total: metrics.outbound_enqueue_fail,
             dominant_stage,
@@ -302,13 +299,12 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.operator_surface.window_required_for_deep_routes,
     ));
     out.push_str(&format!(
-        "  reply_pipeline_dominant_stage: {}\n  reply_pipeline_request_semantics_last_ms: {}\n  reply_pipeline_tool_exec_last_ms: {}\n  reply_pipeline_surface_finalize_last_ms: {}\n  reply_pipeline_mental_privacy_review_last_ms: {}\n  reply_pipeline_final_recovery_last_ms: {}\n  reply_pipeline_dispatch_send_fail_total: {}\n  reply_pipeline_outbound_enqueue_fail_total: {}\n",
+        "  reply_pipeline_dominant_stage: {}\n  reply_pipeline_request_semantics_last_ms: {}\n  reply_pipeline_tool_exec_last_ms: {}\n  reply_pipeline_surface_finalize_last_ms: {}\n  reply_pipeline_mental_privacy_review_last_ms: {}\n  reply_pipeline_dispatch_send_fail_total: {}\n  reply_pipeline_outbound_enqueue_fail_total: {}\n",
         snapshot.reply_pipeline.dominant_stage,
         snapshot.reply_pipeline.request_semantics_last_ms,
         snapshot.reply_pipeline.tool_exec_last_ms,
         snapshot.reply_pipeline.surface_finalize_last_ms,
         snapshot.reply_pipeline.mental_privacy_review_last_ms,
-        snapshot.reply_pipeline.final_recovery_last_ms,
         snapshot.reply_pipeline.dispatch_send_fail_total,
         snapshot.reply_pipeline.outbound_enqueue_fail_total,
     ));

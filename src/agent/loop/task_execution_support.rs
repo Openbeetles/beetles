@@ -23,8 +23,13 @@ pub(super) fn decide_formal_task_admission(
         return FormalTaskAdmission::None;
     }
     if has_active_run
-        && request_semantics.resume_relation
-            == crate::agent::request_semantics::ResumeRelation::ResumeActiveTaskRun
+        && request_semantics.action_family
+            == crate::agent::request_semantics::ActionFamily::TaskExecution
+        && matches!(
+            request_semantics.foreground_control,
+            crate::agent::request_semantics::ForegroundControlDecision::ContinueActiveWork
+                | crate::agent::request_semantics::ForegroundControlDecision::ReviseActiveWork
+        )
     {
         return FormalTaskAdmission::ResumeActiveRun;
     }
@@ -33,8 +38,12 @@ pub(super) fn decide_formal_task_admission(
     }
     if request_semantics.action_family
         == crate::agent::request_semantics::ActionFamily::ActiveAction
-        || request_semantics.resume_relation
-            == crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
+        || matches!(
+            request_semantics.foreground_control,
+            crate::agent::request_semantics::ForegroundControlDecision::ContinueActiveWork
+                | crate::agent::request_semantics::ForegroundControlDecision::ReviseActiveWork
+                | crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork
+        )
     {
         return FormalTaskAdmission::None;
     }
@@ -153,14 +162,14 @@ mod tests {
     use super::*;
     use crate::agent::reply_surface::ReplySurface;
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
-        RequestSemantics, ResumeRelation,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
+        ForegroundControlDecision, RequestKind, RequestSemantics,
     };
     use crate::memory::TurnDeliberationClass;
 
     fn semantics(
         action_family: ActionFamily,
-        resume_relation: ResumeRelation,
+        foreground_control: ForegroundControlDecision,
         execution_preference: ExecutionPreference,
     ) -> RequestSemantics {
         RequestSemantics {
@@ -169,7 +178,7 @@ mod tests {
             disclosure_surface: DisclosureSurface::Governed,
             execution_preference,
             action_family,
-            resume_relation,
+            foreground_control,
             confidence: 100,
         }
     }
@@ -186,7 +195,7 @@ mod tests {
                 TurnDeliberationClass::Standard,
                 semantics(
                     ActionFamily::ActiveAction,
-                    ResumeRelation::ResumeActiveAction,
+                    ForegroundControlDecision::ContinueActiveWork,
                     ExecutionPreference::ToolFirst,
                 ),
                 ReplySurface::GovernedConversation,
@@ -202,7 +211,7 @@ mod tests {
             crate::bus::PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
         let semantics = semantics(
             ActionFamily::TaskExecution,
-            ResumeRelation::ResumeActiveTaskRun,
+            ForegroundControlDecision::ContinueActiveWork,
             ExecutionPreference::ToolFirst,
         );
         assert_eq!(
@@ -248,7 +257,7 @@ mod tests {
                 TurnDeliberationClass::Standard,
                 semantics(
                     ActionFamily::ActiveAction,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                     ExecutionPreference::ToolFirst,
                 ),
                 ReplySurface::GovernedConversation,
@@ -275,7 +284,7 @@ mod tests {
                 TurnDeliberationClass::HardReasoning,
                 semantics(
                     ActionFamily::Conversation,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                     ExecutionPreference::ToolFirst,
                 ),
                 ReplySurface::GovernedConversation,
@@ -302,7 +311,7 @@ mod tests {
                 TurnDeliberationClass::HardReasoning,
                 semantics(
                     ActionFamily::Conversation,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                     ExecutionPreference::AnswerDirect,
                 ),
                 ReplySurface::GovernedConversation,
@@ -324,7 +333,7 @@ mod tests {
                 TurnDeliberationClass::HardReasoning,
                 semantics(
                     ActionFamily::Conversation,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                     ExecutionPreference::AnswerDirect,
                 ),
                 ReplySurface::GovernedConversation,
@@ -346,7 +355,7 @@ mod tests {
                 TurnDeliberationClass::Standard,
                 semantics(
                     ActionFamily::Conversation,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                     ExecutionPreference::AnswerDirect,
                 ),
                 ReplySurface::GovernedConversation,
@@ -373,7 +382,7 @@ mod tests {
                 TurnDeliberationClass::HardReasoning,
                 semantics(
                     ActionFamily::Conversation,
-                    ResumeRelation::IndependentTurn,
+                    ForegroundControlDecision::IndependentTurn,
                     ExecutionPreference::AnswerDirect,
                 ),
                 ReplySurface::GovernedConversation,

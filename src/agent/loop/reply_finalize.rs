@@ -1,11 +1,14 @@
 use super::*;
 use crate::agent::active_work::should_keep_interactive_action_work;
-use crate::agent::final_reply::reply_has_concrete_anchor;
+use crate::agent::final_reply::{
+    build_canonical_reply, finalize_user_visible_reply, reply_has_concrete_anchor,
+    reply_looks_like_future_action_narration, CanonicalReply,
+};
 use crate::memory::EmotionSignalStore;
 
 pub(super) struct FinalizedTurn {
     pub(super) delivery: DeliveryReport,
-    pub(super) reply_content: String,
+    pub(super) reply: CanonicalReply,
     pub(super) is_interrupt: bool,
     pub(super) reply_already_delivered: bool,
     pub(super) skip_delivery: bool,
@@ -19,7 +22,6 @@ pub(super) struct FinalizedTurn {
     pub(super) any_tool_used: bool,
     pub(super) external_content_used: bool,
     pub(super) used_surface_finalization: bool,
-    pub(super) used_final_answer_recovery: bool,
     pub(super) pressure: crate::orchestrator::PressureLevel,
     pub(super) request_semantics: crate::agent::request_semantics::RequestSemantics,
     pub(super) reply_surface: ReplySurface,
@@ -81,34 +83,6 @@ pub(super) fn looks_like_truthful_blocker_or_input_request(content: &str) -> boo
         || lower.contains("please send")
 }
 
-fn looks_like_future_action_narration(content: &str) -> bool {
-    let trimmed = content.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    [
-        "我先整理",
-        "我先检查",
-        "我先看看",
-        "我先处理",
-        "我需要",
-        "让我",
-        "现在我需要",
-        "我需要调整方法",
-        "我明白了问题所在",
-        "我了解了正确的配置结构",
-    ]
-    .iter()
-    .any(|prefix| trimmed.starts_with(prefix))
-        || [
-            "let me ",
-            "i need to ",
-            "now i need to ",
-            "i will ",
-            "i'll ",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-}
-
 fn should_apply_truth_guard(
     strategy: AgentRunStrategy,
     delivery: &DeliveryReport,
@@ -129,7 +103,7 @@ fn should_apply_truth_guard(
     !trimmed.is_empty()
         && !reply_has_concrete_anchor(trimmed)
         && !looks_like_truthful_blocker_or_input_request(trimmed)
-        && looks_like_future_action_narration(trimmed)
+        && reply_looks_like_future_action_narration(trimmed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -147,8 +121,6 @@ pub(super) fn finalize_turn(
         "current_primary"
     } else if telemetry.used_surface_finalization {
         "surface_finalization"
-    } else if telemetry.used_final_answer_recovery {
-        "final_recovery"
     } else {
         "final_answer"
     };
@@ -160,7 +132,6 @@ pub(super) fn finalize_turn(
         any_tool_used,
         external_content_used,
         used_surface_finalization,
-        used_final_answer_recovery,
         task_execution_used: _task_execution_used,
         pressure,
         runtime_mode: _runtime_mode,
@@ -239,32 +210,6 @@ pub(super) fn finalize_turn(
         );
         reply_content = mental_privacy_review.reply_content.clone();
     }
-    if !is_interrupt
-        && reply_content.trim().is_empty()
-        && msg.ingress == IngressKind::User
-        && msg.channel.as_ref() != CHANNEL_CRON
-    {
-        metrics::record_empty_final_blocked();
-        log::warn!(
-            "[reply_surface] empty finalized reply blocked surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
-            reply_surface.as_str(),
-            reply_surface.finalization_policy(),
-            reply_surface.governance_policy(),
-            msg.channel,
-            msg.chat_id
-        );
-        return Err(crate::error::Error::config(
-            "final_reply_empty_after_finalize",
-            format!(
-                "reply_surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
-                reply_surface.as_str(),
-                reply_surface.finalization_policy(),
-                reply_surface.governance_policy(),
-                msg.channel,
-                msg.chat_id
-            ),
-        ));
-    }
     let mark_important = !is_interrupt && reply_content.contains(AGENT_MARKER_MARK_IMPORTANT);
     let signal_comfort = !is_interrupt && reply_content.contains(AGENT_MARKER_SIGNAL_COMFORT);
     if mark_important || signal_comfort {
@@ -283,12 +228,42 @@ pub(super) fn finalize_turn(
     if !is_interrupt && !reply_content.is_empty() {
         metrics::record_final_answer_call();
     }
+    let reply = if is_interrupt {
+        CanonicalReply::new(reply_content.clone())
+    } else {
+        match build_canonical_reply(config.strategy, &reply_content) {
+            Ok(reply) => reply,
+            Err(kind) => {
+                metrics::record_empty_final_blocked();
+                log::warn!(
+                    "[reply_surface] canonical reply contract breached stage={} surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
+                    kind.stage(),
+                    reply_surface.as_str(),
+                    reply_surface.finalization_policy(),
+                    reply_surface.governance_policy(),
+                    msg.channel,
+                    msg.chat_id
+                );
+                return Err(crate::error::Error::config(
+                    kind.stage(),
+                    format!(
+                        "reply_surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
+                        reply_surface.as_str(),
+                        reply_surface.finalization_policy(),
+                        reply_surface.governance_policy(),
+                        msg.channel,
+                        msg.chat_id
+                    ),
+                ));
+            }
+        }
+    };
 
     Ok(FinalizedTurn {
         delivery,
-        skip_delivery: reply_content.trim() == "SILENT"
-            || (msg.channel.as_ref() == CHANNEL_CRON && reply_content.is_empty()),
-        reply_content,
+        skip_delivery: reply.as_str().trim() == "SILENT"
+            || (msg.channel.as_ref() == CHANNEL_CRON && reply.as_str().is_empty()),
+        reply,
         is_interrupt,
         reply_already_delivered,
         mark_important,
@@ -301,7 +276,6 @@ pub(super) fn finalize_turn(
         any_tool_used,
         external_content_used,
         used_surface_finalization,
-        used_final_answer_recovery,
         pressure,
         request_semantics,
         reply_surface,
@@ -341,7 +315,7 @@ pub(super) fn complete_turn(
         latency_warn_ms,
     } = ctx;
     let FinalizedTurn {
-        reply_content,
+        reply,
         is_interrupt,
         reply_already_delivered,
         skip_delivery,
@@ -355,7 +329,6 @@ pub(super) fn complete_turn(
         any_tool_used,
         external_content_used,
         used_surface_finalization,
-        used_final_answer_recovery,
         pressure,
         request_semantics,
         reply_surface,
@@ -371,6 +344,7 @@ pub(super) fn complete_turn(
         persona_priority_adjudication,
         ..
     } = finalized;
+    let reply_content = reply.visible_text;
 
     if skip_delivery {
         llm_failure_count.remove(&msg_key);
@@ -440,8 +414,9 @@ pub(super) fn complete_turn(
     let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
         && (matches!(
-            request_semantics.resume_relation,
-            crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
+            request_semantics.foreground_control,
+            crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork
+                | crate::agent::request_semantics::ForegroundControlDecision::SupersedeActiveWork
         ) || (!keep_interactive_work && reply_surface != ReplySurface::TaskExecution));
     let now_secs = super::now_unix_ms() / 1000;
     if clear_execution_state {
@@ -458,9 +433,9 @@ pub(super) fn complete_turn(
         && reply_surface != ReplySurface::PrivateBoundary
         && (worker_latency.tool_calls > 0
             || matches!(
-                request_semantics.resume_relation,
-                crate::agent::request_semantics::ResumeRelation::ResumeActiveAction
-                    | crate::agent::request_semantics::ResumeRelation::ResumeActiveTaskRun
+                request_semantics.foreground_control,
+                crate::agent::request_semantics::ForegroundControlDecision::ContinueActiveWork
+                    | crate::agent::request_semantics::ForegroundControlDecision::ReviseActiveWork
             )
             || reply_requests_input
             || matches!(reply_surface, ReplySurface::TaskExecution)
@@ -510,11 +485,47 @@ pub(super) fn complete_turn(
             .is_some_and(crate::memory::execution_state_has_pending_work)
             && keep_interactive_work
             && reply_surface != ReplySurface::TaskExecution;
-        if matches!(
-            request_semantics.resume_relation,
-            crate::agent::request_semantics::ResumeRelation::DenyOrCancelActiveAction
-        ) {
-            active_task_run = None;
+        let should_abort_existing_task_run = matches!(
+            request_semantics.foreground_control,
+            crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork
+        ) || (request_semantics.foreground_control
+            == crate::agent::request_semantics::ForegroundControlDecision::SupersedeActiveWork
+            && reply_surface != ReplySurface::TaskExecution);
+        if should_abort_existing_task_run {
+            if let Some(record) = active_task_run.as_ref() {
+                let abort_reason = match request_semantics.foreground_control {
+                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork => {
+                        "user canceled active foreground work"
+                    }
+                    crate::agent::request_semantics::ForegroundControlDecision::SupersedeActiveWork => {
+                        "superseded by a newer user turn"
+                    }
+                    _ => "",
+                };
+                let final_summary = if delivered {
+                    reply_content.as_str()
+                } else {
+                    ""
+                };
+                if let Ok(settled) = crate::task_execution::finalize_foreground_task_run(
+                    config.runtime.task_run_store.as_ref(),
+                    record,
+                    crate::task_execution::TaskRunStatus::Aborted,
+                    final_summary,
+                    abort_reason,
+                    now_secs,
+                ) {
+                    active_task_run = Some(settled);
+                } else {
+                    log::warn!(
+                        "[task_execution] failed to settle interrupted active run chat_id={}",
+                        msg.chat_id
+                    );
+                    active_task_run = None;
+                }
+            } else {
+                active_task_run = None;
+            }
         } else if reply_surface == ReplySurface::TaskExecution {
             active_task_run = active_task_run_for_chat(
                 config.runtime.task_run_store.as_ref(),
@@ -561,15 +572,11 @@ pub(super) fn complete_turn(
         || (runtime_skill_selected_ids.is_empty() && task_learning_selected_ids.is_empty())
     {
         crate::skills::RuntimeSkillReuseOutcome::Neutral
-    } else if used_final_answer_recovery {
-        crate::skills::RuntimeSkillReuseOutcome::Mismatch
     } else {
         crate::skills::RuntimeSkillReuseOutcome::Succeeded
     };
     let reuse_outcome_note = if used_surface_finalization {
         "surface_finalization"
-    } else if used_final_answer_recovery {
-        "final_recovery"
     } else if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
     } else {
@@ -645,8 +652,6 @@ pub(super) fn complete_turn(
         "current_primary"
     } else if used_surface_finalization {
         "surface_finalization"
-    } else if used_final_answer_recovery {
-        "final_recovery"
     } else {
         "final_answer"
     };
@@ -673,7 +678,6 @@ pub(super) fn complete_turn(
     turn_ledger.react_rounds = worker_latency.react_rounds;
     turn_ledger.tool_calls = worker_latency.tool_calls;
     turn_ledger.any_tool_used = any_tool_used;
-    turn_ledger.final_answer_recovered = used_final_answer_recovery;
     turn_ledger.final_reply_delivered = delivered;
     turn_ledger.reply_handoff_ms = reply_handoff_ms.min(u64::MAX as u128) as u64;
     turn_ledger.post_reply_ms = post_reply_ms.min(u64::MAX as u128) as u64;
@@ -801,7 +805,6 @@ pub(super) fn complete_turn(
     metrics::record_tool_exec_ms(worker_latency.tool_exec_ms);
     metrics::record_surface_finalize_ms(worker_latency.surface_finalize_ms);
     metrics::record_mental_privacy_review_ms(worker_latency.mental_privacy_review_ms);
-    metrics::record_final_recovery_ms(worker_latency.final_recovery_ms);
     metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
     metrics::record_e2e_ms(reply_handoff_ms);
     metrics::record_post_reply_ms(post_reply_ms);
