@@ -1872,6 +1872,53 @@ mod tests {
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     #[test]
+    fn config_accounts_post_rejects_legacy_nested_public_wrappers() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                "/api/config/accounts",
+                serde_json::json!({
+                    "op": "apply_account",
+                    "account": {
+                        "provider_kind": "imap_smtp",
+                        "identity_class": "work",
+                        "email": "alice@example.com"
+                    },
+                    "credential": {
+                        "password": "secret-token",
+                        "imap_host": "imap.example.com",
+                        "smtp_host": "smtp.example.com"
+                    }
+                }),
+            ),
+        )
+        .expect("dispatch account create");
+        assert_eq!(
+            response.status,
+            400,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert!(
+            parsed["error"].as_str().is_some_and(
+                |value| value.contains("legacy public account wrappers are not supported")
+            ),
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
     fn config_accounts_delete_removes_account_and_related_state() {
         let _guard = office_test_guard();
         let ctx = build_authed_ctx();

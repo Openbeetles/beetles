@@ -15,50 +15,31 @@ pub(crate) fn parse_public_account_upsert_request_value(
     obj: &Map<String, Value>,
     stage: &'static str,
 ) -> Result<OfficeAccountUpsertRequest> {
-    match serde_json::from_value::<OfficeAccountUpsertRequest>(Value::Object(obj.clone())) {
-        Ok(request) => apply_public_account_upsert_aliases(request, obj, stage),
-        Err(_) => normalize_public_account_upsert_request(obj, stage),
-    }
+    reject_legacy_public_account_keys(obj, stage)?;
+    normalize_public_account_upsert_request(obj, stage)
 }
 
 fn normalize_public_account_upsert_request(
     obj: &Map<String, Value>,
     stage: &'static str,
 ) -> Result<OfficeAccountUpsertRequest> {
-    let account_obj = obj.get("account").and_then(Value::as_object);
-    let config_obj = obj.get("config").and_then(Value::as_object);
-    let credential_obj = obj.get("credential").and_then(Value::as_object);
     let capability_hint = obj
         .get("capability")
         .map(|value| parse_capability_value(value, stage))
         .transpose()?;
-    let provider_kind = account_obj
-        .and_then(|account_obj| public_account_provider_kind(account_obj, obj))
-        .or_else(|| public_provider_kind(obj))
-        .or_else(|| normalize_provider_kind_from_source(config_obj))
-        .or_else(|| infer_provider_kind_from_sources(&[account_obj, config_obj, credential_obj]))
+    let provider_kind = public_provider_kind(obj)
+        .or_else(|| infer_provider_kind_from_sources(&[Some(obj)]))
         .ok_or_else(|| Error::config(stage, "missing provider_kind"))?;
-    let capability_hint =
-        capability_hint.or_else(|| infer_single_capability_for_provider(provider_kind.as_str()));
-    let enabled_capabilities = match account_obj {
-        Some(account_obj) => parse_capability_list_with_hint(
-            account_obj,
-            &["enabled_capabilities", "capabilities"],
-            capability_hint,
-            stage,
-        )?,
-        None => parse_capability_list_with_hint(
-            obj,
-            &["enabled_capabilities", "capabilities"],
-            capability_hint,
-            stage,
-        )?,
-    };
+    let enabled_capabilities = capability_hint
+        .or_else(|| infer_single_capability_for_provider(&provider_kind))
+        .map(|value| vec![value])
+        .unwrap_or_default();
     if enabled_capabilities.is_empty() {
         return Err(Error::config(stage, "missing capability"));
     }
+
     let external_account_id = preferred_string_from_sources(
-        &[account_obj, Some(obj), config_obj, credential_obj],
+        &[Some(obj)],
         &[
             "external_account_id",
             "email",
@@ -70,116 +51,28 @@ fn normalize_public_account_upsert_request(
         ],
     )
     .ok_or_else(|| Error::config(stage, "missing external account identity"))?;
-    let account_label = preferred_string_from_sources(
-        &[account_obj, Some(obj), config_obj],
-        &["account_label", "display_name", "label"],
-    )
-    .unwrap_or_else(|| external_account_id.clone());
-    let identity_class = identity_class_from_sources(&[account_obj, Some(obj), config_obj], stage)?
+    let account_label =
+        preferred_string_from_sources(&[Some(obj)], &["account_label", "display_name", "label"])
+            .unwrap_or_else(|| external_account_id.clone());
+    let identity_class = identity_class_from_sources(&[Some(obj)], stage)?
         .ok_or_else(|| Error::config(stage, "missing identity_class"))?;
+
     let mut request = OfficeAccountUpsertRequest {
         account: OfficeAccountRecordInput {
-            account_key: account_obj
-                .and_then(|account_obj| optional_string(account_obj, "account_key"))
-                .or_else(|| optional_string(obj, "account_key"))
-                .unwrap_or_default(),
+            account_key: String::new(),
             provider_kind,
             external_account_id,
             account_label,
             identity_class,
             enabled_capabilities,
         },
-        set_defaults: parse_capability_array(obj, "set_defaults", stage)?,
-        clear_defaults: parse_capability_array(obj, "clear_defaults", stage)?,
-        policy_patch: obj
-            .get("policy_patch")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| Error::config(stage, error.to_string()))?,
+        set_defaults: Vec::new(),
+        clear_defaults: Vec::new(),
+        policy_patch: None,
         config: None,
     };
-    validate_public_account_request(&request, account_obj.is_none(), stage)?;
-    merge_public_config_aliases(&mut request, obj, stage)?;
-    Ok(request)
-}
-
-fn apply_public_account_upsert_aliases(
-    mut request: OfficeAccountUpsertRequest,
-    obj: &Map<String, Value>,
-    stage: &'static str,
-) -> Result<OfficeAccountUpsertRequest> {
-    let config_obj = obj.get("config").and_then(Value::as_object);
-    let credential_obj = obj.get("credential").and_then(Value::as_object);
-    let Some(account_obj) = obj.get("account").and_then(Value::as_object) else {
-        merge_public_config_aliases(&mut request, obj, stage)?;
-        return Ok(request);
-    };
-    if request.account.external_account_id.trim().is_empty() {
-        request.account.external_account_id = preferred_string_from_sources(
-            &[Some(account_obj), Some(obj), config_obj, credential_obj],
-            &[
-                "external_account_id",
-                "email",
-                "account_id",
-                "username",
-                "mail_username",
-                "from_address",
-                "mail_from_address",
-            ],
-        )
-        .unwrap_or_default();
-    }
-    if request.account.account_label.trim().is_empty() {
-        request.account.account_label = preferred_string_from_sources(
-            &[Some(account_obj), Some(obj), config_obj],
-            &["account_label", "display_name", "label"],
-        )
-        .unwrap_or_else(|| request.account.external_account_id.clone());
-    }
-    if request.account.account_key.trim().is_empty() {
-        request.account.account_key =
-            optional_string(account_obj, "account_key").unwrap_or_default();
-    }
-    request.account.provider_kind = public_account_provider_kind(account_obj, obj)
-        .or_else(|| {
-            infer_provider_kind_from_sources(&[
-                Some(account_obj),
-                obj.get("config").and_then(Value::as_object),
-                obj.get("credential").and_then(Value::as_object),
-            ])
-        })
-        .unwrap_or_else(|| normalize_office_provider_kind(&request.account.provider_kind));
-    if request.account.enabled_capabilities.is_empty() {
-        let capability_hint = obj
-            .get("capability")
-            .map(|value| parse_capability_value(value, stage))
-            .transpose()?
-            .or_else(|| infer_single_capability_for_provider(&request.account.provider_kind));
-        request.account.enabled_capabilities = parse_capability_list_with_hint(
-            account_obj,
-            &["enabled_capabilities", "capabilities"],
-            capability_hint,
-            stage,
-        )?;
-    }
-    validate_public_account_request(&request, false, stage)?;
-    merge_public_config_aliases(&mut request, obj, stage)?;
-    Ok(request)
-}
-
-fn merge_public_config_aliases(
-    request: &mut OfficeAccountUpsertRequest,
-    obj: &Map<String, Value>,
-    stage: &'static str,
-) -> Result<()> {
-    if let Some(credential_obj) = obj.get("credential").and_then(Value::as_object) {
-        merge_public_config_object_aliases(request, credential_obj, stage)?;
-    }
-    if let Some(config_obj) = obj.get("config").and_then(Value::as_object) {
-        merge_public_config_object_aliases(request, config_obj, stage)?;
-    }
-    merge_public_config_object_aliases(request, obj, stage)?;
+    validate_public_account_request(&request, true, stage)?;
+    merge_public_config_object_aliases(&mut request, obj, stage)?;
     if request
         .config
         .as_ref()
@@ -187,7 +80,7 @@ fn merge_public_config_aliases(
     {
         request.config = None;
     }
-    Ok(())
+    Ok(request)
 }
 
 fn merge_public_config_object_aliases(
@@ -195,65 +88,86 @@ fn merge_public_config_object_aliases(
     source_obj: &Map<String, Value>,
     stage: &'static str,
 ) -> Result<()> {
-    let config = request
-        .config
-        .get_or_insert_with(OfficeAccountConfigSaveRequest::default);
+    let mut fields = BTreeMap::new();
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         "access_token",
         preferred_string(source_obj, &["access_token", "password"]),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         "refresh_token",
         optional_string(source_obj, "refresh_token"),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         "token_endpoint",
         optional_string(source_obj, "token_endpoint"),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_USERNAME,
-        preferred_string(source_obj, &["mail_username", "email", "username"]),
+        optional_string(source_obj, "mail_username")
+            .or_else(|| optional_string(source_obj, "username")),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_FROM_ADDRESS,
-        preferred_string(source_obj, &["mail_from_address", "email", "from_address"]),
+        optional_string(source_obj, "mail_from_address")
+            .or_else(|| optional_string(source_obj, "from_address")),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_IMAP_HOST,
         optional_string(source_obj, "imap_host"),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_IMAP_PORT,
         optional_u64(source_obj, "imap_port", stage)?.map(|value| value.to_string()),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_IMAP_TLS,
         optional_bool(source_obj, "imap_tls", stage)?.map(|value| value.to_string()),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_SMTP_HOST,
         optional_string(source_obj, "smtp_host"),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_SMTP_PORT,
         optional_u64(source_obj, "smtp_port", stage)?.map(|value| value.to_string()),
     );
     merge_config_field_alias(
-        &mut config.fields,
+        &mut fields,
         OFFICE_METADATA_MAIL_SMTP_TLS,
         optional_bool(source_obj, "smtp_tls", stage)?.map(|value| value.to_string()),
     );
-    merge_metadata_object_aliases(&mut config.fields, source_obj, stage)?;
+    merge_metadata_object_aliases(&mut fields, source_obj, stage)?;
+    if fields.is_empty() {
+        return Ok(());
+    }
+
+    merge_config_field_alias(
+        &mut fields,
+        OFFICE_METADATA_MAIL_USERNAME,
+        preferred_string(source_obj, &["mail_username", "email", "username"]),
+    );
+    merge_config_field_alias(
+        &mut fields,
+        OFFICE_METADATA_MAIL_FROM_ADDRESS,
+        preferred_string(source_obj, &["mail_from_address", "email", "from_address"]),
+    );
+
+    let config = request
+        .config
+        .get_or_insert_with(OfficeAccountConfigSaveRequest::default);
+    for (key, value) in fields {
+        config.fields.entry(key).or_insert(value);
+    }
     Ok(())
 }
 
@@ -300,45 +214,6 @@ fn json_scalar_to_string(value: &Value, field: &str, stage: &'static str) -> Res
             format!("{field} metadata value must be string/number/boolean"),
         )),
     }
-}
-
-fn parse_capability_array(
-    obj: &Map<String, Value>,
-    field: &str,
-    stage: &'static str,
-) -> Result<Vec<OfficeCapability>> {
-    obj.get(field)
-        .map(|value| parse_capability_values(value, field, stage))
-        .transpose()
-        .map(|value| value.unwrap_or_default())
-}
-
-fn parse_capability_list_with_hint(
-    obj: &Map<String, Value>,
-    fields: &[&str],
-    hint: Option<OfficeCapability>,
-    stage: &'static str,
-) -> Result<Vec<OfficeCapability>> {
-    for field in fields {
-        if let Some(value) = obj.get(*field) {
-            return parse_capability_values(value, field, stage);
-        }
-    }
-    Ok(hint.map(|value| vec![value]).unwrap_or_default())
-}
-
-fn parse_capability_values(
-    value: &Value,
-    field: &str,
-    stage: &'static str,
-) -> Result<Vec<OfficeCapability>> {
-    let items = value
-        .as_array()
-        .ok_or_else(|| Error::config(stage, format!("{field} must be an array")))?;
-    items
-        .iter()
-        .map(|value| parse_capability_value(value, stage))
-        .collect::<Result<Vec<_>>>()
 }
 
 fn parse_capability_value(value: &Value, stage: &'static str) -> Result<OfficeCapability> {
@@ -420,26 +295,36 @@ fn public_provider_kind(obj: &Map<String, Value>) -> Option<String> {
         .map(|raw| normalize_office_provider_kind(raw.as_str()))
 }
 
-fn normalize_provider_kind_from_source(source: Option<&Map<String, Value>>) -> Option<String> {
-    source
-        .and_then(|source| preferred_string(source, &["provider_kind", "provider"]))
-        .map(|raw| normalize_office_provider_kind(raw.as_str()))
-}
-
-fn public_account_provider_kind(
-    account_obj: &Map<String, Value>,
-    obj: &Map<String, Value>,
-) -> Option<String> {
-    preferred_string(account_obj, &["provider_kind", "provider"])
-        .or_else(|| preferred_string(obj, &["provider_kind", "provider"]))
-        .map(|raw| normalize_office_provider_kind(raw.as_str()))
-}
-
 fn normalize_office_provider_kind(raw: &str) -> String {
     match raw.trim() {
         "qq" | "qqmail" | "qq_mail" => "imap_smtp".to_string(),
         other => other.to_string(),
     }
+}
+
+fn reject_legacy_public_account_keys(obj: &Map<String, Value>, stage: &'static str) -> Result<()> {
+    for key in [
+        "account",
+        "config",
+        "credential",
+        "account_key",
+        "enabled_capabilities",
+        "capabilities",
+        "set_defaults",
+        "clear_defaults",
+        "policy_patch",
+    ] {
+        if obj.contains_key(key) {
+            return Err(Error::config(
+                stage,
+                format!(
+                    "legacy public account wrappers are not supported: remove '{}'",
+                    key
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn infer_provider_kind_from_sources(sources: &[Option<&Map<String, Value>>]) -> Option<String> {

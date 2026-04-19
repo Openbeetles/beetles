@@ -11,9 +11,6 @@ use crate::tools::{
 use serde::Serialize;
 use serde_json::Value;
 
-#[cfg(test)]
-use crate::mail::{OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST};
-
 pub struct OfficeConfigTool {
     service: OfficeConfigManagementService,
 }
@@ -437,7 +434,6 @@ mod tests {
 
     struct ToolFixture {
         tool: OfficeConfigTool,
-        config_file_store: Arc<MemoryConfigFileStore>,
         credential_store: Arc<MemoryCredentialStore>,
         runtime_status_store: Arc<MemoryRuntimeStatusStore>,
     }
@@ -453,7 +449,6 @@ mod tests {
         ));
         ToolFixture {
             tool,
-            config_file_store,
             credential_store,
             runtime_status_store,
         }
@@ -489,10 +484,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_account_accepts_tool_facing_mail_shape_without_account_key_and_persists_fact() {
+    fn apply_account_rejects_legacy_nested_account_and_credential_shape() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let payload = fixture
+        let error = fixture
             .tool
             .execute(
                 r#"{
@@ -519,40 +514,17 @@ mod tests {
             }"#,
                 &mut ctx,
             )
-            .unwrap();
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        let account_key = payload["payload"]["account"]["account_key"]
-            .as_str()
-            .expect("account key");
-        assert_eq!(account_key, "imap-smtp-other-675778650-qq-com");
-        assert_eq!(
-            payload["payload"]["account"]["external_account_id"],
-            "675778650@qq.com"
-        );
-        let stored = crate::config::get_office_accounts_segment(fixture.config_file_store.as_ref())
-            .expect("stored accounts");
-        let stored: Value = serde_json::from_str(&stored).expect("stored json");
-        assert!(stored["registry"]["accounts"][account_key].is_object());
-        let stored_credential = fixture
-            .credential_store
-            .get(account_key)
-            .expect("credential get")
-            .expect("credential stored");
-        assert_eq!(stored_credential.access_token, "hqvqcibpdvqgbdba");
-        assert_eq!(
-            stored_credential
-                .metadata
-                .get(OFFICE_METADATA_MAIL_IMAP_HOST)
-                .expect("imap host"),
-            "imap.qq.com"
-        );
+            .expect_err("legacy nested public payload should be rejected");
+        assert!(error
+            .to_string()
+            .contains("legacy public account wrappers are not supported"));
     }
 
     #[test]
-    fn apply_account_accepts_live_mail_shape_without_account_object_and_persists_fact() {
+    fn apply_account_rejects_legacy_nested_config_shape() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let payload = fixture
+        let error = fixture
             .tool
             .execute(
                 r#"{
@@ -575,41 +547,14 @@ mod tests {
             }"#,
                 &mut ctx,
             )
-            .expect("apply account");
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        let account_key = payload["payload"]["account"]["account_key"]
-            .as_str()
-            .expect("account key");
-        assert_eq!(account_key, "imap-smtp-other-675778650-qq-com");
-        assert_eq!(
-            payload["payload"]["account"]["external_account_id"],
-            "675778650@qq.com"
-        );
-        assert_eq!(payload["payload"]["account"]["account_label"], "QQ邮箱");
-        let stored_credential = fixture
-            .credential_store
-            .get(account_key)
-            .expect("credential get")
-            .expect("credential stored");
-        assert_eq!(stored_credential.access_token, "hqvqcibpdvqgbdba");
-        assert_eq!(
-            stored_credential
-                .metadata
-                .get(OFFICE_METADATA_MAIL_IMAP_HOST)
-                .expect("imap host"),
-            "imap.qq.com"
-        );
-        assert_eq!(
-            stored_credential
-                .metadata
-                .get(OFFICE_METADATA_MAIL_SMTP_HOST)
-                .expect("smtp host"),
-            "smtp.qq.com"
-        );
+            .expect_err("legacy nested config payload should be rejected");
+        assert!(error
+            .to_string()
+            .contains("legacy public account wrappers are not supported"));
     }
 
     #[test]
-    fn apply_account_live_mail_shape_infers_provider_and_capability_from_transport_facts() {
+    fn apply_account_public_flat_shape_infers_provider_and_capability_from_transport_facts() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
         let payload = fixture
@@ -618,12 +563,10 @@ mod tests {
                 r#"{
                 "op":"apply_account",
                 "identity_class":"other",
-                "config":{
-                    "email":"675778650@qq.com",
-                    "password":"hqvqcibpdvqgbdba",
-                    "imap_host":"imap.qq.com",
-                    "smtp_host":"smtp.qq.com"
-                }
+                "email":"675778650@qq.com",
+                "password":"hqvqcibpdvqgbdba",
+                "imap_host":"imap.qq.com",
+                "smtp_host":"smtp.qq.com"
             }"#,
                 &mut ctx,
             )
@@ -637,10 +580,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_account_tool_facing_mail_shape_infers_provider_and_capability_from_transport_facts() {
+    fn apply_account_rejects_legacy_nested_credential_shape() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let payload = fixture
+        let error = fixture
             .tool
             .execute(
                 r#"{
@@ -655,17 +598,14 @@ mod tests {
             }"#,
                 &mut ctx,
             )
-            .expect("provider/capability should be inferred");
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(payload["payload"]["account"]["provider_kind"], "imap_smtp");
-        assert_eq!(
-            payload["payload"]["account"]["enabled_capabilities"],
-            json!(["mail"])
-        );
+            .expect_err("legacy nested credential payload should be rejected");
+        assert!(error
+            .to_string()
+            .contains("legacy public account wrappers are not supported"));
     }
 
     #[test]
-    fn apply_account_live_mail_shape_reports_missing_external_account_identity() {
+    fn apply_account_public_flat_shape_reports_missing_external_account_identity() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
         let error = fixture
@@ -675,12 +615,10 @@ mod tests {
                 "op":"apply_account",
                 "capability":"mail",
                 "provider_kind":"qq",
-                "config":{
-                    "display_name":"QQ邮箱",
-                    "password":"hqvqcibpdvqgbdba",
-                    "imap_host":"imap.qq.com",
-                    "smtp_host":"smtp.qq.com"
-                }
+                "display_name":"QQ邮箱",
+                "password":"hqvqcibpdvqgbdba",
+                "imap_host":"imap.qq.com",
+                "smtp_host":"smtp.qq.com"
             }"#,
                 &mut ctx,
             )
@@ -767,38 +705,32 @@ mod tests {
     fn apply_account_persists_and_probe_reports_missing_credential() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        fixture
+        let payload = fixture
             .tool
             .execute(
                 &json!({
                     "op": "apply_account",
                     "capability": "mail",
-                    "account": {
-                        "account_key": "mail-work",
-                        "provider_kind": "imap_smtp",
-                        "email": "work@example.com",
-                        "display_name": "Work",
-                        "identity_class": "work",
-                        "capabilities": ["mail"]
-                    },
-                    "set_defaults": ["mail"]
+                    "provider_kind": "imap_smtp",
+                    "email": "work@example.com",
+                    "display_name": "Work",
+                    "identity_class": "work"
                 })
                 .to_string(),
                 &mut ctx,
             )
             .expect("apply account");
-
-        let stored = crate::config::get_office_accounts_segment(fixture.config_file_store.as_ref())
-            .expect("stored accounts");
-        let stored: Value = serde_json::from_str(&stored).expect("stored json");
-        assert_eq!(
-            stored["binding"]["capability_defaults"]["mail"],
-            "mail-work"
-        );
+        let payload: Value = serde_json::from_str(&payload).expect("parse apply payload");
+        let account_key = payload["payload"]["account"]["account_key"]
+            .as_str()
+            .expect("account key");
 
         let payload = fixture
             .tool
-            .execute(r#"{"op":"probe","account_key":"mail-work"}"#, &mut ctx)
+            .execute(
+                &json!({"op":"probe","account_key":account_key}).to_string(),
+                &mut ctx,
+            )
             .expect("probe");
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(
@@ -990,21 +922,16 @@ mod tests {
                 r#"{
                     "op":"apply_account",
                     "capability":"documents",
-                    "account":{
-                        "account_key":"docs-wecom",
-                        "provider_kind":"wecom_documents",
-                        "display_name":"WeCom Docs",
-                        "identity_class":"work",
-                        "capabilities":["documents"]
-                    },
-                    "credential":{
-                        "access_token":"  corp-secret  ",
-                        "metadata":{
-                            "documents_corp_id":"  wwcorp  ",
-                            "documents_space_id":"  space-1  ",
-                            "documents_root_path":"  /shared/docs  ",
-                            "documents_base_url":"   "
-                        }
+                    "provider_kind":"wecom_documents",
+                    "identity_class":"work",
+                    "account_label":"WeCom Docs",
+                    "account_id":"docs-wecom",
+                    "access_token":"  corp-secret  ",
+                    "metadata":{
+                        "documents_corp_id":"  wwcorp  ",
+                        "documents_space_id":"  space-1  ",
+                        "documents_root_path":"  /shared/docs  ",
+                        "documents_base_url":"   "
                     }
                 }"#,
                 &mut ctx,
@@ -1047,16 +974,12 @@ mod tests {
                     "op":"apply_account",
                     "account_id":"wecom-docs",
                     "identity_class":"other",
-                    "account":{
-                        "display_name":"WeCom Docs"
-                    },
-                    "credential":{
-                        "access_token":"corp-secret",
-                        "metadata":{
-                            "documents_corp_id":"wwcorp",
-                            "documents_space_id":"space-1",
-                            "documents_root_path":"/shared/docs"
-                        }
+                    "display_name":"WeCom Docs",
+                    "access_token":"corp-secret",
+                    "metadata":{
+                        "documents_corp_id":"wwcorp",
+                        "documents_space_id":"space-1",
+                        "documents_root_path":"/shared/docs"
                     }
                 }"#,
                 &mut ctx,
