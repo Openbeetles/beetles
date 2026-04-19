@@ -1757,21 +1757,37 @@ fi
 
 run_linux_docker_build() {
   local target="$1"
+  shift || true
+  local cargo_args=("$@")
+  local cargo_args_quoted=""
+  local cargo_cmd="cargo build"
+  local arg
+
+  if [[ "$BUILD_PROFILE" == "release" ]]; then
+    cargo_cmd+=" --release"
+  else
+    cargo_cmd+=" --profile $(printf '%q' "$BUILD_PROFILE")"
+  fi
+  for arg in "${cargo_args[@]}"; do
+    cargo_args_quoted+=" $(printf '%q' "$arg")"
+  done
+  cargo_cmd+="$cargo_args_quoted"
+
   echo "  $MSG_USING_DOCKER"
   echo ""
   echo "========== $MSG_BUILD_IN_DOCKER =========="
   if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
     docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/workspace -w /workspace \
       rust:latest \
-      bash -c "rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl"
+      bash -c "rustup target add x86_64-unknown-linux-musl && $cargo_cmd"
   elif [[ "$target" == "armv7-unknown-linux-musleabihf" ]]; then
     docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
       messense/rust-musl-cross:armv7-musleabihf \
-      cargo build --release --target armv7-unknown-linux-musleabihf
+      bash -c "$cargo_cmd"
   elif [[ "$target" == "aarch64-unknown-linux-musl" ]]; then
     docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
       messense/rust-musl-cross:aarch64-musl \
-      cargo build --release --target aarch64-unknown-linux-musl
+      bash -c "$cargo_cmd"
   else
     echo "Error: Docker build not supported for target: $target" >&2
     exit 1
@@ -3099,7 +3115,7 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
 
     # 使用 Docker
     if [[ -n "${USE_DOCKER:-}" ]]; then
-      run_linux_docker_build "$BUILD_TARGET"
+      run_linux_docker_build "$BUILD_TARGET" "${RELEASE_ARGS[@]}"
 
       echo ""
       echo "========== $MSG_BUILD_COMPLETE =========="
@@ -3327,7 +3343,7 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
     if [[ "$(uname -s)" == "Darwin" ]] && [[ "$BUILD_TARGET" =~ -unknown-linux-musl ]] && [[ -z "${USE_DOCKER:-}" ]] && command -v docker &>/dev/null && docker info &>/dev/null; then
       echo ""
       echo "Local toolchain build failed. Auto-fallback to Docker build..."
-      run_linux_docker_build "$BUILD_TARGET"
+      run_linux_docker_build "$BUILD_TARGET" "${RELEASE_ARGS[@]}"
       echo ""
       echo "========== $MSG_BUILD_COMPLETE =========="
       echo "  $MSG_BINARY: $BIN"

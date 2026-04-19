@@ -88,6 +88,18 @@ const ACCOUNT_FILTER_GROUP_SX = {
   },
 } as const;
 
+const ACCOUNT_INFO_CHIP_SX = {
+  borderColor: "color-mix(in srgb, #fff 54%, var(--border))",
+  backgroundColor: "color-mix(in srgb, var(--surface) 80%, var(--card))",
+  boxShadow: "inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent)",
+  color: "var(--foreground)",
+} as const;
+
+const ACCOUNT_STATUS_CHIP_SX = {
+  fontWeight: 700,
+  boxShadow: "inset 0 1px 0 color-mix(in srgb, #fff 64%, transparent)",
+} as const;
+
 type AccountsDialogState =
   | { kind: "closed" }
   | { kind: "create" }
@@ -105,6 +117,17 @@ function readinessColor(
     default:
       return "default";
   }
+}
+
+function accountTitle(row: AccountSummary): string {
+  return row.account_label.trim() || row.account_key;
+}
+
+function accountFooterMeta(row: AccountSummary): string {
+  const title = accountTitle(row);
+  return title === row.account_key
+    ? row.provider_kind
+    : `${row.provider_kind} · ${row.account_key}`;
 }
 
 export function AccountsPage() {
@@ -252,7 +275,18 @@ export function AccountsPage() {
               />
             ) : null}
 
-            <Stack spacing={1.5} sx={{ width: "100%" }}>
+            <Box
+              sx={{
+                width: "100%",
+                display: "grid",
+                gridTemplateColumns: {
+                  xs: "1fr",
+                  md: "repeat(auto-fit, minmax(360px, 420px))",
+                },
+                gap: 1.5,
+                justifyContent: "start",
+              }}
+            >
               {items.map((row) => (
                 <Box
                   key={row.account_key}
@@ -266,14 +300,21 @@ export function AccountsPage() {
                     cursor: "pointer",
                     textAlign: "left",
                     width: "100%",
-                    p: 2,
+                    minHeight: 212,
+                    p: 2.25,
                     display: "flex",
-                    alignItems: "flex-start",
+                    flexDirection: "column",
+                    alignItems: "stretch",
                     justifyContent: "space-between",
-                    gap: 2,
+                    gap: 1.75,
                     border: "none",
                     font: "inherit",
                     color: "inherit",
+                    backgroundColor:
+                      "color-mix(in srgb, var(--surface) 78%, var(--card))",
+                    backgroundImage:
+                      "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+                    boxShadow: "var(--os3d-section-module-stack)",
                     transition:
                       "box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-out-smooth)",
                     "@media (hover: hover)": {
@@ -283,57 +324,166 @@ export function AccountsPage() {
                     },
                   }}
                 >
-                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Stack spacing={1.25} sx={{ minWidth: 0 }}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          display: "block",
+                          fontWeight: 700,
+                          letterSpacing: "0.02em",
+                          color: "var(--text-secondary)",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {localizeAccountProviderName(t, row.provider_kind)}
+                      </Typography>
+                    </Box>
                     <Typography
                       variant="subtitle1"
                       fontWeight={700}
-                      sx={{ lineHeight: 1.3 }}
+                      sx={{
+                        lineHeight: 1.3,
+                        fontSize: "1.08rem",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                      title={accountTitle(row)}
                     >
-                      {row.account_label || row.account_key}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-                      {localizeAccountProviderName(t, row.provider_kind)}{" "}
-                      · {row.provider_kind}
+                      {accountTitle(row)}
                     </Typography>
                     <Stack
                       direction="row"
                       flexWrap="wrap"
                       gap={0.75}
-                      sx={{ mt: 1.25 }}
+                      sx={{ minWidth: 0 }}
                     >
                       <Chip
                         size="small"
                         label={t(`accounts.identity.${row.identity_class}`)}
                         variant="outlined"
+                        sx={ACCOUNT_INFO_CHIP_SX}
                       />
                       {row.enabled_capabilities.map((c) => (
                         <Chip
                           key={c}
                           size="small"
                           label={t(`accounts.capabilityShort.${c}`)}
+                          variant="outlined"
+                          sx={ACCOUNT_INFO_CHIP_SX}
                         />
                       ))}
-                      <Chip
-                        size="small"
-                        color={readinessColor(row.readiness)}
-                        label={t(`accounts.readiness.${row.readiness}`)}
-                      />
-                      {row.has_runtime_error ? (
+                    </Stack>
+                  </Stack>
+                  <Box
+                    sx={{
+                      ...CONFIG_PANEL_SX,
+                      p: 1.25,
+                      backgroundColor:
+                        "color-mix(in srgb, var(--surface) 74%, var(--card))",
+                      boxShadow: "var(--os3d-section-module-stack)",
+                    }}
+                  >
+                    <Stack spacing={0.9}>
+                      <Stack direction="row" flexWrap="wrap" gap={0.75}>
                         <Chip
                           size="small"
-                          color="error"
-                          label={t("accounts.runtimeErrorFlag")}
+                          color={readinessColor(row.readiness)}
+                          label={t(`accounts.readiness.${row.readiness}`)}
+                          sx={ACCOUNT_STATUS_CHIP_SX}
                         />
-                      ) : null}
+                        {row.has_runtime_error ? (
+                          <Chip
+                            size="small"
+                            color="error"
+                            label={t("accounts.runtimeErrorFlag")}
+                            sx={ACCOUNT_STATUS_CHIP_SX}
+                          />
+                        ) : null}
+                      </Stack>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color:
+                            row.next_action !== "none"
+                              ? "var(--text-secondary)"
+                              : "var(--text-tertiary)",
+                          fontWeight: row.next_action !== "none" ? 600 : 500,
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        {row.next_action !== "none"
+                          ? `${t("accounts.nextActionLabel")} · ${t(
+                              `accounts.nextAction.${row.next_action}`,
+                            )}`
+                          : t("accounts.openDetailHint")}
+                      </Typography>
                     </Stack>
                   </Box>
-                  <ChevronRightRounded
-                    sx={{ color: "var(--text-tertiary)", flexShrink: 0, mt: 0.25 }}
-                    aria-hidden
-                  />
+                  <Box
+                    sx={{
+                      minWidth: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 1,
+                      pt: 0.25,
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "0.77rem",
+                        lineHeight: 1.3,
+                        color: "var(--text-tertiary)",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                      title={accountFooterMeta(row)}
+                    >
+                      {accountFooterMeta(row)}
+                    </Typography>
+                    <Stack
+                      direction="row"
+                      alignItems="center"
+                      spacing={0.5}
+                      sx={{ color: "var(--text-secondary)", flexShrink: 0 }}
+                    >
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontWeight: 700,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {t("accounts.openDetail")}
+                      </Typography>
+                      <Box
+                        sx={{
+                          width: 28,
+                          height: 28,
+                          display: "grid",
+                          placeItems: "center",
+                          borderRadius: "var(--radius-control)",
+                          border:
+                            "1px solid color-mix(in srgb, #fff 54%, var(--border))",
+                          backgroundColor:
+                            "color-mix(in srgb, var(--surface) 82%, var(--card))",
+                          boxShadow: "var(--os3d-control-soft-lift-stack)",
+                        }}
+                      >
+                        <ChevronRightRounded
+                          sx={{ color: "var(--text-tertiary)", fontSize: 18 }}
+                          aria-hidden
+                        />
+                      </Box>
+                    </Stack>
+                  </Box>
                 </Box>
               ))}
-            </Stack>
+            </Box>
           </Stack>
         )}
       </SettingsSection>

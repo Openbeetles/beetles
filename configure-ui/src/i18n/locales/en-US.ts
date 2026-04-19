@@ -785,6 +785,9 @@ export const enUS = {
         probe: 'Probe',
         none: 'None',
       },
+      nextActionLabel: 'Next',
+      openDetail: 'Open',
+      openDetailHint: 'Open detail to edit credentials and inspect probe state.',
       loadFailed: 'Could not load accounts',
       unsupportedTitle: 'This device does not expose account endpoints',
       unsupportedDesc:
@@ -797,7 +800,6 @@ export const enUS = {
       runtimeErrorFlag: 'Runtime error',
       detailTitle: 'Account detail',
       closeDetail: 'Close',
-      editHint: 'Credential editing will live in this dialog alongside the list.',
       detailLoadFailed: 'Could not load account',
       detailMissingTitle: 'Account not found',
       detailMissingDesc: 'It may have been removed or the key is invalid.',
@@ -807,6 +809,16 @@ export const enUS = {
       probe: 'Probe',
       probing: 'Probing…',
       probeFailed: 'Probe failed',
+      probeDisposition: {
+        ready: 'Ready',
+        missing_credential: 'Missing credential',
+        unsupported: 'Probe unsupported',
+      },
+      probeReason: {
+        credential_missing: 'Credential not configured',
+        probe_adapter_unavailable: 'No probe adapter is available for this provider',
+        imap_ok: 'IMAP probe succeeded',
+      },
       delete: 'Delete',
       deleteConfirmTitle: 'Delete account?',
       deleteConfirmDesc:

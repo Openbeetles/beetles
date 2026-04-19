@@ -27,12 +27,18 @@ import {
   localizeProviderFieldLabel,
 } from "../i18n/providerFields";
 import type { AccountDetail } from "../types/accountConfig";
-import { CONFIG_PANEL_SX, TEXT_BODY_TERTIARY_SX } from "../theme/panelStyles";
+import {
+  CONFIG_PANEL_SX,
+  DIALOG_FORM_SCROLL_WELL_SX,
+  DIALOG_FORM_SUBMIT_BAR_SX,
+  TEXT_BODY_TERTIARY_SX,
+} from "../theme/panelStyles";
 import {
   AccountCreateForm,
   type AccountCapabilityFilter,
 } from "./AccountCreateForm";
 import { ProviderFieldInput } from "./ProviderFieldInput";
+import { formatProbeMessage } from "./accountDetailDialogHelpers";
 import { errorMessage, withTimeout } from "../util/withTimeout";
 
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
@@ -148,7 +154,7 @@ export function AccountDetailDialog({
       );
       setProbeBusy(false);
       if (res.ok && res.data) {
-        setProbeMsg(`${res.data.disposition}: ${res.data.reason}`.trim());
+        setProbeMsg(formatProbeMessage(res.data.disposition, res.data.reason, t));
         void load();
       } else {
         setProbeMsg(res.error ?? t("accounts.probeFailed"));
@@ -260,6 +266,44 @@ export function AccountDetailDialog({
   const titleId =
     mode === "create" ? "account-create-dialog-title" : "account-detail-dialog-title";
 
+  const detailFooter = detail && a ? (
+    <Box sx={DIALOG_FORM_SUBMIT_BAR_SX}>
+      <Stack direction="row" flexWrap="wrap" gap={1} justifyContent="flex-end">
+        <Button
+          color="error"
+          variant="outlined"
+          disabled={!hasPairing || deleteBusy}
+          onClick={() => setDeleteOpen(true)}
+          sx={{ minWidth: 112 }}
+        >
+          {t("accounts.delete")}
+        </Button>
+        <Button
+          variant="contained"
+          disabled={!hasPairing || saveStatus === "saving"}
+          onClick={() => void handleSaveConfig()}
+          sx={{ minWidth: 128 }}
+        >
+          {saveStatus === "saving" ? t("common.saving") : t("common.save")}
+        </Button>
+      </Stack>
+      {saveStatus === "ok" ? (
+        <SaveFeedback
+          status="ok"
+          message={t("common.saveOk")}
+          onDismiss={dismissSaveFeedback}
+        />
+      ) : null}
+      {saveStatus === "fail" && saveError ? (
+        <SaveFeedback
+          status="fail"
+          message={saveError}
+          onDismiss={dismissSaveFeedback}
+        />
+      ) : null}
+    </Box>
+  ) : null;
+
   return (
     <>
       <Dialog
@@ -325,13 +369,9 @@ export function AccountDetailDialog({
             flex: "1 1 auto",
             minHeight: 0,
             pt: 2,
-            ...(mode === "create"
-              ? {
-                  overflow: "hidden",
-                  display: "flex",
-                  flexDirection: "column",
-                }
-              : { overflow: "auto" }),
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           {mode === "create" ? (
@@ -349,7 +389,18 @@ export function AccountDetailDialog({
               />
             </Box>
           ) : (
-            <>
+            <Stack
+              spacing={0}
+              sx={{
+                width: "100%",
+                flex: 1,
+                minHeight: 0,
+                maxHeight: "100%",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <Stack spacing={3} sx={DIALOG_FORM_SCROLL_WELL_SX}>
               {error ? (
                 <Typography color="error" variant="body2" sx={{ mb: 2 }}>
                   {error}
@@ -431,13 +482,28 @@ export function AccountDetailDialog({
                             .join(", ")}
                         </Typography>
                       ) : null}
+                      <Stack
+                        direction="row"
+                        alignItems="center"
+                        flexWrap="wrap"
+                        gap={1}
+                        sx={{ mt: 1.5 }}
+                      >
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          disabled={!hasPairing || probeBusy}
+                          onClick={() => void handleProbe()}
+                        >
+                          {probeBusy ? t("accounts.probing") : t("accounts.probe")}
+                        </Button>
+                        {probeMsg ? (
+                          <Typography variant="body2" color="text.secondary">
+                            {probeMsg}
+                          </Typography>
+                        ) : null}
+                      </Stack>
                     </Box>
-                  ) : null}
-
-                  {probeMsg ? (
-                    <Typography variant="body2" color="text.secondary">
-                      {probeMsg}
-                    </Typography>
                   ) : null}
 
                   <Box sx={{ ...CONFIG_PANEL_SX, p: 2 }}>
@@ -496,62 +562,14 @@ export function AccountDetailDialog({
                           ) : null}
                         </Box>
                       ))}
-                      <Stack direction="row" flexWrap="wrap" gap={1}>
-                        <Button
-                          variant="contained"
-                          disabled={!hasPairing || saveStatus === "saving"}
-                          onClick={() => void handleSaveConfig()}
-                        >
-                          {saveStatus === "saving"
-                            ? t("common.saving")
-                            : t("common.save")}
-                        </Button>
-                      </Stack>
-                      {saveStatus === "ok" ? (
-                        <SaveFeedback
-                          status="ok"
-                          message={t("common.saveOk")}
-                          onDismiss={dismissSaveFeedback}
-                        />
-                      ) : null}
-                      {saveStatus === "fail" && saveError ? (
-                        <SaveFeedback
-                          status="fail"
-                          message={saveError}
-                          onDismiss={dismissSaveFeedback}
-                        />
-                      ) : null}
                     </Stack>
                   </Box>
 
-                  <Stack direction="row" flexWrap="wrap" gap={1}>
-                    <Button
-                      variant="contained"
-                      disabled={!hasPairing || probeBusy}
-                      onClick={() => void handleProbe()}
-                    >
-                      {probeBusy ? t("accounts.probing") : t("accounts.probe")}
-                    </Button>
-                    <Button
-                      color="error"
-                      variant="outlined"
-                      disabled={!hasPairing || deleteBusy}
-                      onClick={() => setDeleteOpen(true)}
-                    >
-                      {t("accounts.delete")}
-                    </Button>
-                  </Stack>
-
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block" }}
-                  >
-                    {t("accounts.editHint")}
-                  </Typography>
                 </Stack>
               )}
-            </>
+              </Stack>
+              {detailFooter}
+            </Stack>
           )}
         </DialogContent>
       </Dialog>
