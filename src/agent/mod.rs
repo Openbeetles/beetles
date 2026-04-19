@@ -20,10 +20,9 @@ mod tool_outcome;
 
 pub(crate) use active_work::{
     append_foreground_work_packet_guidance, current_unix_ms, due_detached_work_records,
-    extract_foreground_work_packet, foreground_work_packet_required,
-    has_meaningful_foreground_work_for_chat, load_active_work_for_chat,
-    render_foreground_work_packet_block, sync_active_work_after_turn, upsert_detached_work_job,
-    ActiveWorkSyncInput, ForegroundWorkPacket, ForegroundWorkRelation,
+    extract_foreground_work_packet, has_meaningful_foreground_work_for_chat,
+    load_active_work_for_chat, sync_active_work_after_turn, upsert_detached_work_job,
+    ActiveWorkSyncInput, ForegroundWorkPacket,
 };
 pub use active_work::{
     classify_background_job_disposition, idle_self_runtime_scheduler_block_reason_with_live_state,

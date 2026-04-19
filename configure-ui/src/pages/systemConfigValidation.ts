@@ -1,0 +1,42 @@
+import type { AppConfig, SystemConfigSegment } from "../types/appConfig.ts";
+
+export const SYSTEM_SESSION_MIN = 1;
+export const SYSTEM_SESSION_MAX = 128;
+
+/** 简单校验：非空时须含 :// 且 scheme 后为非空（后端会做完整校验）。 */
+export function isValidProxyUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  const separator = trimmed.indexOf("://");
+  return separator !== -1 && separator + 3 < trimmed.length;
+}
+
+export function validateSystemConfig(
+  form: AppConfig,
+  t: (key: string) => string,
+): string | null {
+  if (!isValidProxyUrl(form.proxy_url ?? "")) {
+    return t("config.validation.proxyUrlInvalid");
+  }
+  const wifiPassSet = form.wifi_pass.trim().length > 0;
+  if (wifiPassSet && !form.wifi_ssid.trim()) {
+    return t("config.validation.wifiSsidRequired");
+  }
+  if (
+    form.session_max_messages < SYSTEM_SESSION_MIN ||
+    form.session_max_messages > SYSTEM_SESSION_MAX
+  ) {
+    return t("config.validation.sessionMaxMessages");
+  }
+  return null;
+}
+
+export function buildSystemConfigSegment(form: AppConfig): SystemConfigSegment {
+  return {
+    wifi_ssid: form.wifi_ssid,
+    wifi_pass: form.wifi_pass,
+    proxy_url: form.proxy_url ?? "",
+    session_max_messages: form.session_max_messages,
+    tg_group_activation: form.tg_group_activation,
+  };
+}

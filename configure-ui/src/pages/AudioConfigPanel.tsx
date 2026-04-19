@@ -32,23 +32,15 @@ import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from '../theme/panelStyles'
 import { useConfig } from '../hooks/useConfig'
 import { useDeviceApi } from '../hooks/useDeviceApi'
 import { useRevealedPasswordFields } from '../hooks/useRevealedPassword'
-import { useSaveFeedback } from '../hooks/useSaveFeedback'
-import { useUnsaved } from '../hooks/useUnsaved'
-import { useDeviceRuntimeKind, type DeviceRuntimeKind } from '../store/deviceStatusStore'
+import { useConfigEditorController } from '../hooks/useConfigEditorController'
+import { useDeviceRuntimeKind } from '../store/deviceStatusStore'
 import type { HardwareDiscoveryItem } from '../api/endpoints/hardware'
 import {
   AUDIO_AMBIENT_SOUND_EVENT_PRESETS,
   AUDIO_BITS_PER_SAMPLE_ALLOWED,
-  AUDIO_BUFFER_SIZE_MAX,
-  AUDIO_BUFFER_SIZE_MIN,
-  AUDIO_CONFIG_VERSION,
   AUDIO_LED_STATE_PRESETS,
   AUDIO_MIC_DEVICE_TYPES,
-  AUDIO_PIN_MAX,
-  AUDIO_PIN_MIN,
   AUDIO_REALTIME_PROVIDERS,
-  AUDIO_SAMPLE_RATE_MAX,
-  AUDIO_SAMPLE_RATE_MIN,
   AUDIO_SPEECH_LANGUAGES,
   AUDIO_SPEECH_PROVIDERS,
   AUDIO_SPEAKER_DEVICE_TYPES,
@@ -64,7 +56,6 @@ import {
   DEFAULT_SPEECH_API_URL_BAIDU,
   DEFAULT_SPEECH_API_URL_WHISPER,
   audioRealtimeConfigured,
-  audioRealtimeProviderSupported,
   defaultAudioConfig,
   normalizeAudioConfigFromDevice,
   normalizeAudioConfigForSave,
@@ -78,170 +69,11 @@ import {
   unionStringPreset,
   type AudioConfig,
 } from '../types/audioConfig'
+import { validateAudioConfig } from './audioConfigValidation'
 
 function asNumber(v: string): number | null {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
-}
-
-function validateAudioConfig(
-  form: AudioConfig,
-  runtimeKind: DeviceRuntimeKind,
-  t: (k: string) => string,
-): string | null {
-  const realtimeReady = audioRealtimeConfigured(form)
-  const wakeVoicePipelineEnabled = form.enabled && form.wake_word.enabled
-  const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins)
-
-  if (form.version !== AUDIO_CONFIG_VERSION) {
-    return t('audioConfig.validation.version')
-  }
-  const pinInRange = (p: number) => p >= AUDIO_PIN_MIN && p <= AUDIO_PIN_MAX
-  const srInRange = (v: number) => v >= AUDIO_SAMPLE_RATE_MIN && v <= AUDIO_SAMPLE_RATE_MAX
-  const bitsValid = (v: number) => (AUDIO_BITS_PER_SAMPLE_ALLOWED as readonly number[]).includes(v)
-
-  if (runtimeKind === 'linux' && form.microphone.enabled) {
-    return t('audioConfig.validation.linuxMicrophoneUnsupported')
-  }
-
-  if (form.microphone.enabled) {
-    if (
-      !pinInRange(form.microphone.pins.ws) ||
-      !pinInRange(form.microphone.pins.sck) ||
-      !pinInRange(form.microphone.pins.din)
-    ) {
-      return t('audioConfig.validation.pin')
-    }
-    if (!srInRange(form.microphone.sample_rate)) {
-      return t('audioConfig.validation.sampleRate')
-    }
-    if (!bitsValid(form.microphone.bits_per_sample)) {
-      return t('audioConfig.validation.bitsPerSample')
-    }
-    if (
-      form.microphone.buffer_size < AUDIO_BUFFER_SIZE_MIN ||
-      form.microphone.buffer_size > AUDIO_BUFFER_SIZE_MAX
-    ) {
-      return t('audioConfig.validation.bufferSize')
-    }
-  }
-
-  if (form.speaker.enabled) {
-    if (runtimeKind === 'linux') {
-      if (form.speaker.device_type !== 'usb') {
-        return t('audioConfig.validation.linuxSpeakerDeviceType')
-      }
-      if (!form.speaker.device_ref?.trim()) {
-        return t('audioConfig.validation.speakerUsbRequired')
-      }
-    } else {
-      if (
-        !pinInRange(speakerPins.ws) ||
-        !pinInRange(speakerPins.sck) ||
-        !pinInRange(speakerPins.dout)
-      ) {
-        return t('audioConfig.validation.pin')
-      }
-      if (speakerPins.sd != null && !pinInRange(speakerPins.sd)) {
-        return t('audioConfig.validation.pin')
-      }
-    }
-    if (!srInRange(form.speaker.sample_rate)) {
-      return t('audioConfig.validation.sampleRate')
-    }
-    if (!bitsValid(form.speaker.bits_per_sample)) {
-      return t('audioConfig.validation.bitsPerSample')
-    }
-  }
-
-  if (form.vad.threshold < 0 || form.vad.threshold > 1) {
-    return t('audioConfig.validation.vadThreshold')
-  }
-  if (form.vad.silence_duration_ms < 1 || form.vad.silence_duration_ms > 60_000) {
-    return t('audioConfig.validation.vadSilence')
-  }
-
-  if (form.ambient_listening.sound_events.length > 16) {
-    return t('audioConfig.validation.soundEvents')
-  }
-  if (form.ambient_listening.sound_events.some((s) => !s.trim() || s.length > 32)) {
-    return t('audioConfig.validation.soundEvents')
-  }
-  if (
-    form.ambient_listening.check_interval_seconds < 1 ||
-    form.ambient_listening.check_interval_seconds > 86_400
-  ) {
-    return t('audioConfig.validation.checkInterval')
-  }
-  if (form.led_indicator.enabled && !pinInRange(form.led_indicator.pin)) {
-    return t('audioConfig.validation.pin')
-  }
-
-  if (wakeVoicePipelineEnabled && !form.microphone.enabled) {
-    return t('audioConfig.validation.wakeWordMicRequired')
-  }
-  if (wakeVoicePipelineEnabled && !form.speaker.enabled) {
-    return t('audioConfig.validation.wakeWordSpeakerRequired')
-  }
-
-  if (
-    wakeVoicePipelineEnabled &&
-    !realtimeReady &&
-    form.service_provider !== 'baidu'
-  ) {
-    return t('audioConfig.validation.wakeWordSpeechPipeline')
-  }
-
-  if (
-    wakeVoicePipelineEnabled &&
-    !realtimeReady &&
-    form.microphone.enabled &&
-    form.service_provider === 'baidu' &&
-    (!form.speech.api_key.trim() || !form.speech.api_secret.trim())
-  ) {
-    return t('audioConfig.validation.speechInputCredentialRequired')
-  }
-
-  if (
-    wakeVoicePipelineEnabled &&
-    !realtimeReady &&
-    form.speaker.enabled &&
-    form.service_provider === 'baidu' &&
-    (!form.speech.api_key.trim() || !form.speech.api_secret.trim())
-  ) {
-    return t('audioConfig.validation.speechOutputCredentialRequired')
-  }
-
-  if (wakeVoicePipelineEnabled && realtimeReady) {
-    if (!form.microphone.enabled) return t('audioConfig.validation.realtimeMicRequired')
-    if (!form.speaker.enabled) return t('audioConfig.validation.realtimeSpeakerRequired')
-    if (!audioRealtimeProviderSupported(form.realtime.provider)) {
-      return t('audioConfig.validation.realtimeProvider')
-    }
-    if (!form.realtime.api_key.trim()) {
-      return t('audioConfig.validation.realtimeApiKey')
-    }
-    if (!form.realtime.model.trim()) {
-      return t('audioConfig.validation.realtimeModel')
-    }
-    if (!form.realtime.voice.trim()) {
-      return t('audioConfig.validation.realtimeVoice')
-    }
-    if (
-      !form.realtime.ws_url.startsWith('wss://') &&
-      !form.realtime.ws_url.startsWith('ws://')
-    ) {
-      return t('audioConfig.validation.realtimeWsUrl')
-    }
-    const requiredSampleRate = realtimeRequiredSampleRate(form.realtime.provider)
-    if (
-      form.microphone.sample_rate !== requiredSampleRate ||
-      form.speaker.sample_rate !== requiredSampleRate
-    ) {
-      return t('audioConfig.validation.realtimeSampleRate')
-    }
-  }
-  return null
 }
 
 type PresetSound = (typeof AUDIO_AMBIENT_SOUND_EVENT_PRESETS)[number]
@@ -277,8 +109,12 @@ export function AudioConfigPanel() {
     loadAudioConfig,
     saveAudioConfig,
   } = useConfig()
-  const saveFeedback = useSaveFeedback(t)
-  const { setDirty } = useUnsaved()
+  const editor = useConfigEditorController({
+    t,
+    hasData: audioConfig !== null,
+    loading: audioLoading,
+    load: loadAudioConfig,
+  })
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields()
   const [draft, setDraft] = useState<AudioConfig | null>(null)
   const [audioTab, setAudioTab] = useState(0)
@@ -304,32 +140,22 @@ export function AudioConfigPanel() {
     : rawForm
   const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins)
 
-  useEffect(() => {
-    void loadAudioConfig()
-  }, [loadAudioConfig])
-
-  const saveDisabled = saveFeedback.status === 'saving'
+  const saveDisabled = editor.saveDisabled
   const activeAudioTab = form.enabled ? audioTab : 0
   const setDraftSafe = (next: AudioConfig) => {
-    setDirty(true)
+    editor.markDirty()
     setDraft(next)
   }
 
   const save = async () => {
-    const err = validateAudioConfig(form, runtimeKind, t)
-    if (err) {
-      saveFeedback.fail(err)
-      return
-    }
-    saveFeedback.begin()
-    setSaveRestartRequired(false)
-    const payload = normalizeAudioConfigForSave(form)
-    const result = await saveAudioConfig(payload)
-    saveFeedback.finishFromResult(result)
-    if (result.ok) {
-      setDirty(false)
-      setSaveRestartRequired(Boolean(result.restartRequired))
-    }
+    await editor.runSave({
+      validate: () => validateAudioConfig(form, runtimeKind, t),
+      onBeforeSave: () => setSaveRestartRequired(false),
+      performSave: () => saveAudioConfig(normalizeAudioConfigForSave(form)),
+      onSuccess: (result) => {
+        setSaveRestartRequired(Boolean(result.restartRequired))
+      },
+    })
   }
 
   const fieldGridSx = {
@@ -473,23 +299,23 @@ export function AudioConfigPanel() {
             onClick={save}
             disabled={saveDisabled}
           >
-            {saveFeedback.status === 'saving' ? t('common.saving') : t('common.save')}
+            {editor.saveFeedback.status === 'saving' ? t('common.saving') : t('common.save')}
           </Button>
         }
         belowTitleRow={
-          saveFeedback.status === 'ok' || saveFeedback.status === 'fail' ? (
+          editor.saveFeedback.status === 'ok' || editor.saveFeedback.status === 'fail' ? (
             <SaveFeedback
               placement="belowTitle"
-              status={saveFeedback.status}
+              status={editor.saveFeedback.status}
               message={
-                saveFeedback.status === 'ok'
+                editor.saveFeedback.status === 'ok'
                   ? saveRestartRequired
                     ? t('audioConfig.restartRequired')
                     : t('common.saveOk')
-                  : saveFeedback.error
+                  : editor.saveFeedback.error
               }
               autoDismissMs={3000}
-              onDismiss={saveFeedback.dismiss}
+              onDismiss={editor.saveFeedback.dismiss}
             />
           ) : null
         }

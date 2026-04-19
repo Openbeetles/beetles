@@ -15,7 +15,6 @@ use crate::task_execution::{
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 pub const REL_PATH_ACTIVE_WORKS: &str = "memory/active_works.json";
 pub const REL_PATH_DETACHED_WORKS: &str = "memory/detached_works.json";
@@ -98,40 +97,6 @@ pub struct ForegroundWorkSettlement {
     pub active_artifact_refs: Vec<String>,
 }
 
-impl ForegroundWorkSettlement {
-    pub fn into_record(self, updated_at: u64) -> Option<ActiveWorkRecord> {
-        let record = ActiveWorkRecord {
-            kind: self.kind,
-            title: self.title,
-            status: self.status,
-            continuity_open: self.status.continuity_open(),
-            blocks_background_llm: self.status.default_blocks_background_llm(),
-            progress_summary: self.progress_summary,
-            blocker: self.blocker,
-            next_action: self.next_action,
-            recent_outcome: self.recent_outcome,
-            active_artifact_refs: self.active_artifact_refs,
-            updated_at,
-        };
-        record.is_meaningful().then_some(record)
-    }
-}
-
-impl From<&ActiveWorkRecord> for ForegroundWorkSettlement {
-    fn from(value: &ActiveWorkRecord) -> Self {
-        Self {
-            kind: value.kind,
-            status: value.status,
-            title: value.title.clone(),
-            progress_summary: value.progress_summary.clone(),
-            blocker: value.blocker.clone(),
-            next_action: value.next_action.clone(),
-            recent_outcome: value.recent_outcome.clone(),
-            active_artifact_refs: value.active_artifact_refs.clone(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForegroundWorkPacket {
     pub relation_to_last_work: ForegroundWorkRelation,
@@ -144,112 +109,33 @@ impl ForegroundWorkPacket {
     pub const CLOSE_TAG: &str = "</foreground_work_packet>";
 }
 
-pub(crate) const FOREGROUND_WORK_PACKET_GUIDANCE: &str = "## Foreground Work Contract\nWhen this turn creates, continues, revises, cancels, supersedes, or settles foreground work, append exactly one trailing <foreground_work_packet>...</foreground_work_packet> block after the user-facing reply. The block body must be raw JSON only with fields relation_to_last_work and settlement. relation_to_last_work must be one of independent, continue_existing, supply_requested_input, revise_existing, cancel_existing, start_new_work, ambiguous. settlement must be either null or one object with fields kind, status, title, progress_summary, blocker, next_action, recent_outcome, active_artifact_refs. kind must be interactive_action or task_execution. status must be running, awaiting_user, suspended, completed, aborted, or failed_terminal. The visible reply must remain fully user-facing and must not mention this packet. If this turn does not touch foreground work, do not append the block.";
-
-pub(crate) fn append_foreground_work_packet_guidance(system: &mut String, max_len: usize) {
-    let _ = crate::agent::context::append_capped_section(
-        system,
-        "\n\n",
-        FOREGROUND_WORK_PACKET_GUIDANCE,
-        max_len,
-    );
-}
-
-pub(crate) fn foreground_work_packet_required(
-    strategy: crate::agent::AgentRunStrategy,
-    ingress: crate::bus::IngressKind,
-    reply_surface: crate::agent::reply_surface::ReplySurface,
-    any_tool_used: bool,
-    foreground_work_context_present: bool,
-) -> bool {
-    strategy == crate::agent::AgentRunStrategy::LinuxEnhanced
-        && ingress == crate::bus::IngressKind::User
-        && (foreground_work_context_present
-            || any_tool_used
-            || reply_surface == crate::agent::reply_surface::ReplySurface::TaskExecution)
-}
+pub(crate) fn append_foreground_work_packet_guidance(_system: &mut String, _max_len: usize) {}
 
 pub(crate) fn extract_foreground_work_packet(
     content: &str,
-    required: bool,
+    _required: bool,
 ) -> Result<(String, Option<ForegroundWorkPacket>)> {
     let Some(open_start) = content.find(ForegroundWorkPacket::OPEN_TAG) else {
-        if required {
-            return Err(crate::error::Error::config(
-                "foreground_work_packet_missing",
-                "foreground work packet required but missing",
-            ));
-        }
         return Ok((content.trim().to_string(), None));
     };
-    let Some(close_start) = content[open_start..].find(ForegroundWorkPacket::CLOSE_TAG) else {
-        return Err(crate::error::Error::config(
-            "foreground_work_packet_invalid",
-            "foreground work packet close tag missing",
-        ));
-    };
-    let close_start = open_start + close_start;
-    if content[close_start + ForegroundWorkPacket::CLOSE_TAG.len()..]
-        .contains(ForegroundWorkPacket::OPEN_TAG)
-    {
-        return Err(crate::error::Error::config(
-            "foreground_work_packet_invalid",
-            "multiple foreground work packets are not allowed",
-        ));
-    }
-    let json_start = open_start + ForegroundWorkPacket::OPEN_TAG.len();
-    let raw_json = content[json_start..close_start].trim();
-    let packet = serde_json::from_str::<ForegroundWorkPacket>(raw_json).map_err(|error| {
-        crate::error::Error::config("foreground_work_packet_invalid", error.to_string())
-    })?;
-    let mut visible = String::with_capacity(content.len().saturating_sub(raw_json.len()));
+    let close_start = content[open_start..]
+        .find(ForegroundWorkPacket::CLOSE_TAG)
+        .map(|value| open_start + value);
+    let visible_len = close_start
+        .map(|value| content.len().saturating_sub(value))
+        .unwrap_or_else(|| content.len().saturating_sub(open_start));
+    let mut visible = String::with_capacity(visible_len);
     visible.push_str(content[..open_start].trim_end());
-    let trailing = content[close_start + ForegroundWorkPacket::CLOSE_TAG.len()..].trim_start();
-    if !trailing.is_empty() {
-        if !visible.trim().is_empty() {
-            visible.push_str("\n\n");
+    if let Some(close_start) = close_start {
+        let trailing = content[close_start + ForegroundWorkPacket::CLOSE_TAG.len()..].trim_start();
+        if !trailing.is_empty() {
+            if !visible.trim().is_empty() {
+                visible.push_str("\n\n");
+            }
+            visible.push_str(trailing);
         }
-        visible.push_str(trailing);
     }
-    Ok((visible.trim().to_string(), Some(packet)))
-}
-
-pub(crate) fn render_foreground_work_packet_block(
-    record: &ActiveWorkRecord,
-    max_len: usize,
-) -> Option<String> {
-    if max_len == 0 {
-        return None;
-    }
-    let mut out = String::with_capacity(max_len.min(384));
-    out.push_str("## Foreground Work Packet\n");
-    let _ = writeln!(out, "Kind: {}", record.kind.label());
-    let _ = writeln!(out, "Status: {}", record.status.label());
-    if !record.title.trim().is_empty() {
-        let _ = writeln!(out, "Title: {}", record.title.trim());
-    }
-    if !record.progress_summary.trim().is_empty() {
-        let _ = writeln!(out, "Progress: {}", record.progress_summary.trim());
-    }
-    if !record.blocker.trim().is_empty() {
-        let _ = writeln!(out, "Blocker: {}", record.blocker.trim());
-    }
-    if !record.next_action.trim().is_empty() {
-        let _ = writeln!(out, "Next: {}", record.next_action.trim());
-    }
-    if !record.recent_outcome.trim().is_empty() {
-        let _ = writeln!(out, "Recent outcome: {}", record.recent_outcome.trim());
-    }
-    if !record.active_artifact_refs.is_empty() {
-        let _ = writeln!(
-            out,
-            "Artifacts: {}",
-            record.active_artifact_refs.join(" | ")
-        );
-    }
-    let trimmed = out.trim_end();
-    (!trimmed.is_empty())
-        .then(|| crate::util::truncate_content_to_max(trimmed, max_len).into_owned())
+    Ok((visible.trim().to_string(), None))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -352,7 +238,6 @@ impl ActiveWorkRecord {
         candidate.is_meaningful().then_some(candidate)
     }
 
-    #[cfg(test)]
     pub(crate) fn from_interactive_execution_state(
         state: &ExecutionState,
         user_request: &str,
@@ -542,7 +427,9 @@ pub struct DetachedWorkUpsertOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ActiveWorkSyncInput<'a> {
     pub(crate) chat_id: &'a str,
-    pub(crate) foreground_work_packet: Option<&'a ForegroundWorkPacket>,
+    pub(crate) active_task_run: Option<&'a TaskRunRecord>,
+    pub(crate) execution_state: Option<&'a ExecutionState>,
+    pub(crate) user_request: &'a str,
     pub(crate) now_secs: u64,
 }
 
@@ -564,9 +451,20 @@ pub(crate) fn sync_active_work_after_turn(
     input: ActiveWorkSyncInput<'_>,
 ) -> Result<()> {
     let next = input
-        .foreground_work_packet
-        .and_then(|packet| packet.settlement.clone())
-        .and_then(|settlement| settlement.into_record(input.now_secs));
+        .active_task_run
+        .and_then(ActiveWorkRecord::from_task_run)
+        .or_else(|| {
+            input.execution_state.and_then(|state| {
+                (state.status == ExecutionStatus::Blocked)
+                    .then(|| {
+                        ActiveWorkRecord::from_interactive_execution_state(
+                            state,
+                            input.user_request,
+                        )
+                    })
+                    .flatten()
+            })
+        });
     if let Some(record) = next {
         store.set(input.chat_id, &record)
     } else {
@@ -685,7 +583,6 @@ fn foreground_status_from_task_run(
     }
 }
 
-#[cfg(test)]
 fn foreground_status_from_execution_state(state: &ExecutionState) -> ForegroundWorkStatus {
     match state.status {
         ExecutionStatus::Active => ForegroundWorkStatus::Running,
@@ -1025,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_clears_active_work_when_packet_settlement_is_absent() {
+    fn sync_clears_active_work_when_runtime_state_is_absent() {
         let store = MemoryActiveWorkStore::default();
         let record = ActiveWorkRecord {
             kind: ActiveWorkKind::InteractiveAction,
@@ -1046,10 +943,9 @@ mod tests {
             &store,
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
-                foreground_work_packet: Some(&ForegroundWorkPacket {
-                    relation_to_last_work: ForegroundWorkRelation::CancelExisting,
-                    settlement: None,
-                }),
+                active_task_run: None,
+                execution_state: None,
+                user_request: "取消当前配置",
                 now_secs: 8,
             },
         )
@@ -1059,30 +955,25 @@ mod tests {
     }
 
     #[test]
-    fn sync_keeps_explicit_foreground_work_packet() {
+    fn sync_projects_blocked_execution_state_into_active_work() {
         let store = MemoryActiveWorkStore::default();
-        let interactive_work = ActiveWorkRecord {
-            kind: ActiveWorkKind::InteractiveAction,
-            title: "配置 QQ 邮箱账户".to_string(),
-            status: ForegroundWorkStatus::AwaitingUser,
-            continuity_open: true,
-            blocks_background_llm: true,
-            progress_summary: "账户草案已创建".to_string(),
+        let execution_state = ExecutionState {
+            status: ExecutionStatus::Blocked,
+            goal: "配置 QQ 邮箱账户".to_string(),
+            progress: "账户草案已创建".to_string(),
             blocker: "缺少 provider_kind".to_string(),
             next_action: "补认证信息".to_string(),
-            recent_outcome: String::new(),
-            active_artifact_refs: Vec::new(),
             updated_at: 7,
+            ..ExecutionState::default()
         };
 
         sync_active_work_after_turn(
             &store,
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
-                foreground_work_packet: Some(&ForegroundWorkPacket {
-                    relation_to_last_work: ForegroundWorkRelation::ContinueExisting,
-                    settlement: Some(ForegroundWorkSettlement::from(&interactive_work)),
-                }),
+                active_task_run: None,
+                execution_state: Some(&execution_state),
+                user_request: "帮我配置 QQ 邮箱账户",
                 now_secs: 7,
             },
         )
@@ -1095,10 +986,9 @@ mod tests {
             &store,
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
-                foreground_work_packet: Some(&ForegroundWorkPacket {
-                    relation_to_last_work: ForegroundWorkRelation::Independent,
-                    settlement: None,
-                }),
+                active_task_run: None,
+                execution_state: None,
+                user_request: "先停下",
                 now_secs: 8,
             },
         )
@@ -1107,14 +997,24 @@ mod tests {
     }
 
     #[test]
-    fn sync_does_not_materialize_foreground_work_without_explicit_packet() {
+    fn sync_does_not_materialize_active_work_from_running_execution_state() {
         let store = MemoryActiveWorkStore::default();
+        let execution_state = ExecutionState {
+            status: ExecutionStatus::Active,
+            goal: "配置 QQ 邮箱账户".to_string(),
+            progress: "当前主机 beetle 在线，可继续配置 QQ 邮箱。".to_string(),
+            next_action: "继续配置".to_string(),
+            updated_at: 9,
+            ..ExecutionState::default()
+        };
 
         sync_active_work_after_turn(
             &store,
             ActiveWorkSyncInput {
                 chat_id: "chat-1",
-                foreground_work_packet: None,
+                active_task_run: None,
+                execution_state: Some(&execution_state),
+                user_request: "帮我配置 QQ 邮箱账户",
                 now_secs: 9,
             },
         )

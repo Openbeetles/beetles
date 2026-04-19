@@ -1,5 +1,5 @@
 import MenuItem from "@mui/material/MenuItem";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -21,8 +21,7 @@ import { SettingsSection } from "../components/SettingsSection";
 import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
 import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
-import { useSaveFeedback } from "../hooks/useSaveFeedback";
-import { useUnsaved } from "../hooks/useUnsaved";
+import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import type {
   DeviceEntry,
   HardwareSegment,
@@ -30,9 +29,7 @@ import type {
 } from "../types/hardwareConfig";
 import {
   defaultHardwareSegment,
-  HARDWARE_ADC1_MAX_PIN,
   HARDWARE_DEVICE_TYPES,
-  HARDWARE_FORBIDDEN_PINS,
   HARDWARE_PIN_MAX,
   HARDWARE_PIN_MIN,
   HARDWARE_PWM_FREQ_MAX,
@@ -40,15 +37,13 @@ import {
   I2C_MAX_READ_LEN_UI,
   I2C_SENSOR_ADDR_MAX,
   I2C_SENSOR_ADDR_MIN,
-  I2C_SENSOR_ID_MAX_LEN,
   I2C_SENSOR_MAX_CMD_LEN,
   I2C_SENSOR_MODELS,
-  type I2cSensorModel,
   MAX_HARDWARE_DEVICES,
   MAX_I2C_SENSORS,
-  MAX_PWM_DEVICES,
 } from "../types/hardwareConfig";
 import { generateDeviceId } from "../util/hardwareDeviceId";
+import { validateHardwareSegment } from "./hardwareConfigValidation";
 
 function asNumber(v: string): number | null {
   const n = Number(v);
@@ -82,157 +77,6 @@ function createNewI2cSensor(taken: Set<string>): I2cSensorEntry {
   };
 }
 
-function validateSegment(
-  seg: HardwareSegment,
-  t: (k: string) => string,
-): string | null {
-  const devs = seg.hardware_devices;
-  if (devs.length > MAX_HARDWARE_DEVICES) {
-    return t("hardwareConfig.validation.maxDevices");
-  }
-  const seenIds = new Set<string>();
-  const seenPins = new Set<number>();
-  let pwmCount = 0;
-  for (let i = 0; i < devs.length; i++) {
-    const d = devs[i];
-    if (!d.id.trim() || d.id.length > 32) {
-      return t("hardwareConfig.validation.idLen");
-    }
-    if (seenIds.has(d.id)) {
-      return t("hardwareConfig.validation.idDup");
-    }
-    seenIds.add(d.id);
-    if (!HARDWARE_DEVICE_TYPES.includes(d.device_type as never)) {
-      return t("hardwareConfig.validation.badType");
-    }
-    const pin = d.pins.pin;
-    if (pin == null || !Number.isFinite(pin)) {
-      return t("hardwareConfig.validation.pinRequired");
-    }
-    if (pin < HARDWARE_PIN_MIN || pin > HARDWARE_PIN_MAX) {
-      return t("hardwareConfig.validation.pinRange");
-    }
-    if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(pin)) {
-      return t("hardwareConfig.validation.pinForbidden");
-    }
-    if (seenPins.has(pin)) {
-      return t("hardwareConfig.validation.pinDup");
-    }
-    seenPins.add(pin);
-    if (d.device_type === "adc_in" && pin > HARDWARE_ADC1_MAX_PIN) {
-      return t("hardwareConfig.validation.adcPin");
-    }
-    if (d.device_type === "pwm_out") {
-      pwmCount += 1;
-      const hz = d.options?.frequency_hz;
-      if (hz != null) {
-        const n = typeof hz === "number" ? hz : Number(hz);
-        if (
-          !Number.isFinite(n) ||
-          n < HARDWARE_PWM_FREQ_MIN ||
-          n > HARDWARE_PWM_FREQ_MAX
-        ) {
-          return t("hardwareConfig.validation.pwmFreq");
-        }
-      }
-    }
-    if (d.device_type === "dht") {
-      const model = d.options?.model;
-      if (model != null && typeof model === "string") {
-        if (!["dht11", "dht22", "dht21"].includes(model)) {
-          return t("hardwareConfig.validation.dhtModel");
-        }
-      }
-      const wf = d.options?.watch_field;
-      if (wf != null && typeof wf === "string") {
-        if (wf !== "temperature" && wf !== "humidity") {
-          return t("hardwareConfig.validation.dhtWatchField");
-        }
-      }
-      const pull = d.options?.pull;
-      if (pull != null && typeof pull === "string") {
-        if (!["up", "down", "none"].includes(pull)) {
-          return t("hardwareConfig.validation.dhtPull");
-        }
-      }
-    }
-  }
-  if (pwmCount > MAX_PWM_DEVICES) {
-    return t("hardwareConfig.validation.maxPwm");
-  }
-
-  const i2cList = seg.i2c_sensors ?? [];
-  if (i2cList.length > MAX_I2C_SENSORS) {
-    return t("hardwareConfig.validation.i2cSensorMax");
-  }
-  const seenI2cIds = new Set<string>();
-  for (const s of i2cList) {
-    if (!s.id.trim() || s.id.length > I2C_SENSOR_ID_MAX_LEN) {
-      return t("hardwareConfig.validation.i2cSensorIdLen");
-    }
-    if (seenI2cIds.has(s.id)) {
-      return t("hardwareConfig.validation.i2cSensorIdDup");
-    }
-    seenI2cIds.add(s.id);
-    if (devs.some((d) => d.id === s.id)) {
-      return t("hardwareConfig.validation.i2cSensorIdConflict");
-    }
-    if (
-      !Number.isFinite(s.addr) ||
-      s.addr < I2C_SENSOR_ADDR_MIN ||
-      s.addr > I2C_SENSOR_ADDR_MAX
-    ) {
-      return t("hardwareConfig.validation.i2cSensorAddr");
-    }
-    if (!I2C_SENSOR_MODELS.includes(s.model as I2cSensorModel)) {
-      return t("hardwareConfig.validation.i2cSensorModel");
-    }
-    if (s.watch_field !== "temperature" && s.watch_field !== "humidity") {
-      return t("hardwareConfig.validation.i2cSensorWatchField");
-    }
-    if (s.what.length > 128) {
-      return t("hardwareConfig.validation.i2cSensorWhatLen");
-    }
-    if (s.how.length > 256) {
-      return t("hardwareConfig.validation.i2cSensorHowLen");
-    }
-    if (s.model === "raw") {
-      const init = s.options?.init_cmd;
-      if (
-        !Array.isArray(init) ||
-        init.length === 0 ||
-        init.length > I2C_SENSOR_MAX_CMD_LEN
-      ) {
-        return t("hardwareConfig.validation.i2cSensorRawInit");
-      }
-      for (let k = 0; k < init.length; k++) {
-        const el = init[k];
-        const n = typeof el === "number" ? el : Number(el);
-        if (!Number.isFinite(n) || n < 0 || n > 255) {
-          return t("hardwareConfig.validation.i2cSensorRawInitByte");
-        }
-      }
-      const rl = s.options?.read_len;
-      const readLen = typeof rl === "number" ? rl : Number(rl);
-      if (
-        !Number.isFinite(readLen) ||
-        readLen < 1 ||
-        readLen > I2C_MAX_READ_LEN_UI
-      ) {
-        return t("hardwareConfig.validation.i2cSensorRawReadLen");
-      }
-      const cw = s.options?.conversion_wait_ms;
-      if (cw != null) {
-        const m = typeof cw === "number" ? cw : Number(cw);
-        if (!Number.isFinite(m) || m > 2000) {
-          return t("hardwareConfig.validation.i2cSensorRawWait");
-        }
-      }
-    }
-  }
-  return null;
-}
-
 /** 合并编辑中的 hardware_devices / i2c_sensors，保留 i2c_bus 等与 GET 一致 */
 function mergeSegment(
   base: HardwareSegment | null,
@@ -259,8 +103,12 @@ export function HardwareGpioPanel() {
     loadHardwareConfig,
     saveHardwareConfig,
   } = useConfig();
-  const saveFeedback = useSaveFeedback(t);
-  const { setDirty } = useUnsaved();
+  const editor = useConfigEditorController({
+    t,
+    hasData: hardwareSegment !== null,
+    loading: hardwareLoading,
+    load: loadHardwareConfig,
+  });
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const [draftDevices, setDraftDevices] = useState<DeviceEntry[] | null>(null);
   const [draftI2cSensors, setDraftI2cSensors] = useState<
@@ -280,19 +128,15 @@ export function HardwareGpioPanel() {
     [draftI2cSensors, hardwareSegment],
   );
 
-  useEffect(() => {
-    void loadHardwareConfig();
-  }, [loadHardwareConfig]);
-
   const segmentToSave = useMemo(
     () => mergeSegment(hardwareSegment, devices, i2cSensors),
     [hardwareSegment, devices, i2cSensors],
   );
 
-  const saveDisabled = saveFeedback.status === "saving";
+  const saveDisabled = editor.saveDisabled;
 
   const updateDevice = (index: number, next: DeviceEntry) => {
-    setDirty(true);
+    editor.markDirty();
     setDraftDevices((prev) => {
       const base = prev ?? hardwareSegment?.hardware_devices ?? [];
       const copy = [...base];
@@ -302,7 +146,7 @@ export function HardwareGpioPanel() {
   };
 
   const removeDevice = (index: number) => {
-    setDirty(true);
+    editor.markDirty();
     setDraftDevices((prev) => {
       const base = prev ?? hardwareSegment?.hardware_devices ?? [];
       return base.filter((_, i) => i !== index);
@@ -311,7 +155,7 @@ export function HardwareGpioPanel() {
 
   const addDevice = () => {
     if (devices.length >= MAX_HARDWARE_DEVICES) return;
-    setDirty(true);
+    editor.markDirty();
     setDraftDevices((prev) => {
       const base = prev ?? hardwareSegment?.hardware_devices ?? [];
       const taken = new Set(base.map((d) => d.id).filter(Boolean));
@@ -320,7 +164,7 @@ export function HardwareGpioPanel() {
   };
 
   const updateI2cSensor = (index: number, next: I2cSensorEntry) => {
-    setDirty(true);
+    editor.markDirty();
     setDraftI2cSensors((prev) => {
       const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
       const copy = [...base];
@@ -330,7 +174,7 @@ export function HardwareGpioPanel() {
   };
 
   const removeI2cSensor = (index: number) => {
-    setDirty(true);
+    editor.markDirty();
     setDraftI2cSensors((prev) => {
       const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
       return base.filter((_, i) => i !== index);
@@ -339,7 +183,7 @@ export function HardwareGpioPanel() {
 
   const addI2cSensor = () => {
     if (i2cSensors.length >= MAX_I2C_SENSORS) return;
-    setDirty(true);
+    editor.markDirty();
     setDraftI2cSensors((prev) => {
       const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
       const taken = new Set<string>();
@@ -354,21 +198,16 @@ export function HardwareGpioPanel() {
   };
 
   const save = async () => {
-    const err = validateSegment(segmentToSave, t);
-    if (err) {
-      saveFeedback.fail(err);
-      return;
-    }
-    saveFeedback.begin();
-    setSaveRestartRequired(false);
-    const result = await saveHardwareConfig(segmentToSave);
-    saveFeedback.finishFromResult(result);
-    if (result.ok) {
-      setDirty(false);
-      setSaveRestartRequired(Boolean(result.restartRequired));
-      setDraftDevices(null);
-      setDraftI2cSensors(null);
-    }
+    await editor.runSave({
+      validate: () => validateHardwareSegment(segmentToSave, t),
+      onBeforeSave: () => setSaveRestartRequired(false),
+      performSave: () => saveHardwareConfig(segmentToSave),
+      onSuccess: (result) => {
+        setSaveRestartRequired(Boolean(result.restartRequired));
+        setDraftDevices(null);
+        setDraftI2cSensors(null);
+      },
+    });
   };
 
   if (
@@ -421,25 +260,25 @@ export function HardwareGpioPanel() {
             onClick={save}
             disabled={saveDisabled}
           >
-            {saveFeedback.status === "saving"
+            {editor.saveFeedback.status === "saving"
               ? t("common.saving")
               : t("common.save")}
           </Button>
         }
         belowTitleRow={
-          saveFeedback.status === "ok" || saveFeedback.status === "fail" ? (
+          editor.saveFeedback.status === "ok" || editor.saveFeedback.status === "fail" ? (
             <SaveFeedback
               placement="belowTitle"
-              status={saveFeedback.status}
+              status={editor.saveFeedback.status}
               message={
-                saveFeedback.status === "ok"
+                editor.saveFeedback.status === "ok"
                   ? saveRestartRequired
                     ? t("hardwareConfig.restartRequired")
                     : t("common.saveOk")
-                  : saveFeedback.error
+                  : editor.saveFeedback.error
               }
               autoDismissMs={3000}
-              onDismiss={saveFeedback.dismiss}
+              onDismiss={editor.saveFeedback.dismiss}
             />
           ) : null
         }

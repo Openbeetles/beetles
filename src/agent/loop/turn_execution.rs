@@ -274,13 +274,6 @@ pub(super) fn execute_turn(
         let (outcome, telemetry) = task_execution_outcome;
         return Ok(ExecutedTurn { outcome, telemetry });
     }
-    if msg.ingress == IngressKind::User && config.strategy == AgentRunStrategy::LinuxEnhanced {
-        crate::agent::append_foreground_work_packet_guidance(
-            &mut system,
-            crate::orchestrator::current_budget().system_prompt_max,
-        );
-    }
-
     let initial_msg_count = messages.len();
     let current_turn_scope_start = current_turn_scope_start(&messages, initial_msg_count);
     tool_call_repeat.clear();

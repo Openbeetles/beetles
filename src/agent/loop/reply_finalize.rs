@@ -132,7 +132,7 @@ pub(super) fn finalize_turn(
         external_content_used,
         used_surface_finalization,
         task_execution_used: _task_execution_used,
-        foreground_work_context_present,
+        foreground_work_context_present: _foreground_work_context_present,
         pressure,
         runtime_mode: _runtime_mode,
         deliberation_class: _deliberation_class,
@@ -163,19 +163,12 @@ pub(super) fn finalize_turn(
             (s, false, false, true)
         }
     };
-    let packet_required = crate::agent::foreground_work_packet_required(
-        config.strategy,
-        msg.ingress,
-        reply_surface,
-        any_tool_used,
-        foreground_work_context_present,
-    );
-    let (stripped_reply_content, foreground_work_packet) = if is_interrupt {
-        (reply_content.clone(), None)
-    } else {
-        crate::agent::extract_foreground_work_packet(&reply_content, packet_required)?
-    };
-    reply_content = stripped_reply_content;
+    let foreground_work_packet = None;
+    if !is_interrupt {
+        let (stripped_reply_content, _) =
+            crate::agent::extract_foreground_work_packet(&reply_content, false)?;
+        reply_content = stripped_reply_content;
+    }
 
     if !is_interrupt && apply_finalizer {
         reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
@@ -343,7 +336,7 @@ pub(super) fn complete_turn(
         used_surface_finalization,
         pressure,
         reply_surface,
-        foreground_work_packet,
+        foreground_work_packet: _foreground_work_packet,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -422,22 +415,9 @@ pub(super) fn complete_turn(
     }
     let now_secs = super::now_unix_ms() / 1000;
     let reply_requests_input = looks_like_truthful_blocker_or_input_request(&reply_content);
-    let foreground_relation = foreground_work_packet
-        .as_ref()
-        .map(|packet| packet.relation_to_last_work);
-    let explicit_interactive_work = foreground_work_packet
-        .as_ref()
-        .and_then(|packet| packet.settlement.as_ref())
-        .filter(|settlement| settlement.kind == crate::agent::ActiveWorkKind::InteractiveAction)
-        .and_then(|settlement| settlement.clone().into_record(now_secs));
-    let keep_interactive_work = explicit_interactive_work.is_some();
     let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
-        && (matches!(
-            foreground_relation,
-            Some(crate::agent::ForegroundWorkRelation::CancelExisting)
-                | Some(crate::agent::ForegroundWorkRelation::StartNewWork)
-        ) || (!keep_interactive_work && reply_surface != ReplySurface::TaskExecution));
+        && reply_surface != ReplySurface::TaskExecution;
     if clear_execution_state {
         if let Err(error) = config.runtime.execution_state_store.clear(&msg.chat_id) {
             log::warn!(
@@ -450,27 +430,15 @@ pub(super) fn complete_turn(
     let should_seed_execution_state = delivered
         && msg.ingress == IngressKind::User
         && reply_surface != ReplySurface::PrivateBoundary
-        && (explicit_interactive_work.is_some()
-            || reply_requests_input
+        && (reply_requests_input
+            || (any_tool_used && !used_surface_finalization)
             || matches!(reply_surface, ReplySurface::TaskExecution)
             || turn_observation
                 .as_ref()
                 .and_then(|observation| observation.blocker.as_ref())
                 .is_some());
     if should_seed_execution_state {
-        if let Some(record) = explicit_interactive_work.as_ref() {
-            if let Err(error) = config
-                .runtime
-                .execution_state_store
-                .set(&msg.chat_id, &record.execution_state_projection())
-            {
-                log::warn!(
-                    "[agent_execution_state] foreground packet seed failed chat_id={}: {}",
-                    msg.chat_id,
-                    error
-                );
-            }
-        } else if let Err(error) = crate::memory::seed_execution_state_from_turn(
+        if let Err(error) = crate::memory::seed_execution_state_from_turn(
             config.runtime.execution_state_store.as_ref(),
             crate::memory::ProvisionalExecutionStateInput {
                 chat_id: &msg.chat_id,
@@ -492,58 +460,35 @@ pub(super) fn complete_turn(
         }
     }
     if delivered && msg.ingress == IngressKind::User {
-        let should_abort_existing_task_run = matches!(
-            foreground_relation,
-            Some(crate::agent::ForegroundWorkRelation::CancelExisting)
-        ) || (foreground_relation
-            == Some(crate::agent::ForegroundWorkRelation::StartNewWork)
-            && reply_surface != ReplySurface::TaskExecution);
-        if should_abort_existing_task_run {
-            if let Some(record) = active_task_run_for_chat(
-                config.runtime.task_run_store.as_ref(),
-                msg.channel.as_ref(),
-                msg.chat_id.as_ref(),
-            )
-            .ok()
-            .flatten()
-            .as_ref()
-            {
-                let abort_reason = match foreground_relation {
-                    Some(crate::agent::ForegroundWorkRelation::CancelExisting) => {
-                        "user canceled active foreground work"
-                    }
-                    Some(crate::agent::ForegroundWorkRelation::StartNewWork) => {
-                        "superseded by a newer user turn"
-                    }
-                    _ => "",
-                };
-                let final_summary = if delivered {
-                    reply_content.as_str()
-                } else {
-                    ""
-                };
-                if let Ok(settled) = crate::task_execution::finalize_foreground_task_run(
-                    config.runtime.task_run_store.as_ref(),
-                    record,
-                    crate::task_execution::TaskRunStatus::Aborted,
-                    final_summary,
-                    abort_reason,
-                    now_secs,
-                ) {
-                    let _ = settled;
-                } else {
+        let active_task_run = active_task_run_for_chat(
+            config.runtime.task_run_store.as_ref(),
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+        )
+        .ok()
+        .flatten();
+        let execution_state = if active_task_run.is_none() {
+            match config.runtime.execution_state_store.get(&msg.chat_id) {
+                Ok(state) => state,
+                Err(error) => {
                     log::warn!(
-                        "[task_execution] failed to settle interrupted active run chat_id={}",
-                        msg.chat_id
+                        "[agent_execution_state] read failed chat_id={}: {}",
+                        msg.chat_id,
+                        error
                     );
+                    None
                 }
             }
-        }
+        } else {
+            None
+        };
         if let Err(error) = crate::agent::sync_active_work_after_turn(
             config.runtime.active_work_store.as_ref(),
             crate::agent::ActiveWorkSyncInput {
                 chat_id: &msg.chat_id,
-                foreground_work_packet: foreground_work_packet.as_ref(),
+                active_task_run: active_task_run.as_ref(),
+                execution_state: execution_state.as_ref(),
+                user_request: &msg.content,
                 now_secs,
             },
         ) {

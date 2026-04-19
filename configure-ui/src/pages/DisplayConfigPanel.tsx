@@ -1,5 +1,5 @@
 import MenuItem from "@mui/material/MenuItem";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -21,144 +21,20 @@ import { SettingsSection } from "../components/SettingsSection";
 import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
 import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
-import { useSaveFeedback } from "../hooks/useSaveFeedback";
-import { useUnsaved } from "../hooks/useUnsaved";
+import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import type { DisplayConfig } from "../types/displayConfig";
 import { defaultDisplayConfig } from "../types/displayConfig";
 import {
   useDeviceRuntimeKind,
-  type DeviceRuntimeKind,
 } from "../store/deviceStatusStore";
-
-const PIN_MIN = 1;
-const PIN_MAX = 48;
-const DIM_MIN = 1;
-const DIM_MAX = 480;
-const OFFSET_MIN = -480;
-const OFFSET_MAX = 480;
-const FREQ_MIN = 1_000_000;
-const FREQ_MAX = 80_000_000;
+import {
+  linuxBusForDriver,
+  validateDisplayConfigForRuntime,
+} from "./displayConfigValidation";
 
 function asNumber(v: string): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-function pathNoControlChars(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x20 || c === 0) return false;
-  }
-  return true;
-}
-
-function validateEsp(
-  form: DisplayConfig,
-  t: (k: string) => string,
-): string | null {
-  if (!form.enabled) return null;
-  const dimOk =
-    form.width >= DIM_MIN &&
-    form.width <= DIM_MAX &&
-    form.height >= DIM_MIN &&
-    form.height <= DIM_MAX;
-  if (!dimOk) return t("displayConfig.validation.dimension");
-  if (![0, 90, 180, 270].includes(form.rotation))
-    return t("displayConfig.validation.rotation");
-  const offsetOk =
-    form.offset_x >= OFFSET_MIN &&
-    form.offset_x <= OFFSET_MAX &&
-    form.offset_y >= OFFSET_MIN &&
-    form.offset_y <= OFFSET_MAX;
-  if (!offsetOk) return t("displayConfig.validation.offset");
-  if (form.spi.freq_hz < FREQ_MIN || form.spi.freq_hz > FREQ_MAX) {
-    return t("displayConfig.validation.freq");
-  }
-  const pins = [form.spi.sclk, form.spi.mosi, form.spi.cs, form.spi.dc];
-  if (pins.some((p) => p < PIN_MIN || p > PIN_MAX))
-    return t("displayConfig.validation.pin");
-  if (
-    form.spi.rst != null &&
-    (form.spi.rst < PIN_MIN || form.spi.rst > PIN_MAX)
-  )
-    return t("displayConfig.validation.pin");
-  if (form.spi.bl != null && (form.spi.bl < PIN_MIN || form.spi.bl > PIN_MAX))
-    return t("displayConfig.validation.pin");
-  return null;
-}
-
-function validateLinuxFb(
-  form: DisplayConfig,
-  t: (k: string) => string,
-): string | null {
-  if (!form.enabled) return null;
-  const dimOk =
-    form.width >= DIM_MIN &&
-    form.width <= DIM_MAX &&
-    form.height >= DIM_MIN &&
-    form.height <= DIM_MAX;
-  if (!dimOk) return t("displayConfig.validation.dimension");
-  const fb = form.fb_device.trim();
-  if (!fb) return t("displayConfig.validation.fbDeviceRequired");
-  if (!pathNoControlChars(fb))
-    return t("displayConfig.validation.pathInvalid");
-  const bl = form.backlight_sysfs?.trim() ?? "";
-  if (bl && !pathNoControlChars(bl))
-    return t("displayConfig.validation.pathInvalid");
-  return null;
-}
-
-function validateLinuxSpi(
-  form: DisplayConfig,
-  t: (k: string) => string,
-): string | null {
-  if (!form.enabled) return null;
-  const dimOk =
-    form.width >= DIM_MIN &&
-    form.width <= DIM_MAX &&
-    form.height >= DIM_MIN &&
-    form.height <= DIM_MAX;
-  if (!dimOk) return t("displayConfig.validation.dimension");
-  if (![0, 90, 180, 270].includes(form.rotation))
-    return t("displayConfig.validation.rotation");
-  const offsetOk =
-    form.offset_x >= OFFSET_MIN &&
-    form.offset_x <= OFFSET_MAX &&
-    form.offset_y >= OFFSET_MIN &&
-    form.offset_y <= OFFSET_MAX;
-  if (!offsetOk) return t("displayConfig.validation.offset");
-  if (form.spi.freq_hz < FREQ_MIN || form.spi.freq_hz > FREQ_MAX) {
-    return t("displayConfig.validation.freq");
-  }
-  const gpioPins = [form.spi.dc, form.spi.rst, form.spi.bl].filter(
-    (pin): pin is number => pin != null,
-  );
-  if (gpioPins.some((p) => p < PIN_MIN || p > PIN_MAX))
-    return t("displayConfig.validation.pin");
-  const devicePath = form.fb_device.trim();
-  if (devicePath && !pathNoControlChars(devicePath))
-    return t("displayConfig.validation.pathInvalid");
-  return null;
-}
-
-function validateForRuntime(
-  form: DisplayConfig,
-  kind: DeviceRuntimeKind,
-  t: (k: string) => string,
-): string | null {
-  if (kind === "linux") {
-    if (form.driver === "framebuffer") {
-      return validateLinuxFb(form, t);
-    }
-    return validateLinuxSpi(form, t);
-  }
-  return validateEsp(form, t);
-}
-
-function linuxBusForDriver(
-  driver: DisplayConfig["driver"],
-): DisplayConfig["bus"] {
-  return driver === "framebuffer" ? "framebuffer" : "spi";
 }
 
 /** 设备配置 →「显示」Tab 内容（路由子页） */
@@ -172,8 +48,12 @@ export function DisplayConfigPanel() {
     loadDisplayConfig,
     saveDisplayConfig,
   } = useConfig();
-  const saveFeedback = useSaveFeedback(t);
-  const { setDirty } = useUnsaved();
+  const editor = useConfigEditorController({
+    t,
+    hasData: displayConfig !== null,
+    loading: displayLoading,
+    load: loadDisplayConfig,
+  });
   const [draft, setDraft] = useState<DisplayConfig | null>(null);
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const form = draft ?? displayConfig ?? defaultDisplayConfig();
@@ -186,16 +66,12 @@ export function DisplayConfigPanel() {
     return t("displayConfig.sectionMainDesc");
   }, [isLinuxRuntime, t]);
 
-  useEffect(() => {
-    void loadDisplayConfig();
-  }, [loadDisplayConfig]);
-
-  const saveDisabled = saveFeedback.status === "saving";
+  const saveDisabled = editor.saveDisabled;
   const setField = <K extends keyof DisplayConfig>(
     key: K,
     value: DisplayConfig[K],
   ) => {
-    setDirty(true);
+    editor.markDirty();
     setDraft((prev) => ({ ...(prev ?? form), [key]: value }));
   };
 
@@ -218,25 +94,20 @@ export function DisplayConfigPanel() {
   }
 
   const save = async () => {
-    const err = validateForRuntime(form, runtimeKind, t);
-    if (err) {
-      saveFeedback.fail(err);
-      return;
-    }
-    saveFeedback.begin();
-    setSaveRestartRequired(false);
-    const body = {
-      ...form,
-      ...(isLinuxRuntime ? { bus: linuxBusForDriver(form.driver) } : {}),
-      fb_device: form.fb_device.trim(),
-      backlight_sysfs: form.backlight_sysfs?.trim() || null,
-    };
-    const result = await saveDisplayConfig(body);
-    saveFeedback.finishFromResult(result);
-    if (result.ok) {
-      setDirty(false);
-      setSaveRestartRequired(Boolean(result.restartRequired));
-    }
+    await editor.runSave({
+      validate: () => validateDisplayConfigForRuntime(form, runtimeKind, t),
+      onBeforeSave: () => setSaveRestartRequired(false),
+      performSave: () =>
+        saveDisplayConfig({
+          ...form,
+          ...(isLinuxRuntime ? { bus: linuxBusForDriver(form.driver) } : {}),
+          fb_device: form.fb_device.trim(),
+          backlight_sysfs: form.backlight_sysfs?.trim() || null,
+        }),
+      onSuccess: (result) => {
+        setSaveRestartRequired(Boolean(result.restartRequired));
+      },
+    });
   };
 
   const fieldGridSx = {
@@ -268,25 +139,25 @@ export function DisplayConfigPanel() {
             onClick={save}
             disabled={saveDisabled}
           >
-            {saveFeedback.status === "saving"
+            {editor.saveFeedback.status === "saving"
               ? t("common.saving")
               : t("common.save")}
           </Button>
         }
         belowTitleRow={
-          saveFeedback.status === "ok" || saveFeedback.status === "fail" ? (
+          editor.saveFeedback.status === "ok" || editor.saveFeedback.status === "fail" ? (
             <SaveFeedback
               placement="belowTitle"
-              status={saveFeedback.status}
+              status={editor.saveFeedback.status}
               message={
-                saveFeedback.status === "ok"
+                editor.saveFeedback.status === "ok"
                   ? saveRestartRequired
                     ? t("displayConfig.restartRequired")
                     : t("common.saveOk")
-                  : saveFeedback.error
+                  : editor.saveFeedback.error
               }
               autoDismissMs={3000}
-              onDismiss={saveFeedback.dismiss}
+              onDismiss={editor.saveFeedback.dismiss}
             />
           ) : null
         }
@@ -312,7 +183,7 @@ export function DisplayConfigPanel() {
                   label={t("displayConfig.driver")}
                   onChange={(e) => {
                     const driver = e.target.value as DisplayConfig["driver"];
-                    setDirty(true);
+                    editor.markDirty();
                     setDraft((prev) => ({
                       ...(prev ?? form),
                       driver,
@@ -525,7 +396,7 @@ export function DisplayConfigPanel() {
                       ...(prev ?? form),
                       spi: { ...(prev ?? form).spi, host },
                     }));
-                    setDirty(true);
+                    editor.markDirty();
                   }}
                 >
                   <MenuItem value={1}>{t("displayConfig.spiHostSpi2")}</MenuItem>
@@ -555,7 +426,7 @@ export function DisplayConfigPanel() {
                           }
                           return { ...base, spi: next };
                         });
-                        setDirty(true);
+                        editor.markDirty();
                       }}
                     />
                   ),
@@ -572,7 +443,7 @@ export function DisplayConfigPanel() {
                       ...(prev ?? form),
                       spi: { ...(prev ?? form).spi, freq_hz: n },
                     }));
-                    setDirty(true);
+                    editor.markDirty();
                   }}
                 />
               </Box>

@@ -26,56 +26,41 @@ import {
 } from "../theme/panelStyles";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useConfig } from "../hooks/useConfig";
-import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
+import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import { useDeviceApi } from "../hooks/useDeviceApi";
-import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
-import { useUnsaved } from "../hooks/useUnsaved";
 import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
 import type { WifiApEntry } from "../api/endpoints/system";
 import type { AppConfig } from "../types/appConfig";
+import {
+  buildSystemConfigSegment,
+  isValidProxyUrl,
+  SYSTEM_SESSION_MAX,
+  SYSTEM_SESSION_MIN,
+  validateSystemConfig,
+} from "./systemConfigValidation";
 
 const WIFI_MANUAL = "__manual__";
 
 const MAX_LEN = 64;
-const SESSION_MIN = 1;
-const SESSION_MAX = 128;
-
-/** 简单校验：非空时须含 :// 且 scheme 后为非空（后端会做完整校验）。 */
-function isValidProxyUrl(v: string): boolean {
-  const s = v.trim();
-  if (!s) return true;
-  const i = s.indexOf("://");
-  return i !== -1 && i + 3 < s.length;
-}
-
-function validateSystem(
-  form: AppConfig,
-  t: (k: string) => string,
-): string | null {
-  if (!isValidProxyUrl(form.proxy_url ?? ""))
-    return t("config.validation.proxyUrlInvalid");
-  const wifiPassSet = !!form.wifi_pass.trim();
-  if (wifiPassSet && !form.wifi_ssid.trim())
-    return t("config.validation.wifiSsidRequired");
-  const n = form.session_max_messages;
-  if (n < SESSION_MIN || n > SESSION_MAX)
-    return t("config.validation.sessionMaxMessages");
-  return null;
-}
 
 export function SystemConfigPage() {
   const { t } = useTranslation();
   const { baseUrl } = useDevice();
   const { api, ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
   const { config, loadConfig, saveSystem, loading, error } = useConfig();
-  const { setDirty } = useUnsaved();
+  const editor = useConfigEditorController({
+    t,
+    hasData: config !== null,
+    loading,
+    load: loadConfig,
+    canLoad: ready && deviceConnected,
+  });
   const [form, setForm] = useSyncedNullableState<AppConfig>(config);
   const [wifiScanList, setWifiScanList] = useState<WifiApEntry[] | null>(null);
   const [wifiScanLoading, setWifiScanLoading] = useState(false);
   const [wifiScanError, setWifiScanError] = useState("");
-  const saveFeedback = useSaveFeedback(t);
   const { type: wifiPassType, inputProps: wifiPassInputProps } =
     useRevealedPassword();
 
@@ -95,36 +80,17 @@ export function SystemConfigPage() {
     }
   };
 
-  useConfigPageLoad({
-    hasConfig: config !== null,
-    loading,
-    loadConfig,
-    canLoad: ready && deviceConnected,
-  });
-
   const update = (key: keyof AppConfig, value: string | number) => {
-    setDirty(true);
+    editor.markDirty();
     setForm((prev) => (prev ? { ...prev, [key]: value } : null));
   };
 
   const handleSave = async () => {
-    if (!config || !form) return;
-    const err = validateSystem(form, t);
-    if (err) {
-      saveFeedback.fail(err);
-      return;
-    }
-    const segment = {
-      wifi_ssid: form.wifi_ssid,
-      wifi_pass: form.wifi_pass,
-      proxy_url: form.proxy_url ?? "",
-      session_max_messages: form.session_max_messages,
-      tg_group_activation: form.tg_group_activation,
-    };
-    saveFeedback.begin();
-    const result = await saveSystem(segment);
-    saveFeedback.finishFromResult(result);
-    if (result.ok) setDirty(false);
+    if (!form) return;
+    await editor.runSave({
+      validate: () => validateSystemConfig(form, t),
+      performSave: () => saveSystem(buildSystemConfigSegment(form)),
+    });
   };
 
   if (loading && !config) {
@@ -145,15 +111,15 @@ export function SystemConfigPage() {
     );
   }
 
-  const saveDisabled = saveFeedback.status === "saving" || !form;
+  const saveDisabled = editor.saveDisabled || !form;
   const proxyUrlError =
     form && !isValidProxyUrl(form.proxy_url ?? "")
       ? t("config.validation.proxyUrlInvalid")
       : "";
   const sessionError =
     form &&
-    (form.session_max_messages < SESSION_MIN ||
-      form.session_max_messages > SESSION_MAX)
+    (form.session_max_messages < SYSTEM_SESSION_MIN ||
+      form.session_max_messages > SYSTEM_SESSION_MAX)
       ? t("config.validation.sessionMaxMessages")
       : "";
   const showConnectionLoading =
@@ -183,17 +149,17 @@ export function SystemConfigPage() {
             title={!form ? t("config.hintSaveNeedDevice") : undefined}
             sx={{ borderRadius: "var(--radius-control)" }}
           >
-            {saveFeedback.status === "saving" ? t("common.saving") : t("common.save")}
+            {editor.saveFeedback.status === "saving" ? t("common.saving") : t("common.save")}
           </Button>
         }
         belowTitleRow={
-          saveFeedback.status === "ok" || saveFeedback.status === "fail" ? (
+          editor.saveFeedback.status === "ok" || editor.saveFeedback.status === "fail" ? (
             <SaveFeedback
               placement="belowTitle"
-              status={saveFeedback.status}
-              message={saveFeedback.status === "ok" ? t("common.saveOk") : saveFeedback.error}
+              status={editor.saveFeedback.status}
+              message={editor.saveFeedback.status === "ok" ? t("common.saveOk") : editor.saveFeedback.error}
               autoDismissMs={3000}
-              onDismiss={saveFeedback.dismiss}
+              onDismiss={editor.saveFeedback.dismiss}
             />
           ) : null
         }
@@ -356,8 +322,8 @@ export function SystemConfigPage() {
           </Typography>
           <Slider
             value={form.session_max_messages}
-            min={SESSION_MIN}
-            max={SESSION_MAX}
+            min={SYSTEM_SESSION_MIN}
+            max={SYSTEM_SESSION_MAX}
             valueLabelDisplay="auto"
             onChange={(_, value) =>
               update(

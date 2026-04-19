@@ -41,6 +41,10 @@ import {
   pressureLabelKey,
 } from "./deviceHomeViewModel";
 import {
+  loadDeviceChannelConnectivity,
+  loadDeviceHealthBundle,
+} from "./devicePageLoaders";
+import {
   CONFIG_PANEL_LOADING_SX,
   DASHBOARD_CARD_BODY_SX,
   DASHBOARD_CARD_HEADER_ROW_SX,
@@ -56,6 +60,189 @@ const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
 
 function normalizeDeviceUrl(u: string): string {
   return u.trim().replace(/\/$/, "") || DEFAULT_DEVICE_BASE_URL;
+}
+
+type ConnectionEditorVariant = "dashboard" | "setup";
+
+interface ConnectionEditorProps {
+  variant: ConnectionEditorVariant;
+  urlValue: string;
+  codeValue: string;
+  pairingCodeReveal: ReturnType<typeof useRevealedPassword>;
+  onUrlChange: (value: string) => void;
+  onCodeChange: (value: string) => void;
+  onSave: () => void;
+  onProbe: () => void;
+  probeChecking: boolean;
+  baseUrlLabel: string;
+  baseUrlPlaceholder: string;
+  pairingCodeLabel: string;
+  pairingCodePlaceholder: string;
+  saveLabel: string;
+  probeLabel: string;
+}
+
+function ConnectionEditor({
+  variant,
+  urlValue,
+  codeValue,
+  pairingCodeReveal,
+  onUrlChange,
+  onCodeChange,
+  onSave,
+  onProbe,
+  probeChecking,
+  baseUrlLabel,
+  baseUrlPlaceholder,
+  pairingCodeLabel,
+  pairingCodePlaceholder,
+  saveLabel,
+  probeLabel,
+}: ConnectionEditorProps) {
+  const isDashboard = variant === "dashboard";
+
+  const actionButtons = (
+    <Box
+      sx={{
+        display: "flex",
+        gap: LAYOUT_TOKENS.spacingTitleToContent,
+        mt: isDashboard ? 2.5 : 1,
+        pt: isDashboard ? 1 : 0,
+      }}
+    >
+      <Button
+        variant="contained"
+        onClick={onSave}
+        fullWidth
+        size={isDashboard ? "medium" : "large"}
+        sx={{
+          borderRadius: "var(--radius-full)",
+          py: isDashboard ? 1 : 1.25,
+          fontWeight: 600,
+          boxShadow: "none",
+          "&:hover": { boxShadow: "none" },
+        }}
+      >
+        {saveLabel}
+      </Button>
+      <Button
+        variant="outlined"
+        onClick={onProbe}
+        disabled={probeChecking}
+        fullWidth
+        size={isDashboard ? "medium" : "large"}
+        sx={{
+          borderRadius: "var(--radius-full)",
+          py: isDashboard ? 1 : 1.25,
+          fontWeight: 600,
+        }}
+      >
+        {probeLabel}
+      </Button>
+    </Box>
+  );
+
+  if (isDashboard) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 0,
+          height: "100%",
+          justifyContent: "center",
+        }}
+      >
+        <SettingsRow label={baseUrlLabel}>
+          <TextField
+            hiddenLabel
+            placeholder={baseUrlPlaceholder}
+            value={urlValue}
+            onChange={(e) => onUrlChange(e.target.value)}
+            variant="outlined"
+            fullWidth
+            aria-label={baseUrlLabel}
+            slotProps={{
+              htmlInput: {
+                style: {
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "var(--font-size-caption)",
+                },
+              },
+            }}
+          />
+        </SettingsRow>
+        <SettingsRow label={pairingCodeLabel} divider={false}>
+          <TextField
+            hiddenLabel
+            placeholder={pairingCodePlaceholder}
+            value={codeValue}
+            type={pairingCodeReveal.type}
+            onChange={(e) => onCodeChange(e.target.value)}
+            variant="outlined"
+            fullWidth
+            aria-label={pairingCodeLabel}
+            slotProps={{
+              htmlInput: {
+                maxLength: 6,
+                style: {
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "var(--font-size-caption)",
+                  letterSpacing: "0.2em",
+                },
+                ...pairingCodeReveal.inputProps,
+              },
+            }}
+          />
+        </SettingsRow>
+        {actionButtons}
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      sx={{
+        position: "relative",
+        zIndex: 1,
+        display: "flex",
+        flexDirection: "column",
+        gap: LAYOUT_TOKENS.spacingFormFields,
+      }}
+    >
+      <TextField
+        label={baseUrlLabel}
+        placeholder={baseUrlPlaceholder}
+        value={urlValue}
+        onChange={(e) => onUrlChange(e.target.value)}
+        variant="outlined"
+        fullWidth
+        slotProps={{
+          htmlInput: { style: { fontFamily: "var(--font-mono)" } },
+        }}
+      />
+      <TextField
+        label={pairingCodeLabel}
+        placeholder={pairingCodePlaceholder}
+        value={codeValue}
+        type={pairingCodeReveal.type}
+        onChange={(e) => onCodeChange(e.target.value)}
+        variant="outlined"
+        fullWidth
+        slotProps={{
+          htmlInput: {
+            maxLength: 6,
+            style: {
+              fontFamily: "var(--font-mono)",
+              letterSpacing: "0.2em",
+            },
+            ...pairingCodeReveal.inputProps,
+          },
+        }}
+      />
+      {actionButtons}
+    </Box>
+  );
 }
 
 export function DashboardCard({
@@ -185,6 +372,8 @@ export function DevicePage() {
 
   const deviceSessionKey = `${baseUrl ?? ""}\0${pairingCode ?? ""}`;
   const prevDeviceSessionKeyRef = useRef(deviceSessionKey);
+  const healthLoadRequestIdRef = useRef(0);
+  const channelLoadRequestIdRef = useRef(0);
   useEffect(() => {
     if (deviceSessionKey === prevDeviceSessionKeyRef.current) return;
     prevDeviceSessionKeyRef.current = deviceSessionKey;
@@ -267,133 +456,102 @@ export function DevicePage() {
     });
   }, [api.system, deviceConnected, baseUrl, pairingCode]);
 
-  const reloadHealth = useCallback(() => {
-    setHealthError("");
-    if (!deviceConnected || !baseUrl?.trim()) return;
-    setHealthLoading(true);
-    Promise.all([
-      api.system.health(),
-      api.system.resource(),
-      api.system.metrics(),
-    ])
-      .then(([healthRes, resourceRes, metricsRes]) => {
+  const runHealthLoad = useCallback(
+    ({
+      notify,
+      clearError,
+    }: {
+      notify: boolean;
+      clearError: boolean;
+    }) => {
+      if (!deviceConnected || !baseUrl?.trim()) return undefined;
+      const requestId = ++healthLoadRequestIdRef.current;
+      if (clearError) setHealthError("");
+      setHealthLoading(true);
+      let active = true;
+      void loadDeviceHealthBundle({
+        health: api.system.health,
+        resource: api.system.resource,
+        metrics: api.system.metrics,
+      }).then((result) => {
+        if (!active || healthLoadRequestIdRef.current !== requestId) return;
         setHealthLoading(false);
-        if (
-          healthRes.ok &&
-          healthRes.data &&
-          resourceRes.ok &&
-          resourceRes.data &&
-          metricsRes.ok &&
-          metricsRes.data
-        ) {
-          setHealthData(healthRes.data);
-          setResourceData(resourceRes.data);
-          setMetricsData(metricsRes.data);
-        } else {
-          const err =
-            healthRes.error ?? resourceRes.error ?? metricsRes.error ?? "";
-          setHealthError(err);
-          showToast(`${t("device.systemStatusLoadFail")}: ${err}`, {
+        if (result.ok) {
+          setHealthData(result.data.health);
+          setResourceData(result.data.resource);
+          setMetricsData(result.data.metrics);
+          return;
+        }
+        setHealthError(result.error);
+        if (notify) {
+          showToast(`${t("device.systemStatusLoadFail")}: ${result.error}`, {
             variant: "error",
           });
         }
-      })
-      .catch(() => {
-        setHealthLoading(false);
-        setHealthError("config.errorNetwork");
-        showToast(t("config.errorNetwork"), { variant: "error" });
       });
-  }, [api.system, deviceConnected, baseUrl, showToast, t]);
+      return () => {
+        active = false;
+      };
+    },
+    [api.system, deviceConnected, baseUrl, showToast, t],
+  );
+
+  const reloadHealth = useCallback(() => {
+    void runHealthLoad({ notify: true, clearError: true });
+  }, [runHealthLoad]);
 
   useEffect(() => {
     if (!deviceConnected || !baseUrl?.trim()) return;
-    let mounted = true;
-    // Mount sync: enter loading before fetch (same as `reloadHealth`).
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional loading flag for initial fetch after connect
-    setHealthLoading(true);
-    void Promise.all([
-      api.system.health(),
-      api.system.resource(),
-      api.system.metrics(),
-    ])
-      .then(([healthRes, resourceRes, metricsRes]) => {
-        if (!mounted) return;
-        setHealthLoading(false);
-        if (
-          healthRes.ok &&
-          healthRes.data &&
-          resourceRes.ok &&
-          resourceRes.data &&
-          metricsRes.ok &&
-          metricsRes.data
-        ) {
-          setHealthData(healthRes.data);
-          setResourceData(resourceRes.data);
-          setMetricsData(metricsRes.data);
-        } else {
-          setHealthError(
-            healthRes.error ?? resourceRes.error ?? metricsRes.error ?? "",
-          );
-        }
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setHealthLoading(false);
-        setHealthError("config.errorNetwork");
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [api.system, deviceConnected, baseUrl]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial device sync intentionally enters loading as soon as the session becomes reachable
+    return runHealthLoad({ notify: false, clearError: false });
+  }, [deviceConnected, baseUrl, runHealthLoad]);
+
+  const runChannelLoad = useCallback(
+    ({
+      notify,
+      clearError,
+    }: {
+      notify: boolean;
+      clearError: boolean;
+    }) => {
+      if (!deviceConnected || !baseUrl?.trim()) return undefined;
+      const requestId = ++channelLoadRequestIdRef.current;
+      if (clearError) setChannelError("");
+      setChannelLoading(true);
+      let active = true;
+      void loadDeviceChannelConnectivity(api.system.channelConnectivity).then(
+        (result) => {
+          if (!active || channelLoadRequestIdRef.current !== requestId) return;
+          setChannelLoading(false);
+          if (result.ok) {
+            setChannelList(result.data);
+            return;
+          }
+          setChannelError(result.error);
+          if (notify) {
+            showToast(
+              `${t("device.channelConnectivityLoadFailedTitle")}: ${result.error}`,
+              { variant: "error" },
+            );
+          }
+        },
+      );
+      return () => {
+        active = false;
+      };
+    },
+    [api.system, deviceConnected, baseUrl, showToast, t],
+  );
 
   const reloadChannelConnectivity = useCallback(() => {
-    setChannelError("");
-    if (!deviceConnected || !baseUrl?.trim()) return;
-    setChannelLoading(true);
-    api.system
-      .channelConnectivity()
-      .then((res) => {
-        setChannelLoading(false);
-        if (res.ok && res.data?.channels) {
-          setChannelList(res.data.channels);
-        } else {
-          const err = res.error ?? "channel connectivity unavailable";
-          setChannelError(err);
-          showToast(
-            `${t("device.channelConnectivityLoadFailedTitle")}: ${err}`,
-            { variant: "error" },
-          );
-        }
-      })
-      .catch(() => {
-        setChannelLoading(false);
-        setChannelError("config.errorNetwork");
-        showToast(t("config.errorNetwork"), { variant: "error" });
-      });
-  }, [api.system, deviceConnected, baseUrl, showToast, t]);
+    void runChannelLoad({ notify: true, clearError: true });
+  }, [runChannelLoad]);
 
   useEffect(() => {
     if (!deviceConnected || !baseUrl?.trim()) return;
-    let mounted = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional loading flag for initial fetch after connect
-    setChannelLoading(true);
-    void api.system
-      .channelConnectivity()
-      .then((res) => {
-        if (!mounted) return;
-        setChannelLoading(false);
-        if (res.ok && res.data?.channels) setChannelList(res.data.channels);
-        else setChannelError(res.error ?? "channel connectivity unavailable");
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setChannelLoading(false);
-        setChannelError("config.errorNetwork");
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [api.system, deviceConnected, baseUrl]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial device sync intentionally enters loading as soon as the session becomes reachable
+    return runChannelLoad({ notify: false, clearError: false });
+  }, [deviceConnected, baseUrl, runChannelLoad]);
 
   const channelNameKey: Record<string, string> = {
     telegram: "channelTelegram",
@@ -778,92 +936,25 @@ export function DevicePage() {
       icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} variant="tile" />}
       sx={{ height: "100%" }}
     >
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 0,
-          height: "100%",
-          justifyContent: "center",
-        }}
-      >
-        <SettingsRow label={t("device.baseUrlLabel")}>
-          <TextField
-            hiddenLabel
-            placeholder={t("device.baseUrlPlaceholder")}
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            variant="outlined"
-            fullWidth
-            aria-label={t("device.baseUrlLabel")}
-            slotProps={{
-              htmlInput: {
-                style: {
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "var(--font-size-caption)",
-                },
-              },
-            }}
-          />
-        </SettingsRow>
-        <SettingsRow label={t("device.pairingCodeLabel")} divider={false}>
-          <TextField
-            hiddenLabel
-            placeholder={t("device.pairingCodePlaceholder")}
-            value={codeInput}
-            type={pairingCodeReveal.type}
-            onChange={(e) => setCodeInput(e.target.value)}
-            variant="outlined"
-            fullWidth
-            aria-label={t("device.pairingCodeLabel")}
-            slotProps={{
-              htmlInput: {
-                maxLength: 6,
-                style: {
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "var(--font-size-caption)",
-                  letterSpacing: "0.2em",
-                },
-                ...pairingCodeReveal.inputProps,
-              },
-            }}
-          />
-        </SettingsRow>
-        <Box
-          sx={{
-            display: "flex",
-            gap: LAYOUT_TOKENS.spacingTitleToContent,
-            mt: 2.5,
-            pt: 1,
-          }}
-        >
-          <Button
-            variant="contained"
-            onClick={handleSave}
-            fullWidth
-            sx={{
-              borderRadius: "var(--radius-full)",
-              py: 1,
-              fontWeight: 600,
-              boxShadow: "none",
-              "&:hover": { boxShadow: "none" },
-            }}
-          >
-            {t("device.save")}
-          </Button>
-          <Button
-            variant="outlined"
-            onClick={handleProbe}
-            disabled={probeStatus === "checking"}
-            fullWidth
-            sx={{ borderRadius: "var(--radius-full)", py: 1, fontWeight: 600 }}
-          >
-            {probeStatus === "checking"
-              ? t("device.probing")
-              : t("device.probe")}
-          </Button>
-        </Box>
-      </Box>
+      <ConnectionEditor
+        variant="dashboard"
+        urlValue={urlInput}
+        codeValue={codeInput}
+        pairingCodeReveal={pairingCodeReveal}
+        onUrlChange={setUrlInput}
+        onCodeChange={setCodeInput}
+        onSave={handleSave}
+        onProbe={handleProbe}
+        probeChecking={probeStatus === "checking"}
+        baseUrlLabel={t("device.baseUrlLabel")}
+        baseUrlPlaceholder={t("device.baseUrlPlaceholder")}
+        pairingCodeLabel={t("device.pairingCodeLabel")}
+        pairingCodePlaceholder={t("device.pairingCodePlaceholder")}
+        saveLabel={t("device.save")}
+        probeLabel={
+          probeStatus === "checking" ? t("device.probing") : t("device.probe")
+        }
+      />
     </DashboardCard>
   );
 
@@ -947,85 +1038,25 @@ export function DevicePage() {
           </Typography>
         </Box>
 
-        <Box
-          sx={{
-            position: "relative",
-            zIndex: 1,
-            display: "flex",
-            flexDirection: "column",
-            gap: LAYOUT_TOKENS.spacingFormFields,
-          }}
-        >
-          <TextField
-            label={t("device.baseUrlLabel")}
-            placeholder={t("device.baseUrlPlaceholder")}
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            variant="outlined"
-            fullWidth
-            slotProps={{
-              htmlInput: { style: { fontFamily: "var(--font-mono)" } },
-            }}
-          />
-          <TextField
-            label={t("device.pairingCodeLabel")}
-            placeholder={t("device.pairingCodePlaceholder")}
-            value={codeInput}
-            type={pairingCodeReveal.type}
-            onChange={(e) => setCodeInput(e.target.value)}
-            variant="outlined"
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: 6,
-                style: {
-                  fontFamily: "var(--font-mono)",
-                  letterSpacing: "0.2em",
-                },
-                ...pairingCodeReveal.inputProps,
-              },
-            }}
-          />
-          <Box
-            sx={{
-              display: "flex",
-              gap: LAYOUT_TOKENS.spacingTitleToContent,
-              mt: 1,
-            }}
-          >
-            <Button
-              variant="contained"
-              onClick={handleSave}
-              fullWidth
-              size="large"
-              sx={{
-                borderRadius: "var(--radius-full)",
-                fontWeight: 600,
-                boxShadow: "none",
-                py: 1.25,
-                "&:hover": { boxShadow: "none" },
-              }}
-            >
-              {t("device.save")}
-            </Button>
-            <Button
-              variant="outlined"
-              onClick={handleProbe}
-              disabled={probeStatus === "checking"}
-              fullWidth
-              size="large"
-              sx={{
-                borderRadius: "var(--radius-full)",
-                fontWeight: 600,
-                py: 1.25,
-              }}
-            >
-              {probeStatus === "checking"
-                ? t("device.probing")
-                : t("device.probe")}
-            </Button>
-          </Box>
-        </Box>
+        <ConnectionEditor
+          variant="setup"
+          urlValue={urlInput}
+          codeValue={codeInput}
+          pairingCodeReveal={pairingCodeReveal}
+          onUrlChange={setUrlInput}
+          onCodeChange={setCodeInput}
+          onSave={handleSave}
+          onProbe={handleProbe}
+          probeChecking={probeStatus === "checking"}
+          baseUrlLabel={t("device.baseUrlLabel")}
+          baseUrlPlaceholder={t("device.baseUrlPlaceholder")}
+          pairingCodeLabel={t("device.pairingCodeLabel")}
+          pairingCodePlaceholder={t("device.pairingCodePlaceholder")}
+          saveLabel={t("device.save")}
+          probeLabel={
+            probeStatus === "checking" ? t("device.probing") : t("device.probe")
+          }
+        />
       </Box>
     </Box>
   );

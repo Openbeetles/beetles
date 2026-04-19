@@ -267,9 +267,7 @@ pub(crate) fn load_session_stage(
             .map(Box::new)
         })
         .flatten();
-    let foreground_work_packet_text = active_work
-        .as_ref()
-        .and_then(|record| crate::agent::render_foreground_work_packet_block(record, 420));
+    let foreground_work_packet_text = None;
     let execution_state_text = active_work.as_ref().and_then(|record| {
         render_execution_state_block(
             &record.execution_state_projection(),

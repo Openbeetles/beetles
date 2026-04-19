@@ -5021,19 +5021,7 @@ mod tests {
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
-            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
-                relation_to_last_work: crate::agent::ForegroundWorkRelation::ContinueExisting,
-                settlement: Some(crate::agent::active_work::ForegroundWorkSettlement {
-                    kind: crate::agent::ActiveWorkKind::InteractiveAction,
-                    status: crate::agent::ForegroundWorkStatus::Running,
-                    title: "帮我配置 QQ 邮箱账户".to_string(),
-                    progress_summary: "当前主答复已送达".to_string(),
-                    blocker: String::new(),
-                    next_action: "deliver current primary answer before more tool work".to_string(),
-                    recent_outcome: "当前主答复已送达".to_string(),
-                    active_artifact_refs: Vec::new(),
-                }),
-            }),
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -5977,19 +5965,7 @@ mod tests {
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
-            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
-                relation_to_last_work: crate::agent::ForegroundWorkRelation::ContinueExisting,
-                settlement: Some(crate::agent::active_work::ForegroundWorkSettlement {
-                    kind: crate::agent::ActiveWorkKind::InteractiveAction,
-                    status: crate::agent::ForegroundWorkStatus::Running,
-                    title: "帮我配置 QQ 邮箱账户".to_string(),
-                    progress_summary: "当前主答复已送达".to_string(),
-                    blocker: String::new(),
-                    next_action: "deliver current primary answer before more tool work".to_string(),
-                    recent_outcome: "当前主答复已送达".to_string(),
-                    active_artifact_refs: Vec::new(),
-                }),
-            }),
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6037,6 +6013,12 @@ mod tests {
             stored.next_action,
             "deliver current primary answer before more tool work"
         );
+        assert!(config
+            .runtime
+            .active_work_store
+            .get(msg.chat_id.as_ref())
+            .expect("active work get")
+            .is_none());
     }
 
     #[test]
@@ -6184,10 +6166,7 @@ mod tests {
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
-            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
-                relation_to_last_work: crate::agent::ForegroundWorkRelation::CancelExisting,
-                settlement: None,
-            }),
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6368,7 +6347,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？\n\n<foreground_work_packet>{\"relation_to_last_work\":\"continue_existing\",\"settlement\":{\"kind\":\"interactive_action\",\"status\":\"awaiting_user\",\"title\":\"邮箱账户选择\",\"progress_summary\":\"已经列出可用邮箱账户候选。\",\"blocker\":\"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？\",\"next_action\":\"等待用户确认要使用的邮箱账户。\",\"recent_outcome\":\"已列出 Work 和 Personal 两个邮箱候选。\",\"active_artifact_refs\":[]}}</foreground_work_packet>"}"#
+                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"}"#
                         .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
@@ -6417,7 +6396,7 @@ mod tests {
             observed[1]
         );
         assert!(
-            delivered.contains("<foreground_work_packet>"),
+            !delivered.contains("<foreground_work_packet>"),
             "{delivered}"
         );
         assert!(telemetry.used_surface_finalization);
@@ -6489,7 +6468,7 @@ mod tests {
             UiLocale::Zh,
         )
         .expect("first execute turn");
-        let mut first_finalized = self::reply_finalize::finalize_turn(
+        let first_finalized = self::reply_finalize::finalize_turn(
             &mut http,
             &SequenceStubLlm {
                 responses: Mutex::new(Vec::new()),
@@ -6502,20 +6481,6 @@ mod tests {
             first_telemetry,
         )
         .expect("finalize first turn");
-        first_finalized.foreground_work_packet = Some(crate::agent::ForegroundWorkPacket {
-            relation_to_last_work: crate::agent::ForegroundWorkRelation::ContinueExisting,
-            settlement: Some(crate::agent::active_work::ForegroundWorkSettlement {
-                kind: crate::agent::ActiveWorkKind::InteractiveAction,
-                status: crate::agent::ForegroundWorkStatus::AwaitingUser,
-                title: "邮箱账户选择".to_string(),
-                progress_summary: "已经列出可用邮箱账户候选。".to_string(),
-                blocker: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
-                    .to_string(),
-                next_action: "等待用户确认要使用的邮箱账户。".to_string(),
-                recent_outcome: "已列出 Work 和 Personal 两个邮箱候选。".to_string(),
-                active_artifact_refs: Vec::new(),
-            }),
-        });
         msg1.req_id = Some("req-office-resume-1".to_string());
         let first_turn_ledger = build_turn_ledger_start(&msg1, 1);
         self::reply_finalize::complete_turn(
@@ -6582,7 +6547,7 @@ mod tests {
                     }]),
                 },
                 LlmResponse {
-                    content: "已切到 Work 邮箱，并拿到 1 封邮件。\n\n<foreground_work_packet>{\"relation_to_last_work\":\"supply_requested_input\",\"settlement\":{\"kind\":\"interactive_action\",\"status\":\"completed\",\"title\":\"邮箱账户选择\",\"progress_summary\":\"已切到 Work 邮箱并确认邮件可读。\",\"blocker\":\"\",\"next_action\":\"\",\"recent_outcome\":\"已列出 Work 邮箱中的 1 封邮件。\",\"active_artifact_refs\":[]}}</foreground_work_packet>".to_string(),
+                    content: "已切到 Work 邮箱，并拿到 1 封邮件。".to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -6613,7 +6578,7 @@ mod tests {
             "{delivered}"
         );
         assert!(
-            delivered.contains("<foreground_work_packet>"),
+            !delivered.contains("<foreground_work_packet>"),
             "{delivered}"
         );
         assert!(second_telemetry.foreground_work_context_present);
@@ -6694,10 +6659,7 @@ mod tests {
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
-            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
-                relation_to_last_work: crate::agent::ForegroundWorkRelation::CancelExisting,
-                settlement: None,
-            }),
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6745,7 +6707,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_turn_aborts_active_task_run_for_cancel_turn() {
+    fn complete_turn_does_not_abort_active_task_run_from_plain_reply_guess() {
         let config = test_agent_loop_config();
         let now_secs = 9;
         let planner_decision = crate::task_execution::TaskPlannerDecision {
@@ -6830,10 +6792,7 @@ mod tests {
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
-            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
-                relation_to_last_work: crate::agent::ForegroundWorkRelation::CancelExisting,
-                settlement: None,
-            }),
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6880,15 +6839,19 @@ mod tests {
             .expect("stored task run");
         assert_eq!(
             settled.run.status,
-            crate::task_execution::TaskRunStatus::Aborted
+            crate::task_execution::TaskRunStatus::Planning
         );
-        assert!(!settled.run.failure_reason.is_empty());
-        assert!(config
+        assert!(settled.run.failure_reason.is_empty());
+        let active_work = config
             .runtime
             .active_work_store
             .get("chat-cancel-task-run")
             .expect("get active work")
-            .is_none());
+            .expect("active work should remain until a structured task settlement exists");
+        assert_eq!(
+            active_work.kind,
+            crate::agent::ActiveWorkKind::TaskExecution
+        );
     }
 
     #[test]

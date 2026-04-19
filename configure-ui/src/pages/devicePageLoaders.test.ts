@@ -79,11 +79,23 @@ test("loadDeviceChannelConnectivity returns the channel list when the endpoint s
   });
 });
 
-test("loadDeviceChannelConnectivity returns the endpoint fallback error when payload is incomplete", async () => {
+test("loadDeviceChannelConnectivity preserves the endpoint error when payload is incomplete", async () => {
   const result = await loadDeviceChannelConnectivity(async () => ({
     ok: true,
     data: {} as ChannelConnectivityResponse,
-    error: "ignored",
+    error: "upstream unavailable",
+  }));
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "upstream unavailable",
+  });
+});
+
+test("loadDeviceChannelConnectivity falls back to a default error when payload is incomplete and the endpoint is silent", async () => {
+  const result = await loadDeviceChannelConnectivity(async () => ({
+    ok: true,
+    data: {} as ChannelConnectivityResponse,
   }));
 
   assert.deepEqual(result, {
