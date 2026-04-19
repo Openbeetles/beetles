@@ -8,8 +8,7 @@ use crate::office::{
     OfficeAccountRuntimeStatus, OfficeAuthoritySummary, OfficeCapability, OfficeConfigAssessment,
     OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, OfficeProviderFieldLocation,
     OfficeProviderFieldSchema, OfficeProviderFieldValueKind, OfficeProviderSchema,
-    OfficeResolveRequest, OfficeResolveResult, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
-    OfficeService,
+    OfficeResolveRequest, OfficeResolveResult, OfficeRuntimeStatusStore, OfficeService,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -28,16 +27,6 @@ pub struct OfficeConfigSnapshot {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficePolicyPatch {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ask_when_ambiguous: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preferred_identity_class: Option<OfficeAccountIdentityClass>,
-    #[serde(default)]
-    pub clear_preferred_identity_class: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeAccountRecordInput {
     #[serde(default)]
     pub account_key: String,
@@ -51,11 +40,18 @@ pub struct OfficeAccountRecordInput {
     pub enabled_capabilities: Vec<OfficeCapability>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeAccountUpsertRequest {
-    pub account: OfficeAccountRecordInput,
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeAccountOnboardingRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_patch: Option<OfficePolicyPatch>,
+    pub provider_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<OfficeCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_class: Option<OfficeAccountIdentityClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<OfficeAccountConfigSaveRequest>,
 }
@@ -98,6 +94,37 @@ pub struct OfficeConfigAccountDetail {
     pub assessment: OfficeAccountAssessment,
     #[serde(default)]
     pub fields: Vec<OfficeConfigFieldState>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficeAccountOnboardingDisposition {
+    Applied,
+    NeedsUserFacts,
+    ProbeFailed,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeAccountOnboardingResult {
+    pub disposition: OfficeAccountOnboardingDisposition,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<OfficeCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_field_details: Vec<OfficeConfigCreateFieldSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<OfficeConfigAccountDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<OfficeProbeResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -480,46 +507,325 @@ impl OfficeConfigManagementService {
         config::save_office_accounts_segment(self.config_file_store.as_ref(), &body)
     }
 
-    pub fn save_account_upsert(
+    pub fn apply_account(
         &self,
-        request: &OfficeAccountUpsertRequest,
-    ) -> Result<OfficeConfigAccountDetail> {
-        let mut accounts = self.load_accounts_segment()?;
-        let mut account = materialize_account_record_input(&accounts.registry, &request.account)?;
-        let provider_schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
-            Error::config(
-                "office_config_save_account",
-                format!("unknown office provider '{}'", account.provider_kind),
-            )
-        })?;
-        if account
-            .enabled_capabilities
-            .iter()
-            .any(|capability| !provider_schema.capabilities.contains(capability))
-        {
-            return Err(Error::config(
-                "office_config_save_account",
-                format!(
-                    "provider '{}' does not support one or more enabled capabilities",
-                    request.account.provider_kind
-                ),
-            ));
+        request: &OfficeAccountOnboardingRequest,
+    ) -> Result<OfficeAccountOnboardingResult> {
+        let mut unavailable_http = UnavailableOfficeHttpClient;
+        self.apply_account_with_http(&mut unavailable_http, request)
+    }
+
+    pub fn apply_account_with_http(
+        &self,
+        http: &mut dyn OfficeHttpClient,
+        request: &OfficeAccountOnboardingRequest,
+    ) -> Result<OfficeAccountOnboardingResult> {
+        let accounts = self.load_accounts_segment()?;
+        let mut missing_fields = Vec::new();
+        let mut missing_field_details = Vec::new();
+
+        let provider_kind = request
+            .provider_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if provider_kind.is_none() {
+            push_missing_field(
+                &mut missing_fields,
+                &mut missing_field_details,
+                "provider",
+                provider_selector_field_schema(),
+            );
         }
-        let normalized_credential = if let Some(config) = request.config.as_ref() {
-            Some(self.prepare_account_config(&mut account, config, false)?)
-        } else {
-            None
+        if request.identity_class.is_none() {
+            push_missing_field(
+                &mut missing_fields,
+                &mut missing_field_details,
+                "identity_class",
+                identity_class_field_schema(),
+            );
+        }
+        let Some(provider_kind) = provider_kind else {
+            return Ok(OfficeAccountOnboardingResult {
+                disposition: OfficeAccountOnboardingDisposition::NeedsUserFacts,
+                reason: "missing_user_facts".to_string(),
+                provider_kind: None,
+                capability: request.capability,
+                missing_fields,
+                missing_field_details,
+                account: None,
+                probe: None,
+                error_stage: None,
+                error_message: None,
+            });
         };
-        upsert_account_segment(
-            &mut accounts,
-            account.clone(),
-            request.policy_patch.as_ref(),
-        )?;
-        self.persist_accounts(&accounts)?;
-        if let Some(credential) = normalized_credential.as_ref() {
-            self.credential_store.set(credential)?;
+
+        let provider_schema = match office_provider_schema(&provider_kind) {
+            Some(schema) => schema,
+            None => {
+                return Ok(OfficeAccountOnboardingResult {
+                    disposition: OfficeAccountOnboardingDisposition::Unsupported,
+                    reason: "unknown_provider".to_string(),
+                    provider_kind: Some(provider_kind),
+                    capability: request.capability,
+                    missing_fields: Vec::new(),
+                    missing_field_details: Vec::new(),
+                    account: None,
+                    probe: None,
+                    error_stage: None,
+                    error_message: None,
+                })
+            }
+        };
+        let capability = request
+            .capability
+            .or_else(|| infer_single_capability_for_provider(&provider_kind));
+        if capability.is_none() {
+            push_missing_field(
+                &mut missing_fields,
+                &mut missing_field_details,
+                "capability",
+                capability_field_schema(),
+            );
         }
-        self.account_detail(&account.account_key)
+
+        let account_label = request
+            .account_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| request.external_account_id.clone())
+            .unwrap_or_else(|| provider_schema.display_name.clone());
+        let mut provisional_account = OfficeAccount {
+            account_key: request
+                .external_account_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|external_account_id| {
+                    existing_account_key_for_provider_identity(
+                        &accounts.registry,
+                        &provider_kind,
+                        external_account_id,
+                    )
+                })
+                .unwrap_or_default(),
+            provider_kind: provider_kind.clone(),
+            external_account_id: request.external_account_id.clone().unwrap_or_default(),
+            account_label,
+            identity_class: request
+                .identity_class
+                .unwrap_or(OfficeAccountIdentityClass::Other),
+            enabled_capabilities: capability.into_iter().collect(),
+        };
+        let provisional_credential = match request.config.as_ref() {
+            Some(config) => Some(self.prepare_candidate_account_config(
+                &mut provisional_account,
+                config,
+                false,
+            )?),
+            None if !provisional_account.account_key.trim().is_empty() => self
+                .credential_store
+                .get(&provisional_account.account_key)?
+                .map(|credential| {
+                    self.normalize_credential_structure_for_account(
+                        &provisional_account,
+                        &credential,
+                    )
+                })
+                .transpose()?,
+            None => None,
+        };
+        let assessment = assess_office_account(
+            &provisional_account,
+            provisional_credential.as_ref(),
+            None,
+            self.probe_supported_for_provider(&provider_kind),
+        );
+        for field in &assessment.missing_field_details {
+            push_missing_field(
+                &mut missing_fields,
+                &mut missing_field_details,
+                &field.key,
+                build_create_field_from_provider_field(field),
+            );
+        }
+        for field in &assessment.missing_fields {
+            if !missing_fields.iter().any(|existing| existing == field) {
+                missing_fields.push(field.clone());
+            }
+        }
+        if !missing_fields.is_empty() {
+            return Ok(OfficeAccountOnboardingResult {
+                disposition: OfficeAccountOnboardingDisposition::NeedsUserFacts,
+                reason: "missing_user_facts".to_string(),
+                provider_kind: Some(provider_kind),
+                capability,
+                missing_fields,
+                missing_field_details,
+                account: None,
+                probe: None,
+                error_stage: None,
+                error_message: None,
+            });
+        }
+
+        let Some(identity_class) = request.identity_class else {
+            return Err(Error::config(
+                "office_config_apply_account",
+                "identity_class must be present after onboarding assessment",
+            ));
+        };
+        let Some(capability) = capability else {
+            return Err(Error::config(
+                "office_config_apply_account",
+                "capability must be present after onboarding assessment",
+            ));
+        };
+        let mut account = materialize_account_record_input(
+            &accounts.registry,
+            &OfficeAccountRecordInput {
+                account_key: String::new(),
+                provider_kind: provider_kind.clone(),
+                external_account_id: provisional_account.external_account_id.clone(),
+                account_label: provisional_account.account_label.clone(),
+                identity_class,
+                enabled_capabilities: vec![capability],
+            },
+        )?;
+        let credential = match request.config.as_ref() {
+            Some(config) => {
+                Some(self.prepare_candidate_account_config(&mut account, config, false)?)
+            }
+            None if !account.account_key.trim().is_empty() => self
+                .credential_store
+                .get(&account.account_key)?
+                .map(|credential| {
+                    self.normalize_credential_structure_for_account(&account, &credential)
+                })
+                .transpose()?,
+            None => None,
+        };
+        let Some(credential) = credential else {
+            return Ok(OfficeAccountOnboardingResult {
+                disposition: OfficeAccountOnboardingDisposition::NeedsUserFacts,
+                reason: "missing_user_facts".to_string(),
+                provider_kind: Some(provider_kind),
+                capability: Some(capability),
+                missing_fields: assessment.missing_fields,
+                missing_field_details: assessment
+                    .missing_field_details
+                    .iter()
+                    .map(build_create_field_from_provider_field)
+                    .collect(),
+                account: None,
+                probe: None,
+                error_stage: None,
+                error_message: None,
+            });
+        };
+
+        let probe = match self
+            .probe_adapters
+            .iter()
+            .find(|adapter| adapter.provider_kind() == account.provider_kind)
+        {
+            Some(adapter) => match adapter.probe(http, &account, &credential) {
+                Ok(result) => result,
+                Err(error) => {
+                    return Ok(OfficeAccountOnboardingResult {
+                        disposition: OfficeAccountOnboardingDisposition::ProbeFailed,
+                        reason: "probe_error".to_string(),
+                        provider_kind: Some(account.provider_kind.clone()),
+                        capability: Some(capability),
+                        missing_fields: Vec::new(),
+                        missing_field_details: Vec::new(),
+                        account: None,
+                        probe: None,
+                        error_stage: Some(error.stage().to_string()),
+                        error_message: Some(error.to_string()),
+                    })
+                }
+            },
+            None => {
+                return Ok(OfficeAccountOnboardingResult {
+                    disposition: OfficeAccountOnboardingDisposition::Unsupported,
+                    reason: "probe_adapter_unavailable".to_string(),
+                    provider_kind: Some(account.provider_kind.clone()),
+                    capability: Some(capability),
+                    missing_fields: Vec::new(),
+                    missing_field_details: Vec::new(),
+                    account: None,
+                    probe: Some(OfficeProbeResult {
+                        account_key: account.account_key.clone(),
+                        provider_kind: account.provider_kind.clone(),
+                        configured: !credential.access_token.trim().is_empty(),
+                        disposition: OfficeProbeDisposition::Unsupported,
+                        reason: "probe_adapter_unavailable".to_string(),
+                    }),
+                    error_stage: None,
+                    error_message: None,
+                })
+            }
+        };
+
+        match probe.disposition {
+            OfficeProbeDisposition::Ready => {
+                let detail =
+                    self.commit_onboarded_account(&accounts, account, &credential, &probe)?;
+                Ok(OfficeAccountOnboardingResult {
+                    disposition: OfficeAccountOnboardingDisposition::Applied,
+                    reason: "applied".to_string(),
+                    provider_kind: Some(provider_kind),
+                    capability: Some(capability),
+                    missing_fields: Vec::new(),
+                    missing_field_details: Vec::new(),
+                    account: Some(detail),
+                    probe: Some(probe),
+                    error_stage: None,
+                    error_message: None,
+                })
+            }
+            OfficeProbeDisposition::MissingCredential => {
+                let assessment = assess_office_account(
+                    &account,
+                    Some(&credential),
+                    None,
+                    self.probe_supported_for_provider(&account.provider_kind),
+                );
+                let missing_field_details = assessment
+                    .missing_field_details
+                    .iter()
+                    .map(build_create_field_from_provider_field)
+                    .collect::<Vec<_>>();
+                Ok(OfficeAccountOnboardingResult {
+                    disposition: OfficeAccountOnboardingDisposition::NeedsUserFacts,
+                    reason: probe.reason.clone(),
+                    provider_kind: Some(provider_kind),
+                    capability: Some(capability),
+                    missing_fields: assessment.missing_fields,
+                    missing_field_details,
+                    account: None,
+                    probe: Some(probe),
+                    error_stage: None,
+                    error_message: None,
+                })
+            }
+            OfficeProbeDisposition::Unsupported => Ok(OfficeAccountOnboardingResult {
+                disposition: OfficeAccountOnboardingDisposition::Unsupported,
+                reason: probe.reason.clone(),
+                provider_kind: Some(provider_kind),
+                capability: Some(capability),
+                missing_fields: Vec::new(),
+                missing_field_details: Vec::new(),
+                account: None,
+                probe: Some(probe),
+                error_stage: None,
+                error_message: None,
+            }),
+        }
     }
 
     pub fn save_account_config(
@@ -671,6 +977,18 @@ impl OfficeConfigManagementService {
         request: &OfficeAccountConfigSaveRequest,
         allow_external_account_id: bool,
     ) -> Result<OfficeCredential> {
+        let normalized =
+            self.prepare_candidate_account_config(account, request, allow_external_account_id)?;
+        self.ensure_credential_ready_for_account(account, &normalized)?;
+        Ok(normalized)
+    }
+
+    fn prepare_candidate_account_config(
+        &self,
+        account: &mut OfficeAccount,
+        request: &OfficeAccountConfigSaveRequest,
+        allow_external_account_id: bool,
+    ) -> Result<OfficeCredential> {
         let provider_schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
             Error::config(
                 "office_config_save_account_config",
@@ -734,10 +1052,10 @@ impl OfficeConfigManagementService {
         }
         credential.updated_at = now;
         credential.account_key = account.account_key.clone();
-        self.normalize_credential_for_account(account, &credential)
+        self.normalize_credential_structure_for_account(account, &credential)
     }
 
-    fn normalize_credential_for_account(
+    fn normalize_credential_structure_for_account(
         &self,
         account: &OfficeAccount,
         credential: &OfficeCredential,
@@ -800,7 +1118,15 @@ impl OfficeConfigManagementService {
             updated_at: credential.updated_at,
             metadata,
         };
-        let assessment = assess_office_account(account, Some(&normalized), None, false);
+        Ok(normalized)
+    }
+
+    fn ensure_credential_ready_for_account(
+        &self,
+        account: &OfficeAccount,
+        credential: &OfficeCredential,
+    ) -> Result<()> {
+        let assessment = assess_office_account(account, Some(credential), None, false);
         if !assessment.missing_fields.is_empty() {
             return Err(Error::config(
                 "office_config_credentials",
@@ -811,7 +1137,7 @@ impl OfficeConfigManagementService {
                 ),
             ));
         }
-        Ok(normalized)
+        Ok(())
     }
 
     fn persist_probe_runtime_status(
@@ -843,6 +1169,104 @@ impl OfficeConfigManagementService {
             }
         }
         office.set_runtime_status(&status)
+    }
+
+    fn commit_onboarded_account(
+        &self,
+        previous_accounts: &OfficeAccountsSegment,
+        account: OfficeAccount,
+        credential: &OfficeCredential,
+        probe: &OfficeProbeResult,
+    ) -> Result<OfficeConfigAccountDetail> {
+        let previous_credential = self.credential_store.get(&account.account_key)?;
+        let previous_runtime_status = self.runtime_status_store.get(&account.account_key)?;
+        let mut next_accounts = previous_accounts.clone();
+        upsert_account_segment(&mut next_accounts, account.clone())?;
+        self.persist_accounts(&next_accounts)?;
+        if let Err(error) = self.credential_store.set(credential) {
+            return Err(self.rollback_onboarding_commit(
+                previous_accounts,
+                &account.account_key,
+                previous_credential.as_ref(),
+                previous_runtime_status.as_ref(),
+                error,
+            ));
+        }
+        let office = match self.build_office_service(&next_accounts) {
+            Ok(office) => office,
+            Err(error) => {
+                return Err(self.rollback_onboarding_commit(
+                    previous_accounts,
+                    &account.account_key,
+                    previous_credential.as_ref(),
+                    previous_runtime_status.as_ref(),
+                    error,
+                ));
+            }
+        };
+        if let Err(error) = self.persist_probe_runtime_status(&office, probe) {
+            return Err(self.rollback_onboarding_commit(
+                previous_accounts,
+                &account.account_key,
+                previous_credential.as_ref(),
+                previous_runtime_status.as_ref(),
+                error,
+            ));
+        }
+        if let Err(error) = self.account_detail(&account.account_key) {
+            return Err(self.rollback_onboarding_commit(
+                previous_accounts,
+                &account.account_key,
+                previous_credential.as_ref(),
+                previous_runtime_status.as_ref(),
+                error,
+            ));
+        }
+        self.account_detail(&account.account_key)
+    }
+
+    fn rollback_onboarding_commit(
+        &self,
+        previous_accounts: &OfficeAccountsSegment,
+        account_key: &str,
+        previous_credential: Option<&OfficeCredential>,
+        previous_runtime_status: Option<&OfficeAccountRuntimeStatus>,
+        source_error: Error,
+    ) -> Error {
+        if let Err(rollback_error) = self.restore_onboarding_state(
+            previous_accounts,
+            account_key,
+            previous_credential,
+            previous_runtime_status,
+        ) {
+            return Error::config(
+                "office_config_apply_account_commit",
+                format!("{}; rollback_failed={}", source_error, rollback_error),
+            );
+        }
+        Error::config(
+            "office_config_apply_account_commit",
+            source_error.to_string(),
+        )
+    }
+
+    fn restore_onboarding_state(
+        &self,
+        previous_accounts: &OfficeAccountsSegment,
+        account_key: &str,
+        previous_credential: Option<&OfficeCredential>,
+        previous_runtime_status: Option<&OfficeAccountRuntimeStatus>,
+    ) -> Result<()> {
+        self.persist_accounts(previous_accounts)?;
+        match previous_credential {
+            Some(credential) => self.credential_store.set(credential)?,
+            None => self.credential_store.clear(account_key)?,
+        }
+        match previous_runtime_status {
+            Some(status) => self.runtime_status_store.set(status)?,
+            None => self.runtime_status_store.clear(account_key)?,
+        }
+        Ok(())
     }
 }
 
@@ -1003,7 +1427,18 @@ fn existing_account_key_for_natural_identity(
     registry: &crate::office::OfficeAccountRegistry,
     input: &OfficeAccountRecordInput,
 ) -> Option<String> {
-    let external_account_id = input.external_account_id.trim();
+    existing_account_key_for_provider_identity(
+        registry,
+        &input.provider_kind,
+        input.external_account_id.trim(),
+    )
+}
+
+fn existing_account_key_for_provider_identity(
+    registry: &crate::office::OfficeAccountRegistry,
+    provider_kind: &str,
+    external_account_id: &str,
+) -> Option<String> {
     if external_account_id.is_empty() {
         return None;
     }
@@ -1011,7 +1446,7 @@ fn existing_account_key_for_natural_identity(
         .all_accounts()
         .into_iter()
         .find(|account| {
-            account.provider_kind == input.provider_kind
+            account.provider_kind == provider_kind
                 && account.external_account_id.trim() == external_account_id
         })
         .map(|account| account.account_key.clone())
@@ -1113,6 +1548,90 @@ fn identity_class_slug(identity_class: OfficeAccountIdentityClass) -> &'static s
     }
 }
 
+fn provider_selector_field_schema() -> OfficeConfigCreateFieldSchema {
+    OfficeConfigCreateFieldSchema {
+        key: "provider".to_string(),
+        label: "Provider".to_string(),
+        description: "Provider family for this office account.".to_string(),
+        value_kind: OfficeProviderFieldValueKind::Identifier,
+        required: true,
+        secret: false,
+        multiple: false,
+        default_value: None,
+        default_values: Vec::new(),
+        options: Vec::new(),
+    }
+}
+
+fn capability_field_schema() -> OfficeConfigCreateFieldSchema {
+    OfficeConfigCreateFieldSchema {
+        key: "capability".to_string(),
+        label: "Capability".to_string(),
+        description: "Office capability family for this account.".to_string(),
+        value_kind: OfficeProviderFieldValueKind::Identifier,
+        required: true,
+        secret: false,
+        multiple: false,
+        default_value: None,
+        default_values: Vec::new(),
+        options: OfficeCapability::all()
+            .into_iter()
+            .map(|capability| OfficeConfigFieldOption {
+                value: office_capability_key(capability).to_string(),
+                label: office_capability_key(capability).to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn identity_class_field_schema() -> OfficeConfigCreateFieldSchema {
+    shared_account_create_fields(&OfficeProviderSchema {
+        provider_kind: String::new(),
+        display_name: String::new(),
+        capabilities: Vec::new(),
+        fields: Vec::new(),
+    })
+    .into_iter()
+    .find(|field| field.key == "identity_class")
+    .expect("identity_class field")
+}
+
+fn push_missing_field(
+    missing_fields: &mut Vec<String>,
+    missing_field_details: &mut Vec<OfficeConfigCreateFieldSchema>,
+    key: &str,
+    field: OfficeConfigCreateFieldSchema,
+) {
+    if !missing_fields.iter().any(|existing| existing == key) {
+        missing_fields.push(key.to_string());
+    }
+    if !missing_field_details
+        .iter()
+        .any(|existing| existing.key == key)
+    {
+        missing_field_details.push(field);
+    }
+}
+
+fn office_capability_key(capability: OfficeCapability) -> &'static str {
+    match capability {
+        OfficeCapability::Mail => "mail",
+        OfficeCapability::Calendar => "calendar",
+        OfficeCapability::Documents => "documents",
+        OfficeCapability::ContactsDirectory => "contacts_directory",
+    }
+}
+
+pub(crate) fn infer_single_capability_for_provider(
+    provider_kind: &str,
+) -> Option<OfficeCapability> {
+    let schema = office_provider_schema(provider_kind)?;
+    match schema.capabilities.as_slice() {
+        [capability] => Some(*capability),
+        _ => None,
+    }
+}
+
 fn build_create_field_from_provider_field(
     field: &OfficeProviderFieldSchema,
 ) -> OfficeConfigCreateFieldSchema {
@@ -1170,12 +1689,8 @@ fn map_account_next_action(
 fn upsert_account_segment(
     segment: &mut OfficeAccountsSegment,
     account: OfficeAccount,
-    policy_patch: Option<&OfficePolicyPatch>,
 ) -> Result<()> {
     segment.registry.insert(account);
-    if let Some(patch) = policy_patch {
-        apply_policy_patch(&mut segment.policy, patch);
-    }
     validate_office_accounts_candidate(segment)
 }
 
@@ -1197,17 +1712,6 @@ fn apply_config_field_value(
                 .metadata
                 .insert(schema.key.clone(), value.to_string());
         }
-    }
-}
-
-fn apply_policy_patch(policy: &mut OfficeSelectionPolicy, patch: &OfficePolicyPatch) {
-    if let Some(ask_when_ambiguous) = patch.ask_when_ambiguous {
-        policy.ask_when_ambiguous = ask_when_ambiguous;
-    }
-    if patch.clear_preferred_identity_class {
-        policy.preferred_identity_class = None;
-    } else if let Some(preferred_identity_class) = patch.preferred_identity_class {
-        policy.preferred_identity_class = Some(preferred_identity_class);
     }
 }
 
@@ -1341,70 +1845,6 @@ mod tests {
                 .remove(account_key);
             Ok(())
         }
-    }
-
-    #[test]
-    fn save_account_upsert_persists_account_without_selection_side_effects() {
-        let service = OfficeConfigManagementService::new(
-            Arc::new(MemoryConfigFileStore::new()),
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        );
-
-        let detail = service
-            .save_account_upsert(&OfficeAccountUpsertRequest {
-                account: OfficeAccountRecordInput {
-                    account_key: "mail-work".to_string(),
-                    provider_kind: "imap_smtp".to_string(),
-                    external_account_id: "mail-work@example.com".to_string(),
-                    account_label: "mail-work".to_string(),
-                    identity_class: OfficeAccountIdentityClass::Work,
-                    enabled_capabilities: vec![OfficeCapability::Mail],
-                },
-                policy_patch: None,
-                config: None,
-            })
-            .expect("save account upsert");
-
-        assert_eq!(detail.account.account_key, "mail-work");
-        let snapshot = service.inspect().expect("inspect");
-        assert!(snapshot.accounts.registry.get("mail-work").is_some());
-        assert_eq!(snapshot.summary.accounts.len(), 1);
-    }
-
-    #[test]
-    fn save_account_upsert_applies_policy_patch_and_refreshes_snapshot() {
-        let config_file_store = Arc::new(MemoryConfigFileStore::new());
-        let service = OfficeConfigManagementService::new(
-            config_file_store,
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        );
-        service
-            .save_account_upsert(&OfficeAccountUpsertRequest {
-                account: OfficeAccountRecordInput {
-                    account_key: "calendar-work".to_string(),
-                    provider_kind: "caldav".to_string(),
-                    external_account_id: "calendar-work@example.com".to_string(),
-                    account_label: "calendar-work".to_string(),
-                    identity_class: OfficeAccountIdentityClass::Work,
-                    enabled_capabilities: vec![OfficeCapability::Calendar],
-                },
-                policy_patch: Some(OfficePolicyPatch {
-                    ask_when_ambiguous: Some(true),
-                    preferred_identity_class: Some(OfficeAccountIdentityClass::Work),
-                    clear_preferred_identity_class: false,
-                }),
-                config: None,
-            })
-            .expect("save account upsert");
-        let snapshot = service.inspect().expect("inspect");
-        assert!(snapshot.accounts.registry.get("calendar-work").is_some());
-        assert!(snapshot.summary.policy.ask_when_ambiguous);
-        assert_eq!(
-            snapshot.summary.policy.preferred_identity_class,
-            Some(OfficeAccountIdentityClass::Work)
-        );
     }
 
     #[test]
@@ -1605,72 +2045,253 @@ mod tests {
     }
 
     #[test]
-    fn save_account_upsert_generates_account_key_when_missing() {
-        let service = OfficeConfigManagementService::new(
-            Arc::new(MemoryConfigFileStore::new()),
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        );
+    fn materialize_account_record_input_generates_account_key_when_missing() {
+        let registry = crate::office::OfficeAccountRegistry::new();
+        let account = materialize_account_record_input(
+            &registry,
+            &OfficeAccountRecordInput {
+                account_key: String::new(),
+                provider_kind: "imap_smtp".to_string(),
+                external_account_id: String::new(),
+                account_label: "Primary mail".to_string(),
+                identity_class: OfficeAccountIdentityClass::Work,
+                enabled_capabilities: vec![OfficeCapability::Mail],
+            },
+        )
+        .expect("materialize account");
 
-        let detail = service
-            .save_account_upsert(&OfficeAccountUpsertRequest {
-                account: OfficeAccountRecordInput {
-                    account_key: String::new(),
-                    provider_kind: "imap_smtp".to_string(),
-                    external_account_id: String::new(),
-                    account_label: "Primary mail".to_string(),
-                    identity_class: OfficeAccountIdentityClass::Work,
-                    enabled_capabilities: vec![OfficeCapability::Mail],
-                },
-                policy_patch: None,
-                config: None,
-            })
-            .expect("save account upsert");
-
-        assert_eq!(detail.account.account_key, "imap-smtp-work-primary-mail");
+        assert_eq!(account.account_key, "imap-smtp-work-primary-mail");
     }
 
     #[test]
-    fn save_account_upsert_reuses_existing_account_key_when_natural_identity_matches() {
+    fn materialize_account_record_input_reuses_existing_account_key_for_natural_identity() {
+        let mut registry = crate::office::OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "imap-smtp-other-675778650-qq-com".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "675778650@qq.com".to_string(),
+            account_label: "QQ邮箱".to_string(),
+            identity_class: OfficeAccountIdentityClass::Other,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+
+        let account = materialize_account_record_input(
+            &registry,
+            &OfficeAccountRecordInput {
+                account_key: String::new(),
+                provider_kind: "imap_smtp".to_string(),
+                external_account_id: "675778650@qq.com".to_string(),
+                account_label: "QQ邮箱（更新）".to_string(),
+                identity_class: OfficeAccountIdentityClass::Other,
+                enabled_capabilities: vec![OfficeCapability::Mail],
+            },
+        )
+        .expect("materialize account");
+
+        assert_eq!(account.account_key, "imap-smtp-other-675778650-qq-com");
+    }
+
+    #[test]
+    fn apply_account_returns_missing_user_facts_without_persisting() {
         let service = OfficeConfigManagementService::new(
             Arc::new(MemoryConfigFileStore::new()),
             Arc::new(MemoryCredentialStore::default()),
             Arc::new(MemoryRuntimeStatusStore::default()),
         );
 
-        let first = service
-            .save_account_upsert(&OfficeAccountUpsertRequest {
-                account: OfficeAccountRecordInput {
-                    account_key: String::new(),
-                    provider_kind: "imap_smtp".to_string(),
-                    external_account_id: "675778650@qq.com".to_string(),
-                    account_label: "QQ邮箱".to_string(),
-                    identity_class: OfficeAccountIdentityClass::Other,
-                    enabled_capabilities: vec![OfficeCapability::Mail],
-                },
-                policy_patch: None,
-                config: None,
+        let result = service
+            .apply_account(&OfficeAccountOnboardingRequest {
+                provider_kind: Some("imap_smtp".to_string()),
+                capability: None,
+                external_account_id: Some("work@example.com".to_string()),
+                account_label: Some("Work".to_string()),
+                identity_class: None,
+                config: Some(OfficeAccountConfigSaveRequest {
+                    fields: BTreeMap::from([(
+                        "access_token".to_string(),
+                        "secret-token".to_string(),
+                    )]),
+                    clear_fields: Vec::new(),
+                }),
             })
-            .expect("first upsert");
+            .expect("atomic apply should return structured blocker");
 
-        let second = service
-            .save_account_upsert(&OfficeAccountUpsertRequest {
-                account: OfficeAccountRecordInput {
-                    account_key: String::new(),
-                    provider_kind: "imap_smtp".to_string(),
-                    external_account_id: "675778650@qq.com".to_string(),
-                    account_label: "QQ邮箱（更新）".to_string(),
-                    identity_class: OfficeAccountIdentityClass::Other,
-                    enabled_capabilities: vec![OfficeCapability::Mail],
-                },
-                policy_patch: None,
-                config: None,
-            })
-            .expect("second upsert");
-
-        assert_eq!(second.account.account_key, first.account.account_key);
+        assert_eq!(
+            result.disposition,
+            OfficeAccountOnboardingDisposition::NeedsUserFacts
+        );
+        assert_eq!(result.reason, "missing_user_facts");
+        assert!(result
+            .missing_fields
+            .contains(&"identity_class".to_string()));
+        assert!(result
+            .missing_fields
+            .contains(&"mail_imap_host".to_string()));
+        assert!(result
+            .missing_fields
+            .contains(&"mail_smtp_host".to_string()));
         let snapshot = service.inspect().expect("inspect");
-        assert_eq!(snapshot.summary.accounts.len(), 1);
+        assert!(snapshot.accounts.registry.all_accounts().is_empty());
+        assert!(snapshot.summary.accounts.is_empty());
+        assert!(service
+            .load_credentials_segment()
+            .expect("credentials")
+            .items
+            .is_empty());
+        assert!(service
+            .runtime_status_store
+            .list()
+            .expect("runtime status list")
+            .is_empty());
+    }
+
+    #[test]
+    fn apply_account_probe_failure_does_not_persist_partial_state() {
+        #[derive(Clone)]
+        struct FailingProbeAdapter;
+
+        impl OfficeProbeAdapter for FailingProbeAdapter {
+            fn provider_kind(&self) -> &'static str {
+                "imap_smtp"
+            }
+
+            fn probe(
+                &self,
+                _http: &mut dyn OfficeHttpClient,
+                _account: &OfficeAccount,
+                _credential: &OfficeCredential,
+            ) -> Result<OfficeProbeResult> {
+                Err(Error::config("office_probe_test", "imap login failed"))
+            }
+        }
+
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        let credential_store = Arc::new(MemoryCredentialStore::default());
+        let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
+        let service = OfficeConfigManagementService::new(
+            config_file_store.clone(),
+            credential_store.clone(),
+            runtime_status_store.clone(),
+        )
+        .with_probe_adapters(vec![Arc::new(FailingProbeAdapter)]);
+
+        let result = service
+            .apply_account(&OfficeAccountOnboardingRequest {
+                provider_kind: Some("imap_smtp".to_string()),
+                capability: None,
+                external_account_id: Some("work@example.com".to_string()),
+                account_label: Some("Work".to_string()),
+                identity_class: Some(OfficeAccountIdentityClass::Work),
+                config: Some(OfficeAccountConfigSaveRequest {
+                    fields: BTreeMap::from([
+                        ("access_token".to_string(), "secret-token".to_string()),
+                        ("mail_imap_host".to_string(), "imap.example.com".to_string()),
+                        ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
+                    ]),
+                    clear_fields: Vec::new(),
+                }),
+            })
+            .expect("atomic apply should return structured probe failure");
+
+        assert_eq!(
+            result.disposition,
+            OfficeAccountOnboardingDisposition::ProbeFailed
+        );
+        assert_eq!(result.reason, "probe_error");
+        assert_eq!(result.error_stage.as_deref(), Some("office_probe_test"));
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("config: imap login failed (stage: office_probe_test)")
+        );
+        let snapshot = service.inspect().expect("inspect");
+        assert!(snapshot.accounts.registry.all_accounts().is_empty());
+        assert!(credential_store.list().expect("credentials").is_empty());
+        assert!(runtime_status_store
+            .list()
+            .expect("runtime status")
+            .is_empty());
+    }
+
+    #[test]
+    fn apply_account_probe_success_commits_account_credential_and_runtime_status() {
+        #[derive(Clone)]
+        struct ReadyProbeAdapter;
+
+        impl OfficeProbeAdapter for ReadyProbeAdapter {
+            fn provider_kind(&self) -> &'static str {
+                "imap_smtp"
+            }
+
+            fn probe(
+                &self,
+                _http: &mut dyn OfficeHttpClient,
+                account: &OfficeAccount,
+                _credential: &OfficeCredential,
+            ) -> Result<OfficeProbeResult> {
+                Ok(OfficeProbeResult {
+                    account_key: account.account_key.clone(),
+                    provider_kind: account.provider_kind.clone(),
+                    configured: true,
+                    disposition: OfficeProbeDisposition::Ready,
+                    reason: "imap_login_ok".to_string(),
+                })
+            }
+        }
+
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        let credential_store = Arc::new(MemoryCredentialStore::default());
+        let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
+        let service = OfficeConfigManagementService::new(
+            config_file_store.clone(),
+            credential_store.clone(),
+            runtime_status_store.clone(),
+        )
+        .with_probe_adapters(vec![Arc::new(ReadyProbeAdapter)]);
+
+        let result = service
+            .apply_account(&OfficeAccountOnboardingRequest {
+                provider_kind: Some("imap_smtp".to_string()),
+                capability: None,
+                external_account_id: Some("work@example.com".to_string()),
+                account_label: Some("Work".to_string()),
+                identity_class: Some(OfficeAccountIdentityClass::Work),
+                config: Some(OfficeAccountConfigSaveRequest {
+                    fields: BTreeMap::from([
+                        ("access_token".to_string(), "secret-token".to_string()),
+                        ("mail_imap_host".to_string(), "imap.example.com".to_string()),
+                        ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
+                    ]),
+                    clear_fields: Vec::new(),
+                }),
+            })
+            .expect("atomic apply should succeed");
+
+        assert_eq!(
+            result.disposition,
+            OfficeAccountOnboardingDisposition::Applied
+        );
+        assert_eq!(result.reason, "applied");
+        let detail = result.account.as_ref().expect("applied detail");
+        let account_key = detail.account.account_key.as_str();
+        let credential = credential_store
+            .get(account_key)
+            .expect("load credential")
+            .expect("credential exists");
+        assert_eq!(credential.access_token, "secret-token");
+        assert_eq!(
+            credential.metadata_value("mail_imap_host"),
+            Some("imap.example.com")
+        );
+        assert_eq!(
+            credential.metadata_value("mail_smtp_host"),
+            Some("smtp.example.com")
+        );
+        let runtime = runtime_status_store
+            .get(account_key)
+            .expect("load runtime")
+            .expect("runtime exists");
+        assert!(runtime.probe_ok);
+        assert!(runtime.last_error.is_empty());
     }
 
     #[test]

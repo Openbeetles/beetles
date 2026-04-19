@@ -7,11 +7,17 @@ use crate::i18n::{locale_from_store, tr, tr_error, Message};
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::office::{
-    parse_public_account_upsert_request_value, OfficeAccountConfigSaveRequest, OfficeCapability,
-    OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigCapabilityStatus,
-    OfficeConfigManagementService, OfficeConfigProviderCatalogItem,
+    parse_public_account_upsert_request_value, OfficeAccountConfigSaveRequest,
+    OfficeAccountOnboardingDisposition, OfficeCapability, OfficeConfigAccountDetail,
+    OfficeConfigAccountSummary, OfficeConfigCapabilityStatus, OfficeConfigManagementService,
+    OfficeConfigProviderCatalogItem, OfficeHttpClient, OfficeStreamingResponse,
 };
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::platform::{PlatformHttpClient, ResponseBody};
 use serde_json::Value;
 #[cfg(all(
     feature = "capability_office",
@@ -142,12 +148,106 @@ fn default_true() -> bool {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 fn office_config_service(ctx: &HandlerContext) -> OfficeConfigManagementService {
-    OfficeConfigManagementService::new(
+    let service = OfficeConfigManagementService::new(
         Arc::clone(&ctx.config_file_store),
         ctx.platform.office_credential_store(),
         ctx.platform.office_runtime_status_store(),
-    )
-    .with_default_probe_adapters()
+    );
+    #[cfg(test)]
+    {
+        if let Some(probe_adapters) = ctx.office_probe_adapters.as_ref() {
+            return service.with_probe_adapters(probe_adapters.clone());
+        }
+    }
+    service.with_default_probe_adapters()
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+struct HandlerOfficeHttpClient<'a> {
+    http: &'a mut dyn PlatformHttpClient,
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeHttpClient for HandlerOfficeHttpClient<'_> {
+    fn request_with_headers(
+        &mut self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> crate::error::Result<(u16, ResponseBody)> {
+        self.http.request(method, url, headers, body)
+    }
+
+    fn get_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> crate::error::Result<(u16, ResponseBody)> {
+        self.http.get(url, headers)
+    }
+
+    fn get_streaming_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_response_bytes: Option<usize>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> crate::error::Result<()>,
+    ) -> crate::error::Result<OfficeStreamingResponse> {
+        let mut streamed_bytes = 0usize;
+        let limit = max_response_bytes.filter(|value| *value > 0);
+        let status = self
+            .http
+            .get_streaming(url, headers, max_response_bytes, &mut |chunk| {
+                streamed_bytes = streamed_bytes.saturating_add(chunk.len());
+                on_chunk(chunk)
+            })?;
+        Ok(OfficeStreamingResponse {
+            status,
+            truncated: limit.map(|value| streamed_bytes >= value).unwrap_or(false),
+        })
+    }
+
+    fn post_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> crate::error::Result<(u16, ResponseBody)> {
+        self.http.post(url, headers, body)
+    }
+
+    fn patch_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> crate::error::Result<(u16, ResponseBody)> {
+        self.http.patch(url, headers, body)
+    }
+
+    fn put_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> crate::error::Result<(u16, ResponseBody)> {
+        self.http.put(url, headers, body)
+    }
+
+    fn delete_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> crate::error::Result<(u16, ResponseBody)> {
+        self.http.delete(url, headers)
+    }
 }
 
 #[cfg(all(
@@ -251,7 +351,6 @@ pub fn get_capability_detail_body(
 ))]
 /// POST /api/config/accounts：创建或更新单个账户注册。
 pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let request = match serde_json::from_str::<Value>(body) {
         Ok(Value::Object(obj)) => {
             match parse_public_account_upsert_request_value(&obj, "http_config_accounts_post") {
@@ -266,13 +365,40 @@ pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
             ))
         }
     };
-    match office_config_service(ctx).save_account_upsert(&request) {
-        Ok(detail) => {
+    let cfg = ctx.config();
+    let mut http = crate::network::create_http_client_with_config(
+        ctx.platform.as_ref(),
+        &cfg,
+        crate::network::HttpClientClass::Background,
+    )
+    .map_err(|error| to_io(error.to_string()))?;
+    drop(cfg);
+    let mut office_http = HandlerOfficeHttpClient {
+        http: http.as_mut(),
+    };
+    match office_config_service(ctx).apply_account_with_http(&mut office_http, &request) {
+        Ok(result)
+            if matches!(
+                result.disposition,
+                OfficeAccountOnboardingDisposition::Applied
+            ) =>
+        {
+            let detail = result
+                .account
+                .expect("applied onboarding result must include detail");
             ctx.reload_config();
             let body = serde_json::to_string(&detail).map_err(|error| to_io(error.to_string()))?;
             Ok(ApiResponse::ok_200_json(&body))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Ok(result) => {
+            let body = serde_json::to_string(&result).map_err(|error| to_io(error.to_string()))?;
+            Ok(ApiResponse {
+                status: 400,
+                status_text: "Bad Request",
+                body: body.into_bytes(),
+            })
+        }
+        Err(error) => Ok(ApiResponse::err_400(&error.to_string())),
     }
 }
 

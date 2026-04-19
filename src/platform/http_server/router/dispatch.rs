@@ -1285,7 +1285,10 @@ mod tests {
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
-    use crate::office::{OfficeAccount, OfficeAccountIdentityClass, OfficeCapability};
+    use crate::office::{
+        OfficeAccount, OfficeAccountIdentityClass, OfficeCapability, OfficeCredential,
+        OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+    };
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -1326,11 +1329,87 @@ mod tests {
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
+    fn build_office_authed_ctx(
+        probe_adapters: Vec<Arc<dyn OfficeProbeAdapter + Send + Sync>>,
+    ) -> HandlerContext {
+        let mut ctx = build_authed_ctx();
+        ctx.office_probe_adapters = Some(probe_adapters);
+        ctx
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     fn office_test_guard() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[derive(Clone)]
+    struct ReadyProbeAdapter {
+        provider_kind: &'static str,
+        reason: &'static str,
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    impl OfficeProbeAdapter for ReadyProbeAdapter {
+        fn provider_kind(&self) -> &'static str {
+            self.provider_kind
+        }
+
+        fn probe(
+            &self,
+            _http: &mut dyn OfficeHttpClient,
+            account: &OfficeAccount,
+            _credential: &OfficeCredential,
+        ) -> crate::error::Result<OfficeProbeResult> {
+            Ok(OfficeProbeResult {
+                account_key: account.account_key.clone(),
+                provider_kind: account.provider_kind.clone(),
+                configured: true,
+                disposition: OfficeProbeDisposition::Ready,
+                reason: self.reason.to_string(),
+            })
+        }
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[derive(Clone)]
+    struct FailingProbeAdapter;
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    impl OfficeProbeAdapter for FailingProbeAdapter {
+        fn provider_kind(&self) -> &'static str {
+            "imap_smtp"
+        }
+
+        fn probe(
+            &self,
+            _http: &mut dyn OfficeHttpClient,
+            _account: &OfficeAccount,
+            _credential: &OfficeCredential,
+        ) -> crate::error::Result<OfficeProbeResult> {
+            Err(crate::error::Error::config(
+                "office_probe_test",
+                "imap login failed",
+            ))
+        }
     }
 
     #[cfg(all(
@@ -1735,7 +1814,10 @@ mod tests {
     #[test]
     fn config_accounts_post_upserts_single_account_registration() {
         let _guard = office_test_guard();
-        let ctx = build_authed_ctx();
+        let ctx = build_office_authed_ctx(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "imap_smtp",
+            reason: "imap_login_ok",
+        })]);
         let env = build_router_env();
 
         let response = dispatch(
@@ -1769,7 +1851,10 @@ mod tests {
     #[test]
     fn config_accounts_post_creates_account_with_initial_provider_config() {
         let _guard = office_test_guard();
-        let ctx = build_authed_ctx();
+        let ctx = build_office_authed_ctx(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "imap_smtp",
+            reason: "imap_login_ok",
+        })]);
         let env = build_router_env();
 
         let response = dispatch(
@@ -1855,13 +1940,11 @@ mod tests {
             String::from_utf8_lossy(&response.body)
         );
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
-        assert!(
-            parsed["error"]
-                .as_str()
-                .is_some_and(|value| value.contains("missing identity_class")),
-            "body={}",
-            String::from_utf8_lossy(&response.body)
-        );
+        assert_eq!(parsed["disposition"], "needs_user_facts");
+        assert_eq!(parsed["reason"], "missing_user_facts");
+        assert!(parsed["missing_fields"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == "identity_class")));
     }
 
     #[cfg(all(
@@ -1909,6 +1992,93 @@ mod tests {
             "body={}",
             String::from_utf8_lossy(&response.body)
         );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_post_returns_structured_probe_failure_without_persisting() {
+        let _guard = office_test_guard();
+        let ctx = build_office_authed_ctx(vec![Arc::new(FailingProbeAdapter)]);
+        let env = build_router_env();
+        let accounts_before = config::get_office_accounts_segment(ctx.config_file_store.as_ref())
+            .and_then(|body| {
+                serde_json::from_str::<OfficeAccountsSegment>(&body).map_err(|error| {
+                    crate::error::Error::config(
+                        "config_accounts_post_probe_failure_test",
+                        error.to_string(),
+                    )
+                })
+            })
+            .expect("load initial accounts segment");
+        let credentials_before = ctx
+            .platform
+            .office_credential_store()
+            .list()
+            .expect("load initial office credentials");
+        let runtime_before = ctx
+            .platform
+            .office_runtime_status_store()
+            .list()
+            .expect("load initial office runtime status");
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                "/api/config/accounts",
+                serde_json::json!({
+                    "provider_kind": "imap_smtp",
+                    "identity_class": "work",
+                    "account_label": "Primary mail",
+                    "email": "alice@example.com",
+                    "access_token": "secret-token",
+                    "imap_host": "imap.example.com",
+                    "smtp_host": "smtp.example.com"
+                }),
+            ),
+        )
+        .expect("dispatch account create");
+        assert_eq!(
+            response.status,
+            400,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["disposition"], "probe_failed");
+        assert_eq!(parsed["reason"], "probe_error");
+        assert_eq!(parsed["error_stage"], "office_probe_test");
+        assert_eq!(
+            parsed["error_message"],
+            "config: imap login failed (stage: office_probe_test)"
+        );
+
+        let accounts_after = config::get_office_accounts_segment(ctx.config_file_store.as_ref())
+            .and_then(|body| {
+                serde_json::from_str::<OfficeAccountsSegment>(&body).map_err(|error| {
+                    crate::error::Error::config(
+                        "config_accounts_post_probe_failure_test",
+                        error.to_string(),
+                    )
+                })
+            })
+            .expect("load office accounts segment");
+        let credentials_after = ctx
+            .platform
+            .office_credential_store()
+            .list()
+            .expect("load office credentials");
+        let runtime_after = ctx
+            .platform
+            .office_runtime_status_store()
+            .list()
+            .expect("load office runtime status");
+        assert_eq!(accounts_after, accounts_before);
+        assert_eq!(credentials_after, credentials_before);
+        assert_eq!(runtime_after, runtime_before);
     }
 
     #[cfg(all(

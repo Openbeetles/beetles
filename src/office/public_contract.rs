@@ -5,8 +5,9 @@ use crate::mail::{
     OFFICE_METADATA_MAIL_SMTP_PORT, OFFICE_METADATA_MAIL_SMTP_TLS, OFFICE_METADATA_MAIL_USERNAME,
 };
 use crate::office::{
-    office_provider_schema, OfficeAccountConfigSaveRequest, OfficeAccountIdentityClass,
-    OfficeAccountRecordInput, OfficeAccountUpsertRequest, OfficeCapability,
+    infer_single_capability_for_provider, office_provider_schema, OfficeAccountConfigSaveRequest,
+    OfficeAccountIdentityClass, OfficeAccountOnboardingRequest, OfficeCapability,
+    OfficeProviderFieldLocation,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ use std::collections::BTreeMap;
 pub(crate) fn parse_public_account_upsert_request_value(
     obj: &Map<String, Value>,
     stage: &'static str,
-) -> Result<OfficeAccountUpsertRequest> {
+) -> Result<OfficeAccountOnboardingRequest> {
     reject_legacy_public_account_keys(obj, stage)?;
     normalize_public_account_upsert_request(obj, stage)
 }
@@ -22,22 +23,18 @@ pub(crate) fn parse_public_account_upsert_request_value(
 fn normalize_public_account_upsert_request(
     obj: &Map<String, Value>,
     stage: &'static str,
-) -> Result<OfficeAccountUpsertRequest> {
+) -> Result<OfficeAccountOnboardingRequest> {
     let capability_hint = obj
         .get("capability")
         .map(|value| parse_capability_value(value, stage))
         .transpose()?;
-    let provider_kind = public_provider_kind(obj)
-        .or_else(|| infer_provider_kind_from_sources(&[Some(obj)]))
-        .ok_or_else(|| Error::config(stage, "missing provider_kind"))?;
-    let enabled_capabilities = capability_hint
-        .or_else(|| infer_single_capability_for_provider(&provider_kind))
-        .map(|value| vec![value])
-        .unwrap_or_default();
-    if enabled_capabilities.is_empty() {
-        return Err(Error::config(stage, "missing capability"));
-    }
-
+    let provider_kind =
+        public_provider_kind(obj).or_else(|| infer_provider_kind_from_sources(&[Some(obj)]));
+    let capability_hint = capability_hint.or_else(|| {
+        provider_kind
+            .as_deref()
+            .and_then(infer_single_capability_for_provider)
+    });
     let external_account_id = preferred_string_from_sources(
         &[Some(obj)],
         &[
@@ -49,27 +46,20 @@ fn normalize_public_account_upsert_request(
             "from_address",
             "mail_from_address",
         ],
-    )
-    .ok_or_else(|| Error::config(stage, "missing external account identity"))?;
+    );
     let account_label =
         preferred_string_from_sources(&[Some(obj)], &["account_label", "display_name", "label"])
-            .unwrap_or_else(|| external_account_id.clone());
-    let identity_class = identity_class_from_sources(&[Some(obj)], stage)?
-        .ok_or_else(|| Error::config(stage, "missing identity_class"))?;
+            .or_else(|| external_account_id.clone());
+    let identity_class = identity_class_from_sources(&[Some(obj)], stage)?;
 
-    let mut request = OfficeAccountUpsertRequest {
-        account: OfficeAccountRecordInput {
-            account_key: String::new(),
-            provider_kind,
-            external_account_id,
-            account_label,
-            identity_class,
-            enabled_capabilities,
-        },
-        policy_patch: None,
+    let mut request = OfficeAccountOnboardingRequest {
+        provider_kind,
+        capability: capability_hint,
+        external_account_id,
+        account_label,
+        identity_class,
         config: None,
     };
-    validate_public_account_request(&request, true, stage)?;
     merge_public_config_object_aliases(&mut request, obj, stage)?;
     if request
         .config
@@ -82,7 +72,7 @@ fn normalize_public_account_upsert_request(
 }
 
 fn merge_public_config_object_aliases(
-    request: &mut OfficeAccountUpsertRequest,
+    request: &mut OfficeAccountOnboardingRequest,
     source_obj: &Map<String, Value>,
     stage: &'static str,
 ) -> Result<()> {
@@ -145,6 +135,12 @@ fn merge_public_config_object_aliases(
         optional_bool(source_obj, "smtp_tls", stage)?.map(|value| value.to_string()),
     );
     merge_metadata_object_aliases(&mut fields, source_obj, stage)?;
+    merge_top_level_provider_field_aliases(
+        &mut fields,
+        request.provider_kind.as_deref().unwrap_or_default(),
+        source_obj,
+        stage,
+    )?;
     if fields.is_empty() {
         return Ok(());
     }
@@ -165,6 +161,35 @@ fn merge_public_config_object_aliases(
         .get_or_insert_with(OfficeAccountConfigSaveRequest::default);
     for (key, value) in fields {
         config.fields.entry(key).or_insert(value);
+    }
+    Ok(())
+}
+
+fn merge_top_level_provider_field_aliases(
+    fields: &mut BTreeMap<String, String>,
+    provider_kind: &str,
+    source_obj: &Map<String, Value>,
+    stage: &'static str,
+) -> Result<()> {
+    let Some(schema) = office_provider_schema(provider_kind) else {
+        return Ok(());
+    };
+    for field in &schema.fields {
+        if field.location == OfficeProviderFieldLocation::ExternalAccountId
+            || fields.contains_key(&field.key)
+        {
+            continue;
+        }
+        let Some(value) = source_obj.get(&field.key) else {
+            continue;
+        };
+        if !has_non_empty_scalar(Some(value)) {
+            continue;
+        }
+        let value = json_scalar_to_string(value, &field.key, stage)?;
+        if !value.trim().is_empty() {
+            fields.insert(field.key.clone(), value);
+        }
     }
     Ok(())
 }
@@ -393,14 +418,6 @@ fn source_has_any_key(sources: &[Option<&Map<String, Value>>], keys: &[&str]) ->
     })
 }
 
-fn infer_single_capability_for_provider(provider_kind: &str) -> Option<OfficeCapability> {
-    let schema = office_provider_schema(provider_kind)?;
-    match schema.capabilities.as_slice() {
-        [capability] => Some(*capability),
-        _ => None,
-    }
-}
-
 fn has_non_empty_scalar(value: Option<&Value>) -> bool {
     match value {
         Some(Value::String(value)) => !value.trim().is_empty(),
@@ -439,19 +456,51 @@ fn parse_identity_class_value(
     }
 }
 
-fn validate_public_account_request(
-    request: &OfficeAccountUpsertRequest,
-    require_external_account_identity: bool,
-    stage: &'static str,
-) -> Result<()> {
-    if request.account.provider_kind.trim().is_empty() {
-        return Err(Error::config(stage, "missing provider_kind"));
+#[cfg(test)]
+mod tests {
+    use super::parse_public_account_upsert_request_value;
+    use crate::office::WECOM_DEFAULT_BASE_URL;
+    use serde_json::json;
+
+    #[test]
+    fn public_contract_normalizes_top_level_provider_metadata_fields() {
+        let body = json!({
+            "account_id": "wecom-docs",
+            "identity_class": "work",
+            "access_token": "corp-secret",
+            "documents_corp_id": "wwcorp",
+            "documents_space_id": "space-1",
+            "documents_root_path": "/shared/docs",
+            "documents_base_url": WECOM_DEFAULT_BASE_URL
+        });
+        let obj = body.as_object().expect("object");
+
+        let request = parse_public_account_upsert_request_value(obj, "public_contract_test")
+            .expect("normalize onboarding request");
+
+        assert_eq!(request.provider_kind.as_deref(), Some("wecom_documents"));
+        assert_eq!(
+            request.capability,
+            Some(crate::office::OfficeCapability::Documents)
+        );
+        assert_eq!(request.external_account_id.as_deref(), Some("wecom-docs"));
+        assert_eq!(request.account_label.as_deref(), Some("wecom-docs"));
+        let config = request.config.expect("config");
+        assert_eq!(
+            config.fields.get("documents_corp_id").map(String::as_str),
+            Some("wwcorp")
+        );
+        assert_eq!(
+            config.fields.get("documents_space_id").map(String::as_str),
+            Some("space-1")
+        );
+        assert_eq!(
+            config.fields.get("documents_root_path").map(String::as_str),
+            Some("/shared/docs")
+        );
+        assert_eq!(
+            config.fields.get("documents_base_url").map(String::as_str),
+            Some(WECOM_DEFAULT_BASE_URL)
+        );
     }
-    if request.account.enabled_capabilities.is_empty() {
-        return Err(Error::config(stage, "missing capability"));
-    }
-    if require_external_account_identity && request.account.external_account_id.trim().is_empty() {
-        return Err(Error::config(stage, "missing external account identity"));
-    }
-    Ok(())
 }

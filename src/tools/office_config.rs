@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    parse_public_account_upsert_request_value, OfficeCapability, OfficeConfigAssessment,
-    OfficeConfigManagementService, OfficeProviderSchema, OfficeResolveRequest,
+    parse_public_account_upsert_request_value, OfficeAccountOnboardingDisposition,
+    OfficeCapability, OfficeConfigAssessment, OfficeConfigManagementService, OfficeProviderSchema,
+    OfficeResolveRequest,
 };
 use crate::tools::{
     http_bridge::ToolContextHttpClient, office_args::parse_identity_class_value, parse_tool_args,
@@ -147,12 +148,17 @@ impl Tool for OfficeConfigTool {
             "apply_account" => {
                 let request =
                     parse_public_account_upsert_request_value(&obj, "tool_office_config")?;
+                let mut http = ToolContextHttpClient::new(ctx);
+                let result = self.service.apply_account_with_http(&mut http, &request)?;
                 serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "apply_account",
-                        ok: true,
-                        payload: self.service.save_account_upsert(&request)?,
+                        ok: matches!(
+                            result.disposition,
+                            OfficeAccountOnboardingDisposition::Applied
+                        ),
+                        payload: result,
                     },
                 )
             }
@@ -439,18 +445,54 @@ mod tests {
     }
 
     fn build_fixture() -> ToolFixture {
+        build_fixture_with_probe_adapters(Vec::new())
+    }
+
+    fn build_fixture_with_probe_adapters(
+        probe_adapters: Vec<Arc<dyn crate::office::OfficeProbeAdapter + Send + Sync>>,
+    ) -> ToolFixture {
         let config_file_store = Arc::new(MemoryConfigFileStore::new());
         let credential_store = Arc::new(MemoryCredentialStore::default());
         let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
-        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
-            config_file_store.clone(),
-            credential_store.clone(),
-            runtime_status_store.clone(),
-        ));
+        let tool = OfficeConfigTool::new(
+            OfficeConfigManagementService::new(
+                config_file_store.clone(),
+                credential_store.clone(),
+                runtime_status_store.clone(),
+            )
+            .with_probe_adapters(probe_adapters),
+        );
         ToolFixture {
             tool,
             credential_store,
             runtime_status_store,
+        }
+    }
+
+    #[derive(Clone)]
+    struct ReadyProbeAdapter {
+        provider_kind: &'static str,
+        reason: &'static str,
+    }
+
+    impl crate::office::OfficeProbeAdapter for ReadyProbeAdapter {
+        fn provider_kind(&self) -> &'static str {
+            self.provider_kind
+        }
+
+        fn probe(
+            &self,
+            _http: &mut dyn crate::office::OfficeHttpClient,
+            account: &crate::office::OfficeAccount,
+            _credential: &crate::office::OfficeCredential,
+        ) -> Result<crate::office::OfficeProbeResult> {
+            Ok(crate::office::OfficeProbeResult {
+                account_key: account.account_key.clone(),
+                provider_kind: account.provider_kind.clone(),
+                configured: true,
+                disposition: OfficeProbeDisposition::Ready,
+                reason: self.reason.to_string(),
+            })
         }
     }
 
@@ -553,7 +595,10 @@ mod tests {
 
     #[test]
     fn apply_account_public_flat_shape_infers_provider_and_capability_from_transport_facts() {
-        let fixture = build_fixture();
+        let fixture = build_fixture_with_probe_adapters(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "imap_smtp",
+            reason: "imap_login_ok",
+        })]);
         let mut ctx = DummyCtx;
         let payload = fixture
             .tool
@@ -570,9 +615,9 @@ mod tests {
             )
             .expect("provider/capability should be inferred");
         let payload: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(payload["payload"]["account"]["provider_kind"], "imap_smtp");
+        assert_eq!(payload["payload"]["provider_kind"], "imap_smtp");
         assert_eq!(
-            payload["payload"]["account"]["enabled_capabilities"],
+            payload["payload"]["account"]["account"]["enabled_capabilities"],
             json!(["mail"])
         );
     }
@@ -603,10 +648,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_account_public_flat_shape_reports_missing_external_account_identity() {
+    fn apply_account_public_flat_shape_returns_structured_missing_user_facts() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let error = fixture
+        let payload = fixture
             .tool
             .execute(
                 r#"{
@@ -620,17 +665,22 @@ mod tests {
             }"#,
                 &mut ctx,
             )
-            .expect_err("missing external identity should fail");
-        assert!(error
-            .to_string()
-            .contains("missing external account identity"));
+            .expect("missing user facts should return structured payload");
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["payload"]["disposition"], "needs_user_facts");
+        assert!(payload["payload"]["missing_fields"]
+            .as_array()
+            .expect("missing fields")
+            .iter()
+            .any(|item| item == "mail_username"));
     }
 
     #[test]
-    fn apply_account_public_shape_requires_identity_class() {
+    fn apply_account_public_shape_reports_missing_identity_class_without_persisting() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let error = fixture
+        let payload = fixture
             .tool
             .execute(
                 r#"{
@@ -644,8 +694,20 @@ mod tests {
             }"#,
                 &mut ctx,
             )
-            .expect_err("missing identity_class should fail");
-        assert!(error.to_string().contains("missing identity_class"));
+            .expect("missing identity_class should return structured blocker");
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["payload"]["disposition"], "needs_user_facts");
+        assert!(payload["payload"]["missing_fields"]
+            .as_array()
+            .expect("missing fields")
+            .iter()
+            .any(|item| item == "identity_class"));
+        assert!(fixture
+            .credential_store
+            .list()
+            .expect("credentials")
+            .is_empty());
     }
 
     #[test]
@@ -699,8 +761,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_account_persists_and_probe_reports_missing_credential() {
-        let fixture = build_fixture();
+    fn apply_account_applies_atomically_and_persists_ready_runtime_state() {
+        let fixture = build_fixture_with_probe_adapters(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "imap_smtp",
+            reason: "imap_login_ok",
+        })]);
         let mut ctx = DummyCtx;
         let payload = fixture
             .tool
@@ -711,30 +776,34 @@ mod tests {
                     "provider_kind": "imap_smtp",
                     "email": "work@example.com",
                     "display_name": "Work",
-                    "identity_class": "work"
+                    "identity_class": "work",
+                    "access_token": "secret-token",
+                    "imap_host": "imap.example.com",
+                    "smtp_host": "smtp.example.com"
                 })
                 .to_string(),
                 &mut ctx,
             )
             .expect("apply account");
         let payload: Value = serde_json::from_str(&payload).expect("parse apply payload");
-        let account_key = payload["payload"]["account"]["account_key"]
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["payload"]["disposition"], "applied");
+        let account_key = payload["payload"]["account"]["account"]["account_key"]
             .as_str()
             .expect("account key");
-
-        let payload = fixture
-            .tool
-            .execute(
-                &json!({"op":"probe","account_key":account_key}).to_string(),
-                &mut ctx,
-            )
-            .expect("probe");
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(
-            payload["payload"]["disposition"],
-            json!(OfficeProbeDisposition::MissingCredential)
-        );
-        assert_eq!(payload["payload"]["reason"], "credential_missing");
+        let credential = fixture
+            .credential_store
+            .get(account_key)
+            .expect("credential lookup")
+            .expect("credential persisted");
+        assert_eq!(credential.access_token, "secret-token");
+        let runtime = fixture
+            .runtime_status_store
+            .get(account_key)
+            .expect("runtime lookup")
+            .expect("runtime status persisted");
+        assert!(runtime.probe_ok);
+        assert!(runtime.last_error.is_empty());
     }
 
     #[test]
@@ -910,7 +979,10 @@ mod tests {
 
     #[test]
     fn apply_account_normalizes_wecom_documents_defaults_and_trims_values() {
-        let fixture = build_fixture();
+        let fixture = build_fixture_with_probe_adapters(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "wecom_documents",
+            reason: "wecom_documents_ok",
+        })]);
         let mut ctx = DummyCtx;
         let payload = fixture
             .tool
@@ -934,7 +1006,7 @@ mod tests {
             )
             .expect("apply account");
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
-        let account_key = payload["payload"]["account"]["account_key"]
+        let account_key = payload["payload"]["account"]["account"]["account_key"]
             .as_str()
             .expect("account key");
         let credential = fixture
@@ -961,7 +1033,10 @@ mod tests {
 
     #[test]
     fn apply_account_infers_wecom_documents_provider_and_capability_from_unique_metadata() {
-        let fixture = build_fixture();
+        let fixture = build_fixture_with_probe_adapters(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "wecom_documents",
+            reason: "wecom_documents_ok",
+        })]);
         let mut ctx = DummyCtx;
         let payload = fixture
             .tool
@@ -982,13 +1057,64 @@ mod tests {
             )
             .expect("provider/capability should be inferred");
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(payload["payload"]["provider_kind"], "wecom_documents");
         assert_eq!(
-            payload["payload"]["account"]["provider_kind"],
-            "wecom_documents"
+            payload["payload"]["account"]["account"]["enabled_capabilities"],
+            json!(["documents"])
+        );
+    }
+
+    #[test]
+    fn apply_account_accepts_top_level_provider_metadata_without_metadata_wrapper() {
+        let fixture = build_fixture_with_probe_adapters(vec![Arc::new(ReadyProbeAdapter {
+            provider_kind: "wecom_documents",
+            reason: "wecom_documents_ok",
+        })]);
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
+                    "op":"apply_account",
+                    "account_id":"wecom-docs",
+                    "identity_class":"work",
+                    "access_token":"corp-secret",
+                    "documents_corp_id":"wwcorp",
+                    "documents_space_id":"space-1",
+                    "documents_root_path":"/shared/docs"
+                }"#,
+                &mut ctx,
+            )
+            .expect("top-level provider facts should normalize");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        let account_key = payload["payload"]["account"]["account"]["account_key"]
+            .as_str()
+            .expect("account key");
+        let credential = fixture
+            .credential_store
+            .get(account_key)
+            .expect("credential lookup")
+            .expect("credential persisted");
+        assert_eq!(
+            credential
+                .metadata
+                .get("documents_corp_id")
+                .map(String::as_str),
+            Some("wwcorp")
         );
         assert_eq!(
-            payload["payload"]["account"]["enabled_capabilities"],
-            json!(["documents"])
+            credential
+                .metadata
+                .get("documents_space_id")
+                .map(String::as_str),
+            Some("space-1")
+        );
+        assert_eq!(
+            credential
+                .metadata
+                .get("documents_root_path")
+                .map(String::as_str),
+            Some("/shared/docs")
         );
     }
 

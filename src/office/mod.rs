@@ -70,13 +70,16 @@ pub(crate) use capability_runtime::{
     OfficeSelectedRoute,
 };
 #[cfg(feature = "capability_office")]
+pub(crate) use config_management::infer_single_capability_for_provider;
+#[cfg(feature = "capability_office")]
 pub use config_management::{
-    OfficeAccountConfigSaveRequest, OfficeAccountRecordInput, OfficeAccountUpsertRequest,
+    OfficeAccountConfigSaveRequest, OfficeAccountOnboardingDisposition,
+    OfficeAccountOnboardingRequest, OfficeAccountOnboardingResult, OfficeAccountRecordInput,
     OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigCapabilityNextAction,
     OfficeConfigCapabilitySelectionStatus, OfficeConfigCapabilityStatus,
     OfficeConfigCreateFieldSchema, OfficeConfigFieldOption, OfficeConfigFieldState,
     OfficeConfigManagementService, OfficeConfigProviderCatalogItem, OfficeConfigSnapshot,
-    OfficePolicyPatch, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+    OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 pub use credentials::{
     OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore, OfficeCredentialsSegment,

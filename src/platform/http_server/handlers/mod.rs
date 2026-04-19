@@ -46,6 +46,13 @@ pub struct HandlerContext {
     pub cached_config: Arc<RwLock<AppConfig>>,
     pub llm_stream_enabled: bool,
     pub route_contract: ControlPlaneRouteContract,
+    #[cfg(all(
+        test,
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    pub office_probe_adapters:
+        Option<Vec<Arc<dyn crate::office::OfficeProbeAdapter + Send + Sync>>>,
 }
 
 impl HandlerContext {
@@ -125,6 +132,12 @@ pub fn build_runtime_handler_context(
         cached_config,
         llm_stream_enabled,
         route_contract,
+        #[cfg(all(
+            test,
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        office_probe_adapters: None,
     }
 }
 
@@ -192,6 +205,12 @@ pub(crate) fn build_test_handler_context(
         cached_config: Arc::new(RwLock::new(config)),
         llm_stream_enabled: false,
         route_contract,
+        #[cfg(all(
+            test,
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        office_probe_adapters: None,
     }
 }
 
