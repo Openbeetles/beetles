@@ -161,6 +161,7 @@ impl Tool for KvStoreTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+            .with_user_ingress(false)
             .with_risk_level(ToolRiskLevel::Medium)
             .with_rollback_kind(ToolRollbackKind::CompensatingWrite)
     }

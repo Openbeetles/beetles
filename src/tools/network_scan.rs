@@ -125,7 +125,7 @@ impl Tool for NetworkScanTool {
     }
 
     fn description(&self) -> &'static str {
-        "WiFi-specific diagnostics. Op: wifi_scan (scan nearby APs), wifi_status (current WiFi connection info), connectivity_check (HTTP reachability test with latency). Prefer this for AP discovery or WiFi station checks. For general Linux interfaces, DNS, routes, resolve, ping, or HTTP probe, use the network tool."
+        "WiFi-specific diagnostics. Op: wifi_scan (scan nearby APs), wifi_status (current WiFi connection info), connectivity_check (HTTP reachability test with latency). Prefer this for AP discovery or WiFi station checks. For broader end-to-end path diagnosis, use diagnose_network_path."
     }
 
     fn schema(&self) -> &str {

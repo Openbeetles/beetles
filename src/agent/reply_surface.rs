@@ -3,7 +3,8 @@
 
 use super::request_semantics::{ActionFamily, DisclosureSurface, RequestSemantics};
 use crate::agent::final_reply::{
-    reply_has_concrete_anchor, reply_looks_like_future_action_narration,
+    classify_reply_artifacts, reply_has_concrete_anchor, reply_looks_like_future_action_narration,
+    reply_looks_like_transition_colon_draft, ReplyArtifactState,
 };
 use crate::bus::IngressKind;
 use std::collections::BTreeSet;
@@ -113,32 +114,6 @@ impl ReplySurface {
         }
     }
 
-    pub(crate) fn should_run_structured_finalization_after_tool_round(
-        self,
-        draft_content: &str,
-    ) -> bool {
-        if !matches!(
-            self.finalization_policy(),
-            SurfaceFinalizationPolicy::StructuredJson
-        ) {
-            return false;
-        }
-        let trimmed = draft_content.trim();
-        if trimmed.is_empty() {
-            return true;
-        }
-        match self {
-            Self::PublicRuntime => {
-                reply_looks_like_future_action_narration(trimmed)
-                    || !reply_has_concrete_anchor(trimmed)
-            }
-            Self::GovernedConversation | Self::PrivateBoundary => {
-                reply_looks_like_future_action_narration(trimmed)
-            }
-            Self::TaskExecution | Self::InternalOnly => false,
-        }
-    }
-
     pub(crate) fn allows_mental_privacy_review(self) -> bool {
         !matches!(
             self.governance_policy(),
@@ -191,6 +166,8 @@ fn runtime_tool_draft_supports_public_surface(content: &str) -> bool {
     if trimmed.is_empty()
         || looks_like_boundary_or_input_request(trimmed)
         || reply_looks_like_future_action_narration(trimmed)
+        || reply_looks_like_transition_colon_draft(trimmed)
+        || !matches!(classify_reply_artifacts(trimmed), ReplyArtifactState::None)
     {
         return false;
     }
@@ -319,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn public_runtime_contract_skips_privacy_review_and_uses_structured_finalization() {
+    fn public_runtime_contract_skips_privacy_review_and_keeps_structured_json_contract() {
         let surface = ReplySurface::PublicRuntime;
         assert_eq!(
             surface.evidence_policy(),
@@ -334,12 +311,6 @@ mod tests {
             SurfaceFinalizationPolicy::StructuredJson
         );
         assert!(!surface.allows_mental_privacy_review());
-        assert!(surface.should_run_structured_finalization_after_tool_round("系统状态正常。"));
-        assert!(
-            !surface.should_run_structured_finalization_after_tool_round(
-                "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。"
-            )
-        );
     }
 
     #[test]
@@ -372,14 +343,6 @@ mod tests {
             SurfaceFinalizationPolicy::StructuredJson
         );
         assert!(governed.allows_mental_privacy_review());
-        assert!(
-            governed.should_run_structured_finalization_after_tool_round("我先整理一下当前状态。")
-        );
-        assert!(
-            !governed.should_run_structured_finalization_after_tool_round(
-                "当前主机 beetle 在线，可继续配置 QQ 邮箱。"
-            )
-        );
 
         let task = ReplySurface::TaskExecution;
         assert_eq!(
@@ -392,7 +355,6 @@ mod tests {
         );
         assert!(task.allows_mental_privacy_review());
         assert!(task.allows_memory_grounding_block());
-        assert!(!task.should_run_structured_finalization_after_tool_round("当前任务正在继续。"));
     }
 
     #[test]

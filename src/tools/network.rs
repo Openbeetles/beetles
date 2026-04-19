@@ -121,6 +121,7 @@ impl Tool for NetworkTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
+            .with_user_ingress(false)
             .with_system_ingress(false)
             .with_effect_class(ToolEffectClass::HostInspection)
             .with_risk_level(ToolRiskLevel::Medium)

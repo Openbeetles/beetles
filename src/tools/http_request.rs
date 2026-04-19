@@ -2,7 +2,9 @@
 //! http_request tool: unified HTTP request with GET/POST/PUT/DELETE/PATCH support.
 
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{
+    parse_tool_args, Tool, ToolContext, ToolEffectClass, ToolMetadata, ToolRiskLevel,
+};
 use serde_json::json;
 
 pub struct HttpRequestTool;
@@ -23,13 +25,20 @@ impl Tool for HttpRequestTool {
         "http_request"
     }
     fn description(&self) -> &'static str {
-        "Make HTTP requests. Supports GET, POST, PUT, DELETE, PATCH methods with custom headers and body. Private IPs are blocked (SSRF protection)."
+        "Call external HTTP APIs over public HTTP/HTTPS. Supports GET, POST, PUT, DELETE, PATCH methods with custom headers and body. This is not for mail protocols, office account onboarding, or generic host diagnostics. Private IPs are blocked (SSRF protection)."
     }
     fn schema(&self) -> &str {
         r#"{"type":"object","properties":{"url":{"type":"string","description":"Request URL (must be https:// or http://)"},"method":{"type":"string","description":"HTTP method: GET|POST|PUT|DELETE|PATCH (default GET)"},"headers":{"type":"object","description":"Optional headers as key-value pairs"},"body":{"type":"string","description":"Request body (for POST/PUT/PATCH)"},"content_type":{"type":"string","description":"Content-Type header (default application/json)"}},"required":["url"]}"#
     }
     fn requires_network(&self) -> bool {
         true
+    }
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task()
+            .with_user_ingress(false)
+            .with_system_ingress(false)
+            .with_effect_class(ToolEffectClass::HostInspection)
+            .with_risk_level(ToolRiskLevel::Medium)
     }
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_http_request")?;

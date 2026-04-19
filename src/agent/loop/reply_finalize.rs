@@ -1,7 +1,8 @@
 use super::*;
 use crate::agent::final_reply::{
-    build_canonical_reply, finalize_user_visible_reply, reply_has_concrete_anchor,
-    reply_looks_like_future_action_narration, CanonicalReply,
+    build_canonical_reply, classify_reply_artifacts, finalize_user_visible_reply,
+    reply_has_concrete_anchor, reply_looks_like_future_action_narration,
+    reply_looks_like_transition_colon_draft, CanonicalReply, ReplyArtifactState,
 };
 use crate::memory::EmotionSignalStore;
 
@@ -62,6 +63,87 @@ fn truthful_no_new_execution_result_copy(loc: UiLocale) -> &'static str {
     }
 }
 
+fn incomplete_turn_copy(
+    loc: UiLocale,
+    had_mutating_effects: bool,
+    had_visible_side_effects: bool,
+) -> &'static str {
+    match loc {
+        UiLocale::Zh if had_visible_side_effects => {
+            "这轮执行已经产生对外更新，但没有形成可交付的最终答复。请以已发送内容为准。"
+        }
+        UiLocale::Zh if had_mutating_effects => {
+            "这轮执行已经发生实际操作，但没有形成可交付的最终答复。"
+        }
+        UiLocale::Zh => "这轮执行没有形成可交付的最终答复。",
+        UiLocale::En if had_visible_side_effects => {
+            "This turn already produced visible outbound updates, but it did not form a deliverable final reply. Treat the sent updates as authoritative."
+        }
+        UiLocale::En if had_mutating_effects => {
+            "This turn already performed a real operation, but it did not form a deliverable final reply."
+        }
+        UiLocale::En => "This turn did not form a deliverable final reply.",
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TurnCompletionKind {
+    FinalResult,
+    TruthfulBlocker,
+    PlanningOnly,
+    IncompleteTurn,
+    ArtifactOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TurnCompletionAssessment {
+    pub(super) kind: TurnCompletionKind,
+    pub(super) replay_safe: bool,
+    pub(super) had_tool_activity: bool,
+    pub(super) had_mutating_effects: bool,
+    pub(super) had_visible_side_effects: bool,
+}
+
+impl TurnCompletionAssessment {
+    pub(super) fn should_attempt_surface_recovery(self, reply_surface: ReplySurface) -> bool {
+        matches!(
+            self.kind,
+            TurnCompletionKind::PlanningOnly
+                | TurnCompletionKind::IncompleteTurn
+                | TurnCompletionKind::ArtifactOnly
+        ) && self.replay_safe
+            && matches!(
+                reply_surface.finalization_policy(),
+                crate::agent::reply_surface::SurfaceFinalizationPolicy::StructuredJson
+            )
+    }
+
+    fn should_rewrite_to_truthful_copy(self) -> bool {
+        !self.had_tool_activity && matches!(self.kind, TurnCompletionKind::PlanningOnly)
+    }
+
+    fn replacement_copy(self, loc: UiLocale) -> Option<&'static str> {
+        if self.should_rewrite_to_truthful_copy() {
+            return Some(truthful_no_new_execution_result_copy(loc));
+        }
+        if self.had_tool_activity
+            && matches!(
+                self.kind,
+                TurnCompletionKind::PlanningOnly
+                    | TurnCompletionKind::IncompleteTurn
+                    | TurnCompletionKind::ArtifactOnly
+            )
+        {
+            return Some(incomplete_turn_copy(
+                loc,
+                self.had_mutating_effects,
+                self.had_visible_side_effects,
+            ));
+        }
+        None
+    }
+}
+
 pub(super) fn looks_like_truthful_blocker_or_input_request(content: &str) -> bool {
     let trimmed = content.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -82,27 +164,54 @@ pub(super) fn looks_like_truthful_blocker_or_input_request(content: &str) -> boo
         || lower.contains("please send")
 }
 
-fn should_apply_truth_guard(
-    strategy: AgentRunStrategy,
+pub(super) fn assess_turn_completion(
     delivery: &DeliveryReport,
+    any_tool_round_executed: bool,
     any_tool_used: bool,
-    external_content_used: bool,
+    tool_round_completion: ToolRoundCompletionTelemetry,
+    reply_surface: ReplySurface,
     reply_content: &str,
-) -> bool {
-    if strategy != AgentRunStrategy::LinuxEnhanced
-        || any_tool_used
-        || external_content_used
-        || delivery.planner_progress_updates_sent > 0
-        || delivery.tool_progress_updates_sent > 0
-        || delivery.terminal_progress_updates_sent > 0
-    {
-        return false;
-    }
+) -> TurnCompletionAssessment {
     let trimmed = reply_content.trim();
-    !trimmed.is_empty()
-        && !reply_has_concrete_anchor(trimmed)
-        && !looks_like_truthful_blocker_or_input_request(trimmed)
-        && reply_looks_like_future_action_narration(trimmed)
+    let had_tool_activity = any_tool_round_executed || any_tool_used;
+    let had_visible_side_effects = tool_round_completion.had_visible_outbound_side_effects
+        || delivery.tool_visible_updates_sent > 0
+        || delivery.explicit_outbound_sent > 0
+        || delivery.visible_text_updates_sent > 0
+        || delivery.current_primary_delivered
+        || delivery.finalize_streamed;
+    let replay_safe = !tool_round_completion.had_mutating_effects && !had_visible_side_effects;
+    let artifact_state = classify_reply_artifacts(reply_content);
+    let kind = match artifact_state {
+        ReplyArtifactState::ArtifactOnly => TurnCompletionKind::ArtifactOnly,
+        ReplyArtifactState::InternalArtifactLeak => TurnCompletionKind::FinalResult,
+        ReplyArtifactState::None if trimmed.is_empty() => TurnCompletionKind::IncompleteTurn,
+        ReplyArtifactState::None if looks_like_truthful_blocker_or_input_request(trimmed) => {
+            TurnCompletionKind::TruthfulBlocker
+        }
+        ReplyArtifactState::None
+            if had_tool_activity
+                && reply_surface == ReplySurface::PublicRuntime
+                && !reply_has_concrete_anchor(trimmed) =>
+        {
+            TurnCompletionKind::IncompleteTurn
+        }
+        ReplyArtifactState::None
+            if reply_looks_like_future_action_narration(trimmed)
+                || (reply_looks_like_transition_colon_draft(trimmed)
+                    && !looks_like_truthful_blocker_or_input_request(trimmed)) =>
+        {
+            TurnCompletionKind::PlanningOnly
+        }
+        ReplyArtifactState::None => TurnCompletionKind::FinalResult,
+    };
+    TurnCompletionAssessment {
+        kind,
+        replay_safe,
+        had_tool_activity,
+        had_mutating_effects: tool_round_completion.had_mutating_effects,
+        had_visible_side_effects,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -128,7 +237,9 @@ pub(super) fn finalize_turn(
         streamed,
         latency: mut worker_latency,
         delivery,
+        any_tool_round_executed,
         any_tool_used,
+        tool_round_completion,
         external_content_used,
         used_surface_finalization,
         task_execution_used: _task_execution_used,
@@ -173,22 +284,26 @@ pub(super) fn finalize_turn(
     if !is_interrupt && apply_finalizer {
         reply_content = finalize_user_visible_reply(config.strategy, &reply_content);
     }
-    if !is_interrupt
-        && should_apply_truth_guard(
-            config.strategy,
+    if !is_interrupt {
+        let completion = assess_turn_completion(
             &delivery,
+            any_tool_round_executed,
             any_tool_used,
-            external_content_used,
+            tool_round_completion,
+            reply_surface,
             &reply_content,
-        )
-    {
-        log::warn!(
-            "[reply_surface] truth_guard replaced unsupported future-action narration surface={} channel={} chat_id={}",
-            reply_surface.as_str(),
-            msg.channel,
-            msg.chat_id
         );
-        reply_content = truthful_no_new_execution_result_copy(loc).to_string();
+        if let Some(copy) = completion.replacement_copy(loc) {
+            log::warn!(
+                "[reply_surface] completion_assessment rewrote non-deliverable reply kind={:?} replay_safe={} surface={} channel={} chat_id={}",
+                completion.kind,
+                completion.replay_safe,
+                reply_surface.as_str(),
+                msg.channel,
+                msg.chat_id
+            );
+            reply_content = copy.to_string();
+        }
     }
     let review_input_before = reply_content.clone();
     let mut mental_privacy_review = MentalPrivacyReviewOutcome {

@@ -500,7 +500,9 @@ struct WorkerRunTelemetry {
     streamed: bool,
     latency: WorkerLatency,
     delivery: DeliveryReport,
+    any_tool_round_executed: bool,
     any_tool_used: bool,
+    tool_round_completion: ToolRoundCompletionTelemetry,
     external_content_used: bool,
     used_surface_finalization: bool,
     task_execution_used: bool,
@@ -521,6 +523,12 @@ struct WorkerRunTelemetry {
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ToolRoundCompletionTelemetry {
+    had_mutating_effects: bool,
+    had_visible_outbound_side_effects: bool,
+}
+
 fn build_turn_observation_ledger(
     final_outcome: &str,
     is_interrupt: bool,
@@ -530,14 +538,14 @@ fn build_turn_observation_ledger(
         TurnExecutionClass::Interrupted
     } else if telemetry.task_execution_used {
         TurnExecutionClass::TaskExecution
-    } else if telemetry.any_tool_used {
+    } else if telemetry.any_tool_round_executed {
         TurnExecutionClass::ToolAssisted
     } else {
         TurnExecutionClass::DirectReply
     };
     let tool_path = if telemetry.task_execution_used {
         "task_execution"
-    } else if telemetry.any_tool_used {
+    } else if telemetry.any_tool_round_executed {
         if telemetry.used_surface_finalization {
             "surface_finalization"
         } else if telemetry.delivery.current_primary_delivered {
@@ -597,12 +605,16 @@ struct ToolCallExecutionResult {
     result_owned: String,
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
     call_succeeded: bool,
+    had_mutating_effects: bool,
+    had_visible_outbound_side_effects: bool,
 }
 
 struct ToolUseRoundExecutionOutput {
     truncated: bool,
     round_tool_success: bool,
     used_external_content: bool,
+    had_mutating_effects: bool,
+    had_visible_outbound_side_effects: bool,
     omitted_evidence_count: usize,
     successful_tool_names: Vec<String>,
 }
@@ -4296,7 +4308,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: true,
             any_tool_used: true,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
@@ -4396,7 +4410,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: false,
             any_tool_used: false,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
@@ -4496,7 +4512,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: false,
             any_tool_used: false,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: true,
             task_execution_used: false,
@@ -4564,7 +4582,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: true,
             any_tool_used: true,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: true,
@@ -4615,7 +4635,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: false,
             any_tool_used: false,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: true,
             task_execution_used: false,
@@ -4704,7 +4726,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: false,
             any_tool_used: false,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
@@ -4743,7 +4767,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_turn_returns_contract_error_when_task_execution_reply_is_artifact_only() {
+    fn finalize_turn_rewrites_tool_backed_artifact_only_reply_into_programmatic_copy() {
         let llm = SequenceStubLlm {
             responses: Mutex::new(Vec::new()),
         };
@@ -4755,7 +4779,12 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: true,
             any_tool_used: true,
+            tool_round_completion: ToolRoundCompletionTelemetry {
+                had_mutating_effects: true,
+                had_visible_outbound_side_effects: false,
+            },
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: true,
@@ -4781,7 +4810,7 @@ mod tests {
             "</surface_evidence>\n"
         );
 
-        let err = match self::reply_finalize::finalize_turn(
+        let finalized = self::reply_finalize::finalize_turn(
             &mut http,
             &llm,
             &config,
@@ -4790,12 +4819,13 @@ mod tests {
             Instant::now(),
             WorkerOutcome::Content(raw.to_string()),
             telemetry,
-        ) {
-            Ok(_) => panic!("empty task execution reply must fail closed"),
-            Err(err) => err,
-        };
+        )
+        .expect("finalize turn");
 
-        assert_eq!(err.stage(), "artifact_only_reply");
+        assert_eq!(
+            finalized.reply.visible_text,
+            "这轮执行已经发生实际操作，但没有形成可交付的最终答复。"
+        );
     }
 
     #[test]
@@ -4812,7 +4842,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: false,
             any_tool_used: false,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
@@ -4865,7 +4897,9 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            any_tool_round_executed: false,
             any_tool_used: false,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
@@ -6327,6 +6361,128 @@ mod tests {
     }
 
     #[test]
+    fn execute_turn_tool_backed_transition_colon_draft_uses_structured_finalization() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "现在我来配置你的 QQ 邮箱账户。使用 IMAP/SMTP 提供程序："
+                        .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"governed_conversation","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#
+                        .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-ops-colon", "查看系统状态", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-finalization-transition-colon",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let WorkerOutcome::Content(delivered) = outcome;
+        assert_eq!(
+            delivered,
+            "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
+        );
+        assert!(telemetry.used_surface_finalization);
+        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
+    }
+
+    #[test]
+    fn execute_turn_tool_backed_artifact_only_draft_uses_structured_finalization() {
+        let llm = SequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "board_info".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: concat!(
+                        "<surface_evidence surface=\"governed_conversation\" authority=\"governed_context\">\n",
+                        "board_info: ok\n",
+                        "</surface_evidence>\n"
+                    )
+                    .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+                LlmResponse {
+                    content: r#"{"surface":"governed_conversation","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#
+                        .to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBoardInfoTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-ops-artifact", "查看系统状态", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-public-runtime-finalization-artifact-only",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let WorkerOutcome::Content(delivered) = outcome;
+        assert_eq!(
+            delivered,
+            "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
+        );
+        assert!(telemetry.used_surface_finalization);
+        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
+    }
+
+    #[test]
     fn execute_turn_office_account_ambiguity_uses_structured_finalization_for_minimal_confirmation()
     {
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -6993,7 +7149,9 @@ mod tests {
                 current_primary_delivered: true,
                 ..DeliveryReport::default()
             },
+            any_tool_round_executed: true,
             any_tool_used: true,
+            tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
             used_surface_finalization: true,
             task_execution_used: false,
@@ -7124,7 +7282,7 @@ mod tests {
                 expected_outcome_fragment: "规范主回复",
             },
             AgentTurnBenchmarkCase {
-                name: "structured finalization remains single extra llm round",
+                name: "visible side effect draft avoids extra recovery round",
                 msg: PcMsg::new_inbound("qq_channel", "chat-1", "兜底收尾", false)
                     .expect("message"),
                 registry_mode: BenchmarkRegistryMode::MessagePrimary,
@@ -7145,19 +7303,13 @@ mod tests {
                         stop_reason: StopReason::EndTurn,
                         tool_calls: None,
                     },
-                    LlmResponse {
-                        content: r#"{"surface":"governed_conversation","reply":"最终收尾"}"#
-                            .to_string(),
-                        stop_reason: StopReason::EndTurn,
-                        tool_calls: None,
-                    },
                 ],
-                expected_llm_calls: 3,
-                expected_react_rounds: 3,
+                expected_llm_calls: 2,
+                expected_react_rounds: 2,
                 expected_tool_calls: 1,
                 expected_streamed: false,
                 expected_current_primary_delivered: false,
-                expected_outcome_fragment: "最终收尾",
+                expected_outcome_fragment: "先整理一下当前状态。",
             },
             AgentTurnBenchmarkCase {
                 name: "linux enhanced direct reply stays single main llm turn",

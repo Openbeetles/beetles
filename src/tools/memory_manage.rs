@@ -389,7 +389,7 @@ impl Tool for MemoryManageTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::stateful()
+        ToolMetadata::stateful().with_user_ingress(false)
     }
 }
 

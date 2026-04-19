@@ -105,6 +105,7 @@ impl Tool for LuaToolBridgeTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
+            .with_user_ingress(false)
             .with_system_ingress(false)
             .with_risk_level(ToolRiskLevel::Medium)
     }

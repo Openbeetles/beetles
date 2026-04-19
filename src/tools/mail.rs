@@ -775,7 +775,7 @@ impl Tool for MailTool {
     }
 
     fn description(&self) -> &'static str {
-        "Access office mail through shared account authority. Ops: provider_status, list, search, get, send, draft, reply, forward. Provider can be omitted when office mail defaults or a single configured provider make routing unambiguous."
+        "Use configured office mail accounts to inspect provider status, list, search, read, draft, send, reply, or forward mail. If a mail account is missing or needs repair, use office_config first."
     }
 
     fn schema(&self) -> &str {

@@ -122,6 +122,7 @@ impl Tool for FileEditTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::stateful()
+            .with_user_ingress(false)
             .with_risk_level(ToolRiskLevel::High)
             .with_rollback_kind(ToolRollbackKind::CompensatingWrite)
     }

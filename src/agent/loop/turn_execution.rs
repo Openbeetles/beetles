@@ -284,6 +284,7 @@ pub(super) fn execute_turn(
     let mut successful_tool_names = std::collections::BTreeSet::new();
     let mut any_tool_round_executed = false;
     let mut any_tool_used = false;
+    let mut tool_round_completion = ToolRoundCompletionTelemetry::default();
     let mut external_content_used = false;
     let mut effective_reply_surface = reply_surface;
     let mut used_surface_finalization = false;
@@ -399,8 +400,15 @@ pub(super) fn execute_turn(
                 &content,
             );
             if any_tool_round_executed
-                && effective_reply_surface
-                    .should_run_structured_finalization_after_tool_round(&content)
+                && super::reply_finalize::assess_turn_completion(
+                    &delivery.report(),
+                    any_tool_round_executed,
+                    any_tool_used,
+                    tool_round_completion,
+                    effective_reply_surface,
+                    &content,
+                )
+                .should_attempt_surface_recovery(effective_reply_surface)
             {
                 used_surface_finalization = true;
                 final_content = run_surface_finalization_round(
@@ -468,6 +476,9 @@ pub(super) fn execute_turn(
             if tool_round_output.round_tool_success {
                 any_tool_used = true;
             }
+            tool_round_completion.had_mutating_effects |= tool_round_output.had_mutating_effects;
+            tool_round_completion.had_visible_outbound_side_effects |=
+                tool_round_output.had_visible_outbound_side_effects;
             successful_tool_names.extend(tool_round_output.successful_tool_names);
             external_content_used |= tool_round_output.used_external_content;
             let evidence_block = (!round_evidence_lines.is_empty()).then(|| {
@@ -531,35 +542,36 @@ pub(super) fn execute_turn(
         final_content = content;
         break;
     }
-    if !used_surface_finalization
-        && any_tool_round_executed
-        && reply_surface
-            .promote_for_runtime_tools(
-                &successful_tool_names,
-                external_content_used,
-                final_content.as_str(),
-            )
-            .should_run_structured_finalization_after_tool_round(final_content.as_str())
-    {
+    if !used_surface_finalization && any_tool_round_executed {
         effective_reply_surface = reply_surface.promote_for_runtime_tools(
             &successful_tool_names,
             external_content_used,
             final_content.as_str(),
         );
-        used_surface_finalization = true;
-        final_content = run_surface_finalization_round(
-            worker_llm,
-            &mut tool_ctx,
-            &system,
-            &messages,
-            current_turn_scope_start,
+        let completion = super::reply_finalize::assess_turn_completion(
+            &delivery.report(),
+            any_tool_round_executed,
+            any_tool_used,
+            tool_round_completion,
             effective_reply_surface,
             final_content.as_str(),
-            recovery_suffix_for_gate(&deliberation_gate),
-            config.llm_stream,
-            &mut latency,
-            &mut system_scratch,
-        )?;
+        );
+        if completion.should_attempt_surface_recovery(effective_reply_surface) {
+            used_surface_finalization = true;
+            final_content = run_surface_finalization_round(
+                worker_llm,
+                &mut tool_ctx,
+                &system,
+                &messages,
+                current_turn_scope_start,
+                effective_reply_surface,
+                final_content.as_str(),
+                recovery_suffix_for_gate(&deliberation_gate),
+                config.llm_stream,
+                &mut latency,
+                &mut system_scratch,
+            )?;
+        }
     }
     if any_tool_used && !used_surface_finalization {
         effective_reply_surface = reply_surface.promote_for_runtime_tools(
@@ -571,6 +583,7 @@ pub(super) fn execute_turn(
     if final_content.trim().is_empty()
         && msg.ingress == IngressKind::User
         && msg.channel.as_ref() != CHANNEL_CRON
+        && !any_tool_round_executed
     {
         metrics::record_empty_final_blocked();
         return Err(crate::error::Error::config(
@@ -599,7 +612,9 @@ pub(super) fn execute_turn(
             streamed,
             latency,
             delivery: delivery.report(),
+            any_tool_round_executed,
             any_tool_used,
+            tool_round_completion,
             external_content_used,
             used_surface_finalization,
             task_execution_used: false,

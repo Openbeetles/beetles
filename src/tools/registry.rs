@@ -1184,6 +1184,32 @@ mod tests {
     #[derive(Default)]
     struct StubPrivateGardenStore;
 
+    fn with_catalog_runtime_capabilities_online<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        for capability in [
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            crate::orchestrator::RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+        ] {
+            crate::orchestrator::update_runtime_capability(
+                crate::orchestrator::RuntimeCapabilityUpdate {
+                    id: capability,
+                    status: crate::orchestrator::RuntimeCapabilityStatus::Online,
+                    reason: crate::orchestrator::RuntimeCapabilityReason::Nominal,
+                    observed_at_secs: 1,
+                    recovery_hint: None,
+                },
+            );
+        }
+        let outcome = f();
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        outcome
+    }
+
     impl Tool for VisibleTool {
         fn name(&self) -> &'static str {
             "visible"
@@ -1608,6 +1634,32 @@ mod tests {
         }
     }
 
+    fn user_visible_tool_names_from_default_registry() -> std::collections::BTreeSet<String> {
+        with_catalog_runtime_capabilities_online(|| {
+            crate::platform::http_server::handlers::build_default_test_handler_context()
+                .tool_registry
+                .tool_catalog()
+                .expect("tool catalog")
+                .into_iter()
+                .filter(|entry| entry.llm_visible_user)
+                .map(|entry| entry.name)
+                .collect()
+        })
+    }
+
+    fn user_visible_tool_descriptions_from_default_registry(
+    ) -> std::collections::BTreeMap<String, String> {
+        with_catalog_runtime_capabilities_online(|| {
+            let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+            let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+            ctx.tool_registry
+                .tool_specs_for_llm_with_max(&policy, 256 * 1024)
+                .into_iter()
+                .map(|spec| (spec.name.to_string(), spec.description.to_string()))
+                .collect()
+        })
+    }
+
     #[test]
     fn llm_tool_specs_follow_runtime_policy() {
         let mut registry = ToolRegistry::new();
@@ -1634,6 +1686,168 @@ mod tests {
         let specs = registry.tool_specs_for_llm_with_max(&cron, 4096);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "internal_only");
+    }
+
+    #[test]
+    fn default_registry_user_ingress_catalog_curates_domain_surface() {
+        let user_visible = user_visible_tool_names_from_default_registry();
+
+        for required in [
+            "get_time",
+            "board_info",
+            "diagnose_delivery",
+            "diagnose_system",
+            "diagnose_network_path",
+            "diagnose_voice_path",
+            "task",
+            "remind_at",
+            "remind_list",
+            "memory_search",
+            "memory_get",
+            "factual_memory",
+        ] {
+            assert!(
+                user_visible.contains(required),
+                "expected user ingress catalog to keep {required}"
+            );
+        }
+
+        #[cfg(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        for required in [
+            "office_config",
+            "office_status",
+            "mail",
+            "calendar",
+            "documents",
+            "contacts_directory",
+        ] {
+            assert!(
+                user_visible.contains(required),
+                "expected user ingress catalog to keep {required}"
+            );
+        }
+
+        #[cfg(feature = "tools_network_extra")]
+        assert!(
+            user_visible.contains("web_search"),
+            "expected user ingress catalog to keep web_search"
+        );
+
+        #[cfg(all(
+            feature = "tools_network_extra",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        for required in ["document_read", "document_search", "analyze_image"] {
+            assert!(
+                user_visible.contains(required),
+                "expected user ingress catalog to keep {required}"
+            );
+        }
+
+        for hidden in [
+            "env",
+            "continuity_snapshot",
+            "private_garden",
+            "files",
+            "file_edit",
+            "file_write",
+            "kv_store",
+            "cron_manage",
+            "http_request",
+            "web_fetch",
+            "pdf_read",
+            "network",
+            "process",
+            "session_manage",
+            "memory_manage",
+            "system_control",
+            "shell",
+            "proxy_config",
+            "model_config",
+            "capability_atoms_exchange",
+            "capability_atoms_inspect",
+            "lua_query",
+            "lua_memory_query",
+            "lua_tool_bridge",
+            "lua_datasheet_distill",
+            "lua_register_table_helper",
+            "lua_protocol_frame_helper",
+            "lua_state_machine_checker",
+        ] {
+            assert!(
+                !user_visible.contains(hidden),
+                "expected user ingress catalog to hide {hidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_registry_user_visible_descriptions_do_not_route_toward_hidden_operator_tools() {
+        let descriptions = user_visible_tool_descriptions_from_default_registry();
+
+        #[cfg(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        {
+            let office_config = descriptions
+                .get("office_config")
+                .expect("office_config description");
+            assert!(
+                office_config.contains("Configure")
+                    || office_config.contains("configure")
+                    || office_config.contains("reconfigure"),
+                "expected office_config description to explain onboarding/reconfigure ownership"
+            );
+            assert!(
+                office_config.contains("mail"),
+                "expected office_config description to mention mail account onboarding"
+            );
+            assert!(
+                !office_config.contains("http_request"),
+                "user-visible office_config description must not point at hidden tools by name"
+            );
+
+            let mail = descriptions.get("mail").expect("mail description");
+            assert!(
+                mail.contains("office_config"),
+                "mail description should point missing-account repair back to office_config"
+            );
+        }
+
+        let board_info = descriptions
+            .get("board_info")
+            .expect("board_info description");
+        assert!(
+            !board_info.contains("process tool") && !board_info.contains("network tool"),
+            "user-visible board_info description must not point at hidden operator tools"
+        );
+
+        if let Some(network_scan) = descriptions.get("network_scan") {
+            assert!(
+                !network_scan.contains("network tool"),
+                "user-visible network_scan description must not point at hidden operator tools"
+            );
+        }
+
+        #[cfg(all(
+            feature = "tools_network_extra",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        {
+            let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+            let http_request = ctx
+                .tool_registry
+                .get("http_request")
+                .expect("http_request tool registered");
+            assert!(
+                http_request.description().contains("external HTTP APIs"),
+                "http_request description must be narrowed to external HTTP APIs"
+            );
+        }
     }
 
     #[test]
@@ -1910,7 +2124,7 @@ mod tests {
         assert_eq!(catalog_entry.effect_class, "persistent_state_write");
         assert_eq!(catalog_entry.risk_level, "medium");
         assert_eq!(catalog_entry.approval_mode, "explicit_intent");
-        assert!(catalog_entry.llm_visible_user);
+        assert!(!catalog_entry.llm_visible_user);
         assert!(!catalog_entry.llm_visible_system);
         assert!(!catalog_entry.llm_visible_internal_system);
 
@@ -1923,38 +2137,18 @@ mod tests {
         assert_eq!(inspect_catalog_entry.effect_class, "read_only");
         assert_eq!(inspect_catalog_entry.risk_level, "low");
         assert_eq!(inspect_catalog_entry.approval_mode, "automatic");
-        assert!(inspect_catalog_entry.llm_visible_user);
-        assert!(inspect_catalog_entry.llm_visible_system);
+        assert!(!inspect_catalog_entry.llm_visible_user);
+        assert!(!inspect_catalog_entry.llm_visible_system);
         assert!(!inspect_catalog_entry.llm_visible_internal_system);
 
         let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
-        let user_bridge_entry = registry
+        assert!(registry
             .tool_bridge_catalog_for_policy(&user)
             .into_iter()
-            .find(|entry| entry.name == "capability_atoms_exchange")
-            .expect("capability_atoms_exchange bridge entry");
-        assert_eq!(
-            user_bridge_entry.effect_class,
-            crate::tools::ToolEffectClass::PersistentStateWrite
-        );
-        assert_eq!(
-            user_bridge_entry.approval_mode,
-            crate::tools::ToolApprovalMode::ExplicitIntent
-        );
-
-        let inspect_bridge_entry = registry
-            .tool_bridge_catalog_for_policy(&user)
-            .into_iter()
-            .find(|entry| entry.name == "capability_atoms_inspect")
-            .expect("capability_atoms_inspect bridge entry");
-        assert_eq!(
-            inspect_bridge_entry.effect_class,
-            crate::tools::ToolEffectClass::ReadOnly
-        );
-        assert_eq!(
-            inspect_bridge_entry.approval_mode,
-            crate::tools::ToolApprovalMode::Automatic
-        );
+            .all(|entry| {
+                entry.name != "capability_atoms_exchange"
+                    && entry.name != "capability_atoms_inspect"
+            }));
 
         let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
         let system_names = registry
@@ -1965,7 +2159,7 @@ mod tests {
         assert!(!system_names
             .iter()
             .any(|name| name == "capability_atoms_exchange"));
-        assert!(system_names
+        assert!(!system_names
             .iter()
             .any(|name| name == "capability_atoms_inspect"));
     }
@@ -1992,7 +2186,7 @@ mod tests {
             &policy,
         );
         assert_eq!(denied.decision, ToolBridgeProposalDecision::Denied);
-        assert!(denied.summary.contains("explicit_intent_required"));
+        assert!(denied.summary.contains("not visible in the current policy"));
 
         let allowed = registry
             .assess_llm_execution(

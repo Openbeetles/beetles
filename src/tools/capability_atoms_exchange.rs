@@ -119,7 +119,9 @@ impl Tool for CapabilityAtomsExchangeTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::stateful().with_approval_mode(ToolApprovalMode::ExplicitIntent)
+        ToolMetadata::stateful()
+            .with_user_ingress(false)
+            .with_approval_mode(ToolApprovalMode::ExplicitIntent)
     }
 
     fn execution_shape(&self, args: &str) -> Result<crate::tools::ToolExecutionShape> {
@@ -176,6 +178,8 @@ impl Tool for CapabilityAtomsInspectTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
+            .with_user_ingress(false)
+            .with_system_ingress(false)
     }
 }
 
@@ -603,7 +607,8 @@ mod tests {
         assert_eq!(metadata.effect_class, ToolEffectClass::ReadOnly);
         assert_eq!(metadata.risk_level, ToolRiskLevel::Low);
         assert_eq!(metadata.approval_mode, ToolApprovalMode::Automatic);
-        assert!(metadata.allow_in_system_ingress);
+        assert!(!metadata.allow_in_user_ingress);
+        assert!(!metadata.allow_in_system_ingress);
     }
 
     #[test]

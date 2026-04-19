@@ -59,7 +59,7 @@ impl Tool for OfficeConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage office authority through structured operations. Ops: inspect, assess, provider_schema, resolve_account, apply_account, revoke, probe."
+        "Configure, reconfigure, inspect, resolve, revoke, or probe shared office accounts for mail, calendar, documents, and contacts. Use this for account onboarding, provider schema lookup, default binding resolution, and account repair."
     }
 
     fn schema(&self) -> &str {
@@ -283,36 +283,59 @@ fn parse_account_upsert_request(obj: &Map<String, Value>) -> Result<OfficeAccoun
 fn normalize_tool_facing_account_upsert_request(
     obj: &Map<String, Value>,
 ) -> Result<OfficeAccountUpsertRequest> {
-    let account_obj = obj
-        .get("account")
-        .and_then(Value::as_object)
-        .ok_or_else(|| Error::config("tool_office_config", "missing account"))?;
+    let account_obj = obj.get("account").and_then(Value::as_object);
+    let config_obj = obj.get("config").and_then(Value::as_object);
+    let credential_obj = obj.get("credential").and_then(Value::as_object);
     let capability_hint = obj
         .get("capability")
         .map(parse_capability_value)
         .transpose()?;
-    let provider_kind = tool_facing_account_provider_kind(account_obj, obj)
+    let provider_kind = account_obj
+        .and_then(|account_obj| tool_facing_account_provider_kind(account_obj, obj))
+        .or_else(|| tool_facing_provider_kind(obj))
+        .or_else(|| normalize_provider_kind_from_source(config_obj))
         .ok_or_else(|| Error::config("tool_office_config", "missing provider_kind"))?;
-    let external_account_id = preferred_string(
-        account_obj,
-        &["external_account_id", "email", "account_id", "username"],
+    let enabled_capabilities = match account_obj {
+        Some(account_obj) => parse_capability_list_with_hint(
+            account_obj,
+            &["enabled_capabilities", "capabilities"],
+            capability_hint,
+        )?,
+        None => parse_capability_list_with_hint(
+            obj,
+            &["enabled_capabilities", "capabilities"],
+            capability_hint,
+        )?,
+    };
+    if enabled_capabilities.is_empty() {
+        return Err(Error::config("tool_office_config", "missing capability"));
+    }
+    let external_account_id = preferred_string_from_sources(
+        &[account_obj, Some(obj), config_obj, credential_obj],
+        &[
+            "external_account_id",
+            "email",
+            "account_id",
+            "username",
+            "mail_username",
+            "from_address",
+            "mail_from_address",
+        ],
     )
-    .unwrap_or_default();
-    let account_label = preferred_string(account_obj, &["account_label", "display_name", "label"])
-        .unwrap_or_default();
-    let identity_class = account_obj
-        .get("identity_class")
-        .map(|value| parse_identity_class_value(value, "identity_class", "tool_office_config"))
-        .transpose()?
+    .ok_or_else(|| Error::config("tool_office_config", "missing external account identity"))?;
+    let account_label = preferred_string_from_sources(
+        &[account_obj, Some(obj), config_obj],
+        &["account_label", "display_name", "label"],
+    )
+    .unwrap_or_else(|| external_account_id.clone());
+    let identity_class = identity_class_from_sources(&[account_obj, Some(obj), config_obj])?
         .unwrap_or(OfficeAccountIdentityClass::Other);
-    let enabled_capabilities = parse_capability_list_with_hint(
-        account_obj,
-        &["enabled_capabilities", "capabilities"],
-        capability_hint,
-    )?;
     let mut request = OfficeAccountUpsertRequest {
         account: OfficeAccountRecordInput {
-            account_key: optional_string(account_obj, "account_key").unwrap_or_default(),
+            account_key: account_obj
+                .and_then(|account_obj| optional_string(account_obj, "account_key"))
+                .or_else(|| optional_string(obj, "account_key"))
+                .unwrap_or_default(),
             provider_kind,
             external_account_id,
             account_label,
@@ -329,6 +352,7 @@ fn normalize_tool_facing_account_upsert_request(
             .map_err(|error| Error::config("tool_office_config", error.to_string()))?,
         config: None,
     };
+    validate_tool_facing_account_request(&request, account_obj.is_none())?;
     merge_tool_facing_config_aliases(&mut request, obj)?;
     Ok(request)
 }
@@ -337,21 +361,33 @@ fn apply_tool_facing_account_upsert_aliases(
     mut request: OfficeAccountUpsertRequest,
     obj: &Map<String, Value>,
 ) -> Result<OfficeAccountUpsertRequest> {
+    let config_obj = obj.get("config").and_then(Value::as_object);
+    let credential_obj = obj.get("credential").and_then(Value::as_object);
     let Some(account_obj) = obj.get("account").and_then(Value::as_object) else {
         merge_tool_facing_config_aliases(&mut request, obj)?;
         return Ok(request);
     };
     if request.account.external_account_id.trim().is_empty() {
-        request.account.external_account_id = preferred_string(
-            account_obj,
-            &["external_account_id", "email", "account_id", "username"],
+        request.account.external_account_id = preferred_string_from_sources(
+            &[Some(account_obj), Some(obj), config_obj, credential_obj],
+            &[
+                "external_account_id",
+                "email",
+                "account_id",
+                "username",
+                "mail_username",
+                "from_address",
+                "mail_from_address",
+            ],
         )
         .unwrap_or_default();
     }
     if request.account.account_label.trim().is_empty() {
-        request.account.account_label =
-            preferred_string(account_obj, &["account_label", "display_name", "label"])
-                .unwrap_or_default();
+        request.account.account_label = preferred_string_from_sources(
+            &[Some(account_obj), Some(obj), config_obj],
+            &["account_label", "display_name", "label"],
+        )
+        .unwrap_or_else(|| request.account.external_account_id.clone());
     }
     if request.account.account_key.trim().is_empty() {
         request.account.account_key =
@@ -368,6 +404,7 @@ fn apply_tool_facing_account_upsert_aliases(
                 .transpose()?,
         )?;
     }
+    validate_tool_facing_account_request(&request, false)?;
     merge_tool_facing_config_aliases(&mut request, obj)?;
     Ok(request)
 }
@@ -376,74 +413,85 @@ fn merge_tool_facing_config_aliases(
     request: &mut OfficeAccountUpsertRequest,
     obj: &Map<String, Value>,
 ) -> Result<()> {
-    let Some(credential_obj) = obj.get("credential").and_then(Value::as_object) else {
-        return Ok(());
-    };
+    if let Some(credential_obj) = obj.get("credential").and_then(Value::as_object) {
+        merge_tool_facing_config_object_aliases(request, credential_obj)?;
+    }
+    if let Some(config_obj) = obj.get("config").and_then(Value::as_object) {
+        merge_tool_facing_config_object_aliases(request, config_obj)?;
+    }
+    if request
+        .config
+        .as_ref()
+        .is_some_and(|config| config.fields.is_empty() && config.clear_fields.is_empty())
+    {
+        request.config = None;
+    }
+    Ok(())
+}
+
+fn merge_tool_facing_config_object_aliases(
+    request: &mut OfficeAccountUpsertRequest,
+    source_obj: &Map<String, Value>,
+) -> Result<()> {
     let config = request
         .config
         .get_or_insert_with(OfficeAccountConfigSaveRequest::default);
     merge_config_field_alias(
         &mut config.fields,
         "access_token",
-        preferred_string(credential_obj, &["access_token", "password"]),
+        preferred_string(source_obj, &["access_token", "password"]),
     );
     merge_config_field_alias(
         &mut config.fields,
         "refresh_token",
-        optional_string(credential_obj, "refresh_token"),
+        optional_string(source_obj, "refresh_token"),
     );
     merge_config_field_alias(
         &mut config.fields,
         "token_endpoint",
-        optional_string(credential_obj, "token_endpoint"),
+        optional_string(source_obj, "token_endpoint"),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_USERNAME,
-        preferred_string(credential_obj, &["mail_username", "email", "username"]),
+        preferred_string(source_obj, &["mail_username", "email", "username"]),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_FROM_ADDRESS,
-        preferred_string(
-            credential_obj,
-            &["mail_from_address", "email", "from_address"],
-        ),
+        preferred_string(source_obj, &["mail_from_address", "email", "from_address"]),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_IMAP_HOST,
-        optional_string(credential_obj, "imap_host"),
+        optional_string(source_obj, "imap_host"),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_IMAP_PORT,
-        optional_u64(credential_obj, "imap_port")?.map(|value| value.to_string()),
+        optional_u64(source_obj, "imap_port")?.map(|value| value.to_string()),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_IMAP_TLS,
-        optional_bool(credential_obj, "imap_tls")?.map(|value| value.to_string()),
+        optional_bool(source_obj, "imap_tls")?.map(|value| value.to_string()),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_SMTP_HOST,
-        optional_string(credential_obj, "smtp_host"),
+        optional_string(source_obj, "smtp_host"),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_SMTP_PORT,
-        optional_u64(credential_obj, "smtp_port")?.map(|value| value.to_string()),
+        optional_u64(source_obj, "smtp_port")?.map(|value| value.to_string()),
     );
     merge_config_field_alias(
         &mut config.fields,
         OFFICE_METADATA_MAIL_SMTP_TLS,
-        optional_bool(credential_obj, "smtp_tls")?.map(|value| value.to_string()),
+        optional_bool(source_obj, "smtp_tls")?.map(|value| value.to_string()),
     );
-    merge_metadata_object_aliases(&mut config.fields, credential_obj)?;
-    if config.fields.is_empty() && config.clear_fields.is_empty() {
-        request.config = None;
-    }
+    merge_metadata_object_aliases(&mut config.fields, source_obj)?;
     Ok(())
 }
 
@@ -525,6 +573,16 @@ fn preferred_string(obj: &Map<String, Value>, fields: &[&str]) -> Option<String>
     fields.iter().find_map(|field| optional_string(obj, field))
 }
 
+fn preferred_string_from_sources(
+    sources: &[Option<&Map<String, Value>>],
+    fields: &[&str],
+) -> Option<String> {
+    sources
+        .iter()
+        .flatten()
+        .find_map(|source| preferred_string(source, fields))
+}
+
 fn optional_string(obj: &Map<String, Value>, field: &str) -> Option<String> {
     obj.get(field)
         .and_then(Value::as_str)
@@ -579,6 +637,12 @@ fn tool_facing_provider_kind(obj: &Map<String, Value>) -> Option<String> {
         .map(|raw| normalize_office_provider_kind(raw.as_str()))
 }
 
+fn normalize_provider_kind_from_source(source: Option<&Map<String, Value>>) -> Option<String> {
+    source
+        .and_then(|source| preferred_string(source, &["provider_kind", "provider"]))
+        .map(|raw| normalize_office_provider_kind(raw.as_str()))
+}
+
 fn tool_facing_account_provider_kind(
     account_obj: &Map<String, Value>,
     obj: &Map<String, Value>,
@@ -593,6 +657,37 @@ fn normalize_office_provider_kind(raw: &str) -> String {
         "qq" | "qqmail" | "qq_mail" => "imap_smtp".to_string(),
         other => other.to_string(),
     }
+}
+
+fn identity_class_from_sources(
+    sources: &[Option<&Map<String, Value>>],
+) -> Result<Option<OfficeAccountIdentityClass>> {
+    for source in sources.iter().flatten() {
+        if let Some(value) = source.get("identity_class") {
+            return parse_identity_class_value(value, "identity_class", "tool_office_config")
+                .map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn validate_tool_facing_account_request(
+    request: &OfficeAccountUpsertRequest,
+    require_external_account_identity: bool,
+) -> Result<()> {
+    if request.account.provider_kind.trim().is_empty() {
+        return Err(Error::config("tool_office_config", "missing provider_kind"));
+    }
+    if request.account.enabled_capabilities.is_empty() {
+        return Err(Error::config("tool_office_config", "missing capability"));
+    }
+    if require_external_account_identity && request.account.external_account_id.trim().is_empty() {
+        return Err(Error::config(
+            "tool_office_config",
+            "missing external account identity",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -858,6 +953,137 @@ mod tests {
                 .expect("imap host"),
             "imap.qq.com"
         );
+    }
+
+    #[test]
+    fn apply_account_accepts_live_mail_shape_without_account_object_and_persists_fact() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let payload = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"apply_account",
+                "capability":"mail",
+                "provider_kind":"qq",
+                "set_defaults":["mail"],
+                "config":{
+                    "display_name":"QQ邮箱",
+                    "email":"675778650@qq.com",
+                    "password":"hqvqcibpdvqgbdba",
+                    "imap_host":"imap.qq.com",
+                    "imap_port":993,
+                    "smtp_host":"smtp.qq.com",
+                    "smtp_port":465,
+                    "imap_tls":true,
+                    "smtp_tls":true
+                }
+            }"#,
+                &mut ctx,
+            )
+            .expect("apply account");
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let account_key = payload["payload"]["account"]["account_key"]
+            .as_str()
+            .expect("account key");
+        assert_eq!(account_key, "imap-smtp-other-675778650-qq-com");
+        assert_eq!(
+            payload["payload"]["account"]["external_account_id"],
+            "675778650@qq.com"
+        );
+        assert_eq!(payload["payload"]["account"]["account_label"], "QQ邮箱");
+        let stored_credential = fixture
+            .credential_store
+            .get(account_key)
+            .expect("credential get")
+            .expect("credential stored");
+        assert_eq!(stored_credential.access_token, "hqvqcibpdvqgbdba");
+        assert_eq!(
+            stored_credential
+                .metadata
+                .get(OFFICE_METADATA_MAIL_IMAP_HOST)
+                .expect("imap host"),
+            "imap.qq.com"
+        );
+        assert_eq!(
+            stored_credential
+                .metadata
+                .get(OFFICE_METADATA_MAIL_SMTP_HOST)
+                .expect("smtp host"),
+            "smtp.qq.com"
+        );
+    }
+
+    #[test]
+    fn apply_account_live_mail_shape_reports_missing_provider_kind() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let error = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"apply_account",
+                "capability":"mail",
+                "config":{
+                    "email":"675778650@qq.com",
+                    "password":"hqvqcibpdvqgbdba",
+                    "imap_host":"imap.qq.com",
+                    "smtp_host":"smtp.qq.com"
+                }
+            }"#,
+                &mut ctx,
+            )
+            .expect_err("missing provider_kind should fail");
+        assert!(error.to_string().contains("missing provider_kind"));
+    }
+
+    #[test]
+    fn apply_account_live_mail_shape_reports_missing_capability() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let error = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"apply_account",
+                "provider_kind":"qq",
+                "config":{
+                    "email":"675778650@qq.com",
+                    "password":"hqvqcibpdvqgbdba",
+                    "imap_host":"imap.qq.com",
+                    "smtp_host":"smtp.qq.com"
+                }
+            }"#,
+                &mut ctx,
+            )
+            .expect_err("missing capability should fail");
+        assert!(error.to_string().contains("missing capability"));
+    }
+
+    #[test]
+    fn apply_account_live_mail_shape_reports_missing_external_account_identity() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let error = fixture
+            .tool
+            .execute(
+                r#"{
+                "op":"apply_account",
+                "capability":"mail",
+                "provider_kind":"qq",
+                "config":{
+                    "display_name":"QQ邮箱",
+                    "password":"hqvqcibpdvqgbdba",
+                    "imap_host":"imap.qq.com",
+                    "smtp_host":"smtp.qq.com"
+                }
+            }"#,
+                &mut ctx,
+            )
+            .expect_err("missing external identity should fail");
+        assert!(error
+            .to_string()
+            .contains("missing external account identity"));
     }
 
     #[test]

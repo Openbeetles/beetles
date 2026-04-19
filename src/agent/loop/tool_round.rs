@@ -31,6 +31,8 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
         result_owned: crate::util::scrub_credentials(&build_json_error_object(&message)),
         failure_kind: Some(assessment.kind),
         call_succeeded: false,
+        had_mutating_effects: false,
+        had_visible_outbound_side_effects: false,
     }
 }
 
@@ -63,6 +65,8 @@ fn capability_blocked_tool_execution_result(
         result_owned: crate::util::scrub_credentials(&payload.to_string()),
         failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Capability),
         call_succeeded: false,
+        had_mutating_effects: false,
+        had_visible_outbound_side_effects: false,
     }
 }
 
@@ -74,6 +78,8 @@ fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(reason)),
         failure_kind: Some(assessment.kind),
         call_succeeded: false,
+        had_mutating_effects: false,
+        had_visible_outbound_side_effects: false,
     }
 }
 
@@ -81,6 +87,7 @@ fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
 #[inline(never)]
 fn outbound_error_tool_execution_result(
     tool_name: &str,
+    had_mutating_effects: bool,
     error: &crate::error::Error,
 ) -> ToolCallExecutionResult {
     metrics::record_tool_call(false);
@@ -102,6 +109,8 @@ fn outbound_error_tool_execution_result(
         result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
         failure_kind: Some(assessment.kind),
         call_succeeded: false,
+        had_mutating_effects,
+        had_visible_outbound_side_effects: false,
     }
 }
 
@@ -110,6 +119,7 @@ fn outbound_error_tool_execution_result(
 fn execute_error_tool_execution_result(
     tool_name: &str,
     input: &str,
+    had_mutating_effects: bool,
     error: &crate::error::Error,
 ) -> ToolCallExecutionResult {
     metrics::record_tool_call(false);
@@ -132,6 +142,8 @@ fn execute_error_tool_execution_result(
         result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
         failure_kind: Some(assessment.kind),
         call_succeeded: false,
+        had_mutating_effects,
+        had_visible_outbound_side_effects: false,
     }
 }
 
@@ -158,7 +170,7 @@ fn execute_tool_call(
             return denied_tool_execution_result(&reason);
         }
         Err(error) => {
-            return execute_error_tool_execution_result(&tc.name, &tc.input, &error);
+            return execute_error_tool_execution_result(&tc.name, &tc.input, false, &error);
         }
     };
     let needs_net = permit.requires_network();
@@ -179,14 +191,17 @@ fn execute_tool_call(
                 return capability_blocked_tool_execution_result(&tc.name, &blocker);
             }
             let tool_exec_start = Instant::now();
+            let had_mutating_effects = permit.shape().effect_class.is_mutating();
             match registry.execute_permitted(&permit, &tc.input, tool_ctx) {
                 Ok(outcome) => {
                     latency.tool_exec_ms = latency
                         .tool_exec_ms
                         .saturating_add(tool_exec_start.elapsed().as_millis());
+                    let mut had_visible_outbound_side_effects = false;
                     for intent in &outcome.outbound_intents {
                         match delivery.deliver_tool_outbound_intent(intent) {
                             Ok(ToolIntentDelivery::VisibleUpdate) => {
+                                had_visible_outbound_side_effects = true;
                                 log_tool_intent_result(
                                     &tc.name,
                                     intent,
@@ -202,7 +217,11 @@ fn execute_tool_call(
                             }
                             Err(error) => {
                                 latency.tool_exec_ms = latency.tool_exec_ms.saturating_add(0);
-                                return outbound_error_tool_execution_result(&tc.name, &error);
+                                return outbound_error_tool_execution_result(
+                                    &tc.name,
+                                    had_mutating_effects,
+                                    &error,
+                                );
                             }
                         }
                     }
@@ -212,6 +231,8 @@ fn execute_tool_call(
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: Some(tool_failure_kind_from_outcome(failure_kind)),
                             call_succeeded: false,
+                            had_mutating_effects,
+                            had_visible_outbound_side_effects,
                         }
                     } else {
                         metrics::record_tool_call(true);
@@ -219,6 +240,8 @@ fn execute_tool_call(
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: None,
                             call_succeeded: true,
+                            had_mutating_effects,
+                            had_visible_outbound_side_effects,
                         }
                     }
                 }
@@ -236,7 +259,12 @@ fn execute_tool_call(
                             audit_error
                         );
                     }
-                    execute_error_tool_execution_result(&tc.name, &tc.input, &error)
+                    execute_error_tool_execution_result(
+                        &tc.name,
+                        &tc.input,
+                        had_mutating_effects,
+                        &error,
+                    )
                 }
             }
         }
@@ -260,6 +288,8 @@ pub(super) fn execute_tool_use_round(
     let mut round_tool_success = false;
     let mut omitted_evidence_count = 0usize;
     let mut used_external_content = false;
+    let mut had_mutating_effects = false;
+    let mut had_visible_outbound_side_effects = false;
     let mut successful_tool_names = Vec::with_capacity(tool_calls.len());
 
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
@@ -268,6 +298,8 @@ pub(super) fn execute_tool_use_round(
         delivery.emit_tool_progress(&tc.name, i, tool_calls.len());
 
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
+        had_mutating_effects |= execution.had_mutating_effects;
+        had_visible_outbound_side_effects |= execution.had_visible_outbound_side_effects;
         let result_view = execution.result_owned.as_str();
         if execution.failure_kind.is_none() && config.strategy == AgentRunStrategy::LinuxEnhanced {
             used_external_content |= tool_result_uses_external_content(&tc.name, result_view);
@@ -322,6 +354,8 @@ pub(super) fn execute_tool_use_round(
         truncated,
         round_tool_success,
         used_external_content,
+        had_mutating_effects,
+        had_visible_outbound_side_effects,
         omitted_evidence_count,
         successful_tool_names,
     }

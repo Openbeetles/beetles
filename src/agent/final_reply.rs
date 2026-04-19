@@ -34,6 +34,13 @@ impl ReplyContractBreachKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReplyArtifactState {
+    None,
+    ArtifactOnly,
+    InternalArtifactLeak,
+}
+
 pub(crate) fn is_reply_contract_breach_stage(stage: &str) -> bool {
     matches!(
         stage,
@@ -53,12 +60,14 @@ pub(crate) fn build_canonical_reply(
         return Err(ReplyContractBreachKind::ProducerEmpty);
     }
 
-    let artifact_scan = scan_internal_reply_artifacts(&normalized);
-    if artifact_scan.has_artifact {
-        if artifact_scan.visible_without_artifacts.trim().is_empty() {
+    match classify_reply_artifacts(&normalized) {
+        ReplyArtifactState::None => {}
+        ReplyArtifactState::ArtifactOnly => {
             return Err(ReplyContractBreachKind::ArtifactOnlyReply);
         }
-        return Err(ReplyContractBreachKind::InternalArtifactReply);
+        ReplyArtifactState::InternalArtifactLeak => {
+            return Err(ReplyContractBreachKind::InternalArtifactReply);
+        }
     }
 
     let visible_text = finalize_user_visible_reply(strategy, &normalized);
@@ -70,6 +79,19 @@ pub(crate) fn build_canonical_reply(
     }
 
     Ok(CanonicalReply::new(visible_text))
+}
+
+pub(crate) fn classify_reply_artifacts(content: &str) -> ReplyArtifactState {
+    let normalized = normalize_line_endings(content);
+    let artifact_scan = scan_internal_reply_artifacts(&normalized);
+    if !artifact_scan.has_artifact {
+        return ReplyArtifactState::None;
+    }
+    if artifact_scan.visible_without_artifacts.trim().is_empty() {
+        ReplyArtifactState::ArtifactOnly
+    } else {
+        ReplyArtifactState::InternalArtifactLeak
+    }
 }
 
 pub(crate) fn finalize_user_visible_reply(strategy: AgentRunStrategy, content: &str) -> String {
@@ -265,6 +287,11 @@ pub(crate) fn reply_looks_like_future_action_narration(content: &str) -> bool {
         ]
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+}
+
+pub(crate) fn reply_looks_like_transition_colon_draft(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty() && (trimmed.ends_with('：') || trimmed.ends_with(':'))
 }
 
 #[cfg(test)]
