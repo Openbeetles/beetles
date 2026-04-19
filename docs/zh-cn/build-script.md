@@ -179,6 +179,8 @@ BEETLE_SKIP_DEPLOY_PROMPT=1 ./build.sh
 
 - Linux 产物在 `target/<target>/release/beetle`
 - ESP 产物在 `target/<target>/release-size/beetle`
+- ESP 构建还会额外生成 `target/<target>/release-size/beetle.bin`，供后续烧录直接复用
+- 这一步现在由 `espflash save-image` 完成，纯构建路径不再依赖 Python `esptool` 模块是否可导入
 - 构建成功后，脚本会把实际产物路径直接打印出来
 
 如果你打算用 `--deploy-linux`，先确认对应 Linux 产物已经存在。

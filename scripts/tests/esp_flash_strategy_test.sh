@@ -57,6 +57,18 @@ assert_file_contains() {
   fi
 }
 
+assert_file_not_contains() {
+  local file="$1"
+  local pattern="$2"
+  local message="$3"
+  if grep -F -- "$pattern" "$file" >/dev/null 2>&1; then
+    echo "FAIL: $message" >&2
+    echo "  unexpected pattern: $pattern" >&2
+    echo "  file: $file" >&2
+    exit 1
+  fi
+}
+
 assert_eq \
   "$(beetle_preferred_flash_port_for_chip esp32p4 /dev/cu.usbmodemP4 /dev/cu.wchusbserialP4)" \
   "/dev/cu.wchusbserialP4" \
@@ -130,6 +142,14 @@ assert_file_contains \
   "$ROOT_DIR/build.sh" \
   'python3 -m serial.tools.miniterm "$CHOSEN_PORT" "$monitor_baud"' \
   "build.sh should use a raw serial monitor after flashing instead of re-entering the bootloader through espflash monitor"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'ESPFLASH_SKIP_UPDATE_CHECK=true espflash save-image --chip "$FLASH_CHIP"' \
+  "build.sh should generate app images through espflash save-image so build-only runs do not depend on Python esptool modules"
+assert_file_not_contains \
+  "$ROOT_DIR/build.sh" \
+  'python3 -m esptool --chip "$FLASH_CHIP" elf2image' \
+  "build.sh should no longer depend on python3 -m esptool elf2image for app image generation"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
   'beetle_full_erase_transport_for_chip "$FLASH_CHIP"' \

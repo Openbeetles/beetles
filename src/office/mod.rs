@@ -1,11 +1,10 @@
-//! Office capability domain: accounts, bindings, policies, and resolver.
+//! Office capability domain: accounts, policies, and resolver.
 
 mod account;
 #[cfg(feature = "capability_office")]
 mod assessment;
 #[cfg(feature = "capability_office")]
 mod authority_source;
-mod binding;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -62,7 +61,6 @@ pub use assessment::{
 pub use authority_source::{
     OfficeAuthoritySource, ReloadingOfficeAuthoritySource, SnapshotOfficeAuthoritySource,
 };
-pub use binding::OfficeCapabilityBinding;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -125,9 +123,7 @@ pub use resolver::{
     OfficeResolveSelection, OfficeResolveSelectionReason, OfficeResolver,
 };
 #[cfg(feature = "capability_office")]
-pub use service::{
-    OfficeAccountAuthorityStatus, OfficeAuthoritySummary, OfficeCapabilityDefault, OfficeService,
-};
+pub use service::{OfficeAccountAuthorityStatus, OfficeAuthoritySummary, OfficeService};
 pub use status::{
     OfficeAccountRuntimeStatus, OfficeAccountStatusSummary, OfficeRuntimeStatusStore,
     REL_PATH_OFFICE_RUNTIME_STATUS,

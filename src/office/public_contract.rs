@@ -66,8 +66,6 @@ fn normalize_public_account_upsert_request(
             identity_class,
             enabled_capabilities,
         },
-        set_defaults: Vec::new(),
-        clear_defaults: Vec::new(),
         policy_patch: None,
         config: None,
     };

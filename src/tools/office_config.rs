@@ -52,7 +52,7 @@ impl Tool for OfficeConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "Configure, reconfigure, inspect, resolve, revoke, or probe shared office accounts for mail, calendar, documents, and contacts. Use this for account onboarding, provider schema lookup, default binding resolution, and account repair."
+        "Configure, reconfigure, inspect, resolve, revoke, or probe shared office accounts for mail, calendar, documents, and contacts. Use this for account onboarding, provider schema lookup, account resolution, and account repair."
     }
 
     fn schema(&self) -> &str {
@@ -500,7 +500,6 @@ mod tests {
                     "provider_kind":"qq",
                     "capabilities":["mail"]
                 },
-                "set_defaults":["mail"],
                 "credential":{
                     "password":"hqvqcibpdvqgbdba",
                     "email":"675778650@qq.com",
@@ -532,7 +531,6 @@ mod tests {
                 "capability":"mail",
                 "provider_kind":"qq",
                 "identity_class":"other",
-                "set_defaults":["mail"],
                 "config":{
                     "display_name":"QQ邮箱",
                     "email":"675778650@qq.com",
@@ -666,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_account_returns_selected_binding() {
+    fn resolve_account_returns_sole_candidate_selection() {
         let config_file_store = Arc::new(MemoryConfigFileStore::new());
         crate::config::save_office_accounts_segment(
             config_file_store.as_ref(),
@@ -681,7 +679,6 @@ mod tests {
                         "enabled_capabilities":["mail"]
                     }
                 }},
-                "binding":{"capability_defaults":{"mail":"mail-work"}},
                 "policy":{}
             }"#,
         )
@@ -698,7 +695,7 @@ mod tests {
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["payload"]["status"], "selected");
         assert_eq!(payload["payload"]["account_key"], "mail-work");
-        assert_eq!(payload["payload"]["selection_reason"], "capability_default");
+        assert_eq!(payload["payload"]["selection_reason"], "sole_candidate");
     }
 
     #[test]
@@ -780,7 +777,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )

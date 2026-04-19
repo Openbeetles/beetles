@@ -421,8 +421,7 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy,
+        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;
@@ -554,7 +553,6 @@ mod tests {
         (
             OfficeService::new(
                 registry,
-                OfficeCapabilityBinding::default(),
                 OfficeSelectionPolicy::default(),
                 credential_store.clone(),
                 std::sync::Arc::new(StubRuntimeStatusStore),

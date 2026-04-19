@@ -30,8 +30,6 @@ pub struct OfficeConfigSnapshot {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficePolicyPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub global_default_account_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ask_when_ambiguous: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -56,10 +54,6 @@ pub struct OfficeAccountRecordInput {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeAccountUpsertRequest {
     pub account: OfficeAccountRecordInput,
-    #[serde(default)]
-    pub set_defaults: Vec<OfficeCapability>,
-    #[serde(default)]
-    pub clear_defaults: Vec<OfficeCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_patch: Option<OfficePolicyPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,8 +68,6 @@ pub struct OfficeConfigAccountSummary {
     pub identity_class: OfficeAccountIdentityClass,
     #[serde(default)]
     pub enabled_capabilities: Vec<OfficeCapability>,
-    #[serde(default)]
-    pub selected_for_capabilities: Vec<OfficeCapability>,
     pub readiness: crate::office::OfficeConfigReadiness,
     pub next_action: crate::office::OfficeConfigNextAction,
     pub missing_fields_count: usize,
@@ -157,7 +149,7 @@ pub enum OfficeConfigCapabilitySelectionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum OfficeConfigCapabilityNextAction {
     CreateAccount,
-    SelectDefaultAccount,
+    SelectAccount,
     ConfigureAccount,
     Probe,
     ReviewRuntimeError,
@@ -167,8 +159,6 @@ pub enum OfficeConfigCapabilityNextAction {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigCapabilityStatus {
     pub capability: OfficeCapability,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_account_key: Option<String>,
     pub selection_status: OfficeConfigCapabilitySelectionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_account_key: Option<String>,
@@ -366,11 +356,6 @@ impl OfficeConfigManagementService {
             .iter()
             .map(|account| (account.account_key.clone(), account))
             .collect::<BTreeMap<_, _>>();
-        let default_by_capability = summary
-            .defaults
-            .iter()
-            .map(|item| (item.capability, item.account_key.clone()))
-            .collect::<BTreeMap<_, _>>();
         let capabilities = capability
             .map(|value| vec![value])
             .unwrap_or_else(|| OfficeCapability::all().to_vec());
@@ -394,7 +379,6 @@ impl OfficeConfigManagementService {
                 preferred_identity_class: None,
                 historical_account_key: None,
             });
-            let default_account_key = default_by_capability.get(&capability).cloned().flatten();
             let (selection_status, selected_account_key, ready, next_action) = match resolve_result
             {
                 OfficeResolveResult::Selected(selection) => {
@@ -430,7 +414,7 @@ impl OfficeConfigManagementService {
                     OfficeConfigCapabilitySelectionStatus::Ambiguous,
                     None,
                     false,
-                    OfficeConfigCapabilityNextAction::SelectDefaultAccount,
+                    OfficeConfigCapabilityNextAction::SelectAccount,
                 ),
                 OfficeResolveResult::Missing(_) => (
                     OfficeConfigCapabilitySelectionStatus::Missing,
@@ -441,7 +425,6 @@ impl OfficeConfigManagementService {
             };
             items.push(OfficeConfigCapabilityStatus {
                 capability,
-                default_account_key,
                 selection_status,
                 selected_account_key,
                 ready,
@@ -530,8 +513,6 @@ impl OfficeConfigManagementService {
         upsert_account_segment(
             &mut accounts,
             account.clone(),
-            &request.set_defaults,
-            &request.clear_defaults,
             request.policy_patch.as_ref(),
         )?;
         self.persist_accounts(&accounts)?;
@@ -562,21 +543,12 @@ impl OfficeConfigManagementService {
 
     pub fn delete_account(&self, account_key: &str) -> Result<()> {
         let mut accounts = self.load_accounts_segment()?;
-        let removed = accounts.registry.remove(account_key).ok_or_else(|| {
+        accounts.registry.remove(account_key).ok_or_else(|| {
             Error::config(
                 "office_config_delete_account",
                 format!("unknown office account '{}'", account_key),
             )
         })?;
-
-        for capability in removed.enabled_capabilities {
-            if accounts.binding.default_account_for(capability) == Some(account_key) {
-                accounts.binding.clear_default_account(capability);
-            }
-        }
-        if accounts.policy.global_default_account_key.trim() == account_key {
-            accounts.policy.global_default_account_key.clear();
-        }
 
         self.persist_accounts(&accounts)?;
         self.credential_store.clear(account_key)?;
@@ -644,7 +616,6 @@ impl OfficeConfigManagementService {
     fn build_office_service(&self, accounts: &OfficeAccountsSegment) -> Result<OfficeService> {
         Ok(OfficeService::new(
             accounts.registry.clone(),
-            accounts.binding.clone(),
             accounts.policy.clone(),
             Arc::clone(&self.credential_store),
             Arc::clone(&self.runtime_status_store),
@@ -922,7 +893,7 @@ fn build_field_state(
 }
 
 fn build_provider_catalog_item(schema: OfficeProviderSchema) -> OfficeConfigProviderCatalogItem {
-    let mut account_fields = default_account_create_fields(&schema);
+    let mut account_fields = shared_account_create_fields(&schema);
     for field in &schema.fields {
         if field.location == OfficeProviderFieldLocation::ExternalAccountId {
             account_fields.push(build_create_field_from_provider_field(field));
@@ -941,7 +912,7 @@ fn build_provider_catalog_item(schema: OfficeProviderSchema) -> OfficeConfigProv
     }
 }
 
-fn default_account_create_fields(
+fn shared_account_create_fields(
     schema: &OfficeProviderSchema,
 ) -> Vec<OfficeConfigCreateFieldSchema> {
     vec![
@@ -1169,7 +1140,6 @@ fn build_account_summary(
         account_label: account.account_label.clone(),
         identity_class: account.identity_class,
         enabled_capabilities: account.enabled_capabilities.clone(),
-        selected_for_capabilities: account.selected_for_capabilities.clone(),
         readiness: assessment.readiness,
         next_action: assessment.next_action,
         missing_fields_count: assessment.missing_fields.len(),
@@ -1200,22 +1170,9 @@ fn map_account_next_action(
 fn upsert_account_segment(
     segment: &mut OfficeAccountsSegment,
     account: OfficeAccount,
-    set_defaults: &[OfficeCapability],
-    clear_defaults: &[OfficeCapability],
     policy_patch: Option<&OfficePolicyPatch>,
 ) -> Result<()> {
-    let account_key = account.account_key.clone();
     segment.registry.insert(account);
-    for capability in set_defaults {
-        segment
-            .binding
-            .set_default_account(*capability, account_key.clone());
-    }
-    for capability in clear_defaults {
-        if segment.binding.default_account_for(*capability) == Some(account_key.as_str()) {
-            remove_default_binding(segment, *capability)?;
-        }
-    }
     if let Some(patch) = policy_patch {
         apply_policy_patch(&mut segment.policy, patch);
     }
@@ -1244,9 +1201,6 @@ fn apply_config_field_value(
 }
 
 fn apply_policy_patch(policy: &mut OfficeSelectionPolicy, patch: &OfficePolicyPatch) {
-    if let Some(global_default_account_key) = patch.global_default_account_key.as_ref() {
-        policy.global_default_account_key = global_default_account_key.clone();
-    }
     if let Some(ask_when_ambiguous) = patch.ask_when_ambiguous {
         policy.ask_when_ambiguous = ask_when_ambiguous;
     }
@@ -1254,33 +1208,6 @@ fn apply_policy_patch(policy: &mut OfficeSelectionPolicy, patch: &OfficePolicyPa
         policy.preferred_identity_class = None;
     } else if let Some(preferred_identity_class) = patch.preferred_identity_class {
         policy.preferred_identity_class = Some(preferred_identity_class);
-    }
-}
-
-fn remove_default_binding(
-    segment: &mut OfficeAccountsSegment,
-    capability: OfficeCapability,
-) -> Result<()> {
-    let mut defaults = serde_json::to_value(&segment.binding)
-        .map_err(|error| Error::config("office_config_remove_default", error.to_string()))?;
-    let Some(capability_defaults) = defaults
-        .get_mut("capability_defaults")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return Ok(());
-    };
-    capability_defaults.remove(capability_key(capability));
-    segment.binding = serde_json::from_value(defaults)
-        .map_err(|error| Error::config("office_config_remove_default", error.to_string()))?;
-    Ok(())
-}
-
-fn capability_key(capability: OfficeCapability) -> &'static str {
-    match capability {
-        OfficeCapability::Mail => "mail",
-        OfficeCapability::Calendar => "calendar",
-        OfficeCapability::Documents => "documents",
-        OfficeCapability::ContactsDirectory => "contacts_directory",
     }
 }
 
@@ -1417,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn save_account_upsert_persists_account_and_sets_default_binding() {
+    fn save_account_upsert_persists_account_without_selection_side_effects() {
         let service = OfficeConfigManagementService::new(
             Arc::new(MemoryConfigFileStore::new()),
             Arc::new(MemoryCredentialStore::default()),
@@ -1434,8 +1361,6 @@ mod tests {
                     identity_class: OfficeAccountIdentityClass::Work,
                     enabled_capabilities: vec![OfficeCapability::Mail],
                 },
-                set_defaults: vec![OfficeCapability::Mail],
-                clear_defaults: Vec::new(),
                 policy_patch: None,
                 config: None,
             })
@@ -1444,13 +1369,7 @@ mod tests {
         assert_eq!(detail.account.account_key, "mail-work");
         let snapshot = service.inspect().expect("inspect");
         assert!(snapshot.accounts.registry.get("mail-work").is_some());
-        assert_eq!(
-            snapshot
-                .accounts
-                .binding
-                .default_account_for(OfficeCapability::Mail),
-            Some("mail-work")
-        );
+        assert_eq!(snapshot.summary.accounts.len(), 1);
     }
 
     #[test]
@@ -1471,10 +1390,7 @@ mod tests {
                     identity_class: OfficeAccountIdentityClass::Work,
                     enabled_capabilities: vec![OfficeCapability::Calendar],
                 },
-                set_defaults: vec![OfficeCapability::Calendar],
-                clear_defaults: Vec::new(),
                 policy_patch: Some(OfficePolicyPatch {
-                    global_default_account_key: Some("calendar-work".to_string()),
                     ask_when_ambiguous: Some(true),
                     preferred_identity_class: Some(OfficeAccountIdentityClass::Work),
                     clear_preferred_identity_class: false,
@@ -1484,9 +1400,10 @@ mod tests {
             .expect("save account upsert");
         let snapshot = service.inspect().expect("inspect");
         assert!(snapshot.accounts.registry.get("calendar-work").is_some());
+        assert!(snapshot.summary.policy.ask_when_ambiguous);
         assert_eq!(
-            snapshot.summary.policy.global_default_account_key,
-            "calendar-work"
+            snapshot.summary.policy.preferred_identity_class,
+            Some(OfficeAccountIdentityClass::Work)
         );
     }
 
@@ -1529,7 +1446,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_account_removes_registry_defaults_credentials_and_runtime() {
+    fn delete_account_removes_registry_credentials_and_runtime() {
         let config_file_store = Arc::new(MemoryConfigFileStore::new());
         config::save_office_accounts_segment(
             config_file_store.as_ref(),
@@ -1546,14 +1463,7 @@ mod tests {
                         }
                     }
                 },
-                "binding": {
-                    "capability_defaults": {
-                        "mail": "mail-work"
-                    }
-                },
-                "policy": {
-                    "global_default_account_key": "mail-work"
-                }
+                "policy": {}
             }"#,
         )
         .expect("seed accounts");
@@ -1594,17 +1504,7 @@ mod tests {
         assert!(runtime_status_store.get("mail-work").unwrap().is_none());
         let snapshot = service.inspect().expect("inspect");
         assert!(snapshot.accounts.registry.get("mail-work").is_none());
-        assert_eq!(
-            snapshot.summary.policy.global_default_account_key, "",
-            "global default should be cleared"
-        );
-        assert_eq!(
-            snapshot
-                .accounts
-                .binding
-                .default_account_for(OfficeCapability::Mail),
-            None
-        );
+        assert!(snapshot.summary.accounts.is_empty());
     }
 
     #[test]
@@ -1722,8 +1622,6 @@ mod tests {
                     identity_class: OfficeAccountIdentityClass::Work,
                     enabled_capabilities: vec![OfficeCapability::Mail],
                 },
-                set_defaults: vec![],
-                clear_defaults: vec![],
                 policy_patch: None,
                 config: None,
             })
@@ -1750,8 +1648,6 @@ mod tests {
                     identity_class: OfficeAccountIdentityClass::Other,
                     enabled_capabilities: vec![OfficeCapability::Mail],
                 },
-                set_defaults: vec![OfficeCapability::Mail],
-                clear_defaults: vec![],
                 policy_patch: None,
                 config: None,
             })
@@ -1767,8 +1663,6 @@ mod tests {
                     identity_class: OfficeAccountIdentityClass::Other,
                     enabled_capabilities: vec![OfficeCapability::Mail],
                 },
-                set_defaults: vec![OfficeCapability::Mail],
-                clear_defaults: vec![],
                 policy_patch: None,
                 config: None,
             })
@@ -1805,7 +1699,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )
@@ -1842,7 +1735,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )
@@ -1912,7 +1804,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )
@@ -1967,7 +1858,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )
@@ -2009,7 +1899,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )
@@ -2074,7 +1963,6 @@ mod tests {
                         }
                     }
                 },
-                "binding": {},
                 "policy": {}
             }"#,
         )

@@ -179,6 +179,8 @@ Both are useful for automation and CI.
 
 - Linux artifacts go to `target/<target>/release/beetle`
 - ESP artifacts go to `target/<target>/release-size/beetle`
+- ESP builds also emit `target/<target>/release-size/beetle.bin` for later flashing
+- That image is now produced through `espflash save-image`, so build-only runs do not depend on Python `esptool` module imports
 - After a successful build, the script prints the exact artifact path
 
 If you plan to use `--deploy-linux`, make sure the matching Linux artifact already exists.

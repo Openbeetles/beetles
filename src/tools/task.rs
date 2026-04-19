@@ -690,7 +690,6 @@ impl TaskTool {
                 provider,
                 account_key,
                 capability: OfficeCapability::Calendar,
-                default_account_key: calendar_service.office_default_account_key()?,
                 resolve_hint: None,
                 account_assessments: calendar_service.office_account_assessments()?,
                 error,
@@ -978,8 +977,8 @@ mod tests {
     ))]
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, OfficeService,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeService,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -1574,11 +1573,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore::default()),
@@ -1676,8 +1672,7 @@ mod tests {
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     #[test]
-    fn task_tool_routes_remote_calendar_through_office_default_account_and_keeps_lifecycle_in_sync()
-    {
+    fn task_tool_routes_remote_calendar_through_sole_office_account_and_keeps_lifecycle_in_sync() {
         let provider = Arc::new(RecordingRemoteProvider::default());
         let tool = TaskTool::with_office_calendar_service(
             Arc::new(StubTaskStore::default()),
@@ -1773,10 +1768,9 @@ mod tests {
         );
         assert_eq!(payload["ok"], false);
         assert_eq!(payload["office_assessment"]["capability"], "calendar");
-        assert_eq!(
-            payload["office_assessment"]["default_account_key"],
-            "calendar-work"
-        );
+        assert!(payload["office_assessment"]
+            .get("default_account_key")
+            .is_none());
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["account_key"],
             "calendar-work"

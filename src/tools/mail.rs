@@ -33,8 +33,6 @@ pub struct MailTool {
 struct MailProviderStatusResponse {
     op: &'static str,
     registered_remote_providers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default_mail_account_key: Option<String>,
     configured_providers: Vec<MailProviderCredentialStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
@@ -216,7 +214,6 @@ impl MailTool {
             provider,
             account_key,
             capability: OfficeCapability::Mail,
-            default_account_key: self.service.office_default_account_key()?,
             resolve_hint: self.service.office_resolve_hint_with_identity(
                 provider,
                 account_key,
@@ -252,7 +249,6 @@ impl MailTool {
                     &MailProviderStatusResponse {
                         op: "provider_status",
                         registered_remote_providers,
-                        default_mail_account_key: self.service.office_default_account_key()?,
                         account_diagnostics: build_account_diagnostics(&account_assessments),
                         account_assessments,
                         account_statuses: build_mail_account_statuses(
@@ -779,7 +775,7 @@ impl Tool for MailTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|search|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when office defaults or a single configured provider make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list or search. Defaults to provider mailbox."},"query":{"type":"string","description":"Required free-text search query for search."},"unread_only":{"type":"boolean","description":"Whether list or search should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List or search limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|search|get|send|draft|reply|forward"},"provider":{"type":"string","description":"Optional mail provider. Omit only when a single configured provider or explicit identity hints make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office mail account key."},"mailbox":{"type":"string","description":"Mailbox to query for list or search. Defaults to provider mailbox."},"query":{"type":"string","description":"Required free-text search query for search."},"unread_only":{"type":"boolean","description":"Whether list or search should only include unread mail."},"received_after_unix_secs":{"type":"integer","description":"Optional lower bound for received time."},"limit":{"type":"integer","description":"List or search limit, default 10, max 50."},"id":{"type":"string","description":"Message ID or provider UID for get, reply, or forward."},"subject":{"type":"string","description":"Mail subject for send, draft, or optional override on reply/forward."},"text_body":{"type":"string","description":"Mail body or note body for send, draft, reply, or forward."},"to":{"type":"array","items":{"type":"string"},"description":"Primary recipient email addresses."},"cc":{"type":"array","items":{"type":"string"},"description":"CC recipient email addresses."},"bcc":{"type":"array","items":{"type":"string"},"description":"BCC recipient email addresses."},"to_lookup":{"type":"array","items":{"type":"string"},"description":"Primary recipient contact queries resolved through contacts_directory."},"cc_lookup":{"type":"array","items":{"type":"string"},"description":"CC recipient contact queries resolved through contacts_directory."},"bcc_lookup":{"type":"array","items":{"type":"string"},"description":"BCC recipient contact queries resolved through contacts_directory."},"confirm":{"type":"boolean","description":"Must be true for send, draft, reply, and forward."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -1198,8 +1194,8 @@ mod tests {
     };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, ReloadingOfficeAuthoritySource,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        ReloadingOfficeAuthoritySource,
     };
     use crate::platform::StateFs;
     use std::collections::HashMap;
@@ -1568,38 +1564,34 @@ mod tests {
 
     fn build_tool() -> (MailTool, Arc<StubProvider>, Arc<StubRuntimeStatusStore>) {
         let credential_store = Arc::new(StubCredentialStore::default());
-        for (account_key, label, account_id) in [
-            ("mail-work", "Work", "work@example.com"),
-            ("mail-personal", "Personal", "personal@example.com"),
-        ] {
-            credential_store
-                .items
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .insert(
-                    account_key.to_string(),
-                    MailProviderCredential {
-                        account_key: account_key.to_string(),
-                        provider: "imap_smtp".to_string(),
-                        account_id: account_id.to_string(),
-                        account_label: label.to_string(),
-                        username: account_id.to_string(),
-                        corp_id: String::new(),
-                        secret: "secret".to_string(),
-                        base_url: String::new(),
-                        imap_host: "imap.example.com".to_string(),
-                        imap_port: 993,
-                        imap_mailbox: "INBOX".to_string(),
-                        draft_mailbox: "Drafts".to_string(),
-                        imap_tls: true,
-                        smtp_host: "smtp.example.com".to_string(),
-                        smtp_port: 465,
-                        smtp_tls: true,
-                        from_address: account_id.to_string(),
-                        from_name: label.to_string(),
-                    },
-                );
-        }
+        let (account_key, label, account_id) = ("mail-work", "Work", "work@example.com");
+        credential_store
+            .items
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                account_key.to_string(),
+                MailProviderCredential {
+                    account_key: account_key.to_string(),
+                    provider: "imap_smtp".to_string(),
+                    account_id: account_id.to_string(),
+                    account_label: label.to_string(),
+                    username: account_id.to_string(),
+                    corp_id: String::new(),
+                    secret: "secret".to_string(),
+                    base_url: String::new(),
+                    imap_host: "imap.example.com".to_string(),
+                    imap_port: 993,
+                    imap_mailbox: "INBOX".to_string(),
+                    draft_mailbox: "Drafts".to_string(),
+                    imap_tls: true,
+                    smtp_host: "smtp.example.com".to_string(),
+                    smtp_port: 465,
+                    smtp_tls: true,
+                    from_address: account_id.to_string(),
+                    from_name: label.to_string(),
+                },
+            );
 
         let provider = Arc::new(StubProvider::default());
         let mut providers = MailProviderRegistry::new();
@@ -1614,16 +1606,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Mail],
         });
-        registry.insert(OfficeAccount {
-            account_key: "mail-personal".to_string(),
-            provider_kind: "imap_smtp".to_string(),
-            external_account_id: "personal@example.com".to_string(),
-            account_label: "Personal".to_string(),
-            identity_class: OfficeAccountIdentityClass::Personal,
-            enabled_capabilities: vec![OfficeCapability::Mail],
-        });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-work".to_string());
         let runtime_store = Arc::new(StubRuntimeStatusStore::default());
         runtime_store
             .set(&OfficeAccountRuntimeStatus {
@@ -1638,33 +1620,31 @@ mod tests {
             })
             .expect("seed runtime status");
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
-        for account_key in ["mail-work", "mail-personal"] {
-            office_credential_store
-                .set(&OfficeCredential {
-                    account_key: account_key.to_string(),
-                    access_token: "secret".to_string(),
-                    refresh_token: String::new(),
-                    token_endpoint: String::new(),
-                    expires_at_unix_secs: 0,
-                    updated_at: 1,
-                    metadata: [
-                        (
-                            crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
-                            "imap.example.com".to_string(),
-                        ),
-                        (
-                            crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
-                            "smtp.example.com".to_string(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                })
-                .expect("seed office credential");
-        }
+        let account_key = "mail-work";
+        office_credential_store
+            .set(&OfficeCredential {
+                account_key: account_key.to_string(),
+                access_token: "secret".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: [
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_IMAP_HOST.to_string(),
+                        "imap.example.com".to_string(),
+                    ),
+                    (
+                        crate::mail::OFFICE_METADATA_MAIL_SMTP_HOST.to_string(),
+                        "smtp.example.com".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .expect("seed office credential");
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             runtime_store.clone(),
@@ -1699,35 +1679,27 @@ mod tests {
 
     fn save_mail_accounts(
         config_file_store: &dyn ConfigFileStore,
-        default_account_key: &str,
+        account_key: &str,
     ) -> Result<()> {
+        let (external_account_id, account_label, identity_class) = match account_key {
+            "mail-work" => ("work@example.com", "Work", "work"),
+            "mail-personal" => ("personal@example.com", "Personal", "personal"),
+            other => panic!("unsupported test account {other}"),
+        };
         save_office_accounts_segment(
             config_file_store,
             &format!(
                 r#"{{
                     "registry": {{
                         "accounts": {{
-                            "mail-work": {{
-                                "account_key": "mail-work",
+                            "{account_key}": {{
+                                "account_key": "{account_key}",
                                 "provider_kind": "imap_smtp",
-                                "external_account_id": "work@example.com",
-                                "account_label": "Work",
-                                "identity_class": "work",
-                                "enabled_capabilities": ["mail"]
-                            }},
-                            "mail-personal": {{
-                                "account_key": "mail-personal",
-                                "provider_kind": "imap_smtp",
-                                "external_account_id": "personal@example.com",
-                                "account_label": "Personal",
-                                "identity_class": "personal",
+                                "external_account_id": "{external_account_id}",
+                                "account_label": "{account_label}",
+                                "identity_class": "{identity_class}",
                                 "enabled_capabilities": ["mail"]
                             }}
-                        }}
-                    }},
-                    "binding": {{
-                        "capability_defaults": {{
-                            "mail": "{default_account_key}"
                         }}
                     }},
                     "policy": {{}}
@@ -1750,11 +1722,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Mail],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-work".to_string());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore::default()),
@@ -1825,7 +1794,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore::default()),
@@ -1841,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_provider_status_reports_defaults_and_runtime() {
+    fn mail_tool_provider_status_reports_runtime_without_legacy_default_metadata() {
         let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
@@ -1849,7 +1817,7 @@ mod tests {
             .expect("provider status");
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(payload["registered_remote_providers"][0], "imap_smtp");
-        assert_eq!(payload["default_mail_account_key"], "mail-work");
+        assert!(payload.get("default_mail_account_key").is_none());
         assert_eq!(payload["configured_providers"][0]["provider"], "imap_smtp");
         assert_eq!(payload["office_runtime_statuses"][0]["probe_ok"], true);
         let account_statuses = payload["account_statuses"]
@@ -1882,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_list_routes_via_office_default_when_provider_is_omitted() {
+    fn mail_tool_list_routes_via_sole_office_account_when_provider_is_omitted() {
         let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
@@ -1894,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_search_returns_results_and_uses_office_default() {
+    fn mail_tool_search_returns_results_via_sole_office_account() {
         let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
@@ -1912,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_list_prefers_identity_class_over_default_account() {
+    fn mail_tool_list_prefers_identity_class_over_ambiguous_accounts() {
         let provider = Arc::new(StubProvider::default());
         let mut providers = MailProviderRegistry::new();
         providers.register(provider);
@@ -1968,8 +1936,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Mail],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-personal".to_string());
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for account_key in ["mail-work", "mail-personal"] {
             office_credential_store
@@ -1997,7 +1963,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore::default()),
@@ -2201,12 +2166,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-work".to_string());
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         office_credential_store
             .set(&OfficeCredential {
@@ -2253,7 +2212,6 @@ mod tests {
         let runtime_store = Arc::new(StubRuntimeStatusStore::default());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             runtime_store,
@@ -2302,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_send_remote_work_contact_prefers_matching_mail_identity_over_default_account() {
+    fn mail_tool_send_remote_work_contact_prefers_matching_mail_identity() {
         let provider = Arc::new(StubProvider::default());
         let mut providers = MailProviderRegistry::new();
         providers.register(provider.clone());
@@ -2367,12 +2325,6 @@ mod tests {
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
 
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-personal".to_string());
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for (account_key, access_token, metadata) in [
             (
@@ -2441,7 +2393,6 @@ mod tests {
         let runtime_store = Arc::new(StubRuntimeStatusStore::default());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             runtime_store,
@@ -2495,7 +2446,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_send_remote_contact_prefers_matching_mail_provider_over_default_work_provider() {
+    fn mail_tool_send_remote_contact_prefers_matching_mail_provider() {
         let imap_provider = Arc::new(StubProvider::default());
         let feishu_provider = Arc::new(StubProvider {
             provider_name: "feishu_mail",
@@ -2576,12 +2527,6 @@ mod tests {
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
 
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-work-imap".to_string());
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for (account_key, access_token, metadata) in [
             (
@@ -2650,7 +2595,6 @@ mod tests {
         let runtime_store = Arc::new(StubRuntimeStatusStore::default());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             runtime_store,
@@ -2718,7 +2662,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_send_remote_contact_provider_hint_resolves_without_mail_default_binding() {
+    fn mail_tool_send_remote_contact_provider_hint_resolves_without_ambiguity() {
         let imap_provider = Arc::new(StubProvider::default());
         let feishu_provider = Arc::new(StubProvider {
             provider_name: "feishu_mail",
@@ -2799,11 +2743,6 @@ mod tests {
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
 
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for (account_key, access_token, metadata) in [
             (
@@ -2872,7 +2811,6 @@ mod tests {
         let runtime_store = Arc::new(StubRuntimeStatusStore::default());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             runtime_store,
@@ -2992,7 +2930,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_reloads_office_default_after_accounts_commit() {
+    fn mail_tool_reloads_sole_office_account_after_accounts_commit() {
         let credential_store = Arc::new(StubCredentialStore::default());
         for (account_key, label, account_id) in [
             ("mail-work", "Work", "work@example.com"),
@@ -3066,11 +3004,11 @@ mod tests {
             .execute(r#"{"op":"provider_status"}"#, &mut ctx)
             .expect("provider status");
         let status: Value = serde_json::from_str(&status).expect("valid status");
-        assert_eq!(status["default_mail_account_key"], "mail-personal");
+        assert!(status.get("default_mail_account_key").is_none());
     }
 
     #[test]
-    fn mail_tool_list_returns_structured_office_failure_when_default_account_has_no_credential() {
+    fn mail_tool_list_returns_structured_office_failure_for_sole_candidate_without_credential() {
         let tool = build_office_backed_tool_without_credentials();
         let mut ctx = DummyCtx;
 
@@ -3088,10 +3026,9 @@ mod tests {
         assert_eq!(payload["ok"], false);
         assert_eq!(payload["failure_kind"], "capability");
         assert_eq!(payload["office_assessment"]["capability"], "mail");
-        assert_eq!(
-            payload["office_assessment"]["default_account_key"],
-            "mail-work"
-        );
+        assert!(payload["office_assessment"]
+            .get("default_account_key")
+            .is_none());
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["account_key"],
             "mail-work"

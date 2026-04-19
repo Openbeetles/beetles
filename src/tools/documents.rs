@@ -41,8 +41,6 @@ pub struct DocumentsTool {
 struct DocumentsProviderStatusResponse {
     op: &'static str,
     registered_remote_providers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default_documents_account_key: Option<String>,
     configured_providers: Vec<DocumentsProviderCredentialStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
@@ -202,7 +200,6 @@ impl DocumentsTool {
             provider,
             account_key,
             capability: OfficeCapability::Documents,
-            default_account_key: self.service.office_default_account_key()?,
             resolve_hint: self.service.office_resolve_hint_with_identity(
                 provider,
                 account_key,
@@ -236,7 +233,6 @@ impl DocumentsTool {
                     &DocumentsProviderStatusResponse {
                         op: "provider_status",
                         registered_remote_providers,
-                        default_documents_account_key: self.service.office_default_account_key()?,
                         configured_providers: self.service.list_provider_statuses()?,
                         account_diagnostics: build_account_diagnostics(&account_assessments),
                         account_assessments,
@@ -595,7 +591,7 @@ impl Tool for DocumentsTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|summarize|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when office defaults, identity hints, or people/team context make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"preferred_identity_class":{"type":"string","description":"Optional identity class preference when routing through office authority: work|personal|family|shared|other."},"context_lookup":{"type":"array","items":{"type":"string"},"description":"Optional people or organization queries resolved through contacts_directory to guide documents routing."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"focus":{"type":"string","description":"Optional phrase to emphasize in summarize output."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read or summarize, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_status|list|read|summarize|search"},"provider":{"type":"string","description":"Optional documents provider. Omit only when a single configured provider, identity hints, or people/team context make routing unambiguous."},"account_key":{"type":"string","description":"Optional explicit office documents account key."},"preferred_identity_class":{"type":"string","description":"Optional identity class preference when routing through office authority: work|personal|family|shared|other."},"context_lookup":{"type":"array","items":{"type":"string"},"description":"Optional people or organization queries resolved through contacts_directory to guide documents routing."},"path":{"type":"string","description":"Optional directory or file path inside the provider root."},"focus":{"type":"string","description":"Optional phrase to emphasize in summarize output."},"limit":{"type":"integer","description":"List/search limit, default 10, max 50."},"max_chars":{"type":"integer","description":"Maximum characters to return for read or summarize, default 16000, max 50000."},"query":{"type":"string","description":"Search phrase for search."},"case_sensitive":{"type":"boolean","description":"Whether search matching is case-sensitive."},"max_read_bytes":{"type":"integer","description":"Maximum bytes to read per file during content search, default 262144."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -847,8 +843,8 @@ mod tests {
     };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, OfficeService, SnapshotOfficeAuthoritySource,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeService, SnapshotOfficeAuthoritySource,
     };
     use crate::platform::StateFs;
     use serde_json::Value;
@@ -1188,8 +1184,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Documents],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Documents, "docs-work".to_string());
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         office_credential_store
             .set(&OfficeCredential {
@@ -1209,7 +1203,6 @@ mod tests {
             .expect("seed office credential");
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -1231,12 +1224,9 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Documents],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Documents, "docs-work".to_string());
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -1252,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_tool_provider_status_reports_defaults_and_runtime() {
+    fn documents_tool_provider_status_reports_runtime_without_legacy_default_metadata() {
         let tool = build_tool();
         let mut ctx = DummyCtx;
         let payload = tool
@@ -1260,7 +1250,7 @@ mod tests {
             .expect("provider status");
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(payload["registered_remote_providers"][0], "webdav");
-        assert_eq!(payload["default_documents_account_key"], "docs-work");
+        assert!(payload.get("default_documents_account_key").is_none());
         assert_eq!(payload["configured_providers"][0]["provider"], "webdav");
         assert_eq!(payload["office_runtime_statuses"][0]["probe_ok"], true);
         assert_eq!(
@@ -1282,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_tool_routes_list_read_and_search_via_office_default() {
+    fn documents_tool_routes_list_read_and_search_via_sole_office_account() {
         let tool = build_tool();
         let mut ctx = DummyCtx;
 
@@ -1344,8 +1334,8 @@ mod tests {
     }
 
     #[test]
-    fn documents_tool_list_returns_structured_office_failure_when_default_account_has_no_credential(
-    ) {
+    fn documents_tool_list_returns_structured_office_failure_for_sole_candidate_without_credential()
+    {
         let tool = build_office_backed_tool_without_credentials();
         let mut ctx = DummyCtx;
 
@@ -1363,10 +1353,9 @@ mod tests {
         assert_eq!(payload["ok"], false);
         assert_eq!(payload["failure_kind"], "capability");
         assert_eq!(payload["office_assessment"]["capability"], "documents");
-        assert_eq!(
-            payload["office_assessment"]["default_account_key"],
-            "docs-work"
-        );
+        assert!(payload["office_assessment"]
+            .get("default_account_key")
+            .is_none());
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["account_key"],
             "docs-work"
@@ -1398,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_tool_list_prefers_identity_class_over_default_account() {
+    fn documents_tool_list_prefers_identity_class_over_ambiguous_accounts() {
         let mut providers = DocumentsProviderRegistry::new();
         providers.register(Arc::new(StubProvider));
 
@@ -1445,8 +1434,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Documents],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Documents, "docs-personal".to_string());
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for account_key in ["docs-work", "docs-personal"] {
             office_credential_store
@@ -1468,7 +1455,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -1542,7 +1528,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -1586,7 +1571,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_tool_context_lookup_prefers_matching_documents_identity_over_default_account() {
+    fn documents_tool_context_lookup_prefers_matching_documents_identity() {
         let mut providers = DocumentsProviderRegistry::new();
         providers.register(Arc::new(StubProvider));
 
@@ -1642,12 +1627,6 @@ mod tests {
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
 
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Documents, "docs-personal".to_string());
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for (account_key, access_token, metadata) in [
             (
@@ -1695,7 +1674,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),

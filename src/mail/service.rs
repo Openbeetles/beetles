@@ -94,10 +94,6 @@ impl MailService {
         self.remote.credential_store().list_statuses()
     }
 
-    pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        self.remote.default_account_key()
-    }
-
     pub fn office_resolve_hint(
         &self,
         provider: Option<&str>,
@@ -758,8 +754,7 @@ mod tests {
     use crate::mail::OfficeBackedMailProviderCredentialStore;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     };
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -1009,9 +1004,7 @@ mod tests {
         let runtime_store = Arc::new(StubRuntimeStatusStore::default());
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy {
-                global_default_account_key: "mail-work".to_string(),
                 ask_when_ambiguous: false,
                 preferred_identity_class: None,
             },
@@ -1031,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_service_uses_office_default_account_resolution() {
+    fn mail_service_uses_office_resolution_when_provider_has_single_candidate() {
         let (service, _provider, _runtime_store) = build_service();
         let items = service
             .list(
@@ -1050,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_service_search_uses_office_default_account_resolution() {
+    fn mail_service_search_uses_office_resolution_when_provider_has_single_candidate() {
         let (service, _provider, _runtime_store) = build_service();
         let items = service
             .search(
@@ -1080,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_service_infers_provider_from_office_default_account() {
+    fn mail_service_infers_provider_from_office_selected_route() {
         let (service, _provider, _runtime_store) = build_service();
         let provider = service
             .resolve_provider_name(None)
@@ -1147,7 +1140,6 @@ mod tests {
 
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             credential_store.clone(),
             Arc::new(StubRuntimeStatusStore::default()),

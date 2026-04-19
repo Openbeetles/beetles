@@ -24,8 +24,6 @@ struct OfficeOperationFailureResponse {
 struct OfficeOperationAssessmentHint {
     capability: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    default_account_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     resolve_hint: Option<OfficeResolveResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
@@ -39,7 +37,6 @@ pub(crate) struct OfficeOperationFailureInput<'a> {
     pub(crate) provider: Option<&'a str>,
     pub(crate) account_key: Option<&'a str>,
     pub(crate) capability: OfficeCapability,
-    pub(crate) default_account_key: Option<String>,
     pub(crate) resolve_hint: Option<OfficeResolveResult>,
     pub(crate) account_assessments: Vec<OfficeAccountAssessment>,
     pub(crate) error: &'a Error,
@@ -69,7 +66,6 @@ pub(crate) fn build_office_operation_failure_outcome(
             .map(str::to_string),
         office_assessment: OfficeOperationAssessmentHint {
             capability: office_capability_label(input.capability).to_string(),
-            default_account_key: input.default_account_key,
             resolve_hint: input.resolve_hint,
             account_diagnostics: build_account_diagnostics(&relevant_assessments),
             account_assessments: relevant_assessments,

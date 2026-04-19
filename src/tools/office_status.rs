@@ -67,7 +67,7 @@ impl Tool for OfficeStatusTool {
     }
 
     fn description(&self) -> &'static str {
-        "Inspect office account authority, credential presence, runtime probe state, and capability defaults."
+        "Inspect office account authority, credential presence, runtime probe state, and capability routing status."
     }
 
     fn schema(&self) -> &str {
@@ -90,12 +90,8 @@ impl Tool for OfficeStatusTool {
         };
         if let Some(capability) = capability {
             summary
-                .defaults
-                .retain(|item| item.capability == capability);
-            summary.accounts.retain(|account| {
-                account.enabled_capabilities.contains(&capability)
-                    || account.selected_for_capabilities.contains(&capability)
-            });
+                .accounts
+                .retain(|account| account.enabled_capabilities.contains(&capability));
         }
         serialize_tool_output(
             "tool_office_status",
@@ -332,7 +328,7 @@ mod tests {
 
     fn save_mail_accounts(
         config_file_store: &dyn ConfigFileStore,
-        default_account_key: &str,
+        personal_label: &str,
     ) -> Result<()> {
         save_office_accounts_segment(
             config_file_store,
@@ -352,15 +348,10 @@ mod tests {
                                 "account_key": "mail-personal",
                                 "provider_kind": "imap_smtp",
                                 "external_account_id": "personal@example.com",
-                                "account_label": "Personal",
+                                "account_label": "{personal_label}",
                                 "identity_class": "personal",
                                 "enabled_capabilities": ["mail"]
                             }}
-                        }}
-                    }},
-                    "binding": {{
-                        "capability_defaults": {{
-                            "mail": "{default_account_key}"
                         }}
                     }},
                     "policy": {{}}
@@ -369,41 +360,31 @@ mod tests {
         )
     }
 
-    fn save_documents_accounts(
-        config_file_store: &dyn ConfigFileStore,
-        default_account_key: &str,
-    ) -> Result<()> {
+    fn save_documents_accounts(config_file_store: &dyn ConfigFileStore) -> Result<()> {
         save_office_accounts_segment(
             config_file_store,
-            &format!(
-                r#"{{
-                    "registry": {{
-                        "accounts": {{
-                            "docs-work": {{
+            r#"{
+                    "registry": {
+                        "accounts": {
+                            "docs-work": {
                                 "account_key": "docs-work",
                                 "provider_kind": "webdav",
                                 "external_account_id": "work@example.com",
                                 "account_label": "Work Docs",
                                 "identity_class": "work",
                                 "enabled_capabilities": ["documents"]
-                            }}
-                        }}
-                    }},
-                    "binding": {{
-                        "capability_defaults": {{
-                            "documents": "{default_account_key}"
-                        }}
-                    }},
-                    "policy": {{}}
-                }}"#
-            ),
+                            }
+                        }
+                    },
+                    "policy": {}
+                }"#,
         )
     }
 
     #[test]
     fn office_status_tool_reloads_accounts_after_commit() {
         let config_file_store = Arc::new(MemoryConfigFileStore::default());
-        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        save_mail_accounts(config_file_store.as_ref(), "Personal").expect("seed accounts");
         let tool = OfficeStatusTool::with_authority(Arc::new(ReloadingOfficeAuthoritySource::new(
             config_file_store.clone(),
             Arc::new(StubOfficeCredentialStore),
@@ -413,22 +394,20 @@ mod tests {
 
         let first = tool.execute("{}", &mut ctx).expect("first status");
         let first: Value = serde_json::from_str(&first).expect("valid first status");
-        assert_eq!(first["summary"]["defaults"][0]["account_key"], "mail-work");
+        assert!(first["summary"].get("defaults").is_none());
 
-        save_mail_accounts(config_file_store.as_ref(), "mail-personal").expect("update accounts");
+        save_mail_accounts(config_file_store.as_ref(), "Updated Personal")
+            .expect("update accounts");
 
         let second = tool.execute("{}", &mut ctx).expect("second status");
         let second: Value = serde_json::from_str(&second).expect("valid second status");
-        assert_eq!(
-            second["summary"]["defaults"][0]["account_key"],
-            "mail-personal"
-        );
+        assert!(second["summary"].get("defaults").is_none());
     }
 
     #[test]
     fn office_status_tool_reports_account_assessments() {
         let config_file_store = Arc::new(MemoryConfigFileStore::default());
-        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        save_mail_accounts(config_file_store.as_ref(), "Personal").expect("seed accounts");
         let tool = OfficeStatusTool::with_authority(Arc::new(ReloadingOfficeAuthoritySource::new(
             config_file_store,
             Arc::new(StubOfficeCredentialStore),
@@ -483,8 +462,7 @@ mod tests {
         let config_file_store = Arc::new(MemoryConfigFileStore::default());
         let credential_store = Arc::new(MemoryOfficeCredentialStore::default());
         let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
-        save_documents_accounts(config_file_store.as_ref(), "docs-work")
-            .expect("seed document accounts");
+        save_documents_accounts(config_file_store.as_ref()).expect("seed document accounts");
         credential_store
             .set(&OfficeCredential {
                 account_key: "docs-work".to_string(),
@@ -558,7 +536,7 @@ mod tests {
         let config_file_store = Arc::new(MemoryConfigFileStore::default());
         let credential_store = Arc::new(MemoryOfficeCredentialStore::default());
         let runtime_status_store = Arc::new(MemoryRuntimeStatusStore::default());
-        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        save_mail_accounts(config_file_store.as_ref(), "Personal").expect("seed accounts");
         credential_store
             .set(&OfficeCredential {
                 account_key: "mail-work".to_string(),

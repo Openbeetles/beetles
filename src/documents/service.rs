@@ -86,10 +86,6 @@ impl DocumentsService {
         self.remote.credential_store().list_statuses()
     }
 
-    pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        self.remote.default_account_key()
-    }
-
     pub fn office_resolve_hint(
         &self,
         provider: Option<&str>,
@@ -362,8 +358,7 @@ mod tests {
     };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -619,9 +614,7 @@ mod tests {
             .expect("seed office credential");
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy {
-                global_default_account_key: "docs-work".to_string(),
                 ask_when_ambiguous: false,
                 preferred_identity_class: None,
             },
@@ -676,9 +669,7 @@ mod tests {
             .expect("seed office credential");
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy {
-                global_default_account_key: "docs-work".to_string(),
                 ask_when_ambiguous: false,
                 preferred_identity_class: None,
             },
@@ -697,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_service_uses_office_default_account_resolution() {
+    fn documents_service_uses_office_resolution_when_provider_has_single_candidate() {
         let service = build_service();
         let items = service
             .list(

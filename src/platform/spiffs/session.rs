@@ -13,7 +13,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use crate::platform::psram_vec::PsramVec;
@@ -28,7 +28,9 @@ const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const SESSION_FILE_EXT: &str = ".jsonl";
 const CHAT_ID_HEADER_PREFIX: &str = "# chat_id: ";
 const SESSION_MESSAGE_ID_PREFIX: &str = "msg_";
-static SESSION_MESSAGE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+// xtensa/riscv32 targets do not expose AtomicU64; the counter only needs to
+// disambiguate same-timestamp writes within one process, so AtomicU32 is enough.
+static SESSION_MESSAGE_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 fn fnv1a_hash(s: &str) -> u32 {
     let mut h: u32 = 2166136261;
@@ -1106,5 +1108,21 @@ mod tests {
         assert!(repaired.contains("\"message_id\":\"msg_"));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn generated_session_message_ids_keep_fixed_prefix_and_width() {
+        let first = super::next_session_message_id();
+        let second = super::next_session_message_id();
+
+        assert!(first.starts_with(SESSION_MESSAGE_ID_PREFIX));
+        assert!(second.starts_with(SESSION_MESSAGE_ID_PREFIX));
+        assert_eq!(
+            first.len(),
+            SESSION_MESSAGE_ID_PREFIX.len() + 16 + 8,
+            "id format should remain msg_<16 hex nanos><8 hex counter>",
+        );
+        assert_eq!(second.len(), first.len());
+        assert_ne!(first, second);
     }
 }

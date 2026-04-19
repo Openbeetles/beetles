@@ -2,9 +2,8 @@ use crate::office::OfficeAccountIdentityClass;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct OfficeSelectionPolicy {
-    #[serde(default)]
-    pub global_default_account_key: String,
     #[serde(default)]
     pub ask_when_ambiguous: bool,
     #[serde(default)]

@@ -193,7 +193,6 @@ impl RemindAtTool {
             provider: Some(provider),
             account_key,
             capability: OfficeCapability::Calendar,
-            default_account_key: service.office_default_account_key()?,
             resolve_hint: service.office_resolve_hint(Some(provider), account_key)?,
             account_assessments: service.office_account_assessments()?,
             error,
@@ -1336,7 +1335,7 @@ mod tests {
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     #[test]
-    fn remind_at_tool_routes_remote_calendar_through_office_default_account() {
+    fn remind_at_tool_routes_remote_calendar_through_sole_office_account() {
         let provider = Arc::new(RecordingRemoteProvider::default());
         let tool = RemindAtTool::with_office_calendar_service(
             Arc::new(StubRemindStore::default()),
@@ -1495,10 +1494,9 @@ mod tests {
         );
         assert_eq!(payload["ok"], false);
         assert_eq!(payload["office_assessment"]["capability"], "calendar");
-        assert_eq!(
-            payload["office_assessment"]["default_account_key"],
-            "calendar-work"
-        );
+        assert!(payload["office_assessment"]
+            .get("default_account_key")
+            .is_none());
     }
 
     #[cfg(all(
@@ -1871,11 +1869,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = crate::office::OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore),
             Arc::new(StubRuntimeStatusStore),

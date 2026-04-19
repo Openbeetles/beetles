@@ -473,13 +473,6 @@ impl ContactsDirectoryService {
         }
     }
 
-    pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        match self.remote.as_ref() {
-            Some(remote) => remote.0.default_account_key(),
-            None => Ok(None),
-        }
-    }
-
     pub fn office_resolve_hint(
         &self,
         provider: Option<&str>,
@@ -812,8 +805,8 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, OfficeService,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeService,
     };
     use std::collections::BTreeMap;
     use std::collections::HashMap;
@@ -969,11 +962,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let credential_store = Arc::new(StubOfficeCredentialStore::default());
         credential_store
             .set(&OfficeCredential {
@@ -993,7 +981,6 @@ mod tests {
             .expect("seed office credential");
         OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             credential_store,
             Arc::new(StubRuntimeStatusStore),

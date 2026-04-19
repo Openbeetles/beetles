@@ -105,10 +105,6 @@ impl<R, C: ?Sized> OfficeCapabilityRemoteRuntime<R, C> {
         )
     }
 
-    pub(crate) fn default_account_key(&self) -> Result<Option<String>> {
-        self.office_runtime.default_account_key()
-    }
-
     pub(crate) fn resolve_hint(
         &self,
         provider: Option<&str>,
@@ -402,12 +398,6 @@ impl OfficeCapabilityRuntime {
                 ),
             )),
         }
-    }
-
-    pub(crate) fn default_account_key(&self) -> Result<Option<String>> {
-        Ok(self
-            .load_service()?
-            .and_then(|service| service.default_account_key(self.capability)))
     }
 
     pub(crate) fn resolve_hint(
@@ -991,8 +981,8 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, OfficeService, SnapshotOfficeAuthoritySource,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeService, SnapshotOfficeAuthoritySource,
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -1205,10 +1195,7 @@ mod tests {
         }
     }
 
-    fn runtime_with_default_mail_account(
-        ask_when_ambiguous: bool,
-        default_account_key: Option<&str>,
-    ) -> OfficeCapabilityRuntime {
+    fn runtime_with_mail_accounts(ask_when_ambiguous: bool) -> OfficeCapabilityRuntime {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(OfficeAccount {
             account_key: "mail-work".to_string(),
@@ -1226,15 +1213,9 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Mail],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        if let Some(default_account_key) = default_account_key {
-            binding.set_default_account(OfficeCapability::Mail, default_account_key.to_string());
-        }
         let office = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy {
-                global_default_account_key: String::new(),
                 ask_when_ambiguous,
                 preferred_identity_class: None,
             },
@@ -1250,20 +1231,42 @@ mod tests {
         )
     }
 
+    fn runtime_with_single_mail_account() -> OfficeCapabilityRuntime {
+        let mut registry = OfficeAccountRegistry::new();
+        registry.insert(OfficeAccount {
+            account_key: "mail-work".to_string(),
+            provider_kind: "imap_smtp".to_string(),
+            external_account_id: "work@example.com".to_string(),
+            account_label: "Work".to_string(),
+            identity_class: OfficeAccountIdentityClass::Work,
+            enabled_capabilities: vec![OfficeCapability::Mail],
+        });
+        let office = OfficeService::new(
+            registry,
+            OfficeSelectionPolicy::default(),
+            Arc::new(StubCredentialStore::default()),
+            Arc::new(StubRuntimeStatusStore),
+        );
+        OfficeCapabilityRuntime::new(
+            OfficeCapability::Mail,
+            "mail_provider",
+            "mail",
+            "mail_runtime",
+            Some(Arc::new(SnapshotOfficeAuthoritySource::new(office))),
+        )
+    }
+
     #[test]
-    fn selected_provider_name_returns_office_selected_provider() {
-        let runtime = runtime_with_default_mail_account(false, Some("mail-work"));
+    fn selected_provider_name_returns_provider_for_sole_candidate_route() {
+        let runtime = runtime_with_single_mail_account();
         let directory = StubDirectory {
             provider_by_account: [("mail-work".to_string(), "imap_smtp".to_string())]
                 .into_iter()
                 .collect(),
             providers: vec!["imap_smtp".to_string()],
-            keys_by_provider: [(
-                "imap_smtp".to_string(),
-                vec!["mail-work".to_string(), "mail-personal".to_string()],
-            )]
-            .into_iter()
-            .collect(),
+            keys_by_provider: [("imap_smtp".to_string(), vec!["mail-work".to_string()])]
+                .into_iter()
+                .collect(),
         };
 
         let provider = runtime
@@ -1274,7 +1277,7 @@ mod tests {
 
     #[test]
     fn resolve_account_key_reports_ambiguous_candidates_from_office_selection() {
-        let runtime = runtime_with_default_mail_account(true, None);
+        let runtime = runtime_with_mail_accounts(true);
         let directory = StubDirectory {
             provider_by_account: BTreeMap::new(),
             providers: vec!["imap_smtp".to_string()],
@@ -1296,7 +1299,7 @@ mod tests {
 
     #[test]
     fn remote_runtime_resolves_registered_provider_and_credential_from_shared_route_logic() {
-        let runtime = runtime_with_default_mail_account(false, Some("mail-work"));
+        let runtime = runtime_with_single_mail_account();
         let store = Arc::new(StubRemoteStore::default());
         store.insert(StubRemoteCredential {
             account_key: "mail-work".to_string(),
@@ -1320,7 +1323,7 @@ mod tests {
 
     #[test]
     fn remote_runtime_account_assessments_use_provider_registry_as_probe_truth() {
-        let runtime = runtime_with_default_mail_account(false, Some("mail-work"));
+        let runtime = runtime_with_mail_accounts(false);
         let store = Arc::new(StubRemoteStore::default());
         store.insert(StubRemoteCredential {
             account_key: "mail-work".to_string(),

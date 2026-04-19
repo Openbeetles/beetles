@@ -2674,15 +2674,23 @@ ensure_espflash() {
 
 generate_app_bin_from_elf() {
   [[ -f "$BIN" ]] || return 1
+  ensure_espflash
   local flash_mode="${APP_FLASH_MODE:-dio}"
   local flash_size="${APP_FLASH_SIZE:-16MB}"
   local flash_freq="${APP_FLASH_FREQ:-80m}"
-  if ! python3 -m esptool --chip "$FLASH_CHIP" elf2image \
+  flash_mode="$(printf '%s' "$flash_mode" | tr '[:upper:]' '[:lower:]')"
+  flash_size="$(printf '%s' "$flash_size" | tr '[:upper:]' '[:lower:]')"
+  flash_freq="$(printf '%s' "$flash_freq" | tr '[:upper:]' '[:lower:]')"
+  case "$flash_freq" in
+    *mhz) ;;
+    *m) flash_freq="${flash_freq%m}mhz" ;;
+  esac
+  if ! ESPFLASH_SKIP_UPDATE_CHECK=true espflash save-image --chip "$FLASH_CHIP" \
       --flash-mode "$flash_mode" \
       --flash-size "$flash_size" \
       --flash-freq "$flash_freq" \
-      -o "$APP_BIN" \
-      "$BIN" >/dev/null; then
+      "$BIN" \
+      "$APP_BIN" >/dev/null; then
     echo "Error: failed to generate app bin from ELF: $BIN" >&2
     return 1
   fi

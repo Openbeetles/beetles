@@ -1,6 +1,5 @@
 use crate::office::{
-    OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability, OfficeCapabilityBinding,
-    OfficeSelectionPolicy,
+    OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability, OfficeSelectionPolicy,
 };
 
 use serde::{Deserialize, Serialize};
@@ -32,9 +31,7 @@ pub struct OfficeResolveCandidate {
 #[serde(rename_all = "snake_case")]
 pub enum OfficeResolveSelectionReason {
     ExplicitAccountKey,
-    CapabilityDefault,
     HistoricalSuccessfulActivity,
-    GlobalDefault,
     PreferredIdentityClass,
     SoleCandidate,
 }
@@ -75,7 +72,6 @@ pub struct OfficeResolver;
 impl OfficeResolver {
     pub fn resolve(
         registry: &OfficeAccountRegistry,
-        binding: &OfficeCapabilityBinding,
         policy: &OfficeSelectionPolicy,
         request: &OfficeResolveRequest,
     ) -> OfficeResolveResult {
@@ -116,15 +112,6 @@ impl OfficeResolver {
             }
         }
 
-        if let Some(account_key) = binding.default_account_for(request.capability) {
-            if account_in_candidates(&candidates, account_key) {
-                return OfficeResolveResult::Selected(OfficeResolveSelection {
-                    account_key: account_key.to_string(),
-                    selection_reason: OfficeResolveSelectionReason::CapabilityDefault,
-                });
-            }
-        }
-
         if let Some(account_key) = request
             .historical_account_key
             .as_deref()
@@ -137,15 +124,6 @@ impl OfficeResolver {
                     selection_reason: OfficeResolveSelectionReason::HistoricalSuccessfulActivity,
                 });
             }
-        }
-
-        if !policy.global_default_account_key.is_empty()
-            && account_in_candidates(&candidates, &policy.global_default_account_key)
-        {
-            return OfficeResolveResult::Selected(OfficeResolveSelection {
-                account_key: policy.global_default_account_key.clone(),
-                selection_reason: OfficeResolveSelectionReason::GlobalDefault,
-            });
         }
 
         if let Some(identity_class) = policy.preferred_identity_class {
@@ -238,7 +216,6 @@ mod tests {
         ));
         let result = OfficeResolver::resolve(
             &registry,
-            &OfficeCapabilityBinding::default(),
             &OfficeSelectionPolicy::default(),
             &OfficeResolveRequest {
                 capability: OfficeCapability::Mail,
@@ -258,35 +235,27 @@ mod tests {
     }
 
     #[test]
-    fn resolve_uses_capability_default_before_global_default() {
+    fn resolve_uses_sole_candidate_when_only_one_account_matches_provider_filter() {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(account(
             "calendar-work",
-            "caldav",
+            "caldav_work",
             OfficeAccountIdentityClass::Work,
             vec![OfficeCapability::Calendar],
         ));
         registry.insert(account(
             "calendar-personal",
-            "caldav",
+            "caldav_personal",
             OfficeAccountIdentityClass::Personal,
             vec![OfficeCapability::Calendar],
         ));
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
-        let policy = OfficeSelectionPolicy {
-            global_default_account_key: "calendar-personal".to_string(),
-            ask_when_ambiguous: true,
-            preferred_identity_class: None,
-        };
         let result = OfficeResolver::resolve(
             &registry,
-            &binding,
-            &policy,
+            &OfficeSelectionPolicy::default(),
             &OfficeResolveRequest {
                 capability: OfficeCapability::Calendar,
                 preferred_account_key: None,
-                preferred_provider_kind: None,
+                preferred_provider_kind: Some("caldav_work".to_string()),
                 preferred_identity_class: None,
                 historical_account_key: None,
             },
@@ -295,7 +264,7 @@ mod tests {
             result,
             OfficeResolveResult::Selected(OfficeResolveSelection {
                 account_key: "calendar-work".to_string(),
-                selection_reason: OfficeResolveSelectionReason::CapabilityDefault,
+                selection_reason: OfficeResolveSelectionReason::SoleCandidate,
             })
         );
     }
@@ -317,7 +286,6 @@ mod tests {
         ));
         let result = OfficeResolver::resolve(
             &registry,
-            &OfficeCapabilityBinding::default(),
             &OfficeSelectionPolicy::default(),
             &OfficeResolveRequest {
                 capability: OfficeCapability::Mail,
@@ -337,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_explicit_identity_class_overrides_default_binding() {
+    fn resolve_explicit_identity_class_selects_matching_account_directly() {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(account(
             "mail-work",
@@ -351,11 +319,8 @@ mod tests {
             OfficeAccountIdentityClass::Personal,
             vec![OfficeCapability::Mail],
         ));
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, "mail-personal".to_string());
         let result = OfficeResolver::resolve(
             &registry,
-            &binding,
             &OfficeSelectionPolicy::default(),
             &OfficeResolveRequest {
                 capability: OfficeCapability::Mail,
@@ -391,7 +356,6 @@ mod tests {
         ));
         let result = OfficeResolver::resolve(
             &registry,
-            &OfficeCapabilityBinding::default(),
             &OfficeSelectionPolicy::default(),
             &OfficeResolveRequest {
                 capability: OfficeCapability::Documents,
@@ -424,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prefers_historical_successful_activity_before_global_default() {
+    fn resolve_prefers_historical_successful_activity_before_ambiguity() {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(account(
             "docs-work",
@@ -438,15 +402,9 @@ mod tests {
             OfficeAccountIdentityClass::Personal,
             vec![OfficeCapability::Documents],
         ));
-        let policy = OfficeSelectionPolicy {
-            global_default_account_key: "docs-personal".to_string(),
-            ask_when_ambiguous: true,
-            preferred_identity_class: None,
-        };
         let result = OfficeResolver::resolve(
             &registry,
-            &OfficeCapabilityBinding::default(),
-            &policy,
+            &OfficeSelectionPolicy::default(),
             &OfficeResolveRequest {
                 capability: OfficeCapability::Documents,
                 preferred_account_key: None,

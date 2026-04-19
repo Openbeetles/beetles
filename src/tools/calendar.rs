@@ -39,8 +39,6 @@ struct CalendarProviderStatusResponse {
     op: &'static str,
     local_provider: &'static str,
     registered_remote_providers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default_calendar_account_key: Option<String>,
     configured_providers: Vec<CalendarProviderCredentialStatus>,
     account_assessments: Vec<OfficeAccountAssessment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -229,7 +227,6 @@ impl CalendarTool {
             provider,
             account_key,
             capability: OfficeCapability::Calendar,
-            default_account_key: self.service.office_default_account_key()?,
             resolve_hint: self.service.office_resolve_hint_with_identity(
                 provider,
                 account_key,
@@ -264,7 +261,6 @@ impl CalendarTool {
                         op: "provider_status",
                         local_provider: CALENDAR_PROVIDER_LOCAL,
                         registered_remote_providers,
-                        default_calendar_account_key: self.service.office_default_account_key()?,
                         configured_providers,
                         account_diagnostics: build_account_diagnostics(&account_assessments),
                         account_assessments,
@@ -623,7 +619,7 @@ impl Tool for CalendarTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by office calendar defaults, identity hints, and participant context when multiple accounts exist. Times accept Unix seconds or ISO8601."
+        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by explicit identity hints and participant context when multiple accounts exist. Times accept Unix seconds or ISO8601."
     }
 
     fn schema(&self) -> &str {
@@ -929,8 +925,8 @@ mod tests {
     };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry,
-        OfficeAccountRuntimeStatus, OfficeCapability, OfficeCapabilityBinding, OfficeCredential,
-        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
+        OfficeAccountRuntimeStatus, OfficeCapability, OfficeCredential, OfficeCredentialStore,
+        OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
         SnapshotOfficeAuthoritySource,
     };
     use crate::platform::StateFs;
@@ -1439,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_tool_routes_remote_provider_via_office_default_account() {
+    fn calendar_tool_routes_remote_provider_via_explicit_identity_hint() {
         let credential_store = Arc::new(StubCredentialStore::default());
         credential_store
             .set(&CalendarProviderCredential {
@@ -1496,11 +1492,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore),
@@ -1513,7 +1506,10 @@ mod tests {
         );
         let mut ctx = DummyCtx;
         let payload = tool
-            .execute(r#"{"op":"list","provider":"mock_remote"}"#, &mut ctx)
+            .execute(
+                r#"{"op":"list","provider":"mock_remote","preferred_identity_class":"work"}"#,
+                &mut ctx,
+            )
             .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["items"][0]["id"], "event-for-calendar-work");
@@ -1522,7 +1518,7 @@ mod tests {
             .execute(r#"{"op":"provider_status"}"#, &mut ctx)
             .unwrap();
         let status: Value = serde_json::from_str(&status).unwrap();
-        assert_eq!(status["default_calendar_account_key"], "calendar-work");
+        assert!(status.get("default_calendar_account_key").is_none());
         assert_eq!(
             status["account_assessments"][0]["account_key"],
             "calendar-personal"
@@ -1550,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_tool_list_prefers_identity_class_over_default_account() {
+    fn calendar_tool_list_prefers_identity_class_over_ambiguous_accounts() {
         let credential_store = Arc::new(StubCredentialStore::default());
         for (account_key, label, account_id, calendar_id, updated_at) in [
             ("calendar-work", "Work", "work@example.com", "work", 1),
@@ -1600,11 +1596,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-personal".to_string());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore),
@@ -1627,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_tool_remote_list_returns_structured_office_failure_when_default_account_has_no_credential(
+    fn calendar_tool_remote_list_returns_structured_office_failure_for_sole_candidate_without_credential(
     ) {
         let mut providers = CalendarProviderRegistry::new();
         providers.register(Arc::new(StubProvider));
@@ -1640,11 +1633,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore),
@@ -1674,10 +1664,9 @@ mod tests {
         assert_eq!(payload["provider"], "mock_remote");
         assert_eq!(payload["failure_kind"], "capability");
         assert_eq!(payload["office_assessment"]["capability"], "calendar");
-        assert_eq!(
-            payload["office_assessment"]["default_account_key"],
-            "calendar-work"
-        );
+        assert!(payload["office_assessment"]
+            .get("default_account_key")
+            .is_none());
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["account_key"],
             "calendar-work"
@@ -1752,7 +1741,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -1796,8 +1784,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_tool_create_remote_work_participant_prefers_matching_calendar_identity_over_default_account(
-    ) {
+    fn calendar_tool_create_remote_work_participant_prefers_matching_calendar_identity() {
         let credential_store = Arc::new(StubCredentialStore::default());
         for (account_key, label, account_id, calendar_id, updated_at) in [
             ("calendar-work", "Work", "work@example.com", "work", 1),
@@ -1857,12 +1844,6 @@ mod tests {
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
 
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-personal".to_string());
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let office_credential_store = Arc::new(StubOfficeCredentialStore::default());
         for (account_key, access_token, metadata) in [
             ("calendar-work", "secret", BTreeMap::new()),
@@ -1892,7 +1873,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             office_credential_store,
             Arc::new(StubRuntimeStatusStore),

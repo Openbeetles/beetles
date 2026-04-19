@@ -100,10 +100,6 @@ impl CalendarService {
         self.remote.credential_store().list_statuses()
     }
 
-    pub fn office_default_account_key(&self) -> Result<Option<String>> {
-        self.remote.default_account_key()
-    }
-
     pub fn office_resolve_hint(
         &self,
         provider: Option<&str>,
@@ -438,8 +434,8 @@ mod tests {
     };
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry,
-        OfficeAccountRuntimeStatus, OfficeCapability, OfficeCapabilityBinding, OfficeCredential,
-        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeAccountRuntimeStatus, OfficeCapability, OfficeCredential, OfficeCredentialStore,
+        OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     };
     use crate::platform::ResponseBody;
     use std::collections::{BTreeMap, HashMap};
@@ -732,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_provider_uses_office_default_account_before_ambiguity_error() {
+    fn remote_provider_uses_office_policy_identity_before_ambiguity_error() {
         let credential_store = Arc::new(StubCredentialStore::default());
         credential_store
             .set(&CalendarProviderCredential {
@@ -787,14 +783,14 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "work".to_string());
         let mut providers = CalendarProviderRegistry::new();
         providers.register(Arc::new(MockRemoteProvider));
         let office_service = OfficeService::new(
             registry,
-            binding,
-            OfficeSelectionPolicy::default(),
+            OfficeSelectionPolicy {
+                ask_when_ambiguous: false,
+                preferred_identity_class: Some(OfficeAccountIdentityClass::Work),
+            },
             Arc::new(StubOfficeCredentialStore::default()),
             Arc::new(MemoryRuntimeStatusStore::default()),
         );
@@ -816,8 +812,8 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(
             service
-                .office_default_account_key()
-                .expect("default account key")
+                .resolve_account_key_for_provider("mock_remote", None)
+                .expect("resolve account key")
                 .as_deref(),
             Some("work")
         );
@@ -1015,13 +1011,10 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Calendar],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "work".to_string());
         let mut providers = CalendarProviderRegistry::new();
         providers.register(provider);
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubOfficeCredentialStore::default()),
             runtime_status_store,

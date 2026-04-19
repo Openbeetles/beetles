@@ -68,8 +68,6 @@ struct ContactsDirectoryLookupResponse {
 struct ContactsDirectoryProviderStatusResponse {
     op: &'static str,
     registered_remote_providers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default_contacts_directory_account_key: Option<String>,
     configured_providers: Vec<crate::contacts_directory::ContactsDirectoryProviderCredentialStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     account_assessments: Vec<OfficeAccountAssessment>,
@@ -162,7 +160,6 @@ impl ContactsDirectoryTool {
             provider,
             account_key,
             capability: crate::office::OfficeCapability::ContactsDirectory,
-            default_account_key: self.service.office_default_account_key()?,
             resolve_hint: self.service.office_resolve_hint_with_identity(
                 provider,
                 account_key,
@@ -214,9 +211,6 @@ impl ContactsDirectoryTool {
                                 .into_iter()
                                 .map(str::to_string)
                                 .collect(),
-                            default_contacts_directory_account_key: self
-                                .service
-                                .office_default_account_key()?,
                             configured_providers: self.service.list_provider_statuses()?,
                             account_diagnostics: build_account_diagnostics(&account_assessments),
                             account_assessments,
@@ -267,7 +261,7 @@ impl ContactsDirectoryTool {
                         let remote_context = provider.is_some()
                             || account_key.is_some()
                             || preferred_identity_class.is_some()
-                            || self.service.office_default_account_key()?.is_some()
+                            || !self.service.office_account_assessments()?.is_empty()
                             || self.service.list_provider_statuses()?.len() == 1;
                         if remote_context {
                             return self.office_operation_failure(
@@ -516,8 +510,8 @@ mod tests {
     use crate::i18n::Locale;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, OfficeService,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeService,
     };
     use crate::platform::{ResponseBody, StateFs};
     use crate::tools::{Tool, ToolContext};
@@ -754,7 +748,8 @@ mod tests {
     }
 
     #[test]
-    fn contacts_directory_tool_provider_status_reports_feishu_defaults_and_diagnostics() {
+    fn contacts_directory_tool_provider_status_reports_feishu_diagnostics_without_legacy_default_metadata(
+    ) {
         let state_fs = Arc::new(MockStateFs::default());
         let local_store = Arc::new(StateFsContactsDirectoryStore::new(state_fs));
         let mut registry = OfficeAccountRegistry::new();
@@ -766,11 +761,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let credential_store = Arc::new(StubOfficeCredentialStore::default());
         credential_store
             .set(&OfficeCredential {
@@ -790,7 +780,6 @@ mod tests {
             .expect("seed office credential");
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -816,10 +805,9 @@ mod tests {
             payload["registered_remote_providers"][0].as_str(),
             Some("feishu_contacts_directory")
         );
-        assert_eq!(
-            payload["default_contacts_directory_account_key"].as_str(),
-            Some("contacts-feishu")
-        );
+        assert!(payload
+            .get("default_contacts_directory_account_key")
+            .is_none());
         assert_eq!(
             payload["configured_providers"][0]["base_url"].as_str(),
             Some(FEISHU_CONTACTS_DEFAULT_BASE_URL)
@@ -843,11 +831,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu".to_string(),
-        );
         let credential_store = Arc::new(StubOfficeCredentialStore::default());
         credential_store
             .set(&OfficeCredential {
@@ -867,7 +850,6 @@ mod tests {
             .expect("seed office credential");
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -900,10 +882,9 @@ mod tests {
             payload["office_assessment"]["capability"],
             "contacts_directory"
         );
-        assert_eq!(
-            payload["office_assessment"]["default_account_key"],
-            "contacts-feishu"
-        );
+        assert!(payload["office_assessment"]
+            .get("default_account_key")
+            .is_none());
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["account_key"],
             "contacts-feishu"
@@ -957,7 +938,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             credential_store,
             Arc::new(StubRuntimeStatusStore),
@@ -1006,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn contacts_directory_tool_lookup_prefers_identity_class_over_default_account() {
+    fn contacts_directory_tool_lookup_prefers_identity_class_over_ambiguous_accounts() {
         let state_fs = Arc::new(MockStateFs::default());
         let local_store = Arc::new(StateFsContactsDirectoryStore::new(state_fs));
         let mut registry = OfficeAccountRegistry::new();
@@ -1031,11 +1011,6 @@ mod tests {
                 enabled_capabilities: vec![OfficeCapability::ContactsDirectory],
             });
         }
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(
-            OfficeCapability::ContactsDirectory,
-            "contacts-feishu-personal".to_string(),
-        );
         let credential_store = Arc::new(StubOfficeCredentialStore::default());
         for account_key in ["contacts-feishu-work", "contacts-feishu-personal"] {
             credential_store
@@ -1057,7 +1032,6 @@ mod tests {
         }
         let office_service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             credential_store,
             Arc::new(StubRuntimeStatusStore),

@@ -3,19 +3,12 @@ use crate::error::Result;
 use crate::office::{assess_office_account, OfficeAccountAssessment};
 use crate::office::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeAccountRuntimeStatus,
-    OfficeCapability, OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStatus,
-    OfficeCredentialStore, OfficeResolveRequest, OfficeResolveResult, OfficeResolver,
-    OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+    OfficeCapability, OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore,
+    OfficeResolveRequest, OfficeResolveResult, OfficeResolver, OfficeRuntimeStatusStore,
+    OfficeSelectionPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeCapabilityDefault {
-    pub capability: OfficeCapability,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_key: Option<String>,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeAccountAuthorityStatus {
@@ -25,7 +18,6 @@ pub struct OfficeAccountAuthorityStatus {
     pub account_label: String,
     pub identity_class: OfficeAccountIdentityClass,
     pub enabled_capabilities: Vec<OfficeCapability>,
-    pub selected_for_capabilities: Vec<OfficeCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_status: Option<OfficeCredentialStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -35,14 +27,12 @@ pub struct OfficeAccountAuthorityStatus {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeAuthoritySummary {
     pub policy: OfficeSelectionPolicy,
-    pub defaults: Vec<OfficeCapabilityDefault>,
     pub accounts: Vec<OfficeAccountAuthorityStatus>,
 }
 
 #[derive(Clone)]
 pub struct OfficeService {
     registry: OfficeAccountRegistry,
-    binding: OfficeCapabilityBinding,
     policy: OfficeSelectionPolicy,
     credential_store: Arc<dyn OfficeCredentialStore + Send + Sync>,
     runtime_status_store: Arc<dyn OfficeRuntimeStatusStore + Send + Sync>,
@@ -51,14 +41,12 @@ pub struct OfficeService {
 impl OfficeService {
     pub fn new(
         registry: OfficeAccountRegistry,
-        binding: OfficeCapabilityBinding,
         policy: OfficeSelectionPolicy,
         credential_store: Arc<dyn OfficeCredentialStore + Send + Sync>,
         runtime_status_store: Arc<dyn OfficeRuntimeStatusStore + Send + Sync>,
     ) -> Self {
         Self {
             registry,
-            binding,
             policy,
             credential_store,
             runtime_status_store,
@@ -78,20 +66,7 @@ impl OfficeService {
                     None
                 });
         }
-        OfficeResolver::resolve(&self.registry, &self.binding, &self.policy, &request)
-    }
-
-    pub fn default_account_key(&self, capability: OfficeCapability) -> Option<String> {
-        match self.resolve(&OfficeResolveRequest {
-            capability,
-            preferred_account_key: None,
-            preferred_provider_kind: None,
-            preferred_identity_class: None,
-            historical_account_key: None,
-        }) {
-            OfficeResolveResult::Selected(selection) => Some(selection.account_key),
-            OfficeResolveResult::Ambiguous(_) | OfficeResolveResult::Missing(_) => None,
-        }
+        OfficeResolver::resolve(&self.registry, &self.policy, &request)
     }
 
     pub fn account(&self, account_key: &str) -> Option<OfficeAccount> {
@@ -227,27 +202,6 @@ impl OfficeService {
             .into_iter()
             .map(|status| (status.account_key.clone(), status))
             .collect::<std::collections::BTreeMap<_, _>>();
-        let defaults = OfficeCapability::all()
-            .into_iter()
-            .map(|capability| OfficeCapabilityDefault {
-                capability,
-                account_key: self.default_account_key(capability),
-            })
-            .collect::<Vec<_>>();
-        let selected = defaults
-            .iter()
-            .filter_map(|item| {
-                item.account_key
-                    .as_ref()
-                    .map(|account_key| (account_key.clone(), item.capability))
-            })
-            .fold(
-                std::collections::BTreeMap::<String, Vec<OfficeCapability>>::new(),
-                |mut acc, (account_key, capability)| {
-                    acc.entry(account_key).or_default().push(capability);
-                    acc
-                },
-            );
         let accounts = self
             .registry
             .all_accounts()
@@ -259,17 +213,12 @@ impl OfficeService {
                 account_label: account.account_label.clone(),
                 identity_class: account.identity_class,
                 enabled_capabilities: account.enabled_capabilities.clone(),
-                selected_for_capabilities: selected
-                    .get(&account.account_key)
-                    .cloned()
-                    .unwrap_or_default(),
                 credential_status: credentials.get(&account.account_key).cloned(),
                 runtime_status: runtime_statuses.get(&account.account_key).cloned(),
             })
             .collect::<Vec<_>>();
         Ok(OfficeAuthoritySummary {
             policy: self.policy.clone(),
-            defaults,
             accounts,
         })
     }
@@ -345,7 +294,7 @@ fn activity_kind_matches_capability(activity_kind: &str, capability: OfficeCapab
 mod tests {
     use super::*;
     use crate::error::Result;
-    use crate::office::{OfficeCapabilityBinding, OfficeRuntimeStatusStore};
+    use crate::office::OfficeRuntimeStatusStore;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -456,12 +405,10 @@ mod tests {
     }
 
     #[test]
-    fn summary_marks_selected_account_and_joins_runtime_and_credentials() {
+    fn summary_joins_runtime_and_credentials_without_legacy_default_metadata() {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(work_account());
         registry.insert(personal_account());
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Calendar, "calendar-work".to_string());
         let credential_store = Arc::new(StubCredentialStore::default());
         credential_store
             .set(&OfficeCredential {
@@ -493,30 +440,22 @@ mod tests {
 
         let service = OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             credential_store,
             runtime_status_store,
         );
 
         let summary = service.summary().expect("summary");
+        let summary_json = serde_json::to_value(&summary).expect("summary json");
         let work = summary
             .accounts
             .iter()
             .find(|item| item.account_key == "calendar-work")
             .expect("work account");
-        assert_eq!(
-            summary
-                .defaults
-                .iter()
-                .find(|item| item.capability == OfficeCapability::Calendar)
-                .and_then(|item| item.account_key.as_deref()),
-            Some("calendar-work")
-        );
-        assert_eq!(
-            work.selected_for_capabilities,
-            vec![OfficeCapability::Mail, OfficeCapability::Calendar]
-        );
+        assert!(summary_json.get("defaults").is_none());
+        assert!(summary_json["accounts"][0]
+            .get("selected_for_capabilities")
+            .is_none());
         assert_eq!(
             work.credential_status.as_ref().map(|item| item.configured),
             Some(true)
@@ -528,27 +467,48 @@ mod tests {
     }
 
     #[test]
-    fn default_account_key_returns_none_when_resolution_is_ambiguous() {
+    fn resolve_reports_ambiguity_when_multiple_accounts_share_capability() {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(work_account());
         registry.insert(personal_account());
 
         let service = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             Arc::new(StubCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore::default()),
         );
 
         assert_eq!(
-            service.default_account_key(OfficeCapability::Calendar),
-            None
+            service.resolve(&OfficeResolveRequest {
+                capability: OfficeCapability::Calendar,
+                preferred_account_key: None,
+                preferred_provider_kind: None,
+                preferred_identity_class: None,
+                historical_account_key: None,
+            }),
+            OfficeResolveResult::Ambiguous(crate::office::OfficeResolveAmbiguity {
+                reason: crate::office::OfficeResolveAmbiguityReason::MultipleMatchingAccounts,
+                candidate_accounts: vec![
+                    crate::office::OfficeResolveCandidate {
+                        account_key: "calendar-personal".to_string(),
+                        provider_kind: "google_calendar".to_string(),
+                        account_label: "私人日历".to_string(),
+                        identity_class: OfficeAccountIdentityClass::Personal,
+                    },
+                    crate::office::OfficeResolveCandidate {
+                        account_key: "calendar-work".to_string(),
+                        provider_kind: "google_calendar".to_string(),
+                        account_label: "工作日历".to_string(),
+                        identity_class: OfficeAccountIdentityClass::Work,
+                    },
+                ],
+            })
         );
     }
 
     #[test]
-    fn resolve_prefers_historical_successful_activity_before_global_default() {
+    fn resolve_prefers_historical_successful_activity_before_ambiguity() {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(work_account());
         registry.insert(personal_account());
@@ -596,9 +556,7 @@ mod tests {
 
         let service = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy {
-                global_default_account_key: "calendar-personal".to_string(),
                 ask_when_ambiguous: true,
                 preferred_identity_class: None,
             },
@@ -607,8 +565,18 @@ mod tests {
         );
 
         assert_eq!(
-            service.default_account_key(OfficeCapability::Calendar),
-            Some("calendar-work".to_string())
+            service.resolve(&OfficeResolveRequest {
+                capability: OfficeCapability::Calendar,
+                preferred_account_key: None,
+                preferred_provider_kind: None,
+                preferred_identity_class: None,
+                historical_account_key: None,
+            }),
+            OfficeResolveResult::Selected(crate::office::OfficeResolveSelection {
+                account_key: "calendar-work".to_string(),
+                selection_reason:
+                    crate::office::OfficeResolveSelectionReason::HistoricalSuccessfulActivity,
+            })
         );
     }
 }

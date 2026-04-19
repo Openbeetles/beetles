@@ -8,8 +8,7 @@ use crate::display::{
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountRegistry, OfficeCapability, OfficeCapabilityBinding, OfficeCredentialStore,
-    OfficeCredentialsSegment, OfficeSelectionPolicy,
+    OfficeAccountRegistry, OfficeCredentialStore, OfficeCredentialsSegment, OfficeSelectionPolicy,
 };
 use crate::platform::ConfigStore;
 use serde::de::DeserializeOwned;
@@ -1026,11 +1025,10 @@ pub struct SystemSegment {
 
 /// POST /api/config/accounts 请求体。
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct OfficeAccountsSegment {
     #[serde(default)]
     pub registry: OfficeAccountRegistry,
-    #[serde(default)]
-    pub binding: OfficeCapabilityBinding,
     #[serde(default)]
     pub policy: OfficeSelectionPolicy,
 }
@@ -1757,42 +1755,6 @@ fn validate_office_accounts_segment(seg: &OfficeAccountsSegment) -> Result<()> {
                 ),
             ));
         }
-    }
-    for capability in OfficeCapability::all() {
-        if let Some(account_key) = seg.binding.default_account_for(capability) {
-            let Some(account) = seg.registry.get(account_key) else {
-                return Err(Error::config(
-                    "office_accounts",
-                    format!(
-                        "binding default account '{}' for capability '{:?}' does not exist",
-                        account_key, capability
-                    ),
-                ));
-            };
-            if !account.enabled_capabilities.contains(&capability) {
-                return Err(Error::config(
-                    "office_accounts",
-                    format!(
-                        "binding default account '{}' does not enable capability '{:?}'",
-                        account_key, capability
-                    ),
-                ));
-            }
-        }
-    }
-    if !seg.policy.global_default_account_key.trim().is_empty()
-        && seg
-            .registry
-            .get(seg.policy.global_default_account_key.trim())
-            .is_none()
-    {
-        return Err(Error::config(
-            "office_accounts",
-            format!(
-                "global_default_account_key '{}' does not exist",
-                seg.policy.global_default_account_key
-            ),
-        ));
     }
     Ok(())
 }
@@ -3104,14 +3066,7 @@ mod tests {
                     }
                 }
             },
-            "binding": {
-                "capability_defaults": {
-                    "mail": "mail-work",
-                    "calendar": "calendar-personal"
-                }
-            },
             "policy": {
-                "global_default_account_key": "mail-work",
                 "ask_when_ambiguous": true,
                 "preferred_identity_class": "work"
             }
@@ -3123,15 +3078,15 @@ mod tests {
             serde_json::from_str(&saved).expect("parse saved office accounts");
         assert!(parsed.registry.get("mail-work").is_some());
         assert!(parsed.registry.get("calendar-personal").is_some());
+        assert!(parsed.policy.ask_when_ambiguous);
         assert_eq!(
-            parsed.binding.default_account_for(OfficeCapability::Mail),
-            Some("mail-work")
+            parsed.policy.preferred_identity_class,
+            Some(crate::office::OfficeAccountIdentityClass::Work)
         );
-        assert_eq!(parsed.policy.global_default_account_key, "mail-work");
     }
 
     #[test]
-    fn save_office_accounts_segment_rejects_missing_binding_account() {
+    fn save_office_accounts_segment_rejects_legacy_binding_key() {
         struct MemoryFileStore;
 
         impl ConfigFileStore for MemoryFileStore {
@@ -3156,14 +3111,12 @@ mod tests {
                 "policy": {}
             }"#,
         )
-        .expect_err("binding should reject unknown default account");
-        assert!(error
-            .to_string()
-            .contains("binding default account 'ghost'"));
+        .expect_err("legacy binding should be rejected");
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
-    fn save_office_accounts_segment_rejects_binding_account_without_capability() {
+    fn save_office_accounts_segment_rejects_legacy_global_default_policy_key() {
         struct MemoryFileStore;
 
         impl ConfigFileStore for MemoryFileStore {
@@ -3195,14 +3148,11 @@ mod tests {
                         }
                     }
                 },
-                "binding": { "capability_defaults": { "calendar": "mail-work" } },
-                "policy": {}
+                "policy": { "global_default_account_key": "mail-work" }
             }"#,
         )
-        .expect_err("binding should reject accounts that do not enable the capability");
-        assert!(error
-            .to_string()
-            .contains("does not enable capability 'Calendar'"));
+        .expect_err("legacy global default should be rejected");
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -3221,11 +3171,6 @@ mod tests {
                             "identity_class": "work",
                             "enabled_capabilities": ["calendar"]
                         }
-                    }
-                },
-                "binding": {
-                    "capability_defaults": {
-                        "calendar": "calendar-work"
                     }
                 },
                 "policy": {}

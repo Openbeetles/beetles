@@ -378,8 +378,7 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy,
+        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
     };
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -486,7 +485,6 @@ mod tests {
             .expect("seed office credential");
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             credential_store.clone(),
             std::sync::Arc::new(StubRuntimeStatusStore),
@@ -543,7 +541,6 @@ mod tests {
             .expect("seed feishu office credential");
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             credential_store,
             std::sync::Arc::new(StubRuntimeStatusStore),
@@ -593,7 +590,6 @@ mod tests {
             .expect("seed wecom office credential");
         let office = OfficeService::new(
             registry,
-            OfficeCapabilityBinding::default(),
             OfficeSelectionPolicy::default(),
             credential_store,
             std::sync::Arc::new(StubRuntimeStatusStore),

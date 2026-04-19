@@ -52,7 +52,6 @@ impl OfficeAuthoritySource for ReloadingOfficeAuthoritySource {
             .map_err(|error| Error::config("office_authority_load_accounts", error.to_string()))?;
         Ok(OfficeService::new(
             segment.registry,
-            segment.binding,
             segment.policy,
             Arc::clone(&self.credential_store),
             Arc::clone(&self.runtime_status_store),
@@ -69,8 +68,8 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCapabilityBinding, OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore,
-        OfficeSelectionPolicy, OfficeService,
+        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeService,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex};
@@ -173,7 +172,7 @@ mod tests {
         }
     }
 
-    fn office_with_default(default_account_key: &str) -> OfficeService {
+    fn office_with_accounts() -> OfficeService {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(OfficeAccount {
             account_key: "mail-work".to_string(),
@@ -191,11 +190,8 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Personal,
             enabled_capabilities: vec![OfficeCapability::Mail],
         });
-        let mut binding = OfficeCapabilityBinding::default();
-        binding.set_default_account(OfficeCapability::Mail, default_account_key.to_string());
         OfficeService::new(
             registry,
-            binding,
             OfficeSelectionPolicy::default(),
             Arc::new(StubCredentialStore::default()),
             Arc::new(StubRuntimeStatusStore),
@@ -204,7 +200,7 @@ mod tests {
 
     fn save_mail_accounts(
         config_file_store: &dyn ConfigFileStore,
-        default_account_key: &str,
+        personal_label: &str,
     ) -> Result<()> {
         save_office_accounts_segment(
             config_file_store,
@@ -224,15 +220,10 @@ mod tests {
                                 "account_key": "mail-personal",
                                 "provider_kind": "imap_smtp",
                                 "external_account_id": "personal@example.com",
-                                "account_label": "Personal",
+                                "account_label": "{personal_label}",
                                 "identity_class": "personal",
                                 "enabled_capabilities": ["mail"]
                             }}
-                        }}
-                    }},
-                    "binding": {{
-                        "capability_defaults": {{
-                            "mail": "{default_account_key}"
                         }}
                     }},
                     "policy": {{}}
@@ -243,18 +234,20 @@ mod tests {
 
     #[test]
     fn snapshot_source_keeps_original_authority_snapshot() {
-        let source = SnapshotOfficeAuthoritySource::new(office_with_default("mail-work"));
+        let source = SnapshotOfficeAuthoritySource::new(office_with_accounts());
         let office = source.load().expect("load authority");
-        assert_eq!(
-            office.default_account_key(OfficeCapability::Mail),
-            Some("mail-work".to_string())
-        );
+        let summary = office.summary().expect("summary");
+        assert_eq!(summary.accounts.len(), 2);
+        assert!(summary
+            .accounts
+            .iter()
+            .any(|account| account.account_key == "mail-work"));
     }
 
     #[test]
     fn reloading_source_reads_latest_accounts_segment() {
         let config_file_store = Arc::new(MemoryConfigFileStore::default());
-        save_mail_accounts(config_file_store.as_ref(), "mail-work").expect("seed accounts");
+        save_mail_accounts(config_file_store.as_ref(), "Personal").expect("seed accounts");
         let source = ReloadingOfficeAuthoritySource::new(
             config_file_store.clone(),
             Arc::new(StubCredentialStore::default()),
@@ -263,16 +256,21 @@ mod tests {
 
         let first = source.load().expect("load first authority");
         assert_eq!(
-            first.default_account_key(OfficeCapability::Mail),
-            Some("mail-work".to_string())
+            first
+                .account("mail-personal")
+                .map(|account| account.account_label),
+            Some("Personal".to_string())
         );
 
-        save_mail_accounts(config_file_store.as_ref(), "mail-personal").expect("update accounts");
+        save_mail_accounts(config_file_store.as_ref(), "Updated Personal")
+            .expect("update accounts");
 
         let second = source.load().expect("load second authority");
         assert_eq!(
-            second.default_account_key(OfficeCapability::Mail),
-            Some("mail-personal".to_string())
+            second
+                .account("mail-personal")
+                .map(|account| account.account_label),
+            Some("Updated Personal".to_string())
         );
     }
 }

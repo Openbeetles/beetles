@@ -1395,9 +1395,6 @@ mod tests {
             identity_class: OfficeAccountIdentityClass::Work,
             enabled_capabilities: vec![OfficeCapability::Mail],
         });
-        segment
-            .binding
-            .set_default_account(OfficeCapability::Mail, account_key.to_string());
         let body = serde_json::to_string(&segment).expect("serialize accounts segment");
         config::save_office_accounts_segment(ctx.config_file_store.as_ref(), &body)
             .expect("save accounts");
@@ -2007,7 +2004,7 @@ mod tests {
             .iter()
             .find(|item| item["capability"] == "mail")
             .expect("mail capability");
-        assert_eq!(mail["default_account_key"], "test-http-mail-capability");
+        assert!(mail.get("default_account_key").is_none());
         assert_eq!(mail["selection_status"], "selected");
         assert_eq!(mail["selected_account_key"], "test-http-mail-capability");
         assert!(mail["accounts"].is_array());
