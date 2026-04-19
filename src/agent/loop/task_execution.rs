@@ -745,7 +745,6 @@ fn build_task_execution_telemetry(
         latency: WorkerLatency {
             context_ms: latency.context_ms,
             request_semantics_ms: latency.request_semantics_ms,
-            surface_finalize_ms: latency.surface_finalize_ms,
             mental_privacy_review_ms: latency.mental_privacy_review_ms,
             llm_round_total_ms: latency.llm_round_total_ms,
             tool_exec_ms: latency.tool_exec_ms,
@@ -759,7 +758,6 @@ fn build_task_execution_telemetry(
         any_tool_used,
         tool_round_completion: ToolRoundCompletionTelemetry::default(),
         external_content_used,
-        used_surface_finalization: false,
         task_execution_used: true,
         foreground_work_context_present: true,
         pressure,

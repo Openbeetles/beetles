@@ -1747,14 +1747,13 @@ mod tests {
             authed_post(
                 "/api/config/accounts",
                 serde_json::json!({
-                    "account": {
-                        "provider_kind": "imap_smtp",
-                        "external_account_id": "",
-                        "account_label": "Upserted mail",
-                        "identity_class": "work",
-                        "enabled_capabilities": ["mail"]
-                    },
-                    "set_defaults": ["mail"]
+                    "provider_kind": "imap_smtp",
+                    "identity_class": "work",
+                    "account_label": "Upserted mail",
+                    "email": "upserted@example.com",
+                    "access_token": "secret-token",
+                    "imap_host": "imap.example.com",
+                    "smtp_host": "smtp.example.com"
                 }),
             ),
         )
@@ -1762,11 +1761,8 @@ mod tests {
         assert_eq!(response.status, 200);
 
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
-        assert_eq!(
-            parsed["account"]["account_key"],
-            "imap-smtp-work-upserted-mail"
-        );
-        assert_eq!(parsed["account"]["selected_for_capabilities"][0], "mail");
+        assert_eq!(parsed["account"]["account_label"], "Upserted mail");
+        assert_eq!(parsed["account"]["enabled_capabilities"][0], "mail");
     }
 
     #[cfg(all(
@@ -1785,22 +1781,13 @@ mod tests {
             authed_post(
                 "/api/config/accounts",
                 serde_json::json!({
-                    "account": {
-                        "provider_kind": "imap_smtp",
-                        "external_account_id": "",
-                        "account_label": "Primary mail",
-                        "identity_class": "work",
-                        "enabled_capabilities": ["mail"]
-                    },
-                    "set_defaults": ["mail"],
-                    "config": {
-                        "fields": {
-                            "access_token": "secret-token",
-                            "mail_username": "alice",
-                            "mail_imap_host": "imap.example.com",
-                            "mail_smtp_host": "smtp.example.com"
-                        }
-                    }
+                    "provider_kind": "imap_smtp",
+                    "identity_class": "work",
+                    "account_label": "Primary mail",
+                    "email": "alice@example.com",
+                    "access_token": "secret-token",
+                    "imap_host": "imap.example.com",
+                    "smtp_host": "smtp.example.com"
                 }),
             ),
         )
@@ -1816,7 +1803,7 @@ mod tests {
         let account_key = parsed["account"]["account_key"]
             .as_str()
             .expect("account_key string");
-        assert_eq!(account_key, "imap-smtp-work-primary-mail");
+        assert!(!account_key.trim().is_empty());
         let credential = ctx
             .platform
             .office_credential_store()
@@ -1824,7 +1811,10 @@ mod tests {
             .expect("load credential")
             .expect("credential exists");
         assert_eq!(credential.access_token, "secret-token");
-        assert_eq!(credential.metadata_value("mail_username"), Some("alice"));
+        assert_eq!(
+            credential.metadata_value("mail_username"),
+            Some("alice@example.com")
+        );
         assert_eq!(
             credential.metadata_value("mail_imap_host"),
             Some("imap.example.com")
@@ -1832,6 +1822,48 @@ mod tests {
         assert_eq!(
             credential.metadata_value("mail_smtp_host"),
             Some("smtp.example.com")
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_accounts_post_requires_identity_class() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_post(
+                "/api/config/accounts",
+                serde_json::json!({
+                    "provider_kind": "imap_smtp",
+                    "account_label": "Primary mail",
+                    "email": "alice@example.com",
+                    "access_token": "secret-token",
+                    "imap_host": "imap.example.com",
+                    "smtp_host": "smtp.example.com"
+                }),
+            ),
+        )
+        .expect("dispatch account create");
+        assert_eq!(
+            response.status,
+            400,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert!(
+            parsed["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("missing identity_class")),
+            "body={}",
+            String::from_utf8_lossy(&response.body)
         );
     }
 

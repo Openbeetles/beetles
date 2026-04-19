@@ -7,7 +7,7 @@ use crate::i18n::{locale_from_store, tr, tr_error, Message};
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::office::{
-    OfficeAccountConfigSaveRequest, OfficeAccountUpsertRequest, OfficeCapability,
+    parse_public_account_upsert_request_value, OfficeAccountConfigSaveRequest, OfficeCapability,
     OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigCapabilityStatus,
     OfficeConfigManagementService, OfficeConfigProviderCatalogItem,
 };
@@ -252,9 +252,19 @@ pub fn get_capability_detail_body(
 /// POST /api/config/accounts：创建或更新单个账户注册。
 pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let loc = locale_from_store(ctx.config_store.as_ref());
-    let request: OfficeAccountUpsertRequest = match serde_json::from_str(body) {
-        Ok(value) => value,
+    let request = match serde_json::from_str::<Value>(body) {
+        Ok(Value::Object(obj)) => {
+            match parse_public_account_upsert_request_value(&obj, "http_config_accounts_post") {
+                Ok(request) => request,
+                Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+            }
+        }
         Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+        Ok(_) => {
+            return Ok(ApiResponse::err_400(
+                "account create body must be a JSON object",
+            ))
+        }
     };
     match office_config_service(ctx).save_account_upsert(&request) {
         Ok(detail) => {

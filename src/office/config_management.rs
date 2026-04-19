@@ -960,45 +960,36 @@ fn default_account_create_fields(
         OfficeConfigCreateFieldSchema {
             key: "identity_class".to_string(),
             label: "Identity class".to_string(),
-            description: "Identity bucket used during account selection.".to_string(),
-            value_kind: crate::office::OfficeProviderFieldValueKind::Identifier,
+            description: "Account identity class used for office routing and account selection."
+                .to_string(),
+            value_kind: crate::office::OfficeProviderFieldValueKind::Text,
             required: true,
             secret: false,
             multiple: false,
-            default_value: Some("work".to_string()),
+            default_value: None,
             default_values: Vec::new(),
             options: vec![
-                build_field_option("work", "Work"),
-                build_field_option("personal", "Personal"),
-                build_field_option("family", "Family"),
-                build_field_option("shared", "Shared"),
-                build_field_option("other", "Other"),
+                OfficeConfigFieldOption {
+                    value: "work".to_string(),
+                    label: "Work".to_string(),
+                },
+                OfficeConfigFieldOption {
+                    value: "personal".to_string(),
+                    label: "Personal".to_string(),
+                },
+                OfficeConfigFieldOption {
+                    value: "family".to_string(),
+                    label: "Family".to_string(),
+                },
+                OfficeConfigFieldOption {
+                    value: "shared".to_string(),
+                    label: "Shared".to_string(),
+                },
+                OfficeConfigFieldOption {
+                    value: "other".to_string(),
+                    label: "Other".to_string(),
+                },
             ],
-        },
-        OfficeConfigCreateFieldSchema {
-            key: "enabled_capabilities".to_string(),
-            label: "Enabled capabilities".to_string(),
-            description: "Capabilities this account can serve.".to_string(),
-            value_kind: crate::office::OfficeProviderFieldValueKind::Identifier,
-            required: true,
-            secret: false,
-            multiple: true,
-            default_value: None,
-            default_values: schema
-                .capabilities
-                .iter()
-                .map(|capability| capability_key(*capability).to_string())
-                .collect(),
-            options: schema
-                .capabilities
-                .iter()
-                .map(|capability| {
-                    build_field_option(
-                        capability_key(*capability),
-                        capability_display_name(*capability),
-                    )
-                })
-                .collect(),
         },
     ]
 }
@@ -1168,13 +1159,6 @@ fn build_create_field_from_provider_field(
     }
 }
 
-fn build_field_option(value: &str, label: &str) -> OfficeConfigFieldOption {
-    OfficeConfigFieldOption {
-        value: value.to_string(),
-        label: label.to_string(),
-    }
-}
-
 fn build_account_summary(
     account: &OfficeAccountAuthorityStatus,
     assessment: &OfficeAccountAssessment,
@@ -1297,15 +1281,6 @@ fn capability_key(capability: OfficeCapability) -> &'static str {
         OfficeCapability::Calendar => "calendar",
         OfficeCapability::Documents => "documents",
         OfficeCapability::ContactsDirectory => "contacts_directory",
-    }
-}
-
-fn capability_display_name(capability: OfficeCapability) -> &'static str {
-    match capability {
-        OfficeCapability::Mail => "Mail",
-        OfficeCapability::Calendar => "Calendar",
-        OfficeCapability::Documents => "Documents",
-        OfficeCapability::ContactsDirectory => "Contacts Directory",
     }
 }
 
@@ -1653,22 +1628,30 @@ mod tests {
                 .any(|field| field.key == "account_key"),
             "provider catalog should not expose internal account_key in account_fields"
         );
-        let enabled_capabilities = imap
+        let identity_class = imap
             .account_fields
             .iter()
-            .find(|field| field.key == "enabled_capabilities")
-            .expect("enabled_capabilities field");
-        assert!(enabled_capabilities.multiple);
-        assert_eq!(
-            enabled_capabilities.default_values,
-            vec!["mail".to_string()]
-        );
+            .find(|field| field.key == "identity_class")
+            .expect("provider catalog should expose identity_class in account_fields");
         assert!(
-            enabled_capabilities
+            identity_class.required,
+            "identity_class should be required in account_fields"
+        );
+        assert_eq!(
+            identity_class
                 .options
                 .iter()
-                .any(|option| option.value == "mail"),
-            "provider catalog should expose provider capabilities as create options"
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["work", "personal", "family", "shared", "other"],
+            "identity_class should expose the shared identity options"
+        );
+        assert!(
+            !imap
+                .account_fields
+                .iter()
+                .any(|field| field.key == "enabled_capabilities"),
+            "provider catalog should not expose internal enabled_capabilities in account_fields"
         );
         assert!(
             imap.account_fields

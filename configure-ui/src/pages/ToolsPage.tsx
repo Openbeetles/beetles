@@ -22,7 +22,7 @@ import {
   endpointSupportedByInventory,
   parseRootInventory,
 } from "../api/rootInventory";
-import { SETTINGS_SECTION_LIST_ROW_SX } from "../theme/listItemStyles";
+import { SETTINGS_LIST_ROW_PLATE_SX } from "../theme/listItemStyles";
 import { PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 
@@ -136,7 +136,7 @@ export function ToolsPage() {
             {state.data.map((tool) => (
               <ListItem
                 key={tool.name}
-                sx={SETTINGS_SECTION_LIST_ROW_SX}
+                sx={SETTINGS_LIST_ROW_PLATE_SX}
                 aria-label={t(tool.i18n_key, { defaultValue: tool.name })}
               >
                 <ListItemIcon

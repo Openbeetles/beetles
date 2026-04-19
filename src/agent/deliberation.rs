@@ -15,9 +15,6 @@ const HARD_USER_MIN_CHARS: usize = 96;
 const HARD_SEPARATOR_MIN: usize = 4;
 const HARD_LINE_MIN: usize = 3;
 
-const RECOVERY_SUFFIX_COMPACT: &str = "\n\n## Recovery-aware delivery\nCurrent runtime posture is constrained. Keep the answer compact, prefer completed results over exploration, and state blockers explicitly if certainty is limited.";
-const RECOVERY_SUFFIX_HARD: &str = "\n\n## Deliberation recovery\nThis turn is classified as hard reasoning. Reconcile the active task context, governed evidence, and blocker history into one coherent answer or one explicit blocker. Do not drift into process narration.";
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TurnDeliberationGate {
     pub(crate) class: TurnDeliberationClass,
@@ -170,16 +167,6 @@ pub(crate) fn render_turn_deliberation_gate_block(
     )
     .into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
-}
-
-pub(crate) fn recovery_suffix_for_gate(gate: &TurnDeliberationGate) -> &'static str {
-    if gate.class == TurnDeliberationClass::HardReasoning {
-        RECOVERY_SUFFIX_HARD
-    } else if gate.compact_reply || gate.prefer_explicit_blocker {
-        RECOVERY_SUFFIX_COMPACT
-    } else {
-        ""
-    }
 }
 
 fn request_looks_complex(content: &str) -> bool {

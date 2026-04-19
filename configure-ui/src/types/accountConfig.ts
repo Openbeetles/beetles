@@ -173,28 +173,33 @@ export interface AccountConfigSaveRequest {
   clear_fields?: string[]
 }
 
-export interface AccountPolicyPatch {
-  global_default_account_key?: string
-  ask_when_ambiguous?: boolean
-  preferred_identity_class?: AccountIdentityClass
-  clear_preferred_identity_class?: boolean
-}
-
-export interface AccountRecordInput {
-  account_key?: string
-  provider_kind: string
-  external_account_id?: string
-  account_label?: string
-  identity_class: AccountIdentityClass
-  enabled_capabilities: AccountCapability[]
-}
+export type AccountUpsertScalar = string | number | boolean
+export type AccountUpsertMetadata = Record<string, AccountUpsertScalar>
 
 export interface AccountUpsertRequest {
-  account: AccountRecordInput
-  set_defaults?: AccountCapability[]
-  clear_defaults?: AccountCapability[]
-  policy_patch?: AccountPolicyPatch
-  config?: AccountConfigSaveRequest
+  provider_kind?: string
+  provider?: string
+  capability?: AccountCapability
+  identity_class: AccountIdentityClass
+  account_label?: string
+  display_name?: string
+  external_account_id?: string
+  email?: string
+  account_id?: string
+  username?: string
+  password?: string
+  access_token?: string
+  refresh_token?: string
+  token_endpoint?: string
+  mail_username?: string
+  mail_from_address?: string
+  imap_host?: string
+  imap_port?: AccountUpsertScalar
+  imap_tls?: boolean
+  smtp_host?: string
+  smtp_port?: AccountUpsertScalar
+  smtp_tls?: boolean
+  metadata?: AccountUpsertMetadata
 }
 
 export interface AccountProbeResult {

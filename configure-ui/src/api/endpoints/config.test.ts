@@ -96,18 +96,14 @@ test('account config mutating endpoints use expected methods, csrf token, and bo
     assert.equal(token, 'csrf-account')
 
     await createAccount('http://device', '123456', {
-      account: {
-        provider_kind: 'wecom_documents',
-        external_account_id: '',
-        account_label: 'Work WeCom',
-        identity_class: 'work',
-        enabled_capabilities: ['documents'],
-      },
-      config: {
-        fields: {
-          corp_id: 'wxcorp',
-          corp_secret: 'secret',
-        },
+      provider_kind: 'wecom_documents',
+      capability: 'documents',
+      identity_class: 'work',
+      account_label: 'Work WeCom',
+      account_id: 'wx-docs',
+      access_token: 'secret',
+      metadata: {
+        documents_corp_id: 'wxcorp',
       },
     })
     await saveAccountConfig('http://device', '123456', 'work-wecom', {
@@ -138,18 +134,14 @@ test('account config mutating endpoints use expected methods, csrf token, and bo
     }
 
     assert.deepEqual(JSON.parse(calls[1].body ?? '{}'), {
-      account: {
-        provider_kind: 'wecom_documents',
-        external_account_id: '',
-        account_label: 'Work WeCom',
-        identity_class: 'work',
-        enabled_capabilities: ['documents'],
-      },
-      config: {
-        fields: {
-          corp_id: 'wxcorp',
-          corp_secret: 'secret',
-        },
+      provider_kind: 'wecom_documents',
+      capability: 'documents',
+      identity_class: 'work',
+      account_label: 'Work WeCom',
+      account_id: 'wx-docs',
+      access_token: 'secret',
+      metadata: {
+        documents_corp_id: 'wxcorp',
       },
     })
     assert.deepEqual(JSON.parse(calls[2].body ?? '{}'), {

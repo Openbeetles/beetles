@@ -12,6 +12,41 @@ export const SETTINGS_SECTION_LIST_ROW_SX = {
   boxSizing: "border-box" as const,
 } as const;
 
+/**
+ * 与账户列表卡片同源：`CONFIG_PANEL` 双层高光/环境渐变 + 极淡主色角向层。
+ * 供账户卡、Tools/Skills 列表行等复用，避免各处各写一套。
+ */
+export const LIST_CARD_PLATE_BACKGROUND_IMAGE = [
+  "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 6%, transparent) 34%, transparent 76%)",
+  "linear-gradient(180deg, color-mix(in srgb, var(--surface) 40%, transparent) 0%, transparent 68%)",
+  "linear-gradient(125deg, color-mix(in srgb, var(--primary) 4.5%, transparent) 0%, transparent 44%)",
+].join(", ");
+
+/**
+ * 列表行「薄卡」：与账户卡同渐变 + `--os3d-content-plate-stack` + 顶内高光；hover 仅加深阴影（不改底色素块）。
+ */
+export const SETTINGS_LIST_ROW_PLATE_SX = {
+  ...SETTINGS_SECTION_LIST_ROW_SX,
+  bgcolor: "var(--card)",
+  backgroundImage: LIST_CARD_PLATE_BACKGROUND_IMAGE,
+  boxShadow: [
+    "var(--os3d-content-plate-stack)",
+    "inset 0 1px 0 color-mix(in srgb, #fff 48%, transparent)",
+  ].join(", "),
+  isolation: "isolate",
+  overflow: "hidden",
+  transition: "box-shadow var(--transition-duration) var(--ease-out-smooth)",
+  "@media (hover: hover)": {
+    "&:hover": {
+      boxShadow: [
+        "var(--os3d-content-plate-stack)",
+        "0 12px 32px -24px color-mix(in srgb, var(--foreground) 9%, transparent)",
+        "inset 0 1px 0 color-mix(in srgb, #fff 52%, transparent)",
+      ].join(", "),
+    },
+  },
+} as const;
+
 export const SETTINGS_SECTION_LIST_EMPTY_SX = {
   py: 2,
   px: 2.5,

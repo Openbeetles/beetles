@@ -28,13 +28,6 @@ pub(crate) enum SurfaceGovernancePolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SurfaceFinalizationPolicy {
-    StructuredJson,
-    TaskFinisher,
-    InternalOnly,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReplySurface {
     PublicRuntime,
     GovernedConversation,
@@ -101,16 +94,6 @@ impl ReplySurface {
             Self::PrivateBoundary => SurfaceGovernancePolicy::PrivateBoundaryReview,
             Self::TaskExecution => SurfaceGovernancePolicy::TaskExecutionReview,
             Self::InternalOnly => SurfaceGovernancePolicy::SuppressUserDelivery,
-        }
-    }
-
-    pub(crate) fn finalization_policy(self) -> SurfaceFinalizationPolicy {
-        match self {
-            Self::PublicRuntime | Self::GovernedConversation | Self::PrivateBoundary => {
-                SurfaceFinalizationPolicy::StructuredJson
-            }
-            Self::TaskExecution => SurfaceFinalizationPolicy::TaskFinisher,
-            Self::InternalOnly => SurfaceFinalizationPolicy::InternalOnly,
         }
     }
 
@@ -296,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn public_runtime_contract_skips_privacy_review_and_keeps_structured_json_contract() {
+    fn public_runtime_contract_skips_privacy_review() {
         let surface = ReplySurface::PublicRuntime;
         assert_eq!(
             surface.evidence_policy(),
@@ -306,15 +289,11 @@ mod tests {
             surface.governance_policy(),
             SurfaceGovernancePolicy::SkipMentalPrivacyReview
         );
-        assert_eq!(
-            surface.finalization_policy(),
-            SurfaceFinalizationPolicy::StructuredJson
-        );
         assert!(!surface.allows_mental_privacy_review());
     }
 
     #[test]
-    fn private_boundary_contract_keeps_governance_and_structured_finalization() {
+    fn private_boundary_contract_keeps_governance() {
         let surface = ReplySurface::PrivateBoundary;
         assert_eq!(
             surface.evidence_policy(),
@@ -323,10 +302,6 @@ mod tests {
         assert_eq!(
             surface.governance_policy(),
             SurfaceGovernancePolicy::PrivateBoundaryReview
-        );
-        assert_eq!(
-            surface.finalization_policy(),
-            SurfaceFinalizationPolicy::StructuredJson
         );
         assert!(surface.allows_mental_privacy_review());
     }
@@ -338,20 +313,12 @@ mod tests {
             governed.governance_policy(),
             SurfaceGovernancePolicy::ApplyMentalPrivacyReview
         );
-        assert_eq!(
-            governed.finalization_policy(),
-            SurfaceFinalizationPolicy::StructuredJson
-        );
         assert!(governed.allows_mental_privacy_review());
 
         let task = ReplySurface::TaskExecution;
         assert_eq!(
             task.governance_policy(),
             SurfaceGovernancePolicy::TaskExecutionReview
-        );
-        assert_eq!(
-            task.finalization_policy(),
-            SurfaceFinalizationPolicy::TaskFinisher
         );
         assert!(task.allows_mental_privacy_review());
         assert!(task.allows_memory_grounding_block());

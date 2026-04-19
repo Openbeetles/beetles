@@ -785,9 +785,7 @@ export const enUS = {
         probe: 'Probe',
         none: 'None',
       },
-      nextActionLabel: 'Next',
       openDetail: 'Open',
-      openDetailHint: 'Open detail to edit credentials and inspect probe state.',
       loadFailed: 'Could not load accounts',
       unsupportedTitle: 'This device does not expose account endpoints',
       unsupportedDesc:
@@ -908,6 +906,8 @@ export const enUS = {
         contacts_corp_id: 'Contacts corp ID',
       },
       providerFieldDescriptions: {
+        identity_class:
+          'Identity class for this account. Used for multi-account routing and preference selection.',
         access_token: 'Secret or access token used to authenticate this provider account.',
         refresh_token: 'Optional refresh token for OAuth-backed providers.',
         token_endpoint: 'Optional override for the OAuth token endpoint.',

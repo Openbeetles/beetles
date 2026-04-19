@@ -104,9 +104,7 @@ use std::time::{Duration, Instant};
 
 use self::background_jobs::run_background_job_with_accounting;
 use self::delivery_handoff::deliver_turn;
-use self::driver::{
-    prepare_system_with_suffix, recv_next_agent_msg, run_surface_finalization_round,
-};
+use self::driver::{prepare_system_with_suffix, recv_next_agent_msg};
 use self::ingress_admission::admit_turn;
 use self::reply_finalize::{complete_turn, finalize_turn};
 use self::task_execution::try_run_task_execution;
@@ -115,8 +113,8 @@ use self::turn_execution::execute_turn;
 use self::turn_finalize::persist_turn_ledger;
 use self::worker_error::handle_worker_path_error;
 use super::deliberation::{
-    compile_turn_deliberation_gate, recovery_suffix_for_gate, render_turn_deliberation_gate_block,
-    TurnDeliberationGate, TurnDeliberationInput,
+    compile_turn_deliberation_gate, render_turn_deliberation_gate_block, TurnDeliberationGate,
+    TurnDeliberationInput,
 };
 
 type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
@@ -486,7 +484,6 @@ const AGENT_LOOP_TAG: &str = "main";
 struct WorkerLatency {
     context_ms: u128,
     request_semantics_ms: u128,
-    surface_finalize_ms: u128,
     mental_privacy_review_ms: u128,
     llm_round_total_ms: u128,
     tool_exec_ms: u128,
@@ -504,7 +501,6 @@ struct WorkerRunTelemetry {
     any_tool_used: bool,
     tool_round_completion: ToolRoundCompletionTelemetry,
     external_content_used: bool,
-    used_surface_finalization: bool,
     task_execution_used: bool,
     foreground_work_context_present: bool,
     pressure: crate::orchestrator::PressureLevel,
@@ -546,9 +542,7 @@ fn build_turn_observation_ledger(
     let tool_path = if telemetry.task_execution_used {
         "task_execution"
     } else if telemetry.any_tool_round_executed {
-        if telemetry.used_surface_finalization {
-            "surface_finalization"
-        } else if telemetry.delivery.current_primary_delivered {
+        if telemetry.delivery.current_primary_delivered {
             "tool_primary_delivery"
         } else {
             "tool_reply"
@@ -1564,7 +1558,7 @@ fn log_agent_latency_summary(
 ) {
     if total_ms >= latency_warn_ms {
         log::warn!(
-            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} mental_privacy_review_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={} level=slow",
             worker_lane_tag,
             req_id,
             channel,
@@ -1574,7 +1568,6 @@ fn log_agent_latency_summary(
             worker_prepare_ms,
             worker_latency.context_ms,
             worker_latency.request_semantics_ms,
-            worker_latency.surface_finalize_ms,
             worker_latency.mental_privacy_review_ms,
             worker_latency.llm_round_total_ms,
             worker_latency.tool_exec_ms,
@@ -1592,7 +1585,7 @@ fn log_agent_latency_summary(
         );
     } else {
         log::info!(
-            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} surface_finalize_ms={} mental_privacy_review_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
+            "[latency][agent:{}] req_id={} channel={} chat_id={} queue_wait_ms={} admission_ms={} worker_prepare_ms={} context_ms={} request_semantics_ms={} mental_privacy_review_ms={} llm_round_total_ms={} tool_exec_ms={} session_write_ms={} llm_ms={} outbound_enqueue_ms={} reply_handoff_ms={} post_reply_ms={} total_ms={} react_rounds={} tool_calls={} ttft_ms={} streamed={} delivered={}",
             worker_lane_tag,
             req_id,
             channel,
@@ -1602,7 +1595,6 @@ fn log_agent_latency_summary(
             worker_prepare_ms,
             worker_latency.context_ms,
             worker_latency.request_semantics_ms,
-            worker_latency.surface_finalize_ms,
             worker_latency.mental_privacy_review_ms,
             worker_latency.llm_round_total_ms,
             worker_latency.tool_exec_ms,
@@ -3260,62 +3252,6 @@ mod tests {
         }
     }
 
-    struct StubAmbiguousOfficeMailTool;
-
-    impl crate::tools::Tool for StubAmbiguousOfficeMailTool {
-        fn name(&self) -> &'static str {
-            "mail"
-        }
-
-        fn description(&self) -> &str {
-            "return an office account ambiguity failure"
-        }
-
-        fn schema(&self) -> &str {
-            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
-        }
-
-        fn execute(&self, args: &str, ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
-            self.execute_outcome(args, ctx)
-                .map(|outcome| outcome.content)
-        }
-
-        fn execute_outcome(
-            &self,
-            _args: &str,
-            _ctx: &mut dyn crate::tools::ToolContext,
-        ) -> Result<crate::tools::ToolExecutionOutcome> {
-            Ok(crate::tools::ToolExecutionOutcome::text(
-                serde_json::json!({
-                    "ok": false,
-                    "provider": "imap_smtp",
-                    "office_assessment": {
-                        "capability": "mail",
-                        "resolve_hint": {
-                            "status": "ambiguous",
-                            "candidate_accounts": [
-                                {
-                                    "account_key": "mail-work",
-                                    "account_label": "Work",
-                                    "provider_kind": "imap_smtp",
-                                    "identity_class": "work"
-                                },
-                                {
-                                    "account_key": "mail-personal",
-                                    "account_label": "Personal",
-                                    "provider_kind": "imap_smtp",
-                                    "identity_class": "personal"
-                                }
-                            ]
-                        }
-                    }
-                })
-                .to_string(),
-            )
-            .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability))
-        }
-    }
-
     struct StubResolvableOfficeMailTool {
         seen_args: Arc<Mutex<Vec<String>>>,
     }
@@ -4312,7 +4248,6 @@ mod tests {
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4414,7 +4349,6 @@ mod tests {
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4516,7 +4450,6 @@ mod tests {
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: true,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4586,7 +4519,6 @@ mod tests {
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: true,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4639,7 +4571,6 @@ mod tests {
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: true,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4730,7 +4661,6 @@ mod tests {
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4786,7 +4716,6 @@ mod tests {
                 had_visible_outbound_side_effects: false,
             },
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: true,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4846,7 +4775,6 @@ mod tests {
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -4901,7 +4829,6 @@ mod tests {
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: false,
             task_execution_used: false,
             foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
@@ -5052,7 +4979,6 @@ mod tests {
             worker_latency: WorkerLatency::default(),
             any_tool_used: false,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
             foreground_work_packet: None,
@@ -5208,7 +5134,6 @@ mod tests {
             worker_latency: WorkerLatency::default(),
             any_tool_used: true,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::TaskExecution,
             foreground_work_packet: None,
@@ -5403,7 +5328,6 @@ mod tests {
         let WorkerOutcome::Content(delivered) = outcome;
         assert_eq!(delivered, "你好！很高兴见到你。有什么我可以帮你的吗？");
         assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
-        assert!(!telemetry.used_surface_finalization);
     }
 
     #[test]
@@ -5488,11 +5412,6 @@ mod tests {
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"继续配置：当前主机状态可用，可以继续推进邮箱配置。"}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
             ]),
             observed: Arc::clone(&observed),
         };
@@ -5539,7 +5458,7 @@ mod tests {
         .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(observed.len(), 3, "{observed:#?}");
+        assert_eq!(observed.len(), 2, "{observed:#?}");
         assert!(
             observed
                 .iter()
@@ -5996,7 +5915,6 @@ mod tests {
             },
             any_tool_used: true,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
             foreground_work_packet: None,
@@ -6093,7 +6011,6 @@ mod tests {
             worker_latency: WorkerLatency::default(),
             any_tool_used: false,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
             foreground_work_packet: None,
@@ -6197,7 +6114,6 @@ mod tests {
             worker_latency: WorkerLatency::default(),
             any_tool_used: false,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
             foreground_work_packet: None,
@@ -6246,320 +6162,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_empty_draft_after_tool_use_uses_structured_finalization() {
-        let llm = SequenceStubLlm {
-            responses: Mutex::new(vec![
-                LlmResponse {
-                    content: "[tool_use]".to_string(),
-                    stop_reason: StopReason::ToolUse,
-                    tool_calls: Some(vec![crate::llm::ToolCall {
-                        id: "call_1".to_string(),
-                        name: "board_info".to_string(),
-                        input: "{}".to_string(),
-                    }]),
-                },
-                LlmResponse {
-                    content: String::new(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"}"#.to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-            ]),
-        };
-        let mut http = DummyPlatformHttp;
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
-        registry.register(Box::new(StubBoardInfoTool));
-        let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::Embedded;
-        let msg =
-            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
-        let mut repeat = HashMap::new();
-
-        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
-            &mut http,
-            &llm,
-            &msg,
-            &outbound_tx,
-            "req-public-runtime-empty-draft",
-            &registry,
-            &config,
-            &mut repeat,
-            UiLocale::Zh,
-        )
-        .expect("execute turn");
-
-        let WorkerOutcome::Content(delivered) = outcome;
-        assert_eq!(
-            delivered,
-            "系统信息如下：主机 beetle 运行正常，CPU 为 Stub CPU，4 核，内存可用 256 MB。"
-        );
-        assert!(telemetry.used_surface_finalization);
-        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
-    }
-
-    #[test]
-    fn execute_turn_tool_backed_future_action_draft_uses_structured_finalization() {
-        let llm = SequenceStubLlm {
-            responses: Mutex::new(vec![
-                LlmResponse {
-                    content: "[tool_use]".to_string(),
-                    stop_reason: StopReason::ToolUse,
-                    tool_calls: Some(vec![crate::llm::ToolCall {
-                        id: "call_1".to_string(),
-                        name: "board_info".to_string(),
-                        input: "{}".to_string(),
-                    }]),
-                },
-                LlmResponse {
-                    content: "我先整理一下当前状态。".to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#
-                        .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-            ]),
-        };
-        let mut http = DummyPlatformHttp;
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
-        registry.register(Box::new(StubBoardInfoTool));
-        let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
-        let msg =
-            PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统状态", false).expect("message");
-        let mut repeat = HashMap::new();
-
-        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
-            &mut http,
-            &llm,
-            &msg,
-            &outbound_tx,
-            "req-public-runtime-finalization-empty-recovery",
-            &registry,
-            &config,
-            &mut repeat,
-            UiLocale::Zh,
-        )
-        .expect("execute turn");
-
-        let WorkerOutcome::Content(delivered) = outcome;
-        assert_eq!(
-            delivered,
-            "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
-        );
-        assert!(telemetry.used_surface_finalization);
-        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
-    }
-
-    #[test]
-    fn execute_turn_tool_backed_transition_colon_draft_uses_structured_finalization() {
-        let llm = SequenceStubLlm {
-            responses: Mutex::new(vec![
-                LlmResponse {
-                    content: "[tool_use]".to_string(),
-                    stop_reason: StopReason::ToolUse,
-                    tool_calls: Some(vec![crate::llm::ToolCall {
-                        id: "call_1".to_string(),
-                        name: "board_info".to_string(),
-                        input: "{}".to_string(),
-                    }]),
-                },
-                LlmResponse {
-                    content: "现在我来配置你的 QQ 邮箱账户。使用 IMAP/SMTP 提供程序："
-                        .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#
-                        .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-            ]),
-        };
-        let mut http = DummyPlatformHttp;
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
-        registry.register(Box::new(StubBoardInfoTool));
-        let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
-        let msg = PcMsg::new_inbound("qq_channel", "chat-ops-colon", "查看系统状态", false)
-            .expect("message");
-        let mut repeat = HashMap::new();
-
-        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
-            &mut http,
-            &llm,
-            &msg,
-            &outbound_tx,
-            "req-public-runtime-finalization-transition-colon",
-            &registry,
-            &config,
-            &mut repeat,
-            UiLocale::Zh,
-        )
-        .expect("execute turn");
-
-        let WorkerOutcome::Content(delivered) = outcome;
-        assert_eq!(
-            delivered,
-            "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
-        );
-        assert!(telemetry.used_surface_finalization);
-        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
-    }
-
-    #[test]
-    fn execute_turn_tool_backed_artifact_only_draft_uses_structured_finalization() {
-        let llm = SequenceStubLlm {
-            responses: Mutex::new(vec![
-                LlmResponse {
-                    content: "[tool_use]".to_string(),
-                    stop_reason: StopReason::ToolUse,
-                    tool_calls: Some(vec![crate::llm::ToolCall {
-                        id: "call_1".to_string(),
-                        name: "board_info".to_string(),
-                        input: "{}".to_string(),
-                    }]),
-                },
-                LlmResponse {
-                    content: concat!(
-                        "<surface_evidence surface=\"governed_conversation\" authority=\"governed_context\">\n",
-                        "board_info: ok\n",
-                        "</surface_evidence>\n"
-                    )
-                    .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"}"#
-                        .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-            ]),
-        };
-        let mut http = DummyPlatformHttp;
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
-        registry.register(Box::new(StubBoardInfoTool));
-        let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
-        let msg = PcMsg::new_inbound("qq_channel", "chat-ops-artifact", "查看系统状态", false)
-            .expect("message");
-        let mut repeat = HashMap::new();
-
-        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
-            &mut http,
-            &llm,
-            &msg,
-            &outbound_tx,
-            "req-public-runtime-finalization-artifact-only",
-            &registry,
-            &config,
-            &mut repeat,
-            UiLocale::Zh,
-        )
-        .expect("execute turn");
-
-        let WorkerOutcome::Content(delivered) = outcome;
-        assert_eq!(
-            delivered,
-            "系统状态正常：主机 beetle 在线，WiFi 已连接，当前资源压力为 Normal。"
-        );
-        assert!(telemetry.used_surface_finalization);
-        assert_eq!(telemetry.reply_surface, ReplySurface::GovernedConversation);
-    }
-
-    #[test]
-    fn execute_turn_office_account_ambiguity_uses_structured_finalization_for_minimal_confirmation()
-    {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let llm = ObservedSequenceStubLlm {
-            responses: Mutex::new(vec![
-                LlmResponse {
-                    content: "[tool_use]".to_string(),
-                    stop_reason: StopReason::ToolUse,
-                    tool_calls: Some(vec![crate::llm::ToolCall {
-                        id: "call_1".to_string(),
-                        name: "mail".to_string(),
-                        input: r#"{"op":"list","provider":"imap_smtp"}"#.to_string(),
-                    }]),
-                },
-                LlmResponse {
-                    content: "让我继续处理。".to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"}"#
-                        .to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-            ]),
-            observed: Arc::clone(&observed),
-        };
-        let mut http = DummyPlatformHttp;
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
-        registry.register(Box::new(StubAmbiguousOfficeMailTool));
-        let mut config = test_agent_loop_config();
-        config.strategy = AgentRunStrategy::LinuxEnhanced;
-        let msg = PcMsg::new_inbound("qq_channel", "chat-office-ambiguity", "帮我看看邮箱", false)
-            .expect("message");
-        let mut repeat = HashMap::new();
-
-        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
-            &mut http,
-            &llm,
-            &msg,
-            &outbound_tx,
-            "req-office-account-ambiguity",
-            &registry,
-            &config,
-            &mut repeat,
-            UiLocale::Zh,
-        )
-        .expect("execute turn");
-
-        let WorkerOutcome::Content(delivered) = outcome;
-        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(observed.len(), 3, "{:#?}", observed);
-        assert!(
-            observed[2]
-                .system
-                .contains("## Governed Conversation Finalization"),
-            "{:#?}",
-            observed[2]
-        );
-        assert!(
-            delivered.starts_with(
-                "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
-            ),
-            "{:#?}",
-            observed[1]
-        );
-        assert!(
-            !delivered.contains("<foreground_work_packet>"),
-            "{delivered}"
-        );
-        assert!(telemetry.used_surface_finalization);
-        assert_eq!(telemetry.latency.tool_calls, 1);
-    }
-
-    #[test]
     fn office_account_confirmation_turn_resumes_action_and_calls_tool_with_selected_account() {
         let session_store = Arc::new(StubSessionStore::default());
         let execution_state_store = Arc::new(StubExecutionStateStore::default());
@@ -6592,12 +6194,7 @@ mod tests {
                     }]),
                 },
                 LlmResponse {
-                    content: "让我继续处理。".to_string(),
-                    stop_reason: StopReason::EndTurn,
-                    tool_calls: None,
-                },
-                LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"}"#
+                    content: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
                         .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
@@ -6812,7 +6409,6 @@ mod tests {
             worker_latency: WorkerLatency::default(),
             any_tool_used: false,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
             foreground_work_packet: None,
@@ -6945,7 +6541,6 @@ mod tests {
             worker_latency: WorkerLatency::default(),
             any_tool_used: false,
             external_content_used: false,
-            used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             reply_surface: ReplySurface::GovernedConversation,
             foreground_work_packet: None,
@@ -7045,7 +6640,10 @@ mod tests {
             PcMsg::new_inbound("qq_channel", "chat-ops", "查看系统信息", false).expect("message");
         let mut repeat = HashMap::new();
 
-        let turn_execution::ExecutedTurn { outcome, telemetry } = turn_execution::execute_turn(
+        let turn_execution::ExecutedTurn {
+            outcome,
+            telemetry: _,
+        } = turn_execution::execute_turn(
             &mut http,
             &llm,
             &msg,
@@ -7063,7 +6661,6 @@ mod tests {
             WorkerOutcome::Content(ref text)
                 if text == "系统信息属于内部运行机制，为了保护持续性和稳定性，这部分内容不对外公开。"
         ));
-        assert!(!telemetry.used_surface_finalization);
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 2);
     }
@@ -7153,7 +6750,6 @@ mod tests {
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
             external_content_used: false,
-            used_surface_finalization: true,
             task_execution_used: false,
             foreground_work_context_present: false,
             soul_feedback_projection: None,
@@ -7204,7 +6800,7 @@ mod tests {
             persona_priority_adjudication: None,
         };
 
-        let observation = build_turn_observation_ledger("surface_finalization", false, &telemetry)
+        let observation = build_turn_observation_ledger("tool_primary_delivery", false, &telemetry)
             .expect("observation");
 
         assert_eq!(
@@ -7215,7 +6811,7 @@ mod tests {
             observation.deliberation_class,
             crate::memory::TurnDeliberationClass::HardReasoning
         );
-        assert_eq!(observation.final_outcome, "surface_finalization");
+        assert_eq!(observation.final_outcome, "tool_primary_delivery");
         assert_eq!(
             observation.pressure,
             crate::memory::TurnPersonaPressureLevel::Cautious
@@ -7223,7 +6819,7 @@ mod tests {
         assert_eq!(observation.mode.current_mode, "normal");
         assert!(observation.mode.allow_non_voice_outbound);
         assert!(observation.mode.allow_idle_self_runtime);
-        assert_eq!(observation.tool_path.path, "surface_finalization");
+        assert_eq!(observation.tool_path.path, "tool_primary_delivery");
         assert_eq!(observation.tool_path.tool_calls, 2);
         assert_eq!(observation.tool_path.react_rounds, 3);
         assert!(observation.tool_path.current_primary_delivered);

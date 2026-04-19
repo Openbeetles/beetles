@@ -33,6 +33,8 @@ mod policy;
 #[cfg(feature = "capability_office")]
 mod provider_schema;
 #[cfg(feature = "capability_office")]
+mod public_contract;
+#[cfg(feature = "capability_office")]
 mod resolver;
 #[cfg(feature = "capability_office")]
 mod service;
@@ -114,6 +116,8 @@ pub use provider_schema::{
     office_provider_schema, office_provider_schemas, OfficeProviderFieldLocation,
     OfficeProviderFieldSchema, OfficeProviderFieldValueKind, OfficeProviderSchema,
 };
+#[cfg(feature = "capability_office")]
+pub(crate) use public_contract::parse_public_account_upsert_request_value;
 #[cfg(feature = "capability_office")]
 pub use resolver::{
     OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,

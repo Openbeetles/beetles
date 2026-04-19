@@ -779,9 +779,7 @@ export const zhCN = {
         probe: '可探测',
         none: '无',
       },
-      nextActionLabel: '下一步',
       openDetail: '查看',
-      openDetailHint: '进入详情可编辑凭证与探测状态。',
       loadFailed: '账户列表加载失败',
       unsupportedTitle: '当前设备未开放账户接口',
       unsupportedDesc: '这个设备版本还没有暴露账户管理能力，所以此页暂时只展示说明，不再把它当成错误页。',
@@ -899,6 +897,7 @@ export const zhCN = {
         contacts_corp_id: '通讯录企业 ID',
       },
       providerFieldDescriptions: {
+        identity_class: '该账户的身份类别，用于多账户场景下的路由与偏好选择。',
         access_token: '用于连接该提供方账户的密钥或访问令牌。',
         refresh_token: 'OAuth 提供方可选的刷新令牌。',
         token_endpoint: '可选的 OAuth 令牌端点覆盖地址。',

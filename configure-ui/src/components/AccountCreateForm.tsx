@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Checkbox from "@mui/material/Checkbox";
 import FormControl from "@mui/material/FormControl";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import FormHelperText from "@mui/material/FormHelperText";
 import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
@@ -23,7 +21,6 @@ import {
   DIALOG_FORM_SCROLL_WELL_SX,
   DIALOG_FORM_SUBMIT_BAR_SX,
   PANEL_SECTION_PADDING,
-  TEXT_BODY_TERTIARY_SX,
 } from "../theme/panelStyles";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import {
@@ -39,14 +36,6 @@ import { ProviderFieldInput } from "./ProviderFieldInput";
 import { errorMessage, withTimeout } from "../util/withTimeout";
 
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
-
-const IDENTITY_ORDER: AccountIdentityClass[] = [
-  "work",
-  "personal",
-  "family",
-  "shared",
-  "other",
-];
 
 export type AccountCapabilityFilter = "all" | AccountCapability;
 
@@ -67,9 +56,6 @@ export function AccountCreateForm({
   const [catalogError, setCatalogError] = useState("");
   const [providerKind, setProviderKind] = useState("");
   const [accountLabelInput, setAccountLabelInput] = useState("");
-  const [identityClass, setIdentityClass] =
-    useState<AccountIdentityClass>("work");
-  const [enabledCaps, setEnabledCaps] = useState<AccountCapability[]>([]);
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -113,7 +99,6 @@ export function AccountCreateForm({
       selectedProvider?.account_fields.filter(
         (field) =>
           field.key !== "account_label" &&
-          field.key !== "identity_class" &&
           field.key !== "enabled_capabilities",
       ) ?? [],
     [selectedProvider],
@@ -151,7 +136,6 @@ export function AccountCreateForm({
   useEffect(() => {
     if (!selectedProvider) {
       queueMicrotask(() => {
-        setEnabledCaps([]);
         setFieldValues({});
       });
       return;
@@ -168,23 +152,12 @@ export function AccountCreateForm({
       else next[f.key] = "";
     }
     queueMicrotask(() => {
-      setEnabledCaps([...selectedProvider.capabilities]);
       setFieldValues(next);
     });
   }, [providerAccountFields, providerConfigFields, selectedProvider]);
 
-  const toggleCap = (c: AccountCapability) => {
-    setEnabledCaps((prev) =>
-      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c],
-    );
-  };
-
   const handleSubmit = async () => {
     if (!hasPairing || !selectedProvider) return;
-    if (enabledCaps.length === 0) {
-      setCreateError(t("accounts.createCapabilityRequired"));
-      return;
-    }
     const invalid = localizedProviderInputFields.filter(
       (f) => f.required && !(fieldValues[f.key] ?? "").trim(),
     );
@@ -200,29 +173,109 @@ export function AccountCreateForm({
     }
 
     let externalAccountId: string | undefined;
-    const configFields: Record<string, string> = {};
+    let identityClass: AccountIdentityClass | undefined;
+    const metadataFields: Record<string, string> = {};
+    let accessToken: string | undefined;
+    let refreshToken: string | undefined;
+    let tokenEndpoint: string | undefined;
+    let mailUsername: string | undefined;
+    let mailFromAddress: string | undefined;
+    let imapHost: string | undefined;
+    let imapPort: string | undefined;
+    let imapTls: boolean | undefined;
+    let smtpHost: string | undefined;
+    let smtpPort: string | undefined;
+    let smtpTls: boolean | undefined;
     for (const f of providerAccountFields) {
       const raw = (fieldValues[f.key] ?? "").trim();
       if (f.key === "external_account_id") {
         if (raw) externalAccountId = raw;
+        continue;
+      }
+      if (f.key === "identity_class") {
+        if (raw) {
+          identityClass = raw as AccountIdentityClass;
+        }
+        continue;
+      }
+      if (raw) {
+        metadataFields[f.key] = raw;
       }
     }
     for (const f of providerConfigFields) {
       const raw = (fieldValues[f.key] ?? "").trim();
-      if (raw) configFields[f.key] = raw;
+      if (!raw) continue;
+      switch (f.key) {
+        case "access_token":
+          accessToken = raw;
+          break;
+        case "refresh_token":
+          refreshToken = raw;
+          break;
+        case "token_endpoint":
+          tokenEndpoint = raw;
+          break;
+        case "mail_username":
+          mailUsername = raw;
+          break;
+        case "mail_from_address":
+          mailFromAddress = raw;
+          break;
+        case "imap_host":
+          imapHost = raw;
+          break;
+        case "imap_port":
+          imapPort = raw;
+          break;
+        case "imap_tls":
+          imapTls = raw === "true";
+          break;
+        case "smtp_host":
+          smtpHost = raw;
+          break;
+        case "smtp_port":
+          smtpPort = raw;
+          break;
+        case "smtp_tls":
+          smtpTls = raw === "true";
+          break;
+        default:
+          metadataFields[f.key] = raw;
+          break;
+      }
     }
-
+    if (!identityClass) {
+      setCreateError(
+        t("accounts.createRequiredFields", {
+          fields: t("accounts.identityLabel"),
+        }),
+      );
+      return;
+    }
     const body: AccountUpsertRequest = {
-      account: {
-        provider_kind: selectedProvider.provider_kind,
-        external_account_id: externalAccountId,
-        account_label: accountLabelInput.trim() || undefined,
-        identity_class: identityClass,
-        enabled_capabilities: enabledCaps,
-      },
+      provider_kind: selectedProvider.provider_kind,
+      identity_class: identityClass,
+      account_label: accountLabelInput.trim() || undefined,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_endpoint: tokenEndpoint,
+      mail_username: mailUsername,
+      mail_from_address: mailFromAddress,
+      imap_host: imapHost,
+      imap_port: imapPort,
+      imap_tls: imapTls,
+      smtp_host: smtpHost,
+      smtp_port: smtpPort,
+      smtp_tls: smtpTls,
     };
-    if (Object.keys(configFields).length > 0) {
-      body.config = { fields: configFields };
+    if (selectedProvider.capabilities.length === 1) {
+      body.capability = selectedProvider.capabilities[0];
+    }
+    if (externalAccountId) {
+      body.external_account_id = externalAccountId;
+    }
+    if (Object.keys(metadataFields).length > 0) {
+      body.metadata = metadataFields;
     }
 
     setCreateBusy(true);
@@ -320,8 +373,7 @@ export function AccountCreateForm({
           >
             {catalog.map((p) => (
               <MenuItem key={p.provider_kind} value={p.provider_kind}>
-                {localizeAccountProviderName(t, p.provider_kind)}{" "}
-                ({p.provider_kind})
+                {localizeAccountProviderName(t, p.provider_kind)}
               </MenuItem>
             ))}
           </Select>
@@ -329,7 +381,7 @@ export function AccountCreateForm({
       </Box>
 
       <Box sx={{ ...CONFIG_PANEL_SX, p: PANEL_SECTION_PADDING }}>
-        <Stack spacing={3}>
+        <Stack spacing={0}>
           <TextField
             fullWidth
             label={t("accounts.accountLabelOptional")}
@@ -337,53 +389,7 @@ export function AccountCreateForm({
             onChange={(e) => setAccountLabelInput(e.target.value)}
             inputProps={{ autoComplete: "off" }}
           />
-          <FormControl fullWidth>
-            <InputLabel id="account-create-identity-label">
-              {t("accounts.identityLabel")}
-            </InputLabel>
-            <Select
-              labelId="account-create-identity-label"
-              label={t("accounts.identityLabel")}
-              value={identityClass}
-              onChange={(e) =>
-                setIdentityClass(e.target.value as AccountIdentityClass)
-              }
-            >
-              {IDENTITY_ORDER.map((id) => (
-                <MenuItem key={id} value={id}>
-                  {t(`accounts.identity.${id}`)}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
         </Stack>
-      </Box>
-
-      <Box sx={{ ...CONFIG_PANEL_SX, p: PANEL_SECTION_PADDING }}>
-        <Typography
-          variant="subtitle2"
-          color="text.secondary"
-          sx={{ mb: 1.5, display: "block", fontWeight: 600 }}
-        >
-          {t("accounts.enabledCapabilities")}
-        </Typography>
-        <Stack spacing={1.25}>
-          {selectedProvider.capabilities.map((c) => (
-            <FormControlLabel
-              key={c}
-              control={
-                <Checkbox
-                  checked={enabledCaps.includes(c)}
-                  onChange={() => toggleCap(c)}
-                />
-              }
-              label={t(`accounts.capability.${c}`)}
-            />
-          ))}
-        </Stack>
-        <Typography variant="caption" sx={{ ...TEXT_BODY_TERTIARY_SX, mt: 2, display: "block" }}>
-          {t("accounts.enabledCapabilitiesHint")}
-        </Typography>
       </Box>
 
       {localizedProviderInputFields.length > 0 ? (

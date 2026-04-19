@@ -47,7 +47,16 @@ export function ProviderFieldInput({
             { value: "true", label: t("accounts.providerFieldOption.true") },
             { value: "false", label: t("accounts.providerFieldOption.false") },
           ]
-        : options;
+        : options.map((option) =>
+            field.key === "identity_class"
+              ? {
+                  ...option,
+                  label: t(`accounts.identity.${option.value}`, {
+                    defaultValue: option.label,
+                  }),
+                }
+              : option,
+          );
     return (
       <FormControl fullWidth required={field.required}>
         <InputLabel id={`${field.key}-label`}>{field.label}</InputLabel>

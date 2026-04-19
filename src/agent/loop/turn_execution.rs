@@ -1,4 +1,3 @@
-use super::driver::current_turn_scope_start;
 use super::*;
 
 pub(super) struct ExecutedTurn {
@@ -275,7 +274,6 @@ pub(super) fn execute_turn(
         return Ok(ExecutedTurn { outcome, telemetry });
     }
     let initial_msg_count = messages.len();
-    let current_turn_scope_start = current_turn_scope_start(&messages, initial_msg_count);
     tool_call_repeat.clear();
     let mut final_content = String::with_capacity(4096);
     let mut memory_grounding: Option<String> = None;
@@ -287,8 +285,6 @@ pub(super) fn execute_turn(
     let mut tool_round_completion = ToolRoundCompletionTelemetry::default();
     let mut external_content_used = false;
     let mut effective_reply_surface = reply_surface;
-    let mut used_surface_finalization = false;
-
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
         if round > 0 {
@@ -399,33 +395,6 @@ pub(super) fn execute_turn(
                 external_content_used,
                 &content,
             );
-            if any_tool_round_executed
-                && super::reply_finalize::assess_turn_completion(
-                    &delivery.report(),
-                    any_tool_round_executed,
-                    any_tool_used,
-                    tool_round_completion,
-                    effective_reply_surface,
-                    &content,
-                )
-                .should_attempt_surface_recovery(effective_reply_surface)
-            {
-                used_surface_finalization = true;
-                final_content = run_surface_finalization_round(
-                    worker_llm,
-                    &mut tool_ctx,
-                    &system,
-                    &messages,
-                    current_turn_scope_start,
-                    effective_reply_surface,
-                    &content,
-                    recovery_suffix_for_gate(&deliberation_gate),
-                    config.llm_stream,
-                    &mut latency,
-                    &mut system_scratch,
-                )?;
-                break;
-            }
 
             mark_ttft_if_visible(&mut latency, worker_start, &content);
             final_content = content;
@@ -542,38 +511,7 @@ pub(super) fn execute_turn(
         final_content = content;
         break;
     }
-    if !used_surface_finalization && any_tool_round_executed {
-        effective_reply_surface = reply_surface.promote_for_runtime_tools(
-            &successful_tool_names,
-            external_content_used,
-            final_content.as_str(),
-        );
-        let completion = super::reply_finalize::assess_turn_completion(
-            &delivery.report(),
-            any_tool_round_executed,
-            any_tool_used,
-            tool_round_completion,
-            effective_reply_surface,
-            final_content.as_str(),
-        );
-        if completion.should_attempt_surface_recovery(effective_reply_surface) {
-            used_surface_finalization = true;
-            final_content = run_surface_finalization_round(
-                worker_llm,
-                &mut tool_ctx,
-                &system,
-                &messages,
-                current_turn_scope_start,
-                effective_reply_surface,
-                final_content.as_str(),
-                recovery_suffix_for_gate(&deliberation_gate),
-                config.llm_stream,
-                &mut latency,
-                &mut system_scratch,
-            )?;
-        }
-    }
-    if any_tool_used && !used_surface_finalization {
+    if any_tool_used {
         effective_reply_surface = reply_surface.promote_for_runtime_tools(
             &successful_tool_names,
             external_content_used,
@@ -589,10 +527,9 @@ pub(super) fn execute_turn(
         return Err(crate::error::Error::config(
             crate::agent::final_reply::ReplyContractBreachKind::ProducerEmpty.stage(),
             format!(
-                "reply_surface={} any_tool_used={} used_surface_finalization={}",
+                "reply_surface={} any_tool_used={}",
                 effective_reply_surface.as_str(),
                 any_tool_used,
-                used_surface_finalization
             ),
         ));
     }
@@ -616,7 +553,6 @@ pub(super) fn execute_turn(
             any_tool_used,
             tool_round_completion,
             external_content_used,
-            used_surface_finalization,
             task_execution_used: false,
             foreground_work_context_present,
             pressure,

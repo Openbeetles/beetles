@@ -21,7 +21,6 @@ pub(super) struct FinalizedTurn {
     pub(super) worker_latency: WorkerLatency,
     pub(super) any_tool_used: bool,
     pub(super) external_content_used: bool,
-    pub(super) used_surface_finalization: bool,
     pub(super) pressure: crate::orchestrator::PressureLevel,
     pub(super) reply_surface: ReplySurface,
     pub(super) foreground_work_packet: Option<crate::agent::ForegroundWorkPacket>,
@@ -105,19 +104,6 @@ pub(super) struct TurnCompletionAssessment {
 }
 
 impl TurnCompletionAssessment {
-    pub(super) fn should_attempt_surface_recovery(self, reply_surface: ReplySurface) -> bool {
-        matches!(
-            self.kind,
-            TurnCompletionKind::PlanningOnly
-                | TurnCompletionKind::IncompleteTurn
-                | TurnCompletionKind::ArtifactOnly
-        ) && self.replay_safe
-            && matches!(
-                reply_surface.finalization_policy(),
-                crate::agent::reply_surface::SurfaceFinalizationPolicy::StructuredJson
-            )
-    }
-
     fn should_rewrite_to_truthful_copy(self) -> bool {
         !self.had_tool_activity && matches!(self.kind, TurnCompletionKind::PlanningOnly)
     }
@@ -227,8 +213,6 @@ pub(super) fn finalize_turn(
 ) -> Result<FinalizedTurn> {
     let final_outcome = if telemetry.delivery.current_primary_delivered {
         "current_primary"
-    } else if telemetry.used_surface_finalization {
-        "surface_finalization"
     } else {
         "final_answer"
     };
@@ -241,7 +225,6 @@ pub(super) fn finalize_turn(
         any_tool_used,
         tool_round_completion,
         external_content_used,
-        used_surface_finalization,
         task_execution_used: _task_execution_used,
         foreground_work_context_present: _foreground_work_context_present,
         pressure,
@@ -356,10 +339,9 @@ pub(super) fn finalize_turn(
             Err(kind) => {
                 metrics::record_empty_final_blocked();
                 log::warn!(
-                    "[reply_surface] canonical reply contract breached stage={} surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
+                    "[reply_surface] canonical reply contract breached stage={} surface={} governance_policy={:?} channel={} chat_id={}",
                     kind.stage(),
                     reply_surface.as_str(),
-                    reply_surface.finalization_policy(),
                     reply_surface.governance_policy(),
                     msg.channel,
                     msg.chat_id
@@ -367,9 +349,8 @@ pub(super) fn finalize_turn(
                 return Err(crate::error::Error::config(
                     kind.stage(),
                     format!(
-                        "reply_surface={} finalization_policy={:?} governance_policy={:?} channel={} chat_id={}",
+                        "reply_surface={} governance_policy={:?} channel={} chat_id={}",
                         reply_surface.as_str(),
-                        reply_surface.finalization_policy(),
                         reply_surface.governance_policy(),
                         msg.channel,
                         msg.chat_id
@@ -395,7 +376,6 @@ pub(super) fn finalize_turn(
         worker_latency: std::mem::take(&mut worker_latency),
         any_tool_used,
         external_content_used,
-        used_surface_finalization,
         pressure,
         reply_surface,
         foreground_work_packet,
@@ -448,7 +428,6 @@ pub(super) fn complete_turn(
         mut worker_latency,
         any_tool_used,
         external_content_used,
-        used_surface_finalization,
         pressure,
         reply_surface,
         foreground_work_packet: _foreground_work_packet,
@@ -546,7 +525,7 @@ pub(super) fn complete_turn(
         && msg.ingress == IngressKind::User
         && reply_surface != ReplySurface::PrivateBoundary
         && (reply_requests_input
-            || (any_tool_used && !used_surface_finalization)
+            || any_tool_used
             || matches!(reply_surface, ReplySurface::TaskExecution)
             || turn_observation
                 .as_ref()
@@ -627,9 +606,7 @@ pub(super) fn complete_turn(
     } else {
         crate::skills::RuntimeSkillReuseOutcome::Succeeded
     };
-    let reuse_outcome_note = if used_surface_finalization {
-        "surface_finalization"
-    } else if reply_already_delivered || delivery.current_primary_delivered {
+    let reuse_outcome_note = if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
     } else {
         "final_answer"
@@ -702,8 +679,6 @@ pub(super) fn complete_turn(
         "interrupt"
     } else if reply_already_delivered || delivery.current_primary_delivered {
         "current_primary"
-    } else if used_surface_finalization {
-        "surface_finalization"
     } else {
         "final_answer"
     };
@@ -855,7 +830,6 @@ pub(super) fn complete_turn(
     metrics::record_tool_calls_last(worker_latency.tool_calls);
     metrics::record_request_semantics_ms(worker_latency.request_semantics_ms);
     metrics::record_tool_exec_ms(worker_latency.tool_exec_ms);
-    metrics::record_surface_finalize_ms(worker_latency.surface_finalize_ms);
     metrics::record_mental_privacy_review_ms(worker_latency.mental_privacy_review_ms);
     metrics::record_ttft_ms(worker_latency.ttft_ms.unwrap_or(0));
     metrics::record_e2e_ms(reply_handoff_ms);

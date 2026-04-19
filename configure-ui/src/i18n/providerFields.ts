@@ -15,6 +15,7 @@ type ProviderFieldLike =
   | AccountFieldState;
 
 const PROVIDER_FIELD_LABEL_KEYS: Record<string, string> = {
+  identity_class: "accounts.identityLabel",
   access_token: "accounts.providerFieldLabels.access_token",
   refresh_token: "accounts.providerFieldLabels.refresh_token",
   token_endpoint: "accounts.providerFieldLabels.token_endpoint",
@@ -51,6 +52,7 @@ const PROVIDER_FIELD_LABEL_KEYS: Record<string, string> = {
 };
 
 const PROVIDER_FIELD_DESCRIPTION_KEYS: Record<string, string> = {
+  identity_class: "accounts.providerFieldDescriptions.identity_class",
   access_token: "accounts.providerFieldDescriptions.access_token",
   refresh_token: "accounts.providerFieldDescriptions.refresh_token",
   token_endpoint: "accounts.providerFieldDescriptions.token_endpoint",

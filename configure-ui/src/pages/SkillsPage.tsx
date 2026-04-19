@@ -54,9 +54,7 @@ import {
   endpointSupportedByInventory,
   parseRootInventory,
 } from "../api/rootInventory";
-import {
-  SETTINGS_SECTION_LIST_ROW_SX,
-} from "../theme/listItemStyles";
+import { SETTINGS_LIST_ROW_PLATE_SX } from "../theme/listItemStyles";
 import { CONTENT_MAX_WIDTH } from "../config/layout";
 import "./skillsMdEditor.css";
 
@@ -118,6 +116,26 @@ const SkillRichEditor = lazy(async () => {
   const mod = await import("./skillRichEditor");
   return { default: mod.SkillRichEditor };
 });
+
+/** 标题行下方统计：弱对比，避免抢 SettingsSection 主标题 */
+const SKILLS_SUMMARY_CHIP_SX = {
+  height: 22,
+  fontSize: "var(--font-size-caption)",
+  fontWeight: 500,
+  color: "var(--text-tertiary)",
+  borderColor: "color-mix(in srgb, var(--border) 88%, transparent)",
+  bgcolor: "transparent",
+  backgroundImage: "none",
+  boxShadow: "none",
+  "& .MuiChip-label": { px: 1, py: 0 },
+} as const;
+
+const SKILLS_SUMMARY_ENABLED_CHIP_SX = {
+  ...SKILLS_SUMMARY_CHIP_SX,
+  color: "var(--text-secondary)",
+  borderColor: "color-mix(in srgb, var(--primary) 12%, var(--border))",
+  bgcolor: "color-mix(in srgb, var(--primary) 3.5%, transparent)",
+} as const;
 
 export function SkillsPage() {
   const { t } = useTranslation();
@@ -343,21 +361,24 @@ export function SkillsPage() {
         description={t("skills.sectionListDesc")}
         belowTitleRow={
           !listState.loading && listToShow.length > 0 ? (
-            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Stack
+              direction="row"
+              spacing={0.75}
+              useFlexGap
+              flexWrap="wrap"
+              sx={{ opacity: 0.92 }}
+            >
               <Chip
                 size="small"
+                variant="outlined"
                 label={t("skills.summaryTotal", { count: listToShow.length })}
+                sx={SKILLS_SUMMARY_CHIP_SX}
               />
               <Chip
                 size="small"
+                variant="outlined"
                 label={t("skills.summaryEnabled", { count: enabledCount })}
-                sx={{
-                  color: "var(--primary)",
-                  borderColor:
-                    "color-mix(in srgb, var(--primary) 18%, var(--border))",
-                  backgroundColor:
-                    "color-mix(in srgb, var(--primary) 6%, var(--card))",
-                }}
+                sx={SKILLS_SUMMARY_ENABLED_CHIP_SX}
               />
             </Stack>
           ) : null
@@ -395,7 +416,7 @@ export function SkillsPage() {
             disablePadding
             sx={{
               display: "grid",
-              gap: 1.5,
+              gap: LAYOUT_TOKENS.spacingInlineTight,
               width: "100%",
               pr: 0.5,
               alignContent: "start",
@@ -409,25 +430,17 @@ export function SkillsPage() {
               <ListItem key={skill.name} disablePadding sx={{ display: "block" }}>
                 <Box
                   sx={{
-                    ...SETTINGS_SECTION_LIST_ROW_SX,
-                    px: 2,
-                    py: 1.5,
+                    ...SETTINGS_LIST_ROW_PLATE_SX,
+                    px: { xs: 1.75, sm: 2 },
+                    py: 1.25,
                     display: "grid",
                     gridTemplateColumns: {
                       xs: "minmax(0, 1fr)",
                       sm: "minmax(0, 1fr) auto",
                     },
                     columnGap: 1.5,
-                    rowGap: 1,
+                    rowGap: 0.75,
                     alignItems: "center",
-                    minHeight: 92,
-                    backgroundColor:
-                      "color-mix(in srgb, var(--surface) 78%, var(--card))",
-                    backgroundImage:
-                      "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
-                    border:
-                      "1px solid color-mix(in srgb, #fff 52%, var(--border))",
-                    boxShadow: "var(--os3d-section-module-stack)",
                   }}
                 >
                   <Box
@@ -458,9 +471,9 @@ export function SkillsPage() {
                             ...TEXT_SUBSECTION_TITLE_SX,
                             minWidth: 0,
                             color: "var(--text-primary)",
-                            fontSize: "1.03125rem",
-                            fontWeight: 700,
-                            lineHeight: 1.28,
+                            fontSize: "var(--font-size-body-sm)",
+                            fontWeight: 600,
+                            lineHeight: 1.35,
                             whiteSpace: "nowrap",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
@@ -481,27 +494,25 @@ export function SkillsPage() {
                           component="span"
                           sx={{
                             flexShrink: 0,
-                            px: 0.65,
-                            py: 0.28,
+                            px: 0.6,
+                            py: 0.22,
                             borderRadius: 999,
-                            fontSize: "0.72rem",
-                            fontWeight: 700,
+                            fontSize: "0.7rem",
+                            fontWeight: 600,
                             letterSpacing: "0.02em",
                             lineHeight: 1,
                             color:
                               skillKind(skill.name) === "runtime"
-                                ? "color-mix(in srgb, var(--primary) 76%, var(--text-secondary))"
-                                : "color-mix(in srgb, var(--accent) 74%, var(--text-secondary))",
+                                ? "color-mix(in srgb, var(--primary) 72%, var(--text-secondary))"
+                                : "color-mix(in srgb, var(--accent) 70%, var(--text-secondary))",
                             backgroundColor:
                               skillKind(skill.name) === "runtime"
-                                ? "color-mix(in srgb, var(--primary) 8%, var(--surface))"
-                                : "color-mix(in srgb, var(--accent) 10%, var(--surface))",
+                                ? "color-mix(in srgb, var(--primary) 6%, transparent)"
+                                : "color-mix(in srgb, var(--accent) 7%, transparent)",
                             border:
                               skillKind(skill.name) === "runtime"
-                                ? "1px solid color-mix(in srgb, var(--primary) 14%, var(--border))"
-                                : "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
-                            boxShadow:
-                              "inset 0 1px 0 color-mix(in srgb, #fff 70%, transparent)",
+                                ? "1px solid color-mix(in srgb, var(--primary) 12%, transparent)"
+                                : "1px solid color-mix(in srgb, var(--accent) 14%, transparent)",
                           }}
                         >
                           {t(

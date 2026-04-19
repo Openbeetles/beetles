@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { alpha } from "@mui/material/styles";
 import Box from "@mui/material/Box";
-import Chip from "@mui/material/Chip";
 import Stack from "@mui/material/Stack";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
@@ -28,9 +28,14 @@ import { useDeviceApi } from "../hooks/useDeviceApi";
 import { localizeAccountProviderName } from "../i18n/providerDisplay";
 import type { AccountCapability, AccountSummary } from "../types/accountConfig";
 import {
+  buildAccountCardModel,
+  type AccountCardStatusColor,
+} from "./accountsCardModel";
+import {
   CONFIG_PANEL_SX,
   PAGE_STACK_OUTER_SX,
 } from "../theme/panelStyles";
+import { LIST_CARD_PLATE_BACKGROUND_IMAGE } from "../theme/listItemStyles";
 
 type CapabilityFilter = "all" | AccountCapability;
 
@@ -88,47 +93,78 @@ const ACCOUNT_FILTER_GROUP_SX = {
   },
 } as const;
 
-const ACCOUNT_INFO_CHIP_SX = {
-  borderColor: "color-mix(in srgb, #fff 54%, var(--border))",
-  backgroundColor: "color-mix(in srgb, var(--surface) 80%, var(--card))",
-  boxShadow: "inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent)",
-  color: "var(--foreground)",
+/** 就绪状态圆点：与 MUI Chip semantic 对齐 */
+const READINESS_DOT_BG: Record<AccountCardStatusColor, string> = {
+  success: "success.main",
+  warning: "warning.main",
+  error: "error.main",
+  default: "text.disabled",
+};
+
+const ACCOUNT_CARD_STATUS_PILL_SX = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 0.65,
+  maxWidth: "100%",
+  px: 0.85,
+  py: 0.4,
+  borderRadius: LAYOUT_TOKENS.radiusSearchPill,
+  bgcolor: "color-mix(in srgb, var(--foreground) 3.2%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--foreground) 5%, transparent)",
 } as const;
 
-const ACCOUNT_STATUS_CHIP_SX = {
-  fontWeight: 700,
-  boxShadow: "inset 0 1px 0 color-mix(in srgb, #fff 64%, transparent)",
+const ACCOUNT_CARD_SX = {
+  ...CONFIG_PANEL_SX,
+  cursor: "pointer",
+  textAlign: "left",
+  width: "100%",
+  minWidth: 0,
+  overflow: "hidden",
+  p: { xs: 2, sm: 2.5 },
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
+  gap: 1.5,
+  font: "inherit",
+  color: "inherit",
+  bgcolor: "var(--card)",
+  backgroundImage: LIST_CARD_PLATE_BACKGROUND_IMAGE,
+  boxShadow: [
+    "var(--os3d-content-plate-stack)",
+    "inset 0 1px 0 color-mix(in srgb, #fff 48%, transparent)",
+  ].join(", "),
+  transition: [
+    "transform var(--transition-duration) var(--ease-out-smooth)",
+    "box-shadow var(--transition-duration) var(--ease-out-smooth)",
+  ].join(", "),
+  "&:focus-visible": {
+    outline: "2px solid color-mix(in srgb, var(--primary) 55%, transparent)",
+    outlineOffset: 2,
+  },
+  "@media (hover: hover)": {
+    "&:hover": {
+      transform: "translateY(-1px)",
+      boxShadow: [
+        "var(--os3d-content-plate-stack)",
+        "0 14px 36px -26px color-mix(in srgb, var(--foreground) 10%, transparent)",
+        "inset 0 1px 0 color-mix(in srgb, #fff 52%, transparent)",
+      ].join(", "),
+      "& [data-account-card-cta]": {
+        color: "var(--primary)",
+        opacity: 1,
+      },
+      "& [data-account-card-cta] .MuiSvgIcon-root": {
+        transform: "translateX(3px)",
+        opacity: 1,
+      },
+    },
+  },
 } as const;
 
 type AccountsDialogState =
   | { kind: "closed" }
   | { kind: "create" }
   | { kind: "detail"; accountKey: string };
-
-function readinessColor(
-  r: AccountSummary["readiness"],
-): "default" | "success" | "warning" | "error" {
-  switch (r) {
-    case "ready":
-      return "success";
-    case "needs_configuration":
-    case "ready_for_probe":
-      return "warning";
-    default:
-      return "default";
-  }
-}
-
-function accountTitle(row: AccountSummary): string {
-  return row.account_label.trim() || row.account_key;
-}
-
-function accountFooterMeta(row: AccountSummary): string {
-  const title = accountTitle(row);
-  return title === row.account_key
-    ? row.provider_kind
-    : `${row.provider_kind} · ${row.account_key}`;
-}
 
 export function AccountsPage() {
   const { t } = useTranslation();
@@ -281,208 +317,302 @@ export function AccountsPage() {
                 display: "grid",
                 gridTemplateColumns: {
                   xs: "1fr",
-                  md: "repeat(auto-fit, minmax(360px, 420px))",
+                  md: "repeat(auto-fit, minmax(440px, 520px))",
                 },
-                gap: 1.5,
+                gridAutoRows: "1fr",
+                gap: 2,
                 justifyContent: "start",
               }}
             >
-              {items.map((row) => (
-                <Box
-                  key={row.account_key}
-                  component="button"
-                  type="button"
-                  onClick={() =>
-                    setDialog({ kind: "detail", accountKey: row.account_key })
-                  }
-                  sx={{
-                    ...CONFIG_PANEL_SX,
-                    cursor: "pointer",
-                    textAlign: "left",
-                    width: "100%",
-                    minHeight: 212,
-                    p: 2.25,
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "stretch",
-                    justifyContent: "space-between",
-                    gap: 1.75,
-                    border: "none",
-                    font: "inherit",
-                    color: "inherit",
-                    backgroundColor:
-                      "color-mix(in srgb, var(--surface) 78%, var(--card))",
-                    backgroundImage:
-                      "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
-                    boxShadow: "var(--os3d-section-module-stack)",
-                    transition:
-                      "box-shadow var(--transition-duration) var(--ease-out-smooth), transform var(--transition-duration) var(--ease-out-smooth)",
-                    "@media (hover: hover)": {
-                      "&:hover": {
-                        transform: "translateY(-1px)",
-                      },
-                    },
-                  }}
-                >
-                  <Stack spacing={1.25} sx={{ minWidth: 0 }}>
-                    <Box sx={{ minWidth: 0 }}>
+              {items.map((row) => {
+                const model = buildAccountCardModel(row, {
+                  t,
+                  providerLabel: localizeAccountProviderName(t, row.provider_kind),
+                });
+
+                return (
+                  <Box
+                    key={row.account_key}
+                    component="button"
+                    type="button"
+                    onClick={() =>
+                      setDialog({ kind: "detail", accountKey: row.account_key })
+                    }
+                    sx={ACCOUNT_CARD_SX}
+                  >
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 1.5,
+                        minWidth: 0,
+                      }}
+                    >
                       <Typography
                         variant="caption"
                         sx={{
-                          display: "block",
-                          fontWeight: 700,
-                          letterSpacing: "0.02em",
+                          fontWeight: 600,
+                          letterSpacing: "0.05em",
                           color: "var(--text-secondary)",
                           textTransform: "uppercase",
+                          fontSize: "0.6875rem",
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          flex: "1 1 auto",
+                          opacity: 0.92,
+                        }}
+                        title={model.eyebrow}
+                      >
+                        {model.eyebrow}
+                      </Typography>
+                      <Stack
+                        direction="row"
+                        flexWrap="wrap"
+                        spacing={0}
+                        sx={{
+                          gap: 0.75,
+                          justifyContent: "flex-end",
+                          flex: "0 1 auto",
+                          maxWidth: { xs: "100%", sm: "min(100%, 320px)" },
                         }}
                       >
-                        {localizeAccountProviderName(t, row.provider_kind)}
-                      </Typography>
-                    </Box>
-                    <Typography
-                      variant="subtitle1"
-                      fontWeight={700}
-                      sx={{
-                        lineHeight: 1.3,
-                        fontSize: "1.08rem",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                      title={accountTitle(row)}
-                    >
-                      {accountTitle(row)}
-                    </Typography>
-                    <Stack
-                      direction="row"
-                      flexWrap="wrap"
-                      gap={0.75}
-                      sx={{ minWidth: 0 }}
-                    >
-                      <Chip
-                        size="small"
-                        label={t(`accounts.identity.${row.identity_class}`)}
-                        variant="outlined"
-                        sx={ACCOUNT_INFO_CHIP_SX}
-                      />
-                      {row.enabled_capabilities.map((c) => (
-                        <Chip
-                          key={c}
-                          size="small"
-                          label={t(`accounts.capabilityShort.${c}`)}
-                          variant="outlined"
-                          sx={ACCOUNT_INFO_CHIP_SX}
-                        />
-                      ))}
-                    </Stack>
-                  </Stack>
-                  <Box
-                    sx={{
-                      ...CONFIG_PANEL_SX,
-                      p: 1.25,
-                      backgroundColor:
-                        "color-mix(in srgb, var(--surface) 74%, var(--card))",
-                      boxShadow: "var(--os3d-section-module-stack)",
-                    }}
-                  >
-                    <Stack spacing={0.9}>
-                      <Stack direction="row" flexWrap="wrap" gap={0.75}>
-                        <Chip
-                          size="small"
-                          color={readinessColor(row.readiness)}
-                          label={t(`accounts.readiness.${row.readiness}`)}
-                          sx={ACCOUNT_STATUS_CHIP_SX}
-                        />
-                        {row.has_runtime_error ? (
-                          <Chip
-                            size="small"
-                            color="error"
-                            label={t("accounts.runtimeErrorFlag")}
-                            sx={ACCOUNT_STATUS_CHIP_SX}
+                        <Box sx={ACCOUNT_CARD_STATUS_PILL_SX}>
+                          <Box
+                            sx={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              flexShrink: 0,
+                              bgcolor: READINESS_DOT_BG[model.readinessColor],
+                              boxShadow: [
+                                "inset 0 1px 0 color-mix(in srgb, #fff 35%, transparent)",
+                                "0 0 0 1px color-mix(in srgb, var(--foreground) 7%, transparent)",
+                              ].join(", "),
+                            }}
                           />
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              fontWeight: 600,
+                              color: "var(--text-secondary)",
+                              lineHeight: 1.25,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              maxWidth: { xs: 132, sm: 192 },
+                              fontSize: "0.75rem",
+                            }}
+                            title={model.readinessLabel}
+                          >
+                            {model.readinessLabel}
+                          </Typography>
+                        </Box>
+                        {model.showRuntimeFlag ? (
+                          <Box
+                            sx={(theme) => ({
+                              ...ACCOUNT_CARD_STATUS_PILL_SX,
+                              bgcolor: alpha(
+                                theme.palette.error.main,
+                                theme.palette.mode === "dark" ? 0.14 : 0.07,
+                              ),
+                              border: `1px solid ${alpha(theme.palette.error.main, 0.24)}`,
+                            })}
+                          >
+                            <Box
+                              sx={(theme) => ({
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                flexShrink: 0,
+                                bgcolor: "error.main",
+                                boxShadow: [
+                                  "inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent)",
+                                  `0 0 0 1px ${alpha(theme.palette.error.main, 0.38)}`,
+                                ].join(", "),
+                              })}
+                            />
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontWeight: 600,
+                                color: "error.main",
+                                lineHeight: 1.25,
+                                whiteSpace: "nowrap",
+                                fontSize: "0.75rem",
+                              }}
+                            >
+                              {t("accounts.runtimeErrorFlag")}
+                            </Typography>
+                          </Box>
                         ) : null}
                       </Stack>
-                      <Typography
-                        variant="caption"
-                        sx={{
-                          color:
-                            row.next_action !== "none"
-                              ? "var(--text-secondary)"
-                              : "var(--text-tertiary)",
-                          fontWeight: row.next_action !== "none" ? 600 : 500,
-                          lineHeight: 1.35,
-                        }}
-                      >
-                        {row.next_action !== "none"
-                          ? `${t("accounts.nextActionLabel")} · ${t(
-                              `accounts.nextAction.${row.next_action}`,
-                            )}`
-                          : t("accounts.openDetailHint")}
-                      </Typography>
-                    </Stack>
-                  </Box>
-                  <Box
-                    sx={{
-                      minWidth: 0,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 1,
-                      pt: 0.25,
-                    }}
-                  >
+                    </Box>
+
                     <Typography
+                      component="div"
                       sx={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.77rem",
-                        lineHeight: 1.3,
-                        color: "var(--text-tertiary)",
-                        whiteSpace: "nowrap",
+                        fontSize: "1.1875rem",
+                        fontWeight: 600,
+                        lineHeight: 1.35,
+                        letterSpacing: "-0.015em",
+                        color: "var(--foreground)",
+                        display: "-webkit-box",
+                        WebkitBoxOrient: "vertical",
+                        WebkitLineClamp: 2,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
+                        textAlign: "left",
+                        mt: -0.25,
                       }}
-                      title={accountFooterMeta(row)}
+                      title={model.title}
                     >
-                      {accountFooterMeta(row)}
+                      {model.title}
                     </Typography>
-                    <Stack
-                      direction="row"
-                      alignItems="center"
-                      spacing={0.5}
-                      sx={{ color: "var(--text-secondary)", flexShrink: 0 }}
+
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1,
+                        minWidth: 0,
+                        mt: -0.15,
+                      }}
                     >
-                      <Typography
-                        variant="caption"
+                      <Box
+                        component="span"
                         sx={{
-                          fontWeight: 700,
+                          px: 0.9,
+                          py: 0.25,
+                          borderRadius: "var(--radius-chip)",
+                          flexShrink: 0,
+                          border:
+                            "1px solid color-mix(in srgb, var(--primary) 16%, transparent)",
+                          bgcolor:
+                            "color-mix(in srgb, var(--primary) 5.5%, transparent)",
+                          color: "var(--text-secondary)",
+                          fontWeight: 600,
+                          fontSize: "0.8125rem",
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        {model.identityLabel}
+                      </Box>
+                      <Typography
+                        variant="body2"
+                        component="span"
+                        sx={{
+                          color: "var(--text-secondary)",
+                          fontWeight: 500,
+                          lineHeight: 1.45,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
                         }}
+                        title={model.capabilityLabels.join(" · ")}
                       >
-                        {t("accounts.openDetail")}
+                        {model.capabilityLabels.join(" · ")}
                       </Typography>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        mt: "auto",
+                        pt: 1.25,
+                        borderTop:
+                          "1px solid color-mix(in srgb, var(--border) 38%, transparent)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 1.5,
+                        minWidth: 0,
+                      }}
+                    >
+                      <Stack spacing={0.2} sx={{ minWidth: 0, flex: "1 1 auto" }}>
+                        <Typography
+                          variant="caption"
+                          component="span"
+                          sx={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.65625rem",
+                            lineHeight: 1.4,
+                            color: "var(--text-tertiary)",
+                            fontWeight: 500,
+                            letterSpacing: "0.02em",
+                            display: "block",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={model.providerMeta}
+                        >
+                          {model.providerMeta}
+                        </Typography>
+                        {model.rawKeyMeta ? (
+                          <Typography
+                            variant="caption"
+                            component="span"
+                            sx={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: "0.625rem",
+                              lineHeight: 1.4,
+                              color: "color-mix(in srgb, var(--text-tertiary) 75%, transparent)",
+                              fontWeight: 400,
+                              display: "block",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={model.rawKeyMeta}
+                          >
+                            {model.rawKeyMeta}
+                          </Typography>
+                        ) : null}
+                      </Stack>
                       <Box
+                        data-account-card-cta
                         sx={{
-                          width: 28,
-                          height: 28,
-                          display: "grid",
-                          placeItems: "center",
-                          borderRadius: "var(--radius-control)",
-                          border:
-                            "1px solid color-mix(in srgb, #fff 54%, var(--border))",
-                          backgroundColor:
-                            "color-mix(in srgb, var(--surface) 82%, var(--card))",
-                          boxShadow: "var(--os3d-control-soft-lift-stack)",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 0.2,
+                          flexShrink: 0,
+                          color:
+                            "color-mix(in srgb, var(--primary) 88%, var(--foreground))",
+                          opacity: 0.9,
+                          transition: [
+                            "color var(--transition-duration) var(--ease-out-smooth)",
+                            "opacity var(--transition-duration) var(--ease-out-smooth)",
+                          ].join(", "),
                         }}
                       >
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            fontWeight: 700,
+                            letterSpacing: "0.03em",
+                          }}
+                        >
+                          {t("accounts.openDetail")}
+                        </Typography>
                         <ChevronRightRounded
-                          sx={{ color: "var(--text-tertiary)", fontSize: 18 }}
+                          sx={{
+                            fontSize: 18,
+                            opacity: 0.88,
+                            transition: [
+                              "transform var(--transition-duration) var(--ease-out-smooth)",
+                              "opacity var(--transition-duration) var(--ease-out-smooth)",
+                            ].join(", "),
+                          }}
                           aria-hidden
                         />
                       </Box>
-                    </Stack>
+                    </Box>
                   </Box>
-                </Box>
-              ))}
+                );
+              })}
             </Box>
           </Stack>
         )}
