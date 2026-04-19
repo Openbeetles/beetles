@@ -504,10 +504,10 @@ struct WorkerRunTelemetry {
     external_content_used: bool,
     used_surface_finalization: bool,
     task_execution_used: bool,
+    foreground_work_context_present: bool,
     pressure: crate::orchestrator::PressureLevel,
     runtime_mode: crate::runtime::RuntimeModeSnapshot,
     deliberation_class: crate::memory::TurnDeliberationClass,
-    request_semantics: RequestSemantics,
     reply_surface: ReplySurface,
     prompt_recall_intent: crate::memory::PromptRecallIntent,
     runtime_skill_selected_ids: Vec<String>,
@@ -1996,10 +1996,6 @@ fn run_agent_loop_main(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
-        ForegroundControlDecision, RequestKind,
-    };
     use crate::agent::DetachedWorkStore;
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
@@ -4304,6 +4300,7 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
                 current_mode: crate::runtime::RuntimeMode::Normal,
@@ -4339,7 +4336,6 @@ mod tests {
                 },
             },
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::PublicRuntime,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4404,6 +4400,7 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
                 current_mode: crate::runtime::RuntimeMode::Normal,
@@ -4439,7 +4436,6 @@ mod tests {
                 },
             },
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::GovernedConversation,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4504,13 +4500,10 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: true,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics {
-                disclosure_surface: DisclosureSurface::Private,
-                ..RequestSemantics::public_tool_first()
-            },
             reply_surface: ReplySurface::PrivateBoundary,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4575,10 +4568,10 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: true,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::TaskExecution,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4626,6 +4619,7 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: true,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
                 current_mode: crate::runtime::RuntimeMode::Normal,
@@ -4661,7 +4655,6 @@ mod tests {
                 },
             },
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::PublicRuntime,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4715,10 +4708,10 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::GovernedConversation,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4766,10 +4759,10 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: true,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::TaskExecution,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4823,18 +4816,10 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics {
-                request_kind: RequestKind::General,
-                evidence_need: EvidenceNeed::HostTool,
-                disclosure_surface: DisclosureSurface::Governed,
-                execution_preference: ExecutionPreference::ToolFirst,
-                action_family: ActionFamily::ActiveAction,
-                foreground_control: ForegroundControlDecision::ContinueActiveWork,
-                confidence: 90,
-            },
             reply_surface: ReplySurface::GovernedConversation,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -4884,18 +4869,10 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             task_execution_used: false,
+            foreground_work_context_present: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
             runtime_mode: runtime_mode_normal_snapshot(),
             deliberation_class: crate::memory::TurnDeliberationClass::Standard,
-            request_semantics: RequestSemantics {
-                request_kind: RequestKind::General,
-                evidence_need: EvidenceNeed::HostTool,
-                disclosure_surface: DisclosureSurface::Governed,
-                execution_preference: ExecutionPreference::ToolFirst,
-                action_family: ActionFamily::ActiveAction,
-                foreground_control: ForegroundControlDecision::ContinueActiveWork,
-                confidence: 90,
-            },
             reply_surface: ReplySurface::GovernedConversation,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
@@ -5043,8 +5020,20 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
+                relation_to_last_work: crate::agent::ForegroundWorkRelation::ContinueExisting,
+                settlement: Some(crate::agent::active_work::ForegroundWorkSettlement {
+                    kind: crate::agent::ActiveWorkKind::InteractiveAction,
+                    status: crate::agent::ForegroundWorkStatus::Running,
+                    title: "帮我配置 QQ 邮箱账户".to_string(),
+                    progress_summary: "当前主答复已送达".to_string(),
+                    blocker: String::new(),
+                    next_action: "deliver current primary answer before more tool work".to_string(),
+                    recent_outcome: "当前主答复已送达".to_string(),
+                    active_artifact_refs: Vec::new(),
+                }),
+            }),
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -5199,8 +5188,8 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::TaskExecution,
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -5987,8 +5976,20 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics::public_tool_first(),
             reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
+                relation_to_last_work: crate::agent::ForegroundWorkRelation::ContinueExisting,
+                settlement: Some(crate::agent::active_work::ForegroundWorkSettlement {
+                    kind: crate::agent::ActiveWorkKind::InteractiveAction,
+                    status: crate::agent::ForegroundWorkStatus::Running,
+                    title: "帮我配置 QQ 邮箱账户".to_string(),
+                    progress_summary: "当前主答复已送达".to_string(),
+                    blocker: String::new(),
+                    next_action: "deliver current primary answer before more tool work".to_string(),
+                    recent_outcome: "当前主答复已送达".to_string(),
+                    active_artifact_refs: Vec::new(),
+                }),
+            }),
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6078,8 +6079,8 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: None,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6182,18 +6183,11 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics {
-                request_kind: crate::agent::request_semantics::RequestKind::General,
-                evidence_need: crate::agent::request_semantics::EvidenceNeed::None,
-                disclosure_surface: crate::agent::request_semantics::DisclosureSurface::Governed,
-                execution_preference:
-                    crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
-                action_family: crate::agent::request_semantics::ActionFamily::ActiveAction,
-                foreground_control:
-                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork,
-                confidence: 100,
-            },
             reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
+                relation_to_last_work: crate::agent::ForegroundWorkRelation::CancelExisting,
+                settlement: None,
+            }),
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6374,7 +6368,7 @@ mod tests {
                     tool_calls: None,
                 },
                 LlmResponse {
-                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"}"#
+                    content: r#"{"surface":"governed_conversation","reply":"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？\n\n<foreground_work_packet>{\"relation_to_last_work\":\"continue_existing\",\"settlement\":{\"kind\":\"interactive_action\",\"status\":\"awaiting_user\",\"title\":\"邮箱账户选择\",\"progress_summary\":\"已经列出可用邮箱账户候选。\",\"blocker\":\"你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？\",\"next_action\":\"等待用户确认要使用的邮箱账户。\",\"recent_outcome\":\"已列出 Work 和 Personal 两个邮箱候选。\",\"active_artifact_refs\":[]}}</foreground_work_packet>"}"#
                         .to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
@@ -6415,10 +6409,16 @@ mod tests {
             "{:#?}",
             observed[2]
         );
-        assert_eq!(
-            delivered, "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？",
+        assert!(
+            delivered.starts_with(
+                "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+            ),
             "{:#?}",
             observed[1]
+        );
+        assert!(
+            delivered.contains("<foreground_work_packet>"),
+            "{delivered}"
         );
         assert!(telemetry.used_surface_finalization);
         assert_eq!(telemetry.latency.tool_calls, 1);
@@ -6489,7 +6489,7 @@ mod tests {
             UiLocale::Zh,
         )
         .expect("first execute turn");
-        let first_finalized = self::reply_finalize::finalize_turn(
+        let mut first_finalized = self::reply_finalize::finalize_turn(
             &mut http,
             &SequenceStubLlm {
                 responses: Mutex::new(Vec::new()),
@@ -6502,6 +6502,20 @@ mod tests {
             first_telemetry,
         )
         .expect("finalize first turn");
+        first_finalized.foreground_work_packet = Some(crate::agent::ForegroundWorkPacket {
+            relation_to_last_work: crate::agent::ForegroundWorkRelation::ContinueExisting,
+            settlement: Some(crate::agent::active_work::ForegroundWorkSettlement {
+                kind: crate::agent::ActiveWorkKind::InteractiveAction,
+                status: crate::agent::ForegroundWorkStatus::AwaitingUser,
+                title: "邮箱账户选择".to_string(),
+                progress_summary: "已经列出可用邮箱账户候选。".to_string(),
+                blocker: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+                    .to_string(),
+                next_action: "等待用户确认要使用的邮箱账户。".to_string(),
+                recent_outcome: "已列出 Work 和 Personal 两个邮箱候选。".to_string(),
+                active_artifact_refs: Vec::new(),
+            }),
+        });
         msg1.req_id = Some("req-office-resume-1".to_string());
         let first_turn_ledger = build_turn_ledger_start(&msg1, 1);
         self::reply_finalize::complete_turn(
@@ -6568,7 +6582,7 @@ mod tests {
                     }]),
                 },
                 LlmResponse {
-                    content: "已切到 Work 邮箱，并拿到 1 封邮件。".to_string(),
+                    content: "已切到 Work 邮箱，并拿到 1 封邮件。\n\n<foreground_work_packet>{\"relation_to_last_work\":\"supply_requested_input\",\"settlement\":{\"kind\":\"interactive_action\",\"status\":\"completed\",\"title\":\"邮箱账户选择\",\"progress_summary\":\"已切到 Work 邮箱并确认邮件可读。\",\"blocker\":\"\",\"next_action\":\"\",\"recent_outcome\":\"已列出 Work 邮箱中的 1 封邮件。\",\"active_artifact_refs\":[]}}</foreground_work_packet>".to_string(),
                     stop_reason: StopReason::EndTurn,
                     tool_calls: None,
                 },
@@ -6594,15 +6608,15 @@ mod tests {
         .expect("second execute turn");
 
         let WorkerOutcome::Content(delivered) = second_outcome;
-        assert_eq!(delivered, "已切到 Work 邮箱，并拿到 1 封邮件。");
-        assert_eq!(
-            second_telemetry.request_semantics.action_family,
-            ActionFamily::ActiveAction
+        assert!(
+            delivered.starts_with("已切到 Work 邮箱，并拿到 1 封邮件。"),
+            "{delivered}"
         );
-        assert_eq!(
-            second_telemetry.request_semantics.foreground_control,
-            ForegroundControlDecision::ReviseActiveWork
+        assert!(
+            delivered.contains("<foreground_work_packet>"),
+            "{delivered}"
         );
+        assert!(second_telemetry.foreground_work_context_present);
         assert_eq!(second_telemetry.latency.tool_calls, 1);
         let seen_args = seen_args.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(seen_args.len(), 2, "{seen_args:#?}");
@@ -6679,18 +6693,11 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics {
-                request_kind: crate::agent::request_semantics::RequestKind::General,
-                evidence_need: crate::agent::request_semantics::EvidenceNeed::None,
-                disclosure_surface: crate::agent::request_semantics::DisclosureSurface::Governed,
-                execution_preference:
-                    crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
-                action_family: crate::agent::request_semantics::ActionFamily::ActiveAction,
-                foreground_control:
-                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork,
-                confidence: 100,
-            },
             reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
+                relation_to_last_work: crate::agent::ForegroundWorkRelation::CancelExisting,
+                settlement: None,
+            }),
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -6822,18 +6829,11 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: false,
             pressure: crate::orchestrator::PressureLevel::Normal,
-            request_semantics: RequestSemantics {
-                request_kind: crate::agent::request_semantics::RequestKind::General,
-                evidence_need: crate::agent::request_semantics::EvidenceNeed::None,
-                disclosure_surface: crate::agent::request_semantics::DisclosureSurface::Governed,
-                execution_preference:
-                    crate::agent::request_semantics::ExecutionPreference::AnswerDirect,
-                action_family: crate::agent::request_semantics::ActionFamily::TaskExecution,
-                foreground_control:
-                    crate::agent::request_semantics::ForegroundControlDecision::CancelOrAbortActiveWork,
-                confidence: 100,
-            },
             reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: Some(crate::agent::ForegroundWorkPacket {
+                relation_to_last_work: crate::agent::ForegroundWorkRelation::CancelExisting,
+                settlement: None,
+            }),
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),
             task_learning_selected_ids: Vec::new(),
@@ -7034,6 +7034,7 @@ mod tests {
             external_content_used: false,
             used_surface_finalization: true,
             task_execution_used: false,
+            foreground_work_context_present: false,
             soul_feedback_projection: None,
             pressure: crate::orchestrator::PressureLevel::Cautious,
             runtime_mode: crate::runtime::RuntimeModeSnapshot {
@@ -7070,7 +7071,6 @@ mod tests {
                 },
             },
             deliberation_class: crate::memory::TurnDeliberationClass::HardReasoning,
-            request_semantics: RequestSemantics::conservative_default(),
             reply_surface: ReplySurface::GovernedConversation,
             prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
             runtime_skill_selected_ids: Vec::new(),

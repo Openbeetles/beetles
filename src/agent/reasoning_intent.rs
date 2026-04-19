@@ -492,8 +492,8 @@ fn normalize_intent_list(items: Vec<String>, max_items: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
-        ForegroundControlDecision, RequestKind, RequestSemantics,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
+        RequestSemantics,
     };
 
     fn semantics(
@@ -507,7 +507,6 @@ mod tests {
             disclosure_surface: DisclosureSurface::Governed,
             execution_preference,
             action_family,
-            foreground_control: ForegroundControlDecision::IndependentTurn,
             confidence: 91,
         }
     }

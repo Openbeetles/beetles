@@ -1373,11 +1373,11 @@ mod tests {
         );
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["readiness"],
-            "needs_credential_input"
+            "needs_configuration"
         );
         assert_eq!(
             payload["office_assessment"]["account_assessments"][0]["next_action"],
-            "draft_credentials"
+            "configure_account"
         );
         assert_eq!(
             payload["office_assessment"]["account_diagnostics"][0]["account_key"],
@@ -1385,11 +1385,11 @@ mod tests {
         );
         assert_eq!(
             payload["office_assessment"]["account_diagnostics"][0]["diagnosis_kind"],
-            "needs_credential_input"
+            "needs_configuration"
         );
         assert_eq!(
             payload["office_assessment"]["account_diagnostics"][0]["recommended_action"],
-            "draft_credentials"
+            "configure_account"
         );
         assert!(payload["error"]
             .as_str()

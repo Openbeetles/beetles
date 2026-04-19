@@ -769,13 +769,13 @@ export const zhCN = {
         other: '其它',
       },
       readiness: {
-        needs_credential_input: '待填凭证',
+        needs_configuration: '待补全配置',
         ready_for_probe: '可探测',
         probe_unavailable: '不可探测',
         ready: '就绪',
       },
       nextAction: {
-        draft_credentials: '待补全凭证',
+        configure_account: '待补全配置',
         probe: '可探测',
         none: '无',
       },

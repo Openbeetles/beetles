@@ -444,11 +444,11 @@ mod tests {
         );
         assert_eq!(
             payload["account_assessments"][0]["readiness"],
-            "needs_credential_input"
+            "needs_configuration"
         );
         assert_eq!(
             payload["account_assessments"][0]["next_action"],
-            "draft_credentials"
+            "configure_account"
         );
         assert!(payload["account_assessments"][0]["missing_fields"]
             .as_array()
@@ -466,7 +466,11 @@ mod tests {
             }));
         assert_eq!(
             payload["account_diagnostics"][0]["diagnosis_kind"],
-            "needs_credential_input"
+            "needs_configuration"
+        );
+        assert_eq!(
+            payload["account_diagnostics"][0]["recommended_action"],
+            "configure_account"
         );
         assert!(payload["account_diagnostics"][0]["summary"]
             .as_str()

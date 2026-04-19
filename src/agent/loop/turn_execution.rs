@@ -11,9 +11,7 @@ fn foreground_action_progress_kind_for_turn(
     has_resumeable_work: bool,
     has_tools: bool,
 ) -> Option<crate::agent::delivery::TaskActionProgressKind> {
-    use crate::agent::request_semantics::{
-        ActionFamily, ExecutionPreference, ForegroundControlDecision,
-    };
+    use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 
     if !has_tools
         || !has_resumeable_work
@@ -21,13 +19,7 @@ fn foreground_action_progress_kind_for_turn(
     {
         return None;
     }
-    if matches!(request_semantics.action_family, ActionFamily::ActiveAction)
-        && matches!(
-            request_semantics.foreground_control,
-            ForegroundControlDecision::ContinueActiveWork
-                | ForegroundControlDecision::ReviseActiveWork
-        )
-    {
+    if matches!(request_semantics.action_family, ActionFamily::ActiveAction) {
         Some(crate::agent::delivery::TaskActionProgressKind::Resumed)
     } else {
         None
@@ -115,6 +107,7 @@ pub(super) fn execute_turn(
     )
     .ok()
     .flatten();
+    let foreground_work_context_present = active_work.is_some() || active_run.is_some();
     let tool_policy = crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
     let has_tools = !registry.tool_specs_for_llm(&tool_policy).is_empty();
     let request_semantics = super::super::request_semantics::RequestSemantics::compile_for_turn(
@@ -179,13 +172,6 @@ pub(super) fn execute_turn(
         request_semantics,
         mental_privacy_adjudication.is_some(),
     );
-    let foreground_control = active_work
-        .as_ref()
-        .filter(|_| msg.ingress == IngressKind::User)
-        .map(|work| work.foreground_control_for_user_turn(&msg.content))
-        .unwrap_or(crate::agent::request_semantics::ForegroundControlDecision::IndependentTurn);
-    let request_semantics =
-        request_semantics.apply_foreground_control(active_work.as_ref(), foreground_control);
     let request_semantics = request_semantics.apply_reasoning_contract(
         crate::agent::request_semantics::compile_reasoning_contract(
             crate::agent::request_semantics::ReasoningContractCompileInput {
@@ -195,6 +181,7 @@ pub(super) fn execute_turn(
                 reply_surface,
                 request_semantics,
                 active_task_context_present,
+                foreground_work_context_present,
                 governed_memory_evidence_present,
             },
         ),
@@ -286,6 +273,12 @@ pub(super) fn execute_turn(
     )? {
         let (outcome, telemetry) = task_execution_outcome;
         return Ok(ExecutedTurn { outcome, telemetry });
+    }
+    if msg.ingress == IngressKind::User && config.strategy == AgentRunStrategy::LinuxEnhanced {
+        crate::agent::append_foreground_work_packet_guidance(
+            &mut system,
+            crate::orchestrator::current_budget().system_prompt_max,
+        );
     }
 
     let initial_msg_count = messages.len();
@@ -617,10 +610,10 @@ pub(super) fn execute_turn(
             external_content_used,
             used_surface_finalization,
             task_execution_used: false,
+            foreground_work_context_present,
             pressure,
             runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
             deliberation_class: deliberation_gate.class,
-            request_semantics,
             reply_surface: effective_reply_surface,
             prompt_recall_intent: runtime_carry.prompt_recall_intent,
             runtime_skill_selected_ids: runtime_carry.runtime_skill_selected_ids,

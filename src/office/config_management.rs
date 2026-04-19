@@ -1,6 +1,5 @@
 use crate::config::{
-    self, validate_office_accounts_candidate, validate_office_credentials_candidate,
-    ConfigFileStore, OfficeAccountsSegment,
+    self, validate_office_accounts_candidate, ConfigFileStore, OfficeAccountsSegment,
 };
 use crate::error::{Error, Result};
 use crate::office::{
@@ -41,17 +40,6 @@ pub struct OfficePolicyPatch {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeAccountDraftRequest {
-    pub account: OfficeAccount,
-    #[serde(default)]
-    pub set_defaults: Vec<OfficeCapability>,
-    #[serde(default)]
-    pub clear_defaults: Vec<OfficeCapability>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_patch: Option<OfficePolicyPatch>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeAccountRecordInput {
     #[serde(default)]
     pub account_key: String,
@@ -76,11 +64,6 @@ pub struct OfficeAccountUpsertRequest {
     pub policy_patch: Option<OfficePolicyPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<OfficeAccountConfigSaveRequest>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeCredentialDraftRequest {
-    pub credential: OfficeCredential,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,7 +158,7 @@ pub enum OfficeConfigCapabilitySelectionStatus {
 pub enum OfficeConfigCapabilityNextAction {
     CreateAccount,
     SelectDefaultAccount,
-    DraftCredentials,
+    ConfigureAccount,
     Probe,
     ReviewRuntimeError,
     None,
@@ -503,80 +486,22 @@ impl OfficeConfigManagementService {
         })
     }
 
-    pub fn draft_accounts(
-        &self,
-        request: &OfficeAccountDraftRequest,
-    ) -> Result<OfficeAccountsSegment> {
-        let mut segment = self.load_accounts_segment()?;
-        segment.registry.insert(request.account.clone());
-        for capability in &request.set_defaults {
-            segment
-                .binding
-                .set_default_account(*capability, request.account.account_key.clone());
-        }
-        for capability in &request.clear_defaults {
-            if segment.binding.default_account_for(*capability)
-                == Some(request.account.account_key.as_str())
-            {
-                remove_default_binding(&mut segment, *capability)?;
-            }
-        }
-        if let Some(patch) = request.policy_patch.as_ref() {
-            apply_policy_patch(&mut segment.policy, patch);
-        }
-        self.validate_accounts(&segment)?;
-        Ok(segment)
-    }
-
-    pub fn draft_credentials(
-        &self,
-        request: &OfficeCredentialDraftRequest,
-    ) -> Result<OfficeCredentialsSegment> {
-        let mut segment = self.load_credentials_segment()?;
-        segment
-            .items
-            .retain(|item| item.account_key != request.credential.account_key);
-        segment.items.push(request.credential.clone());
-        self.normalize_credentials_segment(&segment)
-    }
-
-    pub fn validate_accounts(&self, segment: &OfficeAccountsSegment) -> Result<()> {
+    fn validate_accounts(&self, segment: &OfficeAccountsSegment) -> Result<()> {
         validate_office_accounts_candidate(segment)
     }
 
-    pub fn validate_credentials(&self, segment: &OfficeCredentialsSegment) -> Result<()> {
-        self.normalize_credentials_segment(segment).map(|_| ())
-    }
-
-    pub fn commit_accounts(&self, segment: &OfficeAccountsSegment) -> Result<()> {
+    fn persist_accounts(&self, segment: &OfficeAccountsSegment) -> Result<()> {
         self.validate_accounts(segment)?;
         let body = serde_json::to_string(segment)
-            .map_err(|error| Error::config("office_config_commit_accounts", error.to_string()))?;
+            .map_err(|error| Error::config("office_config_persist_accounts", error.to_string()))?;
         config::save_office_accounts_segment(self.config_file_store.as_ref(), &body)
-    }
-
-    pub fn commit_credentials(&self, segment: &OfficeCredentialsSegment) -> Result<()> {
-        let normalized = self.normalize_credentials_segment(segment)?;
-        let body = serde_json::to_string(&normalized).map_err(|error| {
-            Error::config("office_config_commit_credentials", error.to_string())
-        })?;
-        config::save_office_credentials_segment(self.credential_store.as_ref(), &body)
-    }
-
-    pub fn save_account(
-        &self,
-        request: &OfficeAccountDraftRequest,
-    ) -> Result<OfficeConfigAccountDetail> {
-        let segment = self.draft_accounts(request)?;
-        self.commit_accounts(&segment)?;
-        self.account_detail(&request.account.account_key)
     }
 
     pub fn save_account_upsert(
         &self,
         request: &OfficeAccountUpsertRequest,
     ) -> Result<OfficeConfigAccountDetail> {
-        let accounts = self.load_accounts_segment()?;
+        let mut accounts = self.load_accounts_segment()?;
         let mut account = materialize_account_record_input(&accounts.registry, &request.account)?;
         let provider_schema = office_provider_schema(&account.provider_kind).ok_or_else(|| {
             Error::config(
@@ -597,18 +522,19 @@ impl OfficeConfigManagementService {
                 ),
             ));
         }
-        let segment = self.draft_accounts(&OfficeAccountDraftRequest {
-            account: account.clone(),
-            set_defaults: request.set_defaults.clone(),
-            clear_defaults: request.clear_defaults.clone(),
-            policy_patch: request.policy_patch.clone(),
-        })?;
         let normalized_credential = if let Some(config) = request.config.as_ref() {
             Some(self.prepare_account_config(&mut account, config, false)?)
         } else {
             None
         };
-        self.commit_accounts(&segment)?;
+        upsert_account_segment(
+            &mut accounts,
+            account.clone(),
+            &request.set_defaults,
+            &request.clear_defaults,
+            request.policy_patch.as_ref(),
+        )?;
+        self.persist_accounts(&accounts)?;
         if let Some(credential) = normalized_credential.as_ref() {
             self.credential_store.set(credential)?;
         }
@@ -629,9 +555,7 @@ impl OfficeConfigManagementService {
         })?;
         let normalized_credential = self.prepare_account_config(&mut account, request, true)?;
         accounts.registry.insert(account.clone());
-        self.validate_accounts(&accounts)?;
-
-        self.commit_accounts(&accounts)?;
+        self.persist_accounts(&accounts)?;
         self.credential_store.set(&normalized_credential)?;
         self.account_detail(account_key)
     }
@@ -654,8 +578,7 @@ impl OfficeConfigManagementService {
             accounts.policy.global_default_account_key.clear();
         }
 
-        self.validate_accounts(&accounts)?;
-        self.commit_accounts(&accounts)?;
+        self.persist_accounts(&accounts)?;
         self.credential_store.clear(account_key)?;
         self.runtime_status_store.clear(account_key)?;
         Ok(())
@@ -841,32 +764,6 @@ impl OfficeConfigManagementService {
         credential.updated_at = now;
         credential.account_key = account.account_key.clone();
         self.normalize_credential_for_account(account, &credential)
-    }
-
-    fn normalize_credentials_segment(
-        &self,
-        segment: &OfficeCredentialsSegment,
-    ) -> Result<OfficeCredentialsSegment> {
-        validate_office_credentials_candidate(segment)?;
-        let accounts = self.load_accounts_segment()?;
-        let mut items = Vec::with_capacity(segment.items.len());
-        for credential in &segment.items {
-            let account_key = credential.account_key.trim();
-            let account = accounts.registry.get(account_key).ok_or_else(|| {
-                Error::config(
-                    "office_config_credentials",
-                    format!(
-                        "credential account_key '{}' is not registered in office accounts",
-                        account_key
-                    ),
-                )
-            })?;
-            items.push(self.normalize_credential_for_account(account, credential)?);
-        }
-        items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        let normalized = OfficeCredentialsSegment { items };
-        validate_office_credentials_candidate(&normalized)?;
-        Ok(normalized)
     }
 
     fn normalize_credential_for_account(
@@ -1110,19 +1007,52 @@ fn materialize_account_record_input(
     registry: &crate::office::OfficeAccountRegistry,
     input: &OfficeAccountRecordInput,
 ) -> Result<OfficeAccount> {
-    let account_key = if input.account_key.trim().is_empty() {
-        generate_account_key(registry, input)?
+    let provider_kind = input.provider_kind.trim().to_string();
+    let external_account_id = input.external_account_id.trim().to_string();
+    let account_label = input.account_label.trim().to_string();
+    let normalized_input = OfficeAccountRecordInput {
+        account_key: input.account_key.trim().to_string(),
+        provider_kind: provider_kind.clone(),
+        external_account_id: external_account_id.clone(),
+        account_label: account_label.clone(),
+        identity_class: input.identity_class,
+        enabled_capabilities: input.enabled_capabilities.clone(),
+    };
+    let account_key = if !normalized_input.account_key.is_empty() {
+        normalized_input.account_key.clone()
+    } else if let Some(existing_account_key) =
+        existing_account_key_for_natural_identity(registry, &normalized_input)
+    {
+        existing_account_key
     } else {
-        input.account_key.trim().to_string()
+        generate_account_key(registry, &normalized_input)?
     };
     Ok(OfficeAccount {
         account_key,
-        provider_kind: input.provider_kind.trim().to_string(),
-        external_account_id: input.external_account_id.trim().to_string(),
-        account_label: input.account_label.trim().to_string(),
-        identity_class: input.identity_class,
-        enabled_capabilities: input.enabled_capabilities.clone(),
+        provider_kind,
+        external_account_id,
+        account_label,
+        identity_class: normalized_input.identity_class,
+        enabled_capabilities: normalized_input.enabled_capabilities,
     })
+}
+
+fn existing_account_key_for_natural_identity(
+    registry: &crate::office::OfficeAccountRegistry,
+    input: &OfficeAccountRecordInput,
+) -> Option<String> {
+    let external_account_id = input.external_account_id.trim();
+    if external_account_id.is_empty() {
+        return None;
+    }
+    registry
+        .all_accounts()
+        .into_iter()
+        .find(|account| {
+            account.provider_kind == input.provider_kind
+                && account.external_account_id.trim() == external_account_id
+        })
+        .map(|account| account.account_key.clone())
 }
 
 fn generate_account_key(
@@ -1275,12 +1205,37 @@ fn map_account_next_action(
     next_action: crate::office::OfficeConfigNextAction,
 ) -> OfficeConfigCapabilityNextAction {
     match next_action {
-        crate::office::OfficeConfigNextAction::DraftCredentials => {
-            OfficeConfigCapabilityNextAction::DraftCredentials
+        crate::office::OfficeConfigNextAction::ConfigureAccount => {
+            OfficeConfigCapabilityNextAction::ConfigureAccount
         }
         crate::office::OfficeConfigNextAction::Probe => OfficeConfigCapabilityNextAction::Probe,
         crate::office::OfficeConfigNextAction::None => OfficeConfigCapabilityNextAction::None,
     }
+}
+
+fn upsert_account_segment(
+    segment: &mut OfficeAccountsSegment,
+    account: OfficeAccount,
+    set_defaults: &[OfficeCapability],
+    clear_defaults: &[OfficeCapability],
+    policy_patch: Option<&OfficePolicyPatch>,
+) -> Result<()> {
+    let account_key = account.account_key.clone();
+    segment.registry.insert(account);
+    for capability in set_defaults {
+        segment
+            .binding
+            .set_default_account(*capability, account_key.clone());
+    }
+    for capability in clear_defaults {
+        if segment.binding.default_account_for(*capability) == Some(account_key.as_str()) {
+            remove_default_binding(segment, *capability)?;
+        }
+    }
+    if let Some(patch) = policy_patch {
+        apply_policy_patch(&mut segment.policy, patch);
+    }
+    validate_office_accounts_candidate(segment)
 }
 
 fn apply_config_field_value(
@@ -1486,52 +1441,61 @@ mod tests {
         }
     }
 
-    fn account(account_key: &str, capability: OfficeCapability) -> OfficeAccount {
-        OfficeAccount {
-            account_key: account_key.to_string(),
-            provider_kind: "imap_smtp".to_string(),
-            external_account_id: format!("{account_key}@example.com"),
-            account_label: account_key.to_string(),
-            identity_class: OfficeAccountIdentityClass::Work,
-            enabled_capabilities: vec![capability],
-        }
-    }
-
     #[test]
-    fn draft_accounts_upserts_account_and_sets_default_binding() {
+    fn save_account_upsert_persists_account_and_sets_default_binding() {
         let service = OfficeConfigManagementService::new(
             Arc::new(MemoryConfigFileStore::new()),
             Arc::new(MemoryCredentialStore::default()),
             Arc::new(MemoryRuntimeStatusStore::default()),
         );
 
-        let draft = service
-            .draft_accounts(&OfficeAccountDraftRequest {
-                account: account("mail-work", OfficeCapability::Mail),
+        let detail = service
+            .save_account_upsert(&OfficeAccountUpsertRequest {
+                account: OfficeAccountRecordInput {
+                    account_key: "mail-work".to_string(),
+                    provider_kind: "imap_smtp".to_string(),
+                    external_account_id: "mail-work@example.com".to_string(),
+                    account_label: "mail-work".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Work,
+                    enabled_capabilities: vec![OfficeCapability::Mail],
+                },
                 set_defaults: vec![OfficeCapability::Mail],
                 clear_defaults: Vec::new(),
                 policy_patch: None,
+                config: None,
             })
-            .expect("draft accounts");
+            .expect("save account upsert");
 
-        assert!(draft.registry.get("mail-work").is_some());
+        assert_eq!(detail.account.account_key, "mail-work");
+        let snapshot = service.inspect().expect("inspect");
+        assert!(snapshot.accounts.registry.get("mail-work").is_some());
         assert_eq!(
-            draft.binding.default_account_for(OfficeCapability::Mail),
+            snapshot
+                .accounts
+                .binding
+                .default_account_for(OfficeCapability::Mail),
             Some("mail-work")
         );
     }
 
     #[test]
-    fn commit_accounts_refreshes_inspect_snapshot() {
+    fn save_account_upsert_applies_policy_patch_and_refreshes_snapshot() {
         let config_file_store = Arc::new(MemoryConfigFileStore::new());
         let service = OfficeConfigManagementService::new(
             config_file_store,
             Arc::new(MemoryCredentialStore::default()),
             Arc::new(MemoryRuntimeStatusStore::default()),
         );
-        let draft = service
-            .draft_accounts(&OfficeAccountDraftRequest {
-                account: account("calendar-work", OfficeCapability::Calendar),
+        service
+            .save_account_upsert(&OfficeAccountUpsertRequest {
+                account: OfficeAccountRecordInput {
+                    account_key: "calendar-work".to_string(),
+                    provider_kind: "caldav".to_string(),
+                    external_account_id: "calendar-work@example.com".to_string(),
+                    account_label: "calendar-work".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Work,
+                    enabled_capabilities: vec![OfficeCapability::Calendar],
+                },
                 set_defaults: vec![OfficeCapability::Calendar],
                 clear_defaults: Vec::new(),
                 policy_patch: Some(OfficePolicyPatch {
@@ -1540,10 +1504,9 @@ mod tests {
                     preferred_identity_class: Some(OfficeAccountIdentityClass::Work),
                     clear_preferred_identity_class: false,
                 }),
+                config: None,
             })
-            .expect("draft accounts");
-
-        service.commit_accounts(&draft).expect("commit accounts");
+            .expect("save account upsert");
         let snapshot = service.inspect().expect("inspect");
         assert!(snapshot.accounts.registry.get("calendar-work").is_some());
         assert_eq!(
@@ -1784,6 +1747,53 @@ mod tests {
             .expect("save account upsert");
 
         assert_eq!(detail.account.account_key, "imap-smtp-work-primary-mail");
+    }
+
+    #[test]
+    fn save_account_upsert_reuses_existing_account_key_when_natural_identity_matches() {
+        let service = OfficeConfigManagementService::new(
+            Arc::new(MemoryConfigFileStore::new()),
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        );
+
+        let first = service
+            .save_account_upsert(&OfficeAccountUpsertRequest {
+                account: OfficeAccountRecordInput {
+                    account_key: String::new(),
+                    provider_kind: "imap_smtp".to_string(),
+                    external_account_id: "675778650@qq.com".to_string(),
+                    account_label: "QQ邮箱".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Other,
+                    enabled_capabilities: vec![OfficeCapability::Mail],
+                },
+                set_defaults: vec![OfficeCapability::Mail],
+                clear_defaults: vec![],
+                policy_patch: None,
+                config: None,
+            })
+            .expect("first upsert");
+
+        let second = service
+            .save_account_upsert(&OfficeAccountUpsertRequest {
+                account: OfficeAccountRecordInput {
+                    account_key: String::new(),
+                    provider_kind: "imap_smtp".to_string(),
+                    external_account_id: "675778650@qq.com".to_string(),
+                    account_label: "QQ邮箱（更新）".to_string(),
+                    identity_class: OfficeAccountIdentityClass::Other,
+                    enabled_capabilities: vec![OfficeCapability::Mail],
+                },
+                set_defaults: vec![OfficeCapability::Mail],
+                clear_defaults: vec![],
+                policy_patch: None,
+                config: None,
+            })
+            .expect("second upsert");
+
+        assert_eq!(second.account.account_key, first.account.account_key);
+        let snapshot = service.inspect().expect("inspect");
+        assert_eq!(snapshot.summary.accounts.len(), 1);
     }
 
     #[test]
@@ -2043,11 +2053,11 @@ mod tests {
         assert_eq!(assessment.account_key, "mail-work");
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert_eq!(
             assessment.next_action,
-            OfficeConfigNextAction::DraftCredentials
+            OfficeConfigNextAction::ConfigureAccount
         );
         assert!(assessment
             .missing_fields

@@ -121,9 +121,6 @@ pub(super) fn try_run_task_execution(
         return Ok(None);
     }
     planner_decision.route = match admission {
-        super::task_execution_support::FormalTaskAdmission::ResumeActiveRun => {
-            TaskExecutionRoute::ResumeRun
-        }
         super::task_execution_support::FormalTaskAdmission::ConsiderNewRun => {
             normalize_task_execution_route(planner_decision.route, active_run.is_some())
         }
@@ -627,11 +624,16 @@ pub(super) fn try_run_task_execution(
         TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX,
         system_scratch,
     );
+    let mut finisher_system = finisher_system.to_string();
+    crate::agent::append_foreground_work_packet_guidance(
+        &mut finisher_system,
+        crate::orchestrator::current_budget().system_prompt_max,
+    );
     let finisher_started = Instant::now();
     let finisher_t0 = metrics::record_llm_call_start();
     let final_reply = match worker_llm.chat(
         tool_ctx,
-        finisher_system,
+        &finisher_system,
         &[Message {
             role: Cow::Borrowed("user"),
             content: finisher_request,
@@ -731,7 +733,7 @@ fn build_task_execution_telemetry(
     external_content_used: bool,
     pressure: crate::orchestrator::PressureLevel,
     deliberation_class: crate::memory::TurnDeliberationClass,
-    request_semantics: crate::agent::request_semantics::RequestSemantics,
+    _request_semantics: crate::agent::request_semantics::RequestSemantics,
     latency: &WorkerLatency,
     subject_state: Option<SubjectState>,
     soul_feedback_projection: Option<SoulFeedbackProjection>,
@@ -757,10 +759,10 @@ fn build_task_execution_telemetry(
         external_content_used,
         used_surface_finalization: false,
         task_execution_used: true,
+        foreground_work_context_present: true,
         pressure,
         runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
         deliberation_class,
-        request_semantics,
         reply_surface: ReplySurface::TaskExecution,
         prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
         runtime_skill_selected_ids: Vec::new(),

@@ -71,13 +71,12 @@ pub(crate) use capability_runtime::{
 };
 #[cfg(feature = "capability_office")]
 pub use config_management::{
-    OfficeAccountConfigSaveRequest, OfficeAccountDraftRequest, OfficeAccountUpsertRequest,
+    OfficeAccountConfigSaveRequest, OfficeAccountRecordInput, OfficeAccountUpsertRequest,
     OfficeConfigAccountDetail, OfficeConfigAccountSummary, OfficeConfigCapabilityNextAction,
     OfficeConfigCapabilitySelectionStatus, OfficeConfigCapabilityStatus,
     OfficeConfigCreateFieldSchema, OfficeConfigFieldOption, OfficeConfigFieldState,
     OfficeConfigManagementService, OfficeConfigProviderCatalogItem, OfficeConfigSnapshot,
-    OfficeCredentialDraftRequest, OfficePolicyPatch, OfficeProbeAdapter, OfficeProbeDisposition,
-    OfficeProbeResult,
+    OfficePolicyPatch, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 pub use credentials::{
     OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore, OfficeCredentialsSegment,

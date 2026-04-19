@@ -1,4 +1,3 @@
-use crate::config::OfficeAccountsSegment;
 use crate::error::{Error, Result};
 use crate::mail::{
     OFFICE_METADATA_MAIL_FROM_ADDRESS, OFFICE_METADATA_MAIL_IMAP_HOST,
@@ -6,10 +5,9 @@ use crate::mail::{
     OFFICE_METADATA_MAIL_SMTP_PORT, OFFICE_METADATA_MAIL_SMTP_TLS, OFFICE_METADATA_MAIL_USERNAME,
 };
 use crate::office::{
-    OfficeAccount, OfficeAccountDraftRequest, OfficeAccountIdentityClass, OfficeCapability,
-    OfficeConfigAssessment, OfficeConfigManagementService, OfficeCredential,
-    OfficeCredentialDraftRequest, OfficeCredentialsSegment, OfficeProviderSchema,
-    OfficeResolveRequest,
+    OfficeAccountConfigSaveRequest, OfficeAccountIdentityClass, OfficeAccountRecordInput,
+    OfficeAccountUpsertRequest, OfficeCapability, OfficeConfigAssessment,
+    OfficeConfigManagementService, OfficeProviderSchema, OfficeResolveRequest,
 };
 use crate::tools::{
     http_bridge::ToolContextHttpClient, office_args::parse_identity_class_value, parse_tool_args,
@@ -29,12 +27,6 @@ struct OfficeConfigResponse<T: Serialize> {
     op: &'static str,
     ok: bool,
     payload: T,
-}
-
-#[derive(Serialize)]
-struct ValidationResponse<'a> {
-    target: &'a str,
-    valid: bool,
 }
 
 #[derive(Serialize)]
@@ -67,11 +59,11 @@ impl Tool for OfficeConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage office authority through structured operations. Ops: inspect, assess, provider_schema, resolve_account, draft_accounts, draft_credentials, validate_accounts, validate_credentials, commit_accounts, commit_credentials, revoke, probe."
+        "Manage office authority through structured operations. Ops: inspect, assess, provider_schema, resolve_account, apply_account, revoke, probe."
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|assess|provider_schema|resolve_account|draft_accounts|draft_credentials|validate_accounts|validate_credentials|commit_accounts|commit_credentials|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"provider_kind":{"type":"string","description":"Optional provider kind for provider_schema"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"OfficeAccount payload for draft_accounts"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to account.account_key"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at account.account_key"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for draft_accounts"},"credential":{"type":"object","description":"OfficeCredential payload for draft_credentials"},"segment":{"type":"object","description":"OfficeAccountsSegment or OfficeCredentialsSegment payload for validate/commit ops"},"account_key":{"type":"string","description":"Optional account key for assess, revoke, or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for commit_* and revoke"}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: inspect|assess|provider_schema|resolve_account|apply_account|revoke|probe"},"capability":{"type":"string","description":"Office capability: mail|calendar|documents|contacts_directory"},"provider_kind":{"type":"string","description":"Optional provider kind for provider_schema"},"preferred_account_key":{"type":"string","description":"Optional explicit account preference for resolve_account"},"preferred_identity_class":{"type":"string","description":"Optional identity class for resolve_account: work|personal|family|shared|other"},"account":{"type":"object","description":"Natural account input for apply_account; account_key is internal and normally omitted"},"set_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities that should default to the resulting account"},"clear_defaults":{"type":"array","items":{"type":"string"},"description":"Capabilities whose default binding should be cleared when pointing at the resulting account"},"policy_patch":{"type":"object","description":"Optional OfficePolicyPatch payload for apply_account"},"config":{"type":"object","description":"Optional canonical OfficeAccountConfigSaveRequest payload for apply_account"},"credential":{"type":"object","description":"Optional tool-facing credential/config input for apply_account"},"account_key":{"type":"string","description":"Optional account key for assess, revoke, or probe"},"clear_runtime_status":{"type":"boolean","description":"Whether revoke should also clear runtime status; default true"},"confirm":{"type":"boolean","description":"Required for revoke"}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -159,87 +151,14 @@ impl Tool for OfficeConfigTool {
                     },
                 )
             }
-            "draft_accounts" => {
-                let request = parse_account_draft_request(&obj)?;
+            "apply_account" => {
+                let request = parse_account_upsert_request(&obj)?;
                 serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
-                        op: "draft_accounts",
+                        op: "apply_account",
                         ok: true,
-                        payload: self.service.draft_accounts(&request)?,
-                    },
-                )
-            }
-            "draft_credentials" => {
-                let request = parse_credential_draft_request(&obj)?;
-                serialize_tool_output(
-                    "tool_office_config",
-                    &OfficeConfigResponse {
-                        op: "draft_credentials",
-                        ok: true,
-                        payload: self.service.draft_credentials(&request)?,
-                    },
-                )
-            }
-            "validate_accounts" => {
-                let segment = parse_accounts_segment(&obj)?;
-                self.service.validate_accounts(&segment)?;
-                serialize_tool_output(
-                    "tool_office_config",
-                    &OfficeConfigResponse {
-                        op: "validate_accounts",
-                        ok: true,
-                        payload: ValidationResponse {
-                            target: "accounts",
-                            valid: true,
-                        },
-                    },
-                )
-            }
-            "validate_credentials" => {
-                let segment = parse_credentials_segment(&obj)?;
-                self.service.validate_credentials(&segment)?;
-                serialize_tool_output(
-                    "tool_office_config",
-                    &OfficeConfigResponse {
-                        op: "validate_credentials",
-                        ok: true,
-                        payload: ValidationResponse {
-                            target: "credentials",
-                            valid: true,
-                        },
-                    },
-                )
-            }
-            "commit_accounts" => {
-                require_confirm(&obj, "commit_accounts")?;
-                let segment = parse_accounts_segment(&obj)?;
-                self.service.commit_accounts(&segment)?;
-                serialize_tool_output(
-                    "tool_office_config",
-                    &OfficeConfigResponse {
-                        op: "commit_accounts",
-                        ok: true,
-                        payload: ValidationResponse {
-                            target: "accounts",
-                            valid: true,
-                        },
-                    },
-                )
-            }
-            "commit_credentials" => {
-                require_confirm(&obj, "commit_credentials")?;
-                let segment = parse_credentials_segment(&obj)?;
-                self.service.commit_credentials(&segment)?;
-                serialize_tool_output(
-                    "tool_office_config",
-                    &OfficeConfigResponse {
-                        op: "commit_credentials",
-                        ok: true,
-                        payload: ValidationResponse {
-                            target: "credentials",
-                            valid: true,
-                        },
+                        payload: self.service.save_account_upsert(&request)?,
                     },
                 )
             }
@@ -302,11 +221,12 @@ impl Tool for OfficeConfigTool {
         let op = obj.get("op").and_then(Value::as_str).unwrap_or("inspect");
         let confirm = obj.get("confirm").and_then(Value::as_bool).unwrap_or(false);
         Ok(match op {
-            "commit_accounts" | "commit_credentials" | "revoke" => self
+            "revoke" => self
                 .metadata()
                 .default_execution_shape(op)
                 .with_approval_mode(ToolApprovalMode::ExplicitIntent)
                 .with_approval_granted(confirm),
+            "apply_account" => self.metadata().default_execution_shape(op),
             _ => self
                 .metadata()
                 .default_execution_shape(op)
@@ -320,9 +240,7 @@ impl Tool for OfficeConfigTool {
     fn governance_examples(&self) -> &'static [&'static str] {
         &[
             r#"{"op":"inspect"}"#,
-            r#"{"op":"draft_accounts"}"#,
-            r#"{"op":"commit_accounts"}"#,
-            r#"{"op":"commit_credentials"}"#,
+            r#"{"op":"apply_account"}"#,
             r#"{"op":"revoke"}"#,
         ]
     }
@@ -337,26 +255,6 @@ fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()>
             format!("{op} requires confirm=true"),
         ))
     }
-}
-
-fn parse_accounts_segment(obj: &serde_json::Map<String, Value>) -> Result<OfficeAccountsSegment> {
-    serde_json::from_value(
-        obj.get("segment")
-            .cloned()
-            .ok_or_else(|| Error::config("tool_office_config", "missing segment"))?,
-    )
-    .map_err(|error| Error::config("tool_office_config", error.to_string()))
-}
-
-fn parse_credentials_segment(
-    obj: &serde_json::Map<String, Value>,
-) -> Result<OfficeCredentialsSegment> {
-    serde_json::from_value(
-        obj.get("segment")
-            .cloned()
-            .ok_or_else(|| Error::config("tool_office_config", "missing segment"))?,
-    )
-    .map_err(|error| Error::config("tool_office_config", error.to_string()))
 }
 
 fn parse_capability_value(value: &Value) -> Result<OfficeCapability> {
@@ -375,16 +273,16 @@ fn parse_capability_value(value: &Value) -> Result<OfficeCapability> {
     }
 }
 
-fn parse_account_draft_request(obj: &Map<String, Value>) -> Result<OfficeAccountDraftRequest> {
-    match serde_json::from_value::<OfficeAccountDraftRequest>(Value::Object(obj.clone())) {
-        Ok(request) => apply_tool_facing_account_aliases(request, obj),
-        Err(_) => normalize_tool_facing_account_draft_request(obj),
+fn parse_account_upsert_request(obj: &Map<String, Value>) -> Result<OfficeAccountUpsertRequest> {
+    match serde_json::from_value::<OfficeAccountUpsertRequest>(Value::Object(obj.clone())) {
+        Ok(request) => apply_tool_facing_account_upsert_aliases(request, obj),
+        Err(_) => normalize_tool_facing_account_upsert_request(obj),
     }
 }
 
-fn normalize_tool_facing_account_draft_request(
+fn normalize_tool_facing_account_upsert_request(
     obj: &Map<String, Value>,
-) -> Result<OfficeAccountDraftRequest> {
+) -> Result<OfficeAccountUpsertRequest> {
     let account_obj = obj
         .get("account")
         .and_then(Value::as_object)
@@ -393,7 +291,6 @@ fn normalize_tool_facing_account_draft_request(
         .get("capability")
         .map(parse_capability_value)
         .transpose()?;
-    let account_key = required_string(account_obj, "account_key")?;
     let provider_kind = tool_facing_account_provider_kind(account_obj, obj)
         .ok_or_else(|| Error::config("tool_office_config", "missing provider_kind"))?;
     let external_account_id = preferred_string(
@@ -413,9 +310,9 @@ fn normalize_tool_facing_account_draft_request(
         &["enabled_capabilities", "capabilities"],
         capability_hint,
     )?;
-    Ok(OfficeAccountDraftRequest {
-        account: OfficeAccount {
-            account_key,
+    let mut request = OfficeAccountUpsertRequest {
+        account: OfficeAccountRecordInput {
+            account_key: optional_string(account_obj, "account_key").unwrap_or_default(),
             provider_kind,
             external_account_id,
             account_label,
@@ -430,23 +327,18 @@ fn normalize_tool_facing_account_draft_request(
             .map(serde_json::from_value)
             .transpose()
             .map_err(|error| Error::config("tool_office_config", error.to_string()))?,
-    })
+        config: None,
+    };
+    merge_tool_facing_config_aliases(&mut request, obj)?;
+    Ok(request)
 }
 
-fn parse_credential_draft_request(
+fn apply_tool_facing_account_upsert_aliases(
+    mut request: OfficeAccountUpsertRequest,
     obj: &Map<String, Value>,
-) -> Result<OfficeCredentialDraftRequest> {
-    match serde_json::from_value::<OfficeCredentialDraftRequest>(Value::Object(obj.clone())) {
-        Ok(request) => apply_tool_facing_credential_aliases(request, obj),
-        Err(_) => normalize_tool_facing_credential_draft_request(obj),
-    }
-}
-
-fn apply_tool_facing_account_aliases(
-    mut request: OfficeAccountDraftRequest,
-    obj: &Map<String, Value>,
-) -> Result<OfficeAccountDraftRequest> {
+) -> Result<OfficeAccountUpsertRequest> {
     let Some(account_obj) = obj.get("account").and_then(Value::as_object) else {
+        merge_tool_facing_config_aliases(&mut request, obj)?;
         return Ok(request);
     };
     if request.account.external_account_id.trim().is_empty() {
@@ -461,6 +353,10 @@ fn apply_tool_facing_account_aliases(
             preferred_string(account_obj, &["account_label", "display_name", "label"])
                 .unwrap_or_default();
     }
+    if request.account.account_key.trim().is_empty() {
+        request.account.account_key =
+            optional_string(account_obj, "account_key").unwrap_or_default();
+    }
     request.account.provider_kind = tool_facing_account_provider_kind(account_obj, obj)
         .unwrap_or_else(|| normalize_office_provider_kind(&request.account.provider_kind));
     if request.account.enabled_capabilities.is_empty() {
@@ -472,156 +368,127 @@ fn apply_tool_facing_account_aliases(
                 .transpose()?,
         )?;
     }
+    merge_tool_facing_config_aliases(&mut request, obj)?;
     Ok(request)
 }
 
-fn apply_tool_facing_credential_aliases(
-    mut request: OfficeCredentialDraftRequest,
+fn merge_tool_facing_config_aliases(
+    request: &mut OfficeAccountUpsertRequest,
     obj: &Map<String, Value>,
-) -> Result<OfficeCredentialDraftRequest> {
+) -> Result<()> {
     let Some(credential_obj) = obj.get("credential").and_then(Value::as_object) else {
-        return Ok(request);
+        return Ok(());
     };
-    if request.credential.access_token.trim().is_empty() {
-        request.credential.access_token =
-            preferred_string(credential_obj, &["access_token", "password"]).unwrap_or_default();
-    }
-    if request.credential.refresh_token.trim().is_empty() {
-        request.credential.refresh_token =
-            optional_string(credential_obj, "refresh_token").unwrap_or_default();
-    }
-    if request.credential.token_endpoint.trim().is_empty() {
-        request.credential.token_endpoint =
-            optional_string(credential_obj, "token_endpoint").unwrap_or_default();
-    }
-    if request.credential.expires_at_unix_secs == 0 {
-        request.credential.expires_at_unix_secs =
-            optional_u64(credential_obj, "expires_at_unix_secs")?.unwrap_or_default();
-    }
-    if request.credential.updated_at == 0 {
-        request.credential.updated_at =
-            optional_u64(credential_obj, "updated_at")?.unwrap_or_default();
-    }
-    insert_metadata_alias(
-        &mut request.credential.metadata,
-        credential_obj,
+    let config = request
+        .config
+        .get_or_insert_with(OfficeAccountConfigSaveRequest::default);
+    merge_config_field_alias(
+        &mut config.fields,
+        "access_token",
+        preferred_string(credential_obj, &["access_token", "password"]),
+    );
+    merge_config_field_alias(
+        &mut config.fields,
+        "refresh_token",
+        optional_string(credential_obj, "refresh_token"),
+    );
+    merge_config_field_alias(
+        &mut config.fields,
+        "token_endpoint",
+        optional_string(credential_obj, "token_endpoint"),
+    );
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_USERNAME,
-        &["mail_username", "email", "username"],
+        preferred_string(credential_obj, &["mail_username", "email", "username"]),
     );
-    insert_metadata_alias(
-        &mut request.credential.metadata,
-        credential_obj,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_FROM_ADDRESS,
-        &["mail_from_address", "email", "from_address"],
+        preferred_string(
+            credential_obj,
+            &["mail_from_address", "email", "from_address"],
+        ),
     );
-    insert_metadata_value(
-        &mut request.credential.metadata,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_IMAP_HOST,
         optional_string(credential_obj, "imap_host"),
     );
-    insert_metadata_u64(
-        &mut request.credential.metadata,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_IMAP_PORT,
-        optional_u64(credential_obj, "imap_port")?,
+        optional_u64(credential_obj, "imap_port")?.map(|value| value.to_string()),
     );
-    insert_metadata_bool(
-        &mut request.credential.metadata,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_IMAP_TLS,
-        optional_bool(credential_obj, "imap_tls")?,
+        optional_bool(credential_obj, "imap_tls")?.map(|value| value.to_string()),
     );
-    insert_metadata_value(
-        &mut request.credential.metadata,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_SMTP_HOST,
         optional_string(credential_obj, "smtp_host"),
     );
-    insert_metadata_u64(
-        &mut request.credential.metadata,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_SMTP_PORT,
-        optional_u64(credential_obj, "smtp_port")?,
+        optional_u64(credential_obj, "smtp_port")?.map(|value| value.to_string()),
     );
-    insert_metadata_bool(
-        &mut request.credential.metadata,
+    merge_config_field_alias(
+        &mut config.fields,
         OFFICE_METADATA_MAIL_SMTP_TLS,
-        optional_bool(credential_obj, "smtp_tls")?,
+        optional_bool(credential_obj, "smtp_tls")?.map(|value| value.to_string()),
     );
-    Ok(request)
+    merge_metadata_object_aliases(&mut config.fields, credential_obj)?;
+    if config.fields.is_empty() && config.clear_fields.is_empty() {
+        request.config = None;
+    }
+    Ok(())
 }
 
-fn normalize_tool_facing_credential_draft_request(
-    obj: &Map<String, Value>,
-) -> Result<OfficeCredentialDraftRequest> {
-    let credential_obj = obj
-        .get("credential")
-        .and_then(Value::as_object)
-        .ok_or_else(|| Error::config("tool_office_config", "missing credential"))?;
-    let account_key = required_string(credential_obj, "account_key")?;
-    let access_token =
-        preferred_string(credential_obj, &["access_token", "password"]).unwrap_or_default();
-    let refresh_token = optional_string(credential_obj, "refresh_token").unwrap_or_default();
-    let token_endpoint = optional_string(credential_obj, "token_endpoint").unwrap_or_default();
-    let expires_at_unix_secs =
-        optional_u64(credential_obj, "expires_at_unix_secs")?.unwrap_or_default();
-    let updated_at = optional_u64(credential_obj, "updated_at")?.unwrap_or_default();
-    let mut metadata = credential_obj
-        .get("metadata")
-        .cloned()
-        .map(serde_json::from_value::<BTreeMap<String, String>>)
-        .transpose()
-        .map_err(|error| Error::config("tool_office_config", error.to_string()))?
-        .unwrap_or_default();
-    insert_metadata_alias(
-        &mut metadata,
-        credential_obj,
-        OFFICE_METADATA_MAIL_USERNAME,
-        &["mail_username", "email", "username"],
-    );
-    insert_metadata_alias(
-        &mut metadata,
-        credential_obj,
-        OFFICE_METADATA_MAIL_FROM_ADDRESS,
-        &["mail_from_address", "email", "from_address"],
-    );
-    insert_metadata_value(
-        &mut metadata,
-        OFFICE_METADATA_MAIL_IMAP_HOST,
-        optional_string(credential_obj, "imap_host"),
-    );
-    insert_metadata_u64(
-        &mut metadata,
-        OFFICE_METADATA_MAIL_IMAP_PORT,
-        optional_u64(credential_obj, "imap_port")?,
-    );
-    insert_metadata_bool(
-        &mut metadata,
-        OFFICE_METADATA_MAIL_IMAP_TLS,
-        optional_bool(credential_obj, "imap_tls")?,
-    );
-    insert_metadata_value(
-        &mut metadata,
-        OFFICE_METADATA_MAIL_SMTP_HOST,
-        optional_string(credential_obj, "smtp_host"),
-    );
-    insert_metadata_u64(
-        &mut metadata,
-        OFFICE_METADATA_MAIL_SMTP_PORT,
-        optional_u64(credential_obj, "smtp_port")?,
-    );
-    insert_metadata_bool(
-        &mut metadata,
-        OFFICE_METADATA_MAIL_SMTP_TLS,
-        optional_bool(credential_obj, "smtp_tls")?,
-    );
-    Ok(OfficeCredentialDraftRequest {
-        credential: OfficeCredential {
-            account_key,
-            access_token,
-            refresh_token,
-            token_endpoint,
-            expires_at_unix_secs,
-            updated_at,
-            metadata,
-        },
-    })
+fn merge_config_field_alias(
+    fields: &mut BTreeMap<String, String>,
+    key: &str,
+    value: Option<String>,
+) {
+    if fields.contains_key(key) {
+        return;
+    }
+    if let Some(value) = value {
+        fields.insert(key.to_string(), value);
+    }
+}
+
+fn merge_metadata_object_aliases(
+    fields: &mut BTreeMap<String, String>,
+    credential_obj: &Map<String, Value>,
+) -> Result<()> {
+    let Some(metadata_obj) = credential_obj.get("metadata").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for (key, value) in metadata_obj {
+        if fields.contains_key(key) {
+            continue;
+        }
+        let value = json_scalar_to_string(value, key)?;
+        if !value.trim().is_empty() {
+            fields.insert(key.clone(), value);
+        }
+    }
+    Ok(())
+}
+
+fn json_scalar_to_string(value: &Value, field: &str) -> Result<String> {
+    match value {
+        Value::String(value) => Ok(value.trim().to_string()),
+        Value::Number(value) => Ok(value.to_string()),
+        Value::Bool(value) => Ok(value.to_string()),
+        _ => Err(Error::config(
+            "tool_office_config",
+            format!("{field} metadata value must be string/number/boolean"),
+        )),
+    }
 }
 
 fn parse_capability_array(obj: &Map<String, Value>, field: &str) -> Result<Vec<OfficeCapability>> {
@@ -652,11 +519,6 @@ fn parse_capability_values(value: &Value, field: &str) -> Result<Vec<OfficeCapab
         .iter()
         .map(parse_capability_value)
         .collect::<Result<Vec<_>>>()
-}
-
-fn required_string(obj: &Map<String, Value>, field: &str) -> Result<String> {
-    optional_string(obj, field)
-        .ok_or_else(|| Error::config("tool_office_config", format!("missing {field}")))
 }
 
 fn preferred_string(obj: &Map<String, Value>, fields: &[&str]) -> Option<String> {
@@ -709,51 +571,6 @@ fn optional_bool(obj: &Map<String, Value>, field: &str) -> Result<Option<bool>> 
             "tool_office_config",
             format!("{field} must be a boolean"),
         )),
-    }
-}
-
-fn insert_metadata_alias(
-    metadata: &mut BTreeMap<String, String>,
-    obj: &Map<String, Value>,
-    metadata_key: &str,
-    aliases: &[&str],
-) {
-    if metadata.contains_key(metadata_key) {
-        return;
-    }
-    if let Some(value) = preferred_string(obj, aliases) {
-        metadata.insert(metadata_key.to_string(), value);
-    }
-}
-
-fn insert_metadata_value(
-    metadata: &mut BTreeMap<String, String>,
-    key: &str,
-    value: Option<String>,
-) {
-    if metadata.contains_key(key) {
-        return;
-    }
-    if let Some(value) = value {
-        metadata.insert(key.to_string(), value);
-    }
-}
-
-fn insert_metadata_u64(metadata: &mut BTreeMap<String, String>, key: &str, value: Option<u64>) {
-    if metadata.contains_key(key) {
-        return;
-    }
-    if let Some(value) = value {
-        metadata.insert(key.to_string(), value.to_string());
-    }
-}
-
-fn insert_metadata_bool(metadata: &mut BTreeMap<String, String>, key: &str, value: Option<bool>) {
-    if metadata.contains_key(key) {
-        return;
-    }
-    if let Some(value) = value {
-        metadata.insert(key.to_string(), value.to_string());
     }
 }
 
@@ -969,124 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn draft_accounts_returns_preview_segment() {
-        let fixture = build_fixture();
-        let mut ctx = DummyCtx;
-        let payload = fixture
-            .tool
-            .execute(
-                r#"{
-                "op":"draft_accounts",
-                "account":{
-                    "account_key":"mail-work",
-                    "provider_kind":"imap_smtp",
-                    "external_account_id":"work@example.com",
-                    "account_label":"Work",
-                    "identity_class":"work",
-                    "enabled_capabilities":["mail"]
-                },
-                "set_defaults":["mail"]
-            }"#,
-                &mut ctx,
-            )
-            .unwrap();
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(
-            payload["payload"]["binding"]["capability_defaults"]["mail"],
-            "mail-work"
-        );
-    }
-
-    #[test]
-    fn draft_accounts_accepts_tool_facing_mail_account_shape() {
-        let fixture = build_fixture();
-        let mut ctx = DummyCtx;
-        let payload = fixture
-            .tool
-            .execute(
-                r#"{
-                "op":"draft_accounts",
-                "capability":"mail",
-                "account":{
-                    "account_key":"qq_675778650",
-                    "display_name":"QQ邮箱",
-                    "email":"675778650@qq.com",
-                    "provider_kind":"qq",
-                    "capabilities":["mail"]
-                },
-                "set_defaults":["mail"]
-            }"#,
-                &mut ctx,
-            )
-            .unwrap();
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        let account = &payload["payload"]["registry"]["accounts"]["qq_675778650"];
-        assert_eq!(account["provider_kind"], "imap_smtp");
-        assert_eq!(account["account_label"], "QQ邮箱");
-        assert_eq!(account["external_account_id"], "675778650@qq.com");
-        assert_eq!(account["identity_class"], "other");
-        assert_eq!(account["enabled_capabilities"][0], "mail");
-    }
-
-    #[test]
-    fn draft_accounts_accepts_nested_provider_alias_when_provider_kind_missing() {
-        let fixture = build_fixture();
-        let mut ctx = DummyCtx;
-        let payload = fixture
-            .tool
-            .execute(
-                r#"{
-                "op":"draft_accounts",
-                "capability":"mail",
-                "account":{
-                    "account_key":"qq_675778650",
-                    "display_name":"QQ邮箱",
-                    "email":"675778650@qq.com",
-                    "provider":"qqmail",
-                    "capabilities":["mail"]
-                },
-                "set_defaults":["mail"]
-            }"#,
-                &mut ctx,
-            )
-            .unwrap();
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        let account = &payload["payload"]["registry"]["accounts"]["qq_675778650"];
-        assert_eq!(account["provider_kind"], "imap_smtp");
-        assert_eq!(account["account_label"], "QQ邮箱");
-        assert_eq!(account["external_account_id"], "675778650@qq.com");
-    }
-
-    #[test]
-    fn draft_accounts_accepts_top_level_provider_kind_when_nested_field_is_missing() {
-        let fixture = build_fixture();
-        let mut ctx = DummyCtx;
-        let payload = fixture
-            .tool
-            .execute(
-                r#"{
-                "op":"draft_accounts",
-                "capability":"mail",
-                "provider_kind":"qq",
-                "account":{
-                    "account_key":"qq_675778650",
-                    "display_name":"QQ邮箱",
-                    "email":"675778650@qq.com",
-                    "capabilities":["mail"]
-                },
-                "set_defaults":["mail"]
-            }"#,
-                &mut ctx,
-            )
-            .unwrap();
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        let account = &payload["payload"]["registry"]["accounts"]["qq_675778650"];
-        assert_eq!(account["provider_kind"], "imap_smtp");
-        assert_eq!(account["account_label"], "QQ邮箱");
-        assert_eq!(account["external_account_id"], "675778650@qq.com");
-    }
-
-    #[test]
     fn provider_schema_accepts_top_level_provider_alias() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
@@ -1103,46 +802,23 @@ mod tests {
     }
 
     #[test]
-    fn draft_credentials_accepts_tool_facing_imap_smtp_shape_after_account_commit() {
+    fn apply_account_accepts_tool_facing_mail_shape_without_account_key_and_persists_fact() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let account_payload = fixture
-            .tool
-            .execute(
-                r#"{
-                "op":"draft_accounts",
-                "capability":"mail",
-                "account":{
-                    "account_key":"qq_675778650",
-                    "display_name":"QQ邮箱",
-                    "email":"675778650@qq.com",
-                    "provider_kind":"imap_smtp",
-                    "capabilities":["mail"]
-                }
-            }"#,
-                &mut ctx,
-            )
-            .unwrap();
-        let account_payload: Value = serde_json::from_str(&account_payload).unwrap();
-        fixture
-            .tool
-            .execute(
-                &json!({
-                    "op":"commit_accounts",
-                    "segment": account_payload["payload"].clone(),
-                    "confirm": true
-                })
-                .to_string(),
-                &mut ctx,
-            )
-            .unwrap();
         let payload = fixture
             .tool
             .execute(
                 r#"{
-                "op":"draft_credentials",
+                "op":"apply_account",
+                "capability":"mail",
+                "account":{
+                    "display_name":"QQ邮箱",
+                    "email":"675778650@qq.com",
+                    "provider_kind":"qq",
+                    "capabilities":["mail"]
+                },
+                "set_defaults":["mail"],
                 "credential":{
-                    "account_key":"qq_675778650",
                     "password":"hqvqcibpdvqgbdba",
                     "email":"675778650@qq.com",
                     "imap_host":"imap.qq.com",
@@ -1157,44 +833,46 @@ mod tests {
             )
             .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
-        let credential = &payload["payload"]["items"][0];
-        assert_eq!(credential["account_key"], "qq_675778650");
-        assert_eq!(credential["access_token"], "hqvqcibpdvqgbdba");
-        assert_eq!(credential["metadata"]["mail_username"], "675778650@qq.com");
+        let account_key = payload["payload"]["account"]["account_key"]
+            .as_str()
+            .expect("account key");
+        assert_eq!(account_key, "imap-smtp-other-675778650-qq-com");
         assert_eq!(
-            credential["metadata"]["mail_from_address"],
+            payload["payload"]["account"]["external_account_id"],
             "675778650@qq.com"
         );
-        assert_eq!(credential["metadata"]["mail_imap_host"], "imap.qq.com");
-        assert_eq!(credential["metadata"]["mail_imap_port"], "993");
-        assert_eq!(credential["metadata"]["mail_smtp_host"], "smtp.qq.com");
-        assert_eq!(credential["metadata"]["mail_smtp_port"], "465");
-        assert_eq!(credential["metadata"]["mail_imap_tls"], "true");
-        assert_eq!(credential["metadata"]["mail_smtp_tls"], "true");
+        let stored = crate::config::get_office_accounts_segment(fixture.config_file_store.as_ref())
+            .expect("stored accounts");
+        let stored: Value = serde_json::from_str(&stored).expect("stored json");
+        assert!(stored["registry"]["accounts"][account_key].is_object());
+        let stored_credential = fixture
+            .credential_store
+            .get(account_key)
+            .expect("credential get")
+            .expect("credential stored");
+        assert_eq!(stored_credential.access_token, "hqvqcibpdvqgbdba");
+        assert_eq!(
+            stored_credential
+                .metadata
+                .get(OFFICE_METADATA_MAIL_IMAP_HOST)
+                .expect("imap host"),
+            "imap.qq.com"
+        );
     }
 
     #[test]
-    fn commit_accounts_requires_confirm_and_explicit_intent() {
+    fn apply_account_is_high_risk_config_write_without_extra_confirm() {
         let fixture = build_fixture();
         let shape = fixture
             .tool
-            .execution_shape(r#"{"op":"commit_accounts"}"#)
+            .execution_shape(r#"{"op":"apply_account"}"#)
             .expect("shape");
-        assert_eq!(shape.operation, "commit_accounts");
+        assert_eq!(shape.operation, "apply_account");
         assert_eq!(shape.effect_class, ToolEffectClass::ConfigWrite);
         assert_eq!(shape.risk_level, ToolRiskLevel::High);
-        assert_eq!(shape.approval_mode, ToolApprovalMode::ExplicitIntent);
-        assert!(!shape.approval_granted);
+        assert_eq!(shape.approval_mode, ToolApprovalMode::Automatic);
+        assert!(shape.approval_granted);
         assert_eq!(shape.rollback_kind, ToolRollbackKind::ConfigRestore);
-
-        let mut ctx = DummyCtx;
-        let error = fixture
-            .tool
-            .execute(r#"{"op":"commit_accounts","segment":{}}"#, &mut ctx)
-            .expect_err("commit without confirm must fail");
-        assert!(error
-            .to_string()
-            .contains("commit_accounts requires confirm=true"));
     }
 
     #[test]
@@ -1234,40 +912,29 @@ mod tests {
     }
 
     #[test]
-    fn commit_accounts_persists_and_probe_reports_missing_credential() {
+    fn apply_account_persists_and_probe_reports_missing_credential() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
         fixture
             .tool
             .execute(
                 &json!({
-                    "op": "commit_accounts",
-                    "segment": {
-                        "registry": {
-                            "accounts": {
-                                "mail-work": {
-                                    "account_key": "mail-work",
-                                    "provider_kind": "imap_smtp",
-                                    "external_account_id": "work@example.com",
-                                    "account_label": "Work",
-                                    "identity_class": "work",
-                                    "enabled_capabilities": ["mail"]
-                                }
-                            }
-                        },
-                        "binding": {
-                            "capability_defaults": {
-                                "mail": "mail-work"
-                            }
-                        },
-                        "policy": {}
+                    "op": "apply_account",
+                    "capability": "mail",
+                    "account": {
+                        "account_key": "mail-work",
+                        "provider_kind": "imap_smtp",
+                        "email": "work@example.com",
+                        "display_name": "Work",
+                        "identity_class": "work",
+                        "capabilities": ["mail"]
                     },
-                    "confirm": true
+                    "set_defaults": ["mail"]
                 })
                 .to_string(),
                 &mut ctx,
             )
-            .expect("commit accounts");
+            .expect("apply account");
 
         let stored = crate::config::get_office_accounts_segment(fixture.config_file_store.as_ref())
             .expect("stored accounts");
@@ -1287,6 +954,89 @@ mod tests {
             json!(OfficeProbeDisposition::MissingCredential)
         );
         assert_eq!(payload["payload"]["reason"], "credential_missing");
+    }
+
+    #[test]
+    fn revoke_requires_confirm_and_explicit_intent() {
+        let fixture = build_fixture();
+        let shape = fixture
+            .tool
+            .execution_shape(r#"{"op":"revoke"}"#)
+            .expect("shape");
+        assert_eq!(shape.operation, "revoke");
+        assert_eq!(shape.effect_class, ToolEffectClass::ConfigWrite);
+        assert_eq!(shape.risk_level, ToolRiskLevel::High);
+        assert_eq!(shape.approval_mode, ToolApprovalMode::ExplicitIntent);
+        assert!(!shape.approval_granted);
+        assert_eq!(shape.rollback_kind, ToolRollbackKind::ConfigRestore);
+
+        let mut ctx = DummyCtx;
+        let error = fixture
+            .tool
+            .execute(r#"{"op":"revoke","account_key":"mail-work"}"#, &mut ctx)
+            .expect_err("revoke without confirm must fail");
+        assert!(error.to_string().contains("revoke requires confirm=true"));
+    }
+
+    #[test]
+    fn assess_reports_missing_fields_and_next_action() {
+        let config_file_store = Arc::new(MemoryConfigFileStore::new());
+        crate::config::save_office_accounts_segment(
+            config_file_store.as_ref(),
+            r#"{
+                "registry": {
+                    "accounts": {
+                        "mail-work": {
+                            "account_key": "mail-work",
+                            "provider_kind": "imap_smtp",
+                            "external_account_id": "",
+                            "account_label": "Work",
+                            "identity_class": "work",
+                            "enabled_capabilities": ["mail"]
+                        }
+                    }
+                },
+                "binding": {},
+                "policy": {}
+            }"#,
+        )
+        .expect("seed accounts");
+        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
+            config_file_store,
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(MemoryRuntimeStatusStore::default()),
+        ));
+        let mut ctx = DummyCtx;
+        let payload = tool
+            .execute(r#"{"op":"assess","account_key":"mail-work"}"#, &mut ctx)
+            .expect("assess");
+        let payload: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(
+            payload["payload"]["accounts"][0]["account_key"],
+            "mail-work"
+        );
+        assert_eq!(
+            payload["payload"]["accounts"][0]["readiness"],
+            "needs_configuration"
+        );
+        assert_eq!(
+            payload["payload"]["accounts"][0]["next_action"],
+            "configure_account"
+        );
+        assert!(payload["payload"]["accounts"][0]["missing_fields"]
+            .as_array()
+            .expect("missing fields array")
+            .iter()
+            .any(|item| item == "mail_imap_host"));
+        assert!(payload["payload"]["accounts"][0]["missing_field_details"]
+            .as_array()
+            .expect("missing field details array")
+            .iter()
+            .any(|item| {
+                item["key"] == "mail_imap_host"
+                    && item["label"] == "IMAP host"
+                    && item["required"] == true
+            }));
     }
 
     #[test]
@@ -1340,67 +1090,6 @@ mod tests {
     }
 
     #[test]
-    fn assess_reports_missing_fields_and_next_action() {
-        let config_file_store = Arc::new(MemoryConfigFileStore::new());
-        crate::config::save_office_accounts_segment(
-            config_file_store.as_ref(),
-            r#"{
-                "registry": {
-                    "accounts": {
-                        "mail-work": {
-                            "account_key": "mail-work",
-                            "provider_kind": "imap_smtp",
-                            "external_account_id": "",
-                            "account_label": "Work",
-                            "identity_class": "work",
-                            "enabled_capabilities": ["mail"]
-                        }
-                    }
-                },
-                "binding": {},
-                "policy": {}
-            }"#,
-        )
-        .expect("seed accounts");
-        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
-            config_file_store,
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        ));
-        let mut ctx = DummyCtx;
-        let payload = tool
-            .execute(r#"{"op":"assess","account_key":"mail-work"}"#, &mut ctx)
-            .expect("assess");
-        let payload: Value = serde_json::from_str(&payload).expect("valid json");
-        assert_eq!(
-            payload["payload"]["accounts"][0]["account_key"],
-            "mail-work"
-        );
-        assert_eq!(
-            payload["payload"]["accounts"][0]["readiness"],
-            "needs_credential_input"
-        );
-        assert_eq!(
-            payload["payload"]["accounts"][0]["next_action"],
-            "draft_credentials"
-        );
-        assert!(payload["payload"]["accounts"][0]["missing_fields"]
-            .as_array()
-            .expect("missing fields array")
-            .iter()
-            .any(|item| item == "mail_imap_host"));
-        assert!(payload["payload"]["accounts"][0]["missing_field_details"]
-            .as_array()
-            .expect("missing field details array")
-            .iter()
-            .any(|item| {
-                item["key"] == "mail_imap_host"
-                    && item["label"] == "IMAP host"
-                    && item["required"] == true
-            }));
-    }
-
-    #[test]
     fn provider_schema_reports_wecom_documents_onboarding_contract() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
@@ -1440,38 +1129,23 @@ mod tests {
     }
 
     #[test]
-    fn draft_credentials_normalizes_wecom_documents_defaults_and_trims_values() {
-        let config_file_store = Arc::new(MemoryConfigFileStore::new());
-        crate::config::save_office_accounts_segment(
-            config_file_store.as_ref(),
-            r#"{
-                "registry":{"accounts":{
-                    "docs-wecom":{
-                        "account_key":"docs-wecom",
-                        "provider_kind":"wecom_documents",
-                        "external_account_id":"",
-                        "account_label":"WeCom Docs",
-                        "identity_class":"work",
-                        "enabled_capabilities":["documents"]
-                    }
-                }},
-                "binding":{},
-                "policy":{}
-            }"#,
-        )
-        .expect("seed accounts");
-        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
-            config_file_store,
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        ));
+    fn apply_account_normalizes_wecom_documents_defaults_and_trims_values() {
+        let fixture = build_fixture();
         let mut ctx = DummyCtx;
-        let payload = tool
+        let payload = fixture
+            .tool
             .execute(
                 r#"{
-                    "op":"draft_credentials",
-                    "credential":{
+                    "op":"apply_account",
+                    "capability":"documents",
+                    "account":{
                         "account_key":"docs-wecom",
+                        "provider_kind":"wecom_documents",
+                        "display_name":"WeCom Docs",
+                        "identity_class":"work",
+                        "capabilities":["documents"]
+                    },
+                    "credential":{
                         "access_token":"  corp-secret  ",
                         "metadata":{
                             "documents_corp_id":"  wwcorp  ",
@@ -1483,198 +1157,14 @@ mod tests {
                 }"#,
                 &mut ctx,
             )
-            .expect("draft credentials");
+            .expect("apply account");
         let payload: Value = serde_json::from_str(&payload).expect("valid json");
-        let credential = &payload["payload"]["items"][0];
-        assert_eq!(credential["access_token"], "corp-secret");
-        assert_eq!(credential["metadata"]["documents_corp_id"], "wwcorp");
-        assert_eq!(credential["metadata"]["documents_space_id"], "space-1");
-        assert_eq!(
-            credential["metadata"]["documents_root_path"],
-            "/shared/docs"
-        );
-        assert_eq!(
-            credential["metadata"]["documents_base_url"],
-            crate::office::WECOM_DEFAULT_BASE_URL
-        );
-    }
-
-    #[test]
-    fn validate_credentials_rejects_unknown_provider_metadata_key() {
-        let config_file_store = Arc::new(MemoryConfigFileStore::new());
-        crate::config::save_office_accounts_segment(
-            config_file_store.as_ref(),
-            r#"{
-                "registry":{"accounts":{
-                    "docs-wecom":{
-                        "account_key":"docs-wecom",
-                        "provider_kind":"wecom_documents",
-                        "external_account_id":"",
-                        "account_label":"WeCom Docs",
-                        "identity_class":"work",
-                        "enabled_capabilities":["documents"]
-                    }
-                }},
-                "binding":{},
-                "policy":{}
-            }"#,
-        )
-        .expect("seed accounts");
-        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
-            config_file_store,
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        ));
-        let mut ctx = DummyCtx;
-        let error = tool
-            .execute(
-                r#"{
-                    "op":"validate_credentials",
-                    "segment":{
-                        "items":[
-                            {
-                                "account_key":"docs-wecom",
-                                "access_token":"corp-secret",
-                                "metadata":{
-                                    "documents_corp_id":"wwcorp",
-                                    "documents_space_id":"space-1",
-                                    "documents_root_path":"/shared/docs",
-                                    "documents_extra":"oops"
-                                }
-                            }
-                        ]
-                    }
-                }"#,
-                &mut ctx,
-            )
-            .expect_err("unexpected metadata key must fail");
-        assert!(error.to_string().contains("documents_extra"));
-    }
-
-    #[test]
-    fn validate_credentials_rejects_unknown_account_key() {
-        let fixture = build_fixture();
-        let mut ctx = DummyCtx;
-        let error = fixture
-            .tool
-            .execute(
-                r#"{
-                    "op":"validate_credentials",
-                    "segment":{
-                        "items":[
-                            {
-                                "account_key":"missing-account",
-                                "access_token":"secret"
-                            }
-                        ]
-                    }
-                }"#,
-                &mut ctx,
-            )
-            .expect_err("unknown account must fail");
-        assert!(error.to_string().contains("missing-account"));
-    }
-
-    #[test]
-    fn validate_credentials_rejects_missing_conditional_transport_fields() {
-        let config_file_store = Arc::new(MemoryConfigFileStore::new());
-        crate::config::save_office_accounts_segment(
-            config_file_store.as_ref(),
-            r#"{
-                "registry":{"accounts":{
-                    "mail-work":{
-                        "account_key":"mail-work",
-                        "provider_kind":"imap_smtp",
-                        "external_account_id":"",
-                        "account_label":"Work",
-                        "identity_class":"work",
-                        "enabled_capabilities":["mail"]
-                    }
-                }},
-                "binding":{},
-                "policy":{}
-            }"#,
-        )
-        .expect("seed accounts");
-        let tool = OfficeConfigTool::new(OfficeConfigManagementService::new(
-            config_file_store,
-            Arc::new(MemoryCredentialStore::default()),
-            Arc::new(MemoryRuntimeStatusStore::default()),
-        ));
-        let mut ctx = DummyCtx;
-        let error = tool
-            .execute(
-                r#"{
-                    "op":"validate_credentials",
-                    "segment":{
-                        "items":[
-                            {
-                                "account_key":"mail-work",
-                                "access_token":"secret",
-                                "metadata":{
-                                    "mail_imap_host":"imap.example.com",
-                                    "mail_smtp_host":"smtp.example.com"
-                                }
-                            }
-                        ]
-                    }
-                }"#,
-                &mut ctx,
-            )
-            .expect_err("conditional missing fields must fail");
-        assert!(error.to_string().contains("mail_username"));
-    }
-
-    #[test]
-    fn commit_credentials_persists_normalized_schema_defaults() {
-        let fixture = build_fixture();
-        crate::config::save_office_accounts_segment(
-            fixture.config_file_store.as_ref(),
-            r#"{
-                "registry":{"accounts":{
-                    "docs-wecom":{
-                        "account_key":"docs-wecom",
-                        "provider_kind":"wecom_documents",
-                        "external_account_id":"",
-                        "account_label":"WeCom Docs",
-                        "identity_class":"work",
-                        "enabled_capabilities":["documents"]
-                    }
-                }},
-                "binding":{},
-                "policy":{}
-            }"#,
-        )
-        .expect("seed accounts");
-        let mut ctx = DummyCtx;
-        fixture
-            .tool
-            .execute(
-                r#"{
-                    "op":"commit_credentials",
-                    "segment":{
-                        "items":[
-                            {
-                                "account_key":"docs-wecom",
-                                "access_token":"  corp-secret  ",
-                                "metadata":{
-                                    "documents_corp_id":"  wwcorp  ",
-                                    "documents_space_id":"  space-1  ",
-                                    "documents_root_path":"  /shared/docs  ",
-                                    "documents_base_url":""
-                                }
-                            }
-                        ]
-                    },
-                    "confirm":true
-                }"#,
-                &mut ctx,
-            )
-            .expect("commit credentials");
-
+        let account_key = payload["payload"]["account"]["account_key"]
+            .as_str()
+            .expect("account key");
         let credential = fixture
             .credential_store
-            .get("docs-wecom")
+            .get(account_key)
             .expect("credential lookup")
             .expect("credential persisted");
         assert_eq!(credential.access_token, "corp-secret");

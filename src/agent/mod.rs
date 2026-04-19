@@ -18,17 +18,19 @@ mod strategy;
 mod subject_state;
 mod tool_outcome;
 
+pub(crate) use active_work::{
+    append_foreground_work_packet_guidance, current_unix_ms, due_detached_work_records,
+    extract_foreground_work_packet, foreground_work_packet_required,
+    has_meaningful_foreground_work_for_chat, load_active_work_for_chat,
+    render_foreground_work_packet_block, sync_active_work_after_turn, upsert_detached_work_job,
+    ActiveWorkSyncInput, ForegroundWorkPacket, ForegroundWorkRelation,
+};
 pub use active_work::{
     classify_background_job_disposition, idle_self_runtime_scheduler_block_reason_with_live_state,
     live_foreground_state_for_chat, ActiveWorkKind, ActiveWorkRecord, ActiveWorkStore,
     BackgroundDisposition, DetachedJobKind, DetachedWorkKey, DetachedWorkRecord, DetachedWorkState,
     DetachedWorkStore, DetachedWorkUpsertOutcome, DetachedWorkWake, ForegroundWorkStatus,
     LiveForegroundState, REL_PATH_ACTIVE_WORKS, REL_PATH_DETACHED_WORKS,
-};
-pub(crate) use active_work::{
-    current_unix_ms, due_detached_work_records, has_meaningful_foreground_work_for_chat,
-    load_active_work_for_chat, sync_active_work_after_turn, upsert_detached_work_job,
-    ActiveWorkSyncInput,
 };
 pub use context::{
     build_context, ContextParams, DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN,

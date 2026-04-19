@@ -31,15 +31,15 @@ pub(crate) fn build_account_diagnostics(
 fn build_account_diagnostic(assessment: &OfficeAccountAssessment) -> OfficeAccountDiagnostic {
     let runtime = assessment.runtime_status.as_ref();
     let (diagnosis_kind, summary, recommended_action) = if assessment.readiness
-        == OfficeConfigReadiness::NeedsCredentialInput
+        == OfficeConfigReadiness::NeedsConfiguration
     {
         (
-            "needs_credential_input",
+            "needs_configuration",
             format_missing_fields_summary(
                 &assessment.missing_fields,
                 &assessment.missing_field_details,
             ),
-            "draft_credentials",
+            "configure_account",
         )
     } else if runtime_indicates_failure(runtime) {
         (
@@ -64,7 +64,7 @@ fn build_account_diagnostic(assessment: &OfficeAccountAssessment) -> OfficeAccou
                     format_ready_summary(runtime),
                     "none",
                 ),
-                OfficeConfigReadiness::NeedsCredentialInput => unreachable!(),
+                OfficeConfigReadiness::NeedsConfiguration => unreachable!(),
             }
     };
     OfficeAccountDiagnostic {

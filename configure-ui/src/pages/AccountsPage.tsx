@@ -99,7 +99,7 @@ function readinessColor(
   switch (r) {
     case "ready":
       return "success";
-    case "needs_credential_input":
+    case "needs_configuration":
     case "ready_for_probe":
       return "warning";
     default:

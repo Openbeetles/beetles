@@ -23,7 +23,7 @@ const OFFICE_METADATA_CALENDAR_BASE_URL_FIELD: &str = "calendar_base_url";
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OfficeConfigReadiness {
-    NeedsCredentialInput,
+    NeedsConfiguration,
     ReadyForProbe,
     ProbeUnavailable,
     Ready,
@@ -32,7 +32,7 @@ pub enum OfficeConfigReadiness {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OfficeConfigNextAction {
-    DraftCredentials,
+    ConfigureAccount,
     Probe,
     None,
 }
@@ -81,10 +81,10 @@ pub fn assess_office_account(
             OfficeConfigReadiness::ProbeUnavailable
         }
     } else {
-        OfficeConfigReadiness::NeedsCredentialInput
+        OfficeConfigReadiness::NeedsConfiguration
     };
     let next_action = match readiness {
-        OfficeConfigReadiness::NeedsCredentialInput => OfficeConfigNextAction::DraftCredentials,
+        OfficeConfigReadiness::NeedsConfiguration => OfficeConfigNextAction::ConfigureAccount,
         OfficeConfigReadiness::ReadyForProbe => OfficeConfigNextAction::Probe,
         OfficeConfigReadiness::ProbeUnavailable | OfficeConfigReadiness::Ready => {
             OfficeConfigNextAction::None
@@ -330,7 +330,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields
@@ -362,7 +362,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields
@@ -397,7 +397,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields
@@ -429,7 +429,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields
@@ -461,7 +461,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields
@@ -490,7 +490,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields
@@ -519,7 +519,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert_eq!(assessment.missing_fields, vec!["access_token".to_string()]);
     }
@@ -570,7 +570,7 @@ mod tests {
         let assessment = assess_office_account(&account, Some(&credential), None, true);
         assert_eq!(
             assessment.readiness,
-            OfficeConfigReadiness::NeedsCredentialInput
+            OfficeConfigReadiness::NeedsConfiguration
         );
         assert!(assessment
             .missing_fields

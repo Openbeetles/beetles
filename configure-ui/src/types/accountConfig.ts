@@ -3,19 +3,19 @@ export type AccountCapability = 'mail' | 'calendar' | 'documents' | 'contacts_di
 export type AccountIdentityClass = 'work' | 'personal' | 'family' | 'shared' | 'other'
 
 export type AccountReadiness =
-  | 'needs_credential_input'
+  | 'needs_configuration'
   | 'ready_for_probe'
   | 'probe_unavailable'
   | 'ready'
 
-export type AccountNextAction = 'draft_credentials' | 'probe' | 'none'
+export type AccountNextAction = 'configure_account' | 'probe' | 'none'
 
 export type CapabilitySelectionStatus = 'selected' | 'ambiguous' | 'missing'
 
 export type CapabilityNextAction =
   | 'create_account'
   | 'select_default_account'
-  | 'draft_credentials'
+  | 'configure_account'
   | 'probe'
   | 'review_runtime_error'
   | 'none'

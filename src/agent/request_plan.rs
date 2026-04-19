@@ -238,8 +238,8 @@ mod tests {
         ProgrammableReasoningIntent, ProgrammableReasoningIntentKind, ProgrammableReasoningStrategy,
     };
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
-        ForegroundControlDecision, RequestKind, RequestSemantics,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
+        RequestSemantics,
     };
     use crate::agent::AgentRunStrategy;
     use crate::llm::{LlmHttpClient, LlmModelCompat, Message, StopReason, ToolChoicePolicy};
@@ -269,7 +269,6 @@ mod tests {
             disclosure_surface: DisclosureSurface::Governed,
             execution_preference,
             action_family: ActionFamily::Conversation,
-            foreground_control: ForegroundControlDecision::IndependentTurn,
             confidence: 90,
         }
     }
@@ -523,7 +522,6 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                foreground_control: ForegroundControlDecision::ContinueActiveWork,
                 confidence: 100,
             },
         );
@@ -548,7 +546,6 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::TaskExecution,
-                foreground_control: ForegroundControlDecision::ContinueActiveWork,
                 confidence: 100,
             },
         );
@@ -572,7 +569,6 @@ mod tests {
                 disclosure_surface: DisclosureSurface::Governed,
                 execution_preference: ExecutionPreference::ToolFirst,
                 action_family: ActionFamily::ActiveAction,
-                foreground_control: ForegroundControlDecision::ReviseActiveWork,
                 confidence: 92,
             },
         );

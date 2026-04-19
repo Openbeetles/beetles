@@ -775,13 +775,13 @@ export const enUS = {
         other: 'Other',
       },
       readiness: {
-        needs_credential_input: 'Needs credentials',
+        needs_configuration: 'Needs configuration',
         ready_for_probe: 'Ready to probe',
         probe_unavailable: 'Probe unavailable',
         ready: 'Ready',
       },
       nextAction: {
-        draft_credentials: 'Draft credentials',
+        configure_account: 'Configure account',
         probe: 'Probe',
         none: 'None',
       },

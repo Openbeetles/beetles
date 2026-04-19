@@ -84,15 +84,6 @@ pub struct ExecutionState {
     pub updated_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ExecutionStateFollowupIntent {
-    Independent,
-    Continue,
-    Revise,
-    Supersede,
-    ExplicitStop,
-}
-
 impl ExecutionState {
     pub fn is_meaningful(&self) -> bool {
         !self.goal.trim().is_empty()
@@ -254,101 +245,6 @@ pub fn render_execution_state_block(state: &ExecutionState, max_len: usize) -> O
     }
     let capped = truncate_content_to_max(trimmed, max_len).into_owned();
     (!capped.trim().is_empty()).then_some(capped)
-}
-
-pub(crate) fn classify_active_execution_state_followup(
-    state: &ExecutionState,
-    user_content: &str,
-) -> ExecutionStateFollowupIntent {
-    let Some(state) = normalize_execution_state(state.clone(), state.updated_at) else {
-        return ExecutionStateFollowupIntent::Independent;
-    };
-    if !should_persist_execution_state(&state) {
-        return ExecutionStateFollowupIntent::Independent;
-    }
-    let user_content = normalize_field(user_content, EXECUTION_STATE_GOAL_MAX_CHARS);
-    if user_content.is_empty() {
-        return ExecutionStateFollowupIntent::Independent;
-    }
-    let focus_match = focus_strings_match(&user_content, &state.goal)
-        || focus_strings_match(&user_content, &state.progress)
-        || focus_strings_match(&user_content, &state.blocker)
-        || focus_strings_match(&user_content, &state.next_action)
-        || focus_strings_match(&user_content, &state.last_output)
-        || state
-            .active_constraints
-            .iter()
-            .any(|item| focus_strings_match(&user_content, item))
-        || state
-            .open_questions
-            .iter()
-            .any(|item| focus_strings_match(&user_content, item))
-        || state
-            .latest_observations
-            .iter()
-            .any(|item| focus_strings_match(&user_content, item))
-        || state
-            .next_best_actions
-            .iter()
-            .any(|item| focus_strings_match(&user_content, item));
-    let specificity = field_specificity_score(&user_content);
-    let explicit_stop = looks_like_explicit_stop_control_turn(&user_content);
-    let hard_cancel = looks_like_explicit_cancel_control_turn(&user_content);
-    let stripped_specificity =
-        field_specificity_score(&strip_explicit_stop_control_markers(&user_content));
-    let has_pending_work = execution_state_has_pending_work(&state);
-
-    if focus_match {
-        return if specificity >= MIN_FIELD_SPECIFICITY_SCORE {
-            ExecutionStateFollowupIntent::Revise
-        } else if has_pending_work {
-            ExecutionStateFollowupIntent::Continue
-        } else {
-            ExecutionStateFollowupIntent::Independent
-        };
-    }
-    if hard_cancel && !focus_match {
-        return ExecutionStateFollowupIntent::ExplicitStop;
-    }
-    if explicit_stop && stripped_specificity < MIN_FIELD_SPECIFICITY_SCORE {
-        return ExecutionStateFollowupIntent::ExplicitStop;
-    }
-    if has_pending_work && specificity < MIN_FIELD_SPECIFICITY_SCORE {
-        return ExecutionStateFollowupIntent::Continue;
-    }
-    if specificity >= MIN_FIELD_SPECIFICITY_SCORE {
-        return ExecutionStateFollowupIntent::Supersede;
-    }
-    ExecutionStateFollowupIntent::Independent
-}
-
-fn looks_like_explicit_stop_control_turn(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    content.contains("取消")
-        || content.contains("先别")
-        || content.contains("算了")
-        || content.contains("停下")
-        || content.contains("别弄了")
-        || lower.contains("cancel")
-        || lower.contains("stop")
-        || lower.contains("never mind")
-}
-
-fn looks_like_explicit_cancel_control_turn(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    content.contains("取消") || lower.contains("cancel")
-}
-
-fn strip_explicit_stop_control_markers(content: &str) -> String {
-    let mut normalized = content.to_string();
-    for marker in ["取消", "先别", "算了", "停下", "别弄了"] {
-        normalized = normalized.replace(marker, "");
-    }
-    let mut lower = normalized.to_ascii_lowercase();
-    for marker in ["cancel", "stop", "never mind"] {
-        lower = lower.replace(marker, "");
-    }
-    lower
 }
 
 pub(crate) fn seed_execution_state_from_turn(
@@ -1959,50 +1855,6 @@ mod tests {
         assert_eq!(outcome, ExecutionStateRefreshOutcome::Skipped);
         let stored = execution_store.get("chat-1").unwrap().unwrap();
         assert_eq!(stored.goal, "收口 execution state");
-    }
-
-    #[test]
-    fn resume_check_accepts_low_signal_turn_when_state_has_pending_work() {
-        let state = ExecutionState {
-            status: ExecutionStatus::Active,
-            goal: "配置 QQ 邮箱账户".to_string(),
-            next_action: "补认证信息并继续配置".to_string(),
-            updated_at: 9,
-            ..ExecutionState::default()
-        };
-
-        assert_eq!(
-            classify_active_execution_state_followup(&state, "继续"),
-            ExecutionStateFollowupIntent::Continue
-        );
-        assert_eq!(
-            classify_active_execution_state_followup(&state, "继续配置邮箱"),
-            ExecutionStateFollowupIntent::Revise
-        );
-        assert_eq!(
-            classify_active_execution_state_followup(&state, "今天天气怎么样"),
-            ExecutionStateFollowupIntent::Supersede
-        );
-    }
-
-    #[test]
-    fn resume_check_rejects_low_signal_turn_without_pending_work() {
-        let state = ExecutionState {
-            status: ExecutionStatus::Active,
-            goal: "查看系统状态".to_string(),
-            last_output: "系统状态正常：主机 beetle 在线".to_string(),
-            updated_at: 9,
-            ..ExecutionState::default()
-        };
-
-        assert_eq!(
-            classify_active_execution_state_followup(&state, "继续"),
-            ExecutionStateFollowupIntent::Independent
-        );
-        assert_eq!(
-            classify_active_execution_state_followup(&state, "谢谢"),
-            ExecutionStateFollowupIntent::Independent
-        );
     }
 
     #[test]

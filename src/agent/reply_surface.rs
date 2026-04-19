@@ -230,8 +230,7 @@ fn looks_like_boundary_or_input_request(content: &str) -> bool {
 mod tests {
     use super::*;
     use crate::agent::request_semantics::{
-        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference,
-        ForegroundControlDecision, RequestKind,
+        ActionFamily, DisclosureSurface, EvidenceNeed, ExecutionPreference, RequestKind,
     };
 
     fn semantics(
@@ -244,7 +243,6 @@ mod tests {
             disclosure_surface,
             execution_preference: ExecutionPreference::AnswerDirect,
             action_family: ActionFamily::Conversation,
-            foreground_control: ForegroundControlDecision::IndependentTurn,
             confidence: 100,
         }
     }

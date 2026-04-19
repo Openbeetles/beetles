@@ -122,15 +122,14 @@ pub use core_revision_ledger::{
     CoreRevisionGovernanceDigest, CoreRevisionLedger, CoreRevisionOutcome, CoreRevisionRecord,
     CoreRevisionRecordChange, CoreRevisionTimelineEntry,
 };
-pub(crate) use execution_state::{
-    classify_active_execution_state_followup, execution_state_has_pending_work,
-    run_execution_state_refresh_with_state, seed_execution_state_from_turn,
-    should_refresh_execution_state, ExecutionStateFollowupIntent, ProvisionalExecutionStateInput,
-};
 pub use execution_state::{
     render_execution_state_block, run_execution_state_refresh, ExecutionState,
     ExecutionStateRefreshContext, ExecutionStateRefreshInput, ExecutionStateRefreshOutcome,
     ExecutionStateStore, ExecutionStatus, EXECUTION_STATE_SYSTEM_PROMPT, REL_PATH_EXECUTION_STATES,
+};
+pub(crate) use execution_state::{
+    run_execution_state_refresh_with_state, seed_execution_state_from_turn,
+    should_refresh_execution_state, ProvisionalExecutionStateInput,
 };
 pub(crate) use hygiene::run_memory_hygiene_jobs;
 pub use hygiene::{

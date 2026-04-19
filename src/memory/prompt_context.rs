@@ -34,6 +34,7 @@ pub struct PromptMemoryContext {
     pub archive_evidence_text: Option<String>,
     pub runtime_skill_text: Option<String>,
     pub recent_turn_observation_text: Option<String>,
+    pub foreground_work_packet_text: Option<String>,
     pub work_continuity_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub task_workspace_text: Option<String>,
@@ -119,11 +120,13 @@ impl PromptMemoryContext {
         self.constitutional_stack_text = self.soul_kernel_projection().constitutional_stack_text();
         let continuity_capsule_in_active =
             matches!(self.recall_router.intent, PromptRecallIntent::Continuity)
-                && (self.work_continuity_text.is_some()
+                && (self.foreground_work_packet_text.is_some()
+                    || self.work_continuity_text.is_some()
                     || self.recent_turn_observation_text.is_some()
                     || self.task_workspace_text.is_some()
                     || self.task_recall_text.is_some());
         let active_task_parts = self.recall_router.active_task_parts(
+            self.foreground_work_packet_text.as_deref(),
             self.work_continuity_text.as_deref(),
             self.recent_turn_observation_text.as_deref(),
             self.task_workspace_text.as_deref(),
@@ -300,12 +303,14 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
     let constitutional = load_constitutional_stage(&params, &seed, &mut health);
     let private_projection =
         load_private_projection_stage(&params, &seed, &constitutional, &mut health);
-    let message_summary_text =
-        if session.work_continuity_text.is_some() || session.execution_state_text.is_some() {
-            None
-        } else {
-            session.summary_text.clone()
-        };
+    let message_summary_text = if session.foreground_work_packet_text.is_some()
+        || session.work_continuity_text.is_some()
+        || session.execution_state_text.is_some()
+    {
+        None
+    } else {
+        session.summary_text.clone()
+    };
     let super::prompt_context_stages::PromptGovernedMemoryStage {
         long_term_memory_text,
         continuity_capsule_text,
@@ -336,6 +341,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         archive_evidence_text,
         runtime_skill_text,
         recent_turn_observation_text: constitutional.recent_turn_observation_text,
+        foreground_work_packet_text: session.foreground_work_packet_text,
         work_continuity_text: session.work_continuity_text,
         execution_state_text: session.execution_state_text,
         task_workspace_text: session.task_workspace_text,
@@ -463,6 +469,7 @@ mod tests {
             archive_evidence_text: None,
             runtime_skill_text: None,
             recent_turn_observation_text: None,
+            foreground_work_packet_text: None,
             work_continuity_text: None,
             execution_state_text: None,
             task_workspace_text: None,
@@ -522,6 +529,7 @@ mod tests {
             archive_evidence_text: None,
             runtime_skill_text: None,
             recent_turn_observation_text: None,
+            foreground_work_packet_text: None,
             work_continuity_text: None,
             execution_state_text: None,
             task_workspace_text: None,
