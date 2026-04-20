@@ -17,11 +17,12 @@ use crate::tools::{
     office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
+    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolClarificationField,
+    ToolClarificationOption, ToolContext, ToolEffectClass, ToolExecutionBlocker,
     ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct MailTool {
@@ -227,10 +228,12 @@ impl MailTool {
     fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let mut http = ToolContextHttpClient::new(ctx);
         let obj = parse_tool_args(args, "tool_mail")?;
-        let op = obj
-            .get("op")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_mail", "missing op"))?;
+        let Some(op) = obj.get("op").and_then(Value::as_str).map(str::trim) else {
+            return mail_op_choice_outcome(None);
+        };
+        if op.is_empty() {
+            return mail_op_choice_outcome(None);
+        }
         let preferred_identity_class =
             parse_preferred_identity_class(&obj, "preferred_identity_class", "tool_mail")?;
         match op {
@@ -337,9 +340,14 @@ impl MailTool {
                         )
                     }
                 };
-                let query = required_str(&obj, "query")?.trim().to_string();
+                let query = optional_str(&obj, "query");
                 if query.is_empty() {
-                    return Err(Error::config("tool_mail", "query must not be empty"));
+                    return mail_missing_field_outcome(
+                        "search",
+                        "query",
+                        "Search query",
+                        "Provide the text to search for in mail.",
+                    );
                 }
                 let items = match self.service.search_with_http_and_identity(
                     &mut http,
@@ -401,16 +409,26 @@ impl MailTool {
                         )
                     }
                 };
-                let id = required_str(&obj, "id")?;
+                let id = match optional_str(&obj, "id") {
+                    id if !id.is_empty() => id,
+                    _ => {
+                        return mail_missing_field_outcome(
+                            "get",
+                            "id",
+                            "Message ID",
+                            "Provide the message id to read.",
+                        )
+                    }
+                };
                 let message = match self.service.get_with_http_and_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     preferred_identity_class,
-                    id,
+                    &id,
                 ) {
                     Ok(Some(message)) => message,
-                    Ok(None) => return Err(Error::config("tool_mail", "message not found")),
+                    Ok(None) => return mail_message_not_found_outcome("get", &id),
                     Err(error) => {
                         return self.office_operation_failure(
                             "get",
@@ -431,7 +449,9 @@ impl MailTool {
                 )?))
             }
             "send" => {
-                require_confirm(&obj, "send")?;
+                if !confirm_requested(&obj) {
+                    return mail_confirmation_outcome("send");
+                }
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (
@@ -462,10 +482,7 @@ impl MailTool {
                     effective_identity_class,
                 );
                 if to.is_empty() && cc.is_empty() && bcc.is_empty() {
-                    return Err(Error::config(
-                        "tool_mail",
-                        "send requires at least one recipient in to, cc, bcc, or *_lookup",
-                    ));
+                    return mail_missing_recipients_outcome("send");
                 }
                 let provider = match self.service.resolve_provider_name_with_identity(
                     effective_provider_hint,
@@ -523,7 +540,9 @@ impl MailTool {
                 )?))
             }
             "draft" => {
-                require_confirm(&obj, "draft")?;
+                if !confirm_requested(&obj) {
+                    return mail_confirmation_outcome("draft");
+                }
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (
@@ -609,7 +628,9 @@ impl MailTool {
                 )?))
             }
             "reply" => {
-                require_confirm(&obj, "reply")?;
+                if !confirm_requested(&obj) {
+                    return mail_confirmation_outcome("reply");
+                }
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (
@@ -640,12 +661,23 @@ impl MailTool {
                         )
                     }
                 };
+                let id = match optional_str(&obj, "id") {
+                    id if !id.is_empty() => id,
+                    _ => {
+                        return mail_missing_field_outcome(
+                            "reply",
+                            "id",
+                            "Message ID",
+                            "Provide the message id to reply to.",
+                        )
+                    }
+                };
                 let message = match self.service.reply_with_http_and_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
-                    required_str(&obj, "id")?,
+                    &id,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
                         text_body: required_str(&obj, "text_body")?.to_string(),
@@ -682,7 +714,9 @@ impl MailTool {
                 )?))
             }
             "forward" => {
-                require_confirm(&obj, "forward")?;
+                if !confirm_requested(&obj) {
+                    return mail_confirmation_outcome("forward");
+                }
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (
@@ -699,11 +733,19 @@ impl MailTool {
                     effective_identity_class,
                 );
                 if to.is_empty() && cc.is_empty() && bcc.is_empty() {
-                    return Err(Error::config(
-                        "tool_mail",
-                        "forward requires at least one recipient in to, cc, bcc, or *_lookup",
-                    ));
+                    return mail_missing_recipients_outcome("forward");
                 }
+                let id = match optional_str(&obj, "id") {
+                    id if !id.is_empty() => id,
+                    _ => {
+                        return mail_missing_field_outcome(
+                            "forward",
+                            "id",
+                            "Message ID",
+                            "Provide the message id to forward.",
+                        )
+                    }
+                };
                 let provider = match self.service.resolve_provider_name_with_identity(
                     requested_provider.as_deref(),
                     effective_identity_class,
@@ -724,7 +766,7 @@ impl MailTool {
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
-                    required_str(&obj, "id")?,
+                    &id,
                     &MailSendRequest {
                         subject: optional_str(&obj, "subject"),
                         text_body: optional_str(&obj, "text_body"),
@@ -760,7 +802,7 @@ impl MailTool {
                     },
                 )?))
             }
-            _ => Err(Error::config("tool_mail", format!("unknown op '{}'", op))),
+            _ => mail_op_choice_outcome(Some(op)),
         }
     }
 }
@@ -1167,15 +1209,159 @@ fn identity_class_label(identity_class: OfficeAccountIdentityClass) -> String {
     .to_string()
 }
 
-fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()> {
-    if obj.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
-        Ok(())
-    } else {
-        Err(Error::config(
-            "tool_mail",
-            format!("{} requires confirm=true", op),
-        ))
-    }
+fn mail_blocked_payload(op: Option<&str>, warning: &str) -> String {
+    json!({
+        "op": op,
+        "ok": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn mail_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(mail_blocked_payload(op, "mail: invalid or missing op"))
+            .with_blocker(ToolExecutionBlocker::needs_user_choice(
+            "请选择邮件操作：provider_status、list、search、get、send、draft、reply 或 forward。",
+            vec!["op".to_string()],
+            vec![ToolClarificationField {
+                key: "op".to_string(),
+                label: "Mail operation".to_string(),
+                description: "Choose which mail operation should run.".to_string(),
+                required: true,
+                secret: false,
+                multiple: false,
+                options: vec![
+                    ToolClarificationOption {
+                        value: "provider_status".to_string(),
+                        label: "Provider status".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "list".to_string(),
+                        label: "List".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "search".to_string(),
+                        label: "Search".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "get".to_string(),
+                        label: "Get".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "send".to_string(),
+                        label: "Send".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "draft".to_string(),
+                        label: "Draft".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "reply".to_string(),
+                        label: "Reply".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "forward".to_string(),
+                        label: "Forward".to_string(),
+                    },
+                ],
+            }],
+        )),
+    )
+}
+
+fn mail_missing_field_outcome(
+    op: &str,
+    field: &'static str,
+    label: &'static str,
+    description: &'static str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(mail_blocked_payload(
+        Some(op),
+        &format!("mail: missing {field}"),
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        format!("还需要补充 `{field}` 才能继续邮件操作。"),
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn mail_missing_recipients_outcome(op: &str) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(mail_blocked_payload(Some(op), "mail: missing recipients"))
+            .with_blocker(ToolExecutionBlocker::needs_user_facts(
+                "还需要至少一个收件人，才能继续邮件发送。",
+                vec!["recipients".to_string()],
+                vec![ToolClarificationField {
+                    key: "recipients".to_string(),
+                    label: "Recipients".to_string(),
+                    description:
+                        "Provide at least one recipient using to, cc, bcc, or the *_lookup fields."
+                            .to_string(),
+                    required: true,
+                    secret: false,
+                    multiple: true,
+                    options: Vec::new(),
+                }],
+            )),
+    )
+}
+
+fn mail_message_not_found_outcome(op: &str, id: &str) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(mail_blocked_payload(Some(op), "mail: message not found"))
+            .with_blocker(ToolExecutionBlocker::needs_user_facts(
+                "找不到对应邮件；请提供有效的邮件 id。",
+                vec!["id".to_string()],
+                vec![ToolClarificationField {
+                    key: "id".to_string(),
+                    label: "Message ID".to_string(),
+                    description: format!("Provide a valid message id to {op}."),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![ToolClarificationOption {
+                        value: id.to_string(),
+                        label: id.to_string(),
+                    }],
+                }],
+            )),
+    )
+}
+
+fn mail_confirmation_outcome(op: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(mail_blocked_payload(
+        Some(op),
+        &format!("mail: {op} requires confirm=true"),
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_confirmation(
+        format!("要继续 `{op}`，需要明确确认。"),
+        vec![ToolClarificationField {
+            key: "confirm".to_string(),
+            label: "Confirm".to_string(),
+            description: format!("Set confirm=true to continue the `{op}` mail action."),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![ToolClarificationOption {
+                value: "true".to_string(),
+                label: "Confirm".to_string(),
+            }],
+        }],
+    )))
+}
+
+fn confirm_requested(obj: &serde_json::Map<String, Value>) -> bool {
+    obj.get("confirm").and_then(Value::as_bool).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1493,6 +1679,9 @@ mod tests {
             credential: &MailProviderCredential,
             id: &str,
         ) -> Result<Option<MailMessage>> {
+            if id == "missing" {
+                return Ok(None);
+            }
             Ok(Some(MailMessage {
                 summary: MailMessageSummary {
                     id: id.to_string(),
@@ -2050,16 +2239,98 @@ mod tests {
     }
 
     #[test]
-    fn mail_tool_send_requires_confirm_and_returns_summary() {
+    fn mail_tool_missing_op_requests_choice_blocker() {
         let (tool, _provider, _runtime_store) = build_tool();
         let mut ctx = DummyCtx;
-        let error = tool
-            .execute(
+
+        let outcome = tool.execute_outcome(r#"{}"#, &mut ctx).expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn mail_tool_unknown_op_requests_choice_blocker() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"weird"}"#, &mut ctx)
+            .expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn mail_tool_search_missing_query_returns_facts_blocker() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"search"}"#, &mut ctx)
+            .expect("query blocker");
+        let blocker = outcome.blocker.expect("query blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["query".to_string()]);
+    }
+
+    #[test]
+    fn mail_tool_get_missing_id_returns_facts_blocker() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get"}"#, &mut ctx)
+            .expect("id blocker");
+        let blocker = outcome.blocker.expect("id blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn mail_tool_get_missing_message_returns_facts_blocker() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get","id":"missing"}"#, &mut ctx)
+            .expect("missing message blocker");
+        let blocker = outcome.blocker.expect("missing message blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn mail_tool_send_requires_confirmation_blocker_and_returns_summary() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+        let outcome = tool
+            .execute_outcome(
                 r#"{"op":"send","subject":"Hi","text_body":"Body","to":["a@example.com"]}"#,
                 &mut ctx,
             )
-            .expect_err("send without confirm should fail");
-        assert!(error.to_string().contains("confirm=true"));
+            .expect("send confirm blocker");
+        let blocker = outcome.blocker.expect("confirmation blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsConfirmation
+        );
 
         let payload = tool
             .execute(
@@ -2071,6 +2342,25 @@ mod tests {
         assert_eq!(payload["ok"], true);
         assert_eq!(payload["message"]["mailbox"], "Sent");
         assert_eq!(payload["message"]["subject"], "Hi");
+    }
+
+    #[test]
+    fn mail_tool_send_without_any_recipients_returns_facts_blocker() {
+        let (tool, _provider, _runtime_store) = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"op":"send","subject":"Hi","text_body":"Body","confirm":true}"#,
+                &mut ctx,
+            )
+            .expect("recipient blocker");
+        let blocker = outcome.blocker.expect("recipient blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["recipients".to_string()]);
     }
 
     #[test]

@@ -791,7 +791,7 @@ fn normalize_and_validate_tool_outcome(
         crate::tools::ToolOutputProtocolKind::StructuredJsonWithOutbound => {
             ensure_structured_output_length(tool_name, &outcome.content)?;
             validate_structured_json_content(tool_name, contract, &outcome.content)?;
-            if outcome.outbound_intents.is_empty() {
+            if outcome.outbound_intents.is_empty() && outcome.blocker.is_none() {
                 return Err(protocol_contract_error(
                     tool_name,
                     "declared structured_json_with_outbound but returned no outbound intents"
@@ -1382,6 +1382,7 @@ mod tests {
     struct MissingOutboundIntentTool;
     struct RogueBlockerTool;
     struct RichBlockerTool;
+    struct OutboundRichBlockerTool;
     struct CapabilityBoundTool;
     struct ConditionalNetworkTool;
     struct StubToolContext;
@@ -1656,6 +1657,34 @@ mod tests {
                     vec!["field".to_string()],
                     Vec::new(),
                 ),
+            ))
+        }
+    }
+
+    impl Tool for OutboundRichBlockerTool {
+        fn name(&self) -> &'static str {
+            "outbound_rich_blocker"
+        }
+
+        fn description(&self) -> &str {
+            "declares outbound protocol with rich blocker support"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text(r#"{"ok":false}"#).with_blocker(
+                crate::tools::ToolExecutionBlocker::runtime_blocked("outbound runtime blocked"),
             ))
         }
     }
@@ -2405,6 +2434,24 @@ mod tests {
     }
 
     #[test]
+    fn registry_execute_allows_outbound_rich_blocker_without_outbound_intent() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "outbound_rich_blocker",
+                ToolProtocolContract::structured_object_json_with_outbound_and_rich_blockers(),
+            )]));
+        registry.register(Box::new(OutboundRichBlockerTool));
+        let mut ctx = StubToolContext;
+
+        let outcome = registry
+            .execute("outbound_rich_blocker", "{}", &mut ctx)
+            .expect("blocked outbound contract should allow blocker outcome");
+
+        assert!(outcome.blocker.is_some());
+        assert!(outcome.outbound_intents.is_empty());
+    }
+
+    #[test]
     fn default_registry_registers_diagnose_memory_runtime_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         assert!(ctx.tool_registry.get("diagnose_memory_runtime").is_some());
@@ -2677,7 +2724,7 @@ mod tests {
             .expect("message catalog entry");
         assert_eq!(message.input_protocol, "structured_object");
         assert_eq!(message.output_protocol, "structured_json_with_outbound");
-        assert!(!message.supports_rich_blockers);
+        assert!(message.supports_rich_blockers);
 
         #[cfg(all(
             feature = "capability_office",

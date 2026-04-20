@@ -6,9 +6,12 @@ use crate::documents::{
     detect_document_kind, documents_search_match_kind, documents_search_match_score,
     DOCUMENTS_SEARCH_MATCH_PATH,
 };
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::tools::state_file_guard::sanitize_state_file_read;
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{
+    parse_tool_args, Tool, ToolClarificationField, ToolContext, ToolExecutionBlocker,
+    ToolExecutionOutcome,
+};
 use crate::util::normalize_state_rel_path;
 use serde_json::{json, Value};
 use std::cmp::Reverse;
@@ -45,24 +48,37 @@ impl Tool for DocumentSearchTool {
         r#"{"type":"object","properties":{"query":{"type":"string","description":"Phrase to search for in file paths and readable document text"},"path":{"type":"string","description":"Optional storage subpath or file to search under, e.g. docs or notes/todo.md"},"limit":{"type":"integer","description":"Maximum number of matches to return (default 6, max 12)"},"case_sensitive":{"type":"boolean","description":"Whether matching is case-sensitive (default false)"}},"required":["query"]}"#
     }
 
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_document_search")?;
-        let query = obj
+        let Some(query) = obj
             .get("query")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| Error::config("tool_document_search", "missing query"))?;
+        else {
+            return missing_query_outcome();
+        };
         let scope_arg = obj.get("path").and_then(Value::as_str).unwrap_or("");
-        let scope = normalize_state_rel_path(scope_arg)
-            .map_err(|_| Error::config("tool_document_search", "invalid path"))?;
+        let scope = match normalize_state_rel_path(scope_arg) {
+            Ok(value) => value,
+            Err(_) => return missing_path_outcome(query, scope_arg),
+        };
         let limit = parse_limit(obj.get("limit"));
         let case_sensitive = obj
             .get("case_sensitive")
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let response = if scope.is_empty() || self.state_fs.list_dir(&scope).is_ok() {
+        let response = if scope.is_empty() {
             self.search_directory(query, scope_arg, &scope, limit, case_sensitive)?
         } else if let Some(raw) = self.state_fs.read(&scope)? {
             let sanitized = sanitize_state_file_read(&scope, &raw, "tool_document_search")?;
@@ -76,11 +92,18 @@ impl Tool for DocumentSearchTool {
                 .take(limit)
                 .collect::<Vec<_>>();
             build_response(query, scope_arg, matches, stats)
+        } else if self
+            .state_fs
+            .list_dir(&scope)
+            .map(|entries| !entries.is_empty())
+            .unwrap_or(false)
+        {
+            self.search_directory(query, scope_arg, &scope, limit, case_sensitive)?
         } else {
-            return Err(Error::config("tool_document_search", "path not found"));
+            return missing_path_outcome(query, scope_arg);
         };
 
-        Ok(response.to_string())
+        Ok(ToolExecutionOutcome::text(response.to_string()))
     }
 }
 
@@ -154,6 +177,47 @@ struct SearchStats {
     scanned_files: usize,
     scanned_raw_bytes: usize,
     truncated: bool,
+}
+
+fn missing_query_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        build_response("", ".", Vec::new(), SearchStats::default()).to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "还需要提供要搜索的短语或主题。",
+        vec!["query".to_string()],
+        vec![ToolClarificationField {
+            key: "query".to_string(),
+            label: "Search query".to_string(),
+            description: "Provide the phrase or topic to search for in stored documents."
+                .to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn missing_path_outcome(query: &str, scope_arg: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        build_response(query, scope_arg, Vec::new(), SearchStats::default()).to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "指定的存储路径不存在；请提供正确路径，或留空以搜索全部存储。",
+        vec!["path".to_string()],
+        vec![ToolClarificationField {
+            key: "path".to_string(),
+            label: "Storage path".to_string(),
+            description:
+                "Provide a valid storage subpath or leave it empty to search all stored documents."
+                    .to_string(),
+            required: false,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
 }
 
 fn build_response(
@@ -260,7 +324,7 @@ mod tests {
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
     use crate::tools::pdf_read::test_pdf_fixture_bytes;
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -430,5 +494,36 @@ mod tests {
 
         assert!(snippet.contains("[REDACTED]"));
         assert!(!snippet.contains("123456:live-secret"));
+    }
+
+    #[test]
+    fn execute_outcome_requires_query_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        let tool = DocumentSearchTool::new(fs);
+
+        let outcome = tool
+            .execute_outcome(r#"{"path":"docs"}"#, &mut MockToolContext)
+            .unwrap();
+        let blocker = outcome.blocker.expect("query blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["query".to_string()]);
+        assert_eq!(blocker.clarification_fields[0].key, "query");
+    }
+
+    #[test]
+    fn execute_outcome_reports_missing_path_as_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        let tool = DocumentSearchTool::new(fs);
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"query":"beetle","path":"docs/missing.md"}"#,
+                &mut MockToolContext,
+            )
+            .unwrap();
+        let blocker = outcome.blocker.expect("path blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["path".to_string()]);
+        assert_eq!(blocker.clarification_fields[0].key, "path");
     }
 }

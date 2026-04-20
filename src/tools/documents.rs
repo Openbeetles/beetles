@@ -19,11 +19,12 @@ use crate::tools::{
     office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
+    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolClarificationField,
+    ToolClarificationOption, ToolContext, ToolEffectClass, ToolExecutionBlocker,
     ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const DEFAULT_READ_MAX_CHARS: usize = 16_000;
@@ -215,10 +216,12 @@ impl DocumentsTool {
         let obj = parse_tool_args(args, "tool_documents")?;
         let preferred_identity_class =
             parse_preferred_identity_class(&obj, "preferred_identity_class", "tool_documents")?;
-        let op = obj
-            .get("op")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_documents", "missing op"))?;
+        let Some(op) = obj.get("op").and_then(Value::as_str).map(str::trim) else {
+            return documents_op_choice_outcome(None);
+        };
+        if op.is_empty() {
+            return documents_op_choice_outcome(None);
+        }
         match op {
             "provider_status" => {
                 let registered_remote_providers = self
@@ -244,7 +247,10 @@ impl DocumentsTool {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                    match self.resolve_lookup_context("list", &obj, preferred_identity_class)? {
+                        DocumentsLookupContextResolution::Ready(context) => context,
+                        DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                    };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -315,7 +321,10 @@ impl DocumentsTool {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                    match self.resolve_lookup_context("read", &obj, preferred_identity_class)? {
+                        DocumentsLookupContextResolution::Ready(context) => context,
+                        DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                    };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -350,12 +359,23 @@ impl DocumentsTool {
                         )
                     }
                 };
+                let path = match required_trimmed_str(&obj, "path") {
+                    Some(path) => path,
+                    None => {
+                        return documents_missing_field_outcome(
+                            "read",
+                            "path",
+                            "Document path",
+                            "Provide the document path to read.",
+                        )
+                    }
+                };
                 let document = match self.service.read_with_http_and_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
-                    required_str(&obj, "path")?,
+                    path,
                     parse_max_chars(obj.get("max_chars"))?,
                 ) {
                     Ok(document) => document,
@@ -382,8 +402,12 @@ impl DocumentsTool {
             "summarize" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) = match self
+                    .resolve_lookup_context("summarize", &obj, preferred_identity_class)?
+                {
+                    DocumentsLookupContextResolution::Ready(context) => context,
+                    DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -418,12 +442,23 @@ impl DocumentsTool {
                         )
                     }
                 };
+                let path = match required_trimmed_str(&obj, "path") {
+                    Some(path) => path,
+                    None => {
+                        return documents_missing_field_outcome(
+                            "summarize",
+                            "path",
+                            "Document path",
+                            "Provide the document path to summarize.",
+                        )
+                    }
+                };
                 let document = match self.service.read_with_http_and_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
                     effective_identity_class,
-                    required_str(&obj, "path")?,
+                    path,
                     parse_max_chars(obj.get("max_chars"))?,
                 ) {
                     Ok(document) => document,
@@ -455,7 +490,10 @@ impl DocumentsTool {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    self.resolve_lookup_context(&obj, preferred_identity_class)?;
+                    match self.resolve_lookup_context("search", &obj, preferred_identity_class)? {
+                        DocumentsLookupContextResolution::Ready(context) => context,
+                        DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                    };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -490,6 +528,17 @@ impl DocumentsTool {
                         )
                     }
                 };
+                let query = match required_trimmed_str(&obj, "query") {
+                    Some(query) => query.to_string(),
+                    None => {
+                        return documents_missing_field_outcome(
+                            "search",
+                            "query",
+                            "Search query",
+                            "Provide the text to search for in documents.",
+                        )
+                    }
+                };
                 let hits = match self.service.search_with_http_and_identity(
                     &mut http,
                     &provider,
@@ -497,7 +546,7 @@ impl DocumentsTool {
                     effective_identity_class,
                     DocumentsSearchQuery {
                         path: optional_str(&obj, "path"),
-                        query: required_str(&obj, "query")?.to_string(),
+                        query,
                         limit: parse_limit(obj.get("limit")),
                         case_sensitive: obj
                             .get("case_sensitive")
@@ -528,26 +577,27 @@ impl DocumentsTool {
                     },
                 )?))
             }
-            _ => Err(Error::config(
-                "tool_documents",
-                format!("unknown op '{}'", op),
-            )),
+            _ => documents_op_choice_outcome(Some(op)),
         }
     }
 
     fn resolve_lookup_context(
         &self,
+        op: &'static str,
         obj: &serde_json::Map<String, Value>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
-    ) -> Result<DocumentsLookupContext> {
+    ) -> Result<DocumentsLookupContextResolution> {
         let queries = parse_string_list(obj, "context_lookup", "tool_documents")?;
         if queries.is_empty() {
-            return Ok((Vec::new(), None, None));
+            return Ok(DocumentsLookupContextResolution::Ready((
+                Vec::new(),
+                None,
+                None,
+            )));
         }
         let Some(directory) = self.contacts_directory.as_ref() else {
-            return Err(Error::config(
-                "tool_documents",
-                "context_lookup requires contacts_directory support",
+            return Ok(DocumentsLookupContextResolution::Blocked(
+                documents_context_lookup_unsupported_outcome(op)?,
             ));
         };
         let mut resolved = Vec::with_capacity(queries.len());
@@ -567,11 +617,11 @@ impl DocumentsTool {
             provider_hints.push(documents_provider_hint_from_lookup_hit(&hit));
             resolved.push(documents_resolved_context(query, hit));
         }
-        Ok((
+        Ok(DocumentsLookupContextResolution::Ready((
             resolved,
             coalesce_identity_hints(identity_hints),
             coalesce_provider_hints(provider_hints),
-        ))
+        )))
     }
 }
 
@@ -580,6 +630,11 @@ type DocumentsLookupContext = (
     Option<OfficeAccountIdentityClass>,
     Option<String>,
 );
+
+enum DocumentsLookupContextResolution {
+    Ready(DocumentsLookupContext),
+    Blocked(ToolExecutionOutcome),
+}
 
 impl Tool for DocumentsTool {
     fn name(&self) -> &'static str {
@@ -735,12 +790,99 @@ fn parse_account_key(obj: &serde_json::Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn required_str<'a>(obj: &'a serde_json::Map<String, Value>, field: &str) -> Result<&'a str> {
+fn documents_blocked_payload(op: Option<&str>, warning: &str) -> String {
+    json!({
+        "op": op,
+        "ok": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn documents_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(documents_blocked_payload(
+        op,
+        "documents: invalid or missing op",
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "请选择文档操作：provider_status、list、read、summarize 或 search。",
+        vec!["op".to_string()],
+        vec![ToolClarificationField {
+            key: "op".to_string(),
+            label: "Documents operation".to_string(),
+            description: "Choose which documents operation should run.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "provider_status".to_string(),
+                    label: "Provider status".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "list".to_string(),
+                    label: "List".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "read".to_string(),
+                    label: "Read".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "summarize".to_string(),
+                    label: "Summarize".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "search".to_string(),
+                    label: "Search".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn documents_missing_field_outcome(
+    op: &str,
+    field: &'static str,
+    label: &'static str,
+    description: &'static str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(documents_blocked_payload(
+        Some(op),
+        &format!("documents: missing {field}"),
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        format!("还需要补充 `{field}` 才能继续文档操作。"),
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn documents_context_lookup_unsupported_outcome(op: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(documents_blocked_payload(
+        Some(op),
+        "documents: context_lookup requires contacts_directory support",
+    ))
+    .with_blocker(ToolExecutionBlocker::unsupported(
+        "当前运行时没有 contacts_directory，暂时不能用 context_lookup 做文档路由。",
+    )))
+}
+
+fn required_trimmed_str<'a>(
+    obj: &'a serde_json::Map<String, Value>,
+    field: &'static str,
+) -> Option<&'a str> {
     obj.get(field)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::config("tool_documents", format!("missing {}", field)))
 }
 
 fn optional_str(obj: &serde_json::Map<String, Value>, field: &str) -> String {
@@ -1331,6 +1473,86 @@ mod tests {
             .as_str()
             .expect("mail brief")
             .contains("Q1 Review"));
+    }
+
+    #[test]
+    fn documents_tool_missing_op_requests_choice_blocker() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool.execute_outcome(r#"{}"#, &mut ctx).expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn documents_tool_unknown_op_requests_choice_blocker() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"weird"}"#, &mut ctx)
+            .expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn documents_tool_read_missing_path_returns_facts_blocker() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"read"}"#, &mut ctx)
+            .expect("path blocker");
+        let blocker = outcome.blocker.expect("path blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["path".to_string()]);
+    }
+
+    #[test]
+    fn documents_tool_search_missing_query_returns_facts_blocker() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"search"}"#, &mut ctx)
+            .expect("query blocker");
+        let blocker = outcome.blocker.expect("query blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["query".to_string()]);
+    }
+
+    #[test]
+    fn documents_tool_context_lookup_without_contacts_directory_returns_unsupported_blocker() {
+        let tool = DocumentsTool::new(Arc::new(StubCredentialStore::default()));
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"op":"list","context_lookup":["Beetle Team"]}"#,
+                &mut ctx,
+            )
+            .expect("unsupported blocker");
+        let blocker = outcome.blocker.expect("unsupported blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::Unsupported
+        );
     }
 
     #[test]

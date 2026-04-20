@@ -370,6 +370,7 @@ pub enum ToolExecutionFailureKind {
 pub enum ToolExecutionBlockerKind {
     NeedsUserFacts,
     NeedsUserChoice,
+    NeedsConfirmation,
     ProbeFailed,
     RuntimeBlocked,
     Unsupported,
@@ -439,6 +440,18 @@ impl ToolExecutionBlocker {
             summary: summary.into(),
             missing_fields: Vec::new(),
             clarification_fields: Vec::new(),
+        }
+    }
+
+    pub fn needs_confirmation(
+        summary: impl Into<String>,
+        clarification_fields: Vec<ToolClarificationField>,
+    ) -> Self {
+        Self {
+            kind: ToolExecutionBlockerKind::NeedsConfirmation,
+            summary: summary.into(),
+            missing_fields: Vec::new(),
+            clarification_fields,
         }
     }
 

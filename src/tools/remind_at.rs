@@ -33,11 +33,12 @@ use crate::tools::office_failure::{
     build_office_operation_failure_outcome, OfficeOperationFailureInput,
 };
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata,
 };
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static REMINDER_SEQ: AtomicU32 = AtomicU32::new(1);
@@ -313,24 +314,22 @@ impl RemindAtTool {
     }
 
     fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
-        let channel = ctx
-            .current_channel()
-            .ok_or_else(|| {
-                Error::config(
-                    "remind_at",
-                    "no current channel (tool used outside session)",
-                )
-            })?
-            .to_string();
-        let chat_id = ctx
-            .current_chat_id()
-            .ok_or_else(|| {
-                Error::config(
-                    "remind_at",
-                    "no current chat_id (tool used outside session)",
-                )
-            })?
-            .to_string();
+        let channel = match ctx.current_channel() {
+            Some(value) => value.to_string(),
+            None => {
+                return remind_runtime_blocked_outcome(
+                    "remind_at tool requires an active channel session",
+                );
+            }
+        };
+        let chat_id = match ctx.current_chat_id() {
+            Some(value) => value.to_string(),
+            None => {
+                return remind_runtime_blocked_outcome(
+                    "remind_at tool requires an active chat session",
+                );
+            }
+        };
         let obj = parse_tool_args(args, "remind_at")?;
         let op = obj.get("op").and_then(Value::as_str).unwrap_or("schedule");
         match op {
@@ -338,7 +337,7 @@ impl RemindAtTool {
             "get" => self.execute_get(&channel, &chat_id, &obj),
             "update" => self.execute_update(&channel, &chat_id, &obj, ctx),
             "delete" => self.execute_delete(&channel, &chat_id, &obj, ctx),
-            _ => Err(Error::config("remind_at", format!("unknown op: {}", op))),
+            _ => remind_op_choice_outcome(Some(op)),
         }
     }
 
@@ -349,10 +348,22 @@ impl RemindAtTool {
         obj: &serde_json::Map<String, Value>,
         ctx: &mut dyn ToolContext,
     ) -> Result<ToolExecutionOutcome> {
-        let at_val = obj
-            .get("at")
-            .ok_or_else(|| Error::config("remind_at", "missing at"))?;
-        let context = required_context(obj)?;
+        let Some(at_val) = obj.get("at") else {
+            return remind_missing_field_outcome(
+                "schedule",
+                "at",
+                "Reminder time",
+                "Provide the reminder time as Unix seconds or ISO8601.",
+            );
+        };
+        let Some(context) = required_context_value(obj) else {
+            return remind_missing_field_outcome(
+                "schedule",
+                "context",
+                "Reminder text",
+                "Provide the reminder text to show when it fires.",
+            );
+        };
         let at_secs = parse_at_to_unix_secs(at_val)?;
         let now_secs = current_unix_secs();
         let mut reminder = ReminderItem {
@@ -405,11 +416,17 @@ impl RemindAtTool {
         chat_id: &str,
         obj: &serde_json::Map<String, Value>,
     ) -> Result<ToolExecutionOutcome> {
-        let id = required_id(obj)?;
-        let reminder = self
-            .store
-            .get(channel, chat_id, id)?
-            .ok_or_else(|| Error::config("remind_at", "reminder not found"))?;
+        let Some(id) = required_id_value(obj) else {
+            return remind_missing_field_outcome(
+                "get",
+                "id",
+                "Reminder ID",
+                "Provide the id of the reminder to inspect.",
+            );
+        };
+        let Some(reminder) = self.store.get(channel, chat_id, id)? else {
+            return remind_not_found_outcome("get", id);
+        };
         Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "remind_at",
             &RemindGetResponse {
@@ -426,11 +443,17 @@ impl RemindAtTool {
         obj: &serde_json::Map<String, Value>,
         ctx: &mut dyn ToolContext,
     ) -> Result<ToolExecutionOutcome> {
-        let id = required_id(obj)?;
-        let mut reminder = self
-            .store
-            .get(channel, chat_id, id)?
-            .ok_or_else(|| Error::config("remind_at", "reminder not found"))?;
+        let Some(id) = required_id_value(obj) else {
+            return remind_missing_field_outcome(
+                "update",
+                "id",
+                "Reminder ID",
+                "Provide the id of the reminder to update.",
+            );
+        };
+        let Some(mut reminder) = self.store.get(channel, chat_id, id)? else {
+            return remind_not_found_outcome("update", id);
+        };
         let previous_context = reminder.context.clone();
         let previous_link = ReminderCalendarLink::from_reminder(&reminder);
         let mut changed = false;
@@ -547,11 +570,17 @@ impl RemindAtTool {
         obj: &serde_json::Map<String, Value>,
         ctx: &mut dyn ToolContext,
     ) -> Result<ToolExecutionOutcome> {
-        let id = required_id(obj)?;
-        let reminder = self
-            .store
-            .get(channel, chat_id, id)?
-            .ok_or_else(|| Error::config("remind_at", "reminder not found"))?;
+        let Some(id) = required_id_value(obj) else {
+            return remind_missing_field_outcome(
+                "delete",
+                "id",
+                "Reminder ID",
+                "Provide the id of the reminder to delete.",
+            );
+        };
+        let Some(reminder) = self.store.get(channel, chat_id, id)? else {
+            return remind_not_found_outcome("delete", id);
+        };
         let link = ReminderCalendarLink::from_reminder(&reminder);
         if let Err(error) = self.delete_calendar_link(&link, ctx) {
             if !link.is_local() {
@@ -789,14 +818,6 @@ fn parse_at_to_unix_secs(v: &Value) -> Result<u64> {
     }
 }
 
-fn required_context(obj: &serde_json::Map<String, Value>) -> Result<&str> {
-    obj.get("context")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::config("remind_at", "missing context"))
-}
-
 fn parse_optional_time(value: Option<&Value>, field: &'static str) -> Result<Option<u64>> {
     let Some(value) = value else {
         return Ok(None);
@@ -865,14 +886,6 @@ fn desired_calendar_provider(reminder: &ReminderItem) -> Option<String> {
     (!provider.is_empty()).then(|| provider.to_string())
 }
 
-fn required_id(obj: &serde_json::Map<String, Value>) -> Result<&str> {
-    obj.get("id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::config("remind_at", "missing id"))
-}
-
 fn nullable_string(value: Option<&Value>) -> String {
     value
         .and_then(Value::as_str)
@@ -880,6 +893,120 @@ fn nullable_string(value: Option<&Value>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+fn remind_blocked_payload(op: Option<&str>, warning: &str) -> String {
+    json!({
+        "op": op,
+        "ok": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn remind_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(remind_blocked_payload(op, "remind_at: invalid op"))
+            .with_blocker(ToolExecutionBlocker::needs_user_choice(
+                "请选择提醒操作：schedule、get、update 或 delete。",
+                vec!["op".to_string()],
+                vec![ToolClarificationField {
+                    key: "op".to_string(),
+                    label: "Reminder operation".to_string(),
+                    description: "Choose which reminder operation should run.".to_string(),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![
+                        ToolClarificationOption {
+                            value: "schedule".to_string(),
+                            label: "Schedule".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "get".to_string(),
+                            label: "Get".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "update".to_string(),
+                            label: "Update".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "delete".to_string(),
+                            label: "Delete".to_string(),
+                        },
+                    ],
+                }],
+            )),
+    )
+}
+
+fn remind_runtime_blocked_outcome(summary: &str) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(remind_blocked_payload(None, summary))
+            .with_blocker(ToolExecutionBlocker::runtime_blocked(summary)),
+    )
+}
+
+fn remind_missing_field_outcome(
+    op: &str,
+    field: &'static str,
+    label: &'static str,
+    description: &'static str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(remind_blocked_payload(
+        Some(op),
+        &format!("remind_at: missing {field}"),
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        format!("还需要补充 `{field}` 才能继续提醒操作。"),
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn remind_not_found_outcome(op: &str, id: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(remind_blocked_payload(
+        Some(op),
+        "remind_at: reminder not found",
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "找不到对应提醒；请提供有效的提醒 id。",
+        vec!["id".to_string()],
+        vec![ToolClarificationField {
+            key: "id".to_string(),
+            label: "Reminder ID".to_string(),
+            description: format!("Provide a valid reminder id to {op}."),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![ToolClarificationOption {
+                value: id.to_string(),
+                label: id.to_string(),
+            }],
+        }],
+    )))
+}
+
+fn required_context_value(obj: &serde_json::Map<String, Value>) -> Option<&str> {
+    obj.get("context")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn required_id_value(obj: &serde_json::Map<String, Value>) -> Option<&str> {
+    obj.get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn next_reminder_id() -> String {
@@ -1016,12 +1143,12 @@ mod tests {
         OfficeService,
     };
     use crate::platform::ResponseBody;
-    use crate::tools::ToolContext;
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     use crate::tools::ToolExecutionFailureKind;
+    use crate::tools::{ToolContext, ToolExecutionBlockerKind};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -1176,6 +1303,67 @@ mod tests {
         }
     }
 
+    struct SessionlessCtx;
+
+    impl ToolContext for SessionlessCtx {
+        fn request_with_headers(
+            &mut self,
+            _method: &str,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: Option<&[u8]>,
+        ) -> Result<(u16, ResponseBody)> {
+            Err(crate::error::Error::config("dummy_ctx", "http unsupported"))
+        }
+
+        fn get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            Err(crate::error::Error::config("dummy_ctx", "http unsupported"))
+        }
+
+        fn post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            Err(crate::error::Error::config("dummy_ctx", "http unsupported"))
+        }
+
+        fn patch_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            Err(crate::error::Error::config("dummy_ctx", "http unsupported"))
+        }
+
+        fn put_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            Err(crate::error::Error::config("dummy_ctx", "http unsupported"))
+        }
+
+        fn delete_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            Err(crate::error::Error::config("dummy_ctx", "http unsupported"))
+        }
+
+        fn user_locale(&self) -> crate::i18n::Locale {
+            crate::i18n::Locale::Zh
+        }
+    }
+
     #[test]
     fn remind_at_tool_can_link_local_calendar_event() {
         let remind_store = Arc::new(StubRemindStore::default());
@@ -1205,6 +1393,101 @@ mod tests {
             .expect("event");
         assert_eq!(event.title, "客户回访");
         assert_eq!(event.status, CalendarEventStatus::Confirmed);
+    }
+
+    #[test]
+    fn remind_at_tool_missing_session_scope_returns_runtime_blocker() {
+        let tool = RemindAtTool::with_local_calendar(
+            Arc::new(StubRemindStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = SessionlessCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"at":1700000000,"context":"客户回访"}"#, &mut ctx)
+            .expect("runtime blocker");
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
+    }
+
+    #[test]
+    fn remind_at_tool_missing_at_returns_facts_blocker() {
+        let tool = RemindAtTool::with_local_calendar(
+            Arc::new(StubRemindStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"context":"客户回访"}"#, &mut ctx)
+            .expect("at blocker");
+        let blocker = outcome.blocker.expect("at blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["at".to_string()]);
+    }
+
+    #[test]
+    fn remind_at_tool_missing_context_returns_facts_blocker() {
+        let tool = RemindAtTool::with_local_calendar(
+            Arc::new(StubRemindStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"at":1700000000}"#, &mut ctx)
+            .expect("context blocker");
+        let blocker = outcome.blocker.expect("context blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["context".to_string()]);
+    }
+
+    #[test]
+    fn remind_at_tool_unknown_op_requests_choice_blocker() {
+        let tool = RemindAtTool::with_local_calendar(
+            Arc::new(StubRemindStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"weird","id":"rem_1"}"#, &mut ctx)
+            .expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn remind_at_tool_get_missing_id_returns_facts_blocker() {
+        let tool = RemindAtTool::with_local_calendar(
+            Arc::new(StubRemindStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get"}"#, &mut ctx)
+            .expect("id blocker");
+        let blocker = outcome.blocker.expect("id blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn remind_at_tool_get_missing_reminder_returns_facts_blocker() {
+        let tool = RemindAtTool::with_local_calendar(
+            Arc::new(StubRemindStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get","id":"rem_missing"}"#, &mut ctx)
+            .expect("not found blocker");
+        let blocker = outcome.blocker.expect("not found blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
     }
 
     #[test]

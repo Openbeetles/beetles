@@ -33,11 +33,12 @@ use crate::tools::office_failure::{
     build_office_operation_failure_outcome, OfficeOperationFailureInput,
 };
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata,
 };
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -354,13 +355,27 @@ impl Tool for TaskTool {
 impl TaskTool {
     fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_task")?;
-        let op = obj
-            .get("op")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_task", "missing op"))?;
-        let (channel, chat_id) = require_session_scope(ctx)?;
-        let channel = channel.to_string();
-        let chat_id = chat_id.to_string();
+        let op = match obj.get("op").and_then(Value::as_str).map(str::trim) {
+            Some("list" | "get" | "create" | "update" | "complete" | "delete") => obj
+                .get("op")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .expect("validated op should stay present"),
+            Some(other) => return task_op_choice_outcome(Some(other)),
+            None => return task_op_choice_outcome(None),
+        };
+        let channel = match ctx.current_channel() {
+            Some(value) => value.to_string(),
+            None => {
+                return task_runtime_blocked_outcome("task tool requires an active channel session")
+            }
+        };
+        let chat_id = match ctx.current_chat_id() {
+            Some(value) => value.to_string(),
+            None => {
+                return task_runtime_blocked_outcome("task tool requires an active chat session")
+            }
+        };
         match op {
             "list" => {
                 let query = TaskQuery {
@@ -383,11 +398,17 @@ impl TaskTool {
                 )?))
             }
             "get" => {
-                let id = required_string(&obj, "id")?;
-                let task = self
-                    .store
-                    .get(&channel, &chat_id, id)?
-                    .ok_or_else(|| Error::config("tool_task", "task not found"))?;
+                let Some(id) = required_string_value(&obj, "id") else {
+                    return task_missing_field_outcome(
+                        "get",
+                        "id",
+                        "Task ID",
+                        "Provide the id of the task to inspect.",
+                    );
+                };
+                let Some(task) = self.store.get(&channel, &chat_id, id)? else {
+                    return task_not_found_outcome("get", id);
+                };
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_task",
                     &TaskGetResponse { op: "get", task },
@@ -395,11 +416,19 @@ impl TaskTool {
             }
             "create" => {
                 let now_secs = current_unix_secs();
+                let Some(title) = required_string_value(&obj, "title") else {
+                    return task_missing_field_outcome(
+                        "create",
+                        "title",
+                        "Task title",
+                        "Provide the task title to create.",
+                    );
+                };
                 let mut task = TaskItem {
-                    id: build_task_id(required_string(&obj, "title")?),
+                    id: build_task_id(title),
                     channel: channel.clone(),
                     chat_id: chat_id.clone(),
-                    title: required_string(&obj, "title")?.to_string(),
+                    title: title.to_string(),
                     detail: optional_string(obj.get("detail")),
                     project: optional_string(obj.get("project")),
                     status: obj
@@ -467,11 +496,17 @@ impl TaskTool {
             }
             "update" => {
                 let now_secs = current_unix_secs();
-                let id = required_string(&obj, "id")?;
-                let mut task = self
-                    .store
-                    .get(&channel, &chat_id, id)?
-                    .ok_or_else(|| Error::config("tool_task", "task not found"))?;
+                let Some(id) = required_string_value(&obj, "id") else {
+                    return task_missing_field_outcome(
+                        "update",
+                        "id",
+                        "Task ID",
+                        "Provide the id of the task to update.",
+                    );
+                };
+                let Some(mut task) = self.store.get(&channel, &chat_id, id)? else {
+                    return task_not_found_outcome("update", id);
+                };
                 let previous_calendar_link = TaskCalendarLink::from_task(&task);
                 let mut updated = Vec::new();
                 if let Some(title) = obj.get("title").and_then(Value::as_str) {
@@ -599,11 +634,17 @@ impl TaskTool {
             }
             "complete" => {
                 let now_secs = current_unix_secs();
-                let id = required_string(&obj, "id")?;
-                let mut task = self
-                    .store
-                    .get(&channel, &chat_id, id)?
-                    .ok_or_else(|| Error::config("tool_task", "task not found"))?;
+                let Some(id) = required_string_value(&obj, "id") else {
+                    return task_missing_field_outcome(
+                        "complete",
+                        "id",
+                        "Task ID",
+                        "Provide the id of the task to complete.",
+                    );
+                };
+                let Some(mut task) = self.store.get(&channel, &chat_id, id)? else {
+                    return task_not_found_outcome("complete", id);
+                };
                 let previous_calendar_link = TaskCalendarLink::from_task(&task);
                 task.status = TaskStatus::Completed;
                 task.completed_at_unix_secs = now_secs;
@@ -635,7 +676,14 @@ impl TaskTool {
                 )?))
             }
             "delete" => {
-                let id = required_string(&obj, "id")?;
+                let Some(id) = required_string_value(&obj, "id") else {
+                    return task_missing_field_outcome(
+                        "delete",
+                        "id",
+                        "Task ID",
+                        "Provide the id of the task to delete.",
+                    );
+                };
                 if let Some(task) = self.store.get(&channel, &chat_id, id)? {
                     let previous_calendar_link = TaskCalendarLink::from_task(&task);
                     if let Err(error) = self.delete_calendar_link(&previous_calendar_link, ctx) {
@@ -662,7 +710,7 @@ impl TaskTool {
                     },
                 )?))
             }
-            _ => Err(Error::config("tool_task", format!("unknown op: {}", op))),
+            _ => unreachable!("validated task op should never reach fallback"),
         }
     }
 
@@ -871,25 +919,121 @@ fn previous_link_failure_context(link: &TaskCalendarLink) -> Option<(String, Opt
     ))
 }
 
-fn require_session_scope(ctx: &dyn ToolContext) -> Result<(&str, &str)> {
-    let channel = ctx
-        .current_channel()
-        .ok_or_else(|| Error::config("tool_task", "no current channel"))?;
-    let chat_id = ctx
-        .current_chat_id()
-        .ok_or_else(|| Error::config("tool_task", "no current chat_id"))?;
-    Ok((channel, chat_id))
-}
-
-fn required_string<'a>(
+fn required_string_value<'a>(
     obj: &'a serde_json::Map<String, Value>,
     key: &'static str,
-) -> Result<&'a str> {
+) -> Option<&'a str> {
     obj.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::config("tool_task", format!("missing {}", key)))
+}
+
+fn task_blocked_payload(op: Option<&str>, warning: &str) -> String {
+    json!({
+        "op": op,
+        "ok": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn task_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(task_blocked_payload(op, "task: invalid or missing op"))
+            .with_blocker(ToolExecutionBlocker::needs_user_choice(
+                "请选择任务操作：list、get、create、update、complete 或 delete。",
+                vec!["op".to_string()],
+                vec![ToolClarificationField {
+                    key: "op".to_string(),
+                    label: "Task operation".to_string(),
+                    description: "Choose which task operation should run.".to_string(),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![
+                        ToolClarificationOption {
+                            value: "list".to_string(),
+                            label: "List".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "get".to_string(),
+                            label: "Get".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "create".to_string(),
+                            label: "Create".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "update".to_string(),
+                            label: "Update".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "complete".to_string(),
+                            label: "Complete".to_string(),
+                        },
+                        ToolClarificationOption {
+                            value: "delete".to_string(),
+                            label: "Delete".to_string(),
+                        },
+                    ],
+                }],
+            )),
+    )
+}
+
+fn task_runtime_blocked_outcome(summary: &str) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(task_blocked_payload(None, summary))
+            .with_blocker(ToolExecutionBlocker::runtime_blocked(summary)),
+    )
+}
+
+fn task_missing_field_outcome(
+    op: &str,
+    field: &'static str,
+    label: &'static str,
+    description: &'static str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(task_blocked_payload(
+        Some(op),
+        &format!("task: missing {field}"),
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        format!("还需要补充 `{field}` 才能继续任务操作。"),
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn task_not_found_outcome(op: &str, id: &str) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(task_blocked_payload(Some(op), "task: task not found"))
+            .with_blocker(ToolExecutionBlocker::needs_user_facts(
+                "找不到对应任务；请提供有效的任务 id。",
+                vec!["id".to_string()],
+                vec![ToolClarificationField {
+                    key: "id".to_string(),
+                    label: "Task ID".to_string(),
+                    description: format!("Provide a valid task id to {op}."),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![ToolClarificationOption {
+                        value: id.to_string(),
+                        label: id.to_string(),
+                    }],
+                }],
+            )),
+    )
 }
 
 fn optional_string(value: Option<&Value>) -> String {
@@ -980,6 +1124,7 @@ mod tests {
         OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
         OfficeService,
     };
+    use crate::tools::ToolExecutionBlockerKind;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -1133,6 +1278,32 @@ mod tests {
 
         fn current_channel(&self) -> Option<&str> {
             Some("qq_channel")
+        }
+    }
+
+    #[derive(Default)]
+    struct SessionlessCtx;
+
+    impl ToolContext for SessionlessCtx {
+        fn get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(Vec::new())))
+        }
+
+        fn post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, crate::platform::ResponseBody)> {
+            Ok((200, crate::platform::ResponseBody::Heap(Vec::new())))
+        }
+
+        fn user_locale(&self) -> crate::i18n::Locale {
+            crate::i18n::Locale::Zh
         }
     }
 
@@ -1611,6 +1782,99 @@ mod tests {
             .unwrap();
         let completed: Value = serde_json::from_str(&completed).unwrap();
         assert_eq!(completed["task"]["status"], "completed");
+    }
+
+    #[test]
+    fn task_tool_missing_op_requests_choice_blocker() {
+        let tool = TaskTool::new(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool.execute_outcome(r#"{}"#, &mut ctx).expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn task_tool_unknown_op_requests_choice_blocker() {
+        let tool = TaskTool::new(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"weird"}"#, &mut ctx)
+            .expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn task_tool_missing_session_scope_returns_runtime_blocker() {
+        let tool = TaskTool::new(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = SessionlessCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list"}"#, &mut ctx)
+            .expect("runtime blocker");
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
+    }
+
+    #[test]
+    fn task_tool_create_missing_title_returns_facts_blocker() {
+        let tool = TaskTool::new(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"create"}"#, &mut ctx)
+            .expect("title blocker");
+        let blocker = outcome.blocker.expect("title blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["title".to_string()]);
+    }
+
+    #[test]
+    fn task_tool_get_missing_id_returns_facts_blocker() {
+        let tool = TaskTool::new(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get"}"#, &mut ctx)
+            .expect("id blocker");
+        let blocker = outcome.blocker.expect("id blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn task_tool_get_missing_task_returns_facts_blocker() {
+        let tool = TaskTool::new(
+            Arc::new(StubTaskStore::default()),
+            Arc::new(StubCalendarStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get","id":"tsk_missing"}"#, &mut ctx)
+            .expect("not found blocker");
+        let blocker = outcome.blocker.expect("not found blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
     }
 
     #[test]

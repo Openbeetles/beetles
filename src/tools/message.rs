@@ -1,11 +1,12 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
+    parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolClarificationField,
+    ToolClarificationOption, ToolContext, ToolEffectClass, ToolExecutionBlocker,
     ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolOutboundDeliveryKind,
     ToolOutboundIntent, ToolOutboundTarget, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub struct MessageTool;
 
@@ -44,12 +45,15 @@ impl Tool for MessageTool {
         ctx: &mut dyn ToolContext,
     ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_message")?;
+        if let Some(outcome) = missing_message_field_outcome(&obj) {
+            return Ok(outcome);
+        }
         let content = obj
             .get("content")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::config("tool_message", "missing content"))?;
+            .expect("content blocker should have returned before required extraction");
 
         let delivery_kind = obj
             .get("delivery_kind")
@@ -60,18 +64,20 @@ impl Tool for MessageTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::config("tool_message", "missing explicit target channel"))?;
+            .expect("target blocker should have returned before channel extraction");
         let chat_id = obj
             .get("chat_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::config("tool_message", "missing explicit target chat_id"))?;
+            .expect("target blocker should have returned before chat extraction");
         if ctx.current_channel() == Some(channel) && ctx.current_chat_id() == Some(chat_id) {
-            return Err(Error::config(
-                "tool_message",
+            return Ok(ToolExecutionOutcome::text(message_ignored_payload(
+                Some(channel),
+                Some(chat_id),
+                delivery_kind,
                 "current-chat delivery is reserved for the canonical reply surface",
-            ));
+            )));
         }
         let channel = channel.to_string();
         let chat_id = chat_id.to_string();
@@ -79,50 +85,67 @@ impl Tool for MessageTool {
         let primary = match delivery_kind {
             "supplemental" => false,
             "primary" => true,
-            _ => {
-                return Err(Error::config(
-                    "tool_message",
-                    "delivery_kind must be supplemental or primary",
-                ));
-            }
+            other => return invalid_delivery_kind_outcome(Some(&channel), Some(&chat_id), other),
         };
-        let capability = ctx.channel_capability(&channel).ok_or_else(|| {
-            Error::config(
-                "tool_message",
+        let Some(capability) = ctx.channel_capability(&channel) else {
+            return runtime_blocked_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
                 "target channel capability is unavailable in this runtime context",
-            )
-        })?;
+            );
+        };
         if !capability.enabled {
-            return Err(Error::config(
-                "tool_message",
+            return runtime_blocked_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
                 "target channel is not enabled in this runtime context",
-            ));
+            );
         }
         if primary && !capability.contract.supports_primary_reply {
-            return Err(Error::config(
-                "tool_message",
+            return unsupported_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
                 "target channel does not support primary reply delivery",
-            ));
+            );
         }
         if !primary && !capability.contract.supports_supplemental_reply {
-            return Err(Error::config(
-                "tool_message",
+            return unsupported_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
                 "target channel does not support supplemental reply delivery",
-            ));
+            );
         }
         if !capability.contract.supports_explicit_target {
-            return Err(Error::config(
-                "tool_message",
+            return unsupported_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
                 "target channel does not support explicit outbound targets",
-            ));
+            );
         }
         if !ctx.supports_explicit_outbound_message() {
-            return Err(Error::config(
-                "tool_message",
+            return runtime_blocked_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
                 "explicit outbound target is not allowed in this runtime context",
-            ));
+            );
         }
-        ctx.claim_outbound_message_delivery(false, primary)?;
+        if let Err(error) = ctx.claim_outbound_message_delivery(false, primary) {
+            return runtime_blocked_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
+                &format!(
+                    "explicit outbound delivery is temporarily blocked in this runtime: {}",
+                    error
+                ),
+            );
+        }
 
         let summary = serialize_tool_output(
             "tool_message",
@@ -185,14 +208,203 @@ impl Tool for MessageTool {
     }
 }
 
+fn message_blocked_payload(
+    channel: Option<&str>,
+    chat_id: Option<&str>,
+    delivery_kind: &str,
+    warning: &str,
+) -> String {
+    json!({
+        "ok": false,
+        "tool": "message",
+        "target": "explicit",
+        "delivery_kind": delivery_kind,
+        "channel": channel,
+        "chat_id": chat_id,
+        "sent_chars": 0,
+        "submitted_to_runtime": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn message_ignored_payload(
+    channel: Option<&str>,
+    chat_id: Option<&str>,
+    delivery_kind: &str,
+    warning: &str,
+) -> String {
+    json!({
+        "ok": true,
+        "tool": "message",
+        "target": "explicit",
+        "delivery_kind": delivery_kind,
+        "channel": channel,
+        "chat_id": chat_id,
+        "sent_chars": 0,
+        "submitted_to_runtime": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn missing_message_field_outcome(
+    obj: &serde_json::Map<String, Value>,
+) -> Option<ToolExecutionOutcome> {
+    let mut missing_fields = Vec::new();
+    let mut clarification_fields = Vec::new();
+    if obj
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        missing_fields.push("content".to_string());
+        clarification_fields.push(ToolClarificationField {
+            key: "content".to_string(),
+            label: "Message content".to_string(),
+            description: "Provide the message body to send.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        });
+    }
+    if obj
+        .get("channel")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        missing_fields.push("channel".to_string());
+        clarification_fields.push(ToolClarificationField {
+            key: "channel".to_string(),
+            label: "Target channel".to_string(),
+            description: "Provide the explicit target channel for cross-target delivery."
+                .to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        });
+    }
+    if obj
+        .get("chat_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        missing_fields.push("chat_id".to_string());
+        clarification_fields.push(ToolClarificationField {
+            key: "chat_id".to_string(),
+            label: "Target chat".to_string(),
+            description: "Provide the explicit target chat id for cross-target delivery."
+                .to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        });
+    }
+    if missing_fields.is_empty() {
+        return None;
+    }
+    Some(
+        ToolExecutionOutcome::text(message_blocked_payload(
+            None,
+            None,
+            "supplemental",
+            "message: missing required outbound fields",
+        ))
+        .with_blocker(ToolExecutionBlocker::needs_user_facts(
+            "还需要补全要发送的内容和显式目标。",
+            missing_fields,
+            clarification_fields,
+        )),
+    )
+}
+
+fn invalid_delivery_kind_outcome(
+    channel: Option<&str>,
+    chat_id: Option<&str>,
+    value: &str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(
+        ToolExecutionOutcome::text(message_blocked_payload(
+            channel,
+            chat_id,
+            value,
+            "message: delivery_kind must be supplemental or primary",
+        ))
+        .with_blocker(ToolExecutionBlocker::needs_user_choice(
+            "请选择消息投递类型：supplemental 或 primary。",
+            vec!["delivery_kind".to_string()],
+            vec![ToolClarificationField {
+                key: "delivery_kind".to_string(),
+                label: "Delivery kind".to_string(),
+                description:
+                    "Choose supplemental for a visible update or primary for the canonical reply on the explicit target."
+                        .to_string(),
+                required: true,
+                secret: false,
+                multiple: false,
+                options: vec![
+                    ToolClarificationOption {
+                        value: "supplemental".to_string(),
+                        label: "Supplemental".to_string(),
+                    },
+                    ToolClarificationOption {
+                        value: "primary".to_string(),
+                        label: "Primary".to_string(),
+                    },
+                ],
+            }],
+        )),
+    )
+}
+
+fn runtime_blocked_message_outcome(
+    channel: Option<&str>,
+    chat_id: Option<&str>,
+    delivery_kind: &str,
+    summary: &str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(message_blocked_payload(
+        channel,
+        chat_id,
+        delivery_kind,
+        summary,
+    ))
+    .with_blocker(ToolExecutionBlocker::runtime_blocked(summary)))
+}
+
+fn unsupported_message_outcome(
+    channel: Option<&str>,
+    chat_id: Option<&str>,
+    delivery_kind: &str,
+    summary: &str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(message_blocked_payload(
+        channel,
+        chat_id,
+        delivery_kind,
+        summary,
+    ))
+    .with_blocker(ToolExecutionBlocker::unsupported(summary)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::channel_capability::{
         ChannelCapabilityContract, ChannelCapabilityEntry, ChannelDeliveryOrderingModel,
     };
+    use crate::error::Error;
     use crate::platform::ResponseBody;
-    use crate::tools::ToolContext;
+    use crate::tools::{ToolContext, ToolExecutionBlockerKind};
     use std::collections::HashMap;
 
     struct StubToolContext {
@@ -314,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn current_chat_target_is_rejected_for_canonical_reply_surface() {
+    fn current_chat_target_is_ignored_for_canonical_reply_surface() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -331,14 +543,16 @@ mod tests {
             outbound_message_count: 0,
         };
         let tool = MessageTool;
-        let err = tool
+        let outcome = tool
             .execute_outcome(
                 r#"{"content":"done","channel":"qq_channel","chat_id":"chat-1","delivery_kind":"primary"}"#,
                 &mut ctx,
             )
-            .expect_err("current-chat target should be rejected");
+            .expect("current-chat noop");
 
-        assert_eq!(err.stage(), "tool_message");
+        assert!(outcome.blocker.is_none());
+        assert!(outcome.outbound_intents.is_empty());
+        assert!(outcome.is_success());
         assert_eq!(ctx.outbound_message_count, 0);
     }
 
@@ -378,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_current_chat_target_is_rejected_before_runtime_delivery_permissions() {
+    fn explicit_current_chat_target_is_ignored_before_runtime_delivery_permissions() {
         let mut ctx = StubToolContext {
             current_channel: Some("qq_channel".to_string()),
             current_chat_id: Some("chat-1".to_string()),
@@ -395,13 +609,15 @@ mod tests {
             outbound_message_count: 0,
         };
         let tool = MessageTool;
-        let err = tool
+        let outcome = tool
             .execute_outcome(
                 r#"{"content":"done","channel":"qq_channel","chat_id":"chat-1","delivery_kind":"primary"}"#,
                 &mut ctx,
             )
-            .expect_err("current chat target should fail early");
-        assert_eq!(err.stage(), "tool_message");
+            .expect("current-chat noop");
+        assert!(outcome.blocker.is_none());
+        assert!(outcome.outbound_intents.is_empty());
+        assert!(outcome.is_success());
         assert_eq!(ctx.outbound_message_count, 0);
     }
 
@@ -420,13 +636,14 @@ mod tests {
             outbound_message_count: 0,
         };
         let tool = MessageTool;
-        let err = tool
+        let outcome = tool
             .execute_outcome(
                 r#"{"content":"ping","channel":"telegram","chat_id":"chat-2"}"#,
                 &mut ctx,
             )
-            .expect_err("explicit message should fail");
-        assert_eq!(err.stage(), "tool_message");
+            .expect("runtime blocker");
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
     }
 
     #[test]
@@ -450,14 +667,15 @@ mod tests {
             &mut ctx,
         )
             .expect("first message");
-        let err = tool
+        let outcome = tool
             .execute_outcome(
                 r#"{"content":"second","channel":"telegram","chat_id":"chat-2"}"#,
                 &mut ctx,
             )
-            .expect_err("second message should hit budget");
+            .expect("second message should block");
 
-        assert_eq!(err.stage(), "tool_message");
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
     }
 
     #[test]
@@ -478,14 +696,19 @@ mod tests {
             outbound_message_count: 0,
         };
         let tool = MessageTool;
-        let err = tool
+        let outcome = tool
             .execute_outcome(
                 r#"{"content":"status","delivery_kind":"supplemental"}"#,
                 &mut ctx,
             )
-            .expect_err("explicit target fields are required");
+            .expect("explicit target blocker");
 
-        assert_eq!(err.stage(), "tool_message");
+        let blocker = outcome.blocker.expect("target blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(
+            blocker.missing_fields,
+            vec!["channel".to_string(), "chat_id".to_string()]
+        );
         assert_eq!(ctx.outbound_message_count, 0);
     }
 
@@ -504,13 +727,121 @@ mod tests {
             outbound_message_count: 0,
         };
         let tool = MessageTool;
-        let err = tool
+        let outcome = tool
             .execute_outcome(
                 r#"{"content":"ping","channel":"dingtalk","chat_id":"chat-2"}"#,
                 &mut ctx,
             )
-            .expect_err("explicit contract denial should fail");
+            .expect("explicit contract blocker");
 
-        assert_eq!(err.stage(), "tool_message");
+        let blocker = outcome.blocker.expect("unsupported blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::Unsupported);
+    }
+
+    #[test]
+    fn message_tool_requires_content_blocker() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[capability_entry(
+                "telegram", true, true, true, true,
+            )]),
+            supports_current_chat_outbound_message: false,
+            supports_explicit_outbound_message: true,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+        };
+        let tool = MessageTool;
+        let outcome = tool
+            .execute_outcome(r#"{"channel":"telegram","chat_id":"chat-2"}"#, &mut ctx)
+            .expect("content blocker");
+
+        let blocker = outcome.blocker.expect("content blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["content".to_string()]);
+    }
+
+    #[test]
+    fn message_tool_invalid_delivery_kind_requests_choice() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[capability_entry(
+                "telegram", true, true, true, true,
+            )]),
+            supports_current_chat_outbound_message: false,
+            supports_explicit_outbound_message: true,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+        };
+        let tool = MessageTool;
+        let outcome = tool
+            .execute_outcome(
+                r#"{"content":"ping","channel":"telegram","chat_id":"chat-2","delivery_kind":"weird"}"#,
+                &mut ctx,
+            )
+            .expect("delivery kind blocker");
+
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+        assert_eq!(blocker.missing_fields, vec!["delivery_kind".to_string()]);
+    }
+
+    #[test]
+    fn explicit_message_runtime_without_explicit_permission_returns_runtime_blocker() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                capability_entry("telegram", true, true, true, true),
+            ]),
+            supports_current_chat_outbound_message: false,
+            supports_explicit_outbound_message: false,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+        };
+        let tool = MessageTool;
+        let outcome = tool
+            .execute_outcome(
+                r#"{"content":"ping","channel":"telegram","chat_id":"chat-2"}"#,
+                &mut ctx,
+            )
+            .expect("runtime blocker");
+
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
+    }
+
+    #[test]
+    fn message_tool_budget_exhaustion_returns_runtime_blocker() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                capability_entry("telegram", true, true, true, true),
+            ]),
+            supports_current_chat_outbound_message: true,
+            supports_explicit_outbound_message: true,
+            outbound_message_budget: 1,
+            outbound_message_count: 0,
+        };
+        let tool = MessageTool;
+
+        tool.execute_outcome(
+            r#"{"content":"first","channel":"telegram","chat_id":"chat-2","delivery_kind":"primary"}"#,
+            &mut ctx,
+        )
+        .expect("first message");
+        let outcome = tool
+            .execute_outcome(
+                r#"{"content":"second","channel":"telegram","chat_id":"chat-2"}"#,
+                &mut ctx,
+            )
+            .expect("budget blocker");
+
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
     }
 }

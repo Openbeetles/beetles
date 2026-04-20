@@ -291,6 +291,9 @@ pub(crate) fn workflow_blocker_from_tool_blocker(
             blocker.missing_fields.clone(),
             clarification,
         ),
+        ToolExecutionBlockerKind::NeedsConfirmation => {
+            WorkflowBlocker::needs_confirmation(blocker.summary.clone(), clarification)
+        }
         ToolExecutionBlockerKind::ProbeFailed => {
             WorkflowBlocker::probe_failed(blocker.summary.clone())
         }

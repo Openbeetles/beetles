@@ -18,11 +18,12 @@ use crate::tools::{
     office_args::parse_preferred_identity_class,
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
     office_failure::{build_office_operation_failure_outcome, OfficeOperationFailureInput},
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolExecutionOutcome, ToolMetadata,
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata,
 };
 use crate::util::{current_unix_secs, parse_iso8601};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -239,10 +240,12 @@ impl CalendarTool {
 
     fn execute_impl(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_calendar")?;
-        let op = obj
-            .get("op")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_calendar", "missing op"))?;
+        let Some(op) = obj.get("op").and_then(Value::as_str).map(str::trim) else {
+            return calendar_op_choice_outcome(None);
+        };
+        if op.is_empty() {
+            return calendar_op_choice_outcome(None);
+        }
         let preferred_identity_class =
             parse_preferred_identity_class(&obj, "preferred_identity_class", "tool_calendar")?;
         match op {
@@ -316,7 +319,17 @@ impl CalendarTool {
             "get" => {
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
-                let id = required_str(&obj, "id", "tool_calendar")?;
+                let id = match required_trimmed_str(&obj, "id") {
+                    Some(id) => id,
+                    None => {
+                        return calendar_missing_field_outcome(
+                            "get",
+                            "id",
+                            "Event ID",
+                            "Provide the event id to load.",
+                        )
+                    }
+                };
                 let event = match with_calendar_http(&provider, ctx, |http| {
                     self.service.get_with_identity(
                         http,
@@ -327,7 +340,7 @@ impl CalendarTool {
                     )
                 }) {
                     Ok(Some(event)) => event,
-                    Ok(None) => return Err(Error::config("tool_calendar", "event not found")),
+                    Ok(None) => return calendar_event_not_found_outcome("get", id),
                     Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
                         return self.office_operation_failure(
                             "get",
@@ -387,9 +400,41 @@ impl CalendarTool {
                         )
                     }
                 };
-                let title = required_str(&obj, "title", "tool_calendar")?;
-                let start_at_unix_secs = parse_required_time(obj.get("start_at"), "start_at")?;
-                let end_at_unix_secs = parse_required_time(obj.get("end_at"), "end_at")?;
+                let title = match required_trimmed_str(&obj, "title") {
+                    Some(title) => title,
+                    None => {
+                        return calendar_missing_field_outcome(
+                            "create",
+                            "title",
+                            "Title",
+                            "Provide the event title.",
+                        )
+                    }
+                };
+                let start_at = match obj.get("start_at") {
+                    Some(value) => value,
+                    None => {
+                        return calendar_missing_field_outcome(
+                            "create",
+                            "start_at",
+                            "Start time",
+                            "Provide the start time for the event.",
+                        )
+                    }
+                };
+                let end_at = match obj.get("end_at") {
+                    Some(value) => value,
+                    None => {
+                        return calendar_missing_field_outcome(
+                            "create",
+                            "end_at",
+                            "End time",
+                            "Provide the end time for the event.",
+                        )
+                    }
+                };
+                let start_at_unix_secs = parse_required_time(Some(start_at), "start_at")?;
+                let end_at_unix_secs = parse_required_time(Some(end_at), "end_at")?;
                 let now_secs = current_unix_secs();
                 let explicit_calendar_id = optional_str(&obj, "calendar_id");
                 let calendar_id = if explicit_calendar_id.trim().is_empty()
@@ -462,7 +507,17 @@ impl CalendarTool {
                     &mut resolved_participants,
                     effective_identity_class,
                 );
-                let id = required_str(&obj, "id", "tool_calendar")?;
+                let id = match required_trimmed_str(&obj, "id") {
+                    Some(id) => id,
+                    None => {
+                        return calendar_missing_field_outcome(
+                            "update",
+                            "id",
+                            "Event ID",
+                            "Provide the event id to update.",
+                        )
+                    }
+                };
                 let mut event = match with_calendar_http(&provider, ctx, |http| {
                     self.service.get_with_identity(
                         http,
@@ -473,7 +528,7 @@ impl CalendarTool {
                     )
                 }) {
                     Ok(Some(event)) => event,
-                    Ok(None) => return Err(Error::config("tool_calendar", "event not found")),
+                    Ok(None) => return calendar_event_not_found_outcome("update", id),
                     Err(error) if provider != CALENDAR_PROVIDER_LOCAL => {
                         return self.office_operation_failure(
                             "update",
@@ -519,18 +574,7 @@ impl CalendarTool {
                     updated.push("status");
                 }
                 if updated.is_empty() {
-                    return Ok(ToolExecutionOutcome::text(serialize_tool_output(
-                        "tool_calendar",
-                        &CalendarUpdateResponse {
-                            op: "update",
-                            ok: false,
-                            provider,
-                            updated_fields: Vec::new(),
-                            event: None,
-                            resolved_participants,
-                            error: Some("no fields to update"),
-                        },
-                    )?));
+                    return calendar_update_fields_outcome();
                 }
                 event.provider = provider.clone();
                 event.updated_at = current_unix_secs();
@@ -573,7 +617,17 @@ impl CalendarTool {
             "delete" => {
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
-                let id = required_str(&obj, "id", "tool_calendar")?;
+                let id = match required_trimmed_str(&obj, "id") {
+                    Some(id) => id,
+                    None => {
+                        return calendar_missing_field_outcome(
+                            "delete",
+                            "id",
+                            "Event ID",
+                            "Provide the event id to delete.",
+                        )
+                    }
+                };
                 let removed = match with_calendar_http(&provider, ctx, |http| {
                     self.service.delete_with_identity(
                         http,
@@ -605,10 +659,7 @@ impl CalendarTool {
                     },
                 )?))
             }
-            _ => Err(Error::config(
-                "tool_calendar",
-                format!("unknown op: {}", op),
-            )),
+            _ => calendar_op_choice_outcome(Some(op)),
         }
     }
 }
@@ -774,14 +825,171 @@ fn parse_status(value: &Value) -> Result<CalendarEventStatus> {
     }
 }
 
-fn required_str<'a>(
+fn calendar_blocked_payload(op: Option<&str>, warning: &str) -> String {
+    json!({
+        "op": op,
+        "ok": false,
+        "warning": warning,
+    })
+    .to_string()
+}
+
+fn calendar_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(calendar_blocked_payload(
+        op,
+        "calendar: invalid or missing op",
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "请选择日历操作：provider_status、list、get、create、update 或 delete。",
+        vec!["op".to_string()],
+        vec![ToolClarificationField {
+            key: "op".to_string(),
+            label: "Calendar operation".to_string(),
+            description: "Choose which calendar operation should run.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "provider_status".to_string(),
+                    label: "Provider status".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "list".to_string(),
+                    label: "List".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "get".to_string(),
+                    label: "Get".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "create".to_string(),
+                    label: "Create".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "update".to_string(),
+                    label: "Update".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "delete".to_string(),
+                    label: "Delete".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn calendar_missing_field_outcome(
+    op: &str,
+    field: &'static str,
+    label: &'static str,
+    description: &'static str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(calendar_blocked_payload(
+        Some(op),
+        &format!("calendar: missing {field}"),
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        format!("还需要补充 `{field}` 才能继续日历操作。"),
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn calendar_event_not_found_outcome(op: &str, id: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(calendar_blocked_payload(
+        Some(op),
+        "calendar: event not found",
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "找不到对应日程；请提供有效的事件 id。",
+        vec!["id".to_string()],
+        vec![ToolClarificationField {
+            key: "id".to_string(),
+            label: "Event ID".to_string(),
+            description: format!("Provide a valid event id to {op}."),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![ToolClarificationOption {
+                value: id.to_string(),
+                label: id.to_string(),
+            }],
+        }],
+    )))
+}
+
+fn calendar_update_fields_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(calendar_blocked_payload(
+        Some("update"),
+        "calendar: no fields to update",
+    ))
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "至少需要一个待更新字段，才能继续修改日历事件。",
+        vec!["update_fields".to_string()],
+        vec![ToolClarificationField {
+            key: "update_fields".to_string(),
+            label: "Fields to update".to_string(),
+            description:
+                "Provide at least one of title, start_at, end_at, timezone, location, notes, calendar_id, or status."
+                    .to_string(),
+            required: true,
+            secret: false,
+            multiple: true,
+            options: vec![
+                ToolClarificationOption {
+                    value: "title".to_string(),
+                    label: "Title".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "start_at".to_string(),
+                    label: "Start time".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "end_at".to_string(),
+                    label: "End time".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "timezone".to_string(),
+                    label: "Timezone".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "location".to_string(),
+                    label: "Location".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "notes".to_string(),
+                    label: "Notes".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "calendar_id".to_string(),
+                    label: "Calendar ID".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "status".to_string(),
+                    label: "Status".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn required_trimmed_str<'a>(
     obj: &'a serde_json::Map<String, Value>,
     key: &'static str,
-    stage: &'static str,
-) -> Result<&'a str> {
+) -> Option<&'a str> {
     obj.get(key)
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::config(stage, format!("missing {}", key)))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn optional_str(obj: &serde_json::Map<String, Value>, key: &'static str) -> String {
@@ -1617,6 +1825,135 @@ mod tests {
             .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["items"][0]["id"], "event-for-calendar-work");
+    }
+
+    #[test]
+    fn calendar_tool_missing_op_requests_choice_blocker() {
+        let tool = CalendarTool::new(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(StubCredentialStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool.execute_outcome(r#"{}"#, &mut ctx).expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn calendar_tool_unknown_op_requests_choice_blocker() {
+        let tool = CalendarTool::new(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(StubCredentialStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"weird"}"#, &mut ctx)
+            .expect("op blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
+    }
+
+    #[test]
+    fn calendar_tool_get_missing_id_returns_facts_blocker() {
+        let tool = CalendarTool::new(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(StubCredentialStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get"}"#, &mut ctx)
+            .expect("id blocker");
+        let blocker = outcome.blocker.expect("id blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn calendar_tool_create_missing_title_returns_facts_blocker() {
+        let tool = CalendarTool::new(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(StubCredentialStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"op":"create","start_at":1700000000,"end_at":1700003600}"#,
+                &mut ctx,
+            )
+            .expect("title blocker");
+        let blocker = outcome.blocker.expect("title blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["title".to_string()]);
+    }
+
+    #[test]
+    fn calendar_tool_get_missing_event_returns_facts_blocker() {
+        let tool = CalendarTool::new(
+            Arc::new(StubCalendarStore::default()),
+            Arc::new(StubCredentialStore::default()),
+        );
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"get","id":"missing"}"#, &mut ctx)
+            .expect("missing event blocker");
+        let blocker = outcome.blocker.expect("missing event blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn calendar_tool_update_without_fields_returns_facts_blocker() {
+        let store = Arc::new(StubCalendarStore::default());
+        store
+            .upsert(&CalendarEvent {
+                id: "event-1".to_string(),
+                title: "Weekly sync".to_string(),
+                start_at_unix_secs: 1_700_000_000,
+                end_at_unix_secs: 1_700_003_600,
+                timezone: "Asia/Shanghai".to_string(),
+                location: String::new(),
+                notes: String::new(),
+                provider: CALENDAR_PROVIDER_LOCAL.to_string(),
+                calendar_id: "default".to_string(),
+                remote_id: String::new(),
+                status: CalendarEventStatus::Confirmed,
+                updated_at: 1_700_000_000,
+            })
+            .expect("seed event");
+        let tool = CalendarTool::new(store, Arc::new(StubCredentialStore::default()));
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"update","id":"event-1"}"#, &mut ctx)
+            .expect("update blocker");
+        let blocker = outcome.blocker.expect("update blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert_eq!(blocker.missing_fields, vec!["update_fields".to_string()]);
     }
 
     #[test]

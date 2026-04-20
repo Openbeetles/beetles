@@ -60,6 +60,14 @@ impl ToolProtocolContract {
         }
     }
 
+    pub const fn structured_object_json_with_rich_blockers() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::StructuredObject,
+            output_kind: ToolOutputProtocolKind::StructuredJson,
+            supports_rich_blockers: true,
+        }
+    }
+
     pub const fn structured_object_plain_text() -> Self {
         Self {
             input_kind: ToolInputProtocolKind::StructuredObject,
@@ -73,6 +81,14 @@ impl ToolProtocolContract {
             input_kind: ToolInputProtocolKind::StructuredObject,
             output_kind: ToolOutputProtocolKind::StructuredJsonWithOutbound,
             supports_rich_blockers: false,
+        }
+    }
+
+    pub const fn structured_object_json_with_outbound_and_rich_blockers() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::StructuredObject,
+            output_kind: ToolOutputProtocolKind::StructuredJsonWithOutbound,
+            supports_rich_blockers: true,
         }
     }
 
@@ -368,9 +384,6 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
             "memory_get",
             "diagnose_memory_runtime",
             "diagnose_voice_path",
-            "web_search",
-            "document_search",
-            "document_read",
             "document_extract",
             "analyze_image",
             "device_control",
@@ -389,12 +402,22 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
     insert_many_protocol(
         authority,
+        ToolProtocolContract::structured_object_json_with_rich_blockers(),
+        &[
+            "web_search",
+            "document_search",
+            "document_read",
+            "web_fetch",
+        ],
+    );
+    insert_many_protocol(
+        authority,
         ToolProtocolContract::structured_object_plain_text(),
         &["get_time", "voice_input", "shell"],
     );
     authority.insert(
         "message",
-        ToolProtocolContract::structured_object_json_with_outbound(),
+        ToolProtocolContract::structured_object_json_with_outbound_and_rich_blockers(),
     );
     insert_many_protocol(
         authority,
@@ -429,7 +452,6 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
         &[
             "file_edit",
             "file_write",
-            "web_fetch",
             "pdf_read",
             "http_request",
             "remind_list",
@@ -465,4 +487,30 @@ pub fn build_default_tool_protocol_authority() -> ToolProtocolAuthority {
     ))]
     populate_office_tool_protocol_authority(&mut authority);
     authority
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_default_tool_protocol_authority, ToolInputProtocolKind, ToolOutputProtocolKind,
+    };
+
+    #[test]
+    fn first_wave_reading_tools_advertise_rich_blockers() {
+        let authority = build_default_tool_protocol_authority();
+        for tool_name in [
+            "web_search",
+            "web_fetch",
+            "document_search",
+            "document_read",
+        ] {
+            let contract = authority.get(tool_name).expect("tool protocol contract");
+            assert_eq!(contract.input_kind, ToolInputProtocolKind::StructuredObject);
+            assert_eq!(contract.output_kind, ToolOutputProtocolKind::StructuredJson);
+            assert!(
+                contract.supports_rich_blockers,
+                "expected {tool_name} to advertise rich blocker support"
+            );
+        }
+    }
 }

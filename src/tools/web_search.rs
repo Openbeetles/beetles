@@ -3,7 +3,10 @@
 
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{
+    parse_tool_args, Tool, ToolClarificationField, ToolContext, ToolExecutionBlocker,
+    ToolExecutionOutcome,
+};
 use crate::util::percent_encode_query;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -53,11 +56,24 @@ impl Tool for WebSearchTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let m = parse_tool_args(args, "tool_web_search")?;
-        let query = m
+        let Some(query) = m
             .get("query")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_web_search", "missing or invalid query"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return missing_query_outcome();
+        };
         let limit = parse_limit(m.get("limit"));
 
         if !self.tavily_key.is_empty() {
@@ -79,7 +95,7 @@ impl Tool for WebSearchTool {
                     Ok(r) => r,
                     Err(e) => {
                         log::warn!("[{}] Tavily request failed: {:?}", TAG, e);
-                        return self.fallback_brave_or_warning(query, limit, ctx);
+                        return self.fallback_brave_or_error(query, limit, ctx, Some(e));
                     }
                 };
             if (200..300).contains(&status) {
@@ -95,44 +111,52 @@ impl Tool for WebSearchTool {
                     query.len(),
                     results.len()
                 );
-                return build_search_response(query, "tavily", &results, None);
+                return Ok(ToolExecutionOutcome::text(build_search_response(
+                    query, "tavily", &results, None,
+                )?));
             }
             log::warn!("[{}] Tavily status={}, fallback to Brave", TAG, status);
-            return self.fallback_brave_or_warning(query, limit, ctx);
+            return self.fallback_brave_or_error(
+                query,
+                limit,
+                ctx,
+                Some(Error::http("tool_web_search", status)),
+            );
         }
 
         if !self.api_key.is_empty() {
             return self.do_brave(query, limit, ctx);
         }
 
-        build_search_response(
-            query,
-            "none",
-            &[],
-            Some("web_search: no search provider configured"),
-        )
+        unsupported_provider_outcome(query)
     }
 }
 
 impl WebSearchTool {
-    fn fallback_brave_or_warning(
+    fn fallback_brave_or_error(
         &self,
         query: &str,
         limit: usize,
         ctx: &mut dyn ToolContext,
-    ) -> Result<String> {
+        tavily_error: Option<Error>,
+    ) -> Result<ToolExecutionOutcome> {
         if self.api_key.is_empty() {
-            return build_search_response(
-                query,
-                "tavily",
-                &[],
-                Some("web_search: Tavily request failed and no Brave key is configured"),
-            );
+            return Err(tavily_error.unwrap_or_else(|| {
+                Error::config(
+                    "tool_web_search",
+                    "tavily search failed and no brave key is configured",
+                )
+            }));
         }
         self.do_brave(query, limit, ctx)
     }
 
-    fn do_brave(&self, query: &str, limit: usize, ctx: &mut dyn ToolContext) -> Result<String> {
+    fn do_brave(
+        &self,
+        query: &str,
+        limit: usize,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let url = format!(
             "{}?q={}&count={}",
             BRAVE_SEARCH_URL,
@@ -168,8 +192,44 @@ impl WebSearchTool {
             query.len(),
             results.len()
         );
-        build_search_response(query, "brave", &results, None)
+        Ok(ToolExecutionOutcome::text(build_search_response(
+            query, "brave", &results, None,
+        )?))
     }
+}
+
+fn missing_query_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(build_search_response(
+        "",
+        "none",
+        &[],
+        Some("web_search: missing search query"),
+    )?)
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "还需要你提供要搜索的内容。",
+        vec!["query".to_string()],
+        vec![ToolClarificationField {
+            key: "query".to_string(),
+            label: "Search query".to_string(),
+            description: "Describe the topic, phrase, or keywords to search for.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn unsupported_provider_outcome(query: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(build_search_response(
+        query,
+        "none",
+        &[],
+        Some("web_search: no search provider configured"),
+    )?)
+    .with_blocker(ToolExecutionBlocker::unsupported(
+        "当前运行时没有可用的网页搜索 provider，暂时无法执行搜索。",
+    )))
 }
 
 fn parse_limit(value: Option<&Value>) -> usize {
@@ -287,7 +347,7 @@ mod tests {
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;
-    use crate::tools::{Tool, ToolContext, WebSearchTool};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind, WebSearchTool};
     use serde_json::{json, Value};
 
     struct MockToolContext {
@@ -426,5 +486,51 @@ mod tests {
         assert_eq!(parsed["count"], 1);
         assert_eq!(parsed["results"][0]["url"], "https://example.com");
         assert_eq!(parsed["summary"], "hello world");
+    }
+
+    #[test]
+    fn execute_outcome_requires_query_blocker() {
+        let tool = WebSearchTool {
+            api_key: String::new(),
+            tavily_key: "tavily-key".into(),
+        };
+        let mut ctx = MockToolContext {
+            post_status: 200,
+            post_body: json!({}),
+            get_status: 200,
+            get_body: json!({}),
+        };
+
+        let outcome = tool.execute_outcome(r#"{"limit":3}"#, &mut ctx).unwrap();
+        let blocker = outcome.blocker.expect("query blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["query".to_string()]);
+        assert_eq!(blocker.clarification_fields.len(), 1);
+        assert_eq!(blocker.clarification_fields[0].key, "query");
+    }
+
+    #[test]
+    fn execute_outcome_reports_missing_provider_as_unsupported_blocker() {
+        let tool = WebSearchTool {
+            api_key: String::new(),
+            tavily_key: String::new(),
+        };
+        let mut ctx = MockToolContext {
+            post_status: 200,
+            post_body: json!({}),
+            get_status: 200,
+            get_body: json!({}),
+        };
+
+        let outcome = tool
+            .execute_outcome(r#"{"query":"beetle"}"#, &mut ctx)
+            .unwrap();
+        let blocker = outcome.blocker.expect("provider blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::Unsupported);
+        let parsed: Value = serde_json::from_str(&outcome.content).unwrap();
+        assert!(parsed["warning"]
+            .as_str()
+            .unwrap()
+            .contains("no search provider configured"));
     }
 }

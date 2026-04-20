@@ -40,8 +40,18 @@ pub(crate) fn denied_tool_assessment(reason: &str) -> ToolFailureAssessment {
 }
 
 pub(crate) fn classify_tool_error(err: &Error) -> ToolFailureAssessment {
+    if err.is_retryable_upstream() {
+        return ToolFailureAssessment {
+            kind: ToolFailureKind::Retryable,
+            hint: " Connection, upstream timeout, or rate pressure blocked the operation. Retry only if conditions change or use a different path.",
+        };
+    }
+
     match err {
-        Error::Config { message, .. } => classify_config_error(message),
+        Error::Config { .. } => ToolFailureAssessment {
+            kind: ToolFailureKind::Permanent,
+            hint: " The tool rejected this request or its local configuration contract is not satisfied. Change the request or configuration before retrying.",
+        },
         Error::Http { status_code, .. } => classify_http_error(*status_code),
         Error::Io { source, .. } => classify_io_error(source.kind()),
         Error::Esp { .. } => ToolFailureAssessment {
@@ -52,92 +62,24 @@ pub(crate) fn classify_tool_error(err: &Error) -> ToolFailureAssessment {
             kind: ToolFailureKind::Capability,
             hint: " This operation is blocked by local storage state or permissions. Explain the limitation if it cannot be corrected now.",
         },
-        Error::Other { source, .. } => {
-            if err.is_tls_admission() || err.is_connect_error() {
-                ToolFailureAssessment {
-                    kind: ToolFailureKind::Retryable,
-                    hint: " Connection or runtime pressure blocked the operation. Retry only if conditions change or use a different path.",
-                }
-            } else {
-                classify_text_error(&source.to_string())
-            }
-        }
+        Error::Other { source, .. } => source
+            .downcast_ref::<Error>()
+            .map(classify_tool_error)
+            .unwrap_or(ToolFailureAssessment {
+                kind: ToolFailureKind::Permanent,
+                hint: " The operation failed in a non-recoverable way. Change the request or route instead of retrying unchanged input.",
+            }),
     }
 }
 
 fn classify_denied_reason(reason: &str) -> ToolFailureKind {
     match reason {
         "critical_no_network_tools" | "cautious_low_heap_for_http_tool" => {
-            return ToolFailureKind::Retryable;
+            ToolFailureKind::Retryable
         }
-        _ => {}
-    }
-
-    let lower = reason.to_ascii_lowercase();
-    if contains_any(
-        &lower,
-        &[
-            "permission",
-            "forbidden",
-            "not available",
-            "not allowed",
-            "disabled",
-            "unsupported",
-            "not supported",
-        ],
-    ) {
-        ToolFailureKind::Capability
-    } else if contains_any(
-        &lower,
-        &[
-            "retry", "timeout", "busy", "pressure", "critical", "low_heap", "later",
-        ],
-    ) {
-        ToolFailureKind::Retryable
-    } else {
-        ToolFailureKind::Permanent
-    }
-}
-
-fn classify_config_error(message: &str) -> ToolFailureAssessment {
-    let lower = message.to_ascii_lowercase();
-    if contains_any(
-        &lower,
-        &[
-            "missing api key",
-            "api key",
-            "token",
-            "credential",
-            "not configured",
-            "disabled",
-            "not enabled",
-            "permission denied",
-            "forbidden",
-        ],
-    ) {
-        return ToolFailureAssessment {
-            kind: ToolFailureKind::Capability,
-            hint: " Required configuration, credentials, or permissions are missing. Stop retrying the same call and explain the limitation if needed.",
-        };
-    }
-    if contains_any(
-        &lower,
-        &[
-            "invalid",
-            "parse",
-            "not found",
-            "does not exist",
-            "unsupported",
-        ],
-    ) {
-        return ToolFailureAssessment {
-            kind: ToolFailureKind::Permanent,
-            hint: " Check the input or target resource. Do not retry unchanged parameters.",
-        };
-    }
-    ToolFailureAssessment {
-        kind: ToolFailureKind::Permanent,
-        hint: " Review the parameters and change the approach instead of retrying the same call.",
+        "operator_only_tool" => ToolFailureKind::Capability,
+        "explicit_intent_required" => ToolFailureKind::Permanent,
+        _ => ToolFailureKind::Permanent,
     }
 }
 
@@ -194,53 +136,6 @@ fn classify_io_error(kind: std::io::ErrorKind) -> ToolFailureAssessment {
     }
 }
 
-fn classify_text_error(message: &str) -> ToolFailureAssessment {
-    let lower = message.to_ascii_lowercase();
-    if contains_any(
-        &lower,
-        &[
-            "permission denied",
-            "forbidden",
-            "unauthorized",
-            "missing api key",
-            "credential",
-            "not supported",
-            "not available",
-        ],
-    ) {
-        return ToolFailureAssessment {
-            kind: ToolFailureKind::Capability,
-            hint: " The runtime lacks permission or capability for this operation. Explain the limitation instead of retrying unchanged calls.",
-        };
-    }
-    if contains_any(
-        &lower,
-        &[
-            "timeout",
-            "timed out",
-            "connection",
-            "temporar",
-            "retry later",
-            "rate limit",
-            "too many requests",
-            "unavailable",
-        ],
-    ) {
-        return ToolFailureAssessment {
-            kind: ToolFailureKind::Retryable,
-            hint: " This looks transient. Retry sparingly or switch to a different path.",
-        };
-    }
-    ToolFailureAssessment {
-        kind: ToolFailureKind::Permanent,
-        hint: " This request failed in a way that likely needs different inputs or a different approach.",
-    }
-}
-
-fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,12 +147,19 @@ mod tests {
     }
 
     #[test]
-    fn config_error_missing_credentials_is_capability_failure() {
-        let assessment = classify_tool_error(&Error::config(
+    fn config_error_wording_does_not_change_failure_kind() {
+        let missing_api_key = classify_tool_error(&Error::config(
             "tool_test",
             "missing api key for external search",
         ));
-        assert_eq!(assessment.kind, ToolFailureKind::Capability);
+        let permission_denied =
+            classify_tool_error(&Error::config("tool_test", "permission denied"));
+        let arbitrary =
+            classify_tool_error(&Error::config("tool_test", "totally different wording"));
+
+        assert_eq!(missing_api_key.kind, ToolFailureKind::Permanent);
+        assert_eq!(permission_denied.kind, ToolFailureKind::Permanent);
+        assert_eq!(arbitrary.kind, ToolFailureKind::Permanent);
     }
 
     #[test]
@@ -273,6 +175,26 @@ mod tests {
             stage: "http_get_request",
         });
         assert_eq!(assessment.kind, ToolFailureKind::Retryable);
+    }
+
+    #[test]
+    fn non_retryable_other_error_wording_does_not_change_failure_kind() {
+        let permission_denied = classify_tool_error(&Error::Other {
+            source: "permission denied".into(),
+            stage: "tool_test",
+        });
+        let missing_token = classify_tool_error(&Error::Other {
+            source: "missing api key".into(),
+            stage: "tool_test",
+        });
+        let arbitrary = classify_tool_error(&Error::Other {
+            source: "custom domain wording".into(),
+            stage: "tool_test",
+        });
+
+        assert_eq!(permission_denied.kind, ToolFailureKind::Permanent);
+        assert_eq!(missing_token.kind, ToolFailureKind::Permanent);
+        assert_eq!(arbitrary.kind, ToolFailureKind::Permanent);
     }
 
     #[test]

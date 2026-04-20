@@ -3,7 +3,10 @@
 
 use crate::error::{Error, Result};
 use crate::tools::http_request::is_private_url;
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    parse_tool_args, Tool, ToolClarificationField, ToolContext, ToolExecutionBlocker,
+    ToolExecutionOutcome, ToolMetadata,
+};
 use serde_json::{json, Value};
 
 const TAG: &str = "tools::web_fetch";
@@ -14,13 +17,45 @@ const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 pub struct WebFetchTool;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WebFetchPayload {
+    pub(crate) url: String,
+    pub(crate) kind: String,
+    pub(crate) title: Option<String>,
+    pub(crate) content: String,
+    pub(crate) truncated: bool,
+    pub(crate) raw_bytes: usize,
+}
+
+impl WebFetchPayload {
+    pub(crate) fn to_json_string(&self, warning: Option<&str>) -> Result<String> {
+        Ok(json!({
+            "url": self.url,
+            "kind": self.kind,
+            "title": self.title,
+            "content": self.content,
+            "truncated": self.truncated,
+            "raw_bytes": self.raw_bytes,
+            "warning": warning,
+        })
+        .to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WebFetchPrepared {
+    Page(WebFetchPayload),
+    PdfDetected,
+    Unsupported(&'static str),
+}
+
 impl Tool for WebFetchTool {
     fn name(&self) -> &'static str {
         "web_fetch"
     }
 
     fn description(&self) -> &'static str {
-        "Fetch a public web page and return cleaned readable text. Best used after web_search with one of the returned HTML/text URLs. For PDF documents, use pdf_read instead."
+        "Fetch a public web page and return cleaned readable text. Best used after web_search with one of the returned HTML/text URLs. For PDFs or other unified document reads, use document_read instead."
     }
 
     fn schema(&self) -> &str {
@@ -32,99 +67,166 @@ impl Tool for WebFetchTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::debug()
+        ToolMetadata::task()
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_web_fetch")?;
-        let url = obj
+        let Some(url) = obj
             .get("url")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_web_fetch", "missing url"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return missing_url_outcome();
+        };
         let max_chars = parse_max_chars(obj.get("max_chars"), DEFAULT_MAX_CHARS);
 
-        if is_private_url(url) {
-            return Err(Error::config(
-                "tool_web_fetch",
-                "private/internal URLs are blocked for security",
-            ));
+        match fetch_public_page_payload(url, max_chars, "tool_web_fetch", ctx)? {
+            WebFetchPrepared::Page(payload) => {
+                log::info!(
+                    "[{}] fetched url={} kind={} raw_bytes={} content_chars={}",
+                    TAG,
+                    payload.url,
+                    payload.kind,
+                    payload.raw_bytes,
+                    payload.content.chars().count()
+                );
+                Ok(ToolExecutionOutcome::text(payload.to_json_string(None)?))
+            }
+            WebFetchPrepared::PdfDetected => unsupported_fetch_outcome(
+                url,
+                "PDF detected; use document_read for document extraction",
+            ),
+            WebFetchPrepared::Unsupported(message) => unsupported_fetch_outcome(url, message),
         }
-
-        let headers = [("User-Agent", USER_AGENT)];
-        let (status, body) = ctx
-            .get_with_headers(url, &headers)
-            .map_err(|err| err.with_stage("tool_web_fetch"))?;
-        if !(200..300).contains(&status) {
-            return Err(Error::http("tool_web_fetch", status));
-        }
-
-        let raw = body.as_ref();
-        let raw_len = raw.len();
-        let truncated_raw = raw_len > MAX_RESPONSE_BYTES;
-        let bounded = if truncated_raw {
-            &raw[..MAX_RESPONSE_BYTES]
-        } else {
-            raw
-        };
-
-        if looks_like_pdf(bounded) {
-            return Err(Error::config(
-                "tool_web_fetch",
-                "PDF detected; use pdf_read for document extraction",
-            ));
-        }
-
-        if looks_like_binary(bounded) {
-            return Err(Error::config(
-                "tool_web_fetch",
-                "response looks like binary data; only text-like pages are supported",
-            ));
-        }
-
-        let decoded = String::from_utf8_lossy(bounded);
-        let trimmed = decoded.trim();
-        let (kind, title, content) = if looks_like_json(url, trimmed) {
-            (
-                "json",
-                None,
-                format_json_text(trimmed).unwrap_or_else(|| trimmed.to_string()),
-            )
-        } else if looks_like_html(url, trimmed) {
-            let html = trimmed.to_string();
-            let title = extract_title(&html);
-            ("html", title, html_to_text(&html))
-        } else {
-            ("text", None, trimmed.to_string())
-        };
-
-        let cleaned = normalize_text(&content);
-        if cleaned.is_empty() {
-            return Err(Error::config(
-                "tool_web_fetch",
-                "page did not contain readable text",
-            ));
-        }
-
-        let (content, truncated_chars) = truncate_chars(&cleaned, max_chars);
-        log::info!(
-            "[{}] fetched url={} kind={} raw_bytes={} content_chars={}",
-            TAG,
-            url,
-            kind,
-            raw_len,
-            cleaned.chars().count()
-        );
-
-        Ok(json!({
-            "url": url,
-            "kind": kind,
-            "title": title,
-            "content": content,
-            "truncated": truncated_raw || truncated_chars,
-            "raw_bytes": raw_len,
-        })
-        .to_string())
     }
+}
+
+pub(crate) fn fetch_public_page_payload(
+    url: &str,
+    max_chars: usize,
+    stage: &'static str,
+    ctx: &mut dyn ToolContext,
+) -> Result<WebFetchPrepared> {
+    if is_private_url(url) {
+        return Ok(WebFetchPrepared::Unsupported(
+            "private/internal URLs are blocked for security",
+        ));
+    }
+
+    let headers = [("User-Agent", USER_AGENT)];
+    let (status, body) = ctx
+        .get_with_headers(url, &headers)
+        .map_err(|err| err.with_stage(stage))?;
+    if !(200..300).contains(&status) {
+        return Err(Error::http(stage, status));
+    }
+
+    let raw = body.as_ref();
+    let raw_len = raw.len();
+    let truncated_raw = raw_len > MAX_RESPONSE_BYTES;
+    let bounded = if truncated_raw {
+        &raw[..MAX_RESPONSE_BYTES]
+    } else {
+        raw
+    };
+
+    if looks_like_pdf(bounded) {
+        return Ok(WebFetchPrepared::PdfDetected);
+    }
+
+    if looks_like_binary(bounded) {
+        return Ok(WebFetchPrepared::Unsupported(
+            "response looks like binary data; only text-like pages are supported",
+        ));
+    }
+
+    let decoded = String::from_utf8_lossy(bounded);
+    let trimmed = decoded.trim();
+    let (kind, title, content) = if looks_like_json(url, trimmed) {
+        (
+            "json",
+            None,
+            format_json_text(trimmed).unwrap_or_else(|| trimmed.to_string()),
+        )
+    } else if looks_like_html(url, trimmed) {
+        let html = trimmed.to_string();
+        let title = extract_title(&html);
+        ("html", title, html_to_text(&html))
+    } else {
+        ("text", None, trimmed.to_string())
+    };
+
+    let cleaned = normalize_text(&content);
+    if cleaned.is_empty() {
+        return Ok(WebFetchPrepared::Unsupported(
+            "page did not contain readable text",
+        ));
+    }
+
+    let (content, truncated_chars) = truncate_chars(&cleaned, max_chars);
+    Ok(WebFetchPrepared::Page(WebFetchPayload {
+        url: url.to_string(),
+        kind: kind.to_string(),
+        title,
+        content,
+        truncated: truncated_raw || truncated_chars,
+        raw_bytes: raw_len,
+    }))
+}
+
+fn missing_url_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "url": Value::Null,
+            "kind": Value::Null,
+            "title": Value::Null,
+            "content": "",
+            "truncated": false,
+            "raw_bytes": 0,
+            "warning": "web_fetch: missing url",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "还需要提供要读取的网页 URL。",
+        vec!["url".to_string()],
+        vec![ToolClarificationField {
+            key: "url".to_string(),
+            label: "Page URL".to_string(),
+            description: "Provide a public http(s) URL to fetch.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn unsupported_fetch_outcome(url: &str, warning: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "url": url,
+            "kind": Value::Null,
+            "title": Value::Null,
+            "content": "",
+            "truncated": false,
+            "raw_bytes": 0,
+            "warning": warning,
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::unsupported(warning)))
 }
 
 pub(crate) fn parse_max_chars(value: Option<&Value>, default_max_chars: usize) -> usize {
@@ -405,7 +507,10 @@ mod tests {
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{
+        Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionBlockerKind,
+        ToolExposure,
+    };
     use serde_json::Value;
 
     struct MockToolContext {
@@ -487,16 +592,63 @@ mod tests {
     }
 
     #[test]
-    fn execute_rejects_pdf_and_redirects_to_pdf_read() {
+    fn execute_outcome_blocks_pdf_payloads_as_unsupported() {
         let tool = WebFetchTool;
         let mut ctx = MockToolContext {
             status: 200,
             body: b"%PDF-1.4 sample".to_vec(),
         };
 
-        let err = tool
-            .execute(r#"{"url":"https://example.com/report.pdf"}"#, &mut ctx)
-            .unwrap_err();
-        assert!(format!("{err}").contains("use pdf_read"));
+        let outcome = tool
+            .execute_outcome(r#"{"url":"https://example.com/report.pdf"}"#, &mut ctx)
+            .unwrap();
+        let blocker = outcome.blocker.expect("pdf blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::Unsupported);
+        let parsed: Value = serde_json::from_str(&outcome.content).unwrap();
+        assert!(parsed["warning"]
+            .as_str()
+            .unwrap()
+            .contains("document_read"));
+    }
+
+    #[test]
+    fn metadata_reports_hidden_read_only_fetch_tool() {
+        let tool = WebFetchTool;
+        let metadata = tool.metadata();
+        let shape = tool.catalog_execution_shape();
+
+        assert_eq!(metadata.exposure, ToolExposure::Task);
+        assert_eq!(shape.effect_class, ToolEffectClass::ReadOnly);
+        assert_eq!(shape.approval_mode, ToolApprovalMode::Automatic);
+    }
+
+    #[test]
+    fn execute_outcome_requires_url_blocker() {
+        let tool = WebFetchTool;
+        let mut ctx = MockToolContext {
+            status: 200,
+            body: Vec::new(),
+        };
+
+        let outcome = tool.execute_outcome(r#"{}"#, &mut ctx).unwrap();
+        let blocker = outcome.blocker.expect("url blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["url".to_string()]);
+        assert_eq!(blocker.clarification_fields[0].key, "url");
+    }
+
+    #[test]
+    fn execute_outcome_blocks_private_urls() {
+        let tool = WebFetchTool;
+        let mut ctx = MockToolContext {
+            status: 200,
+            body: Vec::new(),
+        };
+
+        let outcome = tool
+            .execute_outcome(r#"{"url":"http://127.0.0.1/private"}"#, &mut ctx)
+            .unwrap();
+        let blocker = outcome.blocker.expect("private url blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::Unsupported);
     }
 }
