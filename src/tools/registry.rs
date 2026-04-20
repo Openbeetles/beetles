@@ -9,8 +9,8 @@ use crate::tools::{
     Tool, ToolApprovalMode, ToolCapabilityContract, ToolCatalogAuthority, ToolEffectClass,
     ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
     ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
-    ToolMetadata, ToolPolicyContext, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN,
-    MAX_TOOL_RESULT_LEN,
+    ToolInputProtocolKind, ToolMetadata, ToolOutputProtocolKind, ToolPolicyContext,
+    ToolProtocolAuthority, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -40,6 +40,9 @@ struct RegisteredTool {
 pub struct ToolCatalogEntry {
     pub name: String,
     pub exposure: String,
+    pub input_protocol: String,
+    pub output_protocol: String,
+    pub supports_rich_blockers: bool,
     pub effect_class: String,
     pub risk_level: String,
     pub approval_mode: String,
@@ -60,6 +63,9 @@ pub struct ToolBridgeCatalogEntry {
     pub name: String,
     pub description: String,
     pub parameters_json: String,
+    pub input_protocol: ToolInputProtocolKind,
+    pub output_protocol: ToolOutputProtocolKind,
+    pub supports_rich_blockers: bool,
     pub effect_class: ToolEffectClass,
     pub risk_level: ToolRiskLevel,
     pub approval_mode: ToolApprovalMode,
@@ -97,6 +103,7 @@ pub struct ToolRegistry {
     execution_governance: Option<Arc<ToolExecutionGovernance>>,
     llm_visibility_overlay_provider: Option<LlmVisibilityOverlayProvider>,
     llm_catalog_authority: Arc<ToolCatalogAuthority>,
+    tool_protocol_authority: Arc<ToolProtocolAuthority>,
 }
 
 impl Default for ToolRegistry {
@@ -112,6 +119,7 @@ impl ToolRegistry {
             execution_governance: None,
             llm_visibility_overlay_provider: None,
             llm_catalog_authority: Arc::new(ToolCatalogAuthority::default()),
+            tool_protocol_authority: Arc::new(ToolProtocolAuthority::default()),
         }
     }
 
@@ -134,6 +142,15 @@ impl ToolRegistry {
 
     pub fn set_llm_catalog_authority(&mut self, authority: Arc<ToolCatalogAuthority>) {
         self.llm_catalog_authority = authority;
+    }
+
+    pub fn with_tool_protocol_authority(mut self, authority: Arc<ToolProtocolAuthority>) -> Self {
+        self.tool_protocol_authority = authority;
+        self
+    }
+
+    pub fn set_tool_protocol_authority(&mut self, authority: Arc<ToolProtocolAuthority>) {
+        self.tool_protocol_authority = authority;
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -169,6 +186,11 @@ impl ToolRegistry {
 
     pub fn missing_llm_catalog_entries(&self) -> Vec<String> {
         self.llm_catalog_authority
+            .missing_entries(self.tools.keys().copied())
+    }
+
+    pub fn missing_tool_protocol_entries(&self) -> Vec<String> {
+        self.tool_protocol_authority
             .missing_entries(self.tools.keys().copied())
     }
 
@@ -249,6 +271,8 @@ impl ToolRegistry {
             )),
             stage: "tool_execute",
         })?;
+        let protocol = self.tool_protocol_contract(name);
+        validate_tool_input_protocol(name, args, protocol)?;
         if let Some(blocker) = self.runtime_capability_blocker(name) {
             return Err(runtime_capability_error(name, &blocker));
         }
@@ -261,7 +285,7 @@ impl ToolRegistry {
             &shape,
         )?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
-        outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+        normalize_and_validate_tool_outcome(name, protocol, &mut outcome)?;
         if outcome.is_success() {
             self.observe_runtime_capability_success(name);
         }
@@ -289,6 +313,7 @@ impl ToolRegistry {
                 stage: "tool_execute",
             });
         };
+        validate_tool_input_protocol(name, args, self.tool_protocol_contract(name))?;
         let shape = entry.tool.execution_shape(args)?;
         let requires_network = entry.tool.requires_network_for(args)?;
         let Some(governance) = self.execution_governance.as_ref() else {
@@ -334,8 +359,10 @@ impl ToolRegistry {
             )),
             stage: "tool_execute",
         })?;
+        let protocol = self.tool_protocol_contract(permit.tool_name());
+        validate_tool_input_protocol(permit.tool_name(), args, protocol)?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
-        outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+        normalize_and_validate_tool_outcome(permit.tool_name(), protocol, &mut outcome)?;
         if outcome.is_success() {
             self.observe_runtime_capability_success(permit.tool_name());
             if let Some(governance) = self.execution_governance.as_ref() {
@@ -370,6 +397,12 @@ impl ToolRegistry {
         }
     }
 
+    fn tool_protocol_contract(&self, tool_name: &str) -> crate::tools::ToolProtocolContract {
+        self.tool_protocol_authority
+            .get(tool_name)
+            .unwrap_or_else(crate::tools::ToolProtocolContract::structured_object_json)
+    }
+
     pub fn tool_catalog(&self) -> Result<Vec<ToolCatalogEntry>> {
         let governance = self.inspect_execution_governance()?;
         let user_policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
@@ -382,6 +415,7 @@ impl ToolRegistry {
         for (name, entry) in &self.tools {
             let metadata = entry.metadata;
             let shape = entry.tool.catalog_execution_shape();
+            let protocol = self.tool_protocol_contract(name);
             let breaker_tripped = governance
                 .as_ref()
                 .and_then(|state| {
@@ -397,6 +431,9 @@ impl ToolRegistry {
             out.push(ToolCatalogEntry {
                 name: (*name).to_string(),
                 exposure: metadata.exposure.label().to_string(),
+                input_protocol: protocol.input_kind.label().to_string(),
+                output_protocol: protocol.output_kind.label().to_string(),
+                supports_rich_blockers: protocol.supports_rich_blockers,
                 effect_class: shape.effect_class.label().to_string(),
                 risk_level: shape.risk_level.label().to_string(),
                 approval_mode: shape.approval_mode.label().to_string(),
@@ -442,10 +479,14 @@ impl ToolRegistry {
                 continue;
             }
             let shape = entry.tool.catalog_execution_shape();
+            let protocol = self.tool_protocol_contract(name);
             out.push(ToolBridgeCatalogEntry {
                 name: (*name).to_string(),
                 description: entry.llm_spec.description.to_string(),
                 parameters_json: entry.llm_spec.parameters_json.to_string(),
+                input_protocol: protocol.input_kind,
+                output_protocol: protocol.output_kind,
+                supports_rich_blockers: protocol.supports_rich_blockers,
                 effect_class: shape.effect_class,
                 risk_level: shape.risk_level,
                 approval_mode: shape.approval_mode,
@@ -679,6 +720,131 @@ impl ToolRegistry {
             }
         }
     }
+}
+
+fn validate_tool_input_protocol(
+    tool_name: &str,
+    args: &str,
+    contract: crate::tools::ToolProtocolContract,
+) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(args).map_err(|error| {
+        protocol_contract_error(
+            tool_name,
+            format!(
+                "declared {} but received invalid json args: {error}",
+                contract.input_kind.label()
+            ),
+        )
+    })?;
+    let Some(object) = value.as_object() else {
+        return Err(protocol_contract_error(
+            tool_name,
+            format!(
+                "declared {} but received non-object args",
+                contract.input_kind.label()
+            ),
+        ));
+    };
+    if matches!(
+        contract.input_kind,
+        crate::tools::ToolInputProtocolKind::OperationEnvelope
+    ) && object
+        .get("op")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err(protocol_contract_error(
+            tool_name,
+            "declared operation_envelope requires non-empty string field `op`".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_and_validate_tool_outcome(
+    tool_name: &str,
+    contract: crate::tools::ToolProtocolContract,
+    outcome: &mut ToolExecutionOutcome,
+) -> Result<()> {
+    match contract.output_kind {
+        crate::tools::ToolOutputProtocolKind::PlainText => {
+            outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
+            if !outcome.outbound_intents.is_empty() {
+                return Err(protocol_contract_error(
+                    tool_name,
+                    "declared plain_text but returned outbound intents".to_string(),
+                ));
+            }
+        }
+        crate::tools::ToolOutputProtocolKind::StructuredJson => {
+            ensure_structured_output_length(tool_name, &outcome.content)?;
+            validate_structured_json_content(tool_name, contract, &outcome.content)?;
+            if !outcome.outbound_intents.is_empty() {
+                return Err(protocol_contract_error(
+                    tool_name,
+                    "declared structured_json but returned outbound intents".to_string(),
+                ));
+            }
+        }
+        crate::tools::ToolOutputProtocolKind::StructuredJsonWithOutbound => {
+            ensure_structured_output_length(tool_name, &outcome.content)?;
+            validate_structured_json_content(tool_name, contract, &outcome.content)?;
+            if outcome.outbound_intents.is_empty() {
+                return Err(protocol_contract_error(
+                    tool_name,
+                    "declared structured_json_with_outbound but returned no outbound intents"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    if outcome.blocker.is_some() && !contract.supports_rich_blockers {
+        return Err(protocol_contract_error(
+            tool_name,
+            "returned blocker semantics without rich blocker protocol support".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_structured_output_length(tool_name: &str, content: &str) -> Result<()> {
+    if content.len() > MAX_TOOL_RESULT_LEN {
+        return Err(protocol_contract_error(
+            tool_name,
+            format!(
+                "declared structured json output exceeds max length {}",
+                MAX_TOOL_RESULT_LEN
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_structured_json_content(
+    tool_name: &str,
+    contract: crate::tools::ToolProtocolContract,
+    content: &str,
+) -> Result<()> {
+    serde_json::from_str::<serde_json::Value>(content).map_err(|error| {
+        protocol_contract_error(
+            tool_name,
+            format!(
+                "declared {} but returned non-json content: {error}",
+                contract.output_kind.label()
+            ),
+        )
+    })?;
+    Ok(())
+}
+
+fn protocol_contract_error(tool_name: &str, message: String) -> Error {
+    crate::metrics::record_tool_protocol_violation();
+    Error::config(
+        "tool_protocol_contract",
+        format!("tool '{tool_name}' {message}"),
+    )
 }
 
 fn runtime_capability_error(
@@ -1156,7 +1322,10 @@ pub fn build_default_registry(
         Arc::new(ToolExecutionGovernance::new(services.platform.state_fs()));
     let mut registry = ToolRegistry::new()
         .with_execution_governance(Arc::clone(&tool_execution_governance))
-        .with_llm_catalog_authority(Arc::new(crate::tools::build_default_llm_catalog_authority()));
+        .with_llm_catalog_authority(Arc::new(crate::tools::build_default_llm_catalog_authority()))
+        .with_tool_protocol_authority(Arc::new(
+            crate::tools::build_default_tool_protocol_authority(),
+        ));
     register_core_tools(&mut registry, config, services, &tool_execution_governance);
     #[cfg(all(
         feature = "capability_office",
@@ -1194,7 +1363,10 @@ pub fn build_default_registry(
 mod tests {
     use super::*;
     use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore};
-    use crate::tools::{ToolCatalogAuthority, ToolExecutionShape, ToolLlmVisibility, ToolMetadata};
+    use crate::tools::{
+        ToolCatalogAuthority, ToolExecutionShape, ToolInputProtocolKind, ToolLlmVisibility,
+        ToolMetadata, ToolOutputProtocolKind, ToolProtocolAuthority, ToolProtocolContract,
+    };
     use std::sync::Mutex;
 
     static RUNTIME_CAPABILITY_TEST_GUARD: Mutex<()> = Mutex::new(());
@@ -1205,6 +1377,11 @@ mod tests {
     struct InternalOnlyTool;
     struct UserOnlyTaskTool;
     struct OutcomeTool;
+    struct OperationEnvelopeTool;
+    struct InvalidStructuredJsonTool;
+    struct MissingOutboundIntentTool;
+    struct RogueBlockerTool;
+    struct RichBlockerTool;
     struct CapabilityBoundTool;
     struct ConditionalNetworkTool;
     struct StubToolContext;
@@ -1342,8 +1519,144 @@ mod tests {
             _args: &str,
             _ctx: &mut dyn crate::tools::ToolContext,
         ) -> Result<ToolExecutionOutcome> {
-            Ok(ToolExecutionOutcome::text("outcome body")
-                .with_current_chat_reply("tool delivered reply"))
+            Ok(
+                ToolExecutionOutcome::text(r#"{"ok":true,"summary":"outcome body"}"#)
+                    .with_current_chat_reply("tool delivered reply"),
+            )
+        }
+    }
+
+    impl Tool for OperationEnvelopeTool {
+        fn name(&self) -> &'static str {
+            "operation_envelope"
+        }
+
+        fn description(&self) -> &str {
+            "operation envelope tool"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(r#"{"ok":true}"#.to_string())
+        }
+    }
+
+    impl Tool for InvalidStructuredJsonTool {
+        fn name(&self) -> &'static str {
+            "invalid_structured_json"
+        }
+
+        fn description(&self) -> &str {
+            "declares structured json but returns invalid json"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text("not valid json"))
+        }
+    }
+
+    impl Tool for MissingOutboundIntentTool {
+        fn name(&self) -> &'static str {
+            "missing_outbound_intent"
+        }
+
+        fn description(&self) -> &str {
+            "declares outbound protocol but omits outbound intents"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text(r#"{"ok":true}"#))
+        }
+    }
+
+    impl Tool for RogueBlockerTool {
+        fn name(&self) -> &'static str {
+            "rogue_blocker"
+        }
+
+        fn description(&self) -> &str {
+            "returns a blocker without rich blocker protocol support"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text(r#"{"ok":false}"#).with_blocker(
+                crate::tools::ToolExecutionBlocker::needs_user_facts(
+                    "missing detail",
+                    vec!["field".to_string()],
+                    Vec::new(),
+                ),
+            ))
+        }
+    }
+
+    impl Tool for RichBlockerTool {
+        fn name(&self) -> &'static str {
+            "rich_blocker"
+        }
+
+        fn description(&self) -> &str {
+            "returns a blocker with rich blocker protocol support"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::text(r#"{"ok":false}"#).with_blocker(
+                crate::tools::ToolExecutionBlocker::needs_user_facts(
+                    "missing detail",
+                    vec!["field".to_string()],
+                    Vec::new(),
+                ),
+            ))
         }
     }
 
@@ -1690,6 +2003,16 @@ mod tests {
         Arc::new(authority)
     }
 
+    fn synthetic_protocol_authority(
+        entries: &[(&str, ToolProtocolContract)],
+    ) -> Arc<ToolProtocolAuthority> {
+        let mut authority = ToolProtocolAuthority::default();
+        for (name, contract) in entries {
+            authority.insert(name, *contract);
+        }
+        Arc::new(authority)
+    }
+
     #[test]
     fn llm_tool_specs_follow_runtime_policy() {
         let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
@@ -1752,6 +2075,16 @@ mod tests {
         assert!(
             missing.is_empty(),
             "default registry tools missing explicit catalog authority: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn default_registry_declares_protocol_authority_for_every_registered_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let missing = ctx.tool_registry.missing_tool_protocol_entries();
+        assert!(
+            missing.is_empty(),
+            "default registry tools missing explicit protocol authority: {missing:?}"
         );
     }
 
@@ -1919,13 +2252,17 @@ mod tests {
 
     #[test]
     fn registry_execute_preserves_structured_outcome() {
-        let mut registry = ToolRegistry::new();
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "outcome",
+                ToolProtocolContract::structured_object_json_with_outbound(),
+            )]));
         registry.register(Box::new(OutcomeTool));
         let mut ctx = StubToolContext;
         let outcome = registry
             .execute("outcome", "{}", &mut ctx)
             .expect("execute");
-        assert_eq!(outcome.content, "outcome body");
+        assert_eq!(outcome.content, r#"{"ok":true,"summary":"outcome body"}"#);
         assert_eq!(
             outcome.outbound_intents.as_slice(),
             &[crate::tools::ToolOutboundIntent {
@@ -1938,7 +2275,11 @@ mod tests {
 
     #[test]
     fn registry_execute_preserves_reported_failure_kind() {
-        let mut registry = ToolRegistry::new();
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "semantic_failure",
+                ToolProtocolContract::structured_object_json(),
+            )]));
         registry.register(Box::new(SemanticFailureTool));
         let mut ctx = StubToolContext;
         let outcome = registry
@@ -1949,6 +2290,118 @@ mod tests {
             outcome.failure_kind,
             Some(crate::tools::ToolExecutionFailureKind::Capability)
         );
+    }
+
+    #[test]
+    fn assess_llm_execution_rejects_operation_envelope_without_op() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "operation_envelope",
+                ToolProtocolContract::operation_envelope_json(),
+            )]));
+        registry.register(Box::new(OperationEnvelopeTool));
+
+        let error = registry
+            .assess_llm_execution(
+                "operation_envelope",
+                r#"{"title":"missing op"}"#,
+                &ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram"),
+            )
+            .expect_err("operation envelope args without op must fail protocol validation");
+
+        assert_eq!(error.stage(), "tool_protocol_contract");
+        assert!(
+            error
+                .to_string()
+                .contains("operation_envelope requires non-empty string field `op`"),
+            "unexpected protocol error: {error}"
+        );
+    }
+
+    #[test]
+    fn registry_execute_rejects_invalid_structured_json_output() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "invalid_structured_json",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(InvalidStructuredJsonTool));
+        let mut ctx = StubToolContext;
+
+        let error = registry
+            .execute("invalid_structured_json", "{}", &mut ctx)
+            .expect_err("invalid structured json output must fail protocol validation");
+
+        assert_eq!(error.stage(), "tool_protocol_contract");
+        assert!(
+            error
+                .to_string()
+                .contains("declared structured_json but returned non-json content"),
+            "unexpected protocol error: {error}"
+        );
+    }
+
+    #[test]
+    fn registry_execute_rejects_missing_outbound_intent_for_outbound_protocol() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "missing_outbound_intent",
+                ToolProtocolContract::structured_object_json_with_outbound(),
+            )]));
+        registry.register(Box::new(MissingOutboundIntentTool));
+        let mut ctx = StubToolContext;
+
+        let error = registry
+            .execute("missing_outbound_intent", "{}", &mut ctx)
+            .expect_err("outbound protocol without outbound intents must fail");
+
+        assert_eq!(error.stage(), "tool_protocol_contract");
+        assert!(
+            error.to_string().contains(
+                "declared structured_json_with_outbound but returned no outbound intents"
+            ),
+            "unexpected protocol error: {error}"
+        );
+    }
+
+    #[test]
+    fn registry_execute_rejects_blocker_without_rich_blocker_contract() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "rogue_blocker",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(RogueBlockerTool));
+        let mut ctx = StubToolContext;
+
+        let error = registry
+            .execute("rogue_blocker", "{}", &mut ctx)
+            .expect_err("non-rich-blocker tools must not return blockers");
+
+        assert_eq!(error.stage(), "tool_protocol_contract");
+        assert!(
+            error
+                .to_string()
+                .contains("returned blocker semantics without rich blocker protocol support"),
+            "unexpected protocol error: {error}"
+        );
+    }
+
+    #[test]
+    fn registry_execute_allows_rich_blocker_when_protocol_declares_it() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "rich_blocker",
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+            )]));
+        registry.register(Box::new(RichBlockerTool));
+        let mut ctx = StubToolContext;
+
+        let outcome = registry
+            .execute("rich_blocker", r#"{"op":"inspect"}"#, &mut ctx)
+            .expect("rich blocker contract should allow blocker outcome");
+
+        assert!(outcome.blocker.is_some());
     }
 
     #[test]
@@ -2115,10 +2568,18 @@ mod tests {
 
     #[test]
     fn tool_bridge_catalog_respects_llm_visibility_policy() {
-        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
-            ("visible", ToolLlmVisibility::user_and_system()),
-            ("user_only_task", ToolLlmVisibility::user_only()),
-        ]));
+        let mut registry = ToolRegistry::new()
+            .with_llm_catalog_authority(synthetic_catalog(&[
+                ("visible", ToolLlmVisibility::user_and_system()),
+                ("user_only_task", ToolLlmVisibility::user_only()),
+            ]))
+            .with_tool_protocol_authority(synthetic_protocol_authority(&[
+                ("visible", ToolProtocolContract::structured_object_json()),
+                (
+                    "user_only_task",
+                    ToolProtocolContract::operation_envelope_json(),
+                ),
+            ]));
         registry.register(Box::new(VisibleTool));
         registry.register(Box::new(AdminTool));
         registry.register(Box::new(UserOnlyTaskTool));
@@ -2141,6 +2602,96 @@ mod tests {
             .map(|entry| entry.name)
             .collect::<Vec<_>>();
         assert_eq!(system_names, vec!["visible".to_string()]);
+    }
+
+    #[test]
+    fn tool_bridge_catalog_reports_protocol_contract_truth() {
+        let mut registry = ToolRegistry::new()
+            .with_llm_catalog_authority(synthetic_catalog(&[
+                ("visible", ToolLlmVisibility::user_and_system()),
+                ("user_only_task", ToolLlmVisibility::user_only()),
+            ]))
+            .with_tool_protocol_authority(synthetic_protocol_authority(&[
+                ("visible", ToolProtocolContract::structured_object_json()),
+                (
+                    "user_only_task",
+                    ToolProtocolContract::operation_envelope_json(),
+                ),
+            ]));
+        registry.register(Box::new(VisibleTool));
+        registry.register(Box::new(UserOnlyTaskTool));
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let entries = registry.tool_bridge_catalog_for_policy(&user);
+
+        let visible = entries
+            .iter()
+            .find(|entry| entry.name == "visible")
+            .expect("visible bridge entry");
+        assert_eq!(
+            visible.input_protocol,
+            ToolInputProtocolKind::StructuredObject
+        );
+        assert_eq!(
+            visible.output_protocol,
+            ToolOutputProtocolKind::StructuredJson
+        );
+        assert!(!visible.supports_rich_blockers);
+
+        let task = entries
+            .iter()
+            .find(|entry| entry.name == "user_only_task")
+            .expect("user_only_task bridge entry");
+        assert_eq!(
+            task.input_protocol,
+            ToolInputProtocolKind::OperationEnvelope
+        );
+        assert_eq!(task.output_protocol, ToolOutputProtocolKind::StructuredJson);
+        assert!(!task.supports_rich_blockers);
+    }
+
+    #[test]
+    fn default_registry_protocol_contract_truth_captures_representative_tools() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let entries = ctx.tool_registry.tool_catalog().expect("tool catalog");
+
+        let board_info = entries
+            .iter()
+            .find(|entry| entry.name == "board_info")
+            .expect("board_info catalog entry");
+        assert_eq!(board_info.input_protocol, "structured_object");
+        assert_eq!(board_info.output_protocol, "structured_json");
+        assert!(!board_info.supports_rich_blockers);
+
+        let get_time = entries
+            .iter()
+            .find(|entry| entry.name == "get_time")
+            .expect("get_time catalog entry");
+        assert_eq!(get_time.input_protocol, "structured_object");
+        assert_eq!(get_time.output_protocol, "plain_text");
+        assert!(!get_time.supports_rich_blockers);
+
+        let message = entries
+            .iter()
+            .find(|entry| entry.name == "message")
+            .expect("message catalog entry");
+        assert_eq!(message.input_protocol, "structured_object");
+        assert_eq!(message.output_protocol, "structured_json_with_outbound");
+        assert!(!message.supports_rich_blockers);
+
+        #[cfg(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        {
+            let office_config = entries
+                .iter()
+                .find(|entry| entry.name == "office_config")
+                .expect("office_config catalog entry");
+            assert_eq!(office_config.input_protocol, "operation_envelope");
+            assert_eq!(office_config.output_protocol, "structured_json");
+            assert!(office_config.supports_rich_blockers);
+        }
     }
 
     #[test]

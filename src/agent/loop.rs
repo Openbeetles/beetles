@@ -2020,7 +2020,9 @@ mod tests {
         TurnLedgerStore, TurnPersonaPressureLevel, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
-    use crate::tools::{ToolCatalogAuthority, ToolLlmVisibility};
+    use crate::tools::{
+        build_default_tool_protocol_authority, ToolCatalogAuthority, ToolLlmVisibility,
+    };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -2033,7 +2035,9 @@ mod tests {
     }
 
     fn test_registry(entries: &[(&str, ToolLlmVisibility)]) -> crate::tools::ToolRegistry {
-        crate::tools::ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(entries))
+        crate::tools::ToolRegistry::new()
+            .with_llm_catalog_authority(synthetic_catalog(entries))
+            .with_tool_protocol_authority(Arc::new(build_default_tool_protocol_authority()))
     }
 
     #[test]

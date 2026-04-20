@@ -10,6 +10,126 @@ pub struct ToolLlmVisibility {
     pub internal_system_llm: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolInputProtocolKind {
+    StructuredObject,
+    OperationEnvelope,
+}
+
+impl ToolInputProtocolKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::StructuredObject => "structured_object",
+            Self::OperationEnvelope => "operation_envelope",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutputProtocolKind {
+    PlainText,
+    StructuredJson,
+    StructuredJsonWithOutbound,
+}
+
+impl ToolOutputProtocolKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PlainText => "plain_text",
+            Self::StructuredJson => "structured_json",
+            Self::StructuredJsonWithOutbound => "structured_json_with_outbound",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolProtocolContract {
+    pub input_kind: ToolInputProtocolKind,
+    pub output_kind: ToolOutputProtocolKind,
+    pub supports_rich_blockers: bool,
+}
+
+impl ToolProtocolContract {
+    pub const fn structured_object_json() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::StructuredObject,
+            output_kind: ToolOutputProtocolKind::StructuredJson,
+            supports_rich_blockers: false,
+        }
+    }
+
+    pub const fn structured_object_plain_text() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::StructuredObject,
+            output_kind: ToolOutputProtocolKind::PlainText,
+            supports_rich_blockers: false,
+        }
+    }
+
+    pub const fn structured_object_json_with_outbound() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::StructuredObject,
+            output_kind: ToolOutputProtocolKind::StructuredJsonWithOutbound,
+            supports_rich_blockers: false,
+        }
+    }
+
+    pub const fn operation_envelope_json() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::OperationEnvelope,
+            output_kind: ToolOutputProtocolKind::StructuredJson,
+            supports_rich_blockers: false,
+        }
+    }
+
+    pub const fn operation_envelope_json_with_rich_blockers() -> Self {
+        Self {
+            input_kind: ToolInputProtocolKind::OperationEnvelope,
+            output_kind: ToolOutputProtocolKind::StructuredJson,
+            supports_rich_blockers: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolProtocolAuthority {
+    entries: BTreeMap<String, ToolProtocolContract>,
+}
+
+impl ToolProtocolAuthority {
+    pub fn with_entry(mut self, tool_name: &str, contract: ToolProtocolContract) -> Self {
+        self.insert(tool_name, contract);
+        self
+    }
+
+    pub fn insert(&mut self, tool_name: &str, contract: ToolProtocolContract) {
+        self.entries.insert(tool_name.to_string(), contract);
+    }
+
+    pub fn get(&self, tool_name: &str) -> Option<ToolProtocolContract> {
+        self.entries.get(tool_name).copied()
+    }
+
+    pub fn has_entry(&self, tool_name: &str) -> bool {
+        self.entries.contains_key(tool_name)
+    }
+
+    pub fn missing_entries<'a>(
+        &self,
+        tool_names: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<String> {
+        let mut missing = tool_names
+            .into_iter()
+            .filter(|name| !self.has_entry(name))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        missing.sort();
+        missing
+    }
+}
+
 impl ToolLlmVisibility {
     pub const fn new(user_llm: bool, system_llm: bool, internal_system_llm: bool) -> Self {
         Self {
@@ -84,6 +204,16 @@ fn insert_many(
 ) {
     for name in tool_names {
         authority.insert(name, visibility);
+    }
+}
+
+fn insert_many_protocol(
+    authority: &mut ToolProtocolAuthority,
+    contract: ToolProtocolContract,
+    tool_names: &[&str],
+) {
+    for name in tool_names {
+        authority.insert(name, contract);
     }
 }
 
@@ -221,5 +351,118 @@ pub fn build_default_llm_catalog_authority() -> ToolCatalogAuthority {
     populate_audio_tool_catalog(&mut authority);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     populate_host_only_tool_catalog(&mut authority);
+    authority
+}
+
+fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) {
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::structured_object_json(),
+        &[
+            "board_info",
+            "diagnose_delivery",
+            "diagnose_system",
+            "diagnose_network_path",
+            "factual_memory",
+            "memory_search",
+            "memory_get",
+            "diagnose_memory_runtime",
+            "diagnose_voice_path",
+            "web_search",
+            "document_search",
+            "document_read",
+            "document_extract",
+            "analyze_image",
+            "device_control",
+            "office_status",
+            "voice_output",
+            "sensor_watch",
+            "i2c_sensor",
+            "lua_query",
+            "lua_memory_query",
+            "lua_tool_bridge",
+            "lua_datasheet_distill",
+            "lua_register_table_helper",
+            "lua_protocol_frame_helper",
+            "lua_state_machine_checker",
+        ],
+    );
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::structured_object_plain_text(),
+        &["get_time", "voice_input", "shell"],
+    );
+    authority.insert(
+        "message",
+        ToolProtocolContract::structured_object_json_with_outbound(),
+    );
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::operation_envelope_json(),
+        &[
+            "env",
+            "files",
+            "private_garden",
+            "process",
+            "network",
+            "network_scan",
+            "cron_manage",
+            "memory_manage",
+            "session_manage",
+            "system_control",
+            "proxy_config",
+            "model_config",
+            "kv_store",
+            "continuity_snapshot",
+            "capability_atoms_exchange",
+            "capability_atoms_inspect",
+        ],
+    );
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+        &["task", "remind_at"],
+    );
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::structured_object_json(),
+        &[
+            "file_edit",
+            "file_write",
+            "web_fetch",
+            "pdf_read",
+            "http_request",
+            "remind_list",
+            "i2c_device",
+        ],
+    );
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn populate_office_tool_protocol_authority(authority: &mut ToolProtocolAuthority) {
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+        &[
+            "office_config",
+            "mail",
+            "calendar",
+            "documents",
+            "contacts_directory",
+        ],
+    );
+}
+
+pub fn build_default_tool_protocol_authority() -> ToolProtocolAuthority {
+    let mut authority = ToolProtocolAuthority::default();
+    populate_core_tool_protocol_authority(&mut authority);
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    populate_office_tool_protocol_authority(&mut authority);
     authority
 }

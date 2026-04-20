@@ -169,7 +169,11 @@ pub use board_info::BoardInfoTool;
 pub use calendar::CalendarTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use capability_atoms_exchange::{CapabilityAtomsExchangeTool, CapabilityAtomsInspectTool};
-pub use catalog::{build_default_llm_catalog_authority, ToolCatalogAuthority, ToolLlmVisibility};
+pub use catalog::{
+    build_default_llm_catalog_authority, build_default_tool_protocol_authority,
+    ToolCatalogAuthority, ToolInputProtocolKind, ToolLlmVisibility, ToolOutputProtocolKind,
+    ToolProtocolAuthority, ToolProtocolContract,
+};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
