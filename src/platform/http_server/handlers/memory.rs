@@ -766,6 +766,9 @@ mod tests {
         let decision = TaskPlannerDecision {
             route: TaskExecutionRoute::StartRun,
             reason: "operator inspection".to_string(),
+            blocker_summary: String::new(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
             title: "Release patch".to_string(),
             goal: "Apply the release patch".to_string(),
             completion_definition: "Patch is applied and verified.".to_string(),

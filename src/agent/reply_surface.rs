@@ -58,10 +58,12 @@ impl ReplySurface {
         self,
         successful_tool_names: &BTreeSet<String>,
         external_content_used: bool,
+        has_structured_blocker: bool,
         draft_content: &str,
     ) -> Self {
         if self != Self::GovernedConversation
             || external_content_used
+            || has_structured_blocker
             || successful_tool_names.is_empty()
             || !runtime_tool_draft_supports_public_surface(draft_content)
         {
@@ -147,7 +149,6 @@ impl ReplySurface {
 fn runtime_tool_draft_supports_public_surface(content: &str) -> bool {
     let trimmed = content.trim();
     if trimmed.is_empty()
-        || looks_like_boundary_or_input_request(trimmed)
         || reply_looks_like_future_action_narration(trimmed)
         || reply_looks_like_transition_colon_draft(trimmed)
         || !matches!(classify_reply_artifacts(trimmed), ReplyArtifactState::None)
@@ -162,28 +163,6 @@ fn is_public_runtime_tool(tool_name: &str) -> bool {
         tool_name,
         "board_info" | "process" | "network" | "network_scan" | "system_control"
     )
-}
-
-fn looks_like_boundary_or_input_request(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    content.contains('?')
-        || content.contains('？')
-        || content.contains("请先提供")
-        || content.contains("请提供")
-        || content.contains("请把")
-        || content.contains("请发")
-        || content.contains("无法继续")
-        || content.contains("不能继续")
-        || content.contains("内部")
-        || content.contains("不对外公开")
-        || content.contains("不公开")
-        || lower.contains("please provide")
-        || lower.contains("please send")
-        || lower.contains("cannot continue")
-        || lower.contains("can't continue")
-        || lower.contains("internal")
-        || lower.contains("not disclose")
-        || lower.contains("not public")
 }
 
 #[cfg(test)]
@@ -245,6 +224,7 @@ mod tests {
         let surface = ReplySurface::GovernedConversation.promote_for_runtime_tools(
             &successful_tool_names,
             false,
+            false,
             "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。",
         );
         assert_eq!(surface, ReplySurface::PublicRuntime);
@@ -252,6 +232,7 @@ mod tests {
         successful_tool_names.insert("mail".to_string());
         let surface = ReplySurface::GovernedConversation.promote_for_runtime_tools(
             &successful_tool_names,
+            false,
             false,
             "当前版本是 1.2.3，配置目录在 /var/lib/beetle/config。",
         );
@@ -266,16 +247,18 @@ mod tests {
         let vague = ReplySurface::GovernedConversation.promote_for_runtime_tools(
             &successful_tool_names,
             false,
+            false,
             "我先整理一下当前状态。",
         );
         assert_eq!(vague, ReplySurface::GovernedConversation);
 
-        let boundary = ReplySurface::GovernedConversation.promote_for_runtime_tools(
+        let blocked = ReplySurface::GovernedConversation.promote_for_runtime_tools(
             &successful_tool_names,
             false,
+            true,
             "系统信息属于内部运行机制，这部分内容不对外公开。",
         );
-        assert_eq!(boundary, ReplySurface::GovernedConversation);
+        assert_eq!(blocked, ReplySurface::GovernedConversation);
     }
 
     #[test]

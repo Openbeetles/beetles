@@ -1,5 +1,5 @@
-//! Tool outcome classification helpers for the agent loop.
-//! Centralizes failure semantics so loop/state code stays thin.
+//! Tool failure classification helpers for the agent loop.
+//! Keeps tool-local failure assessment separate from workflow-level blocker truth.
 
 use crate::error::Error;
 

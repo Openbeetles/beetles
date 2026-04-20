@@ -23,6 +23,134 @@ fn terminal_progress_kind_for_status(
     }
 }
 
+fn workflow_blocker_for_task_run(record: &TaskRunRecord) -> Option<crate::agent::WorkflowBlocker> {
+    match record.run.status {
+        TaskRunStatus::Blocked | TaskRunStatus::PartialComplete => {
+            let summary = if !record.run.failure_reason.trim().is_empty() {
+                record.run.failure_reason.trim().to_string()
+            } else if !record.run.final_summary.trim().is_empty() {
+                record.run.final_summary.trim().to_string()
+            } else if !record.run.current_step_id.trim().is_empty() {
+                format!(
+                    "task run `{}` is blocked at step `{}`",
+                    record.run.title.trim(),
+                    record.run.current_step_id.trim()
+                )
+            } else {
+                format!(
+                    "task run `{}` is currently blocked",
+                    record.run.title.trim()
+                )
+            };
+            Some(crate::agent::WorkflowBlocker::task_blocked(summary))
+        }
+        TaskRunStatus::Planning
+        | TaskRunStatus::Running
+        | TaskRunStatus::Completed
+        | TaskRunStatus::Failed
+        | TaskRunStatus::Aborted => None,
+    }
+}
+
+fn workflow_clarification_request_from_task_fields(
+    fields: &[crate::task_execution::TaskClarificationField],
+) -> Option<crate::agent::workflow_outcome::ClarificationRequest> {
+    let fields = fields
+        .iter()
+        .map(|field| crate::agent::WorkflowClarificationField {
+            key: field.key.clone(),
+            label: field.label.clone(),
+            description: field.description.clone(),
+            required: field.required,
+            secret: field.secret,
+            multiple: field.multiple,
+            options: field
+                .options
+                .iter()
+                .map(|option| crate::agent::WorkflowClarificationOption {
+                    value: option.value.clone(),
+                    label: option.label.clone(),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    (!fields.is_empty()).then_some(crate::agent::workflow_outcome::ClarificationRequest { fields })
+}
+
+fn workflow_blocker_for_task_planner_decision(
+    decision: &TaskPlannerDecision,
+) -> Option<crate::agent::WorkflowBlocker> {
+    let clarification =
+        workflow_clarification_request_from_task_fields(&decision.clarification_fields);
+    let summary = if !decision.blocker_summary.trim().is_empty() {
+        decision.blocker_summary.trim().to_string()
+    } else if !decision.reason.trim().is_empty() {
+        decision.reason.trim().to_string()
+    } else {
+        "task planning needs more user input before execution can start".to_string()
+    };
+    match decision.route {
+        TaskExecutionRoute::NeedsUserFacts => {
+            Some(crate::agent::WorkflowBlocker::needs_user_facts(
+                summary,
+                decision.missing_fields.clone(),
+                clarification,
+            ))
+        }
+        TaskExecutionRoute::NeedsUserChoice => {
+            Some(crate::agent::WorkflowBlocker::needs_user_choice(
+                summary,
+                decision.missing_fields.clone(),
+                clarification,
+            ))
+        }
+        TaskExecutionRoute::NeedsConfirmation => Some(
+            crate::agent::WorkflowBlocker::needs_confirmation(summary, clarification),
+        ),
+        TaskExecutionRoute::DirectReply
+        | TaskExecutionRoute::StartRun
+        | TaskExecutionRoute::ResumeRun => None,
+    }
+}
+
+fn workflow_blocker_for_task_review_outcome(
+    outcome: &TaskReviewOutcome,
+) -> Option<crate::agent::WorkflowBlocker> {
+    let clarification =
+        workflow_clarification_request_from_task_fields(&outcome.clarification_fields);
+    let summary = if !outcome.blocker_summary.trim().is_empty() {
+        outcome.blocker_summary.trim().to_string()
+    } else if !outcome.summary.trim().is_empty() {
+        outcome.summary.trim().to_string()
+    } else {
+        "task review needs more user input before execution can continue".to_string()
+    };
+    match outcome.decision {
+        TaskReviewDecision::NeedsUserFacts => {
+            Some(crate::agent::WorkflowBlocker::needs_user_facts(
+                summary,
+                outcome.missing_fields.clone(),
+                clarification,
+            ))
+        }
+        TaskReviewDecision::NeedsUserChoice => {
+            Some(crate::agent::WorkflowBlocker::needs_user_choice(
+                summary,
+                outcome.missing_fields.clone(),
+                clarification,
+            ))
+        }
+        TaskReviewDecision::NeedsConfirmation => Some(
+            crate::agent::WorkflowBlocker::needs_confirmation(summary, clarification),
+        ),
+        TaskReviewDecision::Pass
+        | TaskReviewDecision::RetryStep
+        | TaskReviewDecision::RevisePlan
+        | TaskReviewDecision::AbortRun
+        | TaskReviewDecision::PartialComplete => None,
+    }
+}
+
 fn normalize_task_execution_route(
     route: TaskExecutionRoute,
     has_active_run: bool,
@@ -120,6 +248,29 @@ pub(super) fn try_run_task_execution(
     if planner_decision.route == TaskExecutionRoute::DirectReply {
         return Ok(None);
     }
+    if let Some(blocker) = workflow_blocker_for_task_planner_decision(&planner_decision) {
+        delivery
+            .emit_task_terminal_progress(crate::agent::delivery::TaskTerminalProgressKind::Blocked);
+        let reply =
+            super::turn_execution::render_programmatic_clarification_question(&blocker, loc);
+        return Ok(Some((
+            WorkerOutcome::Content(reply),
+            build_task_execution_telemetry(
+                &delivery.report(),
+                false,
+                false,
+                pressure,
+                deliberation_class,
+                request_semantics,
+                latency,
+                subject_state,
+                soul_feedback_projection,
+                mental_privacy_adjudication,
+                persona_priority_adjudication,
+                Some(blocker),
+            ),
+        )));
+    }
     planner_decision.route = match admission {
         super::task_execution_support::FormalTaskAdmission::ConsiderNewRun => {
             normalize_task_execution_route(planner_decision.route, active_run.is_some())
@@ -131,9 +282,15 @@ pub(super) fn try_run_task_execution(
         TaskExecutionRoute::StartRun | TaskExecutionRoute::DirectReply => {
             crate::agent::delivery::TaskActionProgressKind::Started
         }
+        TaskExecutionRoute::NeedsUserFacts
+        | TaskExecutionRoute::NeedsUserChoice
+        | TaskExecutionRoute::NeedsConfirmation => {
+            unreachable!("planner blocker routes should have returned before task action progress")
+        }
     });
 
     let now_secs = crate::util::current_unix_secs();
+    let mut workflow_blocker = None;
     let mut record = match planner_decision.route {
         TaskExecutionRoute::ResumeRun => {
             let mut record = active_run.clone().ok_or_else(|| {
@@ -172,6 +329,11 @@ pub(super) fn try_run_task_execution(
             &planner_decision,
             now_secs,
         )?,
+        TaskExecutionRoute::NeedsUserFacts
+        | TaskExecutionRoute::NeedsUserChoice
+        | TaskExecutionRoute::NeedsConfirmation => {
+            unreachable!("planner blocker routes should not build a task run record")
+        }
     };
 
     if planner_decision.route == TaskExecutionRoute::StartRun {
@@ -418,6 +580,9 @@ pub(super) fn try_run_task_execution(
                     decision: TaskReviewDecision::PartialComplete,
                     summary: "task review unavailable; stopped without claiming completion"
                         .to_string(),
+                    blocker_summary: String::new(),
+                    missing_fields: Vec::new(),
+                    clarification_fields: Vec::new(),
                     artifact_summary: summarize_task_artifact_content(&step_result),
                     revised_steps: Vec::new(),
                     durable_facts: Vec::new(),
@@ -439,6 +604,9 @@ pub(super) fn try_run_task_execution(
                 TaskReviewOutcome {
                     decision: TaskReviewDecision::PartialComplete,
                     summary: "task review failed; stopped without claiming completion".to_string(),
+                    blocker_summary: String::new(),
+                    missing_fields: Vec::new(),
+                    clarification_fields: Vec::new(),
                     artifact_summary: summarize_task_artifact_content(&step_result),
                     revised_steps: Vec::new(),
                     durable_facts: Vec::new(),
@@ -502,6 +670,17 @@ pub(super) fn try_run_task_execution(
             let step = &mut record.plan.ordered_steps[step_index];
             step.last_result_summary = step_artifact.artifact.summary.clone();
             step.last_review_summary = review_outcome.summary.clone();
+        }
+        if let Some(blocker) = workflow_blocker_for_task_review_outcome(&review_outcome) {
+            let step = &mut record.plan.ordered_steps[step_index];
+            step.status = TaskStepStatus::Blocked;
+            step.finished_at = crate::util::current_unix_secs();
+            record.run.status = TaskRunStatus::Blocked;
+            record.run.failure_reason = blocker.summary.clone();
+            record.run.final_summary = blocker.summary.clone();
+            record.run.finished_at = crate::util::current_unix_secs();
+            workflow_blocker = Some(blocker);
+            break;
         }
         match review_outcome.decision {
             TaskReviewDecision::Pass => {
@@ -573,6 +752,11 @@ pub(super) fn try_run_task_execution(
                 record.run.finished_at = crate::util::current_unix_secs();
                 break;
             }
+            TaskReviewDecision::NeedsUserFacts
+            | TaskReviewDecision::NeedsUserChoice
+            | TaskReviewDecision::NeedsConfirmation => {
+                unreachable!("structured workflow blockers should have been handled before review decision dispatch")
+            }
         }
 
         let next_step_id = record
@@ -618,53 +802,58 @@ pub(super) fn try_run_task_execution(
         .task_artifact_store
         .list_for_run(&record.run.run_id, TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT)
         .unwrap_or_default();
-    let finisher_request = super::build_task_finisher_request(&record, &final_artifacts);
-    let finisher_system = super::prepare_system_with_suffix(
-        system,
-        TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX,
-        system_scratch,
-    );
-    let mut finisher_system = finisher_system.to_string();
-    crate::agent::append_foreground_work_packet_guidance(
-        &mut finisher_system,
-        crate::orchestrator::current_budget().system_prompt_max,
-    );
-    let finisher_started = Instant::now();
-    let finisher_t0 = metrics::record_llm_call_start();
-    let final_reply = match worker_llm.chat(
-        tool_ctx,
-        &finisher_system,
-        &[Message {
-            role: Cow::Borrowed("user"),
-            content: finisher_request,
-        }],
-        None,
-        ToolChoicePolicy::Auto,
-    ) {
-        Ok(response) => {
-            metrics::record_llm_call_end(finisher_t0);
-            latency.llm_round_total_ms = latency
-                .llm_round_total_ms
-                .saturating_add(finisher_started.elapsed().as_millis());
-            if latency.ttft_ms.is_none() && !response.content.trim().is_empty() {
-                latency.ttft_ms = Some(finisher_started.elapsed().as_millis());
+    let final_reply = if let Some(blocker) = workflow_blocker.as_ref() {
+        super::turn_execution::render_programmatic_clarification_question(blocker, loc)
+    } else {
+        let finisher_request = super::build_task_finisher_request(&record, &final_artifacts);
+        let finisher_system = super::prepare_system_with_suffix(
+            system,
+            TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX,
+            system_scratch,
+        );
+        let mut finisher_system = finisher_system.to_string();
+        crate::agent::append_foreground_work_packet_guidance(
+            &mut finisher_system,
+            crate::orchestrator::current_budget().system_prompt_max,
+        );
+        let finisher_started = Instant::now();
+        let finisher_t0 = metrics::record_llm_call_start();
+        match worker_llm.chat(
+            tool_ctx,
+            &finisher_system,
+            &[Message {
+                role: Cow::Borrowed("user"),
+                content: finisher_request,
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        ) {
+            Ok(response) => {
+                metrics::record_llm_call_end(finisher_t0);
+                latency.llm_round_total_ms = latency
+                    .llm_round_total_ms
+                    .saturating_add(finisher_started.elapsed().as_millis());
+                if latency.ttft_ms.is_none() && !response.content.trim().is_empty() {
+                    latency.ttft_ms = Some(finisher_started.elapsed().as_millis());
+                }
+                response.content.trim().to_string()
             }
-            response.content.trim().to_string()
-        }
-        Err(error) => {
-            metrics::record_llm_call_end(finisher_t0);
-            latency.llm_round_total_ms = latency
-                .llm_round_total_ms
-                .saturating_add(finisher_started.elapsed().as_millis());
-            log::warn!(
-                "[task_execution] finisher failed run_id={}: {}",
-                record.run.run_id,
-                error
-            );
-            if record.run.final_summary.is_empty() {
-                "This task run stopped before a clean final summary could be produced.".to_string()
-            } else {
-                record.run.final_summary.clone()
+            Err(error) => {
+                metrics::record_llm_call_end(finisher_t0);
+                latency.llm_round_total_ms = latency
+                    .llm_round_total_ms
+                    .saturating_add(finisher_started.elapsed().as_millis());
+                log::warn!(
+                    "[task_execution] finisher failed run_id={}: {}",
+                    record.run.run_id,
+                    error
+                );
+                if record.run.final_summary.is_empty() {
+                    "This task run stopped before a clean final summary could be produced."
+                        .to_string()
+                } else {
+                    record.run.final_summary.clone()
+                }
             }
         }
     };
@@ -708,6 +897,7 @@ pub(super) fn try_run_task_execution(
         "task_run_finished",
     );
     latency.react_rounds = latency.react_rounds.max(max_react_rounds.max(1));
+    let workflow_blocker = workflow_blocker.or_else(|| workflow_blocker_for_task_run(&record));
     Ok(Some((
         WorkerOutcome::Content(final_reply),
         build_task_execution_telemetry(
@@ -722,6 +912,7 @@ pub(super) fn try_run_task_execution(
             soul_feedback_projection,
             mental_privacy_adjudication,
             persona_priority_adjudication,
+            workflow_blocker,
         ),
     )))
 }
@@ -739,6 +930,7 @@ fn build_task_execution_telemetry(
     soul_feedback_projection: Option<SoulFeedbackProjection>,
     mental_privacy_adjudication: Option<crate::memory::MentalPrivacyDisclosureAdjudication>,
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
+    workflow_blocker: Option<crate::agent::WorkflowBlocker>,
 ) -> WorkerRunTelemetry {
     WorkerRunTelemetry {
         streamed: false,
@@ -756,7 +948,10 @@ fn build_task_execution_telemetry(
         delivery: *delivery,
         any_tool_round_executed: any_tool_used,
         any_tool_used,
-        tool_round_completion: ToolRoundCompletionTelemetry::default(),
+        tool_round_completion: ToolRoundCompletionTelemetry {
+            blocker: workflow_blocker,
+            ..ToolRoundCompletionTelemetry::default()
+        },
         external_content_used,
         task_execution_used: true,
         foreground_work_context_present: true,
@@ -780,6 +975,7 @@ fn build_task_execution_telemetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task_execution::{TaskClarificationField, TaskClarificationOption};
 
     #[test]
     fn normalize_task_execution_route_downgrades_resume_without_active_run() {
@@ -874,6 +1070,7 @@ mod tests {
             Some(soul_feedback_projection.clone()),
             Some(mental_privacy_adjudication.clone()),
             Some(persona_priority_adjudication.clone()),
+            None,
         );
 
         assert!(telemetry.task_execution_used);
@@ -890,6 +1087,149 @@ mod tests {
         assert_eq!(
             telemetry.persona_priority_adjudication,
             Some(persona_priority_adjudication)
+        );
+    }
+
+    #[test]
+    fn workflow_blocker_for_task_run_marks_blocked_runs_as_task_blocked() {
+        let record = crate::task_execution::TaskRunRecord {
+            run: crate::task_execution::TaskRun {
+                run_id: "trblocked".to_string(),
+                kind: crate::task_execution::TaskRunKind::TaskExecution,
+                source_channel: "qq_channel".to_string(),
+                source_chat_id: "chat-task-blocked".to_string(),
+                user_request: "帮我整理今天的新闻并写一篇文章".to_string(),
+                title: "新闻文章编排".to_string(),
+                status: crate::task_execution::TaskRunStatus::Blocked,
+                current_step_id: "step-review".to_string(),
+                planner_reason: "needs a structured workflow".to_string(),
+                final_summary: "缺少文章风格和目标读者，当前工作流被阻塞。".to_string(),
+                failure_reason: "缺少文章风格和目标读者，当前工作流被阻塞。".to_string(),
+                plan_revision: 0,
+                created_at: 1,
+                updated_at: 2,
+                finished_at: 3,
+            },
+            plan: crate::task_execution::TaskPlan {
+                goal: "先看今天新闻，再写成文章".to_string(),
+                completion_definition: "形成一篇可发布文章".to_string(),
+                risk_notes: Vec::new(),
+                ordered_steps: vec![crate::task_execution::TaskStep {
+                    step_id: "step-review".to_string(),
+                    title: "确定写作风格".to_string(),
+                    instruction: "确定风格、受众、篇幅后继续".to_string(),
+                    status: crate::task_execution::TaskStepStatus::Blocked,
+                    tool_budget: 0,
+                    retry_budget: 0,
+                    expected_artifacts: Vec::new(),
+                    review_criteria: Vec::new(),
+                    attempt_count: 0,
+                    last_result_summary: String::new(),
+                    last_review_summary: String::new(),
+                    started_at: 0,
+                    finished_at: 0,
+                }],
+            },
+        };
+
+        let blocker = workflow_blocker_for_task_run(&record).expect("workflow blocker");
+
+        assert_eq!(blocker.kind, crate::agent::WorkflowBlockerKind::TaskBlocked);
+        assert_eq!(blocker.summary, record.run.failure_reason);
+    }
+
+    #[test]
+    fn workflow_blocker_for_task_planner_decision_maps_choice_routes() {
+        let decision = TaskPlannerDecision {
+            route: TaskExecutionRoute::NeedsUserChoice,
+            reason: "need account choice".to_string(),
+            blocker_summary: "Need the user to choose an account.".to_string(),
+            missing_fields: vec!["account_key".to_string()],
+            clarification_fields: vec![TaskClarificationField {
+                key: "account_key".to_string(),
+                label: "Account".to_string(),
+                description: "Choose one account.".to_string(),
+                required: true,
+                secret: false,
+                multiple: false,
+                options: vec![TaskClarificationOption {
+                    value: "mail-work".to_string(),
+                    label: "Work".to_string(),
+                }],
+            }],
+            title: String::new(),
+            goal: String::new(),
+            completion_definition: String::new(),
+            risk_notes: Vec::new(),
+            steps: Vec::new(),
+        };
+
+        let blocker =
+            workflow_blocker_for_task_planner_decision(&decision).expect("planner blocker");
+
+        assert_eq!(
+            blocker.kind,
+            crate::agent::WorkflowBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["account_key".to_string()]);
+        assert_eq!(
+            blocker
+                .clarification
+                .as_ref()
+                .expect("clarification")
+                .fields
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn workflow_blocker_for_task_review_outcome_maps_confirmation() {
+        let outcome = TaskReviewOutcome {
+            decision: TaskReviewDecision::NeedsConfirmation,
+            summary: "Need approval before publishing.".to_string(),
+            blocker_summary: "Need approval before publishing.".to_string(),
+            missing_fields: vec!["confirm".to_string()],
+            clarification_fields: vec![TaskClarificationField {
+                key: "confirm".to_string(),
+                label: "Confirm".to_string(),
+                description: "Confirm whether to continue.".to_string(),
+                required: true,
+                secret: false,
+                multiple: false,
+                options: vec![
+                    TaskClarificationOption {
+                        value: "true".to_string(),
+                        label: "Continue".to_string(),
+                    },
+                    TaskClarificationOption {
+                        value: "false".to_string(),
+                        label: "Stop".to_string(),
+                    },
+                ],
+            }],
+            artifact_summary: String::new(),
+            revised_steps: Vec::new(),
+            durable_facts: Vec::new(),
+            reusable_procedures: Vec::new(),
+            evidence_only: Vec::new(),
+            transient_artifact_ids: Vec::new(),
+        };
+
+        let blocker = workflow_blocker_for_task_review_outcome(&outcome).expect("review blocker");
+
+        assert_eq!(
+            blocker.kind,
+            crate::agent::WorkflowBlockerKind::NeedsConfirmation
+        );
+        assert_eq!(
+            blocker
+                .clarification
+                .as_ref()
+                .expect("clarification")
+                .fields[0]
+                .key,
+            "confirm"
         );
     }
 }

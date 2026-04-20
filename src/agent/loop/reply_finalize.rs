@@ -130,26 +130,6 @@ impl TurnCompletionAssessment {
     }
 }
 
-pub(super) fn looks_like_truthful_blocker_or_input_request(content: &str) -> bool {
-    let trimmed = content.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    trimmed.contains('?')
-        || trimmed.contains('？')
-        || trimmed.contains("缺")
-        || trimmed.contains("请先提供")
-        || trimmed.contains("无法继续")
-        || trimmed.contains("不能继续")
-        || trimmed.contains("才能继续")
-        || trimmed.contains("请提供")
-        || trimmed.contains("请把")
-        || trimmed.contains("请发")
-        || lower.contains("missing ")
-        || lower.contains("cannot continue")
-        || lower.contains("can't continue")
-        || lower.contains("please provide")
-        || lower.contains("please send")
-}
-
 pub(super) fn assess_turn_completion(
     delivery: &DeliveryReport,
     any_tool_round_executed: bool,
@@ -173,9 +153,6 @@ pub(super) fn assess_turn_completion(
         ReplyArtifactState::ArtifactOnly => TurnCompletionKind::ArtifactOnly,
         ReplyArtifactState::InternalArtifactLeak => TurnCompletionKind::FinalResult,
         ReplyArtifactState::None if trimmed.is_empty() => TurnCompletionKind::IncompleteTurn,
-        ReplyArtifactState::None if looks_like_truthful_blocker_or_input_request(trimmed) => {
-            TurnCompletionKind::TruthfulBlocker
-        }
         ReplyArtifactState::None
             if had_tool_activity
                 && reply_surface == ReplySurface::PublicRuntime
@@ -185,8 +162,7 @@ pub(super) fn assess_turn_completion(
         }
         ReplyArtifactState::None
             if reply_looks_like_future_action_narration(trimmed)
-                || (reply_looks_like_transition_colon_draft(trimmed)
-                    && !looks_like_truthful_blocker_or_input_request(trimmed)) =>
+                || reply_looks_like_transition_colon_draft(trimmed) =>
         {
             TurnCompletionKind::PlanningOnly
         }
@@ -509,11 +485,12 @@ pub(super) fn complete_turn(
             .set_important_offset_from_end(&msg.chat_id, 1);
     }
     let now_secs = super::now_unix_ms() / 1000;
-    let reply_requests_input = looks_like_truthful_blocker_or_input_request(&reply_content)
-        || turn_observation
-            .as_ref()
-            .and_then(|observation| observation.blocker.as_ref())
-            .is_some();
+    let reply_requests_input = turn_observation
+        .as_ref()
+        .and_then(|observation| observation.blocker.as_ref())
+        .and_then(|blocker| crate::agent::parse_workflow_outcome_kind(&blocker.kind))
+        .map(crate::agent::WorkflowOutcomeKind::requests_user_input)
+        .unwrap_or(false);
     let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
         && reply_surface != ReplySurface::TaskExecution;

@@ -3019,6 +3019,15 @@ mod tests {
             outcome.failure_kind,
             Some(crate::tools::ToolExecutionFailureKind::Capability)
         );
+        let blocker = outcome.blocker.as_ref().expect("missing-facts blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserFacts
+        );
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "access_token"));
 
         let payload: Value =
             serde_json::from_str(&outcome.content).expect("valid failure response json");
@@ -3071,6 +3080,15 @@ mod tests {
             outcome.failure_kind,
             Some(crate::tools::ToolExecutionFailureKind::Capability)
         );
+        let blocker = outcome.blocker.as_ref().expect("choice blocker");
+        assert_eq!(
+            blocker.kind,
+            crate::tools::ToolExecutionBlockerKind::NeedsUserChoice
+        );
+        assert_eq!(blocker.missing_fields, vec!["account_key".to_string()]);
+        assert_eq!(blocker.clarification_fields.len(), 1);
+        assert_eq!(blocker.clarification_fields[0].key, "account_key");
+        assert_eq!(blocker.clarification_fields[0].options.len(), 2);
 
         let payload: Value =
             serde_json::from_str(&outcome.content).expect("valid failure response json");

@@ -46,6 +46,8 @@ pub const MAX_TASK_WORKSPACE_RENDER_CHARS: usize = 1_400;
 pub const MAX_TASK_OPERATOR_RECENT_RUNS: usize = 5;
 pub const MAX_TASK_OPERATOR_STEP_PREVIEW: usize = 4;
 pub const MAX_TASK_OPERATOR_ARTIFACT_PREVIEW: usize = 4;
+pub const MAX_TASK_CLARIFICATION_FIELDS: usize = 4;
+pub const MAX_TASK_CLARIFICATION_OPTIONS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -131,6 +133,9 @@ pub enum TaskReviewDecision {
     RevisePlan,
     AbortRun,
     PartialComplete,
+    NeedsUserFacts,
+    NeedsUserChoice,
+    NeedsConfirmation,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +144,30 @@ pub enum TaskExecutionRoute {
     DirectReply,
     StartRun,
     ResumeRun,
+    NeedsUserFacts,
+    NeedsUserChoice,
+    NeedsConfirmation,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskClarificationOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskClarificationField {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub multiple: bool,
+    #[serde(default)]
+    pub options: Vec<TaskClarificationOption>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -267,6 +296,12 @@ pub struct TaskPlannerDecision {
     #[serde(default)]
     pub reason: String,
     #[serde(default)]
+    pub blocker_summary: String,
+    #[serde(default)]
+    pub missing_fields: Vec<String>,
+    #[serde(default)]
+    pub clarification_fields: Vec<TaskClarificationField>,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub goal: String,
@@ -283,6 +318,12 @@ pub struct TaskReviewOutcome {
     pub decision: TaskReviewDecision,
     #[serde(default)]
     pub summary: String,
+    #[serde(default)]
+    pub blocker_summary: String,
+    #[serde(default)]
+    pub missing_fields: Vec<String>,
+    #[serde(default)]
+    pub clarification_fields: Vec<TaskClarificationField>,
     #[serde(default)]
     pub artifact_summary: String,
     #[serde(default)]
@@ -350,6 +391,17 @@ pub fn normalize_task_planner_decision(
     mut decision: TaskPlannerDecision,
 ) -> Result<TaskPlannerDecision> {
     decision.reason = normalize_inline(&decision.reason, MAX_TASK_REASON_CHARS);
+    decision.blocker_summary =
+        normalize_multiline(&decision.blocker_summary, MAX_TASK_REASON_CHARS);
+    normalize_string_list(
+        &mut decision.missing_fields,
+        MAX_TASK_CLARIFICATION_FIELDS,
+        MAX_TASK_STEP_TITLE_CHARS,
+    );
+    normalize_task_clarification_fields(
+        &mut decision.clarification_fields,
+        "task_planner_clarification",
+    )?;
     decision.title = normalize_inline(&decision.title, MAX_TASK_TITLE_CHARS);
     decision.goal = normalize_inline(&decision.goal, MAX_TASK_GOAL_CHARS);
     decision.completion_definition = normalize_multiline(
@@ -370,6 +422,25 @@ pub fn normalize_task_planner_decision(
         .collect::<Result<Vec<_>>>()?;
     match decision.route {
         TaskExecutionRoute::DirectReply => Ok(decision),
+        TaskExecutionRoute::NeedsUserFacts
+        | TaskExecutionRoute::NeedsUserChoice
+        | TaskExecutionRoute::NeedsConfirmation => {
+            if decision.blocker_summary.is_empty()
+                && decision.missing_fields.is_empty()
+                && decision.clarification_fields.is_empty()
+            {
+                return Err(Error::config(
+                    "task_planner",
+                    "blocker_summary, missing_fields, or clarification_fields must describe workflow blockers",
+                ));
+            }
+            decision.title.clear();
+            decision.goal.clear();
+            decision.completion_definition.clear();
+            decision.risk_notes.clear();
+            decision.steps.clear();
+            Ok(decision)
+        }
         TaskExecutionRoute::StartRun | TaskExecutionRoute::ResumeRun => {
             if decision.goal.is_empty() {
                 return Err(Error::config("task_planner", "goal must not be empty"));
@@ -394,6 +465,16 @@ pub fn normalize_task_planner_decision(
 
 pub fn normalize_task_review_outcome(mut outcome: TaskReviewOutcome) -> Result<TaskReviewOutcome> {
     outcome.summary = normalize_multiline(&outcome.summary, MAX_TASK_REASON_CHARS);
+    outcome.blocker_summary = normalize_multiline(&outcome.blocker_summary, MAX_TASK_REASON_CHARS);
+    normalize_string_list(
+        &mut outcome.missing_fields,
+        MAX_TASK_CLARIFICATION_FIELDS,
+        MAX_TASK_STEP_TITLE_CHARS,
+    );
+    normalize_task_clarification_fields(
+        &mut outcome.clarification_fields,
+        "task_review_clarification",
+    )?;
     outcome.artifact_summary =
         normalize_multiline(&outcome.artifact_summary, MAX_TASK_ARTIFACT_SUMMARY_CHARS);
     outcome.revised_steps = outcome
@@ -413,6 +494,20 @@ pub fn normalize_task_review_outcome(mut outcome: TaskReviewOutcome) -> Result<T
         return Err(Error::config(
             "task_review",
             "revised_steps must not be empty when decision=revise_plan",
+        ));
+    }
+    if matches!(
+        outcome.decision,
+        TaskReviewDecision::NeedsUserFacts
+            | TaskReviewDecision::NeedsUserChoice
+            | TaskReviewDecision::NeedsConfirmation
+    ) && outcome.blocker_summary.is_empty()
+        && outcome.missing_fields.is_empty()
+        && outcome.clarification_fields.is_empty()
+    {
+        return Err(Error::config(
+            "task_review",
+            "blocker_summary, missing_fields, or clarification_fields must describe workflow blockers",
         ));
     }
     Ok(outcome)
@@ -787,6 +882,43 @@ fn normalize_string_list(values: &mut Vec<String>, max_items: usize, max_chars: 
         .collect();
 }
 
+fn normalize_task_clarification_fields(
+    fields: &mut Vec<TaskClarificationField>,
+    stage: &'static str,
+) -> Result<()> {
+    *fields = fields
+        .drain(..)
+        .filter_map(|mut field| {
+            field.key = normalize_inline(&field.key, MAX_TASK_STEP_ID_CHARS);
+            field.label = normalize_inline(&field.label, MAX_TASK_STEP_TITLE_CHARS);
+            field.description = normalize_multiline(&field.description, MAX_TASK_REASON_CHARS);
+            field.options = field
+                .options
+                .drain(..)
+                .filter_map(|mut option| {
+                    option.value = normalize_inline(&option.value, MAX_TASK_STEP_TITLE_CHARS);
+                    option.label = normalize_inline(&option.label, MAX_TASK_STEP_TITLE_CHARS);
+                    (!option.value.is_empty() && !option.label.is_empty()).then_some(option)
+                })
+                .take(MAX_TASK_CLARIFICATION_OPTIONS)
+                .collect();
+            if field.key.is_empty() || field.label.is_empty() || field.description.is_empty() {
+                None
+            } else {
+                Some(field)
+            }
+        })
+        .take(MAX_TASK_CLARIFICATION_FIELDS)
+        .collect();
+    if fields.iter().any(|field| field.key.is_empty()) {
+        return Err(Error::config(
+            stage,
+            "clarification field key must not be empty",
+        ));
+    }
+    Ok(())
+}
+
 fn normalize_multiline(value: &str, max_chars: usize) -> String {
     truncate_content_to_max(value.trim(), max_chars)
         .trim()
@@ -831,6 +963,9 @@ mod tests {
         let err = normalize_task_planner_decision(TaskPlannerDecision {
             route: TaskExecutionRoute::StartRun,
             reason: "complex".to_string(),
+            blocker_summary: String::new(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
             title: "Fix bug".to_string(),
             goal: "Fix the regression".to_string(),
             completion_definition: "Build should pass".to_string(),
@@ -846,6 +981,9 @@ mod tests {
         let err = normalize_task_review_outcome(TaskReviewOutcome {
             decision: TaskReviewDecision::RevisePlan,
             summary: "need a new plan".to_string(),
+            blocker_summary: String::new(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
             artifact_summary: String::new(),
             revised_steps: vec![],
             durable_facts: vec![],
@@ -867,6 +1005,9 @@ mod tests {
             &normalize_task_planner_decision(TaskPlannerDecision {
                 route: TaskExecutionRoute::StartRun,
                 reason: "multi step".to_string(),
+                blocker_summary: String::new(),
+                missing_fields: Vec::new(),
+                clarification_fields: Vec::new(),
                 title: "Crash fix".to_string(),
                 goal: "Fix the crash".to_string(),
                 completion_definition: "Root cause fixed".to_string(),
@@ -904,5 +1045,79 @@ mod tests {
         .unwrap();
         assert!(rendered.contains("Current step"));
         assert!(rendered.contains("Recent artifacts"));
+    }
+
+    #[test]
+    fn planner_decision_accepts_user_choice_blocker_without_plan_payload() {
+        let decision = normalize_task_planner_decision(TaskPlannerDecision {
+            route: TaskExecutionRoute::NeedsUserChoice,
+            reason: "need account choice".to_string(),
+            blocker_summary: "Need the user to choose which account to use.".to_string(),
+            missing_fields: vec!["account_key".to_string()],
+            clarification_fields: vec![TaskClarificationField {
+                key: "account_key".to_string(),
+                label: "Account".to_string(),
+                description: "Choose one account.".to_string(),
+                required: true,
+                secret: false,
+                multiple: false,
+                options: vec![TaskClarificationOption {
+                    value: "work".to_string(),
+                    label: "Work".to_string(),
+                }],
+            }],
+            title: "ignored".to_string(),
+            goal: "ignored".to_string(),
+            completion_definition: "ignored".to_string(),
+            risk_notes: vec!["ignored".to_string()],
+            steps: vec![TaskPlannerStepDraft {
+                title: "ignored".to_string(),
+                instruction: "ignored".to_string(),
+                tool_budget: 1,
+                retry_budget: 0,
+                expected_artifacts: Vec::new(),
+                review_criteria: Vec::new(),
+            }],
+        })
+        .expect("planner blocker decision");
+        assert!(decision.goal.is_empty());
+        assert!(decision.steps.is_empty());
+        assert_eq!(decision.clarification_fields.len(), 1);
+    }
+
+    #[test]
+    fn review_outcome_accepts_confirmation_blocker_without_revised_steps() {
+        let outcome = normalize_task_review_outcome(TaskReviewOutcome {
+            decision: TaskReviewDecision::NeedsConfirmation,
+            summary: "Need explicit approval before continuing.".to_string(),
+            blocker_summary: "Need explicit approval before continuing.".to_string(),
+            missing_fields: vec!["confirm".to_string()],
+            clarification_fields: vec![TaskClarificationField {
+                key: "confirm".to_string(),
+                label: "Confirm".to_string(),
+                description: "Confirm whether to continue.".to_string(),
+                required: true,
+                secret: false,
+                multiple: false,
+                options: vec![
+                    TaskClarificationOption {
+                        value: "true".to_string(),
+                        label: "Continue".to_string(),
+                    },
+                    TaskClarificationOption {
+                        value: "false".to_string(),
+                        label: "Stop".to_string(),
+                    },
+                ],
+            }],
+            artifact_summary: String::new(),
+            revised_steps: vec![],
+            durable_facts: vec![],
+            reusable_procedures: vec![],
+            evidence_only: vec![],
+            transient_artifact_ids: vec![],
+        })
+        .expect("review blocker decision");
+        assert_eq!(outcome.clarification_fields.len(), 1);
     }
 }

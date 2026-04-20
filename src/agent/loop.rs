@@ -146,8 +146,8 @@ const ASSISTANT_COMPACT_TAIL_CHARS: usize = 48;
 const POST_REPLY_MAINTENANCE_USER_PREVIEW_CHARS: usize = 512;
 const POST_REPLY_MAINTENANCE_REPLY_PREVIEW_CHARS: usize = 768;
 const POST_REPLY_MAINTENANCE_DELAY_MS: u64 = 1_500;
-const TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX: &str = "\n\n## Task Execution Planner\nDecide whether the latest user request should stay on the normal reply path or enter the formal task-execution path. Return JSON only with fields: route, reason, title, goal, completion_definition, risk_notes, steps. route must be one of direct_reply, start_run, resume_run. When route is direct_reply, leave goal/completion_definition/steps empty. When route starts or resumes a run, steps must be an ordered array of 1-6 objects with title, instruction, tool_budget, retry_budget, expected_artifacts, review_criteria. Do not answer the user. Do not call tools in this planner step.";
-const TASK_EXECUTION_REVIEW_SYSTEM_SUFFIX: &str = "\n\n## Task Step Reviewer\nReview the just-finished task step and decide whether the run should pass the step, retry the same step, revise the remaining plan, abort the run, or finish partially. Return JSON only with fields: decision, summary, artifact_summary, revised_steps, durable_facts, reusable_procedures, evidence_only, transient_artifact_ids. decision must be one of pass, retry_step, revise_plan, abort_run, partial_complete. Only provide revised_steps when decision is revise_plan. durable_facts / reusable_procedures / evidence_only are arrays of objects with topic, summary, content, and optional memory_kind for durable_facts. durable_facts are only for canonical long-term facts that deserve governed shared memory. reusable_procedures are only for methods that might become runtime skills after repeated success. evidence_only is for supporting evidence that should enter archive but not canonical memory. transient_artifact_ids lists workspace artifact ids that should be pruned after review because they are low-value scratch output. Do not call tools in this review step.";
+const TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX: &str = "\n\n## Task Execution Planner\nDecide whether the latest user request should stay on the normal reply path, enter the formal task-execution path, or stop first for a structured workflow blocker. Return JSON only with fields: route, reason, blocker_summary, missing_fields, clarification_fields, title, goal, completion_definition, risk_notes, steps. route must be one of direct_reply, start_run, resume_run, needs_user_facts, needs_user_choice, needs_confirmation. When route is direct_reply, leave blocker_summary/missing_fields/clarification_fields/goal/completion_definition/steps empty. When route is a blocker route, explain the blocker in blocker_summary, fill missing_fields and clarification_fields as needed, and leave title/goal/completion_definition/steps empty. When route starts or resumes a run, steps must be an ordered array of 1-6 objects with title, instruction, tool_budget, retry_budget, expected_artifacts, review_criteria. clarification_fields is an array of objects with key, label, description, required, secret, multiple, options; each option has value and label. Do not answer the user. Do not call tools in this planner step.";
+const TASK_EXECUTION_REVIEW_SYSTEM_SUFFIX: &str = "\n\n## Task Step Reviewer\nReview the just-finished task step and decide whether the run should pass the step, retry the same step, revise the remaining plan, abort the run, finish partially, or stop for a structured workflow blocker. Return JSON only with fields: decision, summary, blocker_summary, missing_fields, clarification_fields, artifact_summary, revised_steps, durable_facts, reusable_procedures, evidence_only, transient_artifact_ids. decision must be one of pass, retry_step, revise_plan, abort_run, partial_complete, needs_user_facts, needs_user_choice, needs_confirmation. Only provide revised_steps when decision is revise_plan. For blocker decisions, fill blocker_summary, missing_fields, and clarification_fields, and leave revised_steps empty. clarification_fields is an array of objects with key, label, description, required, secret, multiple, options; each option has value and label. durable_facts / reusable_procedures / evidence_only are arrays of objects with topic, summary, content, and optional memory_kind for durable_facts. durable_facts are only for canonical long-term facts that deserve governed shared memory. reusable_procedures are only for methods that might become runtime skills after repeated success. evidence_only is for supporting evidence that should enter archive but not canonical memory. transient_artifact_ids lists workspace artifact ids that should be pruned after review because they are low-value scratch output. Do not call tools in this review step.";
 const TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX: &str = "\n\n## Task Run Finisher\nUsing only the governed task workspace, completed step outputs, and current conclusions, write the final user-facing reply for this task run. Do not call tools. Do not output execution transcripts, internal step ids, or future-plan boilerplate. If the run is partial or blocked, say exactly what was completed and what remains blocked.";
 const TASK_EXECUTION_MIN_CHARS: usize = 96;
 const TASK_EXECUTION_MIN_LINES: usize = 3;
@@ -523,15 +523,7 @@ struct WorkerRunTelemetry {
 struct ToolRoundCompletionTelemetry {
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
-    blocker: Option<crate::tools::ToolExecutionBlocker>,
-}
-
-fn tool_execution_blocker_kind_label(kind: crate::tools::ToolExecutionBlockerKind) -> &'static str {
-    match kind {
-        crate::tools::ToolExecutionBlockerKind::NeedsUserFacts => "needs_user_facts",
-        crate::tools::ToolExecutionBlockerKind::ProbeFailed => "probe_failed",
-        crate::tools::ToolExecutionBlockerKind::Unsupported => "unsupported",
-    }
+    blocker: Option<crate::agent::WorkflowBlocker>,
 }
 
 fn build_turn_observation_ledger(
@@ -585,7 +577,7 @@ fn build_turn_observation_ledger(
             .blocker
             .as_ref()
             .map(|blocker| TurnBlockerLedger {
-                kind: tool_execution_blocker_kind_label(blocker.kind).to_string(),
+                kind: blocker.outcome_kind().as_str().to_string(),
                 failed_calls: 1,
                 total_calls: telemetry.latency.tool_calls.max(1),
             }),
@@ -615,7 +607,7 @@ struct PreparedWorkerConversation {
 struct ToolCallExecutionResult {
     result_owned: String,
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
-    blocker: Option<crate::tools::ToolExecutionBlocker>,
+    blocker: Option<crate::agent::WorkflowBlocker>,
     call_succeeded: bool,
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
@@ -629,7 +621,7 @@ struct ToolUseRoundExecutionOutput {
     had_visible_outbound_side_effects: bool,
     omitted_evidence_count: usize,
     successful_tool_names: Vec<String>,
-    blocker: Option<crate::tools::ToolExecutionBlocker>,
+    blocker: Option<crate::agent::WorkflowBlocker>,
 }
 
 fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
@@ -905,12 +897,7 @@ fn tool_result_status_attr(call_failed: bool) -> &'static str {
 fn failure_kind_attr(
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
 ) -> Option<&'static str> {
-    match failure_kind {
-        Some(super::tool_outcome::ToolFailureKind::Retryable) => Some("retryable"),
-        Some(super::tool_outcome::ToolFailureKind::Permanent) => Some("permanent"),
-        Some(super::tool_outcome::ToolFailureKind::Capability) => Some("capability"),
-        None => None,
-    }
+    failure_kind.map(|kind| super::workflow_outcome_kind_from_tool_failure_kind(kind).as_str())
 }
 
 struct ToolResultBlock<'a> {
@@ -3356,7 +3343,32 @@ mod tests {
                 })
                 .to_string(),
             )
-            .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability))
+            .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability)
+            .with_blocker(crate::tools::ToolExecutionBlocker {
+                kind: crate::tools::ToolExecutionBlockerKind::NeedsUserChoice,
+                summary: "你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"
+                    .to_string(),
+                missing_fields: vec!["account_key".to_string()],
+                clarification_fields: vec![crate::tools::ToolClarificationField {
+                    key: "account_key".to_string(),
+                    label: "Office account".to_string(),
+                    description: "Choose which configured account should handle this request."
+                        .to_string(),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![
+                        crate::tools::ToolClarificationOption {
+                            value: "mail-work".to_string(),
+                            label: "Work（mail-work）".to_string(),
+                        },
+                        crate::tools::ToolClarificationOption {
+                            value: "mail-personal".to_string(),
+                            label: "Personal（mail-personal）".to_string(),
+                        },
+                    ],
+                }],
+            }))
         }
     }
 
@@ -3421,6 +3433,200 @@ mod tests {
                 }],
             }))
         }
+    }
+
+    struct StubChoiceBlockingTool;
+
+    impl crate::tools::Tool for StubChoiceBlockingTool {
+        fn name(&self) -> &'static str {
+            "mail"
+        }
+
+        fn description(&self) -> &str {
+            "return a structured account choice blocker"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, args: &str, ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.execute_outcome(args, ctx)
+                .map(|outcome| outcome.content)
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<crate::tools::ToolExecutionOutcome> {
+            Ok(crate::tools::ToolExecutionOutcome::text(
+                serde_json::json!({
+                    "op": "list",
+                    "ok": false,
+                    "payload": {
+                        "disposition": "ambiguous",
+                        "missing_fields": ["account_key"],
+                    }
+                })
+                .to_string(),
+            )
+            .with_blocker(crate::tools::ToolExecutionBlocker {
+                kind: crate::tools::ToolExecutionBlockerKind::NeedsUserChoice,
+                summary: "邮件账户选择被阻塞：account_key".to_string(),
+                missing_fields: vec!["account_key".to_string()],
+                clarification_fields: vec![crate::tools::ToolClarificationField {
+                    key: "account_key".to_string(),
+                    label: "Office account".to_string(),
+                    description: "Choose which account to use.".to_string(),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![
+                        crate::tools::ToolClarificationOption {
+                            value: "mail-work".to_string(),
+                            label: "Work mail".to_string(),
+                        },
+                        crate::tools::ToolClarificationOption {
+                            value: "mail-personal".to_string(),
+                            label: "Personal mail".to_string(),
+                        },
+                    ],
+                }],
+            }))
+        }
+    }
+
+    struct StubMultiFieldBlockingTool;
+
+    impl crate::tools::Tool for StubMultiFieldBlockingTool {
+        fn name(&self) -> &'static str {
+            "office_config"
+        }
+
+        fn description(&self) -> &str {
+            "return a structured multi-field onboarding blocker"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, args: &str, ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.execute_outcome(args, ctx)
+                .map(|outcome| outcome.content)
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<crate::tools::ToolExecutionOutcome> {
+            Ok(crate::tools::ToolExecutionOutcome::text(
+                serde_json::json!({
+                    "op": "apply_account",
+                    "ok": false,
+                    "payload": {
+                        "disposition": "needs_user_facts",
+                        "reason": "missing_user_facts",
+                        "missing_fields": ["identity_class", "mail_imap_host"],
+                    }
+                })
+                .to_string(),
+            )
+            .with_blocker(crate::tools::ToolExecutionBlocker {
+                kind: crate::tools::ToolExecutionBlockerKind::NeedsUserFacts,
+                summary: "账户配置被阻塞：identity_class, mail_imap_host".to_string(),
+                missing_fields: vec!["identity_class".to_string(), "mail_imap_host".to_string()],
+                clarification_fields: vec![
+                    crate::tools::ToolClarificationField {
+                        key: "identity_class".to_string(),
+                        label: "Identity Class".to_string(),
+                        description: "work|personal|family|shared|other".to_string(),
+                        required: true,
+                        secret: false,
+                        multiple: false,
+                        options: vec![
+                            crate::tools::ToolClarificationOption {
+                                value: "work".to_string(),
+                                label: "Work".to_string(),
+                            },
+                            crate::tools::ToolClarificationOption {
+                                value: "personal".to_string(),
+                                label: "Personal".to_string(),
+                            },
+                        ],
+                    },
+                    crate::tools::ToolClarificationField {
+                        key: "mail_imap_host".to_string(),
+                        label: "IMAP host".to_string(),
+                        description: "The IMAP server host.".to_string(),
+                        required: true,
+                        secret: false,
+                        multiple: false,
+                        options: vec![],
+                    },
+                ],
+            }))
+        }
+    }
+
+    struct StubCapabilityBoundTool;
+
+    impl crate::tools::Tool for StubCapabilityBoundTool {
+        fn name(&self) -> &'static str {
+            "network_probe"
+        }
+
+        fn description(&self) -> &str {
+            "should be blocked by runtime capability before execution"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{}}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            panic!("runtime capability blocked tool should not execute")
+        }
+
+        fn capability_contract(&self) -> crate::tools::ToolCapabilityContract {
+            crate::tools::ToolCapabilityContract::required(&[
+                crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            ])
+        }
+    }
+
+    static RUNTIME_CAPABILITY_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct RuntimeCapabilitiesRestoreGuard {
+        snapshot: Vec<crate::orchestrator::RuntimeCapabilityState>,
+    }
+
+    impl Drop for RuntimeCapabilitiesRestoreGuard {
+        fn drop(&mut self) {
+            for state in self.snapshot.drain(..) {
+                crate::orchestrator::update_runtime_capability(
+                    crate::orchestrator::RuntimeCapabilityUpdate {
+                        id: state.id,
+                        status: state.status,
+                        reason: state.reason,
+                        observed_at_secs: state.observed_at_secs.max(1),
+                        recovery_hint: state.recovery_hint,
+                    },
+                );
+            }
+        }
+    }
+
+    fn with_runtime_capabilities_restored<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _restore = RuntimeCapabilitiesRestoreGuard {
+            snapshot: crate::orchestrator::runtime_capability_snapshot(),
+        };
+        f()
     }
 
     fn test_agent_loop_config() -> AgentLoopConfig {
@@ -5052,7 +5258,28 @@ mod tests {
             mark_important: false,
             streamed: false,
             msg_start: Instant::now(),
-            turn_observation: None,
+            turn_observation: Some(TurnObservationLedger {
+                execution_class: TurnExecutionClass::DirectReply,
+                deliberation_class: TurnDeliberationClass::Standard,
+                final_outcome: "final_answer".to_string(),
+                pressure: TurnPersonaPressureLevel::Normal,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: String::new(),
+                    tool_calls: 0,
+                    react_rounds: 1,
+                    current_primary_delivered: false,
+                },
+                blocker: Some(TurnBlockerLedger {
+                    kind: "needs_user_facts".to_string(),
+                    failed_calls: 0,
+                    total_calls: 0,
+                }),
+            }),
             mental_privacy_review: MentalPrivacyReviewOutcome {
                 reply_content: "好的，继续。".to_string(),
                 action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
@@ -5207,7 +5434,28 @@ mod tests {
             mark_important: false,
             streamed: false,
             msg_start: Instant::now(),
-            turn_observation: None,
+            turn_observation: Some(TurnObservationLedger {
+                execution_class: TurnExecutionClass::DirectReply,
+                deliberation_class: TurnDeliberationClass::Standard,
+                final_outcome: "final_answer".to_string(),
+                pressure: TurnPersonaPressureLevel::Normal,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: String::new(),
+                    tool_calls: 0,
+                    react_rounds: 1,
+                    current_primary_delivered: false,
+                },
+                blocker: Some(TurnBlockerLedger {
+                    kind: "needs_user_facts".to_string(),
+                    failed_calls: 0,
+                    total_calls: 0,
+                }),
+            }),
             mental_privacy_review: MentalPrivacyReviewOutcome {
                 reply_content: "这轮先把治理快照带进任务回复。".to_string(),
                 action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
@@ -5610,6 +5858,220 @@ mod tests {
             delivered,
             "要继续这一步，还需要你告诉我 `identity_class`。可选值：work / personal。"
         );
+    }
+
+    #[test]
+    fn execute_turn_structured_choice_blocker_renders_programmatic_selection_question() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: "[tool_use]".to_string(),
+                stop_reason: StopReason::ToolUse,
+                tool_calls: Some(vec![crate::llm::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "mail".to_string(),
+                    input: r#"{"op":"list"}"#.to_string(),
+                }]),
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubChoiceBlockingTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-choice-blocker", "帮我查邮件", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-structured-choice-blocker",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1, "{observed:#?}");
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(
+            delivered,
+            "要继续这一步，还需要你选择 `account_key`。可选值：Work mail (`mail-work`) / Personal mail (`mail-personal`)。"
+        );
+    }
+
+    #[test]
+    fn execute_turn_structured_multi_field_blocker_renders_all_missing_fields_programmatically() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: "[tool_use]".to_string(),
+                stop_reason: StopReason::ToolUse,
+                tool_calls: Some(vec![crate::llm::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "office_config".to_string(),
+                    input: r#"{"op":"apply_account"}"#.to_string(),
+                }]),
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubMultiFieldBlockingTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-multi-field-blocker",
+            "帮我配置邮箱",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-structured-multi-field-blocker",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1, "{observed:#?}");
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(
+            delivered,
+            "要继续这一步，还需要你补充这些信息：1. `identity_class`（可选值：work / personal）；2. `mail_imap_host`。"
+        );
+    }
+
+    #[test]
+    fn execute_turn_unavailable_tool_uses_shared_programmatic_unsupported_blocker() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: "[tool_use]".to_string(),
+                stop_reason: StopReason::ToolUse,
+                tool_calls: Some(vec![crate::llm::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "ghost_tool".to_string(),
+                    input: "{}".to_string(),
+                }]),
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let registry = crate::tools::ToolRegistry::new();
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-unsupported-blocker",
+            "继续处理这个任务",
+            false,
+        )
+        .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-unsupported-blocker",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1, "{observed:#?}");
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(
+            delivered,
+            "这一步当前不可用：tool `ghost_tool`; reason `not_available_in_current_runtime`。"
+        );
+    }
+
+    #[test]
+    fn execute_turn_runtime_capability_blocked_tool_uses_shared_programmatic_runtime_blocker() {
+        with_runtime_capabilities_restored(|| {
+            crate::orchestrator::update_runtime_capability(
+                crate::orchestrator::RuntimeCapabilityUpdate {
+                    id: crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+                    status: crate::orchestrator::RuntimeCapabilityStatus::Offline,
+                    reason: crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable,
+                    observed_at_secs: 42,
+                    recovery_hint: None,
+                },
+            );
+
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let llm = ObservedSequenceStubLlm {
+                responses: Mutex::new(vec![LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "network_probe".to_string(),
+                        input: "{}".to_string(),
+                    }]),
+                }]),
+                observed: Arc::clone(&observed),
+            };
+            let mut http = DummyPlatformHttp;
+            let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+            let mut registry = crate::tools::ToolRegistry::new();
+            registry.register(Box::new(StubCapabilityBoundTool));
+            let mut config = test_agent_loop_config();
+            config.strategy = AgentRunStrategy::LinuxEnhanced;
+            let msg = PcMsg::new_inbound(
+                "qq_channel",
+                "chat-runtime-blocked-tool",
+                "继续处理这个任务",
+                false,
+            )
+            .expect("message");
+            let mut repeat = HashMap::new();
+
+            let executed = turn_execution::execute_turn(
+                &mut http,
+                &llm,
+                &msg,
+                &outbound_tx,
+                "req-runtime-blocked-tool",
+                &registry,
+                &config,
+                &mut repeat,
+                UiLocale::Zh,
+            )
+            .expect("execute turn");
+
+            let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(observed.len(), 1, "{observed:#?}");
+            let WorkerOutcome::Content(delivered) = executed.outcome;
+            assert_eq!(
+                delivered,
+                "这一步当前被运行时条件阻塞：tool `network_probe`; sub_capability `network.outbound_http`; status `offline`; reason `upstream_unavailable`; recovery_hint `wait_for_network_recovery`。"
+            );
+        });
     }
 
     #[test]
@@ -6086,7 +6548,6 @@ mod tests {
                 reply_handoff_ms: 1,
             },
         );
-
         let stored = execution_state_store
             .get(msg.chat_id.as_ref())
             .expect("execution state get")
@@ -6131,7 +6592,28 @@ mod tests {
             mark_important: false,
             streamed: false,
             msg_start: Instant::now(),
-            turn_observation: None,
+            turn_observation: Some(TurnObservationLedger {
+                execution_class: TurnExecutionClass::DirectReply,
+                deliberation_class: TurnDeliberationClass::Standard,
+                final_outcome: "final_answer".to_string(),
+                pressure: TurnPersonaPressureLevel::Normal,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: String::new(),
+                    tool_calls: 0,
+                    react_rounds: 1,
+                    current_primary_delivered: false,
+                },
+                blocker: Some(TurnBlockerLedger {
+                    kind: "needs_user_facts".to_string(),
+                    failed_calls: 0,
+                    total_calls: 0,
+                }),
+            }),
             mental_privacy_review: MentalPrivacyReviewOutcome {
                 reply_content: blocker.clone(),
                 action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
@@ -6182,7 +6664,6 @@ mod tests {
                 reply_handoff_ms: 1,
             },
         );
-
         let stored = execution_state_store
             .get(msg.chat_id.as_ref())
             .expect("execution state get")
@@ -6523,9 +7004,15 @@ mod tests {
             crate::agent::ForegroundWorkStatus::AwaitingUser
         );
         assert!(
-            active_work
-                .blocker
-                .contains("你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"),
+            active_work.blocker.contains("`account_key`"),
+            "{active_work:#?}"
+        );
+        assert!(
+            active_work.blocker.contains("mail-work"),
+            "{active_work:#?}"
+        );
+        assert!(
+            active_work.blocker.contains("mail-personal"),
             "{active_work:#?}"
         );
 
@@ -6588,9 +7075,17 @@ mod tests {
         let observed = second_observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 2, "{observed:#?}");
         assert!(
+            observed[1].message_dump.contains("`account_key`"),
+            "{:#?}",
             observed[1]
-                .message_dump
-                .contains("你要用 Work（mail-work）还是 Personal（mail-personal）这个邮箱账户？"),
+        );
+        assert!(
+            observed[1].message_dump.contains("mail-work"),
+            "{:#?}",
+            observed[1]
+        );
+        assert!(
+            observed[1].message_dump.contains("mail-personal"),
             "{:#?}",
             observed[1]
         );
@@ -6708,6 +7203,9 @@ mod tests {
         let planner_decision = crate::task_execution::TaskPlannerDecision {
             route: crate::task_execution::TaskExecutionRoute::StartRun,
             reason: "durable multi-step work".to_string(),
+            blocker_summary: String::new(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
             title: "QQ 邮箱配置".to_string(),
             goal: "配置 QQ 邮箱账户".to_string(),
             completion_definition: "账户已保存并通过校验".to_string(),

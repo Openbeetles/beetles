@@ -30,11 +30,81 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(&message)),
         failure_kind: Some(assessment.kind),
-        blocker: None,
+        blocker: Some(crate::agent::WorkflowBlocker::unsupported(format!(
+            "tool `{tool_name}`; reason `not_available_in_current_runtime`"
+        ))),
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
     }
+}
+
+fn runtime_capability_status_label(
+    status: crate::orchestrator::RuntimeCapabilityStatus,
+) -> &'static str {
+    match status {
+        crate::orchestrator::RuntimeCapabilityStatus::Online => "online",
+        crate::orchestrator::RuntimeCapabilityStatus::Degraded => "degraded",
+        crate::orchestrator::RuntimeCapabilityStatus::Offline => "offline",
+    }
+}
+
+fn runtime_capability_reason_label(
+    reason: crate::orchestrator::RuntimeCapabilityReason,
+) -> &'static str {
+    match reason {
+        crate::orchestrator::RuntimeCapabilityReason::Nominal => "nominal",
+        crate::orchestrator::RuntimeCapabilityReason::NotConfigured => "not_configured",
+        crate::orchestrator::RuntimeCapabilityReason::RuntimeNotInitialized => {
+            "runtime_not_initialized"
+        }
+        crate::orchestrator::RuntimeCapabilityReason::DeviceMissing => "device_missing",
+        crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected => "device_disconnected",
+        crate::orchestrator::RuntimeCapabilityReason::WorkerDead => "worker_dead",
+        crate::orchestrator::RuntimeCapabilityReason::DriverError => "driver_error",
+        crate::orchestrator::RuntimeCapabilityReason::PermissionDenied => "permission_denied",
+        crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable => "upstream_unavailable",
+        crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing => "recovery_stabilizing",
+        crate::orchestrator::RuntimeCapabilityReason::OperatorDisabled => "operator_disabled",
+    }
+}
+
+fn runtime_capability_blocker_kind(
+    blocker: &crate::orchestrator::RuntimeCapabilityBlocker,
+) -> crate::agent::WorkflowBlockerKind {
+    match blocker.capability_reason {
+        crate::orchestrator::RuntimeCapabilityReason::NotConfigured
+        | crate::orchestrator::RuntimeCapabilityReason::PermissionDenied
+        | crate::orchestrator::RuntimeCapabilityReason::OperatorDisabled => {
+            crate::agent::WorkflowBlockerKind::Unsupported
+        }
+        crate::orchestrator::RuntimeCapabilityReason::Nominal
+        | crate::orchestrator::RuntimeCapabilityReason::RuntimeNotInitialized
+        | crate::orchestrator::RuntimeCapabilityReason::DeviceMissing
+        | crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected
+        | crate::orchestrator::RuntimeCapabilityReason::WorkerDead
+        | crate::orchestrator::RuntimeCapabilityReason::DriverError
+        | crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable
+        | crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing => {
+            crate::agent::WorkflowBlockerKind::RuntimeBlocked
+        }
+    }
+}
+
+fn runtime_capability_blocker_summary(
+    tool_name: &str,
+    blocker: &crate::orchestrator::RuntimeCapabilityBlocker,
+) -> String {
+    let mut summary = format!(
+        "tool `{tool_name}`; sub_capability `{}`; status `{}`; reason `{}`",
+        blocker.sub_capability,
+        runtime_capability_status_label(blocker.capability_status),
+        runtime_capability_reason_label(blocker.capability_reason)
+    );
+    if let Some(recovery_hint) = blocker.recovery_hint {
+        let _ = write!(&mut summary, "; recovery_hint `{recovery_hint}`");
+    }
+    summary
 }
 
 #[cold]
@@ -44,6 +114,23 @@ fn capability_blocked_tool_execution_result(
     blocker: &crate::orchestrator::RuntimeCapabilityBlocker,
 ) -> ToolCallExecutionResult {
     metrics::record_tool_call(false);
+    let blocker_kind = runtime_capability_blocker_kind(blocker);
+    let assessment_kind = match blocker_kind {
+        crate::agent::WorkflowBlockerKind::RuntimeBlocked => {
+            crate::agent::tool_outcome::ToolFailureKind::Retryable
+        }
+        crate::agent::WorkflowBlockerKind::Unsupported => {
+            crate::agent::tool_outcome::ToolFailureKind::Capability
+        }
+        crate::agent::WorkflowBlockerKind::NeedsUserFacts
+        | crate::agent::WorkflowBlockerKind::NeedsUserChoice
+        | crate::agent::WorkflowBlockerKind::NeedsConfirmation
+        | crate::agent::WorkflowBlockerKind::ProbeFailed
+        | crate::agent::WorkflowBlockerKind::RetryLater
+        | crate::agent::WorkflowBlockerKind::TaskBlocked => {
+            crate::agent::tool_outcome::ToolFailureKind::Capability
+        }
+    };
     let payload = serde_json::json!({
         "error": format!(
             "tool '{}' is no longer callable because sub-capability '{}' is {:?}",
@@ -64,8 +151,29 @@ fn capability_blocked_tool_execution_result(
     });
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&payload.to_string()),
-        failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Capability),
-        blocker: None,
+        failure_kind: Some(assessment_kind),
+        blocker: Some(match blocker_kind {
+            crate::agent::WorkflowBlockerKind::RuntimeBlocked => {
+                crate::agent::WorkflowBlocker::runtime_blocked(runtime_capability_blocker_summary(
+                    tool_name, blocker,
+                ))
+            }
+            crate::agent::WorkflowBlockerKind::Unsupported => {
+                crate::agent::WorkflowBlocker::unsupported(runtime_capability_blocker_summary(
+                    tool_name, blocker,
+                ))
+            }
+            crate::agent::WorkflowBlockerKind::NeedsUserFacts
+            | crate::agent::WorkflowBlockerKind::NeedsUserChoice
+            | crate::agent::WorkflowBlockerKind::NeedsConfirmation
+            | crate::agent::WorkflowBlockerKind::ProbeFailed
+            | crate::agent::WorkflowBlockerKind::RetryLater
+            | crate::agent::WorkflowBlockerKind::TaskBlocked => {
+                crate::agent::WorkflowBlocker::runtime_blocked(runtime_capability_blocker_summary(
+                    tool_name, blocker,
+                ))
+            }
+        }),
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
@@ -74,12 +182,25 @@ fn capability_blocked_tool_execution_result(
 
 #[cold]
 #[inline(never)]
-fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
+fn denied_tool_execution_result(tool_name: &str, reason: &str) -> ToolCallExecutionResult {
     let assessment = denied_tool_assessment(reason);
+    let blocker = match assessment.kind {
+        crate::agent::tool_outcome::ToolFailureKind::Retryable => {
+            crate::agent::WorkflowBlocker::retry_later(format!(
+                "tool `{tool_name}`; reason `{reason}`"
+            ))
+        }
+        crate::agent::tool_outcome::ToolFailureKind::Capability
+        | crate::agent::tool_outcome::ToolFailureKind::Permanent => {
+            crate::agent::WorkflowBlocker::unsupported(format!(
+                "tool `{tool_name}`; reason `{reason}`"
+            ))
+        }
+    };
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(reason)),
         failure_kind: Some(assessment.kind),
-        blocker: None,
+        blocker: Some(blocker),
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
@@ -172,7 +293,7 @@ fn execute_tool_call(
         Ok(crate::tools::ToolExecutionGateDecision::Allow(permit)) => permit,
         Ok(crate::tools::ToolExecutionGateDecision::Deny { reason }) => {
             log::info!("[agent_tool] {} denied by governance: {}", tc.name, reason);
-            return denied_tool_execution_result(&reason);
+            return denied_tool_execution_result(&tc.name, &reason);
         }
         Err(error) => {
             return execute_error_tool_execution_result(&tc.name, &tc.input, false, &error);
@@ -189,7 +310,7 @@ fn execute_tool_call(
                     error
                 );
             }
-            denied_tool_execution_result(reason)
+            denied_tool_execution_result(&tc.name, reason)
         }
         ToolDecision::Allow => {
             if let Some(blocker) = registry.runtime_capability_blocker(&tc.name) {
@@ -235,7 +356,9 @@ fn execute_tool_call(
                         ToolCallExecutionResult {
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: outcome.failure_kind.map(tool_failure_kind_from_outcome),
-                            blocker: Some(blocker),
+                            blocker: Some(crate::agent::workflow_blocker_from_tool_blocker(
+                                &blocker,
+                            )),
                             call_succeeded: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,

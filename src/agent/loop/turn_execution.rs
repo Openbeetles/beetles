@@ -50,8 +50,7 @@ fn should_emit_regular_foreground_blocked_progress(
     request_semantics: crate::agent::request_semantics::RequestSemantics,
     any_tool_used: bool,
     delivery: &DeliverySession<'_>,
-    blocker: Option<&crate::tools::ToolExecutionBlocker>,
-    content: &str,
+    blocker: Option<&crate::agent::WorkflowBlocker>,
 ) -> bool {
     use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 
@@ -60,8 +59,7 @@ fn should_emit_regular_foreground_blocked_progress(
         && matches!(request_semantics.action_family, ActionFamily::ActiveAction)
         && delivery.report().action_progress_updates_sent > 0
         && delivery.report().terminal_progress_updates_sent == 0
-        && (blocker.is_some()
-            || super::reply_finalize::looks_like_truthful_blocker_or_input_request(content))
+        && blocker.is_some()
 }
 
 fn render_tool_blocker_field_list(fields: &[String]) -> String {
@@ -73,39 +71,216 @@ fn render_tool_blocker_field_list(fields: &[String]) -> String {
 }
 
 fn render_tool_blocker_option_list(
-    options: &[crate::tools::ToolClarificationOption],
+    options: &[crate::agent::WorkflowClarificationOption],
 ) -> Option<String> {
     let values = options
         .iter()
-        .map(|option| option.value.trim())
-        .filter(|value| !value.is_empty())
+        .filter_map(|option| {
+            let value = option.value.trim();
+            if value.is_empty() {
+                return None;
+            }
+            let label = option.label.trim();
+            if label.is_empty() || label.eq_ignore_ascii_case(value) {
+                Some(value.to_string())
+            } else {
+                Some(format!("{label} (`{value}`)"))
+            }
+        })
         .collect::<Vec<_>>();
     (!values.is_empty()).then(|| values.join(" / "))
 }
 
-fn render_programmatic_clarification_question(
-    blocker: &crate::tools::ToolExecutionBlocker,
+fn render_tool_clarification_field_prompt(
+    field: &crate::agent::WorkflowClarificationField,
+    blocker_kind: crate::agent::WorkflowBlockerKind,
     loc: UiLocale,
 ) -> String {
-    if blocker.kind != crate::tools::ToolExecutionBlockerKind::NeedsUserFacts {
-        return blocker.summary.trim().to_string();
+    let field_name = format!("`{}`", field.key.trim());
+    if let Some(options) = render_tool_blocker_option_list(&field.options) {
+        return match blocker_kind {
+            crate::agent::WorkflowBlockerKind::NeedsUserChoice
+            | crate::agent::WorkflowBlockerKind::NeedsConfirmation => match loc {
+                UiLocale::Zh => format!("{field_name}（可选值：{options}）"),
+                UiLocale::En => format!("{field_name} (allowed values: {options})"),
+            },
+            _ => match loc {
+                UiLocale::Zh => format!("{field_name}（可选值：{options}）"),
+                UiLocale::En => format!("{field_name} (allowed values: {options})"),
+            },
+        };
     }
-    if blocker.clarification_fields.len() == 1 {
-        let field = &blocker.clarification_fields[0];
-        let field_name = format!("`{}`", field.key.trim());
-        if let Some(options) = render_tool_blocker_option_list(&field.options) {
+    field_name
+}
+
+fn render_tool_clarification_field_list(
+    blocker: &crate::agent::WorkflowBlocker,
+    loc: UiLocale,
+) -> Option<String> {
+    let rendered = blocker
+        .clarification
+        .as_ref()
+        .map(|clarification| clarification.fields.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            let key = field.key.trim();
+            if key.is_empty() {
+                return None;
+            }
+            Some(match loc {
+                UiLocale::Zh => format!(
+                    "{}. {}",
+                    idx + 1,
+                    render_tool_clarification_field_prompt(field, blocker.kind, loc)
+                ),
+                UiLocale::En => format!(
+                    "{}. {}",
+                    idx + 1,
+                    render_tool_clarification_field_prompt(field, blocker.kind, loc)
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    (!rendered.is_empty()).then(|| match loc {
+        UiLocale::Zh => rendered.join("；"),
+        UiLocale::En => rendered.join("; "),
+    })
+}
+
+pub(super) fn render_programmatic_clarification_question(
+    blocker: &crate::agent::WorkflowBlocker,
+    loc: UiLocale,
+) -> String {
+    match blocker.kind {
+        crate::agent::WorkflowBlockerKind::ProbeFailed => {
+            return match loc {
+                UiLocale::Zh => format!("这一步的探测失败了：{}。", blocker.summary.trim()),
+                UiLocale::En => format!(
+                    "This step failed during probing: {}.",
+                    blocker.summary.trim()
+                ),
+            };
+        }
+        crate::agent::WorkflowBlockerKind::RuntimeBlocked => {
             return match loc {
                 UiLocale::Zh => {
-                    format!("要继续这一步，还需要你告诉我 {field_name}。可选值：{options}。")
+                    format!("这一步当前被运行时条件阻塞：{}。", blocker.summary.trim())
                 }
+                UiLocale::En => format!(
+                    "This step is currently blocked by runtime conditions: {}.",
+                    blocker.summary.trim()
+                ),
+            };
+        }
+        crate::agent::WorkflowBlockerKind::Unsupported => {
+            return match loc {
+                UiLocale::Zh => format!("这一步当前不可用：{}。", blocker.summary.trim()),
                 UiLocale::En => {
-                    format!("To continue, I still need {field_name}. Allowed values: {options}.")
+                    format!(
+                        "This step is currently unsupported: {}.",
+                        blocker.summary.trim()
+                    )
                 }
             };
         }
-        return match loc {
-            UiLocale::Zh => format!("要继续这一步，还需要你提供 {field_name}。"),
-            UiLocale::En => format!("To continue, I still need {field_name}."),
+        crate::agent::WorkflowBlockerKind::RetryLater => {
+            return match loc {
+                UiLocale::Zh => format!("这一步当前还不能继续：{}。", blocker.summary.trim()),
+                UiLocale::En => {
+                    format!("This step cannot continue yet: {}.", blocker.summary.trim())
+                }
+            };
+        }
+        crate::agent::WorkflowBlockerKind::TaskBlocked => {
+            return match loc {
+                UiLocale::Zh => format!("这项工作流当前被阻塞：{}。", blocker.summary.trim()),
+                UiLocale::En => {
+                    format!(
+                        "This workflow is currently blocked: {}.",
+                        blocker.summary.trim()
+                    )
+                }
+            };
+        }
+        crate::agent::WorkflowBlockerKind::NeedsUserFacts
+        | crate::agent::WorkflowBlockerKind::NeedsUserChoice
+        | crate::agent::WorkflowBlockerKind::NeedsConfirmation => {}
+    }
+    let clarification_fields = blocker
+        .clarification
+        .as_ref()
+        .map(|clarification| clarification.fields.as_slice())
+        .unwrap_or(&[]);
+    if clarification_fields.len() == 1 {
+        let field = &clarification_fields[0];
+        let field_name = format!("`{}`", field.key.trim());
+        if let Some(options) = render_tool_blocker_option_list(&field.options) {
+            return match blocker.kind {
+                crate::agent::WorkflowBlockerKind::NeedsUserChoice => match loc {
+                    UiLocale::Zh => {
+                        format!("要继续这一步，还需要你选择 {field_name}。可选值：{options}。")
+                    }
+                    UiLocale::En => {
+                        format!("To continue, I still need you to choose {field_name}. Allowed values: {options}.")
+                    }
+                },
+                crate::agent::WorkflowBlockerKind::NeedsConfirmation => match loc {
+                    UiLocale::Zh => {
+                        format!("要继续这一步，还需要你明确确认 {field_name}。可选值：{options}。")
+                    }
+                    UiLocale::En => {
+                        format!(
+                            "To continue, I still need you to confirm {field_name}. Allowed values: {options}."
+                        )
+                    }
+                },
+                _ => match loc {
+                    UiLocale::Zh => {
+                        format!("要继续这一步，还需要你告诉我 {field_name}。可选值：{options}。")
+                    }
+                    UiLocale::En => {
+                        format!(
+                            "To continue, I still need {field_name}. Allowed values: {options}."
+                        )
+                    }
+                },
+            };
+        }
+        return match blocker.kind {
+            crate::agent::WorkflowBlockerKind::NeedsUserChoice => match loc {
+                UiLocale::Zh => format!("要继续这一步，还需要你选择 {field_name}。"),
+                UiLocale::En => format!("To continue, I still need you to choose {field_name}."),
+            },
+            crate::agent::WorkflowBlockerKind::NeedsConfirmation => match loc {
+                UiLocale::Zh => format!("要继续这一步，还需要你明确确认 {field_name}。"),
+                UiLocale::En => format!("To continue, I still need you to confirm {field_name}."),
+            },
+            _ => match loc {
+                UiLocale::Zh => format!("要继续这一步，还需要你提供 {field_name}。"),
+                UiLocale::En => format!("To continue, I still need {field_name}."),
+            },
+        };
+    }
+    if let Some(fields) = render_tool_clarification_field_list(blocker, loc) {
+        return match blocker.kind {
+            crate::agent::WorkflowBlockerKind::NeedsUserChoice => match loc {
+                UiLocale::Zh => format!("要继续这一步，还需要你完成这些选择：{fields}。"),
+                UiLocale::En => {
+                    format!("To continue, I still need you to make these choices: {fields}.")
+                }
+            },
+            crate::agent::WorkflowBlockerKind::NeedsConfirmation => match loc {
+                UiLocale::Zh => format!("要继续这一步，还需要你完成这些确认：{fields}。"),
+                UiLocale::En => {
+                    format!("To continue, I still need these confirmations: {fields}.")
+                }
+            },
+            _ => match loc {
+                UiLocale::Zh => format!("要继续这一步，还需要你补充这些信息：{fields}。"),
+                UiLocale::En => format!("To continue, I still need these facts: {fields}."),
+            },
         };
     }
     if !blocker.missing_fields.is_empty() {
@@ -449,6 +624,7 @@ pub(super) fn execute_turn(
             effective_reply_surface = reply_surface.promote_for_runtime_tools(
                 &successful_tool_names,
                 external_content_used,
+                false,
                 &content,
             );
 
@@ -580,6 +756,7 @@ pub(super) fn execute_turn(
         effective_reply_surface = reply_surface.promote_for_runtime_tools(
             &successful_tool_names,
             external_content_used,
+            tool_round_completion.blocker.is_some(),
             final_content.as_str(),
         );
     }
@@ -603,7 +780,6 @@ pub(super) fn execute_turn(
         any_tool_used,
         &delivery,
         tool_round_completion.blocker.as_ref(),
-        &final_content,
     ) {
         delivery.emit_foreground_work_blocked();
     }

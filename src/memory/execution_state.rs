@@ -556,18 +556,9 @@ fn build_recent_observation_working_set(
             .push("deliver current primary answer before more tool work".to_string());
     }
     if let Some(blocker) = observation.blocker.as_ref() {
-        let hint = match blocker.kind.trim() {
-            "needs_user_facts" => "ask only for the missing user facts before continuing",
-            "probe_failed" => "explain the probe failure clearly before asking for corrected facts",
-            "unsupported" => "state the unsupported path clearly before choosing another route",
-            "retryable" => "decide whether to retry or route around the retryable blocker",
-            "capability" => {
-                "state the capability blocker clearly and switch to an alternative path"
-            }
-            "permanent" => "state the permanent blocker clearly and switch to an alternative path",
-            "mixed" => "separate retryable and hard blockers before continuing",
-            _ => "state the blocker clearly before continuing",
-        };
+        let hint = crate::agent::parse_workflow_outcome_kind(&blocker.kind)
+            .map(crate::agent::WorkflowOutcomeKind::next_action_hint)
+            .unwrap_or("state the blocker clearly before continuing");
         grounding.next_best_actions.push(hint.to_string());
     }
     grounding.latest_observations = normalize_execution_state_list(grounding.latest_observations);

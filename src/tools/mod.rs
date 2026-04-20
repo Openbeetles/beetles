@@ -363,7 +363,9 @@ pub enum ToolExecutionFailureKind {
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionBlockerKind {
     NeedsUserFacts,
+    NeedsUserChoice,
     ProbeFailed,
+    RuntimeBlocked,
     Unsupported,
 }
 
@@ -396,6 +398,61 @@ pub struct ToolExecutionBlocker {
     pub missing_fields: Vec<String>,
     #[serde(default)]
     pub clarification_fields: Vec<ToolClarificationField>,
+}
+
+impl ToolExecutionBlocker {
+    pub fn needs_user_facts(
+        summary: impl Into<String>,
+        missing_fields: Vec<String>,
+        clarification_fields: Vec<ToolClarificationField>,
+    ) -> Self {
+        Self {
+            kind: ToolExecutionBlockerKind::NeedsUserFacts,
+            summary: summary.into(),
+            missing_fields,
+            clarification_fields,
+        }
+    }
+
+    pub fn needs_user_choice(
+        summary: impl Into<String>,
+        missing_fields: Vec<String>,
+        clarification_fields: Vec<ToolClarificationField>,
+    ) -> Self {
+        Self {
+            kind: ToolExecutionBlockerKind::NeedsUserChoice,
+            summary: summary.into(),
+            missing_fields,
+            clarification_fields,
+        }
+    }
+
+    pub fn probe_failed(summary: impl Into<String>) -> Self {
+        Self {
+            kind: ToolExecutionBlockerKind::ProbeFailed,
+            summary: summary.into(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
+        }
+    }
+
+    pub fn runtime_blocked(summary: impl Into<String>) -> Self {
+        Self {
+            kind: ToolExecutionBlockerKind::RuntimeBlocked,
+            summary: summary.into(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
+        }
+    }
+
+    pub fn unsupported(summary: impl Into<String>) -> Self {
+        Self {
+            kind: ToolExecutionBlockerKind::Unsupported,
+            summary: summary.into(),
+            missing_fields: Vec::new(),
+            clarification_fields: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
