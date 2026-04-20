@@ -358,7 +358,7 @@ impl Tool for ContactsDirectoryTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage a local contacts directory the agent can use for people lookup and future mail/calendar composition. Ops: status, list, lookup, upsert, delete, provider_status."
+        "Manage a local contacts directory the agent can use for people lookup and future mail/calendar composition. Ops: status, list, lookup, upsert, delete, provider_status. For office account readiness, diagnostics, or routing status for remote contacts providers, start with office_status. If a remote office contacts account needs onboarding, reconfiguration, or repair, use office_config."
     }
 
     fn schema(&self) -> &str {

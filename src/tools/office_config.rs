@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    parse_public_account_upsert_request_value, OfficeAccountOnboardingDisposition,
-    OfficeCapability, OfficeConfigAssessment, OfficeConfigManagementService, OfficeProviderSchema,
-    OfficeResolveRequest,
+    office_config_op_doctrines, office_tool_doctrine, parse_public_account_upsert_request_value,
+    OfficeAccountOnboardingDisposition, OfficeCapability, OfficeConfigAssessment,
+    OfficeConfigManagementService, OfficeProviderSchema, OfficeResolveRequest,
 };
 use crate::tools::{
     http_bridge::ToolContextHttpClient, office_args::parse_identity_class_value, parse_tool_args,
@@ -125,11 +125,15 @@ impl Tool for OfficeConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "Configure, reconfigure, inspect, resolve, revoke, or probe shared office accounts for mail, calendar, documents, and contacts. Use this for account onboarding, provider schema lookup, account resolution, and account repair."
+        office_tool_doctrine(self.name())
+            .map(|doctrine| doctrine.description)
+            .unwrap_or(
+                "Configure, reconfigure, and repair shared office accounts for mail, calendar, documents, and contacts.",
+            )
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: provider_schema|resolve_account|apply_account"},"capability":{"type":"string","description":"Optional office capability hint: mail|calendar|documents|contacts_directory"},"provider":{"type":"string","description":"Optional provider hint when the user explicitly chose a provider family."},"identity_class":{"type":"string","description":"Required for apply_account. Account identity class: work|personal|family|shared|other."},"account_label":{"type":"string","description":"Optional human-readable account label."},"display_name":{"type":"string","description":"Optional display name or label hint."},"external_account_id":{"type":"string","description":"Optional explicit external account identity when it is not obvious from email/account_id/username."},"email":{"type":"string","description":"Email address for mail-style providers."},"account_id":{"type":"string","description":"Account identifier for providers that use account IDs instead of email."},"username":{"type":"string","description":"Username for providers that use usernames instead of email."},"password":{"type":"string","description":"Password or app password for password-style authentication."},"access_token":{"type":"string","description":"Access token, app secret, or other token-style credential."},"refresh_token":{"type":"string","description":"Optional refresh token when the provider supports it."},"token_endpoint":{"type":"string","description":"Optional token endpoint override for providers that need it."},"imap_host":{"type":"string","description":"IMAP server hostname for IMAP/SMTP providers."},"imap_port":{"type":"integer","description":"Optional IMAP port override."},"imap_tls":{"type":"boolean","description":"Optional IMAP TLS override."},"smtp_host":{"type":"string","description":"SMTP server hostname for IMAP/SMTP providers."},"smtp_port":{"type":"integer","description":"Optional SMTP port override."},"smtp_tls":{"type":"boolean","description":"Optional SMTP TLS override."},"metadata":{"type":"object","description":"Optional provider-specific factual fields such as corp_id, app_id, calendar_id, root_path, or space_id when the provider needs them."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation. Mainline path: provider_schema -> apply_account -> resolve_account (when routing is ambiguous). Repair/advanced paths: probe|revoke|inspect|assess."},"capability":{"type":"string","description":"Optional office capability hint: mail|calendar|documents|contacts_directory"},"provider":{"type":"string","description":"Optional provider hint when the user explicitly chose a provider family."},"identity_class":{"type":"string","description":"Required for apply_account. Account identity class: work|personal|family|shared|other."},"account_label":{"type":"string","description":"Optional human-readable account label."},"display_name":{"type":"string","description":"Optional display name or label hint."},"external_account_id":{"type":"string","description":"Optional explicit external account identity when it is not obvious from email/account_id/username."},"email":{"type":"string","description":"Email address for mail-style providers."},"account_id":{"type":"string","description":"Account identifier for providers that use account IDs instead of email."},"username":{"type":"string","description":"Username for providers that use usernames instead of email."},"password":{"type":"string","description":"Password or app password for password-style authentication."},"access_token":{"type":"string","description":"Access token, app secret, or other token-style credential."},"refresh_token":{"type":"string","description":"Optional refresh token when the provider supports it."},"token_endpoint":{"type":"string","description":"Optional token endpoint override for providers that need it."},"imap_host":{"type":"string","description":"IMAP server hostname for IMAP/SMTP providers."},"imap_port":{"type":"integer","description":"Optional IMAP port override."},"imap_tls":{"type":"boolean","description":"Optional IMAP TLS override."},"smtp_host":{"type":"string","description":"SMTP server hostname for IMAP/SMTP providers."},"smtp_port":{"type":"integer","description":"Optional SMTP port override."},"smtp_tls":{"type":"boolean","description":"Optional SMTP TLS override."},"metadata":{"type":"object","description":"Optional provider-specific factual fields such as corp_id, app_id, calendar_id, root_path, or space_id when the provider needs them."}},"required":["op"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -344,8 +348,8 @@ impl Tool for OfficeConfigTool {
     fn governance_examples(&self) -> &'static [&'static str] {
         &[
             r#"{"op":"provider_schema","capability":"mail"}"#,
-            r#"{"op":"resolve_account","capability":"mail"}"#,
             r#"{"op":"apply_account"}"#,
+            r#"{"op":"resolve_account","capability":"mail"}"#,
         ]
     }
 }
@@ -385,6 +389,13 @@ fn tool_facing_provider_kind(obj: &serde_json::Map<String, Value>) -> Option<Str
 }
 
 fn office_config_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    let options = office_config_op_doctrines()
+        .iter()
+        .map(|doctrine| ToolClarificationOption {
+            value: doctrine.op.to_string(),
+            label: doctrine.op.to_string(),
+        })
+        .collect::<Vec<_>>();
     Ok(ToolExecutionOutcome::text(
         serde_json::json!({
             "op": op,
@@ -403,36 +414,7 @@ fn office_config_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutc
             required: true,
             secret: false,
             multiple: false,
-            options: vec![
-                ToolClarificationOption {
-                    value: "inspect".to_string(),
-                    label: "inspect".to_string(),
-                },
-                ToolClarificationOption {
-                    value: "assess".to_string(),
-                    label: "assess".to_string(),
-                },
-                ToolClarificationOption {
-                    value: "provider_schema".to_string(),
-                    label: "provider_schema".to_string(),
-                },
-                ToolClarificationOption {
-                    value: "resolve_account".to_string(),
-                    label: "resolve_account".to_string(),
-                },
-                ToolClarificationOption {
-                    value: "apply_account".to_string(),
-                    label: "apply_account".to_string(),
-                },
-                ToolClarificationOption {
-                    value: "revoke".to_string(),
-                    label: "revoke".to_string(),
-                },
-                ToolClarificationOption {
-                    value: "probe".to_string(),
-                    label: "probe".to_string(),
-                },
-            ],
+            options,
         }],
     )))
 }
@@ -1511,5 +1493,54 @@ mod tests {
                 "public office_config schema should describe visible onboarding field marker {visible}: {schema}"
             );
         }
+    }
+
+    #[test]
+    fn office_config_description_keeps_full_capability_but_highlights_mainline_ops() {
+        let fixture = build_fixture();
+        let description = fixture.tool.description();
+
+        assert!(
+            description.contains("provider_schema"),
+            "office_config description should explicitly call out provider_schema as part of the mainline path: {description}"
+        );
+        assert!(
+            description.contains("apply_account"),
+            "office_config description should explicitly call out apply_account as part of the mainline path: {description}"
+        );
+        assert!(
+            description.contains("repair") || description.contains("advanced"),
+            "office_config description should preserve repair/advanced management depth: {description}"
+        );
+    }
+
+    #[test]
+    fn office_config_choice_outcome_orders_mainline_ops_before_repair_ops() {
+        let outcome = office_config_op_choice_outcome(None).expect("choice outcome");
+        let blocker = outcome.blocker.expect("blocker");
+        let op_field = blocker
+            .clarification_fields
+            .into_iter()
+            .find(|field| field.key == "op")
+            .expect("op field");
+        let values = op_field
+            .options
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values,
+            vec![
+                "provider_schema".to_string(),
+                "apply_account".to_string(),
+                "resolve_account".to_string(),
+                "probe".to_string(),
+                "revoke".to_string(),
+                "inspect".to_string(),
+                "assess".to_string(),
+            ],
+            "office_config should list mainline ops before repair/advanced ops"
+        );
     }
 }

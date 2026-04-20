@@ -2204,6 +2204,18 @@ mod tests {
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         {
+            let office_status = descriptions
+                .get("office_status")
+                .expect("office_status description");
+            assert!(
+                office_status.contains("first"),
+                "office_status description should teach the LLM to start here for office state questions"
+            );
+            assert!(
+                office_status.contains("diagnostic") || office_status.contains("repair"),
+                "office_status description should explain readiness/repair decision ownership"
+            );
+
             let office_config = descriptions
                 .get("office_config")
                 .expect("office_config description");
@@ -2216,6 +2228,12 @@ mod tests {
             assert!(
                 office_config.contains("mail"),
                 "expected office_config description to mention mail account onboarding"
+            );
+            assert!(
+                office_config.contains("provider_schema")
+                    && office_config.contains("apply_account")
+                    && office_config.contains("repair"),
+                "office_config description should keep full management depth while highlighting the mainline ops"
             );
             assert!(
                 !office_config.contains("http_request"),
@@ -2257,6 +2275,44 @@ mod tests {
             assert!(
                 http_request.description().contains("external HTTP APIs"),
                 "http_request description must be narrowed to external HTTP APIs"
+            );
+        }
+    }
+
+    #[test]
+    fn mail_calendar_documents_and_contacts_point_status_questions_to_office_status() {
+        let descriptions = user_visible_tool_descriptions_from_default_registry();
+
+        #[cfg(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        for tool_name in ["mail", "calendar", "documents", "contacts_directory"] {
+            let description = descriptions
+                .get(tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} description"));
+            assert!(
+                description.contains("office_status"),
+                "{tool_name} description should point office status/readiness questions to office_status"
+            );
+        }
+    }
+
+    #[test]
+    fn mail_calendar_documents_and_contacts_point_onboarding_and_repair_to_office_config() {
+        let descriptions = user_visible_tool_descriptions_from_default_registry();
+
+        #[cfg(all(
+            feature = "capability_office",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
+        for tool_name in ["mail", "calendar", "documents", "contacts_directory"] {
+            let description = descriptions
+                .get(tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} description"));
+            assert!(
+                description.contains("office_config"),
+                "{tool_name} description should point onboarding/repair to office_config"
             );
         }
     }

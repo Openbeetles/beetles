@@ -537,6 +537,8 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 用途：列出已接入账号。
 
+这组 HTTP API 继续保持完整的公开账号管理合同，不会为了官方 UI 或 LLM 工具面简化而缩窄。对 LLM 来说，`office_status` 是状态/可用性入口，`office_config` 是管理入口。
+
 鉴权：`配对码`
 
 可选查询参数：
@@ -567,6 +569,8 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 **POST /api/config/accounts**
 
 用途：创建账号，或更新账号的基础信息。
+
+这个 API 继续保留完整的公开账号管理能力，供第三方前端、脚本和其他 consumer 使用。官方 UI 只是其中一个 consumer；LLM 侧 office 工具则在同一套 office authority 之上走更窄的主线路径。
 
 鉴权：`配对码 + CSRF`
 

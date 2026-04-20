@@ -1,0 +1,7 @@
+interface:
+  display_name: "Office Suite Doctrine"
+  short_description: "Official Beetle office tool routing and onboarding doctrine"
+  default_prompt: "Use $office-suite-doctrine to route office status, onboarding, repair, and provider-family decisions correctly."
+
+policy:
+  allow_implicit_invocation: true

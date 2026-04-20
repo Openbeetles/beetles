@@ -63,12 +63,12 @@
 
 | 工具名 | 做什么 | 什么时候会出现 |
 |--------|--------|----------------|
-| `calendar` | 管理日历事件 | 办公能力；主机侧部署 |
-| `mail` | 查看、搜索、发送、回复和转发邮件 | 办公能力；主机侧部署 |
-| `contacts_directory` | 管理联系人目录，供邮件和日历查人 | 办公能力；主机侧部署 |
-| `documents` | 查看、读取、搜索和总结文档库内容 | 办公能力；主机侧部署 |
-| `office_config` | 管理办公账号和相关配置 | 办公能力；主机侧部署 |
-| `office_status` | 查看办公账号是否配置好、是否可用 | 办公能力；主机侧部署 |
+| `calendar` | 管理日历事件；办公账号状态/可用性先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `mail` | 查看、搜索、发送、回复和转发邮件；办公账号状态/可用性先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `contacts_directory` | 管理联系人目录，供邮件和日历查人；远端办公账号状态先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `documents` | 查看、读取、搜索和总结文档库内容；办公账号状态/可用性先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `office_config` | 完整的办公账号管理入口；主线路径是 `provider_schema`，再 `apply_account`，账号歧义时用 `resolve_account` | 办公能力；主机侧部署 |
+| `office_status` | LLM 侧唯一的办公账号状态/可用性/诊断入口 | 办公能力；主机侧部署 |
 
 ## 硬件与语音
 

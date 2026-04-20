@@ -38,6 +38,8 @@ mod resolver;
 #[cfg(feature = "capability_office")]
 mod service;
 mod status;
+#[cfg(feature = "capability_office")]
+mod tool_doctrine;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -131,6 +133,12 @@ pub use status::{
     OfficeAccountRuntimeStatus, OfficeAccountStatusSummary, OfficeRuntimeStatusStore,
     REL_PATH_OFFICE_RUNTIME_STATUS,
 };
+#[cfg(feature = "capability_office")]
+pub use tool_doctrine::{
+    office_config_op_doctrine, office_config_op_doctrines, office_tool_doctrine,
+    office_tool_doctrines, OfficeConfigOpDoctrine, OfficeConfigOpTier, OfficeToolDoctrine,
+    OfficeToolRole,
+};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -148,3 +156,51 @@ pub use wecom::{
     request_wecom_json_ureq, WecomApiEnvelope, WecomAuthCredential, WecomTokenPayload,
     WECOM_DEFAULT_BASE_URL,
 };
+
+#[cfg(all(test, feature = "capability_office"))]
+mod tool_doctrine_tests {
+    use super::{
+        office_config_op_doctrine, office_tool_doctrine, OfficeConfigOpTier, OfficeToolRole,
+    };
+
+    #[test]
+    fn office_status_is_the_unique_status_entrypoint() {
+        let office_status =
+            office_tool_doctrine("office_status").expect("office_status doctrine must exist");
+        let office_config =
+            office_tool_doctrine("office_config").expect("office_config doctrine must exist");
+
+        assert_eq!(office_status.role, OfficeToolRole::StatusEntry);
+        assert_eq!(office_config.role, OfficeToolRole::ManagementEntry);
+    }
+
+    #[test]
+    fn office_config_keeps_full_management_ops_but_marks_mainline_priority() {
+        let provider_schema = office_config_op_doctrine("provider_schema")
+            .expect("provider_schema doctrine must exist");
+        let apply_account =
+            office_config_op_doctrine("apply_account").expect("apply_account doctrine must exist");
+        let resolve_account = office_config_op_doctrine("resolve_account")
+            .expect("resolve_account doctrine must exist");
+        let inspect = office_config_op_doctrine("inspect").expect("inspect doctrine must exist");
+        let assess = office_config_op_doctrine("assess").expect("assess doctrine must exist");
+        let probe = office_config_op_doctrine("probe").expect("probe doctrine must exist");
+        let revoke = office_config_op_doctrine("revoke").expect("revoke doctrine must exist");
+
+        assert_eq!(provider_schema.tier, OfficeConfigOpTier::Mainline);
+        assert!(provider_schema.llm_primary);
+        assert_eq!(apply_account.tier, OfficeConfigOpTier::Mainline);
+        assert!(apply_account.llm_primary);
+        assert_eq!(resolve_account.tier, OfficeConfigOpTier::Mainline);
+        assert!(resolve_account.llm_primary);
+
+        assert_eq!(inspect.tier, OfficeConfigOpTier::Advanced);
+        assert!(!inspect.llm_primary);
+        assert_eq!(assess.tier, OfficeConfigOpTier::Advanced);
+        assert!(!assess.llm_primary);
+        assert_eq!(probe.tier, OfficeConfigOpTier::Repair);
+        assert!(!probe.llm_primary);
+        assert_eq!(revoke.tier, OfficeConfigOpTier::Repair);
+        assert!(!revoke.llm_primary);
+    }
+}

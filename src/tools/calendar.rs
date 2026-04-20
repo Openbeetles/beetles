@@ -670,7 +670,7 @@ impl Tool for CalendarTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by explicit identity hints and participant context when multiple accounts exist. Times accept Unix seconds or ISO8601."
+        "Manage persistent calendar events. Ops: list, get, create, update, delete, provider_status. Provider defaults to local. Remote providers can route by explicit identity hints and participant context when multiple accounts exist. For office account readiness, diagnostics, or routing status, start with office_status. If a remote calendar account needs onboarding, reconfiguration, or repair, use office_config. Times accept Unix seconds or ISO8601."
     }
 
     fn schema(&self) -> &str {

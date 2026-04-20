@@ -537,6 +537,8 @@ The response uses the same shape as one item from `GET /api/config/capabilities`
 
 Purpose: list connected accounts.
 
+This HTTP API remains the complete public account-management surface. It is not narrowed to match the official UI or the LLM-facing office tool surface. In the LLM tool path, `office_status` is the status/readiness entrypoint and `office_config` is the management entrypoint.
+
 Auth: `Pairing code`
 
 Optional query parameters:
@@ -567,6 +569,8 @@ Each item in `items` contains:
 **POST /api/config/accounts**
 
 Purpose: create an account or update its base information.
+
+This API keeps the complete public account-management contract for external consumers. The official UI is only one consumer; the LLM-facing office tools intentionally use a narrower mainline path on top of the same underlying office authority.
 
 Auth: `Pairing code + CSRF`
 

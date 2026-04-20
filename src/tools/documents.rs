@@ -642,7 +642,7 @@ impl Tool for DocumentsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Access office document libraries through shared account authority. Ops: provider_status, list, read, summarize, search. Provider can be omitted when office documents defaults, identity hints, or people/team context make routing unambiguous."
+        "Access office document libraries through shared account authority. Ops: provider_status, list, read, summarize, search. Provider can be omitted when office documents defaults, identity hints, or people/team context make routing unambiguous. For office account readiness, diagnostics, or routing status, start with office_status. If a documents account needs onboarding, reconfiguration, or repair, use office_config."
     }
 
     fn schema(&self) -> &str {

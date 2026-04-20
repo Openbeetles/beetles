@@ -63,12 +63,12 @@ For example, `task` and `remind_at` already exist by default, and gain more inte
 
 | Tool | What it does | When it appears |
 |------|--------------|-----------------|
-| `calendar` | Manage calendar events | Office capability; host deployments |
-| `mail` | View, search, send, reply to, and forward mail | Office capability; host deployments |
-| `contacts_directory` | Manage the contacts directory used by mail and calendar flows | Office capability; host deployments |
-| `documents` | List, read, search, and summarize document libraries | Office capability; host deployments |
-| `office_config` | Manage office accounts and related configuration | Office capability; host deployments |
-| `office_status` | Check whether office accounts are configured and usable | Office capability; host deployments |
+| `calendar` | Manage calendar events; use `office_status` for office account readiness and `office_config` for onboarding or repair | Office capability; host deployments |
+| `mail` | View, search, send, reply to, and forward mail; use `office_status` for office account readiness and `office_config` for onboarding or repair | Office capability; host deployments |
+| `contacts_directory` | Manage the contacts directory used by mail and calendar flows; use `office_status` for remote office account readiness and `office_config` for onboarding or repair | Office capability; host deployments |
+| `documents` | List, read, search, and summarize document libraries; use `office_status` for office account readiness and `office_config` for onboarding or repair | Office capability; host deployments |
+| `office_config` | Full office account management entrypoint; mainline is `provider_schema`, then `apply_account`, then `resolve_account` when routing is ambiguous | Office capability; host deployments |
+| `office_status` | The unique office status/readiness/diagnostics entrypoint for the LLM | Office capability; host deployments |
 
 ## Hardware And Voice
 

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::office::{
-    OfficeAccountAssessment, OfficeAuthoritySource, OfficeAuthoritySummary, OfficeCapability,
-    OfficeProbeAdapter, OfficeService, SnapshotOfficeAuthoritySource,
+    office_tool_doctrine, OfficeAccountAssessment, OfficeAuthoritySource, OfficeAuthoritySummary,
+    OfficeCapability, OfficeProbeAdapter, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
@@ -68,7 +68,9 @@ impl Tool for OfficeStatusTool {
     }
 
     fn description(&self) -> &'static str {
-        "Inspect office account authority, credential presence, runtime probe state, and capability routing status."
+        office_tool_doctrine(self.name())
+            .map(|doctrine| doctrine.description)
+            .unwrap_or("Inspect office account status, readiness, diagnostics, and routing.")
     }
 
     fn schema(&self) -> &str {
@@ -196,6 +198,32 @@ mod tests {
     use crate::tools::ToolExecutionBlockerKind;
     use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn office_status_description_claims_status_ownership() {
+        let tool = OfficeStatusTool::with_authority(Arc::new(SnapshotOfficeAuthoritySource::new(
+            OfficeService::new(
+                OfficeAccountRegistry::default(),
+                OfficeSelectionPolicy::default(),
+                Arc::new(StubOfficeCredentialStore),
+                Arc::new(StubRuntimeStatusStore),
+            ),
+        )));
+
+        let description = tool.description();
+        assert!(
+            description.contains("status") || description.contains("readiness"),
+            "office_status description should claim status/readiness ownership: {description}"
+        );
+        assert!(
+            description.contains("diagnostic") || description.contains("repair"),
+            "office_status description should explain readiness/repair decision ownership: {description}"
+        );
+        assert!(
+            description.contains("first"),
+            "office_status description should teach the LLM to start here for office state questions: {description}"
+        );
+    }
 
     #[derive(Default)]
     struct MemoryConfigFileStore {

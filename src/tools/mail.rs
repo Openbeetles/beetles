@@ -813,7 +813,7 @@ impl Tool for MailTool {
     }
 
     fn description(&self) -> &'static str {
-        "Use configured office mail accounts to inspect provider status, list, search, read, draft, send, reply, or forward mail. If a mail account is missing or needs repair, use office_config first."
+        "Use configured office mail accounts to inspect provider status, list, search, read, draft, send, reply, or forward mail. For office account readiness, diagnostics, or routing status, start with office_status. If a mail account is missing, needs onboarding, reconfiguration, or repair, use office_config."
     }
 
     fn schema(&self) -> &str {
