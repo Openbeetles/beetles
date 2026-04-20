@@ -159,12 +159,6 @@ impl ToolRollbackKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ToolMetadata {
     pub exposure: ToolExposure,
-    /// 普通用户 ingress 是否允许暴露给 LLM；task/stateful 默认允许。
-    pub allow_in_user_ingress: bool,
-    /// system ingress 是否允许调用；普通 task 默认允许，stateful/admin/debug 默认禁止。
-    pub allow_in_system_ingress: bool,
-    /// 内部系统通道（如 cron / heartbeat）是否允许调用；默认禁止。
-    pub allow_in_system_channel: bool,
     pub effect_class: ToolEffectClass,
     pub risk_level: ToolRiskLevel,
     pub approval_mode: ToolApprovalMode,
@@ -175,9 +169,6 @@ impl ToolMetadata {
     pub const fn task() -> Self {
         Self {
             exposure: ToolExposure::Task,
-            allow_in_user_ingress: true,
-            allow_in_system_ingress: true,
-            allow_in_system_channel: false,
             effect_class: ToolEffectClass::ReadOnly,
             risk_level: ToolRiskLevel::Low,
             approval_mode: ToolApprovalMode::Automatic,
@@ -188,9 +179,6 @@ impl ToolMetadata {
     pub const fn stateful() -> Self {
         Self {
             exposure: ToolExposure::Stateful,
-            allow_in_user_ingress: true,
-            allow_in_system_ingress: false,
-            allow_in_system_channel: false,
             effect_class: ToolEffectClass::PersistentStateWrite,
             risk_level: ToolRiskLevel::Medium,
             approval_mode: ToolApprovalMode::Automatic,
@@ -201,9 +189,6 @@ impl ToolMetadata {
     pub const fn admin() -> Self {
         Self {
             exposure: ToolExposure::Admin,
-            allow_in_user_ingress: false,
-            allow_in_system_ingress: false,
-            allow_in_system_channel: false,
             effect_class: ToolEffectClass::ConfigWrite,
             risk_level: ToolRiskLevel::Critical,
             approval_mode: ToolApprovalMode::OperatorOnly,
@@ -214,29 +199,11 @@ impl ToolMetadata {
     pub const fn debug() -> Self {
         Self {
             exposure: ToolExposure::Debug,
-            allow_in_user_ingress: false,
-            allow_in_system_ingress: false,
-            allow_in_system_channel: false,
             effect_class: ToolEffectClass::HostExecution,
             risk_level: ToolRiskLevel::Critical,
             approval_mode: ToolApprovalMode::OperatorOnly,
             rollback_kind: ToolRollbackKind::Irreversible,
         }
-    }
-
-    pub const fn with_system_channel(mut self, allowed: bool) -> Self {
-        self.allow_in_system_channel = allowed;
-        self
-    }
-
-    pub const fn with_user_ingress(mut self, allowed: bool) -> Self {
-        self.allow_in_user_ingress = allowed;
-        self
-    }
-
-    pub const fn with_system_ingress(mut self, allowed: bool) -> Self {
-        self.allow_in_system_ingress = allowed;
-        self
     }
 
     pub const fn with_effect_class(mut self, effect_class: ToolEffectClass) -> Self {
@@ -257,21 +224,6 @@ impl ToolMetadata {
     pub const fn with_rollback_kind(mut self, rollback_kind: ToolRollbackKind) -> Self {
         self.rollback_kind = rollback_kind;
         self
-    }
-
-    pub fn is_exposed_to_llm(self, ctx: &ToolPolicyContext<'_>) -> bool {
-        match self.exposure {
-            ToolExposure::Admin | ToolExposure::Debug => false,
-            ToolExposure::Task | ToolExposure::Stateful => {
-                if ctx.is_internal_system_channel() {
-                    self.allow_in_system_channel
-                } else if ctx.ingress == IngressKind::System {
-                    self.allow_in_system_ingress
-                } else {
-                    self.allow_in_user_ingress
-                }
-            }
-        }
     }
 
     pub fn default_execution_shape(self, tool_name: &str) -> ToolExecutionShape {

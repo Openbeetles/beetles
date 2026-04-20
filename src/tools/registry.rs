@@ -6,10 +6,11 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolApprovalMode, ToolCapabilityContract, ToolEffectClass, ToolExecutionGateDecision,
-    ToolExecutionGovernance, ToolExecutionGovernanceState, ToolExecutionOutcome,
-    ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest, ToolMetadata,
-    ToolPolicyContext, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
+    Tool, ToolApprovalMode, ToolCapabilityContract, ToolCatalogAuthority, ToolEffectClass,
+    ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
+    ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
+    ToolMetadata, ToolPolicyContext, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN,
+    MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -95,6 +96,7 @@ pub struct ToolRegistry {
     tools: IndexMap<&'static str, RegisteredTool>,
     execution_governance: Option<Arc<ToolExecutionGovernance>>,
     llm_visibility_overlay_provider: Option<LlmVisibilityOverlayProvider>,
+    llm_catalog_authority: Arc<ToolCatalogAuthority>,
 }
 
 impl Default for ToolRegistry {
@@ -109,6 +111,7 @@ impl ToolRegistry {
             tools: IndexMap::new(),
             execution_governance: None,
             llm_visibility_overlay_provider: None,
+            llm_catalog_authority: Arc::new(ToolCatalogAuthority::default()),
         }
     }
 
@@ -122,6 +125,15 @@ impl ToolRegistry {
 
     pub fn set_llm_visibility_overlay_provider(&mut self, provider: LlmVisibilityOverlayProvider) {
         self.llm_visibility_overlay_provider = Some(provider);
+    }
+
+    pub fn with_llm_catalog_authority(mut self, authority: Arc<ToolCatalogAuthority>) -> Self {
+        self.llm_catalog_authority = authority;
+        self
+    }
+
+    pub fn set_llm_catalog_authority(&mut self, authority: Arc<ToolCatalogAuthority>) {
+        self.llm_catalog_authority = authority;
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -153,6 +165,11 @@ impl ToolRegistry {
     /// API / 调试使用：返回当前注册顺序下的工具名列表。
     pub fn tool_names(&self) -> Vec<&'static str> {
         self.tools.keys().copied().collect()
+    }
+
+    pub fn missing_llm_catalog_entries(&self) -> Vec<String> {
+        self.llm_catalog_authority
+            .missing_entries(self.tools.keys().copied())
     }
 
     /// 该工具是否需要网络（从 Tool trait 推导）。未注册工具返回 false。
@@ -575,12 +592,21 @@ impl ToolRegistry {
 
     fn is_entry_llm_visible(
         &self,
-        entry: &RegisteredTool,
+        _entry: &RegisteredTool,
         tool_name: &str,
         policy: &ToolPolicyContext<'_>,
         overlay_set: Option<&crate::capability_package::CapabilityPackageToolPolicySet>,
     ) -> bool {
-        let base_visible = entry.metadata.is_exposed_to_llm(policy);
+        let Some(base_visibility) = self.llm_catalog_authority.get(tool_name) else {
+            return false;
+        };
+        let base_visible = if policy.is_internal_system_channel() {
+            base_visibility.internal_system_llm
+        } else if policy.ingress == crate::bus::IngressKind::System {
+            base_visibility.system_llm
+        } else {
+            base_visibility.user_llm
+        };
         let policy_visible = overlay_set.map_or(base_visible, |overlays| {
             overlays.llm_visibility_for(tool_name, policy, base_visible)
         });
@@ -1128,8 +1154,9 @@ pub fn build_default_registry(
         crate::build_device_capability_registry(config, services.platform.as_ref());
     let tool_execution_governance =
         Arc::new(ToolExecutionGovernance::new(services.platform.state_fs()));
-    let mut registry =
-        ToolRegistry::new().with_execution_governance(Arc::clone(&tool_execution_governance));
+    let mut registry = ToolRegistry::new()
+        .with_execution_governance(Arc::clone(&tool_execution_governance))
+        .with_llm_catalog_authority(Arc::new(crate::tools::build_default_llm_catalog_authority()));
     register_core_tools(&mut registry, config, services, &tool_execution_governance);
     #[cfg(all(
         feature = "capability_office",
@@ -1167,7 +1194,7 @@ pub fn build_default_registry(
 mod tests {
     use super::*;
     use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore};
-    use crate::tools::{ToolExecutionShape, ToolExposure, ToolMetadata};
+    use crate::tools::{ToolCatalogAuthority, ToolExecutionShape, ToolLlmVisibility, ToolMetadata};
     use std::sync::Mutex;
 
     static RUNTIME_CAPABILITY_TEST_GUARD: Mutex<()> = Mutex::new(());
@@ -1275,12 +1302,7 @@ mod tests {
             Ok(String::new())
         }
         fn metadata(&self) -> ToolMetadata {
-            ToolMetadata {
-                exposure: ToolExposure::Task,
-                allow_in_system_ingress: false,
-                allow_in_system_channel: true,
-                ..ToolMetadata::task()
-            }
+            ToolMetadata::task()
         }
     }
 
@@ -1298,7 +1320,7 @@ mod tests {
             Ok(String::new())
         }
         fn metadata(&self) -> ToolMetadata {
-            ToolMetadata::task().with_system_ingress(false)
+            ToolMetadata::task()
         }
     }
 
@@ -1485,7 +1507,7 @@ mod tests {
         }
 
         fn metadata(&self) -> ToolMetadata {
-            ToolMetadata::task().with_system_ingress(false)
+            ToolMetadata::task()
         }
 
         fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
@@ -1660,9 +1682,22 @@ mod tests {
         })
     }
 
+    fn synthetic_catalog(entries: &[(&str, ToolLlmVisibility)]) -> Arc<ToolCatalogAuthority> {
+        let mut authority = ToolCatalogAuthority::default();
+        for (name, visibility) in entries {
+            authority.insert(name, *visibility);
+        }
+        Arc::new(authority)
+    }
+
     #[test]
     fn llm_tool_specs_follow_runtime_policy() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("visible", ToolLlmVisibility::user_and_system()),
+            ("stateful", ToolLlmVisibility::user_only()),
+            ("internal_only", ToolLlmVisibility::internal_only()),
+            ("user_only_task", ToolLlmVisibility::user_only()),
+        ]));
         registry.register(Box::new(VisibleTool));
         registry.register(Box::new(StatefulTool));
         registry.register(Box::new(AdminTool));
@@ -1672,10 +1707,7 @@ mod tests {
         let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
         let user_specs = registry.tool_specs_for_llm_with_max(&user, 4096);
         let user_names: Vec<&str> = user_specs.iter().map(|spec| spec.name.as_str()).collect();
-        assert_eq!(
-            user_names,
-            vec!["visible", "stateful", "internal_only", "user_only_task"]
-        );
+        assert_eq!(user_names, vec!["visible", "stateful", "user_only_task"]);
 
         let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
         let system_specs = registry.tool_specs_for_llm_with_max(&system, 4096);
@@ -1686,6 +1718,41 @@ mod tests {
         let specs = registry.tool_specs_for_llm_with_max(&cron, 4096);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "internal_only");
+    }
+
+    #[test]
+    fn llm_tool_visibility_requires_explicit_catalog_membership() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(VisibleTool));
+
+        let user = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let system = ToolPolicyContext::new(crate::bus::IngressKind::System, "telegram");
+        let internal = ToolPolicyContext::new(crate::bus::IngressKind::System, "cron");
+
+        assert!(
+            registry.tool_specs_for_llm_with_max(&user, 4096).is_empty(),
+            "tools without explicit catalog membership must stay hidden from user ingress"
+        );
+        assert!(
+            registry
+                .tool_specs_for_llm_with_max(&system, 4096)
+                .is_empty(),
+            "tools without explicit catalog membership must stay hidden from system ingress"
+        );
+        assert!(
+            registry.tool_specs_for_llm_with_max(&internal, 4096).is_empty(),
+            "tools without explicit catalog membership must stay hidden from internal system ingress"
+        );
+    }
+
+    #[test]
+    fn default_registry_declares_catalog_authority_for_every_registered_tool() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let missing = ctx.tool_registry.missing_llm_catalog_entries();
+        assert!(
+            missing.is_empty(),
+            "default registry tools missing explicit catalog authority: {missing:?}"
+        );
     }
 
     #[test]
@@ -2048,7 +2115,10 @@ mod tests {
 
     #[test]
     fn tool_bridge_catalog_respects_llm_visibility_policy() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("visible", ToolLlmVisibility::user_and_system()),
+            ("user_only_task", ToolLlmVisibility::user_only()),
+        ]));
         registry.register(Box::new(VisibleTool));
         registry.register(Box::new(AdminTool));
         registry.register(Box::new(UserOnlyTaskTool));
@@ -2075,7 +2145,10 @@ mod tests {
 
     #[test]
     fn tool_catalog_uses_governance_examples_to_compute_conservative_shape() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "dynamic_governance",
+            ToolLlmVisibility::user_only(),
+        )]));
         registry.register(Box::new(DynamicGovernanceTool));
 
         let catalog_entry = registry
@@ -2106,7 +2179,10 @@ mod tests {
 
     #[test]
     fn capability_atoms_exchange_catalog_reports_governed_write_and_stays_out_of_system_ingress() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("capability_atoms_exchange", ToolLlmVisibility::hidden()),
+            ("capability_atoms_inspect", ToolLlmVisibility::hidden()),
+        ]));
         let skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync> =
             Arc::new(StubSkillStorage::default());
         registry.register(Box::new(crate::tools::CapabilityAtomsExchangeTool::new(
@@ -2267,7 +2343,10 @@ mod tests {
 
     #[test]
     fn private_garden_tool_is_hidden_from_user_ingress_but_visible_to_system() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "private_garden",
+            ToolLlmVisibility::system_and_internal(),
+        )]));
         registry.register(Box::new(crate::tools::PrivateGardenTool::new(Arc::new(
             StubPrivateGardenStore,
         ))));
@@ -2293,9 +2372,14 @@ mod tests {
 
     #[test]
     fn tool_bridge_assessment_denies_unknown_and_explicit_intent_tool() {
-        let mut registry = ToolRegistry::new().with_execution_governance(Arc::new(
-            ToolExecutionGovernance::new(Arc::new(MemoryStateFs::default())),
-        ));
+        let mut registry = ToolRegistry::new()
+            .with_execution_governance(Arc::new(ToolExecutionGovernance::new(Arc::new(
+                MemoryStateFs::default(),
+            ))))
+            .with_llm_catalog_authority(synthetic_catalog(&[(
+                "explicit_tool",
+                ToolLlmVisibility::user_only(),
+            )]));
         registry.register(Box::new(ExplicitIntentTool));
         let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
 

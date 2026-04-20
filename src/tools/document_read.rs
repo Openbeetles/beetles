@@ -235,8 +235,7 @@ mod tests {
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
     use crate::tools::pdf_read::test_pdf_fixture_bytes;
-    use crate::tools::PdfReadTool;
-    use crate::tools::{Tool, ToolContext, ToolPolicyContext, WebFetchTool};
+    use crate::tools::{Tool, ToolContext};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -411,10 +410,17 @@ mod tests {
 
     #[test]
     fn llm_visibility_prefers_unified_entry() {
-        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "qq_channel");
-        let doc_tool = DocumentReadTool::new(Arc::new(MockStateFs::default()));
-        assert!(doc_tool.metadata().is_exposed_to_llm(&policy));
-        assert!(!WebFetchTool.metadata().is_exposed_to_llm(&policy));
-        assert!(!PdfReadTool.metadata().is_exposed_to_llm(&policy));
+        let authority = crate::tools::build_default_llm_catalog_authority();
+        let document_read = authority
+            .get("document_read")
+            .expect("document_read catalog");
+        let web_fetch = authority.get("web_fetch").expect("web_fetch catalog");
+        let pdf_read = authority.get("pdf_read").expect("pdf_read catalog");
+
+        assert!(document_read.user_llm);
+        assert!(document_read.system_llm);
+        assert!(!document_read.internal_system_llm);
+        assert!(!web_fetch.user_llm);
+        assert!(!pdf_read.user_llm);
     }
 }

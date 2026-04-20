@@ -1,6 +1,7 @@
 //! 工具抽象与注册。核心域不依赖 platform；HTTP 等由 main 注入 ToolContext。
 //! Tool trait and registry; no platform dependency.
 
+mod catalog;
 mod execution_governance;
 mod policy;
 mod registry;
@@ -168,6 +169,7 @@ pub use board_info::BoardInfoTool;
 pub use calendar::CalendarTool;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use capability_atoms_exchange::{CapabilityAtomsExchangeTool, CapabilityAtomsInspectTool};
+pub use catalog::{build_default_llm_catalog_authority, ToolCatalogAuthority, ToolLlmVisibility};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

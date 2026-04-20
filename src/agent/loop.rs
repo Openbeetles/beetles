@@ -2020,8 +2020,21 @@ mod tests {
         TurnLedgerStore, TurnPersonaPressureLevel, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
+    use crate::tools::{ToolCatalogAuthority, ToolLlmVisibility};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    fn synthetic_catalog(entries: &[(&str, ToolLlmVisibility)]) -> Arc<ToolCatalogAuthority> {
+        let mut authority = ToolCatalogAuthority::default();
+        for (name, visibility) in entries {
+            authority.insert(name, *visibility);
+        }
+        Arc::new(authority)
+    }
+
+    fn test_registry(entries: &[(&str, ToolLlmVisibility)]) -> crate::tools::ToolRegistry {
+        crate::tools::ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(entries))
+    }
 
     #[test]
     fn post_reply_payload_defaults_external_content_flag_for_older_jobs() {
@@ -3743,7 +3756,7 @@ mod tests {
     }
 
     fn build_benchmark_registry(mode: &BenchmarkRegistryMode) -> crate::tools::ToolRegistry {
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("message", ToolLlmVisibility::user_only())]);
         if matches!(mode, BenchmarkRegistryMode::MessagePrimary) {
             registry.register(Box::new(crate::tools::MessageTool));
         }
@@ -4116,7 +4129,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("message", ToolLlmVisibility::user_only())]);
         registry.register(Box::new(crate::tools::MessageTool));
         let config = test_agent_loop_config();
         let msg =
@@ -5636,7 +5649,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::Embedded;
@@ -5686,7 +5699,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -5749,7 +5762,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -5830,7 +5843,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("office_config", ToolLlmVisibility::user_only())]);
         registry.register(Box::new(StubBlockingOfficeConfigTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -5877,7 +5890,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("mail", ToolLlmVisibility::user_only())]);
         registry.register(Box::new(StubChoiceBlockingTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -5924,7 +5937,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("office_config", ToolLlmVisibility::user_only())]);
         registry.register(Box::new(StubMultiFieldBlockingTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6038,7 +6051,8 @@ mod tests {
             };
             let mut http = DummyPlatformHttp;
             let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-            let mut registry = crate::tools::ToolRegistry::new();
+            let mut registry =
+                test_registry(&[("network_probe", ToolLlmVisibility::user_and_system())]);
             registry.register(Box::new(StubCapabilityBoundTool));
             let mut config = test_agent_loop_config();
             config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6098,7 +6112,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6178,7 +6192,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6231,7 +6245,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6297,7 +6311,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6381,7 +6395,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6901,7 +6915,7 @@ mod tests {
             as Arc<dyn crate::task_execution::TaskRunStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("mail", ToolLlmVisibility::user_only())]);
         registry.register(Box::new(StubResolvableOfficeMailTool {
             seen_args: Arc::clone(&seen_args),
         }));
@@ -7373,7 +7387,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -7435,7 +7449,7 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = crate::tools::ToolRegistry::new();
+        let mut registry = test_registry(&[("board_info", ToolLlmVisibility::user_and_system())]);
         registry.register(Box::new(StubBoardInfoTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::Embedded;

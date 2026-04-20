@@ -93,10 +93,7 @@ impl Tool for LuaMemoryQueryTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::task()
-            .with_user_ingress(false)
-            .with_system_ingress(false)
-            .with_risk_level(ToolRiskLevel::Medium)
+        ToolMetadata::task().with_risk_level(ToolRiskLevel::Medium)
     }
 }
 

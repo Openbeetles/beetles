@@ -159,7 +159,6 @@ impl Tool for NetworkScanTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
-            .with_system_ingress(false)
             .with_effect_class(ToolEffectClass::HostInspection)
             .with_risk_level(ToolRiskLevel::Medium)
     }

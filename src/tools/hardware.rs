@@ -281,7 +281,6 @@ impl Tool for DeviceControlTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
-            .with_system_ingress(false)
             .with_effect_class(ToolEffectClass::HardwareActuation)
             .with_risk_level(ToolRiskLevel::Critical)
             .with_approval_mode(ToolApprovalMode::ExplicitIntent)

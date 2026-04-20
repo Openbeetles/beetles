@@ -87,7 +87,7 @@ impl Tool for VoiceInputTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::task().with_system_ingress(false)
+        ToolMetadata::task()
     }
 
     fn capability_contract(&self) -> ToolCapabilityContract {

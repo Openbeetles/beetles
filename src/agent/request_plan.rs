@@ -247,8 +247,9 @@ mod tests {
         AdversarialArenaAdjudication, AdversarialArenaClaim, AdversarialArenaDisposition,
         AdversarialArenaRole, AdversarialArenaSubjectKind,
     };
-    use crate::tools::{Tool, ToolMetadata};
+    use crate::tools::{Tool, ToolCatalogAuthority, ToolLlmVisibility, ToolMetadata};
     use crate::Result;
+    use std::sync::Arc;
 
     struct VisibleTool;
     struct NamedTool {
@@ -258,6 +259,14 @@ mod tests {
     }
     struct NativeLlm;
     struct PromptGuidedLlm;
+
+    fn synthetic_catalog(entries: &[(&str, ToolLlmVisibility)]) -> Arc<ToolCatalogAuthority> {
+        let mut authority = ToolCatalogAuthority::default();
+        for (name, visibility) in entries {
+            authority.insert(name, *visibility);
+        }
+        Arc::new(authority)
+    }
 
     fn semantics(
         evidence_need: EvidenceNeed,
@@ -353,7 +362,10 @@ mod tests {
 
     #[test]
     fn request_plan_prefers_native_tools_when_supported() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "hi", false).expect("pcmsg");
         let plan = AgentRequestPlan::build(
@@ -370,7 +382,10 @@ mod tests {
 
     #[test]
     fn request_plan_falls_back_to_prompt_guided_mode() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "hi", false).expect("pcmsg");
         let plan = AgentRequestPlan::build(
@@ -387,7 +402,10 @@ mod tests {
 
     #[test]
     fn operational_requests_require_first_round_tool_for_linux_native_mode() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "process",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(NamedTool {
             name: "process",
             description: "process inspection",
@@ -408,7 +426,10 @@ mod tests {
 
     #[test]
     fn public_operational_observability_requests_require_first_round_tool() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "board_info",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(NamedTool {
             name: "board_info",
             description: "whole host status",
@@ -427,7 +448,10 @@ mod tests {
 
     #[test]
     fn memory_evidence_requests_do_not_force_first_round_tool() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("memory_search", ToolLlmVisibility::user_and_system()),
+            ("memory_get", ToolLlmVisibility::user_and_system()),
+        ]));
         registry.register(Box::new(NamedTool {
             name: "memory_search",
             description: "search archive evidence",
@@ -455,7 +479,10 @@ mod tests {
 
     #[test]
     fn low_confidence_tool_first_semantics_do_not_force_tools() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "查看系统状态", false).expect("pcmsg");
         let plan = AgentRequestPlan::build(
@@ -473,7 +500,10 @@ mod tests {
 
     #[test]
     fn embedded_mode_keeps_tool_choice_flexible() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "process",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(NamedTool {
             name: "process",
             description: "process inspection",
@@ -493,7 +523,10 @@ mod tests {
 
     #[test]
     fn conversational_questions_do_not_force_tools() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "1+1 等于多少", false).expect("pcmsg");
         let plan = AgentRequestPlan::build(
@@ -508,7 +541,10 @@ mod tests {
 
     #[test]
     fn active_action_resume_requires_native_tool_on_first_round() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "继续配置", false).expect("pcmsg");
         let plan = AgentRequestPlan::build(
@@ -532,7 +568,10 @@ mod tests {
 
     #[test]
     fn task_execution_resume_requires_native_tool_on_first_round() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "继续配置", false).expect("pcmsg");
         let plan = AgentRequestPlan::build(
@@ -554,7 +593,13 @@ mod tests {
 
     #[test]
     fn active_action_supply_input_requires_native_tool_on_first_round() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("visible", ToolLlmVisibility::user_and_system()),
+            ("board_info", ToolLlmVisibility::user_and_system()),
+            ("process", ToolLlmVisibility::user_and_system()),
+            ("network", ToolLlmVisibility::user_and_system()),
+            ("network_scan", ToolLlmVisibility::user_only()),
+        ]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "授权码是 hqvqcibpdvqgbdba", false)
             .expect("pcmsg");
@@ -577,7 +622,10 @@ mod tests {
 
     #[test]
     fn request_plan_does_not_add_linux_inspection_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("process", ToolLlmVisibility::user_and_system()),
+            ("network", ToolLlmVisibility::user_and_system()),
+        ]));
         for (name, description) in [
             ("board_info", "whole host status"),
             ("process", "process inspection"),
@@ -606,7 +654,12 @@ mod tests {
 
     #[test]
     fn request_plan_does_not_add_request_specific_guidance_for_process_or_network() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("board_info", ToolLlmVisibility::user_and_system()),
+            ("process", ToolLlmVisibility::user_and_system()),
+            ("network", ToolLlmVisibility::user_and_system()),
+            ("network_scan", ToolLlmVisibility::user_only()),
+        ]));
         for (name, description) in [
             ("process", "process inspection"),
             ("network", "network inspection"),
@@ -633,7 +686,10 @@ mod tests {
 
     #[test]
     fn request_plan_keeps_general_conversation_without_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("memory_search", ToolLlmVisibility::user_and_system()),
+            ("memory_get", ToolLlmVisibility::user_and_system()),
+        ]));
         for (name, description) in [
             ("board_info", "whole host status"),
             ("process", "process inspection"),
@@ -661,7 +717,10 @@ mod tests {
 
     #[test]
     fn request_plan_does_not_add_retrieval_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "private_garden",
+            ToolLlmVisibility::system_and_internal(),
+        )]));
         registry.register(Box::new(NamedTool {
             name: "memory_search",
             description: "search archive evidence",
@@ -691,7 +750,10 @@ mod tests {
 
     #[test]
     fn request_plan_does_not_add_private_garden_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("memory_search", ToolLlmVisibility::user_and_system()),
+            ("memory_get", ToolLlmVisibility::user_and_system()),
+        ]));
         registry.register(Box::new(NamedTool {
             name: "private_garden",
             description: "free private workspace",
@@ -712,7 +774,10 @@ mod tests {
 
     #[test]
     fn request_plan_does_not_add_archive_memory_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         for (name, description) in [
             ("memory_search", "search archive evidence"),
             ("memory_get", "inspect cited archive records"),
@@ -742,7 +807,10 @@ mod tests {
 
     #[test]
     fn programmable_reasoning_intent_can_force_native_tool_round() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "resolve current runtime issue", false)
             .expect("pcmsg");
@@ -768,7 +836,10 @@ mod tests {
 
     #[test]
     fn counterfactual_analysis_can_force_native_tool_round_and_append_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound("telegram", "chat", "继续排查并修这个运行时故障", false)
             .expect("pcmsg");
@@ -813,7 +884,10 @@ mod tests {
 
     #[test]
     fn adversarial_arena_can_override_counterfactual_tool_bias_and_append_guidance() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_and_system(),
+        )]));
         registry.register(Box::new(VisibleTool));
         let msg = PcMsg::new_inbound(
             "telegram",

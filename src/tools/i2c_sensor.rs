@@ -217,6 +217,6 @@ impl Tool for I2cSensorTool {
     }
 
     fn metadata(&self) -> ToolMetadata {
-        ToolMetadata::task().with_system_ingress(false)
+        ToolMetadata::task()
     }
 }
