@@ -74,10 +74,13 @@ export function SettingsSection({
               borderRadius: "var(--radius-chip)",
               backgroundColor: loadingSurface
                 ? "transparent"
-                : "color-mix(in srgb, var(--foreground) 4%, transparent)",
+                : "color-mix(in srgb, var(--primary) 8%, var(--card))",
               boxShadow: loadingSurface
                 ? "none"
                 : "var(--os3d-pedestal-lift-stack)",
+              border: loadingSurface
+                ? "none"
+                : "1px solid color-mix(in srgb, var(--primary) 12%, transparent)",
             }}
           >
             {icon}
@@ -105,6 +108,13 @@ export function SettingsSection({
         sx={{
           ...surfaceSx,
           p: PANEL_SECTION_PADDING,
+          backgroundImage:
+            surfaceTone === "loading"
+              ? undefined
+              : [
+                  "linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 100%)",
+                  "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
+                ].join(", "),
           display: "flex",
           flexDirection: "column",
           flex: 1,
@@ -136,6 +146,13 @@ export function SettingsSection({
       sx={{
         ...surfaceSx,
         p: PANEL_SECTION_PADDING,
+        backgroundImage:
+          surfaceTone === "loading"
+            ? undefined
+            : [
+                "linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 100%)",
+                "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
+              ].join(", "),
         ...sxProp,
       }}
     >

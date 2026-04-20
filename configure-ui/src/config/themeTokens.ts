@@ -8,11 +8,11 @@ export type ThemeBrand = 'blue' | 'teal' | 'logo' | 'firmware'
  */
 export const LAYOUT_TOKENS = {
   /** 控件圆角（按钮、输入框、Toggle 等） */
-  radiusControl: 10,
+  radiusControl: 12,
   /** 卡片/抽屉/弹层圆角 */
-  radiusCard: 16,
+  radiusCard: 18,
   /** 小控件圆角（Chip、IconButton、Tooltip） */
-  radiusChip: 10,
+  radiusChip: 12,
   /** 强调动效曲线 */
   easeEmphasized: 'cubic-bezier(0.22, 1, 0.36, 1)',
   /** 平滑缓动曲线 */
@@ -20,8 +20,8 @@ export const LAYOUT_TOKENS = {
   /** 卡片内图片 hover 动画时长（ms） */
   durationImageHoverMs: 380,
   /** 按钮默认最小高度 */
-  buttonMinHeight: 42,
-  buttonMinHeightLarge: 50,
+  buttonMinHeight: 44,
+  buttonMinHeightLarge: 52,
   buttonMinHeightSmall: 32,
   /** 大按钮水平内边距 */
   buttonPaddingXLarge: 28,
@@ -304,22 +304,22 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
-      surface: '#f7f5ff',
+      surface: '#f4f7fb',
       muted: LIGHT_TEXT_TERTIARY,
-      border: '#ebe7f3',
-      primary: '#6d28d9',
-      primarySoft: 'rgba(109, 40, 217, 0.08)',
+      border: '#dee6ef',
+      primary: '#5f47d4',
+      primarySoft: 'rgba(95, 71, 212, 0.08)',
       primaryFg: '#ffffff',
-      accent: '#0891b2',
+      accent: '#1398b6',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
       overlay: 'rgba(255, 255, 255, 0.94)',
-      appBarGlass: 'rgba(251, 249, 255, 0.82)',
+      appBarGlass: 'rgba(248, 250, 254, 0.84)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: LIGHT_TEXT_SECONDARY,
-      borderSubtle: '#f5f3fb',
+      borderSubtle: '#e9eef5',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
       shadowCardHover:
@@ -407,25 +407,25 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       badgeNew: '#f87171',
     },
     logo: {
-      background: '#0f0b18',
-      foreground: '#e8e4f5',
-      card: '#161024',
-      surface: '#1c1530',
+      background: '#10151c',
+      foreground: '#e5eaf3',
+      card: '#171d26',
+      surface: '#202733',
       muted: DARK_TEXT_TERTIARY,
-      border: '#302448',
-      primary: '#a78bfa',
-      primarySoft: 'rgba(167, 139, 250, 0.12)',
+      border: '#2f3948',
+      primary: '#8c79f3',
+      primarySoft: 'rgba(140, 121, 243, 0.12)',
       primaryFg: '#ffffff',
-      accent: '#22d3ee',
+      accent: '#29c7de',
       imageOverlay: 'rgba(0, 0, 0, 0.55)',
-      overlay: 'rgba(15, 11, 24, 0.92)',
-      appBarGlass: 'rgba(22, 16, 36, 0.75)',
+      overlay: 'rgba(16, 21, 28, 0.92)',
+      appBarGlass: 'rgba(23, 29, 38, 0.78)',
       backdropOverlay: 'rgba(0, 0, 0, 0.50)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: DARK_TEXT_SECONDARY,
-      borderSubtle: '#221830',
+      borderSubtle: '#1b222d',
       shadowSubtle:
         '0 18px 40px -26px color-mix(in srgb, #000 40%, transparent)',
       shadowCardHover:

@@ -36,42 +36,42 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
    */
   const iconDefault = dark
     ? [
-        "drop-shadow(0 8px 18px rgba(0,0,0,0.18))",
-        "drop-shadow(0 2px 6px rgba(0,0,0,0.1))",
+        "drop-shadow(0 7px 16px rgba(0,0,0,0.17))",
+        "drop-shadow(0 2px 5px rgba(0,0,0,0.09))",
       ].join(" ")
     : [
-        "drop-shadow(0 14px 28px color-mix(in srgb, var(--foreground) 6%, transparent))",
-        "drop-shadow(0 4px 10px color-mix(in srgb, var(--foreground) 2.8%, transparent))",
+        "drop-shadow(0 12px 24px color-mix(in srgb, var(--foreground) 5.4%, transparent))",
+        "drop-shadow(0 4px 9px color-mix(in srgb, var(--foreground) 2.6%, transparent))",
       ].join(" ");
 
   const iconDock = dark
     ? [
-        "drop-shadow(0 5px 12px rgba(0,0,0,0.16))",
-        "drop-shadow(0 1px 3px rgba(0,0,0,0.09))",
+        "drop-shadow(0 4px 10px rgba(0,0,0,0.15))",
+        "drop-shadow(0 1px 2px rgba(0,0,0,0.08))",
       ].join(" ")
     : [
-        "drop-shadow(0 10px 20px color-mix(in srgb, var(--foreground) 4.8%, transparent))",
-        "drop-shadow(0 3px 7px color-mix(in srgb, var(--foreground) 2.6%, transparent))",
+        "drop-shadow(0 9px 18px color-mix(in srgb, var(--foreground) 4.4%, transparent))",
+        "drop-shadow(0 3px 6px color-mix(in srgb, var(--foreground) 2.4%, transparent))",
       ].join(" ");
 
   const iconTile = dark
     ? [
-        "drop-shadow(0 10px 24px rgba(0,0,0,0.22))",
-        "drop-shadow(0 3px 8px rgba(0,0,0,0.12))",
+        "drop-shadow(0 9px 20px rgba(0,0,0,0.2))",
+        "drop-shadow(0 3px 7px rgba(0,0,0,0.11))",
       ].join(" ")
     : [
-        "drop-shadow(0 16px 34px color-mix(in srgb, var(--foreground) 7%, transparent))",
-        "drop-shadow(0 5px 12px color-mix(in srgb, var(--foreground) 3.4%, transparent))",
+        "drop-shadow(0 14px 28px color-mix(in srgb, var(--foreground) 6.2%, transparent))",
+        "drop-shadow(0 5px 10px color-mix(in srgb, var(--foreground) 3%, transparent))",
       ].join(" ");
 
   const iconHero = dark
     ? [
-        "drop-shadow(0 14px 34px rgba(0,0,0,0.24))",
-        "drop-shadow(0 5px 12px rgba(0,0,0,0.14))",
+        "drop-shadow(0 12px 30px rgba(0,0,0,0.23))",
+        "drop-shadow(0 4px 10px rgba(0,0,0,0.13))",
       ].join(" ")
     : [
-        "drop-shadow(0 22px 46px color-mix(in srgb, var(--foreground) 8%, transparent))",
-        "drop-shadow(0 7px 16px color-mix(in srgb, var(--foreground) 3.8%, transparent))",
+        "drop-shadow(0 20px 40px color-mix(in srgb, var(--foreground) 7.2%, transparent))",
+        "drop-shadow(0 6px 14px color-mix(in srgb, var(--foreground) 3.4%, transparent))",
       ].join(" ");
 
   const iconInline = dark
@@ -90,45 +90,45 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
    * Content plate: ambient halo + layered lift (beetle_site marketing OsPanel, neutral-only).
    */
   const plateDark = [
-    "0 24px 56px -36px color-mix(in srgb, #000 42%, transparent)",
-    "0 10px 24px -18px color-mix(in srgb, #000 24%, transparent)",
+    "0 20px 46px -30px color-mix(in srgb, #000 38%, transparent)",
+    "0 8px 18px -12px color-mix(in srgb, #000 22%, transparent)",
     "inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent)",
-    "inset 0 14px 24px -24px color-mix(in srgb, var(--foreground) 4%, transparent)",
+    "inset 0 12px 20px -20px color-mix(in srgb, var(--foreground) 4%, transparent)",
     "inset 0 -1px 0 color-mix(in srgb, #000 12%, transparent)",
   ].join(", ");
 
   const plateLight = [
-    "0 30px 68px -44px color-mix(in srgb, var(--foreground) 10%, transparent)",
-    "0 12px 26px -18px color-mix(in srgb, var(--foreground) 5.5%, transparent)",
+    "0 26px 54px -38px color-mix(in srgb, var(--foreground) 8.6%, transparent)",
+    "0 10px 20px -14px color-mix(in srgb, var(--foreground) 4.8%, transparent)",
     "0 2px 6px -3px color-mix(in srgb, var(--foreground) 2.4%, transparent)",
     "inset 0 1px 0 color-mix(in srgb, #fff 92%, transparent)",
-    "inset 0 18px 30px -28px color-mix(in srgb, #fff 58%, transparent)",
+    "inset 0 16px 24px -24px color-mix(in srgb, #fff 52%, transparent)",
     "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 1.5%, transparent)",
   ].join(", ");
 
   const controlSoftLift = dark
     ? [
         "inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent)",
-        "0 6px 14px -10px color-mix(in srgb, #000 22%, transparent)",
+        "0 5px 12px -10px color-mix(in srgb, #000 20%, transparent)",
         "0 1px 3px -2px color-mix(in srgb, #000 14%, transparent)",
       ].join(", ")
     : [
         "inset 0 1px 0 color-mix(in srgb, #fff 82%, transparent)",
-        "inset 0 12px 20px -18px color-mix(in srgb, #fff 42%, transparent)",
-        "0 10px 18px -14px color-mix(in srgb, var(--foreground) 6%, transparent)",
+        "inset 0 10px 18px -18px color-mix(in srgb, #fff 40%, transparent)",
+        "0 9px 16px -12px color-mix(in srgb, var(--foreground) 5.4%, transparent)",
         "0 2px 5px -4px color-mix(in srgb, var(--foreground) 3%, transparent)",
       ].join(", ");
 
   const selectionPill = dark
     ? [
         "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)",
-        "0 8px 18px -12px color-mix(in srgb, #000 24%, transparent)",
+        "0 7px 16px -11px color-mix(in srgb, #000 22%, transparent)",
         "0 3px 7px -4px color-mix(in srgb, var(--primary) 12%, transparent)",
       ].join(", ")
     : [
         "inset 0 1px 0 color-mix(in srgb, #fff 90%, transparent)",
-        "inset 0 14px 22px -20px color-mix(in srgb, #fff 40%, transparent)",
-        "0 12px 22px -16px color-mix(in srgb, var(--primary) 16%, transparent)",
+        "inset 0 12px 20px -20px color-mix(in srgb, #fff 38%, transparent)",
+        "0 10px 18px -14px color-mix(in srgb, var(--primary) 14%, transparent)",
         "0 3px 8px -6px color-mix(in srgb, var(--foreground) 4%, transparent)",
       ].join(", ");
 
@@ -170,16 +170,16 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
     /** 顶栏：统一主光源的薄高光 + 底缘接触影，读起来像实体窗口 chrome。 */
     "--os3d-chrome-titlebar-stack": [
       "inset 0 1px 0 color-mix(in srgb, #fff 58%, transparent)",
-      "inset 0 14px 22px -22px color-mix(in srgb, #fff 18%, transparent)",
+      "inset 0 12px 18px -18px color-mix(in srgb, #fff 18%, transparent)",
       "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 2.4%, transparent)",
     ].join(", "),
 
     /** 任务栏：比顶栏更沉一点，像桌面底部承托出来的一块实体条。 */
     "--os3d-chrome-taskbar-stack": [
       "inset 0 1px 0 color-mix(in srgb, #fff 56%, transparent)",
-      "inset 0 16px 24px -24px color-mix(in srgb, #fff 16%, transparent)",
+      "inset 0 14px 20px -20px color-mix(in srgb, #fff 16%, transparent)",
       "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 2.8%, transparent)",
-      "0 -16px 34px -24px color-mix(in srgb, var(--foreground) 6%, transparent)",
+      "0 -14px 30px -22px color-mix(in srgb, var(--foreground) 5.4%, transparent)",
       "0 -4px 10px -8px color-mix(in srgb, var(--foreground) 3.4%, transparent)",
     ].join(", "),
 
@@ -207,18 +207,18 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
      */
     "--os3d-start-panel-stack": dark
       ? [
-          "0 34px 72px -34px color-mix(in srgb, #000 46%, transparent)",
-          "0 16px 30px -18px color-mix(in srgb, #000 26%, transparent)",
+          "0 28px 58px -30px color-mix(in srgb, #000 42%, transparent)",
+          "0 12px 24px -14px color-mix(in srgb, #000 24%, transparent)",
           "inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent)",
-          "inset 0 14px 24px -24px color-mix(in srgb, var(--foreground) 5%, transparent)",
+          "inset 0 12px 20px -20px color-mix(in srgb, var(--foreground) 5%, transparent)",
           "inset 0 -1px 0 color-mix(in srgb, #000 12%, transparent)",
         ].join(", ")
       : [
-          "0 38px 78px -44px color-mix(in srgb, var(--foreground) 12%, transparent)",
-          "0 16px 30px -20px color-mix(in srgb, var(--foreground) 7%, transparent)",
+          "0 32px 62px -38px color-mix(in srgb, var(--foreground) 10%, transparent)",
+          "0 13px 24px -16px color-mix(in srgb, var(--foreground) 6%, transparent)",
           "0 4px 10px -8px color-mix(in srgb, var(--foreground) 3.2%, transparent)",
           "inset 0 1px 0 color-mix(in srgb, #fff 94%, transparent)",
-          "inset 0 20px 32px -30px color-mix(in srgb, #fff 54%, transparent)",
+          "inset 0 16px 24px -24px color-mix(in srgb, #fff 50%, transparent)",
           "inset 0 -1px 0 color-mix(in srgb, var(--foreground) 1.8%, transparent)",
         ].join(", "),
 

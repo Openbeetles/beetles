@@ -117,9 +117,11 @@ export function TopBar() {
   };
 
   const chromeCapsuleSx = {
-    border: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
-    backgroundColor: "color-mix(in srgb, var(--card) 62%, transparent)",
-    boxShadow: "var(--os3d-control-soft-lift-stack)",
+    border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+    backgroundColor: "color-mix(in srgb, var(--card) 72%, transparent)",
+    backgroundImage:
+      "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 100%)",
+    boxShadow: "var(--os3d-breadcrumb-lift-stack)",
   } as const;
 
   const macTitlebarLaneInset = "88px";
@@ -142,7 +144,7 @@ export function TopBar() {
         pt: titlebarPaddingTop,
         position: "relative",
         ...SHELL_TITLEBAR_CHROME_SX,
-        borderBottom: "1px solid color-mix(in srgb, var(--border) 10%, transparent)",
+        borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
         gap: 0,
       }}
       data-tauri-drag-region={macTauriWindow ? "" : undefined}
@@ -243,17 +245,27 @@ export function TopBar() {
           >
             <Box
               sx={{
+                display: "flex",
+                alignItems: "center",
                 minWidth: 0,
-                maxWidth: "100%",
-                px: { xs: 1.125, sm: 1.25 },
-                py: chromeLabelPaddingY,
-                borderRadius: "var(--radius-search-pill)",
+                width: "fit-content",
+                maxWidth: "min(100%, 420px)",
+                px: { xs: 0.875, sm: 1 },
+                py: desktopShellWindow ? chromeLabelPaddingY : 0.625,
+                borderRadius: "calc(var(--radius-control) + 2px)",
                 ...chromeCapsuleSx,
-                backgroundImage:
+                border:
+                  "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
+                backgroundColor:
+                  "color-mix(in srgb, var(--surface) 78%, var(--card))",
+                backgroundImage: [
                   "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+                  "linear-gradient(90deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 28%)",
+                ].join(", "),
+                boxShadow: "var(--os3d-control-soft-lift-stack)",
               }}
             >
-              <PageHeader title={title} />
+              <PageHeader title={title} brandLabel={t("app.name")} />
             </Box>
           </Box>
         )}

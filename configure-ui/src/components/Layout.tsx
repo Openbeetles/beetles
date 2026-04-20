@@ -233,11 +233,25 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     <NavBlockerContext.Provider value={navBlockerValue}>
       <Box
         sx={{
+          position: "relative",
+          isolation: "isolate",
           display: "flex",
           height: "100vh",
           overflow: "hidden",
           /** 透明以便 body 纯色底透出；顶栏/任务栏用 shellChromeSurface 变体 */
           backgroundColor: "transparent",
+          "&::before": {
+            content: '""',
+            position: "absolute",
+            inset: 0,
+            zIndex: 0,
+            pointerEvents: "none",
+            backgroundImage: [
+              "radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--primary) 14%, transparent) 0%, transparent 30%)",
+              "radial-gradient(circle at 90% 10%, color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 26%)",
+              "linear-gradient(180deg, color-mix(in srgb, var(--surface) 30%, transparent) 0%, transparent 24%, transparent 74%, color-mix(in srgb, var(--foreground) 2.4%, transparent) 100%)",
+            ].join(", "),
+          },
         }}
       >
         <ConfirmDialog

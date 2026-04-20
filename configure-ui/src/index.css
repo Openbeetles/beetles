@@ -3,16 +3,25 @@
  * 文字色阶：`createAppTheme` 注入 `--text-primary` / `--secondary` / `--tertiary`（映射 foreground 系）。
  * 页面级纵向 gap：`panelStyles.PAGE_STACK_OUTER_SX`（= `spacingPageStack`）。
  */
-/* 系统 UI：无衬线栈与壳层一致；`--font-brand` 仅用于少数营销/设备 Hero 标题 */
+@font-face {
+  font-family: 'Audiowide';
+  src: url('/fonts/audiowide-latin.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+/* 系统 UI：正文偏工业控制台，展示字用于壳层标题与品牌锚点 */
 :root {
   /* 与 MUI typography.fontSize 对齐，保证 rem 与壳层 token 一致 */
   font-size: 16px;
   --font-sans:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    'IBM Plex Sans', 'Noto Sans', sans-serif;
+    'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans',
+    sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
-  --font-display: var(--font-sans);
-  --font-brand: 'Orbitron', 'IBM Plex Sans', var(--font-sans);
+  --font-display: 'Audiowide', 'IBM Plex Sans', var(--font-sans);
+  --font-brand: var(--font-display);
 }
 
 /* 与系统滚动条协调的细滚动条（不影响布局宽度语义） */
@@ -56,6 +65,17 @@ html, body {
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--primary) 22%, transparent);
+  color: var(--foreground);
 }
 
 /* 允许文本输入类元素被选中 */

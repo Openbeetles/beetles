@@ -106,9 +106,10 @@ export const DIALOG_FORM_SUBMIT_BAR_SX = {
 export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
-  border: "none",
+  border: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
   backgroundImage: [
     "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 6%, transparent) 34%, transparent 76%)",
+    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 5%, transparent) 0%, transparent 36%, color-mix(in srgb, var(--accent) 4%, transparent) 100%)",
     "linear-gradient(180deg, color-mix(in srgb, var(--surface) 40%, transparent) 0%, transparent 68%)",
   ].join(", "),
   boxShadow: "var(--os3d-content-plate-stack)",
@@ -148,13 +149,14 @@ export const DASHBOARD_CARD_SURFACE_SX = {
  */
 export const FORM_SECTION_MODULE_SX = {
   borderRadius: "calc(var(--radius-card) - 2px)",
-  bgcolor: "color-mix(in srgb, var(--surface) 42%, var(--card))",
+  bgcolor: "color-mix(in srgb, var(--surface) 46%, var(--card))",
   backgroundImage: [
     "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 40%, transparent 88%)",
+    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
     "linear-gradient(180deg, color-mix(in srgb, var(--surface) 28%, transparent) 0%, transparent 100%)",
   ].join(", "),
   boxShadow: "var(--os3d-section-module-stack)",
-  border: "none",
+  border: "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
   overflow: "hidden",
   isolation: "isolate",
 } as const
@@ -162,7 +164,7 @@ export const FORM_SECTION_MODULE_SX = {
 /** 二级模块头：轻抬起的标题条，强调结构分组而不是网页 sticky strip。 */
 export const FORM_SECTION_MODULE_HEADER_SX = {
   px: 2,
-  py: 1.35,
+  py: 1.45,
   bgcolor: "color-mix(in srgb, var(--card) 78%, var(--surface))",
   backgroundImage:
     "linear-gradient(180deg, color-mix(in srgb, #fff 24%, transparent) 0%, color-mix(in srgb, #fff 8%, transparent) 48%, transparent 84%)",
@@ -174,7 +176,7 @@ export const FORM_SECTION_MODULE_BODY_SX = {
   px: 2,
   pt: 2,
   pb: 2,
-  bgcolor: "color-mix(in srgb, var(--card) 82%, var(--form-group-well))",
+  bgcolor: "color-mix(in srgb, var(--card) 84%, var(--form-group-well))",
 } as const
 
 /**

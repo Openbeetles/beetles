@@ -85,6 +85,10 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
           minHeight: { md: 0 },
           display: "flex",
           flexDirection: "column",
+          backgroundImage: [
+            "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+            "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
+          ].join(", "),
         }}
       >
         <Box
@@ -94,9 +98,10 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
             display: "flex",
             flexDirection: "column",
             borderRadius: "var(--radius-control)",
-            bgcolor: "color-mix(in srgb, var(--surface) 74%, var(--card))",
+            bgcolor: "color-mix(in srgb, var(--surface) 78%, var(--card))",
             backgroundImage:
-              "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 54%)",
+              "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 54%)",
+            border: "1px solid color-mix(in srgb, var(--border) 10%, transparent)",
             boxShadow: "var(--os3d-subnav-track-recess)",
             overflow: "hidden",
           }}
@@ -124,7 +129,6 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
                   aria-current={tab === item.segment ? "page" : undefined}
                   onClick={() => goTo(item.segment)}
                   sx={{
-                    position: "relative",
                     py: { xs: 1, md: 1.125 },
                     px: { xs: 1.5, md: 1.375 },
                     width: { xs: "auto", md: "100%" },
@@ -132,23 +136,25 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
                     borderRadius: "var(--radius-control)",
                     border: "1px solid transparent",
                     backgroundImage:
-                      "linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 100%)",
-                  transition:
-                    "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), border-color var(--transition-duration) var(--ease-out-smooth)",
-                  "&:hover": {
-                    backgroundColor:
-                      "color-mix(in srgb, var(--foreground) 3.5%, var(--card))",
-                    borderColor:
-                      "color-mix(in srgb, var(--border) 18%, transparent)",
+                      tab === item.segment
+                        ? "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, var(--primary) 7%, transparent) 100%)"
+                        : "linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 100%)",
+                    transition:
+                      "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), border-color var(--transition-duration) var(--ease-out-smooth)",
+                    "&:hover": {
+                      backgroundColor:
+                        "color-mix(in srgb, var(--foreground) 3.5%, var(--card))",
+                      borderColor:
+                        "color-mix(in srgb, var(--border) 18%, transparent)",
                       boxShadow: "var(--os3d-control-soft-lift-stack)",
                     },
                     "&.Mui-selected": {
-                    borderColor:
-                      "color-mix(in srgb, var(--primary) 22%, var(--border))",
-                    backgroundColor:
-                      "color-mix(in srgb, var(--primary) 11%, var(--card))",
-                    boxShadow: "var(--os3d-selection-pill-stack)",
-                  },
+                      borderColor:
+                        "color-mix(in srgb, var(--primary) 22%, var(--border))",
+                      backgroundColor:
+                        "color-mix(in srgb, var(--primary) 11%, var(--card))",
+                      boxShadow: "var(--os3d-selection-pill-stack)",
+                    },
                     "&.Mui-selected:hover": {
                       backgroundColor:
                         "color-mix(in srgb, var(--primary) 13%, var(--card))",
@@ -180,7 +186,7 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
                               : "color-mix(in srgb, var(--card) 72%, transparent)",
                           boxShadow:
                             tab === item.segment
-                              ? "var(--os3d-control-soft-lift-stack)"
+                              ? "var(--os3d-selection-pill-stack)"
                               : "none",
                         }}
                       >

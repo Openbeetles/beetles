@@ -34,10 +34,10 @@ import { SHELL_TASKBAR_CHROME_SX } from "../theme/shellChromeSurface";
 const START_MENU_NAV_ITEMS = NAV_ITEMS.filter(
   (item) => item.path !== "/device",
 );
-const START_MENU_GAP_PX = 18;
-const DOCK_MAGNIFY_SCALE = [1.26, 1.14, 1.06];
-const DOCK_MAGNIFY_LIFT_PX = [14, 7, 2];
-const START_MENU_TILE_MIN_HEIGHT = 120;
+const START_MENU_GAP_PX = 14;
+const DOCK_MAGNIFY_SCALE = [1.12, 1.06, 1.02];
+const DOCK_MAGNIFY_LIFT_PX = [8, 4, 1];
+const START_MENU_TILE_MIN_HEIGHT = 112;
 const TASKBAR_TRAY_CONTROL_SIZE = 36;
 
 function getDockMotion(index: number, hoveredIndex: number | null) {
@@ -129,10 +129,12 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
     path === "/device" || (deviceConnected && !needDeviceHint);
   const startOpen = Boolean(startAnchor);
   const trayControlSurfaceSx = {
-    border: "1px solid var(--border-subtle)",
+    border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
     boxShadow: "var(--os3d-pedestal-lift-stack)",
-    borderRadius: "var(--radius-chip)",
-    backgroundColor: "var(--surface)",
+    borderRadius: "calc(var(--radius-chip) + 2px)",
+    backgroundColor: "color-mix(in srgb, var(--card) 72%, var(--surface))",
+    backgroundImage:
+      "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 100%)",
     transition:
       "background-color var(--transition-duration) var(--ease-emphasized), border-color var(--transition-duration) ease, box-shadow var(--transition-duration) var(--ease-emphasized), transform var(--transition-duration) var(--ease-emphasized)",
     "&:hover": {
@@ -241,7 +243,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
         px: { xs: 1.5, sm: 2 },
         gap: { xs: 1, sm: 1.25 },
         ...SHELL_TASKBAR_CHROME_SX,
-        borderTop: "1px solid var(--border-subtle)",
+        borderTop: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
         position: "relative",
         zIndex: 2,
         overflow: "visible",
@@ -263,7 +265,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
             width: 44,
             height: 44,
             p: 0,
-            borderRadius: "var(--radius-control)",
+            borderRadius: "calc(var(--radius-chip) + 2px)",
             margin: 0,
             cursor: "pointer",
             font: "inherit",
@@ -275,8 +277,10 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
               startOpen
                 ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
                 : "color-mix(in srgb, var(--card) 76%, var(--surface))",
-            backgroundImage:
+            backgroundImage: [
               "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+              "linear-gradient(135deg, color-mix(in srgb, var(--primary) 8%, transparent) 0%, transparent 100%)",
+            ].join(", "),
             boxShadow: startOpen
               ? "var(--os3d-selection-pill-stack)"
               : "var(--os3d-control-soft-lift-stack)",
@@ -325,7 +329,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
           paper: {
             elevation: 0,
             sx: {
-              width: "min(480px, 100vw - 32px)",
+              width: "min(540px, 100vw - 32px)",
               maxHeight: "min(72vh, 540px)",
               position: "relative",
               display: "flex",
@@ -336,11 +340,11 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                 "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
               boxShadow: "var(--os3d-start-panel-stack)",
               backgroundColor:
-                "color-mix(in srgb, var(--card) 94%, transparent)",
+                "color-mix(in srgb, var(--card) 96%, transparent)",
               backgroundImage: [
-                "linear-gradient(180deg, color-mix(in srgb, #fff 20%, transparent) 0%, transparent 24%)",
-                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 58%, transparent) 0%, transparent 54%)",
-                "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 3.5%, transparent) 0%, transparent 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 24%)",
+                "linear-gradient(135deg, color-mix(in srgb, var(--primary) 8%, transparent) 0%, transparent 38%, color-mix(in srgb, var(--accent) 7%, transparent) 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 58%, transparent) 0%, transparent 56%)",
               ].join(", "),
               backdropFilter: "saturate(1.12) blur(var(--shell-chrome-blur))",
               WebkitBackdropFilter:
@@ -358,20 +362,6 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                 pointerEvents: "none",
                 backgroundImage:
                   "linear-gradient(180deg, color-mix(in srgb, #fff 20%, transparent) 0%, transparent 18%, transparent 82%, color-mix(in srgb, var(--foreground) 4%, transparent) 100%)",
-              },
-              "&::after": {
-                content: '""',
-                position: "absolute",
-                left: 40,
-                right: 40,
-                bottom: 12,
-                height: 16,
-                borderRadius: "9999px",
-                pointerEvents: "none",
-                background:
-                  "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 8%, transparent), transparent)",
-                filter: "blur(12px)",
-                opacity: 0.62,
               },
               "@media (prefers-reduced-motion: reduce)": {
                 backdropFilter: "none",
@@ -401,10 +391,12 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
             sx={{
               flexShrink: 0,
               px: PANEL_SECTION_PADDING,
-              py: 1.5,
-              borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
-              background:
+              py: 1.6,
+              borderBottom: "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
+              background: [
                 "linear-gradient(180deg, color-mix(in srgb, #fff 14%, var(--surface)) 0%, color-mix(in srgb, var(--surface) 66%, var(--card)) 100%)",
+                "linear-gradient(90deg, color-mix(in srgb, var(--primary) 7%, transparent) 0%, transparent 62%, color-mix(in srgb, var(--accent) 6%, transparent) 100%)",
+              ].join(", "),
               boxShadow:
                 "inset 0 1px 0 color-mix(in srgb, #fff 42%, transparent)",
             }}
@@ -435,9 +427,9 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                   variant="subtitle2"
                   sx={{
                     minWidth: 0,
-                    fontFamily: "var(--font-sans)",
-                    fontWeight: 700,
-                    letterSpacing: "-0.02em",
+                    fontFamily: "var(--font-display)",
+                    fontWeight: 400,
+                    letterSpacing: "0.04em",
                     fontSize: "var(--font-size-body-lg)",
                     lineHeight: 1.2,
                   }}
@@ -683,7 +675,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                     onClick={handleNavClick}
                     sx={{
                       minHeight: START_MENU_TILE_MIN_HEIGHT,
-                      borderRadius: "var(--radius-card)",
+                      borderRadius: "calc(var(--radius-card) - 2px)",
                       border: "1px solid",
                       borderColor:
                         active && allowNav
@@ -699,8 +691,10 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                       textDecoration: "none",
                       color: "inherit",
                       backgroundColor: active && allowNav ? activeBg : idleBg,
-                      backgroundImage:
+                      backgroundImage: [
                         "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 100%)",
+                        "linear-gradient(135deg, color-mix(in srgb, var(--primary) 6%, transparent) 0%, transparent 100%)",
+                      ].join(", "),
                       cursor: allowNav ? "pointer" : "default",
                       opacity: allowNav ? 1 : 0.72,
                       boxShadow: active && allowNav
@@ -714,7 +708,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                               active && allowNav
                                 ? "color-mix(in srgb, var(--primary) 12%, var(--card))"
                                 : "color-mix(in srgb, var(--foreground) 4%, var(--card))",
-                            transform: "translateY(-0.5px)",
+                            transform: "translateY(-1px)",
                             boxShadow: "var(--os3d-chip-lift-stack)",
                           }
                         : {},
@@ -735,9 +729,9 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 62,
-                        height: 62,
-                        borderRadius: "calc(var(--radius-card) - 2px)",
+                        width: 58,
+                        height: 58,
+                        borderRadius: "calc(var(--radius-card) - 6px)",
                         alignSelf: "flex-start",
                         bgcolor:
                           active && allowNav
@@ -889,9 +883,9 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                 aria-current={active ? "page" : undefined}
                 sx={{
                   flexShrink: 0,
-                  width: 48,
-                  height: 48,
-                  borderRadius: "var(--radius-card)",
+                  width: 46,
+                  height: 46,
+                  borderRadius: "calc(var(--radius-card) - 2px)",
                   color: active ? "var(--primary)" : "var(--foreground)",
                   position: "relative",
                   border:
@@ -901,7 +895,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                       ? "color-mix(in srgb, var(--primary) 10%, var(--card))"
                       : "color-mix(in srgb, var(--card) 68%, transparent)",
                   transition:
-                    "background-color 0.2s ease, border-color 0.2s ease, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease",
+                    "background-color 0.2s ease, border-color 0.2s ease, transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease",
                   boxShadow:
                     active && allowNav
                       ? "var(--os3d-chip-lift-stack)"
@@ -924,8 +918,8 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                     transform: allowNav ? "translateY(0) scale(0.98)" : "none",
                   },
                   "& svg, & img": {
-                    width: "36px",
-                    height: "36px",
+                    width: "34px",
+                    height: "34px",
                   },
                   "@media (prefers-reduced-motion: reduce)": {
                     transform: "none",

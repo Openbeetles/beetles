@@ -1,11 +1,11 @@
 # Beetle OS 配置页 · 设计约束
 
-本文档面向**参与配置页 UI 开发与样式修改的开发者**，约定视觉与布局的单源（Token 化）及必须遵守的约束，避免硬编码色值、重阴影、重边框。产品与设计说明见本目录上级 README。
+本文档面向**参与配置页 UI 开发与样式修改的开发者**，约定视觉与布局的单源（Token 化）及必须遵守的约束，避免硬编码色值、失控阴影、脏材质混色与重边框。产品与设计说明见本目录上级 README。
 
 ## 项目定位
 
 - **产品**：**Beetle OS**（固件侧项目名可仍为 beetle / 甲壳虫，配置页对用户的系统语义统一为 **Beetle OS**）配置前端，用于连接设备后配置 WiFi、LLM、通道（飞书/钉钉/企微/QQ/Telegram）、系统与技能等。
-- **风格**：现代、扁平化、精致，偏工具型与可信赖感。壳层采用 **桌面 OS 隐喻**：顶栏为标题栏、**底部任务栏** 承载主导航；Beetle OS 徽标（SVG）作为 **「开始」徽标** 打开开始菜单（完整列表与连接摘要），任务栏中部为固定快捷方式（图标），右侧为连接状态托盘区。详见下文「Shell 布局」。
+- **风格**：现代、精致、带克制拟物感，偏工具型与可信赖感。不是网页式扁平，也不是厚重玩具感；目标是 **干净的 3D 壳层**：材质分层清楚、阴影精确、主副光源统一。壳层采用 **桌面 OS 隐喻**：顶栏为标题栏、**底部任务栏** 承载主导航；Beetle OS 徽标（SVG）作为 **「开始」徽标** 打开开始菜单（完整列表与连接摘要），任务栏中部为固定快捷方式（图标），右侧为连接状态托盘区。详见下文「Shell 布局」。
 
 ## Token 化（单源）
 
@@ -22,10 +22,10 @@
 
 ### 必须遵守
 
-- **扁平化**：界面层次通过留白、色块与轻微对比区分，不依赖立体感
+- **克制拟物**：允许明确的 3D 壳层、台座、磨砂与蜡光，但必须读起来像同一套工业材质，而不是堆效果
 - **精致**：细节克制，间距与字号统一，动效引用 `var(--transition-duration)` 或 `LAYOUT_TOKENS`
-- **禁止重阴影**：若有阴影仅限极轻级别
-- **禁止重边框**：分割用 `var(--border)` / `var(--border-subtle)` 的细线
+- **阴影要分层，不要发糊**：允许多层阴影，但每层都要服务体积感；禁止大面积脏灰糊影
+- **禁止重边框**：分割用 `var(--border)` / `var(--border-subtle)` 的细线，轮廓优先靠材质明暗与薄描边共同成立
 
 ### 推荐做法
 
@@ -38,19 +38,19 @@
 - **区块内间距**：小节之间、表单项之间使用 **`LAYOUT_TOKENS`** 中的 **`spacingSectionStack`、`spacingFormFields`** 等，与 `SettingsSection` / `SettingsRow` 节奏一致。
 - **Settings 行**：`SettingsRow` **始终纵向**（标签在上、控件在下）；**说明/helper 不要用窄 `maxWidth`/`ch` 人为过早换行**，保持与正文同宽或自然换行。
 - **表单布局**：**禁止**为「留白」而做左右分栏拉空一栏；需要分组时用 `SettingsSection`、`FormSectionSub`、`FormFieldStack` 等现有结构，而不是空列。
-- **卡片**：配置区、仪表盘等 **不使用卡片投影**（`boxShadow: none`）；层次靠 **细描边**（`var(--form-outline-rest)`）与背景差（`var(--card)` / well）区分，与 `CONFIG_PANEL_SX`、`DASHBOARD_CARD_SURFACE_SX` 一致。
+- **卡片**：配置区、仪表盘等允许使用 **校准过的 3D 投影栈**（如 `--os3d-content-plate-stack`），但必须配合细描边与材质高光；不要重新发明另一套重影。
 
 ## Shell 布局（桌面隐喻）
 
-- **顶栏 `TopBar`**：**窗口标题栏**隐喻——`SHELL_TITLEBAR_CHROME_SX` 为 **半透明哑光底 + `blur(var(--shell-chrome-blur))`**，**无背景渐变**；与主内容以 `border-subtle` 底边分隔。左侧 **Beetle OS 窗口图标**（点击回首页）、中间标题与说明（窄屏隐藏说明行）、右侧 **标题栏按钮区**（带过渡）。
-- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **扁平哑光 + 磨砂 blur**，**无渐变**；**顶边 `border-subtle`**，无外投阴影。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：**品牌条**内左侧为 **Beetle OS** 徽标 + 应用名/标语，**右侧**为 **重启**（仅已连接时显示：**仅 3D 图标**、无正文，`OS_ICON_SHELL.power` / Fluent *Electric plug*，`Tooltip` 与 `aria-label` 承载文案，确认对话框在 `Taskbar`）；其下 **宽幅连接磁贴**（语义色扁平底）；再下 **响应式磁贴网格**（`xs` 单列、`sm`+ 12 列 mosaic），各路由为 **Metro 式竖向磁贴**（图标上、标题下，主色/强调色/中性三色轮换底 + 选中主色强调），纸面 **无边框、无外投阴影、无圆角**（磁贴与连接条同为直角），半透明 + `blur(var(--shell-chrome-blur))`。**顶栏不再放重启按钮**（避免与「开始」语义重复）。**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
+- **顶栏 `TopBar`**：**窗口标题栏**隐喻——`SHELL_TITLEBAR_CHROME_SX` 为 **半透明哑光底 + `blur(var(--shell-chrome-blur))` + 轻微品牌侧光**；允许极浅材质渐变，但不允许脏色叠加。与主内容以 `border-subtle` 底边分隔。左侧 **Beetle OS 窗口图标**（点击回首页）、中间为 **轻量品牌标签 + 当前页标题胶囊**、右侧为 **标题栏按钮区**；页标题本身保持高可读性，不用展示字体抢层级。
+- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **磨砂哑光台面**，允许浅品牌辉光与底部承托影；目标是“有体积，但不脏”。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：**品牌条**内左侧为 **Beetle OS** 徽标 + 应用名，**右侧**为 **重启**（仅已连接时显示：**仅 3D 图标**、无正文，`OS_ICON_SHELL.power` / Fluent *Electric plug*，`Tooltip` 与 `aria-label` 承载文案，确认对话框在 `Taskbar`）；其下 **宽幅连接磁贴**；再下 **响应式磁贴网格**，各路由为 **竖向 3D 磁贴**（图标上、标题下，材质高光与台座统一）；**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
 - **导航数据单源**：`src/config/navItems.tsx` 的 `NAV_ITEMS`，任务栏快捷方式与开始菜单共用，避免分叉。
 
 ## 组件与布局
 
-- **顶栏**：与主体同宽逻辑一致，样式遵循壳层 token（无重阴影、无粗边框）
-- **卡片 / 列表**：优先用主题提供的 Card、Paper 等组件样式，不额外加重阴影或边框
-- **按钮 / 输入框**：使用主题已定制的 MUI 组件，保持扁平、无强立体感
+- **顶栏**：与主体同宽逻辑一致，样式遵循壳层 token；允许轻台座与眉题胶囊，但不能再另起材质体系
+- **卡片 / 列表**：优先用主题提供的 Card、Paper 等组件样式，不额外加第二套重影或粗边框
+- **按钮 / 输入框**：使用主题已定制的 MUI 组件，保持明确 3D 触感，但 hover / active 位移必须克制
 
 ### 列表：静态行 vs 可点击导航
 
@@ -86,7 +86,7 @@
 ## 主题品牌（ThemeBrand）
 
 - **单源**：`src/config/themeTokens.ts` 的 `ThemeBrand`、`THEME_BRAND_KEYS`、`tokenMap`；默认偏好见 `appPreferencesContext.ts`。
-- **`logo`（默认）**：与 `public/logo.png` 对齐——浅色模式主色深紫 `#6d28d9`、强调电青 `#0891b2`；深色模式主色 `#a78bfa`、强调 `#22d3ee`，背景带轻微紫基调。
+- **`logo`（默认）**：与 `public/logo.png` 对齐，但背景收敛为更干净的控制台中性色。浅色模式主色 `#5f47d4`、强调 `#1398b6`；深色模式主色 `#8c79f3`、强调 `#29c7de`，避免整页泛紫发脏。
 - **已移除**：原「爱马仕橙」`orange` 品牌；本地若仍存 `themeBrand: "orange"` 的偏好会被视为无效并回退到默认 `logo`。
 
 ## 设计约束清单（写 UI/样式时必须遵守）
@@ -94,15 +94,15 @@
 以下为 `.cursor/rules/design-constraints.mdc` 的完整内容来源，AI 与开发写样式时以此为准：
 
 - **Token 化**：禁止在组件和 theme 的 styleOverrides 中硬编码色值、圆角、动效时长、焦点环等。颜色用 `var(--primary)`、`var(--border)`、`var(--card)`、`var(--foreground)` 等；**文案层级优先 `var(--text-primary)` / `var(--text-secondary)` / `var(--text-tertiary)` 或 `TEXT_*_SX`**。圆角用 `var(--radius-control)`、`var(--radius-card)`、`var(--radius-chip)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)`；焦点环用 `var(--focus-ring-width)`、`var(--focus-ring-offset)`。单源为 `src/config/themeTokens.ts`（ThemeTokens + LAYOUT_TOKENS）、`appTheme` 注入的 `:root` 变量，以及 **`panelStyles` / `listItemStyles` 中的版面与列表预设**。
-- **风格**：现代、扁平化、精致；禁止重阴影、粗/重边框。
-- **阴影**：仅允许极轻级别；禁止大面积、高模糊、深色强阴影。
+- **风格**：现代、精致、克制拟物；禁止把 3D 做成混乱的效果堆叠。
+- **阴影**：允许多层阴影栈，但必须收敛、可解释；禁止大面积、高模糊、脏灰重影。
 - **边框**：分割用 `var(--border)` 或 `var(--border-subtle)` 的细线，不写死色值；表单/面板描边优先 `var(--form-outline-rest)`。
 - **布局**：内容宽度用 `CONTENT_MAX_WIDTH` / `maxWidth="lg"`，不写死 1200 等数字；页级/滚动区用 **`PAGE_STACK_OUTER_SX` / `PAGE_SCROLL_STACK_SX`**，纵向间距用 **`LAYOUT_TOKENS`**。
 - **表单与说明**：`SettingsRow` 纵向；**禁止**左右分栏拉空；helper **不要**用窄 `maxWidth` 过早断行。
 - **列表与导航**：静态列表行用 **`listItemStyles`**；侧栏/子导航 **`ListItemButton`** 交互样式只在 **`MuiListItemButton`**，页面不写重复 selected/hover。
 - **Toast**：只用 **`useToast`**；外观分层遵守上文「Toast（Snackbar）」；业务代码不复制 Snackbar 全套样式。
 - **Slider**：样式只在主题 **`MuiSlider`**；页面只保留布局型 `sx`。
-- **组件**：优先用主题已定制的 MUI 组件，不额外加重阴影或边框。
+- **组件**：优先用主题已定制的 MUI 组件，不额外加第二套重影或粗边框。
 - **新增 token**：在 themeTokens 中定义，并在 appTheme 的 `:root` 中注入对应 CSS 变量。
 
 ## 变更与扩展
