@@ -1001,7 +1001,6 @@ export const enUS = {
       voice_input: 'Voice input',
       voice_output: 'Voice output',
       shell: 'Shell',
-      env: 'Environment',
       lua_datasheet_distill: 'Linux Lua datasheet distillation',
       lua_memory_query: 'Linux Lua read-only memory snapshot',
       lua_state_machine_checker: 'Linux Lua state-machine contract check',

@@ -901,7 +901,6 @@ fn register_core_tools(
 ) {
     let platform = &services.platform;
     registry.register(Box::new(super::GetTimeTool));
-    registry.register(Box::new(super::EnvTool));
     registry.register(Box::new(super::MessageTool));
     registry.register(Box::new(super::TaskTool::new(
         Arc::clone(&services.task_store),
@@ -2161,7 +2160,6 @@ mod tests {
         }
 
         for hidden in [
-            "env",
             "continuity_snapshot",
             "private_garden",
             "files",
@@ -2451,6 +2449,15 @@ mod tests {
                 "expected legacy diagnose tool {removed} to be removed"
             );
         }
+    }
+
+    #[test]
+    fn default_registry_removes_env_tool_from_runtime_surface() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        assert!(
+            ctx.tool_registry.get("env").is_none(),
+            "expected env tool to be removed from runtime registry"
+        );
     }
 
     #[test]

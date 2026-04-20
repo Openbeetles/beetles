@@ -267,7 +267,6 @@ fn populate_core_tool_catalog(authority: &mut ToolCatalogAuthority) {
         authority,
         ToolLlmVisibility::hidden(),
         &[
-            "env",
             "files",
             "file_edit",
             "web_fetch",
@@ -420,7 +419,6 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
         authority,
         ToolProtocolContract::operation_envelope_json(),
         &[
-            "env",
             "process",
             "network",
             "network_scan",
@@ -608,5 +606,20 @@ mod tests {
                 "expected {removed} protocol entry to disappear"
             );
         }
+    }
+
+    #[test]
+    fn env_tool_leaves_catalog_and_protocol_authority() {
+        let llm_authority = build_default_llm_catalog_authority();
+        let protocol_authority = build_default_tool_protocol_authority();
+
+        assert!(
+            llm_authority.get("env").is_none(),
+            "expected env tool to leave catalog authority"
+        );
+        assert!(
+            protocol_authority.get("env").is_none(),
+            "expected env tool to leave protocol authority"
+        );
     }
 }

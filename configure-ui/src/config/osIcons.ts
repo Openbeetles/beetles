@@ -142,7 +142,6 @@ export const OS_ICON_TOOL: Record<string, string> = {
   process: "/icons/runtime_3d.png",
   network: "/icons/tool_network_3d.png",
   shell: "/icons/keyboard_3d.png",
-  env: "/icons/tool_env_3d.png",
   proxy_config: "/icons/tool_proxy_3d.png",
   model_config: "/icons/bot_3d.png",
   voice_input: "/icons/microphone_3d.png",

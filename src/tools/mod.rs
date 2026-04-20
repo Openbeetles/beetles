@@ -49,7 +49,6 @@ pub mod document_search;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub mod documents;
-pub mod env;
 pub mod factual_memory;
 pub mod file_edit;
 pub mod file_write;
@@ -198,7 +197,6 @@ pub use document_search::DocumentSearchTool;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use documents::DocumentsTool;
-pub use env::EnvTool;
 pub use execution_governance::{
     render_tool_execution_governance_markdown, ToolEmergencyStopState, ToolExecutionGateDecision,
     ToolExecutionGovernance, ToolExecutionGovernanceState, ToolExecutionPermit,

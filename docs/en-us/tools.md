@@ -13,7 +13,6 @@ For example, `task` and `remind_at` already exist by default, and gain more inte
 | Tool | What it does | When it appears |
 |------|--------------|-----------------|
 | `get_time` | Check the current time | Default |
-| `env` | View environment variables | Default |
 | `message` | Send a visible message to the current or a specific chat | Default |
 | `task` | Manage tasks and due times; can also sync with calendars when office capability is connected | Default |
 | `remind_at` | Create, view, update, and delete reminders | Default |

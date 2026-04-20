@@ -984,7 +984,6 @@ export const zhCN = {
       voice_input: '语音输入',
       voice_output: '语音输出',
       shell: 'Shell',
-      env: '环境变量',
       lua_datasheet_distill: 'Linux Lua 工程资料/数据手册提炼',
       lua_memory_query: 'Linux Lua 只读记忆快照查询',
       lua_state_machine_checker: 'Linux Lua 状态机契约检查',

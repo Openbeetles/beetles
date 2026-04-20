@@ -14,7 +14,6 @@ const registryPath = path.resolve(__dirname, '../../../src/tools/registry.rs')
 /** `super::FooTool` 中的 Foo → `GET /api/tools` 的 `name`（与 `handlers/tools.rs` i18n_key 一致） */
 const TOOL_CLASS_TO_NAME: Record<string, string> = {
   GetTime: 'get_time',
-  Env: 'env',
   Message: 'message',
   Task: 'task',
   Calendar: 'calendar',
