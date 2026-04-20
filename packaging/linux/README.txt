@@ -9,6 +9,7 @@ Binary
 ------
 - `beetle`: statically linked (musl). `./build.sh --deploy-linux` installs to `/opt/beetle/releases/<release>/`, updates `/opt/beetle/current`, maintains `/opt/beetle/rollback` for the previous release, and creates `/usr/local/bin/beetle -> /opt/beetle/current/beetle` as the global command entry. Start the Linux runtime with `beetle supervise`; `beetle agent` is the execution-plane entry used by the supervisor.
 - The deploy flow writes `/var/lib/beetle/runtime/linux_release/state.json` with rollout state `pending_validation`. The supervisor marks the release `steady` after it survives the validation window, or flips back to `rollback` on repeated quick failures.
+- The deploy flow also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote state root `skills/` directory. Existing user-created runtime skills on the device are left in place unless a shipped file has the same name.
 - **WiFi addressing**: Beetle sets AP/STA addresses via **rtnetlink** in-process; the **`ip` utility is not required** for those steps (you still need `wpa_supplicant` / `hostapd` / `dnsmasq` / `iw` where the code invokes them).
 
 Config API (optional)

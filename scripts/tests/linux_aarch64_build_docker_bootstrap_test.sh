@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SCRIPT_PATH="$ROOT_DIR/scripts/create_linux_aarch64_build_docker.sh"
+SCRIPT_PATH="$ROOT_DIR/scripts/docker/linux_aarch64_build_docker.sh"
 BUILD_SH="$ROOT_DIR/build.sh"
 
 assert_contains() {
@@ -40,7 +40,7 @@ assert_contains "$SCRIPT_PATH" 'docker exec -it \$CONTAINER_NAME bash' \
 assert_contains "$SCRIPT_PATH" 'cargo build --release --target aarch64-unknown-linux-gnu' \
   "bootstrap script must guide users to the GNU aarch64 build command"
 
-assert_contains "$BUILD_SH" 'create_linux_aarch64_build_docker\.sh' \
+assert_contains "$BUILD_SH" 'scripts/docker/linux_aarch64_build_docker\.sh' \
   "build.sh help should point Linux aarch64 users at the one-shot Docker bootstrap script"
 
 echo "linux_aarch64_build_docker_bootstrap_test: ok"

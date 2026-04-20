@@ -83,12 +83,15 @@ TARGET=linux ./build.sh
 TARGET=linux-armv7 ./build.sh
 TARGET=linux-aarch64 ./build.sh
 ./build.sh --deploy-linux
+./scripts/docker/linux_armv7_build_docker.sh
 ```
 
 直接结论：
 
 - 交互式构建成功后，脚本会问你是否立刻通过 SSH 部署
 - `--deploy-linux` 不会重新编译，只会拿现有产物去部署
+- `--deploy-linux` 还会把 `spiffs_data/skills/*.md` 里的官方运行时技能同步到远端 Beetle state root 的 `skills/` 目录；不会删除设备上已有的用户自定义技能
+- `scripts/docker/linux_armv7_build_docker.sh` 会准备 Orange Pi 这类 armv7 GNU 本地专用构建容器
 - Linux 部署模式、目录和回滚，单独见 [linux-release-rollback.md](linux-release-rollback.md)
 
 ## 打包方案
@@ -143,7 +146,7 @@ BUILD_METHOD=remote TARGET=linux ./build.sh
 - 在 Linux 主机上，`auto` 通常就是本地构建
 - 在 macOS 上构建 Linux，`auto` 会优先用 Docker；如果 Docker daemon 没启动，就退回本地 musl-cross
 - `remote` 只适合 Linux 目标，脚本会继续问远端地址、远端目录，以及构建完成后怎么处理产物
-- 如果你只是想先准备一个 Linux aarch64 GNU 构建容器，可以看 `./scripts/create_linux_aarch64_build_docker.sh`
+- 如果你只是想先准备一个 Linux aarch64 GNU 构建容器，可以看 `./scripts/docker/linux_aarch64_build_docker.sh`
 
 ## 交互提示和非交互用法
 

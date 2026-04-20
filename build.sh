@@ -47,7 +47,7 @@ Quick examples:
   TARGET=linux ./build.sh --package-profile linux-full
   TARGET=linux-armv7 ./build.sh
   TARGET=linux-aarch64 ./build.sh
-  ./scripts/create_linux_aarch64_build_docker.sh
+  ./scripts/docker/linux_aarch64_build_docker.sh
   TARGET=esp ./build.sh
   TARGET=esp ./build.sh --package-profile voice
   TARGET=esp ./build.sh --flash
@@ -55,7 +55,7 @@ Quick examples:
 
 Notes:
   - On macOS building Linux musl, auto mode uses Docker only if the daemon is running; otherwise musl-cross (Homebrew).
-  - For option 5 beginner setup, run: ./scripts/create_linux_aarch64_build_docker.sh
+  - For option 5 beginner setup, run: ./scripts/docker/linux_aarch64_build_docker.sh
   - Force local: BUILD_METHOD=local ./build.sh
   - Force Docker: BUILD_METHOD=docker ./build.sh
   - Force remote: BUILD_METHOD=remote ./build.sh
@@ -1336,6 +1336,46 @@ REMOTE_EOF
     echo -e "${GREEN}✓ Bundled tools uploaded (beetle prefers /opt/beetle/bin)${NC}"
 }
 
+OFFICIAL_SKILLS_UPLOADED=0
+OFFICIAL_SKILLS_EXPECTED=0
+linux_deploy_upload_official_skills() {
+    local skills_dir="$SCRIPT_ROOT/spiffs_data/skills"
+    local remote_stage_dir=""
+    local has=""
+    local f=""
+    OFFICIAL_SKILLS_UPLOADED=0
+    OFFICIAL_SKILLS_EXPECTED=0
+    if [ ! -d "$skills_dir" ]; then
+        return 0
+    fi
+    for f in "$skills_dir"/*.md; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in
+            README*|*.txt) continue ;;
+        esac
+        has=1
+        break
+    done
+    if [ -z "$has" ]; then
+        return 0
+    fi
+    echo "Uploading official runtime skills → $DEPLOY_STATE_DIR/skills ..."
+    remote_stage_dir="$REMOTE_TMP_SKILLS_DIR"
+    ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
+        "rm -rf '$remote_stage_dir' && mkdir -p '$remote_stage_dir'" || return 1
+    for f in "$skills_dir"/*.md; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in
+            README*|*.txt) continue ;;
+        esac
+        OFFICIAL_SKILLS_EXPECTED=$((OFFICIAL_SKILLS_EXPECTED + 1))
+        scp "${SSH_MUX_OPTS[@]}" -P "$SSH_PORT" "$f" \
+            "${DEVICE_USER}@${DEVICE_IP}:${remote_stage_dir}/" || return 1
+    done
+    OFFICIAL_SKILLS_UPLOADED=1
+    echo -e "${GREEN}✓ Official runtime skills uploaded (${OFFICIAL_SKILLS_EXPECTED})${NC}"
+}
+
 # Upload files
 linux_deploy_upload_files() {
     echo "========== Uploading Files =========="
@@ -1348,8 +1388,10 @@ linux_deploy_upload_files() {
     REMOTE_TMP_ENV="/tmp/beetle-${DEPLOY_RELEASE_NAME}.env"
     REMOTE_TMP_README="/tmp/beetle-${DEPLOY_RELEASE_NAME}.README.txt"
     REMOTE_TMP_HWJSON="/tmp/beetle-${DEPLOY_RELEASE_NAME}.hardware.json"
+    REMOTE_TMP_SKILLS_DIR="/tmp/beetle-${DEPLOY_RELEASE_NAME}.skills"
 
     linux_deploy_upload_embed_deps || return 1
+    linux_deploy_upload_official_skills || return 1
 
     echo "Uploading release payload for ${DEPLOY_RELEASE_NAME} ..."
     if [ "${REMOTE_BUILD_ACTIVE:-0}" = "1" ] && [ "${REMOTE_BUILD_ROLE:-}" = "deploy" ] && [ -n "${REMOTE_BUILD_BIN:-}" ]; then
@@ -1423,7 +1465,7 @@ linux_deploy_install_payloads() {
     echo "========== Installing Payload =========="
     echo ""
 
-    local remote_cmd="env DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' sh -s"
+    local remote_cmd="env DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' REMOTE_TMP_SKILLS_DIR='$REMOTE_TMP_SKILLS_DIR' sh -s"
     linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF'
 set -eu
 
@@ -1461,6 +1503,16 @@ if [ -f "$REMOTE_TMP_HWJSON" ]; then
     if [ ! -f "$DEPLOY_STATE_DIR/config/hardware.json.example" ]; then
         cp -f "$release_dir/hardware.json.example" "$DEPLOY_STATE_DIR/config/hardware.json.example"
     fi
+fi
+if [ -d "$REMOTE_TMP_SKILLS_DIR" ]; then
+    mkdir -p "$DEPLOY_STATE_DIR/skills"
+    chmod 700 "$DEPLOY_STATE_DIR/skills" 2>/dev/null || true
+    for f in "$REMOTE_TMP_SKILLS_DIR"/*.md; do
+        [ -f "$f" ] || continue
+        base="$(basename "$f")"
+        mv "$f" "$DEPLOY_STATE_DIR/skills/$base"
+    done
+    rm -rf "$REMOTE_TMP_SKILLS_DIR"
 fi
 
 if [ -e "$DEPLOY_CURRENT_LINK" ] && [ ! -L "$DEPLOY_CURRENT_LINK" ]; then
@@ -1535,6 +1587,7 @@ if [ -f "$REMOTE_TMP_ENV" ]; then
     fi
 fi
 
+rm -rf "$REMOTE_TMP_SKILLS_DIR"
 rm -f "$REMOTE_TMP_SERVICE" "$REMOTE_TMP_INIT" "$REMOTE_TMP_ENV" "$REMOTE_TMP_README" "$REMOTE_TMP_HWJSON"
 
 echo "✓ Installed release: $release_dir"
@@ -1607,7 +1660,7 @@ linux_deploy_verify_remote_install() {
     echo "========== Remote Verification =========="
     echo ""
 
-    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' sh -s"
+    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' OFFICIAL_SKILLS_EXPECTED='${OFFICIAL_SKILLS_EXPECTED:-0}' sh -s"
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
         "$remote_cmd" << 'REMOTE_EOF'
 set -eu
@@ -1639,6 +1692,19 @@ if [ -d "$DEPLOY_STATE_DIR" ]; then
 else
     echo "  state dir -> missing"
     missing=1
+fi
+if [ "${OFFICIAL_SKILLS_EXPECTED:-0}" -gt 0 ]; then
+    if [ -d "$DEPLOY_STATE_DIR/skills" ]; then
+        actual_skills=$(find "$DEPLOY_STATE_DIR/skills" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')
+        echo "  official skills -> $actual_skills markdown files"
+        if [ "$actual_skills" -lt "$OFFICIAL_SKILLS_EXPECTED" ]; then
+            echo "  official skills -> incomplete"
+            missing=1
+        fi
+    else
+        echo "  official skills -> missing"
+        missing=1
+    fi
 fi
 echo ""
 
