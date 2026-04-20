@@ -2281,39 +2281,41 @@ mod tests {
 
     #[test]
     fn mail_calendar_documents_and_contacts_point_status_questions_to_office_status() {
-        let descriptions = user_visible_tool_descriptions_from_default_registry();
-
         #[cfg(all(
             feature = "capability_office",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        for tool_name in ["mail", "calendar", "documents", "contacts_directory"] {
-            let description = descriptions
-                .get(tool_name)
-                .unwrap_or_else(|| panic!("{tool_name} description"));
-            assert!(
-                description.contains("office_status"),
-                "{tool_name} description should point office status/readiness questions to office_status"
-            );
+        {
+            let descriptions = user_visible_tool_descriptions_from_default_registry();
+            for tool_name in ["mail", "calendar", "documents", "contacts_directory"] {
+                let description = descriptions
+                    .get(tool_name)
+                    .unwrap_or_else(|| panic!("{tool_name} description"));
+                assert!(
+                    description.contains("office_status"),
+                    "{tool_name} description should point office status/readiness questions to office_status"
+                );
+            }
         }
     }
 
     #[test]
     fn mail_calendar_documents_and_contacts_point_onboarding_and_repair_to_office_config() {
-        let descriptions = user_visible_tool_descriptions_from_default_registry();
-
         #[cfg(all(
             feature = "capability_office",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        for tool_name in ["mail", "calendar", "documents", "contacts_directory"] {
-            let description = descriptions
-                .get(tool_name)
-                .unwrap_or_else(|| panic!("{tool_name} description"));
-            assert!(
-                description.contains("office_config"),
-                "{tool_name} description should point onboarding/repair to office_config"
-            );
+        {
+            let descriptions = user_visible_tool_descriptions_from_default_registry();
+            for tool_name in ["mail", "calendar", "documents", "contacts_directory"] {
+                let description = descriptions
+                    .get(tool_name)
+                    .unwrap_or_else(|| panic!("{tool_name} description"));
+                assert!(
+                    description.contains("office_config"),
+                    "{tool_name} description should point onboarding/repair to office_config"
+                );
+            }
         }
     }
 

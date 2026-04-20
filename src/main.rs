@@ -1859,21 +1859,8 @@ fn handle_restart_command() {
         }
     }
 
-    match beetle::runtime::linux_supervisor::request_restart() {
-        Ok(true) => {
-            println!("beetle supervisor restart requested.");
-        }
-        Ok(false) => {
-            eprintln!(
-                "restart requires a running beetle supervisor or a systemd-managed beetle service."
-            );
-            std::process::exit(1);
-        }
-        Err(error) => {
-            eprintln!("failed to request beetle supervisor restart: {}", error);
-            std::process::exit(1);
-        }
-    }
+    eprintln!("restart requires a systemd-managed beetle service.");
+    std::process::exit(1);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1894,21 +1881,8 @@ fn handle_stop_command() {
         }
     }
 
-    match beetle::runtime::linux_supervisor::request_stop() {
-        Ok(true) => {
-            println!("beetle supervisor stop requested.");
-        }
-        Ok(false) => {
-            eprintln!(
-                "stop requires a running beetle supervisor or a systemd-managed beetle service."
-            );
-            std::process::exit(1);
-        }
-        Err(error) => {
-            eprintln!("failed to request beetle supervisor stop: {}", error);
-            std::process::exit(1);
-        }
-    }
+    eprintln!("stop requires a systemd-managed beetle service.");
+    std::process::exit(1);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1976,18 +1950,6 @@ fn handle_release_rollback_command(platform: &Arc<dyn Platform>) {
     if !release.rollback_available {
         eprintln!("rollback pointer is not available for the current Linux release.");
         std::process::exit(1);
-    }
-
-    match beetle::runtime::linux_supervisor::request_rollback() {
-        Ok(true) => {
-            println!("beetle supervisor rollback requested.");
-            return;
-        }
-        Ok(false) => {}
-        Err(error) => {
-            eprintln!("failed to request beetle supervisor rollback: {}", error);
-            std::process::exit(1);
-        }
     }
 
     match beetle::runtime::rollback_current_release(

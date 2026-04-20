@@ -16,11 +16,6 @@ impl ControlPlaneRouteContract {
     pub const FULL: Self = Self {
         inbound_webhooks_enabled: true,
     };
-
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    pub const SUPERVISOR_MINIMAL: Self = Self {
-        inbound_webhooks_enabled: false,
-    };
 }
 
 /// 各 handler 共享的上下文，由 run() 构建后以 Arc 传入闭包。

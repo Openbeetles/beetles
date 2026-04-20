@@ -7,8 +7,6 @@ pub mod delayed_task;
 pub mod governance;
 pub mod initiative;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub mod linux_control_plane;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_release;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_supervisor;

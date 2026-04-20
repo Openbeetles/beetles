@@ -248,25 +248,6 @@ fn build_release_status(
     }
 }
 
-pub(crate) fn auto_release_rollback_eligible_for_state(
-    state_fs: &dyn StateFs,
-    current_exe: &Path,
-) -> bool {
-    let managed_layout = derive_managed_layout_from_binary(current_exe);
-    let rollback = managed_layout
-        .as_ref()
-        .and_then(|(root, _)| read_release_pointer_symlink(root.join("rollback").as_path()));
-    let marker_pending = read_pending_validation_marker(state_fs).unwrap_or(false);
-    match load_release_state(state_fs) {
-        Ok(Some(state)) => {
-            state.current.is_some()
-                && state.rollback.is_some()
-                && state.rollout_state == LinuxReleaseRolloutState::PendingValidation
-        }
-        Ok(None) | Err(_) => managed_layout.is_some() && rollback.is_some() && marker_pending,
-    }
-}
-
 fn inspect_linux_release_status(state_fs: &dyn StateFs, current_exe: &Path) -> LinuxReleaseStatus {
     let managed_layout = derive_managed_layout_from_binary(current_exe);
     let derived_deploy_root = managed_layout
@@ -492,11 +473,11 @@ fn atomic_symlink(target: &Path, link_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        auto_release_rollback_eligible_for_state, derive_managed_layout_from_binary,
-        inspect_linux_release_status, read_release_pointer_symlink, LinuxReleasePointer,
-        LinuxReleaseRolloutState, LinuxReleaseState, LinuxReleaseStatus, StateSchemaStatus,
-        BEETLE_STATE_SCHEMA_VERSION, REL_PATH_LINUX_RELEASE_PENDING_VALIDATION,
-        REL_PATH_LINUX_RELEASE_STATE, REL_PATH_STATE_SCHEMA_STATUS,
+        derive_managed_layout_from_binary, inspect_linux_release_status,
+        read_release_pointer_symlink, LinuxReleasePointer, LinuxReleaseRolloutState,
+        LinuxReleaseState, LinuxReleaseStatus, StateSchemaStatus, BEETLE_STATE_SCHEMA_VERSION,
+        REL_PATH_LINUX_RELEASE_PENDING_VALIDATION, REL_PATH_LINUX_RELEASE_STATE,
+        REL_PATH_STATE_SCHEMA_STATUS,
     };
     use crate::error::Result;
     use crate::platform::StateFs;
@@ -686,24 +667,6 @@ mod tests {
             .state_error
             .as_deref()
             .is_some_and(|error| error.contains("linux_release_state")));
-    }
-
-    #[test]
-    fn auto_rollback_eligibility_uses_pending_validation_marker_when_state_is_unreadable() {
-        let fs = MemoryStateFs::default();
-        fs.write(REL_PATH_LINUX_RELEASE_STATE, br#"{"rollout_state":"#)
-            .unwrap();
-        fs.write(
-            REL_PATH_LINUX_RELEASE_PENDING_VALIDATION,
-            b"pending_validation",
-        )
-        .unwrap();
-        let (_root, current_exe) = managed_release_fixture();
-
-        assert!(auto_release_rollback_eligible_for_state(
-            &fs,
-            current_exe.as_path()
-        ));
     }
 
     #[test]

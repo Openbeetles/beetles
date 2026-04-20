@@ -461,10 +461,6 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
 }
 
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 fn populate_office_tool_protocol_authority(authority: &mut ToolProtocolAuthority) {
     insert_many_protocol(
         authority,
@@ -482,10 +478,6 @@ fn populate_office_tool_protocol_authority(authority: &mut ToolProtocolAuthority
 pub fn build_default_tool_protocol_authority() -> ToolProtocolAuthority {
     let mut authority = ToolProtocolAuthority::default();
     populate_core_tool_protocol_authority(&mut authority);
-    #[cfg(all(
-        feature = "capability_office",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
     populate_office_tool_protocol_authority(&mut authority);
     authority
 }
