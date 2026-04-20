@@ -245,7 +245,7 @@ impl ToolRegistry {
         )?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
-        if outcome.failure_kind.is_none() {
+        if outcome.is_success() {
             self.observe_runtime_capability_success(name);
         }
         Ok(outcome)
@@ -319,7 +319,7 @@ impl ToolRegistry {
         })?;
         let mut outcome = tool.execute_outcome(args, ctx)?;
         outcome.content = truncate_to_byte_len(&outcome.content, MAX_TOOL_RESULT_LEN);
-        if outcome.failure_kind.is_none() {
+        if outcome.is_success() {
             self.observe_runtime_capability_success(permit.tool_name());
             if let Some(governance) = self.execution_governance.as_ref() {
                 if let Err(error) = governance.record_success(permit, &outcome) {

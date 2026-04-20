@@ -6,8 +6,9 @@ use crate::office::{
 };
 use crate::tools::{
     http_bridge::ToolContextHttpClient, office_args::parse_identity_class_value, parse_tool_args,
-    serialize_tool_output, Tool, ToolApprovalMode, ToolContext, ToolEffectClass,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    serialize_tool_output, Tool, ToolApprovalMode, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolEffectClass, ToolExecutionBlocker, ToolExecutionBlockerKind,
+    ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -47,6 +48,91 @@ impl OfficeConfigTool {
     }
 }
 
+fn onboarding_blocker_kind(
+    disposition: OfficeAccountOnboardingDisposition,
+) -> Option<ToolExecutionBlockerKind> {
+    match disposition {
+        OfficeAccountOnboardingDisposition::Applied => None,
+        OfficeAccountOnboardingDisposition::NeedsUserFacts => {
+            Some(ToolExecutionBlockerKind::NeedsUserFacts)
+        }
+        OfficeAccountOnboardingDisposition::ProbeFailed => {
+            Some(ToolExecutionBlockerKind::ProbeFailed)
+        }
+        OfficeAccountOnboardingDisposition::Unsupported => {
+            Some(ToolExecutionBlockerKind::Unsupported)
+        }
+    }
+}
+
+fn clarification_field_from_office_schema(
+    field: &crate::office::OfficeConfigCreateFieldSchema,
+) -> ToolClarificationField {
+    ToolClarificationField {
+        key: field.key.clone(),
+        label: field.label.clone(),
+        description: field.description.clone(),
+        required: field.required,
+        secret: field.secret,
+        multiple: field.multiple,
+        options: field
+            .options
+            .iter()
+            .map(|option| ToolClarificationOption {
+                value: option.value.clone(),
+                label: option.label.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn onboarding_blocker_summary(
+    result: &crate::office::OfficeAccountOnboardingResult,
+    locale: crate::i18n::Locale,
+) -> String {
+    match result.disposition {
+        OfficeAccountOnboardingDisposition::NeedsUserFacts => {
+            let field_text = if result.missing_fields.is_empty() {
+                match locale {
+                    crate::i18n::Locale::Zh => "需要补充必要字段".to_string(),
+                    crate::i18n::Locale::En => "required facts are still missing".to_string(),
+                }
+            } else {
+                result.missing_fields.join(", ")
+            };
+            match locale {
+                crate::i18n::Locale::Zh => format!("账户配置被阻塞：{field_text}"),
+                crate::i18n::Locale::En => format!("Account onboarding is blocked: {field_text}"),
+            }
+        }
+        OfficeAccountOnboardingDisposition::ProbeFailed => {
+            let reason = result
+                .error_message
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(result.reason.as_str());
+            match locale {
+                crate::i18n::Locale::Zh => format!("账户配置探测失败：{reason}"),
+                crate::i18n::Locale::En => format!("Account onboarding probe failed: {reason}"),
+            }
+        }
+        OfficeAccountOnboardingDisposition::Unsupported => {
+            let provider = result
+                .provider_kind
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(result.reason.as_str());
+            match locale {
+                crate::i18n::Locale::Zh => format!("当前不支持这种账户接入路径：{provider}"),
+                crate::i18n::Locale::En => {
+                    format!("This account onboarding path is not supported: {provider}")
+                }
+            }
+        }
+        OfficeAccountOnboardingDisposition::Applied => String::new(),
+    }
+}
+
 impl Tool for OfficeConfigTool {
     fn name(&self) -> &'static str {
         "office_config"
@@ -61,25 +147,34 @@ impl Tool for OfficeConfigTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_office_config")?;
         let op = obj
             .get("op")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::config("tool_office_config", "missing op"))?;
         match op {
-            "inspect" => serialize_tool_output(
+            "inspect" => Ok(ToolExecutionOutcome::text(serialize_tool_output(
                 "tool_office_config",
                 &OfficeConfigResponse {
                     op: "inspect",
                     ok: true,
                     payload: self.service.inspect()?,
                 },
-            ),
+            )?)),
             "assess" => {
                 let payload: OfficeConfigAssessment = self
                     .service
                     .assess(obj.get("account_key").and_then(Value::as_str))?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "assess",
@@ -89,7 +184,7 @@ impl Tool for OfficeConfigTool {
                             accounts: payload.accounts,
                         },
                     },
-                )
+                )?))
             }
             "provider_schema" => {
                 let capability = obj
@@ -100,7 +195,7 @@ impl Tool for OfficeConfigTool {
                 let providers = self
                     .service
                     .provider_schemas(preferred_provider_kind.as_deref(), capability)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "provider_schema",
@@ -110,7 +205,7 @@ impl Tool for OfficeConfigTool {
                             providers,
                         },
                     },
-                )
+                )?))
             }
             "resolve_account" => {
                 let capability =
@@ -127,7 +222,7 @@ impl Tool for OfficeConfigTool {
                         )
                     })
                     .transpose()?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "resolve_account",
@@ -143,14 +238,14 @@ impl Tool for OfficeConfigTool {
                             historical_account_key: None,
                         })?,
                     },
-                )
+                )?))
             }
             "apply_account" => {
                 let request =
                     parse_public_account_upsert_request_value(&obj, "tool_office_config")?;
                 let mut http = ToolContextHttpClient::new(ctx);
                 let result = self.service.apply_account_with_http(&mut http, &request)?;
-                serialize_tool_output(
+                let content = serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "apply_account",
@@ -158,9 +253,23 @@ impl Tool for OfficeConfigTool {
                             result.disposition,
                             OfficeAccountOnboardingDisposition::Applied
                         ),
-                        payload: result,
+                        payload: result.clone(),
                     },
-                )
+                )?;
+                let outcome = ToolExecutionOutcome::text(content);
+                let Some(blocker_kind) = onboarding_blocker_kind(result.disposition) else {
+                    return Ok(outcome);
+                };
+                Ok(outcome.with_blocker(ToolExecutionBlocker {
+                    kind: blocker_kind,
+                    summary: onboarding_blocker_summary(&result, ctx.user_locale()),
+                    missing_fields: result.missing_fields.clone(),
+                    clarification_fields: result
+                        .missing_field_details
+                        .iter()
+                        .map(clarification_field_from_office_schema)
+                        .collect(),
+                }))
             }
             "revoke" => {
                 require_confirm(&obj, "revoke")?;
@@ -173,7 +282,7 @@ impl Tool for OfficeConfigTool {
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
                 self.service.revoke(account_key, clear_runtime_status)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "revoke",
@@ -183,14 +292,14 @@ impl Tool for OfficeConfigTool {
                             cleared_runtime_status: clear_runtime_status,
                         },
                     },
-                )
+                )?))
             }
             "probe" => {
                 let account_key = obj
                     .get("account_key")
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::config("tool_office_config", "missing account_key"))?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_office_config",
                     &OfficeConfigResponse {
                         op: "probe",
@@ -200,7 +309,7 @@ impl Tool for OfficeConfigTool {
                             self.service.probe_with_http(&mut http, account_key)?
                         },
                     },
-                )
+                )?))
             }
             _ => Err(Error::config(
                 "tool_office_config",
@@ -293,7 +402,10 @@ mod tests {
         OfficeAccountRuntimeStatus, OfficeCredential, OfficeCredentialStore,
         OfficeProbeDisposition, OfficeRuntimeStatusStore,
     };
-    use crate::tools::{ToolApprovalMode, ToolEffectClass, ToolRiskLevel, ToolRollbackKind};
+    use crate::tools::{
+        ToolApprovalMode, ToolEffectClass, ToolExecutionBlockerKind, ToolRiskLevel,
+        ToolRollbackKind,
+    };
     use serde_json::{json, Value};
     use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex};
@@ -708,6 +820,42 @@ mod tests {
             .list()
             .expect("credentials")
             .is_empty());
+    }
+
+    #[test]
+    fn apply_account_execute_outcome_reports_structured_blocker_for_missing_user_facts() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let outcome = fixture
+            .tool
+            .execute_outcome(
+                r#"{
+                "op":"apply_account",
+                "provider_kind":"imap_smtp",
+                "capability":"mail",
+                "email":"work@example.com",
+                "password":"secret",
+                "imap_host":"imap.example.com",
+                "smtp_host":"smtp.example.com"
+            }"#,
+                &mut ctx,
+            )
+            .expect("missing identity_class should return structured blocker outcome");
+        let blocker = outcome
+            .blocker
+            .as_ref()
+            .expect("tool outcome should carry blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "identity_class"));
+        assert!(blocker
+            .clarification_fields
+            .iter()
+            .any(|field| field.key == "identity_class"));
+        assert!(blocker.summary.contains("identity_class"));
+        assert!(!outcome.is_success());
     }
 
     #[test]

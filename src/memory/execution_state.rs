@@ -557,6 +557,9 @@ fn build_recent_observation_working_set(
     }
     if let Some(blocker) = observation.blocker.as_ref() {
         let hint = match blocker.kind.trim() {
+            "needs_user_facts" => "ask only for the missing user facts before continuing",
+            "probe_failed" => "explain the probe failure clearly before asking for corrected facts",
+            "unsupported" => "state the unsupported path clearly before choosing another route",
             "retryable" => "decide whether to retry or route around the retryable blocker",
             "capability" => {
                 "state the capability blocker clearly and switch to an alternative path"

@@ -63,9 +63,9 @@ use crate::memory::{
     PersonaPriorityGrounding, PersonaPriorityRuntimeState, PostReplyMemoryMaintenanceContext,
     PostReplyMemoryMaintenanceInput, PromptMemoryContext, PromptMemoryContextParams,
     PromptRuntimeCarry, SelfRuntimeContext, SessionMessage, SessionSummaryRefreshOutcome,
-    TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-    TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger, TurnPersonaReviewLedger,
-    TurnToolPathLedger,
+    TurnBlockerLedger, TurnDeliveryLedger, TurnExecutionClass, TurnLedger, TurnLedgerStatus,
+    TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaLedger,
+    TurnPersonaReviewLedger, TurnToolPathLedger,
 };
 use crate::metrics;
 use crate::orchestrator::admission::{LlmDecision, ToolDecision};
@@ -519,10 +519,19 @@ struct WorkerRunTelemetry {
     persona_priority_adjudication: Option<PersonaPriorityAdjudication>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ToolRoundCompletionTelemetry {
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
+    blocker: Option<crate::tools::ToolExecutionBlocker>,
+}
+
+fn tool_execution_blocker_kind_label(kind: crate::tools::ToolExecutionBlockerKind) -> &'static str {
+    match kind {
+        crate::tools::ToolExecutionBlockerKind::NeedsUserFacts => "needs_user_facts",
+        crate::tools::ToolExecutionBlockerKind::ProbeFailed => "probe_failed",
+        crate::tools::ToolExecutionBlockerKind::Unsupported => "unsupported",
+    }
 }
 
 fn build_turn_observation_ledger(
@@ -571,7 +580,15 @@ fn build_turn_observation_ledger(
             react_rounds: telemetry.latency.react_rounds,
             current_primary_delivered: telemetry.delivery.current_primary_delivered,
         },
-        blocker: None,
+        blocker: telemetry
+            .tool_round_completion
+            .blocker
+            .as_ref()
+            .map(|blocker| TurnBlockerLedger {
+                kind: tool_execution_blocker_kind_label(blocker.kind).to_string(),
+                failed_calls: 1,
+                total_calls: telemetry.latency.tool_calls.max(1),
+            }),
     };
     observation.is_meaningful().then_some(observation)
 }
@@ -598,6 +615,7 @@ struct PreparedWorkerConversation {
 struct ToolCallExecutionResult {
     result_owned: String,
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
+    blocker: Option<crate::tools::ToolExecutionBlocker>,
     call_succeeded: bool,
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
@@ -611,6 +629,7 @@ struct ToolUseRoundExecutionOutput {
     had_visible_outbound_side_effects: bool,
     omitted_evidence_count: usize,
     successful_tool_names: Vec<String>,
+    blocker: Option<crate::tools::ToolExecutionBlocker>,
 }
 
 fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
@@ -2010,7 +2029,8 @@ mod tests {
         MentalPrivacyState, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
         PrivateDocStore, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
         RelationshipTopologyStore, SelfContinuityStore, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSenseStore,
+        SessionStore, SessionSummaryStore, TurnBlockerLedger, TurnDeliberationClass, TurnLedger,
+        TurnLedgerStore, TurnPersonaPressureLevel, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use std::collections::HashMap;
@@ -3337,6 +3357,69 @@ mod tests {
                 .to_string(),
             )
             .with_failure_kind(crate::tools::ToolExecutionFailureKind::Capability))
+        }
+    }
+
+    struct StubBlockingOfficeConfigTool;
+
+    impl crate::tools::Tool for StubBlockingOfficeConfigTool {
+        fn name(&self) -> &'static str {
+            "office_config"
+        }
+
+        fn description(&self) -> &str {
+            "return a structured onboarding blocker"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, args: &str, ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.execute_outcome(args, ctx)
+                .map(|outcome| outcome.content)
+        }
+
+        fn execute_outcome(
+            &self,
+            _args: &str,
+            _ctx: &mut dyn crate::tools::ToolContext,
+        ) -> Result<crate::tools::ToolExecutionOutcome> {
+            Ok(crate::tools::ToolExecutionOutcome::text(
+                serde_json::json!({
+                    "op": "apply_account",
+                    "ok": false,
+                    "payload": {
+                        "disposition": "needs_user_facts",
+                        "reason": "missing_user_facts",
+                        "missing_fields": ["identity_class"],
+                    }
+                })
+                .to_string(),
+            )
+            .with_blocker(crate::tools::ToolExecutionBlocker {
+                kind: crate::tools::ToolExecutionBlockerKind::NeedsUserFacts,
+                summary: "账户配置被阻塞：identity_class".to_string(),
+                missing_fields: vec!["identity_class".to_string()],
+                clarification_fields: vec![crate::tools::ToolClarificationField {
+                    key: "identity_class".to_string(),
+                    label: "Identity Class".to_string(),
+                    description: "work|personal|family|shared|other".to_string(),
+                    required: true,
+                    secret: false,
+                    multiple: false,
+                    options: vec![
+                        crate::tools::ToolClarificationOption {
+                            value: "work".to_string(),
+                            label: "Work".to_string(),
+                        },
+                        crate::tools::ToolClarificationOption {
+                            value: "personal".to_string(),
+                            label: "Personal".to_string(),
+                        },
+                    ],
+                }],
+            }))
         }
     }
 
@@ -4714,6 +4797,7 @@ mod tests {
             tool_round_completion: ToolRoundCompletionTelemetry {
                 had_mutating_effects: true,
                 had_visible_outbound_side_effects: false,
+                blocker: None,
             },
             external_content_used: false,
             task_execution_used: true,
@@ -5482,6 +5566,53 @@ mod tests {
     }
 
     #[test]
+    fn execute_turn_structured_tool_blocker_short_circuits_second_llm_round() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![LlmResponse {
+                content: "[tool_use]".to_string(),
+                stop_reason: StopReason::ToolUse,
+                tool_calls: Some(vec![crate::llm::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "office_config".to_string(),
+                    input: r#"{"op":"apply_account"}"#.to_string(),
+                }]),
+            }]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(Box::new(StubBlockingOfficeConfigTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::LinuxEnhanced;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-blocker", "帮我配置邮箱", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-structured-tool-blocker",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 1, "{observed:#?}");
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(
+            delivered,
+            "要继续这一步，还需要你告诉我 `identity_class`。可选值：work / personal。"
+        );
+    }
+
+    #[test]
     fn execute_turn_group_active_action_tool_round_suppresses_append_only_progress_copy() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
@@ -6062,6 +6193,118 @@ mod tests {
             stored.next_action,
             "请先提供 QQ 邮箱的授权码，我才能继续配置。"
         );
+    }
+
+    #[test]
+    fn complete_turn_seeds_execution_state_for_structured_tool_blocker_without_wording_cues() {
+        let execution_state_store = Arc::new(StubExecutionStateStore::default());
+        let mut config = test_agent_loop_config();
+        config.runtime.execution_state_store =
+            Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut msg = PcMsg::new_inbound(
+            "qq_channel",
+            "chat-structured-tool-blocker",
+            "帮我配置 QQ 邮箱账户",
+            false,
+        )
+        .expect("message");
+        msg.req_id = Some("req-structured-tool-blocker-state".to_string());
+        let turn_ledger = build_turn_ledger_start(&msg, 1);
+        let blocker_summary = "账户配置被阻塞：identity_class".to_string();
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply: crate::agent::final_reply::CanonicalReply::new(blocker_summary.clone()),
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: Some(TurnObservationLedger {
+                execution_class: TurnExecutionClass::ToolAssisted,
+                deliberation_class: TurnDeliberationClass::Standard,
+                final_outcome: "tool_blocker".to_string(),
+                pressure: TurnPersonaPressureLevel::Normal,
+                mode: TurnModeSnapshotLedger {
+                    current_mode: "normal".to_string(),
+                    allow_non_voice_outbound: true,
+                    allow_idle_self_runtime: true,
+                },
+                tool_path: TurnToolPathLedger {
+                    path: "tool_blocker".to_string(),
+                    tool_calls: 1,
+                    react_rounds: 1,
+                    current_primary_delivered: false,
+                },
+                blocker: Some(TurnBlockerLedger {
+                    kind: "needs_user_facts".to_string(),
+                    failed_calls: 1,
+                    total_calls: 1,
+                }),
+            }),
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: blocker_summary.clone(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: blocker_summary.clone(),
+            worker_latency: WorkerLatency {
+                tool_calls: 1,
+                ..WorkerLatency::default()
+            },
+            any_tool_used: true,
+            external_content_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            reply_surface: ReplySurface::GovernedConversation,
+            foreground_work_packet: None,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            programmable_reasoning_intent: None,
+            counterfactual_analysis: None,
+            adversarial_arena_adjudication: None,
+            subject_state: None,
+            soul_feedback_projection: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                msg: msg.clone(),
+                loc: UiLocale::Zh,
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger,
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            finalized,
+            delivery_handoff::DeliveryHandoff {
+                delivered: true,
+                outbound_enqueue_ms: 0,
+                reply_handoff_ms: 1,
+            },
+        );
+
+        let stored = execution_state_store
+            .get(msg.chat_id.as_ref())
+            .expect("execution state get")
+            .expect("seeded execution state");
+        assert_eq!(stored.goal, "帮我配置 QQ 邮箱账户");
+        assert_eq!(stored.blocker, blocker_summary);
+        assert_eq!(stored.next_action, "账户配置被阻塞：identity_class");
     }
 
     #[test]

@@ -30,6 +30,7 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(&message)),
         failure_kind: Some(assessment.kind),
+        blocker: None,
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
@@ -64,6 +65,7 @@ fn capability_blocked_tool_execution_result(
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&payload.to_string()),
         failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Capability),
+        blocker: None,
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
@@ -77,6 +79,7 @@ fn denied_tool_execution_result(reason: &str) -> ToolCallExecutionResult {
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(&build_json_error_object(reason)),
         failure_kind: Some(assessment.kind),
+        blocker: None,
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
@@ -108,6 +111,7 @@ fn outbound_error_tool_execution_result(
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
         failure_kind: Some(assessment.kind),
+        blocker: None,
         call_succeeded: false,
         had_mutating_effects,
         had_visible_outbound_side_effects: false,
@@ -141,6 +145,7 @@ fn execute_error_tool_execution_result(
     ToolCallExecutionResult {
         result_owned: crate::util::scrub_credentials(tool_error_buf.as_str()),
         failure_kind: Some(assessment.kind),
+        blocker: None,
         call_succeeded: false,
         had_mutating_effects,
         had_visible_outbound_side_effects: false,
@@ -225,11 +230,22 @@ fn execute_tool_call(
                             }
                         }
                     }
-                    if let Some(failure_kind) = outcome.failure_kind {
+                    if let Some(blocker) = outcome.blocker {
+                        metrics::record_tool_call(false);
+                        ToolCallExecutionResult {
+                            result_owned: crate::util::scrub_credentials(&outcome.content),
+                            failure_kind: outcome.failure_kind.map(tool_failure_kind_from_outcome),
+                            blocker: Some(blocker),
+                            call_succeeded: false,
+                            had_mutating_effects,
+                            had_visible_outbound_side_effects,
+                        }
+                    } else if let Some(failure_kind) = outcome.failure_kind {
                         metrics::record_tool_call(false);
                         ToolCallExecutionResult {
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: Some(tool_failure_kind_from_outcome(failure_kind)),
+                            blocker: None,
                             call_succeeded: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
@@ -239,6 +255,7 @@ fn execute_tool_call(
                         ToolCallExecutionResult {
                             result_owned: crate::util::scrub_credentials(&outcome.content),
                             failure_kind: None,
+                            blocker: None,
                             call_succeeded: true,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
@@ -291,6 +308,7 @@ pub(super) fn execute_tool_use_round(
     let mut had_mutating_effects = false;
     let mut had_visible_outbound_side_effects = false;
     let mut successful_tool_names = Vec::with_capacity(tool_calls.len());
+    let mut blocker = None;
 
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
 
@@ -300,8 +318,11 @@ pub(super) fn execute_tool_use_round(
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
         had_mutating_effects |= execution.had_mutating_effects;
         had_visible_outbound_side_effects |= execution.had_visible_outbound_side_effects;
+        if blocker.is_none() {
+            blocker = execution.blocker.clone();
+        }
         let result_view = execution.result_owned.as_str();
-        if execution.failure_kind.is_none() && config.strategy == AgentRunStrategy::LinuxEnhanced {
+        if execution.call_succeeded && config.strategy == AgentRunStrategy::LinuxEnhanced {
             used_external_content |= tool_result_uses_external_content(&tc.name, result_view);
             if request_plan.reply_surface().accepts_tool_evidence(&tc.name)
                 && round_evidence_lines.len() < MAX_TOOL_EVIDENCE_ITEMS
@@ -338,7 +359,7 @@ pub(super) fn execute_tool_use_round(
             ToolResultBlock {
                 call_id: &tc.id,
                 tool_name: &tc.name,
-                status: tool_result_status_attr(execution.failure_kind.is_some()),
+                status: tool_result_status_attr(!execution.call_succeeded),
                 failure: failure_kind_attr(execution.failure_kind),
                 repeat_count,
                 content: result_view,
@@ -346,6 +367,9 @@ pub(super) fn execute_tool_use_round(
             MAX_TOOL_RESULTS_USER_MESSAGE_LEN,
         ) {
             truncated = true;
+            break;
+        }
+        if execution.blocker.is_some() {
             break;
         }
     }
@@ -358,6 +382,7 @@ pub(super) fn execute_tool_use_round(
         had_visible_outbound_side_effects,
         omitted_evidence_count,
         successful_tool_names,
+        blocker,
     }
 }
 

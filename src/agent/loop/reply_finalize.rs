@@ -154,7 +154,7 @@ pub(super) fn assess_turn_completion(
     delivery: &DeliveryReport,
     any_tool_round_executed: bool,
     any_tool_used: bool,
-    tool_round_completion: ToolRoundCompletionTelemetry,
+    tool_round_completion: &ToolRoundCompletionTelemetry,
     reply_surface: ReplySurface,
     reply_content: &str,
 ) -> TurnCompletionAssessment {
@@ -169,6 +169,7 @@ pub(super) fn assess_turn_completion(
     let replay_safe = !tool_round_completion.had_mutating_effects && !had_visible_side_effects;
     let artifact_state = classify_reply_artifacts(reply_content);
     let kind = match artifact_state {
+        _ if tool_round_completion.blocker.is_some() => TurnCompletionKind::TruthfulBlocker,
         ReplyArtifactState::ArtifactOnly => TurnCompletionKind::ArtifactOnly,
         ReplyArtifactState::InternalArtifactLeak => TurnCompletionKind::FinalResult,
         ReplyArtifactState::None if trimmed.is_empty() => TurnCompletionKind::IncompleteTurn,
@@ -272,7 +273,7 @@ pub(super) fn finalize_turn(
             &delivery,
             any_tool_round_executed,
             any_tool_used,
-            tool_round_completion,
+            &tool_round_completion,
             reply_surface,
             &reply_content,
         );
@@ -508,7 +509,11 @@ pub(super) fn complete_turn(
             .set_important_offset_from_end(&msg.chat_id, 1);
     }
     let now_secs = super::now_unix_ms() / 1000;
-    let reply_requests_input = looks_like_truthful_blocker_or_input_request(&reply_content);
+    let reply_requests_input = looks_like_truthful_blocker_or_input_request(&reply_content)
+        || turn_observation
+            .as_ref()
+            .and_then(|observation| observation.blocker.as_ref())
+            .is_some();
     let clear_execution_state = delivered
         && msg.ingress == IngressKind::User
         && reply_surface != ReplySurface::TaskExecution;

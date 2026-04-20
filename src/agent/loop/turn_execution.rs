@@ -50,6 +50,7 @@ fn should_emit_regular_foreground_blocked_progress(
     request_semantics: crate::agent::request_semantics::RequestSemantics,
     any_tool_used: bool,
     delivery: &DeliverySession<'_>,
+    blocker: Option<&crate::tools::ToolExecutionBlocker>,
     content: &str,
 ) -> bool {
     use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
@@ -59,7 +60,62 @@ fn should_emit_regular_foreground_blocked_progress(
         && matches!(request_semantics.action_family, ActionFamily::ActiveAction)
         && delivery.report().action_progress_updates_sent > 0
         && delivery.report().terminal_progress_updates_sent == 0
-        && super::reply_finalize::looks_like_truthful_blocker_or_input_request(content)
+        && (blocker.is_some()
+            || super::reply_finalize::looks_like_truthful_blocker_or_input_request(content))
+}
+
+fn render_tool_blocker_field_list(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|field| format!("`{}`", field.trim()))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn render_tool_blocker_option_list(
+    options: &[crate::tools::ToolClarificationOption],
+) -> Option<String> {
+    let values = options
+        .iter()
+        .map(|option| option.value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then(|| values.join(" / "))
+}
+
+fn render_programmatic_clarification_question(
+    blocker: &crate::tools::ToolExecutionBlocker,
+    loc: UiLocale,
+) -> String {
+    if blocker.kind != crate::tools::ToolExecutionBlockerKind::NeedsUserFacts {
+        return blocker.summary.trim().to_string();
+    }
+    if blocker.clarification_fields.len() == 1 {
+        let field = &blocker.clarification_fields[0];
+        let field_name = format!("`{}`", field.key.trim());
+        if let Some(options) = render_tool_blocker_option_list(&field.options) {
+            return match loc {
+                UiLocale::Zh => {
+                    format!("要继续这一步，还需要你告诉我 {field_name}。可选值：{options}。")
+                }
+                UiLocale::En => {
+                    format!("To continue, I still need {field_name}. Allowed values: {options}.")
+                }
+            };
+        }
+        return match loc {
+            UiLocale::Zh => format!("要继续这一步，还需要你提供 {field_name}。"),
+            UiLocale::En => format!("To continue, I still need {field_name}."),
+        };
+    }
+    if !blocker.missing_fields.is_empty() {
+        let fields = render_tool_blocker_field_list(&blocker.missing_fields);
+        return match loc {
+            UiLocale::Zh => format!("要继续这一步，还需要你补充这些信息：{fields}。"),
+            UiLocale::En => format!("To continue, I still need these facts: {fields}."),
+        };
+    }
+    blocker.summary.trim().to_string()
 }
 
 /// 完整 context + worker LLM + ReAct 循环，返回执行结果与 telemetry。
@@ -448,8 +504,17 @@ pub(super) fn execute_turn(
             tool_round_completion.had_mutating_effects |= tool_round_output.had_mutating_effects;
             tool_round_completion.had_visible_outbound_side_effects |=
                 tool_round_output.had_visible_outbound_side_effects;
+            if tool_round_completion.blocker.is_none() {
+                tool_round_completion.blocker = tool_round_output.blocker.clone();
+            }
             successful_tool_names.extend(tool_round_output.successful_tool_names);
             external_content_used |= tool_round_output.used_external_content;
+            if let Some(blocker) = tool_round_output.blocker {
+                let reply = render_programmatic_clarification_question(&blocker, loc);
+                mark_ttft_if_visible(&mut latency, worker_start, &reply);
+                final_content = reply;
+                break;
+            }
             let evidence_block = (!round_evidence_lines.is_empty()).then(|| {
                 render_surface_evidence_block(
                     effective_reply_surface,
@@ -537,6 +602,7 @@ pub(super) fn execute_turn(
         request_semantics,
         any_tool_used,
         &delivery,
+        tool_round_completion.blocker.as_ref(),
         &final_content,
     ) {
         delivery.emit_foreground_work_blocked();

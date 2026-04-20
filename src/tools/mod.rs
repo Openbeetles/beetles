@@ -359,6 +359,45 @@ pub enum ToolExecutionFailureKind {
     Capability,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionBlockerKind {
+    NeedsUserFacts,
+    ProbeFailed,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolClarificationOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolClarificationField {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub multiple: bool,
+    #[serde(default)]
+    pub options: Vec<ToolClarificationOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolExecutionBlocker {
+    pub kind: ToolExecutionBlockerKind,
+    pub summary: String,
+    #[serde(default)]
+    pub missing_fields: Vec<String>,
+    #[serde(default)]
+    pub clarification_fields: Vec<ToolClarificationField>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolOutboundIntent {
     pub target: ToolOutboundTarget,
@@ -371,6 +410,7 @@ pub struct ToolExecutionOutcome {
     pub content: String,
     pub outbound_intents: Vec<ToolOutboundIntent>,
     pub failure_kind: Option<ToolExecutionFailureKind>,
+    pub blocker: Option<ToolExecutionBlocker>,
 }
 
 impl ToolExecutionOutcome {
@@ -379,6 +419,7 @@ impl ToolExecutionOutcome {
             content: content.into(),
             outbound_intents: Vec::new(),
             failure_kind: None,
+            blocker: None,
         }
     }
 
@@ -399,6 +440,15 @@ impl ToolExecutionOutcome {
     pub fn with_failure_kind(mut self, failure_kind: ToolExecutionFailureKind) -> Self {
         self.failure_kind = Some(failure_kind);
         self
+    }
+
+    pub fn with_blocker(mut self, blocker: ToolExecutionBlocker) -> Self {
+        self.blocker = Some(blocker);
+        self
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.failure_kind.is_none() && self.blocker.is_none()
     }
 }
 
