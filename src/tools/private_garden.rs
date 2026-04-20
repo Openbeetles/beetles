@@ -5,10 +5,13 @@ use crate::memory::{
     build_private_garden_usage, private_garden_scope_id, summarize_private_garden_directories,
     PrivateGardenStore, PRIVATE_GARDEN_MAX_DOCS_PER_CHAT,
 };
-use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata,
+};
 use crate::util::current_unix_secs;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const PRIVATE_GARDEN_MAX_LIST_LIMIT: usize = 8;
@@ -79,15 +82,28 @@ impl Tool for PrivateGardenTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_private_garden")?;
-        let _chat_id = ctx.current_chat_id().ok_or_else(|| {
-            Error::config("tool_private_garden", "current chat_id is unavailable")
-        })?;
+        let Some(_chat_id) = ctx.current_chat_id() else {
+            return Ok(private_garden_missing_scope_outcome());
+        };
         let scope_id = private_garden_scope_id();
-        let op = obj
+        let Some(op) = obj
             .get("op")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_private_garden", "missing op"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(private_garden_invalid_op_outcome());
+        };
 
         match op {
             "list" => {
@@ -98,14 +114,14 @@ impl Tool for PrivateGardenTool {
                     .clamp(1, PRIVATE_GARDEN_MAX_LIST_LIMIT as u64)
                     as usize;
                 let docs = self.store.list(scope_id, limit)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDocsResponse {
                         ok: true,
                         op: "list",
                         docs,
                     },
-                )
+                )?))
             }
             "tree" => {
                 let limit = obj
@@ -116,7 +132,7 @@ impl Tool for PrivateGardenTool {
                     as usize;
                 let all_docs = self.store.list(scope_id, usize::MAX)?;
                 let docs = all_docs.iter().take(limit).cloned().collect::<Vec<_>>();
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenTreeResponse {
                         ok: true,
@@ -125,32 +141,39 @@ impl Tool for PrivateGardenTool {
                         directories: summarize_private_garden_directories(&all_docs, 8),
                         docs,
                     },
-                )
+                )?))
             }
             "read" => {
-                let path = obj
+                let Some(path) = obj
                     .get("path")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(private_garden_missing_field_outcome("path"));
+                };
                 let doc = self.store.read(scope_id, path)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDocResponse {
                         ok: true,
                         op: "read",
                         doc,
                     },
-                )
+                )?))
             }
             "write" => {
-                let path = obj
+                let Some(path) = obj
                     .get("path")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
-                let content = obj
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_private_garden", "missing content"))?;
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(private_garden_missing_field_outcome("path"));
+                };
+                let Some(content) = obj.get("content").and_then(Value::as_str) else {
+                    return Ok(private_garden_missing_field_outcome("content"));
+                };
                 if content.len() > PRIVATE_GARDEN_MAX_CONTENT_LEN {
                     return Err(Error::config(
                         "tool_private_garden",
@@ -160,28 +183,36 @@ impl Tool for PrivateGardenTool {
                 let record = self
                     .store
                     .write(scope_id, path, content, current_unix_secs())?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDocResponse {
                         ok: true,
                         op: "write",
                         doc: record,
                     },
-                )
+                )?))
             }
             "move" => {
-                let from_path = obj
+                let Some(from_path) = obj
                     .get("from_path")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_private_garden", "missing from_path"))?;
-                let to_path = obj
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(private_garden_missing_field_outcome("from_path"));
+                };
+                let Some(to_path) = obj
                     .get("to_path")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_private_garden", "missing to_path"))?;
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(private_garden_missing_field_outcome("to_path"));
+                };
                 let moved =
                     self.store
                         .move_doc(scope_id, from_path, to_path, current_unix_secs())?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenMoveResponse {
                         ok: true,
@@ -190,15 +221,19 @@ impl Tool for PrivateGardenTool {
                         to_path,
                         doc: moved,
                     },
-                )
+                )?))
             }
             "delete" => {
-                let path = obj
+                let Some(path) = obj
                     .get("path")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| Error::config("tool_private_garden", "missing path"))?;
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(private_garden_missing_field_outcome("path"));
+                };
                 let deleted = self.store.delete(scope_id, path)?;
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_private_garden",
                     &PrivateGardenDeleteResponse {
                         ok: true,
@@ -206,12 +241,9 @@ impl Tool for PrivateGardenTool {
                         deleted,
                         path,
                     },
-                )
+                )?))
             }
-            _ => Err(Error::config(
-                "tool_private_garden",
-                "op must be list, tree, read, write, move, or delete",
-            )),
+            _ => Ok(private_garden_invalid_op_outcome()),
         }
     }
 
@@ -220,12 +252,97 @@ impl Tool for PrivateGardenTool {
     }
 }
 
+fn private_garden_missing_scope_outcome() -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": "private_garden: current chat scope is unavailable",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::runtime_blocked(
+        "private_garden can only run inside an active conversation scope.",
+    ))
+}
+
+fn private_garden_invalid_op_outcome() -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": "private_garden: choose list, tree, read, write, move, or delete",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "An operation is still required before private_garden can continue.",
+        vec!["op".to_string()],
+        vec![ToolClarificationField {
+            key: "op".to_string(),
+            label: "Operation".to_string(),
+            description: "Choose how to interact with the private garden.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "list".to_string(),
+                    label: "list".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "tree".to_string(),
+                    label: "tree".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "read".to_string(),
+                    label: "read".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "write".to_string(),
+                    label: "write".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "move".to_string(),
+                    label: "move".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "delete".to_string(),
+                    label: "delete".to_string(),
+                },
+            ],
+        }],
+    ))
+}
+
+fn private_garden_missing_field_outcome(field: &str) -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": format!("private_garden: missing {}", field),
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        format!("{field} is still required before private_garden can continue."),
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: field.to_string(),
+            description: format!("Provide {} for private_garden.", field),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::i18n::Locale;
     use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, BOARD_SUBJECT_SCOPE_ID};
     use crate::platform::ResponseBody;
+    use crate::tools::ToolExecutionBlockerKind;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -491,5 +608,36 @@ mod tests {
             scopes.iter().all(|scope| scope == BOARD_SUBJECT_SCOPE_ID),
             "private_garden tool must persist under board subject scope, got {scopes:?}"
         );
+    }
+
+    #[test]
+    fn private_garden_tool_missing_session_scope_returns_runtime_blocker() {
+        let store = Arc::new(StubPrivateGardenStore::default());
+        let tool =
+            PrivateGardenTool::new(Arc::clone(&store) as Arc<dyn PrivateGardenStore + Send + Sync>);
+        let mut ctx = StubToolContext { chat_id: None };
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"list"}"#, &mut ctx)
+            .expect("runtime blocker");
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
+    }
+
+    #[test]
+    fn private_garden_tool_invalid_op_returns_choice_blocker() {
+        let store = Arc::new(StubPrivateGardenStore::default());
+        let tool =
+            PrivateGardenTool::new(Arc::clone(&store) as Arc<dyn PrivateGardenStore + Send + Sync>);
+        let mut ctx = StubToolContext {
+            chat_id: Some("chat-1".to_string()),
+        };
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"weird"}"#, &mut ctx)
+            .expect("choice blocker");
+        let blocker = outcome.blocker.expect("choice blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+        assert_eq!(blocker.missing_fields, vec!["op".to_string()]);
     }
 }

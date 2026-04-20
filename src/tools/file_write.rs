@@ -5,10 +5,11 @@ use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata, ToolRiskLevel,
-    ToolRollbackKind,
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolContext,
+    ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct FileWriteTool {
@@ -39,16 +40,34 @@ impl Tool for FileWriteTool {
     fn schema(&self) -> &str {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"File path under storage root, e.g. notes/todo.txt"},"content":{"type":"string","description":"Content to write"},"append":{"type":"boolean","description":"If true, append to existing file (default false, overwrite)"}},"required":["path","content"]}"#
     }
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_file_write")?;
-        let path_arg = obj
+        let Some(path_arg) = obj
             .get("path")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| Error::config("tool_file_write", "missing path"))?;
-        let content = obj
-            .get("content")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| Error::config("tool_file_write", "missing content"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(file_write_missing_field_outcome(
+                "path",
+                "A storage path is still required before file_write can continue.",
+            ));
+        };
+        let Some(content) = obj.get("content").and_then(|x| x.as_str()) else {
+            return Ok(file_write_missing_field_outcome(
+                "content",
+                "File content is still required before file_write can continue.",
+            ));
+        };
         let append = obj.get("append").and_then(|x| x.as_bool()).unwrap_or(false);
 
         if content.len() > FILE_WRITE_MAX_CONTENT_LEN {
@@ -88,7 +107,7 @@ impl Tool for FileWriteTool {
 
         self.state_fs.write(&rel, &final_bytes)?;
 
-        serialize_tool_output(
+        Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "tool_file_write",
             &FileWriteResponse {
                 path: path_arg,
@@ -96,7 +115,7 @@ impl Tool for FileWriteTool {
                 append,
                 bytes_written: final_bytes.len(),
             },
-        )
+        )?))
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -106,13 +125,38 @@ impl Tool for FileWriteTool {
     }
 }
 
+fn file_write_missing_field_outcome(field: &str, summary: &str) -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "path": if field == "path" { Value::Null } else { Value::String(String::new()) },
+            "append": false,
+            "warning": format!("file_write: missing {}", field),
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        summary,
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: field.to_string(),
+            description: format!("Provide {} for file_write.", field),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::FileWriteTool;
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -199,5 +243,18 @@ mod tests {
             .unwrap_err();
 
         assert!(format!("{err}").contains("final content exceeds"));
+    }
+
+    #[test]
+    fn missing_path_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        let tool = FileWriteTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let outcome = tool
+            .execute_outcome(r#"{"content":"hello"}"#, &mut MockToolContext)
+            .expect("path blocker");
+        let blocker = outcome.blocker.expect("path blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert_eq!(blocker.missing_fields, vec!["path".to_string()]);
     }
 }

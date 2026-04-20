@@ -152,16 +152,14 @@ export const OS_ICON_TOOL: Record<string, string> = {
   office_status: "/icons/tool_office_status_3d.png",
   contacts_directory: "/icons/contacts_3d.png",
   mail: "/icons/mail_3d.png",
-  /** 诊断类（各一条目独立隐喻） */
-  diagnose_delivery: "/icons/diag_delivery_3d.png",
-  diagnose_system: "/icons/diagnose_3d.png",
-  diagnose_network_path: "/icons/diag_network_3d.png",
-  diagnose_voice_path: "/icons/diag_voice_3d.png",
-  diagnose_memory_runtime: "/icons/diag_memory_3d.png",
+  /** 诊断类 */
+  diagnose: "/icons/diagnose_3d.png",
   /** Lua 脚本桥 */
   lua_query: "/icons/lua_snake_3d.png",
   lua_memory_query: "/icons/lua_abacus_3d.png",
   lua_tool_bridge: "/icons/lua_hook_3d.png",
+  capability_atoms_exchange: "/icons/storage_3d.png",
+  capability_atoms_inspect: "/icons/search_3d.png",
 };
 
 /** 工具名 → 3D 图标路径（未知工具用工具页主图标） */

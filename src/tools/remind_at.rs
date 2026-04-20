@@ -1088,18 +1088,21 @@ impl Tool for RemindListTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
-        let chat_id = ctx.current_chat_id().ok_or_else(|| {
-            Error::config(
-                "remind_list",
-                "no current chat_id (tool used outside session)",
-            )
-        })?;
-        let channel = ctx.current_channel().ok_or_else(|| {
-            Error::config(
-                "remind_list",
-                "no current channel (tool used outside session)",
-            )
-        })?;
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
+        let Some(chat_id) = ctx.current_chat_id() else {
+            return Ok(remind_list_missing_scope_outcome());
+        };
+        let Some(channel) = ctx.current_channel() else {
+            return Ok(remind_list_missing_scope_outcome());
+        };
         let obj = parse_tool_args(args, "remind_list")?;
         let limit = obj
             .get("limit")
@@ -1108,14 +1111,27 @@ impl Tool for RemindListTool {
             .clamp(1, 20) as usize;
         let now = current_unix_secs();
         let items = self.store.list_upcoming(channel, chat_id, now, limit)?;
-        serialize_tool_output(
+        Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "remind_list",
             &RemindListResponse {
                 count: items.len(),
                 items,
             },
-        )
+        )?))
     }
+}
+
+fn remind_list_missing_scope_outcome() -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": "remind_list: current chat scope is unavailable",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::runtime_blocked(
+        "remind_list can only run inside an active conversation scope.",
+    ))
 }
 
 #[cfg(test)]
@@ -1569,6 +1585,18 @@ mod tests {
             event.end_at_unix_secs,
             1_700_003_600 + DEFAULT_REMINDER_CALENDAR_DURATION_SECS
         );
+    }
+
+    #[test]
+    fn remind_list_tool_missing_session_scope_returns_runtime_blocker() {
+        let tool = RemindListTool::new(Arc::new(StubRemindStore::default()));
+        let mut ctx = SessionlessCtx;
+
+        let outcome = tool
+            .execute_outcome("{}", &mut ctx)
+            .expect("runtime blocker");
+        let blocker = outcome.blocker.expect("runtime blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::RuntimeBlocked);
     }
 
     #[test]

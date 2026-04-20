@@ -40,11 +40,7 @@ For example, `task` and `remind_at` already exist by default, and gain more inte
 | Tool | What it does | When it appears |
 |------|--------------|-----------------|
 | `board_info` | Show a device or host status summary | Default |
-| `diagnose_delivery` | Investigate failed sends, delays, or reply handoff issues | Default |
-| `diagnose_system` | Investigate overall runtime health, resource pressure, and degraded capability | Default |
-| `diagnose_network_path` | Investigate network path, DNS, proxy, and upstream reachability | Default |
-| `diagnose_memory_runtime` | Investigate whether memory runtime is behaving abnormally | Default |
-| `diagnose_voice_path` | Investigate voice input, voice output, and related setup | Default |
+| `diagnose` | Investigate one runtime plane selected by `op` (`system`, `network`, `memory`, `delivery`, `voice`) | Default |
 | `network_scan` | Scan Wi-Fi, view Wi-Fi status, and run connectivity checks | Diagnostics capability |
 | `system_control` | View system status and storage usage, or perform controlled restart and emergency stop actions | Diagnostics capability |
 | `cron_manage` | Manage persistent scheduled tasks | Diagnostics capability |

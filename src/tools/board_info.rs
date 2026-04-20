@@ -21,7 +21,7 @@ impl Tool for BoardInfoTool {
         "board_info"
     }
     fn description(&self) -> &'static str {
-        "Return a whole-device or whole-host status snapshot as JSON. ESP: chip, uptime, SPIFFS, WiFi, internal heap free (`heap_free` / `heap_free_internal`), whole-memory free including PSRAM (`heap_free_total`), PSRAM free, largest internal free block, and TLS fragmentation risk. Linux: platform \"linux\" plus cpu_model, cpu_cores, mem_*, distro_pretty/distro_id, kernel_release, hostname, arch, storage, storage_media, os (/proc/version), uptime, pressure, and WiFi STA state. Use this for overall system status, resource pressure, distro, CPU/RAM, and storage topology. For deeper runtime diagnosis, prefer diagnose_system or diagnose_network_path."
+        "Return a whole-device or whole-host status snapshot as JSON. ESP: chip, uptime, SPIFFS, WiFi, internal heap free (`heap_free` / `heap_free_internal`), whole-memory free including PSRAM (`heap_free_total`), PSRAM free, largest internal free block, and TLS fragmentation risk. Linux: platform \"linux\" plus cpu_model, cpu_cores, mem_*, distro_pretty/distro_id, kernel_release, hostname, arch, storage, storage_media, os (/proc/version), uptime, pressure, and WiFi STA state. Use this for overall system status, resource pressure, distro, CPU/RAM, and storage topology. For deeper runtime diagnosis, use `diagnose` with `op=system` or `op=network`."
     }
     fn schema(&self) -> &str {
         r#"{"type":"object","properties":{}}"#

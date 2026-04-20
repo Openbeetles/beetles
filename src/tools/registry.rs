@@ -953,17 +953,6 @@ fn register_core_tools(
         &services.remind_at_store,
     ))));
     registry.register(Box::new(super::BoardInfoTool::new(Arc::clone(platform))));
-    registry.register(Box::new(super::DiagnoseDeliveryTool::new(
-        config.enabled_channel.clone(),
-    )));
-    registry.register(Box::new(super::DiagnoseSystemTool::new(
-        Arc::clone(platform),
-        config.enabled_channel.clone(),
-    )));
-    registry.register(Box::new(super::DiagnoseNetworkPathTool::new(
-        Arc::clone(platform),
-        Arc::clone(&services.config_store),
-    )));
     registry.register(Box::new(super::KvStoreTool::new(platform.state_fs())));
     registry.register(Box::new(super::PrivateGardenTool::new(Arc::clone(
         &services.private_garden_store,
@@ -1006,13 +995,11 @@ fn register_core_tools(
         Arc::clone(tool_execution_governance),
     )));
     let continuity_snapshot_supported = registry.get("continuity_snapshot").is_some();
-    registry.register(Box::new(super::DiagnoseMemoryRuntimeTool::new(
-        Arc::clone(platform),
-        continuity_snapshot_supported,
-    )));
-    registry.register(Box::new(super::DiagnoseVoicePathTool::new(
+    registry.register(Box::new(super::DiagnoseTool::new(
         Arc::clone(platform),
         Arc::clone(&services.config_store),
+        config.enabled_channel.clone(),
+        continuity_snapshot_supported,
     )));
     #[cfg(feature = "tools_diagnostics")]
     if !config.hardware_devices.is_empty() {
@@ -2124,10 +2111,7 @@ mod tests {
         for required in [
             "get_time",
             "board_info",
-            "diagnose_delivery",
-            "diagnose_system",
-            "diagnose_network_path",
-            "diagnose_voice_path",
+            "diagnose",
             "task",
             "remind_at",
             "remind_list",
@@ -2452,9 +2436,21 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_registers_diagnose_memory_runtime_tool() {
+    fn default_registry_registers_unified_diagnose_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
-        assert!(ctx.tool_registry.get("diagnose_memory_runtime").is_some());
+        assert!(ctx.tool_registry.get("diagnose").is_some());
+        for removed in [
+            "diagnose_delivery",
+            "diagnose_system",
+            "diagnose_network_path",
+            "diagnose_memory_runtime",
+            "diagnose_voice_path",
+        ] {
+            assert!(
+                ctx.tool_registry.get(removed).is_none(),
+                "expected legacy diagnose tool {removed} to be removed"
+            );
+        }
     }
 
     #[test]
@@ -2468,15 +2464,15 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_memory_runtime_tool_returns_structured_diagnosis_json() {
+    fn diagnose_tool_routes_memory_op_to_structured_diagnosis_json() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         let tool = ctx
             .tool_registry
-            .get("diagnose_memory_runtime")
-            .expect("diagnose_memory_runtime registered");
+            .get("diagnose")
+            .expect("diagnose registered");
         let mut tool_ctx = StubToolContext;
 
-        let result = tool.execute("{}", &mut tool_ctx).unwrap();
+        let result = tool.execute(r#"{"op":"memory"}"#, &mut tool_ctx).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(parsed["kind"].as_str(), Some("memory_runtime"));
@@ -2485,21 +2481,15 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_registers_diagnose_network_path_tool() {
-        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
-        assert!(ctx.tool_registry.get("diagnose_network_path").is_some());
-    }
-
-    #[test]
-    fn diagnose_network_path_tool_returns_structured_diagnosis_json() {
+    fn diagnose_tool_routes_network_op_to_structured_diagnosis_json() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         let tool = ctx
             .tool_registry
-            .get("diagnose_network_path")
-            .expect("diagnose_network_path registered");
+            .get("diagnose")
+            .expect("diagnose registered");
         let mut tool_ctx = StubToolContext;
 
-        let result = tool.execute("{}", &mut tool_ctx).unwrap();
+        let result = tool.execute(r#"{"op":"network"}"#, &mut tool_ctx).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(parsed["kind"].as_str(), Some("network_path"));
@@ -2508,9 +2498,58 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_registers_diagnose_voice_path_tool() {
+    fn diagnose_tool_routes_voice_op_to_structured_diagnosis_json() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
-        assert!(ctx.tool_registry.get("diagnose_voice_path").is_some());
+        let tool = ctx
+            .tool_registry
+            .get("diagnose")
+            .expect("diagnose registered");
+        let mut tool_ctx = StubToolContext;
+
+        let result = tool.execute(r#"{"op":"voice"}"#, &mut tool_ctx).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["kind"].as_str(), Some("voice_path"));
+        assert!(parsed.get("summary").is_some());
+        assert!(parsed.get("suspected_root_causes").is_some());
+    }
+
+    #[test]
+    fn diagnose_tool_routes_system_and_delivery_ops_to_structured_diagnosis_json() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let tool = ctx
+            .tool_registry
+            .get("diagnose")
+            .expect("diagnose registered");
+        let mut tool_ctx = StubToolContext;
+
+        let system: serde_json::Value =
+            serde_json::from_str(&tool.execute(r#"{"op":"system"}"#, &mut tool_ctx).unwrap())
+                .unwrap();
+        assert_eq!(system["kind"].as_str(), Some("system"));
+
+        let delivery: serde_json::Value =
+            serde_json::from_str(&tool.execute(r#"{"op":"delivery"}"#, &mut tool_ctx).unwrap())
+                .unwrap();
+        assert_eq!(delivery["kind"].as_str(), Some("delivery"));
+    }
+
+    #[test]
+    fn diagnose_tool_missing_or_unknown_op_is_rejected_as_invalid_request() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let tool = ctx
+            .tool_registry
+            .get("diagnose")
+            .expect("diagnose registered");
+        let mut tool_ctx = StubToolContext;
+
+        let missing = tool.execute("{}", &mut tool_ctx).unwrap_err();
+        assert!(format!("{missing}").contains("missing op"));
+
+        let unknown = tool
+            .execute(r#"{"op":"weird"}"#, &mut tool_ctx)
+            .unwrap_err();
+        assert!(format!("{unknown}").contains("unsupported op"));
     }
 
     #[cfg(target_os = "linux")]
@@ -2568,23 +2607,6 @@ mod tests {
     fn default_registry_registers_contacts_directory_tool() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
         assert!(ctx.tool_registry.get("contacts_directory").is_some());
-    }
-
-    #[test]
-    fn diagnose_voice_path_tool_returns_structured_diagnosis_json() {
-        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
-        let tool = ctx
-            .tool_registry
-            .get("diagnose_voice_path")
-            .expect("diagnose_voice_path registered");
-        let mut tool_ctx = StubToolContext;
-
-        let result = tool.execute("{}", &mut tool_ctx).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-
-        assert_eq!(parsed["kind"].as_str(), Some("voice_path"));
-        assert!(parsed.get("summary").is_some());
-        assert!(parsed.get("suspected_root_causes").is_some());
     }
 
     #[test]

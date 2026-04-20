@@ -28,11 +28,7 @@ pub mod contacts_directory;
 pub mod continuity_snapshot;
 pub mod cron;
 pub mod cron_manage;
-pub mod diagnose_delivery;
-pub mod diagnose_memory_runtime;
-pub mod diagnose_network_path;
-pub mod diagnose_system;
-pub mod diagnose_voice_path;
+pub mod diagnose;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -181,11 +177,7 @@ pub use catalog::{
 pub use contacts_directory::ContactsDirectoryTool;
 pub use continuity_snapshot::ContinuitySnapshotTool;
 pub use cron_manage::CronManageTool;
-pub use diagnose_delivery::DiagnoseDeliveryTool;
-pub use diagnose_memory_runtime::DiagnoseMemoryRuntimeTool;
-pub use diagnose_network_path::DiagnoseNetworkPathTool;
-pub use diagnose_system::DiagnoseSystemTool;
-pub use diagnose_voice_path::DiagnoseVoicePathTool;
+pub use diagnose::DiagnoseTool;
 #[cfg(all(
     feature = "tools_network_extra",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

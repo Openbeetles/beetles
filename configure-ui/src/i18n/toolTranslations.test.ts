@@ -30,17 +30,13 @@ const TOOL_CLASS_TO_NAME: Record<string, string> = {
   RemindAt: 'remind_at',
   RemindList: 'remind_list',
   BoardInfo: 'board_info',
-  DiagnoseDelivery: 'diagnose_delivery',
-  DiagnoseSystem: 'diagnose_system',
-  DiagnoseNetworkPath: 'diagnose_network_path',
+  Diagnose: 'diagnose',
   KvStore: 'kv_store',
   PrivateGarden: 'private_garden',
   FactualMemory: 'factual_memory',
   MemorySearch: 'memory_search',
   MemoryGet: 'memory_get',
   ContinuitySnapshot: 'continuity_snapshot',
-  DiagnoseMemoryRuntime: 'diagnose_memory_runtime',
-  DiagnoseVoicePath: 'diagnose_voice_path',
   DeviceControl: 'device_control',
   Mail: 'mail',
   ContactsDirectory: 'contacts_directory',
@@ -71,6 +67,8 @@ const TOOL_CLASS_TO_NAME: Record<string, string> = {
   LuaMemoryQuery: 'lua_memory_query',
   LuaStateMachineChecker: 'lua_state_machine_checker',
   LuaToolBridge: 'lua_tool_bridge',
+  CapabilityAtomsExchange: 'capability_atoms_exchange',
+  CapabilityAtomsInspect: 'capability_atoms_inspect',
 }
 
 function registeredToolNames(): string[] {

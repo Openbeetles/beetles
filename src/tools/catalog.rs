@@ -245,14 +245,10 @@ fn populate_core_tool_catalog(authority: &mut ToolCatalogAuthority) {
             "web_search",
             "analyze_image",
             "board_info",
-            "diagnose_delivery",
-            "diagnose_system",
-            "diagnose_network_path",
+            "diagnose",
             "factual_memory",
             "memory_search",
             "memory_get",
-            "diagnose_memory_runtime",
-            "diagnose_voice_path",
         ],
     );
     insert_many(
@@ -375,18 +371,19 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
         authority,
         ToolProtocolContract::structured_object_json_with_rich_blockers(),
         &[
-            "diagnose_delivery",
-            "diagnose_system",
-            "diagnose_network_path",
-            "factual_memory",
             "memory_search",
             "memory_get",
-            "diagnose_memory_runtime",
-            "diagnose_voice_path",
             "document_extract",
-            "analyze_image",
-            "device_control",
             "office_status",
+        ],
+    );
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::structured_object_json(),
+        &[
+            "diagnose",
+            "factual_memory",
+            "device_control",
             "voice_output",
             "sensor_watch",
             "i2c_sensor",
@@ -413,7 +410,7 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     insert_many_protocol(
         authority,
         ToolProtocolContract::structured_object_plain_text(),
-        &["get_time", "voice_input", "shell"],
+        &["get_time", "voice_input", "shell", "analyze_image"],
     );
     authority.insert(
         "message",
@@ -421,11 +418,9 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
     insert_many_protocol(
         authority,
-        ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+        ToolProtocolContract::operation_envelope_json(),
         &[
             "env",
-            "files",
-            "private_garden",
             "process",
             "network",
             "network_scan",
@@ -444,6 +439,11 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     insert_many_protocol(
         authority,
         ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+        &["files", "private_garden"],
+    );
+    insert_many_protocol(
+        authority,
+        ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
         &["task", "remind_at"],
     );
     insert_many_protocol(
@@ -453,8 +453,13 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
     insert_many_protocol(
         authority,
+        ToolProtocolContract::structured_object_json_with_rich_blockers(),
+        &["file_write", "remind_list"],
+    );
+    insert_many_protocol(
+        authority,
         ToolProtocolContract::structured_object_json(),
-        &["file_write", "http_request", "remind_list", "i2c_device"],
+        &["http_request", "i2c_device"],
     );
 }
 
@@ -490,7 +495,8 @@ pub fn build_default_tool_protocol_authority() -> ToolProtocolAuthority {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_default_tool_protocol_authority, ToolInputProtocolKind, ToolOutputProtocolKind,
+        build_default_llm_catalog_authority, build_default_tool_protocol_authority,
+        ToolInputProtocolKind, ToolOutputProtocolKind,
     };
 
     #[test]
@@ -508,6 +514,98 @@ mod tests {
             assert!(
                 contract.supports_rich_blockers,
                 "expected {tool_name} to advertise rich blocker support"
+            );
+        }
+    }
+
+    #[test]
+    fn minimal_semantics_audit_truth_captures_remaining_and_reverted_tools() {
+        let authority = build_default_tool_protocol_authority();
+
+        let analyze_image = authority
+            .get("analyze_image")
+            .expect("analyze_image contract");
+        assert_eq!(
+            analyze_image.input_kind,
+            ToolInputProtocolKind::StructuredObject
+        );
+        assert_eq!(analyze_image.output_kind, ToolOutputProtocolKind::PlainText);
+        assert!(!analyze_image.supports_rich_blockers);
+
+        let diagnose = authority.get("diagnose").expect("diagnose contract");
+        assert_eq!(diagnose.input_kind, ToolInputProtocolKind::StructuredObject);
+        assert_eq!(diagnose.output_kind, ToolOutputProtocolKind::StructuredJson);
+        assert!(!diagnose.supports_rich_blockers);
+
+        let factual_memory = authority
+            .get("factual_memory")
+            .expect("factual_memory contract");
+        assert_eq!(
+            factual_memory.input_kind,
+            ToolInputProtocolKind::StructuredObject
+        );
+        assert_eq!(
+            factual_memory.output_kind,
+            ToolOutputProtocolKind::StructuredJson
+        );
+        assert!(!factual_memory.supports_rich_blockers);
+
+        let remind_list = authority.get("remind_list").expect("remind_list contract");
+        assert_eq!(
+            remind_list.input_kind,
+            ToolInputProtocolKind::StructuredObject
+        );
+        assert_eq!(
+            remind_list.output_kind,
+            ToolOutputProtocolKind::StructuredJson
+        );
+        assert!(remind_list.supports_rich_blockers);
+
+        let file_write = authority.get("file_write").expect("file_write contract");
+        assert_eq!(
+            file_write.input_kind,
+            ToolInputProtocolKind::StructuredObject
+        );
+        assert_eq!(
+            file_write.output_kind,
+            ToolOutputProtocolKind::StructuredJson
+        );
+        assert!(file_write.supports_rich_blockers);
+
+        let private_garden = authority
+            .get("private_garden")
+            .expect("private_garden contract");
+        assert_eq!(
+            private_garden.input_kind,
+            ToolInputProtocolKind::OperationEnvelope
+        );
+        assert_eq!(
+            private_garden.output_kind,
+            ToolOutputProtocolKind::StructuredJson
+        );
+        assert!(private_garden.supports_rich_blockers);
+    }
+
+    #[test]
+    fn diagnose_surface_replaces_split_diagnose_tools_in_catalog_and_protocol() {
+        let llm_authority = build_default_llm_catalog_authority();
+        let protocol_authority = build_default_tool_protocol_authority();
+
+        assert!(llm_authority.get("diagnose").is_some());
+        for removed in [
+            "diagnose_delivery",
+            "diagnose_system",
+            "diagnose_network_path",
+            "diagnose_memory_runtime",
+            "diagnose_voice_path",
+        ] {
+            assert!(
+                llm_authority.get(removed).is_none(),
+                "expected {removed} to leave public diagnose surface"
+            );
+            assert!(
+                protocol_authority.get(removed).is_none(),
+                "expected {removed} protocol entry to disappear"
             );
         }
     }

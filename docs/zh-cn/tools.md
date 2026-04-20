@@ -40,11 +40,7 @@
 | 工具名 | 做什么 | 什么时候会出现 |
 |--------|--------|----------------|
 | `board_info` | 查看整机状态摘要 | 默认 |
-| `diagnose_delivery` | 排查消息发送失败、延迟或回复交接问题 | 默认 |
-| `diagnose_system` | 排查整体运行状态、资源压力和能力降级 | 默认 |
-| `diagnose_network_path` | 排查网络链路、DNS、代理和上游连通性 | 默认 |
-| `diagnose_memory_runtime` | 排查记忆运行状态是否异常 | 默认 |
-| `diagnose_voice_path` | 排查语音输入、语音输出和相关配置 | 默认 |
+| `diagnose` | 通过 `op` 选择一个运行时平面进行诊断（`system`、`network`、`memory`、`delivery`、`voice`） | 默认 |
 | `network_scan` | 扫描 Wi-Fi、看 Wi-Fi 状态、做连通性检查 | 诊断能力 |
 | `system_control` | 查看系统状态、存储占用，或执行受控的重启与紧急停用 | 诊断能力 |
 | `cron_manage` | 管理持久化定时任务 | 诊断能力 |
