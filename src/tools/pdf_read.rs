@@ -4,7 +4,10 @@
 use crate::error::{Error, Result};
 use crate::tools::http_request::is_private_url;
 use crate::tools::web_fetch::{parse_max_chars, truncate_chars};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    parse_tool_args, Tool, ToolClarificationField, ToolContext, ToolExecutionBlocker,
+    ToolExecutionOutcome, ToolMetadata,
+};
 use serde_json::{json, Value};
 
 const TAG: &str = "tools::pdf_read";
@@ -35,18 +38,28 @@ impl Tool for PdfReadTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_pdf_read")?;
-        let url = obj
+        let Some(url) = obj
             .get("url")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_pdf_read", "missing url"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return missing_url_outcome();
+        };
         let max_chars = parse_max_chars(obj.get("max_chars"), DEFAULT_MAX_CHARS);
 
         if is_private_url(url) {
-            return Err(Error::config(
-                "tool_pdf_read",
-                "private/internal URLs are blocked for security",
-            ));
+            return unsupported_pdf_outcome(url, "private/internal URLs are blocked for security");
         }
 
         let headers = [
@@ -66,10 +79,7 @@ impl Tool for PdfReadTool {
         let raw = body.as_ref();
         let raw_len = raw.len();
         if !looks_like_pdf(raw) {
-            return Err(Error::config(
-                "tool_pdf_read",
-                "response does not look like a PDF document",
-            ));
+            return unsupported_pdf_outcome(url, "response does not look like a PDF document");
         }
 
         let normalized = normalize_pdf_text(&extract_pdf_text(raw).map_err(|err| {
@@ -85,14 +95,16 @@ impl Tool for PdfReadTool {
         })?);
 
         if normalized.is_empty() {
-            return Ok(json!({
-                "url": url,
-                "content": "",
-                "truncated": false,
-                "raw_bytes": raw_len,
-                "warning": "PDF contains no extractable text (may be image-only or encrypted)",
-            })
-            .to_string());
+            return Ok(ToolExecutionOutcome::text(
+                json!({
+                    "url": url,
+                    "content": "",
+                    "truncated": false,
+                    "raw_bytes": raw_len,
+                    "warning": "PDF contains no extractable text (may be image-only or encrypted)",
+                })
+                .to_string(),
+            ));
         }
 
         let (content, truncated) = truncate_chars(&normalized, max_chars);
@@ -103,15 +115,57 @@ impl Tool for PdfReadTool {
             raw_len,
             normalized.chars().count()
         );
-        Ok(json!({
-            "url": url,
-            "content": content,
-            "truncated": truncated,
-            "raw_bytes": raw_len,
-            "warning": Value::Null,
-        })
-        .to_string())
+        Ok(ToolExecutionOutcome::text(
+            json!({
+                "url": url,
+                "content": content,
+                "truncated": truncated,
+                "raw_bytes": raw_len,
+                "warning": Value::Null,
+            })
+            .to_string(),
+        ))
     }
+}
+
+fn missing_url_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "url": Value::Null,
+            "content": "",
+            "truncated": false,
+            "raw_bytes": 0,
+            "warning": "pdf_read: missing url",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "A public PDF URL is still required before pdf_read can continue.",
+        vec!["url".to_string()],
+        vec![ToolClarificationField {
+            key: "url".to_string(),
+            label: "PDF URL".to_string(),
+            description: "Provide a public http(s) URL that points to a PDF document.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn unsupported_pdf_outcome(url: &str, warning: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "url": url,
+            "content": "",
+            "truncated": false,
+            "raw_bytes": 0,
+            "warning": warning,
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::unsupported(warning)))
 }
 
 pub(crate) fn looks_like_pdf(bytes: &[u8]) -> bool {
@@ -183,7 +237,7 @@ mod tests {
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::ResponseBody;
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use serde_json::Value;
 
     struct MockToolContext {
@@ -258,9 +312,25 @@ mod tests {
             status: 200,
             body: b"not a pdf".to_vec(),
         };
-        let err = tool
-            .execute(r#"{"url":"https://example.com/doc.pdf"}"#, &mut ctx)
-            .unwrap_err();
-        assert!(format!("{err}").contains("response does not look like a PDF"));
+        let outcome = tool
+            .execute_outcome(r#"{"url":"https://example.com/doc.pdf"}"#, &mut ctx)
+            .expect("non-pdf should return structured blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::Unsupported);
+    }
+
+    #[test]
+    fn execute_missing_url_returns_facts_blocker() {
+        let tool = PdfReadTool;
+        let mut ctx = MockToolContext {
+            status: 200,
+            body: minimal_pdf_bytes(),
+        };
+        let outcome = tool
+            .execute_outcome(r#"{}"#, &mut ctx)
+            .expect("missing url should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "url"));
     }
 }

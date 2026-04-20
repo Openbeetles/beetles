@@ -1,11 +1,14 @@
 //! Search the archive sidecar over retained transcripts, daily notes, and turn logs.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::memory::{
     search_archive_records_detailed, ArchiveRecordSource, ArchiveSearchQuery,
     ArchiveSearchQueryReport, MemoryStore, SessionStore, TurnLedgerStore, MAX_ARCHIVE_SEARCH_LIMIT,
 };
-use crate::tools::{parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata};
+use crate::tools::{
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -58,13 +61,24 @@ impl Tool for MemorySearchTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_memory_search")?;
-        let query = obj
+        let Some(query) = obj
             .get("query")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::config("tool_memory_search", "missing query"))?;
+        else {
+            return missing_query_outcome();
+        };
         let limit = obj
             .get("limit")
             .and_then(Value::as_u64)
@@ -75,7 +89,10 @@ impl Tool for MemorySearchTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let sources = parse_sources(obj.get("sources"))?;
+        let sources = match parse_sources_choice(obj.get("sources")) {
+            Ok(sources) => sources,
+            Err(outcome) => return Ok(*outcome),
+        };
         let result = search_archive_records_detailed(
             self.session_store.as_ref(),
             self.memory_store.as_ref(),
@@ -88,7 +105,7 @@ impl Tool for MemorySearchTool {
                 limit,
             },
         )?;
-        serialize_tool_output(
+        Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "tool_memory_search",
             &MemorySearchResponse {
                 ok: true,
@@ -102,7 +119,7 @@ impl Tool for MemorySearchTool {
                 traceability: "Each hit includes retrieval_trace with backend, matched_terms, score breakdown, and ranking/source/recency/selector reasons when available.",
                 usage_hint: "Use memory_get with record_id or locator to inspect one cited archive record before concluding. Distill a grounded stable conclusion separately; if an exact detail is still unsupported, say so plainly.",
             },
-        )
+        )?))
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -110,24 +127,225 @@ impl Tool for MemorySearchTool {
     }
 }
 
-fn parse_sources(value: Option<&Value>) -> Result<Vec<ArchiveRecordSource>> {
+fn parse_sources_choice(
+    value: Option<&Value>,
+) -> std::result::Result<Vec<ArchiveRecordSource>, Box<ToolExecutionOutcome>> {
     let Some(items) = value.and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
     let mut out = Vec::with_capacity(items.len());
     for item in items {
-        let source = item
-            .as_str()
-            .ok_or_else(|| Error::config("tool_memory_search", "sources items must be strings"))?;
-        let parsed = source.parse::<ArchiveRecordSource>().map_err(|_| {
-            Error::config(
-                "tool_memory_search",
-                format!("unsupported archive source: {}", source),
-            )
-        })?;
+        let Some(source) = item.as_str() else {
+            return Err(Box::new(invalid_sources_outcome()));
+        };
+        let parsed = source
+            .parse::<ArchiveRecordSource>()
+            .map_err(|_| Box::new(invalid_sources_outcome()))?;
         if !out.contains(&parsed) {
             out.push(parsed);
         }
     }
     Ok(out)
+}
+
+fn missing_query_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        serde_json::json!({
+            "ok": false,
+            "op": "search",
+            "warning": "memory_search: missing query",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "A memory query is still required before memory_search can continue.",
+        vec!["query".to_string()],
+        vec![ToolClarificationField {
+            key: "query".to_string(),
+            label: "Search query".to_string(),
+            description: "Describe what you want to search for in the archive evidence."
+                .to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn invalid_sources_outcome() -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        serde_json::json!({
+            "ok": false,
+            "op": "search",
+            "warning": "memory_search: sources must be transcript, daily_note, or turn_log",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "A supported archive source selection is still required before memory_search can continue.",
+        vec!["sources".to_string()],
+        vec![ToolClarificationField {
+            key: "sources".to_string(),
+            label: "Archive sources".to_string(),
+            description: "Choose one or more archive sources to search.".to_string(),
+            required: true,
+            secret: false,
+            multiple: true,
+            options: vec![
+                ToolClarificationOption {
+                    value: "transcript".to_string(),
+                    label: "transcript".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "daily_note".to_string(),
+                    label: "daily_note".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "turn_log".to_string(),
+                    label: "turn_log".to_string(),
+                },
+            ],
+        }],
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemorySearchTool;
+    use crate::error::Result;
+    use crate::i18n::Locale;
+    use crate::memory::{
+        MemoryStore, SessionMessage, SessionMessageRecord, SessionStore, TurnLedger,
+        TurnLedgerStore,
+    };
+    use crate::platform::ResponseBody;
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
+    use std::sync::Arc;
+
+    struct EmptySessionStore;
+
+    impl SessionStore for EmptySessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn load_recent(&self, _chat_id: &str, _n: usize) -> Result<Vec<SessionMessage>> {
+            Ok(Vec::new())
+        }
+        fn load_recent_records(
+            &self,
+            _chat_id: &str,
+            _n: usize,
+        ) -> Result<Vec<SessionMessageRecord>> {
+            Ok(Vec::new())
+        }
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct EmptyMemoryStore;
+
+    impl MemoryStore for EmptyMemoryStore {
+        fn get_memory(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_memory(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn get_soul(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_soul(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn get_user(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_user(&self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+        fn list_daily_note_names(&self, _recent_n: usize) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn get_daily_note(&self, _name: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn write_daily_note(&self, _name: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct EmptyTurnLedgerStore;
+
+    impl TurnLedgerStore for EmptyTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(None)
+        }
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            Ok(())
+        }
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct DummyCtx;
+
+    impl ToolContext for DummyCtx {
+        fn get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!()
+        }
+
+        fn post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!()
+        }
+
+        fn user_locale(&self) -> Locale {
+            Locale::Zh
+        }
+    }
+
+    fn build_tool() -> MemorySearchTool {
+        MemorySearchTool::new(
+            Arc::new(EmptySessionStore),
+            Arc::new(EmptyMemoryStore),
+            Arc::new(EmptyTurnLedgerStore),
+        )
+    }
+
+    #[test]
+    fn memory_search_missing_query_returns_facts_blocker() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+        let outcome = tool
+            .execute_outcome(r#"{}"#, &mut ctx)
+            .expect("missing query should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "query"));
+    }
+
+    #[test]
+    fn memory_search_unsupported_source_returns_choice_blocker() {
+        let tool = build_tool();
+        let mut ctx = DummyCtx;
+        let outcome = tool
+            .execute_outcome(r#"{"query":"alice","sources":["foo"]}"#, &mut ctx)
+            .expect("unsupported source should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
 }

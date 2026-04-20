@@ -1,11 +1,12 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::office::{
     OfficeAccountAssessment, OfficeAuthoritySource, OfficeAuthoritySummary, OfficeCapability,
     OfficeProbeAdapter, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use crate::tools::{
     office_diagnostics::{build_account_diagnostics, OfficeAccountDiagnostic},
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata,
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -74,9 +75,24 @@ impl Tool for OfficeStatusTool {
         r#"{"type":"object","properties":{"capability":{"type":"string","description":"Optional capability filter: mail|calendar|documents|contacts_directory"}}}"#
     }
 
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_office_status")?;
-        let capability = obj.get("capability").map(parse_capability).transpose()?;
+        let capability = match obj.get("capability") {
+            Some(value) => match parse_capability_choice(value) {
+                Ok(capability) => Some(capability),
+                Err(outcome) => return Ok(*outcome),
+            },
+            None => None,
+        };
         let service = self.authority.load()?;
         let mut summary = service.summary()?;
         let account_assessments = if let Some(capability) = capability {
@@ -93,7 +109,7 @@ impl Tool for OfficeStatusTool {
                 .accounts
                 .retain(|account| account.enabled_capabilities.contains(&capability));
         }
-        serialize_tool_output(
+        Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "tool_office_status",
             &OfficeStatusResponse {
                 op: "status",
@@ -102,7 +118,7 @@ impl Tool for OfficeStatusTool {
                 account_diagnostics: build_account_diagnostics(&account_assessments),
                 account_assessments,
             },
-        )
+        )?))
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -110,20 +126,60 @@ impl Tool for OfficeStatusTool {
     }
 }
 
-fn parse_capability(value: &Value) -> Result<OfficeCapability> {
-    let raw = value
-        .as_str()
-        .ok_or_else(|| Error::config("tool_office_status", "capability must be a string"))?;
+fn parse_capability_choice(
+    value: &Value,
+) -> std::result::Result<OfficeCapability, Box<ToolExecutionOutcome>> {
+    let Some(raw) = value.as_str() else {
+        return Err(Box::new(invalid_capability_outcome()));
+    };
     match raw {
         "mail" => Ok(OfficeCapability::Mail),
         "calendar" => Ok(OfficeCapability::Calendar),
         "documents" => Ok(OfficeCapability::Documents),
         "contacts_directory" => Ok(OfficeCapability::ContactsDirectory),
-        _ => Err(Error::config(
-            "tool_office_status",
-            format!("unsupported capability '{}'", raw),
-        )),
+        _ => Err(Box::new(invalid_capability_outcome())),
     }
+}
+
+fn invalid_capability_outcome() -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        serde_json::json!({
+            "op": "status",
+            "ok": false,
+            "warning": "office_status: capability must be one of mail, calendar, documents, contacts_directory",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "A supported office capability is still required before office_status can continue.",
+        vec!["capability".to_string()],
+        vec![ToolClarificationField {
+            key: "capability".to_string(),
+            label: "Capability".to_string(),
+            description: "Choose which office capability to inspect.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "mail".to_string(),
+                    label: "mail".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "calendar".to_string(),
+                    label: "calendar".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "documents".to_string(),
+                    label: "documents".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "contacts_directory".to_string(),
+                    label: "contacts_directory".to_string(),
+                },
+            ],
+        }],
+    ))
 }
 
 #[cfg(test)]
@@ -131,11 +187,13 @@ mod tests {
     use super::*;
     use crate::config::{save_office_accounts_segment, ConfigFileStore};
     use crate::documents::OFFICE_METADATA_DOCUMENTS_BASE_URL;
+    use crate::error::Error;
     use crate::mail::{OFFICE_METADATA_MAIL_IMAP_HOST, OFFICE_METADATA_MAIL_SMTP_HOST};
     use crate::office::{
-        OfficeAccountRuntimeStatus, OfficeCredential, OfficeCredentialStore,
-        OfficeRuntimeStatusStore, ReloadingOfficeAuthoritySource,
+        OfficeAccountRegistry, OfficeAccountRuntimeStatus, OfficeCredential, OfficeCredentialStore,
+        OfficeRuntimeStatusStore, OfficeSelectionPolicy, ReloadingOfficeAuthoritySource,
     };
+    use crate::tools::ToolExecutionBlockerKind;
     use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex};
 
@@ -593,5 +651,24 @@ mod tests {
             .expect("mail-work diagnosis");
         assert_eq!(diagnosis["diagnosis_kind"], "ready");
         assert_eq!(diagnosis["recommended_action"], "none");
+    }
+
+    #[test]
+    fn office_status_tool_invalid_capability_returns_choice_blocker() {
+        let tool = OfficeStatusTool::with_authority(Arc::new(SnapshotOfficeAuthoritySource::new(
+            OfficeService::new(
+                OfficeAccountRegistry::default(),
+                OfficeSelectionPolicy::default(),
+                Arc::new(StubOfficeCredentialStore),
+                Arc::new(StubRuntimeStatusStore),
+            ),
+        )));
+        let mut ctx = DummyCtx;
+
+        let outcome = tool
+            .execute_outcome(r#"{"capability":"mailbox"}"#, &mut ctx)
+            .expect("invalid capability should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
     }
 }

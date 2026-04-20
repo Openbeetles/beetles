@@ -5,10 +5,12 @@ use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata, ToolRiskLevel,
+    parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata, ToolRiskLevel,
     ToolRollbackKind,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const MAX_EDIT_FILE_BYTES: usize = 64 * 1024;
@@ -45,20 +47,45 @@ impl Tool for FileEditTool {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"File path under storage root, e.g. notes/todo.txt"},"mode":{"type":"string","enum":["replace_once","replace_all","insert_before","insert_after","prepend"],"description":"Edit operation to perform"},"match_text":{"type":"string","description":"Exact text to locate for replace/insert modes"},"content":{"type":"string","description":"Replacement or inserted content"}},"required":["path","mode","content"]}"#
     }
 
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_file_edit")?;
-        let path_arg = obj
+        let Some(path_arg) = obj
             .get("path")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| Error::config("tool_file_edit", "missing path"))?;
-        let mode = obj
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return missing_field_outcome(
+                "path",
+                "A file path is still required before file_edit can continue.",
+            );
+        };
+        let Some(mode) = obj
             .get("mode")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| Error::config("tool_file_edit", "missing mode"))?;
-        let content = obj
-            .get("content")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| Error::config("tool_file_edit", "missing content"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return missing_field_outcome(
+                "mode",
+                "An edit mode is still required before file_edit can continue.",
+            );
+        };
+        let Some(content) = obj.get("content").and_then(|x| x.as_str()) else {
+            return missing_field_outcome(
+                "content",
+                "Edit content is still required before file_edit can continue.",
+            );
+        };
 
         if content.len() > FILE_WRITE_MAX_CONTENT_LEN {
             return Err(Error::config(
@@ -70,10 +97,12 @@ impl Tool for FileEditTool {
         let rel = normalize_state_tool_path(path_arg, "tool_file_edit")?;
         ensure_state_path_mutable(&rel, "tool_file_edit")?;
 
-        let raw = self
-            .state_fs
-            .read(&rel)?
-            .ok_or_else(|| Error::config("tool_file_edit", "file not found"))?;
+        let Some(raw) = self.state_fs.read(&rel)? else {
+            return missing_field_outcome(
+                "path",
+                "The target file does not exist; a valid file path is still required.",
+            );
+        };
         if raw.len() > MAX_EDIT_FILE_BYTES {
             return Err(Error::config("tool_file_edit", "file too large"));
         }
@@ -82,33 +111,72 @@ impl Tool for FileEditTool {
 
         let edit = match mode {
             "replace_once" => {
-                let match_text = parse_match_text(&obj)?;
-                apply_replace_once(current, match_text, content)?
+                let Some(match_text) = parse_match_text(&obj) else {
+                    return missing_field_outcome(
+                        "match_text",
+                        "match_text is still required for this edit mode.",
+                    );
+                };
+                match apply_replace_once(current, match_text, content) {
+                    Ok(edit) => edit,
+                    Err(error) if match_text_not_found(&error) => {
+                        return match_text_not_found_outcome();
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             "replace_all" => {
-                let match_text = parse_match_text(&obj)?;
-                apply_replace_all(current, match_text, content)?
+                let Some(match_text) = parse_match_text(&obj) else {
+                    return missing_field_outcome(
+                        "match_text",
+                        "match_text is still required for this edit mode.",
+                    );
+                };
+                match apply_replace_all(current, match_text, content) {
+                    Ok(edit) => edit,
+                    Err(error) if match_text_not_found(&error) => {
+                        return match_text_not_found_outcome();
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             "insert_before" => {
-                let match_text = parse_match_text(&obj)?;
-                apply_insert_before(current, match_text, content)?
+                let Some(match_text) = parse_match_text(&obj) else {
+                    return missing_field_outcome(
+                        "match_text",
+                        "match_text is still required for this edit mode.",
+                    );
+                };
+                match apply_insert_before(current, match_text, content) {
+                    Ok(edit) => edit,
+                    Err(error) if match_text_not_found(&error) => {
+                        return match_text_not_found_outcome();
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             "insert_after" => {
-                let match_text = parse_match_text(&obj)?;
-                apply_insert_after(current, match_text, content)?
+                let Some(match_text) = parse_match_text(&obj) else {
+                    return missing_field_outcome(
+                        "match_text",
+                        "match_text is still required for this edit mode.",
+                    );
+                };
+                match apply_insert_after(current, match_text, content) {
+                    Ok(edit) => edit,
+                    Err(error) if match_text_not_found(&error) => {
+                        return match_text_not_found_outcome();
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             "prepend" => apply_prepend(current, content),
-            _ => {
-                return Err(Error::config(
-                    "tool_file_edit",
-                    "mode must be one of: replace_once, replace_all, insert_before, insert_after, prepend",
-                ));
-            }
+            _ => return invalid_mode_outcome(),
         };
 
         self.state_fs.write(&rel, edit.content.as_bytes())?;
 
-        serialize_tool_output(
+        Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "tool_file_edit",
             &FileEditResponse {
                 path: path_arg,
@@ -117,7 +185,7 @@ impl Tool for FileEditTool {
                 match_count: edit.match_count,
                 bytes_written: edit.content.len(),
             },
-        )
+        )?))
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -132,11 +200,10 @@ struct AppliedEdit {
     match_count: usize,
 }
 
-fn parse_match_text(obj: &serde_json::Map<String, serde_json::Value>) -> Result<&str> {
+fn parse_match_text(obj: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
     obj.get("match_text")
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| Error::config("tool_file_edit", "missing match_text"))
 }
 
 fn apply_replace_once(current: &str, match_text: &str, replacement: &str) -> Result<AppliedEdit> {
@@ -203,13 +270,109 @@ fn apply_prepend(current: &str, content: &str) -> AppliedEdit {
     }
 }
 
+fn match_text_not_found(error: &Error) -> bool {
+    matches!(error, Error::Config { message, .. } if message == "match_text not found")
+}
+
+fn missing_field_outcome(field: &str, summary: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "path": Value::Null,
+            "mode": Value::Null,
+            "warning": format!("file_edit: missing {}", field),
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        summary,
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: field.to_string(),
+            description: format!("Provide {} for file_edit.", field),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn invalid_mode_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": "file_edit: unsupported mode",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "A valid file_edit mode is still required before this tool can continue.",
+        vec!["mode".to_string()],
+        vec![ToolClarificationField {
+            key: "mode".to_string(),
+            label: "Mode".to_string(),
+            description: "Choose which deterministic file edit to perform.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "replace_once".to_string(),
+                    label: "replace_once".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "replace_all".to_string(),
+                    label: "replace_all".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "insert_before".to_string(),
+                    label: "insert_before".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "insert_after".to_string(),
+                    label: "insert_after".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "prepend".to_string(),
+                    label: "prepend".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn match_text_not_found_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": "file_edit: match_text not found",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "match_text was not found in the current file; a valid match_text is still required.",
+        vec!["match_text".to_string()],
+        vec![ToolClarificationField {
+            key: "match_text".to_string(),
+            label: "Match text".to_string(),
+            description: "Provide text that already exists in the target file.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::FileEditTool;
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -361,5 +524,93 @@ mod tests {
             )
             .unwrap_err();
         assert!(format!("{err}").contains("protected"));
+    }
+
+    #[test]
+    fn file_edit_missing_path_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        let tool = FileEditTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"mode":"prepend","content":"hello "}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing path should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "path"));
+    }
+
+    #[test]
+    fn file_edit_invalid_mode_returns_choice_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("notes/a.txt", b"hello").unwrap();
+        let tool = FileEditTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"path":"notes/a.txt","mode":"append","content":" world"}"#,
+                &mut MockToolContext,
+            )
+            .expect("invalid mode should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn file_edit_missing_match_text_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("notes/a.txt", b"hello").unwrap();
+        let tool = FileEditTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"path":"notes/a.txt","mode":"replace_once","content":"world"}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing match_text should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "match_text"));
+    }
+
+    #[test]
+    fn file_edit_file_not_found_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        let tool = FileEditTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"path":"notes/a.txt","mode":"prepend","content":"hello "}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing file should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "path"));
+    }
+
+    #[test]
+    fn file_edit_missing_match_target_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("notes/a.txt", b"hello world").unwrap();
+        let tool = FileEditTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"path":"notes/a.txt","mode":"replace_once","match_text":"beta","content":"B"}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing match target should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "match_text"));
     }
 }

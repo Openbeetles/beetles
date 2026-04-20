@@ -88,22 +88,16 @@ fn clarification_field_from_office_schema(
 
 fn onboarding_blocker_summary(
     result: &crate::office::OfficeAccountOnboardingResult,
-    locale: crate::i18n::Locale,
+    _locale: crate::i18n::Locale,
 ) -> String {
     match result.disposition {
         OfficeAccountOnboardingDisposition::NeedsUserFacts => {
             let field_text = if result.missing_fields.is_empty() {
-                match locale {
-                    crate::i18n::Locale::Zh => "需要补充必要字段".to_string(),
-                    crate::i18n::Locale::En => "required facts are still missing".to_string(),
-                }
+                "required facts are still missing".to_string()
             } else {
                 result.missing_fields.join(", ")
             };
-            match locale {
-                crate::i18n::Locale::Zh => format!("账户配置被阻塞：{field_text}"),
-                crate::i18n::Locale::En => format!("Account onboarding is blocked: {field_text}"),
-            }
+            format!("Account onboarding is blocked: {field_text}")
         }
         OfficeAccountOnboardingDisposition::ProbeFailed => {
             let reason = result
@@ -111,10 +105,7 @@ fn onboarding_blocker_summary(
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(result.reason.as_str());
-            match locale {
-                crate::i18n::Locale::Zh => format!("账户配置探测失败：{reason}"),
-                crate::i18n::Locale::En => format!("Account onboarding probe failed: {reason}"),
-            }
+            format!("Account onboarding probe failed: {reason}")
         }
         OfficeAccountOnboardingDisposition::Unsupported => {
             let provider = result
@@ -122,12 +113,7 @@ fn onboarding_blocker_summary(
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(result.reason.as_str());
-            match locale {
-                crate::i18n::Locale::Zh => format!("当前不支持这种账户接入路径：{provider}"),
-                crate::i18n::Locale::En => {
-                    format!("This account onboarding path is not supported: {provider}")
-                }
-            }
+            format!("This account onboarding path is not supported: {provider}")
         }
         OfficeAccountOnboardingDisposition::Applied => String::new(),
     }
@@ -157,10 +143,14 @@ impl Tool for OfficeConfigTool {
         ctx: &mut dyn ToolContext,
     ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_office_config")?;
-        let op = obj
+        let Some(op) = obj
             .get("op")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_office_config", "missing op"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return office_config_op_choice_outcome(None);
+        };
         match op {
             "inspect" => Ok(ToolExecutionOutcome::text(serialize_tool_output(
                 "tool_office_config",
@@ -187,10 +177,13 @@ impl Tool for OfficeConfigTool {
                 )?))
             }
             "provider_schema" => {
-                let capability = obj
-                    .get("capability")
-                    .map(parse_capability_value)
-                    .transpose()?;
+                let capability = match obj.get("capability") {
+                    Some(value) => Some(match parse_capability_choice(value) {
+                        Ok(capability) => capability,
+                        Err(outcome) => return Ok(*outcome),
+                    }),
+                    None => None,
+                };
                 let preferred_provider_kind = tool_facing_provider_kind(&obj);
                 let providers = self
                     .service
@@ -208,10 +201,13 @@ impl Tool for OfficeConfigTool {
                 )?))
             }
             "resolve_account" => {
-                let capability =
-                    parse_capability_value(obj.get("capability").ok_or_else(|| {
-                        Error::config("tool_office_config", "missing capability")
-                    })?)?;
+                let Some(capability_value) = obj.get("capability") else {
+                    return missing_capability_outcome();
+                };
+                let capability = match parse_capability_choice(capability_value) {
+                    Ok(capability) => capability,
+                    Err(outcome) => return Ok(*outcome),
+                };
                 let preferred_identity_class = obj
                     .get("preferred_identity_class")
                     .map(|value| {
@@ -272,7 +268,9 @@ impl Tool for OfficeConfigTool {
                 }))
             }
             "revoke" => {
-                require_confirm(&obj, "revoke")?;
+                if !obj.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
+                    return revoke_confirmation_outcome();
+                }
                 let account_key = obj
                     .get("account_key")
                     .and_then(Value::as_str)
@@ -311,10 +309,7 @@ impl Tool for OfficeConfigTool {
                     },
                 )?))
             }
-            _ => Err(Error::config(
-                "tool_office_config",
-                format!("unknown op '{}'", op),
-            )),
+            _ => office_config_op_choice_outcome(Some(op)),
         }
     }
 
@@ -355,17 +350,6 @@ impl Tool for OfficeConfigTool {
     }
 }
 
-fn require_confirm(obj: &serde_json::Map<String, Value>, op: &str) -> Result<()> {
-    if obj.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
-        Ok(())
-    } else {
-        Err(Error::config(
-            "tool_office_config",
-            format!("{op} requires confirm=true"),
-        ))
-    }
-}
-
 fn parse_capability_value(value: &Value) -> Result<OfficeCapability> {
     let raw = value
         .as_str()
@@ -382,6 +366,12 @@ fn parse_capability_value(value: &Value) -> Result<OfficeCapability> {
     }
 }
 
+fn parse_capability_choice(
+    value: &Value,
+) -> std::result::Result<OfficeCapability, Box<ToolExecutionOutcome>> {
+    parse_capability_value(value).map_err(|_| Box::new(invalid_capability_outcome()))
+}
+
 fn tool_facing_provider_kind(obj: &serde_json::Map<String, Value>) -> Option<String> {
     obj.get("provider")
         .or_else(|| obj.get("provider_kind"))
@@ -392,6 +382,154 @@ fn tool_facing_provider_kind(obj: &serde_json::Map<String, Value>) -> Option<Str
             "qq" | "qqmail" | "qq_mail" => "imap_smtp".to_string(),
             other => other.to_string(),
         })
+}
+
+fn office_config_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        serde_json::json!({
+            "op": op,
+            "ok": false,
+            "warning": "office_config: choose a supported operation",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "An operation is still required before office_config can continue.",
+        vec!["op".to_string()],
+        vec![ToolClarificationField {
+            key: "op".to_string(),
+            label: "Operation".to_string(),
+            description: "Choose the office account operation to perform.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "inspect".to_string(),
+                    label: "inspect".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "assess".to_string(),
+                    label: "assess".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "provider_schema".to_string(),
+                    label: "provider_schema".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "resolve_account".to_string(),
+                    label: "resolve_account".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "apply_account".to_string(),
+                    label: "apply_account".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "revoke".to_string(),
+                    label: "revoke".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "probe".to_string(),
+                    label: "probe".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn missing_capability_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        serde_json::json!({
+            "op": "resolve_account",
+            "ok": false,
+            "warning": "office_config: missing capability",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "A capability is still required before resolve_account can continue.",
+        vec!["capability".to_string()],
+        vec![ToolClarificationField {
+            key: "capability".to_string(),
+            label: "Capability".to_string(),
+            description: "Choose which office capability account to resolve.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "mail".to_string(),
+                    label: "mail".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "calendar".to_string(),
+                    label: "calendar".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "documents".to_string(),
+                    label: "documents".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "contacts_directory".to_string(),
+                    label: "contacts_directory".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn invalid_capability_outcome() -> ToolExecutionOutcome {
+    ToolExecutionOutcome::text(
+        serde_json::json!({
+            "ok": false,
+            "warning": "office_config: capability must be one of mail, calendar, documents, contacts_directory",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "A supported office capability is still required before this tool can continue.",
+        vec!["capability".to_string()],
+        vec![ToolClarificationField {
+            key: "capability".to_string(),
+            label: "Capability".to_string(),
+            description: "Choose a supported office capability.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption { value: "mail".to_string(), label: "mail".to_string() },
+                ToolClarificationOption { value: "calendar".to_string(), label: "calendar".to_string() },
+                ToolClarificationOption { value: "documents".to_string(), label: "documents".to_string() },
+                ToolClarificationOption { value: "contacts_directory".to_string(), label: "contacts_directory".to_string() },
+            ],
+        }],
+    ))
+}
+
+fn revoke_confirmation_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        serde_json::json!({
+            "op": "revoke",
+            "ok": false,
+            "warning": "office_config: revoke requires confirm=true",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_confirmation(
+        "Explicit confirmation is still required before revoking this account.",
+        vec![ToolClarificationField {
+            key: "confirm".to_string(),
+            label: "Confirm revoke".to_string(),
+            description: "Set confirm=true to revoke the account.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![ToolClarificationOption {
+                value: "true".to_string(),
+                label: "true".to_string(),
+            }],
+        }],
+    )))
 }
 
 #[cfg(test)]
@@ -969,11 +1107,79 @@ mod tests {
         assert_eq!(shape.rollback_kind, ToolRollbackKind::ConfigRestore);
 
         let mut ctx = DummyCtx;
-        let error = fixture
+        let outcome = fixture
             .tool
-            .execute(r#"{"op":"revoke","account_key":"mail-work"}"#, &mut ctx)
-            .expect_err("revoke without confirm must fail");
-        assert!(error.to_string().contains("revoke requires confirm=true"));
+            .execute_outcome(r#"{"op":"revoke","account_key":"mail-work"}"#, &mut ctx)
+            .expect("revoke without confirm should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsConfirmation);
+    }
+
+    #[test]
+    fn missing_op_returns_choice_blocker() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let outcome = fixture
+            .tool
+            .execute_outcome(r#"{}"#, &mut ctx)
+            .expect("missing op should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn unknown_op_returns_choice_blocker() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let outcome = fixture
+            .tool
+            .execute_outcome(r#"{"op":"merge_account"}"#, &mut ctx)
+            .expect("unknown op should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn resolve_account_missing_capability_returns_facts_blocker() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let outcome = fixture
+            .tool
+            .execute_outcome(r#"{"op":"resolve_account"}"#, &mut ctx)
+            .expect("missing capability should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "capability"));
+    }
+
+    #[test]
+    fn resolve_account_invalid_capability_returns_choice_blocker() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let outcome = fixture
+            .tool
+            .execute_outcome(
+                r#"{"op":"resolve_account","capability":"mailbox"}"#,
+                &mut ctx,
+            )
+            .expect("invalid capability should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn revoke_without_confirm_returns_confirmation_blocker() {
+        let fixture = build_fixture();
+        let mut ctx = DummyCtx;
+        let outcome = fixture
+            .tool
+            .execute_outcome(r#"{"op":"revoke","account_key":"mail-work"}"#, &mut ctx)
+            .expect("missing confirm should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsConfirmation);
     }
 
     #[test]

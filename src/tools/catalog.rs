@@ -373,9 +373,8 @@ pub fn build_default_llm_catalog_authority() -> ToolCatalogAuthority {
 fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) {
     insert_many_protocol(
         authority,
-        ToolProtocolContract::structured_object_json(),
+        ToolProtocolContract::structured_object_json_with_rich_blockers(),
         &[
-            "board_info",
             "diagnose_delivery",
             "diagnose_system",
             "diagnose_network_path",
@@ -400,6 +399,7 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
             "lua_state_machine_checker",
         ],
     );
+    authority.insert("board_info", ToolProtocolContract::structured_object_json());
     insert_many_protocol(
         authority,
         ToolProtocolContract::structured_object_json_with_rich_blockers(),
@@ -421,7 +421,7 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
     insert_many_protocol(
         authority,
-        ToolProtocolContract::operation_envelope_json(),
+        ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
         &[
             "env",
             "files",
@@ -448,15 +448,13 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
     insert_many_protocol(
         authority,
+        ToolProtocolContract::structured_object_json_with_rich_blockers(),
+        &["file_edit", "pdf_read"],
+    );
+    insert_many_protocol(
+        authority,
         ToolProtocolContract::structured_object_json(),
-        &[
-            "file_edit",
-            "file_write",
-            "pdf_read",
-            "http_request",
-            "remind_list",
-            "i2c_device",
-        ],
+        &["file_write", "http_request", "remind_list", "i2c_device"],
     );
 }
 

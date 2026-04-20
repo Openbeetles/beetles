@@ -28,11 +28,12 @@ use crate::tools::office_failure::{
 };
 use crate::tools::{
     http_bridge::ToolContextHttpClient, parse_tool_args, serialize_tool_output, Tool,
-    ToolApprovalMode, ToolCapabilityContract, ToolContext, ToolEffectClass, ToolExecutionOutcome,
-    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
+    ToolApprovalMode, ToolCapabilityContract, ToolClarificationField, ToolClarificationOption,
+    ToolContext, ToolEffectClass, ToolExecutionBlocker, ToolExecutionOutcome, ToolExecutionShape,
+    ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct ContactsDirectoryTool {
@@ -182,10 +183,14 @@ impl ContactsDirectoryTool {
             "preferred_identity_class",
             "tool_contacts_directory",
         )?;
-        let op = obj
+        let Some(op) = obj
             .get("op")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_contacts_directory", "missing op"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return contacts_op_choice_outcome(None);
+        };
         match op {
             "status" => Ok(ToolExecutionOutcome::text(serialize_tool_output(
                 "tool_contacts_directory",
@@ -241,7 +246,12 @@ impl ContactsDirectoryTool {
                 )?))
             }
             "lookup" => {
-                let query = required_str(&obj, "query")?;
+                let Some(query) = required_str(&obj, "query") else {
+                    return contacts_missing_field_outcome(
+                        "query",
+                        "A contact lookup query is still required.",
+                    );
+                };
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
                 #[cfg(all(
@@ -296,11 +306,16 @@ impl ContactsDirectoryTool {
                 )?))
             }
             "upsert" => {
+                let emails = parse_string_array(&obj, "emails")?;
+                let display_name = optional_str(&obj, "display_name").unwrap_or_default();
+                if display_name.trim().is_empty() && emails.is_empty() {
+                    return contacts_upsert_identity_outcome();
+                }
                 let ContactsDirectoryUpsertResult { created, contact } =
                     self.service.upsert(ContactEntry {
                         id: optional_str(&obj, "id").unwrap_or_default(),
-                        display_name: optional_str(&obj, "display_name").unwrap_or_default(),
-                        emails: parse_string_array(&obj, "emails")?,
+                        display_name,
+                        emails,
                         aliases: parse_string_array(&obj, "aliases")?,
                         organization: optional_str(&obj, "organization").unwrap_or_default(),
                         notes: optional_str(&obj, "notes").unwrap_or_default(),
@@ -316,7 +331,12 @@ impl ContactsDirectoryTool {
                 )?))
             }
             "delete" => {
-                let id = required_str(&obj, "id")?;
+                let Some(id) = required_str(&obj, "id") else {
+                    return contacts_missing_field_outcome(
+                        "id",
+                        "A contact id is still required before deletion can continue.",
+                    );
+                };
                 let deleted = self.service.delete(id)?;
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_contacts_directory",
@@ -327,10 +347,7 @@ impl ContactsDirectoryTool {
                     },
                 )?))
             }
-            _ => Err(Error::config(
-                "tool_contacts_directory",
-                format!("unknown op '{op}'"),
-            )),
+            _ => contacts_op_choice_outcome(Some(op)),
         }
     }
 }
@@ -458,12 +475,11 @@ fn parse_account_key(obj: &serde_json::Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn required_str<'a>(obj: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
+fn required_str<'a>(obj: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
     obj.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::config("tool_contacts_directory", format!("missing {key}")))
 }
 
 fn optional_str(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
@@ -497,6 +513,112 @@ fn parse_string_array(obj: &serde_json::Map<String, Value>, key: &str) -> Result
     Ok(out)
 }
 
+fn contacts_op_choice_outcome(op: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "op": op,
+            "ok": false,
+            "warning": "contacts_directory: choose a supported operation",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "An operation is still required before contacts_directory can continue.",
+        vec!["op".to_string()],
+        vec![ToolClarificationField {
+            key: "op".to_string(),
+            label: "Operation".to_string(),
+            description: "Choose the contacts directory operation to perform.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "status".to_string(),
+                    label: "status".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "provider_status".to_string(),
+                    label: "provider_status".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "list".to_string(),
+                    label: "list".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "lookup".to_string(),
+                    label: "lookup".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "upsert".to_string(),
+                    label: "upsert".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "delete".to_string(),
+                    label: "delete".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn contacts_missing_field_outcome(field: &str, summary: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": format!("contacts_directory: missing {}", field),
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        summary,
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: field.to_string(),
+            description: format!("Provide {} for contacts_directory.", field),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn contacts_upsert_identity_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "warning": "contacts_directory: display_name or email is required",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "Creating a contact still requires at least a display_name or one email address.",
+        vec!["display_name_or_email".to_string()],
+        vec![
+            ToolClarificationField {
+                key: "display_name".to_string(),
+                label: "Display name".to_string(),
+                description: "Primary display name for the contact.".to_string(),
+                required: false,
+                secret: false,
+                multiple: false,
+                options: Vec::new(),
+            },
+            ToolClarificationField {
+                key: "emails".to_string(),
+                label: "Emails".to_string(),
+                description: "Known email addresses for the contact.".to_string(),
+                required: false,
+                secret: false,
+                multiple: true,
+                options: Vec::new(),
+            },
+        ],
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::ContactsDirectoryTool;
@@ -514,7 +636,7 @@ mod tests {
         OfficeService,
     };
     use crate::platform::{ResponseBody, StateFs};
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::collections::HashMap;
@@ -1058,5 +1180,81 @@ mod tests {
         let payload: Value = serde_json::from_str(&payload).expect("lookup json");
         assert_eq!(payload["items"][0]["account_key"], "contacts-feishu-work");
         assert_eq!(payload["items"][0]["contact"]["id"], "contacts-feishu-work");
+    }
+
+    #[test]
+    fn contacts_directory_tool_missing_op_returns_choice_blocker() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let tool =
+            ContactsDirectoryTool::new(Arc::new(StateFsContactsDirectoryStore::new(state_fs)));
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(r#"{}"#, &mut ctx)
+            .expect("missing op should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn contacts_directory_tool_unknown_op_returns_choice_blocker() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let tool =
+            ContactsDirectoryTool::new(Arc::new(StateFsContactsDirectoryStore::new(state_fs)));
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"merge"}"#, &mut ctx)
+            .expect("unknown op should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn contacts_directory_tool_lookup_missing_query_returns_facts_blocker() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let tool =
+            ContactsDirectoryTool::new(Arc::new(StateFsContactsDirectoryStore::new(state_fs)));
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"lookup"}"#, &mut ctx)
+            .expect("missing query should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "query"));
+    }
+
+    #[test]
+    fn contacts_directory_tool_delete_missing_id_returns_facts_blocker() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let tool =
+            ContactsDirectoryTool::new(Arc::new(StateFsContactsDirectoryStore::new(state_fs)));
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"delete"}"#, &mut ctx)
+            .expect("missing id should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "id"));
+    }
+
+    #[test]
+    fn contacts_directory_tool_upsert_without_identity_returns_facts_blocker() {
+        let state_fs = Arc::new(MockStateFs::default());
+        let tool =
+            ContactsDirectoryTool::new(Arc::new(StateFsContactsDirectoryStore::new(state_fs)));
+        let mut ctx = StubToolContext;
+
+        let outcome = tool
+            .execute_outcome(r#"{"op":"upsert"}"#, &mut ctx)
+            .expect("missing identity should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "display_name_or_email"));
     }
 }

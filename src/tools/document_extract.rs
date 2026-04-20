@@ -4,7 +4,10 @@
 use crate::error::{Error, Result};
 use crate::tools::document_read::{read_document_source, DEFAULT_DOCUMENT_MAX_CHARS};
 use crate::tools::web_fetch::parse_max_chars;
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{
+    parse_tool_args, Tool, ToolClarificationField, ToolClarificationOption, ToolContext,
+    ToolExecutionBlocker, ToolExecutionOutcome,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -41,15 +44,35 @@ impl Tool for DocumentExtractTool {
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_document_extract")?;
-        let source = obj
+        let Some(source) = obj
             .get("source")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_document_extract", "missing source"))?;
-        let mode = obj
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return document_extract_missing_field_outcome(
+                "source",
+                "A document source is still required before extraction can continue.",
+            );
+        };
+        let Some(mode) = obj
             .get("mode")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::config("tool_document_extract", "missing mode"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return document_extract_mode_choice_outcome(None);
+        };
         let limit = parse_limit(obj.get("limit"));
         let case_sensitive = obj
             .get("case_sensitive")
@@ -67,45 +90,57 @@ impl Tool for DocumentExtractTool {
 
         let response = match mode {
             "lines" => {
-                let query = parse_query(&obj, "tool_document_extract")?;
+                let Some(query) = parse_query(&obj) else {
+                    return document_extract_missing_field_outcome(
+                        "query",
+                        "A query phrase is still required for line extraction.",
+                    );
+                };
                 let before = parse_context(obj.get("context_before"));
                 let after = parse_context(obj.get("context_after"));
                 build_lines_response(&document, query, before, after, limit, case_sensitive)
             }
             "section" => {
-                let query = parse_query(&obj, "tool_document_extract")?;
+                let Some(query) = parse_query(&obj) else {
+                    return document_extract_missing_field_outcome(
+                        "query",
+                        "A query phrase is still required for section extraction.",
+                    );
+                };
                 build_section_response(&document, query, limit, case_sensitive)
             }
             "json_field" => {
-                let json_path = obj
+                let Some(json_path) = obj
                     .get("json_path")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    .ok_or_else(|| Error::config("tool_document_extract", "missing json_path"))?;
+                else {
+                    return document_extract_missing_field_outcome(
+                        "json_path",
+                        "A JSON field path is still required for json_field extraction.",
+                    );
+                };
+                if document.kind != "json" {
+                    return document_extract_unsupported_outcome(
+                        source,
+                        "json_field mode requires a JSON document",
+                    );
+                }
                 build_json_field_response(&document, json_path)
             }
-            _ => {
-                return Err(Error::config(
-                    "tool_document_extract",
-                    "mode must be one of: lines, section, json_field",
-                ));
-            }
+            _ => return document_extract_mode_choice_outcome(Some(mode)),
         }?;
 
-        Ok(response.to_string())
+        Ok(ToolExecutionOutcome::text(response.to_string()))
     }
 }
 
-fn parse_query<'a>(
-    obj: &'a serde_json::Map<String, Value>,
-    stage: &'static str,
-) -> Result<&'a str> {
+fn parse_query(obj: &serde_json::Map<String, Value>) -> Option<&str> {
     obj.get("query")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| Error::config(stage, "missing query"))
 }
 
 fn parse_limit(value: Option<&Value>) -> usize {
@@ -113,6 +148,85 @@ fn parse_limit(value: Option<&Value>) -> usize {
         .and_then(Value::as_u64)
         .map(|raw| raw.clamp(1, MAX_ITEM_LIMIT as u64) as usize)
         .unwrap_or(DEFAULT_ITEM_LIMIT)
+}
+
+fn document_extract_missing_field_outcome(
+    field: &str,
+    summary: &str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "mode": Value::Null,
+            "warning": format!("document_extract: missing {}", field),
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        summary,
+        vec![field.to_string()],
+        vec![ToolClarificationField {
+            key: field.to_string(),
+            label: field.to_string(),
+            description: format!("Provide {} for document_extract.", field),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn document_extract_mode_choice_outcome(mode: Option<&str>) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "mode": mode,
+            "warning": "document_extract: choose lines, section, or json_field",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "An extraction mode is still required before document_extract can continue.",
+        vec!["mode".to_string()],
+        vec![ToolClarificationField {
+            key: "mode".to_string(),
+            label: "Mode".to_string(),
+            description: "Choose how to extract from the document.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "lines".to_string(),
+                    label: "lines".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "section".to_string(),
+                    label: "section".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "json_field".to_string(),
+                    label: "json_field".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn document_extract_unsupported_outcome(
+    source: &str,
+    warning: &str,
+) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "ok": false,
+            "source": source,
+            "warning": warning,
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::unsupported(warning)))
 }
 
 fn parse_context(value: Option<&Value>) -> usize {
@@ -385,7 +499,7 @@ mod tests {
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -530,5 +644,95 @@ mod tests {
 
         assert!(value.contains("[REDACTED]"));
         assert!(!value.contains("sk-live-secret"));
+    }
+
+    #[test]
+    fn document_extract_missing_mode_returns_choice_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("docs/guide.md", b"# Intro\nhello").unwrap();
+        let tool = DocumentExtractTool::new(fs);
+        let outcome = tool
+            .execute_outcome(r#"{"source":"docs/guide.md"}"#, &mut MockToolContext)
+            .expect("missing mode should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn document_extract_unknown_mode_returns_choice_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("docs/guide.md", b"# Intro\nhello").unwrap();
+        let tool = DocumentExtractTool::new(fs);
+        let outcome = tool
+            .execute_outcome(
+                r#"{"source":"docs/guide.md","mode":"table"}"#,
+                &mut MockToolContext,
+            )
+            .expect("unknown mode should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn document_extract_missing_source_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        let tool = DocumentExtractTool::new(fs);
+        let outcome = tool
+            .execute_outcome(r#"{"mode":"lines","query":"error"}"#, &mut MockToolContext)
+            .expect("missing source should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "source"));
+    }
+
+    #[test]
+    fn document_extract_missing_query_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("docs/guide.md", b"# Intro\nhello").unwrap();
+        let tool = DocumentExtractTool::new(fs);
+        let outcome = tool
+            .execute_outcome(
+                r#"{"source":"docs/guide.md","mode":"section"}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing query should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "query"));
+    }
+
+    #[test]
+    fn document_extract_missing_json_path_returns_facts_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("config/app.json", br#"{"llm":{"model":"gpt-5"}}"#)
+            .unwrap();
+        let tool = DocumentExtractTool::new(fs);
+        let outcome = tool
+            .execute_outcome(
+                r#"{"source":"config/app.json","mode":"json_field"}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing json_path should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker
+            .missing_fields
+            .iter()
+            .any(|item| item == "json_path"));
+    }
+
+    #[test]
+    fn document_extract_json_field_on_non_json_returns_unsupported_blocker() {
+        let fs = Arc::new(MockStateFs::default());
+        fs.write("docs/guide.md", b"# Intro\nhello").unwrap();
+        let tool = DocumentExtractTool::new(fs);
+        let outcome = tool
+            .execute_outcome(
+                r#"{"source":"docs/guide.md","mode":"json_field","json_path":"llm.model"}"#,
+                &mut MockToolContext,
+            )
+            .expect("non-json json_field should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::Unsupported);
     }
 }

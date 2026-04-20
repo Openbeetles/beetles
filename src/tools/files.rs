@@ -7,10 +7,12 @@ use crate::tools::state_file_guard::{
 };
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolCapabilityContract,
-    ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
+    ToolClarificationField, ToolClarificationOption, ToolContext, ToolEffectClass,
+    ToolExecutionBlocker, ToolExecutionOutcome, ToolExecutionShape, ToolMetadata, ToolRiskLevel,
     ToolRollbackKind, MAX_TOOL_RESULT_LEN,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const MAX_LIST_ENTRIES: usize = 256;
@@ -60,12 +62,25 @@ impl Tool for FilesTool {
     fn schema(&self) -> &str {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"Path under storage root, e.g. skills/foo.md"},"mode":{"type":"string","description":"list, read, or delete (default read)"}},"required":["path"]}"#
     }
-    fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
+    fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
+        self.execute_outcome(args, ctx)
+            .map(|outcome| outcome.content)
+    }
+
+    fn execute_outcome(
+        &self,
+        args: &str,
+        _ctx: &mut dyn ToolContext,
+    ) -> Result<ToolExecutionOutcome> {
         let obj = parse_tool_args(args, "tool_files")?;
-        let path_arg = obj
+        let Some(path_arg) = obj
             .get("path")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| Error::config("tool_files", "missing path"))?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return missing_path_outcome();
+        };
         let mode = obj
             .get("mode")
             .and_then(|x| x.as_str())
@@ -76,12 +91,18 @@ impl Tool for FilesTool {
         let rel = normalize_state_tool_path(path_arg, "tool_files")?;
 
         if mode == "list" {
-            let mut entries = self.state_fs.list_dir(&rel)?;
+            let mut entries = match self.state_fs.list_dir(&rel) {
+                Ok(entries) => entries,
+                Err(error) if is_not_found_error(&error) => {
+                    return missing_target_outcome(path_arg, "list");
+                }
+                Err(error) => return Err(error),
+            };
             let truncated = entries.len() > MAX_LIST_ENTRIES;
             if truncated {
                 entries.truncate(MAX_LIST_ENTRIES);
             }
-            return serialize_tool_output(
+            return Ok(ToolExecutionOutcome::text(serialize_tool_output(
                 "tool_files",
                 &FilesListResponse {
                     mode: "list",
@@ -89,27 +110,27 @@ impl Tool for FilesTool {
                     entries,
                     truncated,
                 },
-            );
+            )?));
         }
 
         if mode == "delete" {
+            if !state_path_exists(self.state_fs.as_ref(), &rel)? {
+                return missing_target_outcome(path_arg, "delete");
+            }
             ensure_state_path_mutable(&rel, "tool_files")?;
             self.state_fs.remove(&rel)?;
-            return serialize_tool_output(
+            return Ok(ToolExecutionOutcome::text(serialize_tool_output(
                 "tool_files",
                 &FilesDeleteResponse {
                     mode: "delete",
                     path: path_arg,
                     success: true,
                 },
-            );
+            )?));
         }
 
         if mode != "read" {
-            return Err(Error::config(
-                "tool_files",
-                "mode must be 'list', 'read', or 'delete'",
-            ));
+            return invalid_mode_outcome();
         }
 
         match self.state_fs.read(&rel)? {
@@ -131,7 +152,7 @@ impl Tool for FilesTool {
                 } else {
                     (content, false)
                 };
-                serialize_tool_output(
+                Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_files",
                     &FilesReadResponse {
                         mode: "read",
@@ -139,7 +160,7 @@ impl Tool for FilesTool {
                         content,
                         truncated,
                     },
-                )
+                )?))
             }
             None => match self.state_fs.list_dir(&rel) {
                 Ok(mut entries) => {
@@ -147,7 +168,7 @@ impl Tool for FilesTool {
                     if truncated {
                         entries.truncate(MAX_LIST_ENTRIES);
                     }
-                    serialize_tool_output(
+                    Ok(ToolExecutionOutcome::text(serialize_tool_output(
                         "tool_files",
                         &FilesListResponse {
                             mode: "list",
@@ -155,9 +176,12 @@ impl Tool for FilesTool {
                             entries,
                             truncated,
                         },
-                    )
+                    )?))
                 }
-                Err(e) => Err(e),
+                Err(error) if is_not_found_error(&error) => {
+                    missing_target_outcome(path_arg, "read")
+                }
+                Err(error) => Err(error),
             },
         }
     }
@@ -212,13 +236,120 @@ impl Tool for FilesTool {
     }
 }
 
+fn state_path_exists(state_fs: &(dyn crate::StateFs + Send + Sync), rel: &str) -> Result<bool> {
+    if state_fs.read(rel)?.is_some() {
+        return Ok(true);
+    }
+    match state_fs.list_dir(rel) {
+        Ok(_) => Ok(true),
+        Err(error) if is_not_found_error(&error) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_not_found_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Io {
+            source,
+            ..
+        } if source.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+fn missing_path_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "mode": Value::Null,
+            "path": Value::Null,
+            "warning": "files: missing path",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "A storage path is still required before files can continue.",
+        vec!["path".to_string()],
+        vec![ToolClarificationField {
+            key: "path".to_string(),
+            label: "Path".to_string(),
+            description: "Provide a path under the storage root, such as notes/todo.txt."
+                .to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
+fn invalid_mode_outcome() -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "mode": Value::Null,
+            "path": Value::Null,
+            "warning": "files: mode must be list, read, or delete",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_choice(
+        "A valid files mode is still required before this tool can continue.",
+        vec!["mode".to_string()],
+        vec![ToolClarificationField {
+            key: "mode".to_string(),
+            label: "Mode".to_string(),
+            description: "Choose how to interact with the path.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: vec![
+                ToolClarificationOption {
+                    value: "list".to_string(),
+                    label: "list".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "read".to_string(),
+                    label: "read".to_string(),
+                },
+                ToolClarificationOption {
+                    value: "delete".to_string(),
+                    label: "delete".to_string(),
+                },
+            ],
+        }],
+    )))
+}
+
+fn missing_target_outcome(path: &str, mode: &str) -> Result<ToolExecutionOutcome> {
+    Ok(ToolExecutionOutcome::text(
+        json!({
+            "mode": mode,
+            "path": path,
+            "warning": "files: path not found",
+        })
+        .to_string(),
+    )
+    .with_blocker(ToolExecutionBlocker::needs_user_facts(
+        "The requested path does not exist; a valid file or directory path is still required.",
+        vec!["path".to_string()],
+        vec![ToolClarificationField {
+            key: "path".to_string(),
+            label: "Path".to_string(),
+            description: "Provide a valid existing path under the storage root.".to_string(),
+            required: true,
+            secret: false,
+            multiple: false,
+            options: Vec::new(),
+        }],
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::FilesTool;
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::{Tool, ToolContext, ToolExecutionBlockerKind};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -340,5 +471,52 @@ mod tests {
         assert!(content.contains("\"enabled_channel\":\"telegram\""));
         assert!(!content.contains("123456:live-secret"));
         assert!(!content.contains("fs-secret-value"));
+    }
+
+    #[test]
+    fn files_missing_path_returns_facts_blocker() {
+        let tool = FilesTool::new(Arc::new(MockStateFs {
+            files: HashMap::new(),
+            dirs: HashMap::new(),
+        }));
+
+        let outcome = tool
+            .execute_outcome(r#"{}"#, &mut MockToolContext)
+            .expect("missing path should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "path"));
+    }
+
+    #[test]
+    fn files_invalid_mode_returns_choice_blocker() {
+        let tool = FilesTool::new(Arc::new(MockStateFs {
+            files: HashMap::new(),
+            dirs: HashMap::new(),
+        }));
+
+        let outcome = tool
+            .execute_outcome(r#"{"path":"notes","mode":"move"}"#, &mut MockToolContext)
+            .expect("invalid mode should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserChoice);
+    }
+
+    #[test]
+    fn files_missing_target_returns_facts_blocker() {
+        let tool = FilesTool::new(Arc::new(MockStateFs {
+            files: HashMap::new(),
+            dirs: HashMap::new(),
+        }));
+
+        let outcome = tool
+            .execute_outcome(
+                r#"{"path":"notes/missing.txt","mode":"read"}"#,
+                &mut MockToolContext,
+            )
+            .expect("missing target should return blocker");
+        let blocker = outcome.blocker.as_ref().expect("blocker");
+        assert_eq!(blocker.kind, ToolExecutionBlockerKind::NeedsUserFacts);
+        assert!(blocker.missing_fields.iter().any(|item| item == "path"));
     }
 }
