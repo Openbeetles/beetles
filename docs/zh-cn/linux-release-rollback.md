@@ -24,15 +24,13 @@
 
 Linux 服务入口现在是：
 
-- `beetle supervise`
+- `beetle run`
 
-执行面入口是：
-
-- `beetle agent`
+控制面（HTTP API）与 agent 运行在同一个进程内，无需再派生子进程。
 
 如果你用 `systemd`，`ExecStart` 应该指向：
 
-- `/opt/beetle/current/beetle supervise`
+- `/opt/beetle/current/beetle run`
 
 ## 三种部署模式
 
@@ -71,6 +69,6 @@ Linux 服务入口现在是：
 ## 几个直接结论
 
 - Linux 版现在是常驻服务形态
-- 真正的启动入口是 `beetle supervise`
+- 真正的启动入口是 `beetle run`（单进程）
 - 回滚不只是换一个文件，而是切回上一版发布目录
 - 如果你要配硬件，不要参考旧式的 Linux 硬件示例口径，直接看 [hardware-device-config.md](hardware-device-config.md)

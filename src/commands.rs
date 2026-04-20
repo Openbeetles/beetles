@@ -12,15 +12,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start the Linux supervisor in the foreground
-    Supervise {
-        /// Optional config file path
-        #[arg(short, long)]
-        config: Option<String>,
-    },
-
-    /// Run the agent execution plane directly
-    Agent {
+    /// Start the unified Beetle runtime (control plane + agent) in the foreground
+    Run {
         /// Optional config file path
         #[arg(short, long)]
         config: Option<String>,
@@ -100,15 +93,24 @@ pub enum ConfigAction {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{Cli, Commands};
     use clap::Parser;
 
     #[test]
-    fn cli_rejects_deprecated_run_subcommand() {
-        let parsed = Cli::try_parse_from(["beetle", "run"]);
+    fn cli_accepts_run_subcommand() {
+        let parsed = Cli::try_parse_from(["beetle", "run"]).expect("run should parse");
+        assert!(matches!(parsed.command, Commands::Run { .. }));
+    }
+
+    #[test]
+    fn cli_rejects_removed_supervise_and_agent_subcommands() {
         assert!(
-            parsed.is_err(),
-            "deprecated `run` alias should no longer be accepted"
+            Cli::try_parse_from(["beetle", "supervise"]).is_err(),
+            "`supervise` has been merged into `run` and should no longer parse"
+        );
+        assert!(
+            Cli::try_parse_from(["beetle", "agent"]).is_err(),
+            "`agent` has been merged into `run` and should no longer parse"
         );
     }
 }

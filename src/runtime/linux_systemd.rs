@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, ExitStatus};
 
 const BEETLE_SYSTEMD_UNIT: &str = "beetle.service";
-const EXPECTED_EXEC_START: &str = "ExecStart=/opt/beetle/current/beetle supervise";
+const EXPECTED_EXEC_START: &str = "ExecStart=/opt/beetle/current/beetle run";
 
 /// Run `systemctl <action> beetle` when beetle is managed by systemd.
 /// Returns `Ok(None)` when systemd does not know the beetle unit in the current environment.
@@ -94,10 +94,16 @@ mod tests {
     #[test]
     fn unit_consistency_requires_expected_exec_start() {
         assert!(unit_content_has_expected_exec_start(
-            "[Service]\nExecStart=/opt/beetle/current/beetle supervise\n"
+            "[Service]\nExecStart=/opt/beetle/current/beetle run\n"
         ));
         assert!(!unit_content_has_expected_exec_start(
-            "[Service]\nExecStart=/opt/beetle/releases/r2/beetle supervise\n"
+            "[Service]\nExecStart=/opt/beetle/releases/r2/beetle run\n"
         ));
+        assert!(
+            !unit_content_has_expected_exec_start(
+                "[Service]\nExecStart=/opt/beetle/current/beetle supervise\n"
+            ),
+            "legacy `supervise` ExecStart must no longer validate"
+        );
     }
 }

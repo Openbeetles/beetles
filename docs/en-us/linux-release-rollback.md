@@ -24,15 +24,13 @@ In practice:
 
 The Linux service entrypoint is:
 
-- `beetle supervise`
+- `beetle run`
 
-The execution-plane entrypoint is:
-
-- `beetle agent`
+The control plane (HTTP API) and the agent run inside the same process — no child process is spawned.
 
 If you use `systemd`, `ExecStart` should point to:
 
-- `/opt/beetle/current/beetle supervise`
+- `/opt/beetle/current/beetle run`
 
 ## The three deploy modes
 
@@ -71,6 +69,6 @@ If it fails quickly and repeatedly during the validation window, Beetle prefers 
 ## Direct takeaways
 
 - The Linux path now runs as a long-running service
-- The real startup entrypoint is `beetle supervise`
+- The real startup entrypoint is `beetle run` (single process)
 - Rollback is not just swapping one file; it switches back to the previous release layout
 - For hardware setup, do not follow old Linux-only hardware examples; go straight to [hardware-device-config.md](hardware-device-config.md)

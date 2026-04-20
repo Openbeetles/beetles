@@ -46,10 +46,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-#[cfg(all(
-    feature = "config_api",
-    any(target_arch = "xtensa", target_arch = "riscv32")
-))]
+#[cfg(feature = "config_api")]
 use std::sync::RwLock;
 #[cfg(any(
     test,
@@ -139,10 +136,7 @@ impl beetle::TypingNotifier for TelegramTypingNotifier {
     }
 }
 
-#[cfg(all(
-    feature = "config_api",
-    any(target_arch = "xtensa", target_arch = "riscv32")
-))]
+#[cfg(feature = "config_api")]
 struct HttpServerSpawnContext {
     platform: Arc<dyn Platform>,
     tool_registry: Arc<beetle::tools::ToolRegistry>,
@@ -280,10 +274,7 @@ fn compute_refresh_secs(
     }
 }
 
-#[cfg(all(
-    feature = "config_api",
-    any(target_arch = "xtensa", target_arch = "riscv32")
-))]
+#[cfg(feature = "config_api")]
 fn spawn_http_config_server(
     ctx: HttpServerSpawnContext,
 ) -> std::io::Result<beetle::util::TaskHandle> {
@@ -2115,23 +2106,10 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Supervise {
+        Commands::Run {
             config: config_path,
         } => {
-            log_start_banner("supervisor", config_path.as_deref());
-            log_launch_role("supervisor");
-            if let Err(error) = beetle::runtime::linux_supervisor::run_supervisor(
-                Arc::clone(&platform),
-                config_path,
-            ) {
-                eprintln!("[{}] supervisor failed: {}", TAG, error);
-                std::process::exit(1);
-            }
-        }
-        Commands::Agent {
-            config: config_path,
-        } => {
-            log_start_banner("agent", config_path.as_deref());
+            log_start_banner("run", config_path.as_deref());
             run_linux_agent_entry(platform);
         }
         Commands::Config { action } => {
@@ -2429,7 +2407,6 @@ fn start_support_planes(
     wifi_init_ok: bool,
 ) -> beetle::Result<()> {
     #[cfg(feature = "config_api")]
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
         let shared_runtime_config = Arc::new(RwLock::new((*assembly.config).clone()));
         spawn_http_config_server(HttpServerSpawnContext {
