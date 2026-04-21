@@ -3,7 +3,7 @@
 
 use crate::channels::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
-    run_buffered_sender_loop,
+    run_buffered_sender_loop, QueuedOutboundMessage,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -79,15 +79,15 @@ fn send_one_dingtalk<H: ChannelHttpClient>(
 
 /// 从 rx 取出待发送（一次性 drain）。
 pub fn flush_dingtalk_sends<H: ChannelHttpClient>(
-    rx: &std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: &std::sync::mpsc::Receiver<QueuedOutboundMessage>,
     webhook_url: &str,
     http: &mut H,
 ) {
     if webhook_url.is_empty() {
         return;
     }
-    while let Ok((_chat_id, content, _req_id)) = rx.try_recv() {
-        if let Err(error) = send_one_dingtalk(http, webhook_url, &content) {
+    while let Ok(message) = rx.try_recv() {
+        if let Err(error) = send_one_dingtalk(http, webhook_url, &message.content) {
             record_outbound_http_failure(&error);
             log::warn!("[dingtalk_flush] send failed: {}", error);
         } else {
@@ -98,7 +98,7 @@ pub fn flush_dingtalk_sends<H: ChannelHttpClient>(
 
 /// 持续运行的钉钉发送循环：sender 线程内**复用**同一 HTTP 客户端，减轻 lwIP socket / TLS 压力。
 pub fn run_dingtalk_sender_loop<H, F>(
-    rx: std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
     webhook_url: &str,
     mut create_http: F,
 ) where
@@ -120,7 +120,7 @@ pub fn run_dingtalk_sender_loop<H, F>(
                 "sender http missing after ensure",
             ));
         };
-        match send_one_dingtalk(h, webhook_url, &message.1) {
+        match send_one_dingtalk(h, webhook_url, &message.content) {
             Ok(()) => {
                 record_outbound_http_success();
                 Ok(())

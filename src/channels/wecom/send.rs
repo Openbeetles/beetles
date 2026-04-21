@@ -283,7 +283,7 @@ fn send_one_wecom<H: ChannelHttpClient>(
 
 /// 从 rx 取出待发送（一次性 drain）。
 pub fn flush_wecom_sends<H: ChannelHttpClient>(
-    rx: &std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: &std::sync::mpsc::Receiver<crate::channels::send::QueuedOutboundMessage>,
     corp_id: &str,
     corp_secret: &str,
     agent_id: &str,
@@ -304,19 +304,19 @@ pub fn flush_wecom_sends<H: ChannelHttpClient>(
         Some(t) => t,
         None => return,
     };
-    while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
+    while let Ok(message) = rx.try_recv() {
         if let Err(error) = send_one_wecom(
             http,
             &token,
             agent_id_u32,
-            &chat_id,
+            &message.chat_id,
             default_touser,
-            &content,
+            &message.content,
         ) {
             record_outbound_http_failure(&error);
             log::warn!(
                 "[wecom_flush] send failed for chat_id={}: {}",
-                chat_id,
+                message.chat_id,
                 error
             );
         } else {
@@ -330,7 +330,7 @@ const WECOM_TOKEN_CACHE_MARGIN_SECS: u64 = 120;
 
 /// 持续运行的企业微信发送循环：sender 线程内**复用** HTTP，并按 `expires_in` **缓存** token。
 pub fn run_wecom_sender_loop<H, F>(
-    rx: std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: std::sync::mpsc::Receiver<crate::channels::send::QueuedOutboundMessage>,
     corp_id: &str,
     corp_secret: &str,
     agent_id: &str,
@@ -410,9 +410,9 @@ pub fn run_wecom_sender_loop<H, F>(
             h,
             &token,
             agent_id_u32,
-            &message.0,
+            &message.chat_id,
             default_touser,
-            &message.1,
+            &message.content,
         ) {
             Ok(()) => {
                 record_outbound_http_success();
@@ -424,7 +424,7 @@ pub fn run_wecom_sender_loop<H, F>(
                     "[{}] send failed (attempt {}), chat_id={}: {}",
                     TAG,
                     attempt,
-                    message.0,
+                    message.chat_id,
                     error
                 );
                 token_cache = None;

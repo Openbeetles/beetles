@@ -1,7 +1,7 @@
 //! 出站分发：从 outbound_rx 取 PcMsg，按 channel 调用对应 MessageSink；按通道熔断，避免单通道拖垮全局。
 //! Outbound dispatch: recv from outbound_rx, send via MessageSink; per-channel circuit breaker.
 
-use crate::bus::{OutboundRx, MAX_CONTENT_LEN};
+use crate::bus::{OutboundKind, OutboundRx, MAX_CONTENT_LEN};
 use crate::config::AppConfig;
 use crate::constants::VOICE_CHANNEL_NAME;
 use crate::error::Result;
@@ -19,7 +19,13 @@ use std::time::Duration;
 pub trait MessageSink: Send + Sync {
     fn send(&self, chat_id: &str, content: &str) -> Result<()>;
 
-    fn send_with_req(&self, chat_id: &str, content: &str, _req_id: Option<&str>) -> Result<()> {
+    fn send_with_req(
+        &self,
+        chat_id: &str,
+        content: &str,
+        _req_id: Option<&str>,
+        _outbound_kind: OutboundKind,
+    ) -> Result<()> {
         self.send(chat_id, content)
     }
 
@@ -37,13 +43,13 @@ pub trait MessageSink: Send + Sync {
 
 /// 队列型 Sink：将 (chat_id, content) 送入 channel，由 main 的 flush_*_sends 消费。各通道仅 stage 不同。
 pub struct QueuedSink {
-    tx: std::sync::mpsc::SyncSender<(String, String, Option<String>)>,
+    tx: std::sync::mpsc::SyncSender<super::send::QueuedOutboundMessage>,
     stage: &'static str,
 }
 
 impl QueuedSink {
     pub fn new(
-        tx: std::sync::mpsc::SyncSender<(String, String, Option<String>)>,
+        tx: std::sync::mpsc::SyncSender<super::send::QueuedOutboundMessage>,
         stage: &'static str,
     ) -> Self {
         Self { tx, stage }
@@ -52,17 +58,24 @@ impl QueuedSink {
 
 impl MessageSink for QueuedSink {
     fn send(&self, chat_id: &str, content: &str) -> Result<()> {
-        self.send_with_req(chat_id, content, None)
+        self.send_with_req(chat_id, content, None, OutboundKind::Primary)
     }
 
-    fn send_with_req(&self, chat_id: &str, content: &str, req_id: Option<&str>) -> Result<()> {
+    fn send_with_req(
+        &self,
+        chat_id: &str,
+        content: &str,
+        req_id: Option<&str>,
+        outbound_kind: OutboundKind,
+    ) -> Result<()> {
         let content = truncate_content_to_max(content, MAX_CONTENT_LEN);
         self.tx
-            .try_send((
-                chat_id.to_string(),
-                content.into_owned(),
-                req_id.map(str::to_string),
-            ))
+            .try_send(super::send::QueuedOutboundMessage {
+                chat_id: chat_id.to_string(),
+                content: content.into_owned(),
+                req_id: req_id.map(str::to_string),
+                outbound_kind,
+            })
             .map_err(|e| crate::error::Error::Other {
                 source: Box::new(e),
                 stage: self.stage,
@@ -194,6 +207,36 @@ fn dispatch_via_sink(
 
     crate::platform::task_wdt::feed_current_task();
 
+    if msg.outbound_kind.is_supplemental() {
+        match sink.send_with_req(
+            &msg.chat_id,
+            content,
+            msg.req_id.as_deref(),
+            msg.outbound_kind,
+        ) {
+            Ok(()) => {
+                metrics::record_dispatch_send(true);
+                log::debug!(
+                    "[latency][dispatch] req_id={} channel={} outbound_kind=supplemental attempt=1 status=ok",
+                    msg.req_id.as_deref().unwrap_or("-"),
+                    msg.channel
+                );
+                return true;
+            }
+            Err(error) => {
+                metrics::record_dispatch_send(false);
+                log::warn!(
+                    "[{}] req_id={} channel={} outbound_kind=supplemental send failed: {}",
+                    tag,
+                    msg.req_id.as_deref().unwrap_or("-"),
+                    msg.channel,
+                    error
+                );
+                return false;
+            }
+        }
+    }
+
     if let AdmissionDecision::Defer { delay_ms } =
         crate::orchestrator::should_accept_outbound_pub(&msg.channel)
     {
@@ -213,7 +256,12 @@ fn dispatch_via_sink(
             std::thread::sleep(Duration::from_millis(SEND_RETRY_DELAY_MS));
             crate::platform::task_wdt::feed_current_task();
         }
-        match sink.send_with_req(&msg.chat_id, content, msg.req_id.as_deref()) {
+        match sink.send_with_req(
+            &msg.chat_id,
+            content,
+            msg.req_id.as_deref(),
+            msg.outbound_kind,
+        ) {
             Ok(()) => {
                 log::debug!(
                     "[latency][dispatch] req_id={} channel={} attempt={} status=ok",
@@ -282,18 +330,36 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
         }
 
         if outbound_blocked(&msg) {
-            log::info!(
-                "[{}] req_id={} channel={} deferred while voice-exclusive is active",
-                TAG,
-                msg.req_id.as_deref().unwrap_or("-"),
-                msg.channel
-            );
-            push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+            if msg.outbound_kind.is_supplemental() {
+                log::warn!(
+                    "[{}] req_id={} channel={} outbound_kind=supplemental dropped while voice-exclusive is active",
+                    TAG,
+                    msg.req_id.as_deref().unwrap_or("-"),
+                    msg.channel
+                );
+            } else {
+                log::info!(
+                    "[{}] req_id={} channel={} deferred while voice-exclusive is active",
+                    TAG,
+                    msg.req_id.as_deref().unwrap_or("-"),
+                    msg.channel
+                );
+                push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+            }
             continue;
         }
 
         if is_channel_in_cooldown(&msg.channel) {
-            push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+            if msg.outbound_kind.is_supplemental() {
+                log::warn!(
+                    "[{}] req_id={} channel={} outbound_kind=supplemental dropped while channel is in cooldown",
+                    TAG,
+                    msg.req_id.as_deref().unwrap_or("-"),
+                    msg.channel
+                );
+            } else {
+                push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+            }
             continue;
         }
         let _ = dispatch_via_sink(TAG, sinks.as_ref(), &msg, &content);
@@ -306,7 +372,7 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
 
 /// 各通道的 rx 及 flush 所需凭证，由 build_channel_sinks 填充；未启用通道为 None。
 pub struct ChannelRxSet {
-    pub telegram: Option<mpsc::Receiver<(String, String, Option<String>)>>,
+    pub telegram: Option<mpsc::Receiver<super::send::QueuedOutboundMessage>>,
     pub feishu: Option<FeishuRxConfig>,
     pub dingtalk: Option<DingtalkRxConfig>,
     pub wecom: Option<WecomRxConfig>,
@@ -314,18 +380,18 @@ pub struct ChannelRxSet {
 }
 
 pub struct FeishuRxConfig {
-    pub rx: mpsc::Receiver<(String, String, Option<String>)>,
+    pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub app_id: String,
     pub app_secret: String,
 }
 
 pub struct DingtalkRxConfig {
-    pub rx: mpsc::Receiver<(String, String, Option<String>)>,
+    pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub webhook_url: String,
 }
 
 pub struct WecomRxConfig {
-    pub rx: mpsc::Receiver<(String, String, Option<String>)>,
+    pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub corp_id: String,
     pub corp_secret: String,
     pub agent_id: String,
@@ -333,7 +399,7 @@ pub struct WecomRxConfig {
 }
 
 pub struct QqChannelRxConfig {
-    pub rx: mpsc::Receiver<(String, String, Option<String>)>,
+    pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub app_id: String,
     pub app_secret: String,
     pub msg_id_cache: super::QqMsgIdCache,
@@ -356,7 +422,7 @@ pub fn build_channel_sinks(
     let enabled = config.enabled_channel.as_str();
 
     let telegram = if enabled == "telegram" && !config.tg_token.trim().is_empty() {
-        let (tx, rx) = mpsc::sync_channel(SENDER_QUEUE_DEPTH);
+        let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register(
             "telegram",
             Box::new(QueuedSink::new(tx, "telegram_send_queue")),
@@ -370,7 +436,7 @@ pub fn build_channel_sinks(
         && !config.feishu_app_id.trim().is_empty()
         && !config.feishu_app_secret.trim().is_empty()
     {
-        let (tx, rx) = mpsc::sync_channel(SENDER_QUEUE_DEPTH);
+        let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register("feishu", Box::new(QueuedSink::new(tx, "feishu_send_queue")));
         Some(FeishuRxConfig {
             rx,
@@ -382,7 +448,7 @@ pub fn build_channel_sinks(
     };
 
     let dingtalk = if enabled == "dingtalk" && !config.dingtalk_webhook_url.trim().is_empty() {
-        let (tx, rx) = mpsc::sync_channel(SENDER_QUEUE_DEPTH);
+        let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register(
             "dingtalk",
             Box::new(QueuedSink::new(tx, "dingtalk_send_queue")),
@@ -400,7 +466,7 @@ pub fn build_channel_sinks(
         && !config.wecom_corp_secret.trim().is_empty()
         && config.wecom_agent_id.trim().parse::<u32>().is_ok()
     {
-        let (tx, rx) = mpsc::sync_channel(SENDER_QUEUE_DEPTH);
+        let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register("wecom", Box::new(QueuedSink::new(tx, "wecom_send_queue")));
         Some(WecomRxConfig {
             rx,
@@ -417,7 +483,7 @@ pub fn build_channel_sinks(
         && !config.qq_channel_app_id.trim().is_empty()
         && !config.qq_channel_secret.trim().is_empty()
     {
-        let (tx, rx) = mpsc::sync_channel(SENDER_QUEUE_DEPTH);
+        let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register(
             "qq_channel",
             Box::new(QueuedSink::new(tx, "qq_channel_send_queue")),
@@ -605,11 +671,25 @@ mod tests {
     use super::replay_cooldown_buffer_with;
     use super::replay_ready_messages_for_tick;
     use super::spawn_sender_thread;
-    use crate::bus::PcMsg;
+    use crate::bus::{OutboundKind, PcMsg};
+    use crate::error::{Error, Result};
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn build_msg(channel: &str, chat_id: &str, content: &str) -> PcMsg {
         PcMsg::new(channel, chat_id, content).expect("pcmsg")
+    }
+
+    struct FailingSink {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl super::MessageSink for FailingSink {
+        fn send(&self, _chat_id: &str, _content: &str) -> Result<()> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            Err(Error::config("failing_sink", "synthetic failure"))
+        }
     }
 
     #[test]
@@ -684,5 +764,27 @@ mod tests {
         .expect_err("spawn should fail");
 
         assert_eq!(error.stage(), "telegram_sender_spawn");
+    }
+
+    #[test]
+    fn supplemental_dispatch_fails_fast_without_retries() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut msg = build_msg("ready", "chat-1", "supplemental");
+        msg.outbound_kind = OutboundKind::Supplemental;
+        let mut sinks = super::ChannelSinks::new();
+        sinks.register(
+            "ready",
+            Box::new(FailingSink {
+                attempts: Arc::clone(&attempts),
+            }),
+        );
+
+        assert!(!super::dispatch_via_sink(
+            "channel_dispatch",
+            &sinks,
+            &msg,
+            "supplemental"
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 }

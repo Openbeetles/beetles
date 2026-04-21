@@ -436,7 +436,11 @@ pub(super) fn execute_tool_use_round(
     latency.tool_calls = latency.tool_calls.saturating_add(tool_calls.len() as u32);
 
     for (i, tc) in tool_calls.iter().enumerate() {
-        delivery.emit_tool_progress(&tc.name, i, tool_calls.len());
+        delivery.emit_fact(crate::agent::TurnVisibilityFact::RunningTool {
+            tool: tc.name.as_str(),
+            index: i,
+            total: tool_calls.len(),
+        });
 
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
         had_mutating_effects |= execution.had_mutating_effects;

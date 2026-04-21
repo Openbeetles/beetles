@@ -255,6 +255,7 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                 chat_id: Arc::from(chat_id.as_str()),
                 content,
                 req_id: None,
+                outbound_kind: crate::bus::OutboundKind::Primary,
                 ingress: crate::bus::IngressKind::User,
                 enqueue_ts_ms: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

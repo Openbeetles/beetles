@@ -5,20 +5,18 @@ pub(super) fn extract_worker_outcome_text(outcome: WorkerOutcome) -> String {
     text
 }
 
-fn terminal_progress_kind_for_status(
+fn terminal_visibility_status_for_task_status(
     status: TaskRunStatus,
-) -> Option<crate::agent::delivery::TaskTerminalProgressKind> {
+) -> Option<crate::agent::TaskTerminalVisibilityStatus> {
     match status {
-        TaskRunStatus::Completed => {
-            Some(crate::agent::delivery::TaskTerminalProgressKind::Completed)
-        }
+        TaskRunStatus::Completed => Some(crate::agent::TaskTerminalVisibilityStatus::Completed),
         TaskRunStatus::PartialComplete => {
-            Some(crate::agent::delivery::TaskTerminalProgressKind::PartialComplete)
+            Some(crate::agent::TaskTerminalVisibilityStatus::PartialComplete)
         }
         TaskRunStatus::Blocked | TaskRunStatus::Failed => {
-            Some(crate::agent::delivery::TaskTerminalProgressKind::Blocked)
+            Some(crate::agent::TaskTerminalVisibilityStatus::Blocked)
         }
-        TaskRunStatus::Aborted => Some(crate::agent::delivery::TaskTerminalProgressKind::Aborted),
+        TaskRunStatus::Aborted => Some(crate::agent::TaskTerminalVisibilityStatus::Aborted),
         TaskRunStatus::Planning | TaskRunStatus::Running => None,
     }
 }
@@ -199,7 +197,7 @@ pub(super) fn try_run_task_execution(
         return Ok(None);
     }
 
-    delivery.emit_task_planner_progress();
+    delivery.emit_fact(crate::agent::TurnVisibilityFact::TaskPlanner);
     let planner_system = super::prepare_system_with_suffix(
         system,
         TASK_EXECUTION_PLANNER_SYSTEM_SUFFIX,
@@ -249,8 +247,9 @@ pub(super) fn try_run_task_execution(
         return Ok(None);
     }
     if let Some(blocker) = workflow_blocker_for_task_planner_decision(&planner_decision) {
-        delivery
-            .emit_task_terminal_progress(crate::agent::delivery::TaskTerminalProgressKind::Blocked);
+        delivery.emit_fact(crate::agent::TurnVisibilityFact::TaskTerminal {
+            status: crate::agent::TaskTerminalVisibilityStatus::Blocked,
+        });
         let reply =
             super::turn_execution::render_programmatic_clarification_question(&blocker, loc);
         return Ok(Some((
@@ -277,16 +276,8 @@ pub(super) fn try_run_task_execution(
         }
         super::task_execution_support::FormalTaskAdmission::None => TaskExecutionRoute::DirectReply,
     };
-    delivery.emit_task_action_progress(match planner_decision.route {
-        TaskExecutionRoute::ResumeRun => crate::agent::delivery::TaskActionProgressKind::Resumed,
-        TaskExecutionRoute::StartRun | TaskExecutionRoute::DirectReply => {
-            crate::agent::delivery::TaskActionProgressKind::Started
-        }
-        TaskExecutionRoute::NeedsUserFacts
-        | TaskExecutionRoute::NeedsUserChoice
-        | TaskExecutionRoute::NeedsConfirmation => {
-            unreachable!("planner blocker routes should have returned before task action progress")
-        }
+    delivery.emit_fact(crate::agent::TurnVisibilityFact::TaskStarted {
+        resumed: matches!(planner_decision.route, TaskExecutionRoute::ResumeRun),
     });
 
     let now_secs = crate::util::current_unix_secs();
@@ -465,6 +456,7 @@ pub(super) fn try_run_task_execution(
             chat_id: msg.chat_id.clone(),
             content: step_request,
             req_id: Some(step_req_id.clone()),
+            outbound_kind: crate::bus::OutboundKind::Primary,
             ingress: IngressKind::System,
             enqueue_ts_ms: super::now_unix_ms(),
             source_transport: crate::bus::MessageTransport::Internal,
@@ -788,8 +780,8 @@ pub(super) fn try_run_task_execution(
     if record.run.status.is_terminal() && record.run.finished_at == 0 {
         record.run.finished_at = record.run.updated_at;
     }
-    if let Some(kind) = terminal_progress_kind_for_status(record.run.status) {
-        delivery.emit_task_terminal_progress(kind);
+    if let Some(status) = terminal_visibility_status_for_task_status(record.run.status) {
+        delivery.emit_fact(crate::agent::TurnVisibilityFact::TaskTerminal { status });
     }
     let final_artifact_count = config
         .runtime

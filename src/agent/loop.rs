@@ -5736,10 +5736,26 @@ mod tests {
             observed.iter().any(|request| request.tool_count == 1),
             "{observed:#?}"
         );
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
+        assert_eq!(
+            executed.telemetry.delivery.edit_phase_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_planner_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_action_header_updates_sent,
+            0
+        );
+        assert_eq!(executed.telemetry.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(
+            executed
+                .telemetry
+                .delivery
+                .edit_terminal_header_updates_sent,
+            0
+        );
     }
 
     #[test]
@@ -5824,10 +5840,26 @@ mod tests {
                 .all(|request| !request.system.contains("## Task Execution Planner")),
             "{observed:#?}"
         );
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
+        assert_eq!(
+            executed.telemetry.delivery.edit_phase_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_planner_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_action_header_updates_sent,
+            0
+        );
+        assert_eq!(executed.telemetry.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(
+            executed
+                .telemetry
+                .delivery
+                .edit_terminal_header_updates_sent,
+            0
+        );
     }
 
     #[test]
@@ -6093,7 +6125,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_turn_group_active_action_tool_round_suppresses_append_only_progress_copy() {
+    fn execute_turn_group_active_action_tool_round_suppresses_edit_header_visible_text_copy() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![
@@ -6177,14 +6209,31 @@ mod tests {
             "{observed:#?}"
         );
         assert_eq!(observed[0].tool_count, 1, "{observed:#?}");
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
+        assert_eq!(
+            executed.telemetry.delivery.edit_phase_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_planner_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_action_header_updates_sent,
+            0
+        );
+        assert_eq!(executed.telemetry.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(
+            executed
+                .telemetry
+                .delivery
+                .edit_terminal_header_updates_sent,
+            0
+        );
     }
 
     #[test]
-    fn execute_turn_action_request_without_tool_use_avoids_fake_started_and_blocked_progress() {
+    fn execute_turn_action_request_without_tool_use_avoids_fake_started_and_blocked_edit_header_visibility(
+    ) {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![LlmResponse {
@@ -6224,12 +6273,24 @@ mod tests {
 
         let WorkerOutcome::Content(delivered) = executed.outcome;
         assert_eq!(delivered, "请先提供 QQ 邮箱的授权码，我才能继续配置。");
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
         assert_eq!(
-            executed.telemetry.delivery.terminal_progress_updates_sent,
+            executed.telemetry.delivery.edit_phase_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_planner_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_action_header_updates_sent,
+            0
+        );
+        assert_eq!(executed.telemetry.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(
+            executed
+                .telemetry
+                .delivery
+                .edit_terminal_header_updates_sent,
             0
         );
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
@@ -6294,16 +6355,18 @@ mod tests {
             delivered,
             "这轮还没有实际执行新的工具或任务步骤，也还没有产生新结果。"
         );
-        assert_eq!(finalized.delivery.progress_updates_sent, 0);
-        assert_eq!(finalized.delivery.action_progress_updates_sent, 0);
-        assert_eq!(finalized.delivery.tool_progress_updates_sent, 0);
-        assert_eq!(finalized.delivery.terminal_progress_updates_sent, 0);
+        assert_eq!(finalized.delivery.edit_phase_header_updates_sent, 0);
+        assert_eq!(finalized.delivery.edit_planner_header_updates_sent, 0);
+        assert_eq!(finalized.delivery.edit_action_header_updates_sent, 0);
+        assert_eq!(finalized.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(finalized.delivery.edit_terminal_header_updates_sent, 0);
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(observed.len(), 1, "{observed:#?}");
     }
 
     #[test]
-    fn execute_turn_active_action_without_tool_use_keeps_blocker_truth_without_fake_progress() {
+    fn execute_turn_active_action_without_tool_use_keeps_blocker_truth_without_fake_edit_header_visibility(
+    ) {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let llm = ObservedSequenceStubLlm {
             responses: Mutex::new(vec![LlmResponse {
@@ -6363,12 +6426,24 @@ mod tests {
 
         let WorkerOutcome::Content(delivered) = executed.outcome;
         assert_eq!(delivered, "请把 SMTP 授权码也发我，我才能继续配置。");
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
         assert_eq!(
-            executed.telemetry.delivery.terminal_progress_updates_sent,
+            executed.telemetry.delivery.edit_phase_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_planner_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_action_header_updates_sent,
+            0
+        );
+        assert_eq!(executed.telemetry.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(
+            executed
+                .telemetry
+                .delivery
+                .edit_terminal_header_updates_sent,
             0
         );
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
@@ -6440,12 +6515,24 @@ mod tests {
         .expect("execute turn");
 
         let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(executed.telemetry.delivery.progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.planner_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.action_progress_updates_sent, 0);
-        assert_eq!(executed.telemetry.delivery.tool_progress_updates_sent, 0);
         assert_eq!(
-            executed.telemetry.delivery.terminal_progress_updates_sent,
+            executed.telemetry.delivery.edit_phase_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_planner_header_updates_sent,
+            0
+        );
+        assert_eq!(
+            executed.telemetry.delivery.edit_action_header_updates_sent,
+            0
+        );
+        assert_eq!(executed.telemetry.delivery.edit_tool_header_updates_sent, 0);
+        assert_eq!(
+            executed
+                .telemetry
+                .delivery
+                .edit_terminal_header_updates_sent,
             0
         );
         assert_eq!(observed.len(), 2, "{observed:#?}");

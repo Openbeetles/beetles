@@ -2,12 +2,19 @@
 //! Shared POST + log-on-failure for channel outbound; reduces duplicate match/log code.
 
 use super::ChannelHttpClient;
+use crate::bus::OutboundKind;
 use crate::error::Result;
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
-pub(crate) type QueuedOutboundMessage = (String, String, Option<String>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedOutboundMessage {
+    pub chat_id: String,
+    pub content: String,
+    pub req_id: Option<String>,
+    pub outbound_kind: OutboundKind,
+}
 
 pub(crate) const CHANNEL_SENDER_MAX_RETRIES: u8 = 3;
 const CHANNEL_SENDER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
@@ -134,8 +141,13 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
         };
         feed_sender_loop_wdt();
 
+        let max_retries = if message.outbound_kind.is_supplemental() {
+            1
+        } else {
+            CHANNEL_SENDER_MAX_RETRIES
+        };
         let mut sent = false;
-        for retry in 0..CHANNEL_SENDER_MAX_RETRIES {
+        for retry in 0..max_retries {
             let attempt = retry + 1;
             if retry > 0 {
                 sleep_sender_retry_delay();
@@ -146,12 +158,21 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
             }
         }
         if !sent {
-            log_sender_drop(
-                tag,
-                message.2.as_deref(),
-                Some(message.0.as_str()),
-                CHANNEL_SENDER_MAX_RETRIES,
-            );
+            if message.outbound_kind.is_supplemental() {
+                log::warn!(
+                    "[{}] supplemental dropped after send failure req_id={} chat_id={}",
+                    tag,
+                    message.req_id.as_deref().unwrap_or("-"),
+                    message.chat_id
+                );
+            } else {
+                log_sender_drop(
+                    tag,
+                    message.req_id.as_deref(),
+                    Some(message.chat_id.as_str()),
+                    max_retries,
+                );
+            }
         }
     }
 }
@@ -293,12 +314,27 @@ mod tests {
     fn buffered_sender_loop_retries_failed_drained_message_instead_of_losing_it() {
         let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
-        tx.send(("chat-a".to_string(), "first".to_string(), None))
-            .expect("send first");
-        tx.send(("chat-b".to_string(), "second".to_string(), None))
-            .expect("send second");
-        tx.send(("chat-c".to_string(), "third".to_string(), None))
-            .expect("send third");
+        tx.send(QueuedOutboundMessage {
+            chat_id: "chat-a".to_string(),
+            content: "first".to_string(),
+            req_id: None,
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("send first");
+        tx.send(QueuedOutboundMessage {
+            chat_id: "chat-b".to_string(),
+            content: "second".to_string(),
+            req_id: None,
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("send second");
+        tx.send(QueuedOutboundMessage {
+            chat_id: "chat-c".to_string(),
+            content: "third".to_string(),
+            req_id: None,
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("send third");
         drop(tx);
 
         let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
@@ -306,8 +342,8 @@ mod tests {
 
         run_buffered_sender_loop(rx, "test_sender", move |message, attempt| {
             let mut guard = seen_clone.lock().unwrap_or_else(|e| e.into_inner());
-            guard.push(format!("{}:{}", message.1, attempt));
-            if message.1 == "second" && attempt == 1 {
+            guard.push(format!("{}:{}", message.content, attempt));
+            if message.content == "second" && attempt == 1 {
                 return Err(Error::config("test_sender", "synthetic failure"));
             }
             Ok(())
@@ -318,5 +354,33 @@ mod tests {
             guard.as_slice(),
             ["first:1", "second:1", "second:2", "third:1"]
         );
+    }
+
+    #[test]
+    fn buffered_sender_loop_does_not_retry_supplemental_message() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(QueuedOutboundMessage {
+            chat_id: "chat-a".to_string(),
+            content: "supplemental".to_string(),
+            req_id: Some("req-1".to_string()),
+            outbound_kind: OutboundKind::Supplemental,
+        })
+        .expect("send supplemental");
+        drop(tx);
+
+        let attempts = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
+        let attempts_clone = std::sync::Arc::clone(&attempts);
+
+        run_buffered_sender_loop(rx, "test_sender", move |_message, attempt| {
+            attempts_clone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(attempt);
+            Err(Error::config("test_sender", "synthetic failure"))
+        });
+
+        let attempts = attempts.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(attempts.as_slice(), [1]);
     }
 }

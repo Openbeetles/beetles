@@ -33,6 +33,20 @@ impl MessageTransport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboundKind {
+    #[default]
+    Primary,
+    Supplemental,
+}
+
+impl OutboundKind {
+    pub fn is_supplemental(self) -> bool {
+        matches!(self, Self::Supplemental)
+    }
+}
+
 /// 总线消息。入队前需校验 `content.len() <= MAX_CONTENT_LEN`。可序列化供 pending_retry 持久化。
 /// channel/chat_id 用 Arc<str> 减少 clone 开销。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +65,9 @@ pub struct PcMsg {
     /// 请求关联 ID：用于贯通 agent -> dispatch -> sender 的端到端时延日志。
     #[serde(default)]
     pub req_id: Option<String>,
+    /// 出站消息类别：primary 保留 canonical reply 语义，supplemental 为 best-effort 附加可见性。
+    #[serde(default)]
+    pub outbound_kind: OutboundKind,
     /// 入站来源：用于调度与指标分流；默认 user（兼容历史持久化消息）。
     #[serde(default)]
     pub ingress: IngressKind,
@@ -159,6 +176,7 @@ impl PcMsg {
             chat_id: Arc::from(chat_id.into().as_str()),
             content,
             req_id: None,
+            outbound_kind: OutboundKind::Primary,
             ingress,
             enqueue_ts_ms: current_unix_ms(),
             source_transport: MessageTransport::Unknown,
@@ -193,6 +211,7 @@ impl PcMsg {
             chat_id: Arc::clone(chat_id),
             content,
             req_id,
+            outbound_kind: OutboundKind::Primary,
             ingress: IngressKind::User,
             enqueue_ts_ms: current_unix_ms(),
             source_transport: MessageTransport::Unknown,
@@ -227,6 +246,11 @@ impl PcMsg {
         self.platform_message_id = platform_message_id.into();
         self.platform_event_id = platform_event_id.into();
         self.inbound_dedup_key = inbound_dedup_key.into();
+        self
+    }
+
+    pub fn with_outbound_kind(mut self, outbound_kind: OutboundKind) -> Self {
+        self.outbound_kind = outbound_kind;
         self
     }
 

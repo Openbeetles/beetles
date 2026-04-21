@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use super::super::connectivity;
 use super::super::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
-    run_buffered_sender_loop,
+    run_buffered_sender_loop, QueuedOutboundMessage,
 };
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
@@ -84,16 +84,16 @@ fn send_one_telegram<H: ChannelHttpClient>(
 
 /// 从 rx 取出所有待发送（一次性 drain）。
 pub fn flush_telegram_sends<H: ChannelHttpClient>(
-    rx: &std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: &std::sync::mpsc::Receiver<QueuedOutboundMessage>,
     token: &str,
     http: &mut H,
 ) {
-    while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
-        if let Err(error) = send_one_telegram(http, token, &chat_id, &content) {
+    while let Ok(message) = rx.try_recv() {
+        if let Err(error) = send_one_telegram(http, token, &message.chat_id, &message.content) {
             record_outbound_http_failure(&error);
             log::warn!(
                 "[telegram_flush] send failed for chat_id={}: {}",
-                chat_id,
+                message.chat_id,
                 error
             );
         } else {
@@ -104,7 +104,7 @@ pub fn flush_telegram_sends<H: ChannelHttpClient>(
 
 /// 持续运行的 Telegram 发送循环：sender 线程内**复用**同一 HTTP 客户端，减轻 lwIP socket / TLS 压力。
 pub fn run_telegram_sender_loop<H, F>(
-    rx: std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
     token: &str,
     mut create_http: F,
 ) where
@@ -120,7 +120,7 @@ pub fn run_telegram_sender_loop<H, F>(
         let Some(h) = http.as_mut() else {
             return Err(Error::config(TAG, "sender http missing after ensure"));
         };
-        match send_one_telegram(h, token, &message.0, &message.1) {
+        match send_one_telegram(h, token, &message.chat_id, &message.content) {
             Ok(()) => {
                 record_outbound_http_success();
                 Ok(())
@@ -131,7 +131,7 @@ pub fn run_telegram_sender_loop<H, F>(
                     "[{}] send failed (attempt {}), chat_id={}: {}",
                     TAG,
                     attempt,
-                    message.0,
+                    message.chat_id,
                     error
                 );
                 http = None;

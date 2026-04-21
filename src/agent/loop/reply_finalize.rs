@@ -143,6 +143,9 @@ pub(super) fn assess_turn_completion(
     let had_visible_side_effects = tool_round_completion.had_visible_outbound_side_effects
         || delivery.tool_visible_updates_sent > 0
         || delivery.explicit_outbound_sent > 0
+        || delivery.append_only_ack_sent > 0
+        || delivery.append_only_heartbeat_sent > 0
+        || delivery.append_only_first_tool_milestone_sent > 0
         || delivery.visible_text_updates_sent > 0
         || delivery.current_primary_delivered
         || delivery.finalize_streamed;

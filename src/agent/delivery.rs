@@ -1,16 +1,28 @@
-use crate::bus::{IngressKind, OutboundTx, PcMsg};
+use super::{TaskTerminalVisibilityStatus, TurnVisibilityFact};
+use crate::bus::{IngressKind, OutboundKind, OutboundTx, PcMsg};
+use crate::channel_capability::ChannelDeliveryOrderingModel;
 use crate::error::Result;
 use crate::i18n::Locale as UiLocale;
 use crate::memory::MemorySystemKind;
 use crate::metrics;
-use crate::tools::{ToolOutboundIntent, ToolOutboundTarget};
+use crate::tools::{ToolOutboundDeliveryKind, ToolOutboundIntent, ToolOutboundTarget};
 use crate::util::truncate_content_to_max;
+use std::sync::{Arc, Mutex};
 
 const EDIT_THROTTLE_MS: u64 = 500;
 const MAX_EDIT_FAILURES: u8 = 3;
 const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
+const MAX_APPEND_ONLY_TOOL_NAME_CHARS: usize = 32;
+#[cfg(test)]
+const APPEND_ONLY_PRIVATE_ACK_DELAY_MS: u64 = 5;
+#[cfg(not(test))]
+const APPEND_ONLY_PRIVATE_ACK_DELAY_MS: u64 = 1500;
+#[cfg(test)]
+const APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS: u64 = 10;
+#[cfg(not(test))]
+const APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS: u64 = 8000;
 
 /// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
 /// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
@@ -23,12 +35,14 @@ pub trait StreamEditor {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DeliveryReport {
-    pub presence_pulses_sent: u8,
-    pub progress_updates_sent: u8,
-    pub planner_progress_updates_sent: u8,
-    pub tool_progress_updates_sent: u8,
-    pub action_progress_updates_sent: u8,
-    pub terminal_progress_updates_sent: u8,
+    pub edit_phase_header_updates_sent: u8,
+    pub edit_planner_header_updates_sent: u8,
+    pub edit_tool_header_updates_sent: u8,
+    pub edit_action_header_updates_sent: u8,
+    pub edit_terminal_header_updates_sent: u8,
+    pub append_only_ack_sent: u8,
+    pub append_only_heartbeat_sent: u8,
+    pub append_only_first_tool_milestone_sent: u8,
     pub partial_updates_sent: u8,
     pub tool_outbound_intents_seen: u8,
     pub tool_visible_updates_sent: u8,
@@ -45,6 +59,7 @@ pub(crate) struct DeliverySession<'a> {
     req_id: &'a str,
     policy: DeliveryPolicy,
     visible_update_contract: VisibleUpdateContract,
+    fact_state: DeliveryFactState,
 }
 
 enum DeliveryMode<'a> {
@@ -61,13 +76,74 @@ struct EditDelivery<'a> {
     edit_disabled: bool,
     edit_failures: u8,
     lifecycle: DeliveryLifecycle,
-    last_visible_text: String,
+    status_header: Option<EditStatusHeader>,
+    last_body_text: String,
+    last_sent_composed: String,
+    pending_compose: String,
     report: DeliveryReport,
 }
 
 struct QueuedDelivery {
     lifecycle: DeliveryLifecycle,
     report: DeliveryReport,
+    append_only_visibility: Option<Arc<AppendOnlyVisibilityShared>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DeliveryFactState {
+    task_started_visible: bool,
+    task_terminal_visible: bool,
+}
+
+#[derive(Clone)]
+struct AppendOnlyVisibilityShared {
+    delivery: AppendOnlyVisibilityDelivery,
+    mode: AppendOnlyVisibilityMode,
+    state: Arc<Mutex<AppendOnlyVisibilityState>>,
+}
+
+#[derive(Clone)]
+struct AppendOnlyVisibilityDelivery {
+    channel: Arc<str>,
+    chat_id: Arc<str>,
+    req_id: String,
+    is_group: bool,
+    outbound_tx: OutboundTx,
+    contract: AppendOnlyVisibilityContract,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppendOnlyVisibilityMode {
+    PrivateAck,
+    GroupHeartbeat,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AppendOnlyVisibilityContract {
+    loc: UiLocale,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AppendOnlyVisibilityState {
+    finalized: bool,
+    supplemental_emitted: u8,
+    ack_sent: bool,
+    heartbeat_sent: bool,
+    first_tool_milestone_sent: bool,
+    first_tool_snapshot: Option<FirstToolSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FirstToolSnapshot {
+    tool_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AppendOnlyVisibilityProjection {
+    text: String,
+    marks_ack_sent: bool,
+    marks_heartbeat_sent: bool,
+    marks_first_tool_milestone_sent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,25 +171,32 @@ struct VisibleUpdateContract {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VisibleUpdateKind {
+    Acknowledged,
+    Reasoning,
     PlannerProgress,
     ToolProgress,
     ActionProgress,
     TerminalProgress,
+    Finalizing,
     PartialDraft,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TaskActionProgressKind {
-    Started,
-    Resumed,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditStatusHeader {
+    text: String,
+    kind: EditStatusHeaderKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TaskTerminalProgressKind {
-    Completed,
-    PartialComplete,
-    Blocked,
-    Aborted,
+enum EditStatusHeaderKind {
+    Placeholder,
+    StickyTerminal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditFactProjection {
+    header: EditStatusHeader,
+    report_kind: VisibleUpdateKind,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -140,6 +223,9 @@ impl<'a> DeliverySession<'a> {
                 supports_current_supplemental: entry.contract.supports_supplemental_reply,
             })
             .unwrap_or_default();
+        let append_only_visibility = channel_capability.and_then(|entry| {
+            AppendOnlyVisibilityShared::new_if_enabled(msg, req_id, outbound_tx, entry, loc, policy)
+        });
         let mode = if !policy.supports_current_primary && !policy.supports_current_supplemental {
             DeliveryMode::Silent
         } else if let Some(editor) = editor.filter(|_| {
@@ -155,13 +241,17 @@ impl<'a> DeliverySession<'a> {
                 edit_disabled: false,
                 edit_failures: 0,
                 lifecycle: DeliveryLifecycle::Open,
-                last_visible_text: String::new(),
+                status_header: None,
+                last_body_text: String::new(),
+                last_sent_composed: String::new(),
+                pending_compose: String::new(),
                 report: DeliveryReport::default(),
             })
         } else {
             DeliveryMode::Queued(QueuedDelivery {
                 lifecycle: DeliveryLifecycle::Open,
                 report: DeliveryReport::default(),
+                append_only_visibility,
             })
         };
         Self {
@@ -170,6 +260,7 @@ impl<'a> DeliverySession<'a> {
             req_id,
             policy,
             visible_update_contract,
+            fact_state: DeliveryFactState::default(),
         }
     }
 
@@ -177,7 +268,7 @@ impl<'a> DeliverySession<'a> {
         match self.mode {
             DeliveryMode::Silent => DeliveryReport::default(),
             DeliveryMode::Edit(ref delivery) => delivery.report,
-            DeliveryMode::Queued(ref delivery) => delivery.report,
+            DeliveryMode::Queued(ref delivery) => delivery.report(),
         }
     }
 
@@ -188,91 +279,19 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
-    fn emit_supplemental_visible_update(&mut self, text: &str, kind: VisibleUpdateKind) {
+    pub(crate) fn emit_fact(&mut self, fact: TurnVisibilityFact<'_>) {
+        if !self.policy.supports_current_supplemental {
+            return;
+        }
         match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => delivery.force_visible_update(text, kind),
-            // Append-only channels cannot retract these mid-turn status pulses. Treat them as
-            // internal telemetry only and reserve user-visible delivery for the canonical reply.
-            DeliveryMode::Queued(_) | DeliveryMode::Silent => {}
+            DeliveryMode::Edit(ref mut delivery) => {
+                if delivery.emit_fact(self.visible_update_contract, fact) {
+                    self.fact_state.record_visible_fact(fact);
+                }
+            }
+            DeliveryMode::Queued(ref delivery) => delivery.observe_fact(fact),
+            DeliveryMode::Silent => {}
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn emit_progress(&mut self, content: &str) {
-        if !self.policy.supports_current_supplemental {
-            return;
-        }
-        let text = normalize_visible_update(content, MAX_QUEUED_PROGRESS_CHARS);
-        if text.is_empty() {
-            return;
-        }
-        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::PlannerProgress);
-    }
-
-    pub(crate) fn emit_task_planner_progress(&mut self) {
-        if !self.policy.supports_current_supplemental {
-            return;
-        }
-        let text = normalize_visible_update(
-            &self.visible_update_contract.task_planner_progress(),
-            MAX_QUEUED_PROGRESS_CHARS,
-        );
-        if text.is_empty() {
-            return;
-        }
-        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::PlannerProgress);
-    }
-
-    pub(crate) fn emit_tool_progress(&mut self, name: &str, index: usize, total: usize) {
-        if !self.policy.supports_current_supplemental {
-            return;
-        }
-        let text = normalize_visible_update(
-            &self
-                .visible_update_contract
-                .tool_progress(name, index, total),
-            MAX_QUEUED_PROGRESS_CHARS,
-        );
-        if text.is_empty() {
-            return;
-        }
-        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::ToolProgress);
-    }
-
-    pub(crate) fn emit_task_action_progress(&mut self, kind: TaskActionProgressKind) {
-        if !self.policy.supports_current_supplemental {
-            return;
-        }
-        let text = normalize_visible_update(
-            &self.visible_update_contract.task_action_progress(kind),
-            MAX_QUEUED_PROGRESS_CHARS,
-        );
-        if text.is_empty() {
-            return;
-        }
-        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::ActionProgress);
-    }
-
-    pub(crate) fn emit_foreground_work_resumed(&mut self) {
-        self.emit_task_action_progress(TaskActionProgressKind::Resumed);
-    }
-
-    pub(crate) fn emit_task_terminal_progress(&mut self, kind: TaskTerminalProgressKind) {
-        if !self.policy.supports_current_supplemental {
-            return;
-        }
-        let text = normalize_visible_update(
-            &self.visible_update_contract.task_terminal_progress(kind),
-            MAX_QUEUED_PROGRESS_CHARS,
-        );
-        if text.is_empty() {
-            return;
-        }
-        self.emit_supplemental_visible_update(&text, VisibleUpdateKind::TerminalProgress);
-    }
-
-    pub(crate) fn emit_foreground_work_blocked(&mut self) {
-        self.emit_task_terminal_progress(TaskTerminalProgressKind::Blocked);
     }
 
     pub(crate) fn emit_partial(&mut self, content: &str) {
@@ -284,9 +303,7 @@ impl<'a> DeliverySession<'a> {
             return;
         }
         match self.mode {
-            DeliveryMode::Edit(ref mut delivery) => {
-                delivery.force_visible_update(&text, VisibleUpdateKind::PartialDraft)
-            }
+            DeliveryMode::Edit(ref mut delivery) => delivery.emit_partial_body(&text),
             // Non-edit channels cannot revise previously sent text, so exposing ToolUse-time
             // drafts or mid-turn status copy here would leak unfinished plans. Reserve queued
             // delivery for the canonical final answer only.
@@ -335,6 +352,7 @@ impl<'a> DeliverySession<'a> {
                     channel,
                     chat_id,
                     self.req_id,
+                    map_tool_outbound_kind(intent.delivery_kind),
                     &text,
                 )
                 .map_err(|()| {
@@ -355,6 +373,14 @@ impl<'a> DeliverySession<'a> {
             DeliveryMode::Edit(ref delivery) => delivery.lifecycle.is_closed(),
             DeliveryMode::Queued(ref delivery) => delivery.lifecycle.is_closed(),
         }
+    }
+
+    pub(crate) fn has_visible_task_started_fact(&self) -> bool {
+        self.fact_state.task_started_visible
+    }
+
+    pub(crate) fn has_visible_task_terminal_fact(&self) -> bool {
+        self.fact_state.task_terminal_visible
     }
 
     fn bump_tool_intent_seen(&mut self) {
@@ -412,31 +438,69 @@ impl Drop for DeliverySession<'_> {
     fn drop(&mut self) {}
 }
 
+impl DeliveryFactState {
+    fn record_visible_fact(&mut self, fact: TurnVisibilityFact<'_>) {
+        match fact {
+            TurnVisibilityFact::TaskStarted { .. } => self.task_started_visible = true,
+            TurnVisibilityFact::TaskTerminal { .. } => self.task_terminal_visible = true,
+            TurnVisibilityFact::Acknowledged
+            | TurnVisibilityFact::Reasoning { .. }
+            | TurnVisibilityFact::RunningTool { .. }
+            | TurnVisibilityFact::TaskPlanner
+            | TurnVisibilityFact::Finalizing => {}
+        }
+    }
+}
+
 impl<'a> EditDelivery<'a> {
     fn on_stream_delta(&mut self, accumulated: &str) {
         if self.edit_disabled || self.lifecycle.is_closed() || accumulated.trim().is_empty() {
             return;
         }
-        if self.message_id.is_none() {
-            self.send_initial(accumulated);
+        let normalized = normalize_visible_update(accumulated, crate::bus::MAX_CONTENT_LEN);
+        if normalized.is_empty() {
             return;
         }
-        if self.last_edit_at.elapsed() < std::time::Duration::from_millis(EDIT_THROTTLE_MS) {
-            return;
-        }
-        self.edit_existing(accumulated);
+        let had_no_body = self.last_body_text.is_empty();
+        self.last_body_text = normalized;
+        self.clear_placeholder_header_for_body();
+        self.sync_composed(had_no_body);
     }
 
-    fn force_visible_update(&mut self, content: &str, kind: VisibleUpdateKind) {
+    fn emit_fact(&mut self, contract: VisibleUpdateContract, fact: TurnVisibilityFact<'_>) -> bool {
+        if self.edit_disabled || self.lifecycle.is_closed() {
+            return false;
+        }
+        let Some(projection) = contract.project_fact(fact) else {
+            return false;
+        };
+        if matches!(
+            self.status_header.as_ref().map(|header| header.kind),
+            Some(EditStatusHeaderKind::StickyTerminal)
+        ) && projection.header.kind == EditStatusHeaderKind::Placeholder
+        {
+            return false;
+        }
+        let header_kind = projection.header.kind;
+        if self.last_body_text.is_empty() || header_kind == EditStatusHeaderKind::StickyTerminal {
+            self.status_header = Some(projection.header);
+        } else {
+            return false;
+        }
+        record_visible_update_kind(&mut self.report, projection.report_kind);
+        self.sync_composed(header_kind == EditStatusHeaderKind::StickyTerminal);
+        true
+    }
+
+    fn emit_partial_body(&mut self, content: &str) {
         if self.edit_disabled || self.lifecycle.is_closed() {
             return;
         }
-        record_visible_update_kind(&mut self.report, kind);
-        if self.message_id.is_none() {
-            self.send_initial(content);
-        } else {
-            self.edit_existing(content);
-        }
+        let had_no_body = self.last_body_text.is_empty();
+        self.last_body_text = content.to_string();
+        self.clear_placeholder_header_for_body();
+        record_visible_update_kind(&mut self.report, VisibleUpdateKind::PartialDraft);
+        self.sync_composed(had_no_body);
     }
 
     fn finalize(&mut self, final_content: &str) -> bool {
@@ -444,60 +508,124 @@ impl<'a> EditDelivery<'a> {
             return self.report.finalize_streamed;
         }
         let normalized = normalize_visible_update(final_content, crate::bus::MAX_CONTENT_LEN);
-        if self.message_id.is_none() {
+        self.status_header = None;
+        self.pending_compose.clear();
+        let already_visible_final = !normalized.is_empty() && self.last_sent_composed == normalized;
+        let visible_now = if self.message_id.is_none() {
             if normalized.is_empty() {
-                return false;
+                false
+            } else {
+                self.send_initial(&normalized)
             }
-            self.send_initial(&normalized);
-        } else if !normalized.is_empty() {
-            self.edit_existing(&normalized);
+        } else if normalized.is_empty() {
+            false
+        } else {
+            self.edit_existing(&normalized)
+        };
+        let streamed = self.message_id.is_some() && (visible_now || already_visible_final);
+        if streamed && !normalized.is_empty() {
+            self.last_body_text = normalized.clone();
+            self.last_sent_composed = normalized;
         }
-        let streamed = self.message_id.is_some()
-            && (!self.edit_disabled
-                || (!normalized.is_empty() && self.last_visible_text == normalized));
         self.lifecycle = DeliveryLifecycle::Finalized;
         self.report.finalize_streamed = streamed;
         streamed
     }
 
-    fn send_initial(&mut self, content: &str) {
+    fn clear_placeholder_header_for_body(&mut self) {
+        if matches!(
+            self.status_header.as_ref().map(|header| header.kind),
+            Some(EditStatusHeaderKind::Placeholder)
+        ) {
+            self.status_header = None;
+        }
+    }
+
+    fn sync_composed(&mut self, force_flush: bool) {
+        let composed = self.compose_visible_text();
+        if composed.is_empty() {
+            return;
+        }
+        self.pending_compose = composed;
+        if self.message_id.is_none() {
+            let initial = self.pending_compose.clone();
+            self.pending_compose.clear();
+            self.send_initial(&initial);
+            return;
+        }
+        if !force_flush
+            && self.last_edit_at.elapsed() < std::time::Duration::from_millis(EDIT_THROTTLE_MS)
+        {
+            return;
+        }
+        self.flush_pending();
+    }
+
+    fn flush_pending(&mut self) {
+        if self.pending_compose.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_compose);
+        self.edit_existing(&pending);
+    }
+
+    fn compose_visible_text(&self) -> String {
+        let body = self.last_body_text.trim();
+        let composed = match (self.status_header.as_ref(), body.is_empty()) {
+            (Some(header), false) if header.kind == EditStatusHeaderKind::StickyTerminal => {
+                format!("{}\n\n{}", header.text, body)
+            }
+            (_, false) => body.to_string(),
+            (Some(header), true) => header.text.clone(),
+            (None, true) => String::new(),
+        };
+        normalize_visible_update(&composed, crate::bus::MAX_CONTENT_LEN)
+    }
+
+    fn send_initial(&mut self, content: &str) -> bool {
         let normalized = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
         if normalized.is_empty() {
-            return;
+            return false;
         }
         match self.editor.send_initial(self.chat_id, &normalized) {
             Ok(Some(message_id)) => {
                 self.message_id = Some(message_id);
-                self.last_visible_text = normalized;
+                self.last_sent_composed = normalized;
                 self.last_edit_at = std::time::Instant::now();
                 self.edit_failures = 0;
                 self.report.visible_text_updates_sent =
                     self.report.visible_text_updates_sent.saturating_add(1);
+                true
             }
-            Ok(None) => {}
+            Ok(None) => false,
             Err(e) => {
                 log::warn!(
                     "[agent_delivery] send_initial failed, disabling edit delivery: {}",
                     e
                 );
                 self.edit_disabled = true;
+                false
             }
         }
     }
 
-    fn edit_existing(&mut self, content: &str) {
+    fn edit_existing(&mut self, content: &str) -> bool {
         let normalized = normalize_visible_update(content, crate::bus::MAX_CONTENT_LEN);
-        if normalized.is_empty() || normalized == self.last_visible_text {
-            return;
+        if normalized.is_empty() {
+            return false;
+        }
+        if normalized == self.last_sent_composed {
+            return true;
         }
         let Some(ref message_id) = self.message_id else {
-            return;
+            return false;
         };
         match self.editor.edit(self.chat_id, message_id, &normalized) {
             Ok(()) => {
-                self.last_visible_text = normalized;
+                self.last_sent_composed = normalized;
                 self.last_edit_at = std::time::Instant::now();
                 self.edit_failures = 0;
+                true
             }
             Err(e) => {
                 self.edit_failures = self.edit_failures.saturating_add(1);
@@ -517,6 +645,7 @@ impl<'a> EditDelivery<'a> {
                     );
                 }
                 self.last_edit_at = std::time::Instant::now();
+                false
             }
         }
     }
@@ -524,12 +653,223 @@ impl<'a> EditDelivery<'a> {
 
 impl QueuedDelivery {
     fn finalize(&mut self) -> bool {
+        if let Some(ref visibility) = self.append_only_visibility {
+            visibility.mark_finalized();
+        }
         match self.lifecycle {
             DeliveryLifecycle::Finalized => false,
             DeliveryLifecycle::Open => {
                 self.lifecycle = DeliveryLifecycle::Finalized;
                 false
             }
+        }
+    }
+
+    fn observe_fact(&self, fact: TurnVisibilityFact<'_>) {
+        if let Some(ref visibility) = self.append_only_visibility {
+            visibility.observe_fact(fact);
+        }
+    }
+
+    fn report(&self) -> DeliveryReport {
+        let mut report = self.report;
+        if let Some(ref visibility) = self.append_only_visibility {
+            let snapshot = visibility.report_snapshot();
+            report.append_only_ack_sent = snapshot.append_only_ack_sent;
+            report.append_only_heartbeat_sent = snapshot.append_only_heartbeat_sent;
+            report.append_only_first_tool_milestone_sent =
+                snapshot.append_only_first_tool_milestone_sent;
+        }
+        report
+    }
+}
+
+impl AppendOnlyVisibilityShared {
+    fn new_if_enabled(
+        msg: &PcMsg,
+        req_id: &str,
+        outbound_tx: &OutboundTx,
+        entry: crate::ChannelCapabilityEntry,
+        loc: UiLocale,
+        policy: DeliveryPolicy,
+    ) -> Option<Arc<Self>> {
+        if msg.ingress != IngressKind::User
+            || !policy.supports_current_primary
+            || !policy.supports_current_supplemental
+        {
+            return None;
+        }
+        let mode = match entry.contract.delivery_ordering_model {
+            ChannelDeliveryOrderingModel::AppendOnly
+            | ChannelDeliveryOrderingModel::StatelessWebhook
+            | ChannelDeliveryOrderingModel::SessionSocket => {
+                if msg.is_group {
+                    AppendOnlyVisibilityMode::GroupHeartbeat
+                } else {
+                    AppendOnlyVisibilityMode::PrivateAck
+                }
+            }
+            ChannelDeliveryOrderingModel::EditableSingleMessage
+            | ChannelDeliveryOrderingModel::AudioPlayback => return None,
+        };
+        let shared = Arc::new(Self {
+            delivery: AppendOnlyVisibilityDelivery {
+                channel: Arc::clone(&msg.channel),
+                chat_id: Arc::clone(&msg.chat_id),
+                req_id: req_id.to_string(),
+                is_group: msg.is_group,
+                outbound_tx: outbound_tx.clone(),
+                contract: AppendOnlyVisibilityContract { loc },
+            },
+            mode,
+            state: Arc::new(Mutex::new(AppendOnlyVisibilityState::default())),
+        });
+        shared.register_deadline();
+        Some(shared)
+    }
+
+    fn register_deadline(self: &Arc<Self>) {
+        let due_at = std::time::Instant::now() + self.mode.deadline_delay();
+        let shared = Arc::clone(self);
+        if crate::runtime::schedule_critical_delayed_task(
+            due_at,
+            Box::new(move || {
+                shared.fire_deadline();
+            }),
+        )
+        .is_err()
+        {
+            log::warn!(
+                "[agent_delivery] append-only visibility deadline registration dropped req_id={} channel={} chat_id={} mode={}",
+                self.delivery.req_id,
+                self.delivery.channel,
+                self.delivery.chat_id,
+                self.mode.log_label()
+            );
+        }
+    }
+
+    fn mark_finalized(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.finalized = true;
+    }
+
+    fn observe_fact(&self, fact: TurnVisibilityFact<'_>) {
+        if !matches!(fact, TurnVisibilityFact::RunningTool { .. }) {
+            return;
+        }
+        if !matches!(self.mode, AppendOnlyVisibilityMode::PrivateAck) {
+            return;
+        }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finalized || state.first_tool_milestone_sent {
+            return;
+        }
+        if state.first_tool_snapshot.is_none() {
+            let TurnVisibilityFact::RunningTool { tool, .. } = fact else {
+                return;
+            };
+            state.first_tool_snapshot = Some(FirstToolSnapshot {
+                tool_name: truncate_content_to_max(tool.trim(), MAX_APPEND_ONLY_TOOL_NAME_CHARS)
+                    .to_string(),
+            });
+        }
+        if !state.ack_sent || state.supplemental_emitted >= self.mode.max_supplemental_messages() {
+            return;
+        }
+        let Some(projection) = self
+            .delivery
+            .contract
+            .private_first_tool_milestone(state.first_tool_snapshot.as_ref())
+        else {
+            return;
+        };
+        if send_current_chat_supplemental(&self.delivery, &projection.text).is_ok() {
+            state.first_tool_milestone_sent = projection.marks_first_tool_milestone_sent;
+            state.supplemental_emitted = state.supplemental_emitted.saturating_add(1);
+        }
+    }
+
+    fn fire_deadline(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finalized || state.supplemental_emitted >= self.mode.max_supplemental_messages() {
+            return;
+        }
+        let projection = match self.mode {
+            AppendOnlyVisibilityMode::PrivateAck => {
+                if state.ack_sent {
+                    return;
+                }
+                if state.first_tool_snapshot.is_some() {
+                    self.delivery
+                        .contract
+                        .private_ack_with_first_tool(state.first_tool_snapshot.as_ref())
+                } else {
+                    self.delivery.contract.private_ack()
+                }
+            }
+            AppendOnlyVisibilityMode::GroupHeartbeat => {
+                if state.heartbeat_sent {
+                    return;
+                }
+                self.delivery.contract.group_heartbeat()
+            }
+        };
+        let Some(projection) = projection else {
+            return;
+        };
+        if send_current_chat_supplemental(&self.delivery, &projection.text).is_ok() {
+            if projection.marks_ack_sent {
+                state.ack_sent = true;
+            }
+            if projection.marks_heartbeat_sent {
+                state.heartbeat_sent = true;
+            }
+            if projection.marks_first_tool_milestone_sent {
+                state.first_tool_milestone_sent = true;
+            }
+            state.supplemental_emitted = state.supplemental_emitted.saturating_add(1);
+        }
+    }
+
+    fn report_snapshot(&self) -> AppendOnlyVisibilityReportSnapshot {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        AppendOnlyVisibilityReportSnapshot {
+            append_only_ack_sent: u8::from(state.ack_sent),
+            append_only_heartbeat_sent: u8::from(state.heartbeat_sent),
+            append_only_first_tool_milestone_sent: u8::from(state.first_tool_milestone_sent),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AppendOnlyVisibilityReportSnapshot {
+    append_only_ack_sent: u8,
+    append_only_heartbeat_sent: u8,
+    append_only_first_tool_milestone_sent: u8,
+}
+
+impl AppendOnlyVisibilityMode {
+    fn deadline_delay(self) -> std::time::Duration {
+        match self {
+            Self::PrivateAck => std::time::Duration::from_millis(APPEND_ONLY_PRIVATE_ACK_DELAY_MS),
+            Self::GroupHeartbeat => {
+                std::time::Duration::from_millis(APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS)
+            }
+        }
+    }
+
+    fn max_supplemental_messages(self) -> u8 {
+        match self {
+            Self::PrivateAck => 2,
+            Self::GroupHeartbeat => 1,
+        }
+    }
+
+    fn log_label(self) -> &'static str {
+        match self {
+            Self::PrivateAck => "private_ack",
+            Self::GroupHeartbeat => "group_heartbeat",
         }
     }
 }
@@ -539,98 +879,210 @@ impl VisibleUpdateContract {
         Self { loc }
     }
 
-    fn tool_progress(self, name: &str, index: usize, total: usize) -> String {
-        match self.loc {
-            UiLocale::Zh if total > 1 => {
-                format!("正在执行 {}（{}/{}），继续推进 🪲", name, index + 1, total)
-            }
-            UiLocale::Zh => format!("正在执行 {}，继续推进 🪲", name),
-            UiLocale::En if total > 1 => {
-                format!(
-                    "Running {} ({}/{}), still moving 🪲",
-                    name,
-                    index + 1,
-                    total
-                )
-            }
-            UiLocale::En => format!("Running {}, still moving 🪲", name),
+    fn project_fact(self, fact: TurnVisibilityFact<'_>) -> Option<EditFactProjection> {
+        let (text, report_kind, header_kind) = match fact {
+            TurnVisibilityFact::Acknowledged => (
+                match self.loc {
+                    UiLocale::Zh => "已收到，正在处理".to_string(),
+                    UiLocale::En => "Received, processing".to_string(),
+                },
+                VisibleUpdateKind::Acknowledged,
+                EditStatusHeaderKind::Placeholder,
+            ),
+            TurnVisibilityFact::Reasoning { round } => (
+                match (self.loc, round) {
+                    (UiLocale::Zh, 0 | 1) => "正在分析当前请求".to_string(),
+                    (UiLocale::Zh, _) => "正在继续分析当前请求".to_string(),
+                    (UiLocale::En, 0 | 1) => "Analyzing the current request".to_string(),
+                    (UiLocale::En, _) => "Continuing to analyze the current request".to_string(),
+                },
+                VisibleUpdateKind::Reasoning,
+                EditStatusHeaderKind::Placeholder,
+            ),
+            TurnVisibilityFact::RunningTool { tool, index, total } => (
+                match self.loc {
+                    UiLocale::Zh if total > 1 => {
+                        format!("正在执行 {}（{}/{}）", tool, index + 1, total)
+                    }
+                    UiLocale::Zh => format!("正在执行 {}", tool),
+                    UiLocale::En if total > 1 => {
+                        format!("Running {} ({}/{})", tool, index + 1, total)
+                    }
+                    UiLocale::En => format!("Running {}", tool),
+                },
+                VisibleUpdateKind::ToolProgress,
+                EditStatusHeaderKind::Placeholder,
+            ),
+            TurnVisibilityFact::TaskPlanner => (
+                match self.loc {
+                    UiLocale::Zh => "正在规划当前任务".to_string(),
+                    UiLocale::En => "Planning the current task".to_string(),
+                },
+                VisibleUpdateKind::PlannerProgress,
+                EditStatusHeaderKind::Placeholder,
+            ),
+            TurnVisibilityFact::TaskStarted { resumed } => (
+                match (self.loc, resumed) {
+                    (UiLocale::Zh, true) => "已恢复任务执行".to_string(),
+                    (UiLocale::Zh, false) => "已进入任务执行".to_string(),
+                    (UiLocale::En, true) => "Task execution resumed".to_string(),
+                    (UiLocale::En, false) => "Task execution started".to_string(),
+                },
+                VisibleUpdateKind::ActionProgress,
+                EditStatusHeaderKind::Placeholder,
+            ),
+            TurnVisibilityFact::TaskTerminal { status } => (
+                match (self.loc, status) {
+                    (UiLocale::Zh, TaskTerminalVisibilityStatus::Completed) => {
+                        "当前任务已完成".to_string()
+                    }
+                    (UiLocale::Zh, TaskTerminalVisibilityStatus::PartialComplete) => {
+                        "当前任务已部分完成".to_string()
+                    }
+                    (UiLocale::Zh, TaskTerminalVisibilityStatus::Blocked) => {
+                        "当前任务已阻塞".to_string()
+                    }
+                    (UiLocale::Zh, TaskTerminalVisibilityStatus::Aborted) => {
+                        "当前任务已终止".to_string()
+                    }
+                    (UiLocale::En, TaskTerminalVisibilityStatus::Completed) => {
+                        "Task completed".to_string()
+                    }
+                    (UiLocale::En, TaskTerminalVisibilityStatus::PartialComplete) => {
+                        "Task partially completed".to_string()
+                    }
+                    (UiLocale::En, TaskTerminalVisibilityStatus::Blocked) => {
+                        "Task blocked".to_string()
+                    }
+                    (UiLocale::En, TaskTerminalVisibilityStatus::Aborted) => {
+                        "Task aborted".to_string()
+                    }
+                },
+                VisibleUpdateKind::TerminalProgress,
+                EditStatusHeaderKind::StickyTerminal,
+            ),
+            TurnVisibilityFact::Finalizing => (
+                match self.loc {
+                    UiLocale::Zh => "正在整理最终答复".to_string(),
+                    UiLocale::En => "Preparing the final reply".to_string(),
+                },
+                VisibleUpdateKind::Finalizing,
+                EditStatusHeaderKind::Placeholder,
+            ),
+        };
+        let text = normalize_visible_update(&text, MAX_QUEUED_PROGRESS_CHARS);
+        if text.is_empty() {
+            return None;
         }
+        Some(EditFactProjection {
+            header: EditStatusHeader {
+                text,
+                kind: header_kind,
+            },
+            report_kind,
+        })
+    }
+}
+
+impl AppendOnlyVisibilityContract {
+    fn private_ack(self) -> Option<AppendOnlyVisibilityProjection> {
+        Some(AppendOnlyVisibilityProjection {
+            text: normalize_visible_update(
+                match self.loc {
+                    UiLocale::Zh => "已收到，正在处理",
+                    UiLocale::En => "Received, processing",
+                },
+                MAX_QUEUED_PROGRESS_CHARS,
+            ),
+            marks_ack_sent: true,
+            marks_heartbeat_sent: false,
+            marks_first_tool_milestone_sent: false,
+        })
     }
 
-    fn task_planner_progress(self) -> String {
-        match self.loc {
-            UiLocale::Zh => "正在判断当前动作路径，继续推进 🪲".to_string(),
-            UiLocale::En => "Evaluating the current action path, still moving 🪲".to_string(),
-        }
+    fn group_heartbeat(self) -> Option<AppendOnlyVisibilityProjection> {
+        Some(AppendOnlyVisibilityProjection {
+            text: normalize_visible_update(
+                match self.loc {
+                    UiLocale::Zh => "仍在处理",
+                    UiLocale::En => "Still processing",
+                },
+                MAX_QUEUED_PROGRESS_CHARS,
+            ),
+            marks_ack_sent: false,
+            marks_heartbeat_sent: true,
+            marks_first_tool_milestone_sent: false,
+        })
     }
 
-    fn task_action_progress(self, kind: TaskActionProgressKind) -> String {
-        match (self.loc, kind) {
-            (UiLocale::Zh, TaskActionProgressKind::Started) => {
-                "已进入任务执行，继续推进 🪲".to_string()
-            }
-            (UiLocale::Zh, TaskActionProgressKind::Resumed) => {
-                "已恢复当前任务，继续推进 🪲".to_string()
-            }
-            (UiLocale::En, TaskActionProgressKind::Started) => {
-                "Task execution started, still moving 🪲".to_string()
-            }
-            (UiLocale::En, TaskActionProgressKind::Resumed) => {
-                "Current task resumed, still moving 🪲".to_string()
-            }
-        }
+    fn private_first_tool_milestone(
+        self,
+        snapshot: Option<&FirstToolSnapshot>,
+    ) -> Option<AppendOnlyVisibilityProjection> {
+        let _has_tool_name = snapshot.is_some_and(|snapshot| !snapshot.tool_name.is_empty());
+        Some(AppendOnlyVisibilityProjection {
+            text: normalize_visible_update(
+                match self.loc {
+                    UiLocale::Zh => "已进入首个工具执行",
+                    UiLocale::En => "Started the first tool execution",
+                },
+                MAX_QUEUED_PROGRESS_CHARS,
+            ),
+            marks_ack_sent: false,
+            marks_heartbeat_sent: false,
+            marks_first_tool_milestone_sent: true,
+        })
     }
 
-    fn task_terminal_progress(self, kind: TaskTerminalProgressKind) -> String {
-        match (self.loc, kind) {
-            (UiLocale::Zh, TaskTerminalProgressKind::Completed) => {
-                "当前任务已完成，正在整理答复 🪲".to_string()
-            }
-            (UiLocale::Zh, TaskTerminalProgressKind::PartialComplete) => {
-                "当前任务已部分完成，正在整理结果 🪲".to_string()
-            }
-            (UiLocale::Zh, TaskTerminalProgressKind::Blocked) => {
-                "当前任务已阻塞，正在整理结果 🪲".to_string()
-            }
-            (UiLocale::Zh, TaskTerminalProgressKind::Aborted) => {
-                "当前任务已终止，正在整理结果 🪲".to_string()
-            }
-            (UiLocale::En, TaskTerminalProgressKind::Completed) => {
-                "Task completed, preparing the final reply 🪲".to_string()
-            }
-            (UiLocale::En, TaskTerminalProgressKind::PartialComplete) => {
-                "Task partially completed, preparing the result 🪲".to_string()
-            }
-            (UiLocale::En, TaskTerminalProgressKind::Blocked) => {
-                "Task blocked, preparing the result 🪲".to_string()
-            }
-            (UiLocale::En, TaskTerminalProgressKind::Aborted) => {
-                "Task aborted, preparing the result 🪲".to_string()
-            }
-        }
+    fn private_ack_with_first_tool(
+        self,
+        snapshot: Option<&FirstToolSnapshot>,
+    ) -> Option<AppendOnlyVisibilityProjection> {
+        let ack = self.private_ack()?.text;
+        let milestone = self.private_first_tool_milestone(snapshot)?.text;
+        Some(AppendOnlyVisibilityProjection {
+            text: normalize_visible_update(
+                &format!("{ack}\n{milestone}"),
+                MAX_QUEUED_PROGRESS_CHARS,
+            ),
+            marks_ack_sent: true,
+            marks_heartbeat_sent: false,
+            marks_first_tool_milestone_sent: true,
+        })
     }
 }
 
 fn record_visible_update_kind(report: &mut DeliveryReport, kind: VisibleUpdateKind) {
     match kind {
+        VisibleUpdateKind::Acknowledged
+        | VisibleUpdateKind::Reasoning
+        | VisibleUpdateKind::Finalizing => {
+            report.edit_phase_header_updates_sent =
+                report.edit_phase_header_updates_sent.saturating_add(1);
+        }
         VisibleUpdateKind::PlannerProgress => {
-            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
-            report.planner_progress_updates_sent =
-                report.planner_progress_updates_sent.saturating_add(1);
+            report.edit_phase_header_updates_sent =
+                report.edit_phase_header_updates_sent.saturating_add(1);
+            report.edit_planner_header_updates_sent =
+                report.edit_planner_header_updates_sent.saturating_add(1);
         }
         VisibleUpdateKind::ToolProgress => {
-            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
-            report.tool_progress_updates_sent = report.tool_progress_updates_sent.saturating_add(1);
+            report.edit_phase_header_updates_sent =
+                report.edit_phase_header_updates_sent.saturating_add(1);
+            report.edit_tool_header_updates_sent =
+                report.edit_tool_header_updates_sent.saturating_add(1);
         }
         VisibleUpdateKind::ActionProgress => {
-            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
-            report.action_progress_updates_sent =
-                report.action_progress_updates_sent.saturating_add(1);
+            report.edit_phase_header_updates_sent =
+                report.edit_phase_header_updates_sent.saturating_add(1);
+            report.edit_action_header_updates_sent =
+                report.edit_action_header_updates_sent.saturating_add(1);
         }
         VisibleUpdateKind::TerminalProgress => {
-            report.progress_updates_sent = report.progress_updates_sent.saturating_add(1);
-            report.terminal_progress_updates_sent =
-                report.terminal_progress_updates_sent.saturating_add(1);
+            report.edit_phase_header_updates_sent =
+                report.edit_phase_header_updates_sent.saturating_add(1);
+            report.edit_terminal_header_updates_sent =
+                report.edit_terminal_header_updates_sent.saturating_add(1);
         }
         VisibleUpdateKind::PartialDraft => {
             report.partial_updates_sent = report.partial_updates_sent.saturating_add(1);
@@ -644,18 +1096,71 @@ fn normalize_visible_update(content: &str, max_chars: usize) -> String {
         .to_string()
 }
 
+fn send_current_chat_supplemental(
+    delivery: &AppendOnlyVisibilityDelivery,
+    content: &str,
+) -> std::result::Result<(), ()> {
+    let mut msg = match PcMsg::new_outbound_for_chat(
+        &delivery.channel,
+        &delivery.chat_id,
+        content,
+        Some(delivery.req_id.clone()),
+        delivery.is_group,
+    ) {
+        Ok(msg) => msg,
+        Err(error) => {
+            log::warn!(
+                "[agent_delivery] current-chat supplemental rejected req_id={} channel={} chat_id={}: {}",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id,
+                error
+            );
+            return Err(());
+        }
+    };
+    msg.outbound_kind = OutboundKind::Supplemental;
+    match delivery.outbound_tx.try_send(msg) {
+        Ok(()) => {
+            metrics::record_message_out();
+            Ok(())
+        }
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::warn!(
+                "[agent_delivery] current-chat supplemental dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id
+            );
+            Err(())
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::error!(
+                "[agent_delivery] current-chat supplemental dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id
+            );
+            Err(())
+        }
+    }
+}
+
 fn send_visible_update_explicit(
     outbound_tx: &OutboundTx,
     channel: &str,
     chat_id: &str,
     req_id: &str,
+    outbound_kind: OutboundKind,
     content: &str,
 ) -> std::result::Result<(), ()> {
     let mut msg = match PcMsg::new(channel, chat_id, content) {
         Ok(msg) => msg,
         Err(error) => {
             log::warn!(
-                "[agent_delivery] explicit visible update rejected channel={} chat_id={}: {}",
+                "[agent_delivery] explicit outbound rejected channel={} chat_id={}: {}",
                 channel,
                 chat_id,
                 error
@@ -663,6 +1168,7 @@ fn send_visible_update_explicit(
             return Err(());
         }
     };
+    msg.outbound_kind = outbound_kind;
     msg.req_id = Some(req_id.to_string());
     match outbound_tx.try_send(msg) {
         Ok(()) => {
@@ -672,7 +1178,7 @@ fn send_visible_update_explicit(
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             metrics::record_outbound_enqueue_fail();
             log::warn!(
-                "[agent_delivery] explicit visible update dropped: outbound queue full channel={} chat_id={}",
+                "[agent_delivery] explicit outbound dropped: outbound queue full channel={} chat_id={}",
                 channel,
                 chat_id
             );
@@ -681,7 +1187,7 @@ fn send_visible_update_explicit(
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             metrics::record_outbound_enqueue_fail();
             log::error!(
-                "[agent_delivery] explicit visible update dropped: outbound disconnected channel={} chat_id={}",
+                "[agent_delivery] explicit outbound dropped: outbound disconnected channel={} chat_id={}",
                 channel,
                 chat_id
             );
@@ -690,10 +1196,17 @@ fn send_visible_update_explicit(
     }
 }
 
+fn map_tool_outbound_kind(delivery_kind: ToolOutboundDeliveryKind) -> OutboundKind {
+    match delivery_kind {
+        ToolOutboundDeliveryKind::Supplemental => OutboundKind::Supplemental,
+        ToolOutboundDeliveryKind::Primary => OutboundKind::Primary,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::{new_inbound_channel, OutboundKind};
     use crate::channel_capability::{
         ChannelCapabilityContract, ChannelCapabilityEntry, ChannelDeliveryOrderingModel,
     };
@@ -795,8 +1308,13 @@ mod tests {
         crate::runtime::delayed_task::delayed_task_test_guard()
     }
 
+    fn service_due_delayed_tasks_after(wait_ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        crate::runtime::service_delayed_tasks();
+    }
+
     #[test]
-    fn queued_delivery_suppresses_test_progress_for_current_chat() {
+    fn queued_delivery_suppresses_facts_for_current_chat() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -811,12 +1329,16 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_progress("第一步");
-        delivery.emit_progress("第一步");
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
+        delivery.emit_fact(TurnVisibilityFact::Reasoning { round: 1 });
         delivery.emit_partial("第二步：继续处理中");
-        delivery.emit_progress("第三步");
-        delivery.emit_progress("第四步");
-        delivery.emit_progress("第五步");
+        delivery.emit_fact(TurnVisibilityFact::TaskPlanner);
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+        delivery.emit_fact(TurnVisibilityFact::Finalizing);
 
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report(), DeliveryReport::default());
@@ -844,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_without_supplemental_contract_suppresses_progress_updates() {
+    fn queued_delivery_without_supplemental_contract_suppresses_fact_updates() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -859,10 +1381,204 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_progress("处理中");
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
 
         assert!(outbound_rx.try_recv().is_err());
-        assert_eq!(delivery.report().presence_pulses_sent, 0);
+        assert_eq!(delivery.report(), DeliveryReport::default());
+    }
+
+    #[test]
+    fn queued_private_visibility_deadline_sends_ack() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-append-only-ack",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        let outbound = outbound_rx.try_recv().expect("append-only ack");
+        assert_eq!(outbound.content, "已收到，正在处理");
+        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+        assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 0);
+    }
+
+    #[test]
+    fn queued_private_visibility_deadline_combines_ack_with_first_tool_milestone() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-append-only-combined",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        let outbound = outbound_rx.try_recv().expect("combined visibility");
+        assert_eq!(outbound.content, "已收到，正在处理\n已进入首个工具执行");
+        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+        assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 1);
+        assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn queued_private_visibility_sends_late_first_tool_milestone_after_ack() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-append-only-late-tool",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+        let ack = outbound_rx.try_recv().expect("ack");
+        assert_eq!(ack.content, "已收到，正在处理");
+
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+
+        let milestone = outbound_rx.try_recv().expect("first-tool milestone");
+        assert_eq!(milestone.content, "已进入首个工具执行");
+        assert_eq!(milestone.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+        assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 1);
+    }
+
+    #[test]
+    fn queued_group_visibility_deadline_sends_heartbeat() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg_with_group("qq_channel", true);
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-group-heartbeat",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        service_due_delayed_tasks_after(APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS + 5);
+
+        let outbound = outbound_rx.try_recv().expect("group heartbeat");
+        assert_eq!(outbound.content, "仍在处理");
+        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(delivery.report().append_only_heartbeat_sent, 1);
+        assert_eq!(delivery.report().append_only_ack_sent, 0);
+    }
+
+    #[test]
+    fn queued_visibility_finalize_before_deadline_turns_deadline_into_noop() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-append-only-finalize-first",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        assert!(!delivery.finalize("最终答复"));
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().append_only_ack_sent, 0);
+        assert_eq!(delivery.report().append_only_heartbeat_sent, 0);
+    }
+
+    #[test]
+    fn queued_system_turn_never_registers_append_only_deadline() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = PcMsg::new_inbound_with_ingress(
+            "qq_channel",
+            "chat-system",
+            "system step",
+            false,
+            IngressKind::System,
+        )
+        .expect("system msg");
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-system-turn",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().append_only_ack_sent, 0);
+        assert_eq!(delivery.report().append_only_heartbeat_sent, 0);
+    }
+
+    #[test]
+    fn queued_visibility_degrades_when_critical_delayed_task_slots_are_exhausted() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let hold_until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while crate::runtime::schedule_critical_delayed_task(hold_until, Box::new(|| {})).is_ok() {}
+
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel");
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-critical-slots-full",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().append_only_ack_sent, 0);
+        assert_eq!(delivery.report().append_only_heartbeat_sent, 0);
     }
 
     #[test]
@@ -882,15 +1598,15 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_progress("正在执行 tools");
+        delivery.emit_fact(TurnVisibilityFact::TaskPlanner);
         let streamed = delivery.finalize("最终答案");
 
         assert!(streamed);
         assert_eq!(
             delivery.report(),
             DeliveryReport {
-                progress_updates_sent: 1,
-                planner_progress_updates_sent: 1,
+                edit_phase_header_updates_sent: 1,
+                edit_planner_header_updates_sent: 1,
                 finalize_streamed: true,
                 visible_text_updates_sent: 1,
                 ..DeliveryReport::default()
@@ -902,7 +1618,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_slice(),
-            ["正在执行 tools"]
+            ["正在规划当前任务"]
         );
         assert_eq!(
             editor
@@ -962,6 +1678,7 @@ mod tests {
         assert_eq!(outbound.channel.as_ref(), "telegram");
         assert_eq!(outbound.chat_id.as_ref(), "chat-2");
         assert_eq!(outbound.content, "不应再发送");
+        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report().tool_outbound_intents_seen, 3);
         assert_eq!(delivery.report().tool_visible_updates_sent, 1);
@@ -991,8 +1708,8 @@ mod tests {
                     channel: "telegram".to_string(),
                     chat_id: "chat-2".to_string(),
                 },
-                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
-                content: "显式外发".to_string(),
+                delivery_kind: ToolOutboundDeliveryKind::Primary,
+                content: "显式主答复".to_string(),
             })
             .expect("explicit intent");
 
@@ -1000,14 +1717,15 @@ mod tests {
         let outbound = outbound_rx.try_recv().expect("outbound");
         assert_eq!(outbound.channel.as_ref(), "telegram");
         assert_eq!(outbound.chat_id.as_ref(), "chat-2");
-        assert_eq!(outbound.content, "显式外发");
+        assert_eq!(outbound.content, "显式主答复");
+        assert_eq!(outbound.outbound_kind, OutboundKind::Primary);
         assert_eq!(delivery.report().tool_outbound_intents_seen, 1);
         assert_eq!(delivery.report().tool_visible_updates_sent, 1);
         assert_eq!(delivery.report().explicit_outbound_sent, 1);
     }
 
     #[test]
-    fn edit_delivery_finalize_reuses_edit_lane_after_progress() {
+    fn edit_delivery_finalize_reuses_edit_lane_after_header_projection() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
@@ -1023,7 +1741,7 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_progress("处理中");
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
         assert!(delivery.finalize("主答复"));
 
         assert_eq!(
@@ -1032,7 +1750,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_slice(),
-            ["处理中"]
+            ["已收到，正在处理"]
         );
         assert_eq!(
             editor
@@ -1041,6 +1759,49 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_slice(),
             ["主答复"]
+        );
+    }
+
+    #[test]
+    fn edit_delivery_placeholder_header_does_not_overwrite_visible_body() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram");
+        let editor = StubEditor::default();
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::TaskPlanner);
+        delivery.on_stream_delta("这是已经可见的正文");
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+
+        assert_eq!(
+            editor
+                .sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["正在规划当前任务"]
+        );
+        assert_eq!(
+            editor
+                .edits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["这是已经可见的正文"]
         );
     }
 
@@ -1061,12 +1822,16 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_progress("已可见最终文本");
-        delivery.emit_progress("第一次失败");
-        delivery.emit_progress("第二次失败");
-        delivery.emit_progress("第三次失败");
+        delivery.emit_partial("这是已可见最终文本");
+        delivery.emit_fact(TurnVisibilityFact::TaskPlanner);
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+        delivery.emit_fact(TurnVisibilityFact::Finalizing);
 
-        let streamed = delivery.finalize("已可见最终文本");
+        let streamed = delivery.finalize("这是已可见最终文本");
 
         assert!(streamed);
         assert!(delivery.report().finalize_streamed);
@@ -1076,12 +1841,91 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_slice(),
-            ["已可见最终文本"]
+            ["这是已可见最终文本"]
         );
     }
 
     #[test]
-    fn queued_delivery_suppresses_structured_progress_contracts_for_current_chat() {
+    fn edit_delivery_terminal_header_stays_sticky_against_later_placeholder_fact() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram");
+        let editor = StubEditor::default();
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::TaskTerminal {
+            status: TaskTerminalVisibilityStatus::PartialComplete,
+        });
+        delivery.emit_fact(TurnVisibilityFact::Finalizing);
+
+        assert_eq!(
+            editor
+                .sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["当前任务已部分完成"]
+        );
+        assert!(editor
+            .edits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
+    }
+
+    #[test]
+    fn edit_delivery_terminal_header_stays_above_body_until_finalize() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram");
+        let editor = StubEditor::default();
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::TaskTerminal {
+            status: TaskTerminalVisibilityStatus::PartialComplete,
+        });
+        delivery.on_stream_delta("已取得部分结果");
+        delivery.emit_fact(TurnVisibilityFact::Finalizing);
+        assert!(delivery.finalize("最终答复"));
+
+        assert_eq!(
+            editor
+                .sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["当前任务已部分完成"]
+        );
+        assert_eq!(
+            editor
+                .edits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["当前任务已部分完成\n\n已取得部分结果", "最终答复"]
+        );
+    }
+
+    #[test]
+    fn queued_delivery_suppresses_structured_visibility_contracts_for_current_chat() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1096,17 +1940,23 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_task_planner_progress();
-        delivery.emit_tool_progress("board_info", 0, 1);
-        delivery.emit_task_action_progress(TaskActionProgressKind::Started);
-        delivery.emit_task_terminal_progress(TaskTerminalProgressKind::PartialComplete);
+        delivery.emit_fact(TurnVisibilityFact::TaskPlanner);
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+        delivery.emit_fact(TurnVisibilityFact::TaskStarted { resumed: false });
+        delivery.emit_fact(TurnVisibilityFact::TaskTerminal {
+            status: TaskTerminalVisibilityStatus::PartialComplete,
+        });
 
         assert!(outbound_rx.try_recv().is_err());
         assert_eq!(delivery.report(), DeliveryReport::default());
     }
 
     #[test]
-    fn queued_delivery_action_progress_stays_without_presence_pulses() {
+    fn queued_delivery_action_facts_remain_telemetry_only_without_append_only_visibility() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1121,11 +1971,12 @@ mod tests {
             UiLocale::Zh,
         );
 
-        delivery.emit_foreground_work_resumed();
-        delivery.emit_foreground_work_blocked();
+        delivery.emit_fact(TurnVisibilityFact::TaskStarted { resumed: true });
+        delivery.emit_fact(TurnVisibilityFact::TaskTerminal {
+            status: TaskTerminalVisibilityStatus::Blocked,
+        });
 
         assert!(outbound_rx.try_recv().is_err());
-        assert_eq!(delivery.report().presence_pulses_sent, 0);
         assert_eq!(delivery.report(), DeliveryReport::default());
     }
 }

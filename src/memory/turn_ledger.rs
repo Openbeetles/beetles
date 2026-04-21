@@ -595,18 +595,14 @@ impl TurnLedgerStatus {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnDeliveryLedger {
     #[serde(default)]
-    #[serde(alias = "waiting_notice_sent")]
-    pub presence_pulses_sent: u8,
+    pub append_only_ack_sent: u8,
     #[serde(default)]
-    pub progress_updates_sent: u8,
+    pub append_only_heartbeat_sent: u8,
     #[serde(default)]
-    pub planner_progress_updates_sent: u8,
+    pub append_only_first_tool_milestone_sent: u8,
     #[serde(default)]
-    pub tool_progress_updates_sent: u8,
-    #[serde(default)]
-    pub action_progress_updates_sent: u8,
-    #[serde(default)]
-    pub terminal_progress_updates_sent: u8,
+    #[serde(alias = "progress_updates_sent")]
+    pub edit_phase_header_updates_sent: u8,
     #[serde(default)]
     pub partial_updates_sent: u8,
     #[serde(default)]
@@ -1355,5 +1351,24 @@ mod tests {
         assert!(rendered.contains("Winner: clarify_before_action (88)"));
         assert!(rendered.contains("Defender: structured_tool_synthesis (84)"));
         assert!(rendered.contains("Attacker: clarify_before_action (88)"));
+    }
+
+    #[test]
+    fn turn_delivery_ledger_deserializes_legacy_progress_alias_into_edit_phase_headers() {
+        let ledger: TurnDeliveryLedger = serde_json::from_value(serde_json::json!({
+            "progress_updates_sent": 3,
+            "append_only_ack_sent": 1,
+        }))
+        .expect("legacy delivery ledger");
+
+        assert_eq!(ledger.edit_phase_header_updates_sent, 3);
+        assert_eq!(ledger.append_only_ack_sent, 1);
+
+        let serialized = serde_json::to_value(&ledger).expect("serialize delivery ledger");
+        assert_eq!(
+            serialized.get("edit_phase_header_updates_sent"),
+            Some(&serde_json::Value::from(3))
+        );
+        assert!(serialized.get("progress_updates_sent").is_none());
     }
 }

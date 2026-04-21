@@ -1674,14 +1674,16 @@ fn handle_status_command(platform: &Arc<dyn Platform>, json: bool, chat_id: Opti
                     println!("Recent turn total_ms: {}", ledger.total_ms);
                     println!("Recent turn tool_calls: {}", ledger.tool_calls);
                     println!(
-                        "Recent turn delivery: presence_pulses_sent={} progress_updates_sent={} planner_progress_updates_sent={} tool_progress_updates_sent={} action_progress_updates_sent={} terminal_progress_updates_sent={} partial_updates_sent={} tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
-                        ledger.delivery.presence_pulses_sent,
-                        ledger.delivery.progress_updates_sent,
-                        ledger.delivery.planner_progress_updates_sent,
-                        ledger.delivery.tool_progress_updates_sent,
-                        ledger.delivery.action_progress_updates_sent,
-                        ledger.delivery.terminal_progress_updates_sent,
+                        "Recent turn visibility counters: edit_phase_header_updates_sent={} append_only_ack_sent={} append_only_heartbeat_sent={} append_only_first_tool_milestone_sent={} partial_updates_sent={} visible_text_updates_sent={}",
+                        ledger.delivery.edit_phase_header_updates_sent,
+                        ledger.delivery.append_only_ack_sent,
+                        ledger.delivery.append_only_heartbeat_sent,
+                        ledger.delivery.append_only_first_tool_milestone_sent,
                         ledger.delivery.partial_updates_sent,
+                        ledger.delivery.visible_text_updates_sent
+                    );
+                    println!(
+                        "Recent turn outbound counters: tool_outbound_intents_seen={} tool_visible_updates_sent={} explicit_outbound_sent={} tool_outbound_suppressed={} current_primary_delivered={} finalize_streamed={}",
                         ledger.delivery.tool_outbound_intents_seen,
                         ledger.delivery.tool_visible_updates_sent,
                         ledger.delivery.explicit_outbound_sent,

@@ -76,12 +76,10 @@ pub(super) fn sync_user_turn_relationship_topology(
 
 pub(super) fn build_turn_delivery_ledger(report: DeliveryReport) -> TurnDeliveryLedger {
     TurnDeliveryLedger {
-        presence_pulses_sent: report.presence_pulses_sent,
-        progress_updates_sent: report.progress_updates_sent,
-        planner_progress_updates_sent: report.planner_progress_updates_sent,
-        tool_progress_updates_sent: report.tool_progress_updates_sent,
-        action_progress_updates_sent: report.action_progress_updates_sent,
-        terminal_progress_updates_sent: report.terminal_progress_updates_sent,
+        append_only_ack_sent: report.append_only_ack_sent,
+        append_only_heartbeat_sent: report.append_only_heartbeat_sent,
+        append_only_first_tool_milestone_sent: report.append_only_first_tool_milestone_sent,
+        edit_phase_header_updates_sent: report.edit_phase_header_updates_sent,
         partial_updates_sent: report.partial_updates_sent,
         tool_outbound_intents_seen: report.tool_outbound_intents_seen,
         tool_visible_updates_sent: report.tool_visible_updates_sent,

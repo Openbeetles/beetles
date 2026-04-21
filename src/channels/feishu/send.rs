@@ -3,7 +3,7 @@
 use crate::bus::PcMsg;
 use crate::channels::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
-    run_buffered_sender_loop,
+    run_buffered_sender_loop, QueuedOutboundMessage,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -200,7 +200,7 @@ fn send_feishu_message<H: ChannelHttpClient>(
 
 /// 从 rx 取出待发送，鉴权后调用飞书发消息 API（一次性 drain）。
 pub fn flush_feishu_sends<H: ChannelHttpClient>(
-    rx: &std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: &std::sync::mpsc::Receiver<QueuedOutboundMessage>,
     app_id: &str,
     app_secret: &str,
     http: &mut H,
@@ -216,12 +216,12 @@ pub fn flush_feishu_sends<H: ChannelHttpClient>(
                 return;
             }
         };
-    while let Ok((chat_id, content, _req_id)) = rx.try_recv() {
-        if let Err(error) = send_feishu_message(http, &token, &chat_id, &content) {
+    while let Ok(message) = rx.try_recv() {
+        if let Err(error) = send_feishu_message(http, &token, &message.chat_id, &message.content) {
             record_outbound_http_failure(&error);
             log::warn!(
                 "[feishu_flush] send failed for chat_id={}: {}",
-                chat_id,
+                message.chat_id,
                 error
             );
         } else {
@@ -232,7 +232,7 @@ pub fn flush_feishu_sends<H: ChannelHttpClient>(
 
 /// 持续运行的飞书发送循环：sender 线程内**复用**同一 HTTP；tenant_access_token 仍按 TTL 缓存，减少 getToken 次数。
 pub fn run_feishu_sender_loop<H, F>(
-    rx: std::sync::mpsc::Receiver<(String, String, Option<String>)>,
+    rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
     app_id: &str,
     app_secret: &str,
     mut create_http: F,
@@ -267,7 +267,7 @@ pub fn run_feishu_sender_loop<H, F>(
                 return Err(error);
             }
         };
-        match send_feishu_message(h, token.as_str(), &message.0, &message.1) {
+        match send_feishu_message(h, token.as_str(), &message.chat_id, &message.content) {
             Ok(()) => {
                 record_outbound_http_success();
                 Ok(())
@@ -278,7 +278,7 @@ pub fn run_feishu_sender_loop<H, F>(
                     "[{}] send failed (attempt {}), chat_id={}: {}",
                     TAG,
                     attempt,
-                    message.0,
+                    message.chat_id,
                     error
                 );
                 token_cache.invalidate();

@@ -17,6 +17,7 @@ mod soul_feedback;
 mod strategy;
 mod subject_state;
 mod tool_outcome;
+mod turn_visibility;
 mod workflow_outcome;
 
 pub(crate) use active_work::{
@@ -39,6 +40,7 @@ pub use context::{
 pub use delivery::StreamEditor;
 pub use r#loop::{run_agent_loop, AgentLoopConfig, TypingNotifier};
 pub use strategy::AgentRunStrategy;
+pub(crate) use turn_visibility::{TaskTerminalVisibilityStatus, TurnVisibilityFact};
 pub(crate) use workflow_outcome::{
     parse_workflow_outcome_kind, workflow_blocker_from_tool_blocker,
     workflow_outcome_kind_from_tool_failure_kind, WorkflowBlocker, WorkflowBlockerKind,

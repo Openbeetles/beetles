@@ -5,11 +5,11 @@ pub(super) struct ExecutedTurn {
     pub(super) telemetry: WorkerRunTelemetry,
 }
 
-fn foreground_action_progress_kind_for_turn(
+fn foreground_task_started_for_turn(
     request_semantics: crate::agent::request_semantics::RequestSemantics,
     has_resumeable_work: bool,
     has_tools: bool,
-) -> Option<crate::agent::delivery::TaskActionProgressKind> {
+) -> Option<bool> {
     use crate::agent::request_semantics::{ActionFamily, ExecutionPreference};
 
     if !has_tools
@@ -19,7 +19,7 @@ fn foreground_action_progress_kind_for_turn(
         return None;
     }
     if matches!(request_semantics.action_family, ActionFamily::ActiveAction) {
-        Some(crate::agent::delivery::TaskActionProgressKind::Resumed)
+        Some(true)
     } else {
         None
     }
@@ -31,18 +31,13 @@ fn maybe_emit_regular_foreground_action_progress(
     has_resumeable_work: bool,
     has_tools: bool,
 ) {
-    use crate::agent::delivery::TaskActionProgressKind;
-
-    if delivery.report().action_progress_updates_sent > 0 {
+    if delivery.has_visible_task_started_fact() {
         return;
     }
-    match foreground_action_progress_kind_for_turn(
-        request_semantics,
-        has_resumeable_work,
-        has_tools,
-    ) {
-        Some(TaskActionProgressKind::Resumed) => delivery.emit_foreground_work_resumed(),
-        None | Some(TaskActionProgressKind::Started) => {}
+    if let Some(resumed) =
+        foreground_task_started_for_turn(request_semantics, has_resumeable_work, has_tools)
+    {
+        delivery.emit_fact(crate::agent::TurnVisibilityFact::TaskStarted { resumed });
     }
 }
 
@@ -57,8 +52,8 @@ fn should_emit_regular_foreground_blocked_progress(
     !any_tool_used
         && request_semantics.execution_preference == ExecutionPreference::ToolFirst
         && matches!(request_semantics.action_family, ActionFamily::ActiveAction)
-        && delivery.report().action_progress_updates_sent > 0
-        && delivery.report().terminal_progress_updates_sent == 0
+        && delivery.has_visible_task_started_fact()
+        && !delivery.has_visible_task_terminal_fact()
         && blocker.is_some()
 }
 
@@ -370,6 +365,7 @@ pub(super) fn execute_turn(
         config.runtime.memory_system_kind,
         loc,
     );
+    delivery.emit_fact(crate::agent::TurnVisibilityFact::Acknowledged);
     let PreparedWorkerConversation {
         mut runtime_carry,
         subject_state,
@@ -541,6 +537,9 @@ pub(super) fn execute_turn(
         if round >= 2 {
             compact_early_tool_rounds(&mut messages, initial_msg_count);
         }
+        delivery.emit_fact(crate::agent::TurnVisibilityFact::Reasoning {
+            round: round as u32 + 1,
+        });
         let t0 = metrics::record_llm_call_start();
         let llm_round_start = Instant::now();
         let mut first_token_marked = latency.ttft_ms.is_some();
@@ -781,8 +780,11 @@ pub(super) fn execute_turn(
         &delivery,
         tool_round_completion.blocker.as_ref(),
     ) {
-        delivery.emit_foreground_work_blocked();
+        delivery.emit_fact(crate::agent::TurnVisibilityFact::TaskTerminal {
+            status: crate::agent::TaskTerminalVisibilityStatus::Blocked,
+        });
     }
+    delivery.emit_fact(crate::agent::TurnVisibilityFact::Finalizing);
     let streamed = delivery.finalize(&final_content);
     let outcome = WorkerOutcome::Content(final_content);
     Ok(ExecutedTurn {
