@@ -1,6 +1,7 @@
 //! Start/stop hostapd and dnsmasq for AP mode.
 
 use crate::error::Result;
+use crate::platform::linux_owner::{self, LinuxSocketProtocol};
 use crate::platform::state_mount_path;
 use crate::platform::wifi::linux_ctrl::hostapd_ctrl;
 use crate::platform::wifi::linux_ctrl::net;
@@ -31,6 +32,27 @@ fn kill_and_wait(pid: u32) {
     let _ = signal_process(pid, false); // SIGKILL
                                         // 给内核最多 500ms 回收 socket
     std::thread::sleep(Duration::from_millis(500));
+}
+
+fn hostapd_socket_path(iface: &str) -> PathBuf {
+    Path::new(HOSTAPD_CTRL_INTERFACE_DIR).join(iface)
+}
+
+fn process_summary(identity: &process::ProcessIdentity) -> String {
+    format!(
+        "pid={} comm={} cmdline={}",
+        identity.pid,
+        identity.comm,
+        identity.cmdline()
+    )
+}
+
+fn hostapd_process_matches_owned(identity: &process::ProcessIdentity, conf_path: &Path) -> bool {
+    identity.comm.trim() == "hostapd"
+        && identity
+            .args
+            .iter()
+            .any(|arg| arg == conf_path.to_string_lossy().as_ref())
 }
 
 /// Parse dnsmasq argv and confirm it points at beetle-owned config or pidfile.
@@ -71,30 +93,275 @@ fn dnsmasq_cmdline_matches_owned_paths(
     false
 }
 
-/// 通过 /proc 扫描仍指向 beetle 自己 dnsmasq.conf/pidfile 的 dnsmasq 进程。
-fn find_owned_dnsmasq_pids(conf_path: &Path, pidfile_path: &Path) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return pids;
-    };
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let comm_path = entry.path().join("comm");
-        if let Ok(c) = std::fs::read_to_string(comm_path) {
-            if c.trim() != "dnsmasq" {
-                continue;
+fn dnsmasq_process_matches_owned(
+    identity: &process::ProcessIdentity,
+    conf_path: &Path,
+    pidfile_path: &Path,
+) -> bool {
+    if identity.comm.trim() != "dnsmasq" {
+        return false;
+    }
+    let expected_conf = conf_path.to_string_lossy();
+    let expected_pidfile = pidfile_path.to_string_lossy();
+    for (index, arg) in identity.args.iter().enumerate() {
+        if arg.as_str() == format!("--conf-file={}", expected_conf) {
+            return true;
+        }
+        if arg.as_str() == format!("--pid-file={}", expected_pidfile) {
+            return true;
+        }
+        if arg.as_str() == "--conf-file"
+            && identity
+                .args
+                .get(index + 1)
+                .is_some_and(|next| next.as_str() == expected_conf.as_ref())
+        {
+            return true;
+        }
+        if arg.as_str() == "--pid-file"
+            && identity
+                .args
+                .get(index + 1)
+                .is_some_and(|next| next.as_str() == expected_pidfile.as_ref())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn pidfile_identity(path: &Path) -> Option<process::ProcessIdentity> {
+    let pid = std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()?;
+    process::read_process_identity(pid)
+}
+
+fn pidfile_matches_owned_hostapd(
+    pid_path: &Path,
+    conf_path: &Path,
+) -> Option<process::ProcessIdentity> {
+    let identity = pidfile_identity(pid_path)?;
+    hostapd_process_matches_owned(&identity, conf_path).then_some(identity)
+}
+
+fn owned_hostapd_owners(iface: &str, conf_path: &Path) -> Vec<process::ProcessIdentity> {
+    process::unix_socket_owners(&hostapd_socket_path(iface))
+        .into_iter()
+        .filter(|identity| hostapd_process_matches_owned(identity, conf_path))
+        .collect()
+}
+
+fn summarize_owners(owners: &[process::ProcessIdentity]) -> String {
+    if owners.is_empty() {
+        return "none".to_string();
+    }
+    owners
+        .iter()
+        .map(process_summary)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn summarize_string_owners(hostapd_owners: &[String], dnsmasq_owners: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !hostapd_owners.is_empty() {
+        parts.push(format!("hostapd=[{}]", hostapd_owners.join(", ")));
+    }
+    if !dnsmasq_owners.is_empty() {
+        parts.push(format!("dnsmasq=[{}]", dnsmasq_owners.join(", ")));
+    }
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn partition_dnsmasq_owners(
+    owners: &[linux_owner::LinuxSocketOwner],
+    conf_path: &Path,
+    pidfile_path: &Path,
+) -> (Vec<process::ProcessIdentity>, Vec<String>) {
+    let mut owned = Vec::new();
+    let mut external = Vec::new();
+    for owner in owners {
+        match process::read_process_identity(owner.pid) {
+            Some(proc) if dnsmasq_process_matches_owned(&proc, conf_path, pidfile_path) => {
+                owned.push(proc);
             }
-            let cmdline_path = entry.path().join("cmdline");
-            if let Ok(cmdline) = std::fs::read(cmdline_path) {
-                if dnsmasq_cmdline_matches_owned_paths(&cmdline, conf_path, pidfile_path) {
-                    pids.push(pid);
-                }
+            Some(_) | None => external.push(owner.summary()),
+        }
+    }
+    (owned, external)
+}
+
+fn own_pidfile_residue(
+    iface: &str,
+    hostapd_conf: &Path,
+    dnsmasq_conf: &Path,
+    hostapd_pid: &Path,
+    dnsmasq_pid: &Path,
+) -> Vec<String> {
+    let mut residue = Vec::new();
+    if let Ok(raw) = std::fs::read_to_string(hostapd_pid) {
+        let pid = raw.trim().parse::<u32>().ok();
+        match pid.and_then(process::read_process_identity) {
+            Some(identity) if hostapd_process_matches_owned(&identity, hostapd_conf) => {
+                residue.push(format!("hostapd pidfile -> {}", process_summary(&identity)));
+            }
+            Some(identity) => {
+                residue.push(format!(
+                    "hostapd pidfile foreign -> {}",
+                    process_summary(&identity)
+                ));
+            }
+            None => {
+                residue.push(format!(
+                    "hostapd pidfile stale -> {}",
+                    hostapd_pid.display()
+                ));
             }
         }
     }
-    pids
+    if let Ok(raw) = std::fs::read_to_string(dnsmasq_pid) {
+        let pid = raw.trim().parse::<u32>().ok();
+        match pid.and_then(process::read_process_identity) {
+            Some(identity)
+                if dnsmasq_process_matches_owned(&identity, dnsmasq_conf, dnsmasq_pid) =>
+            {
+                residue.push(format!("dnsmasq pidfile -> {}", process_summary(&identity)));
+            }
+            Some(identity) => {
+                residue.push(format!(
+                    "dnsmasq pidfile foreign -> {}",
+                    process_summary(&identity)
+                ));
+            }
+            None => {
+                residue.push(format!(
+                    "dnsmasq pidfile stale -> {}",
+                    dnsmasq_pid.display()
+                ));
+            }
+        }
+    }
+    if !residue.is_empty() {
+        residue.push(format!("iface={}", iface));
+    }
+    residue
+}
+
+fn other_beetle_runtime_summaries() -> Result<Vec<String>> {
+    Ok(linux_owner::other_beetle_run_processes()
+        .map_err(|e| crate::error::Error::io("wifi_ap_owner", e))?
+        .into_iter()
+        .map(|identity| identity.summary())
+        .collect())
+}
+
+/// 启动前 owner preflight：
+/// - 外部 hostapd/dnsmasq 占用时直接报 owner，避免误杀系统服务。
+/// - Beetle 自己的残留/重复启动尝试会先清理，再继续启动链。
+pub fn preflight_ap_start(iface: &str) -> Result<()> {
+    let hostapd_conf_file = hostapd_conf_path();
+    let dnsmasq_conf_file = dnsmasq_conf_path();
+    let hostapd_pid_file = pidfile("hostapd");
+    let dnsmasq_pid_file = pidfile("dnsmasq");
+
+    let hostapd_owners = process::unix_socket_owners(&hostapd_socket_path(iface));
+    let dnsmasq_owners = linux_owner::resolve_listener_owners("67", LinuxSocketProtocol::Udp)
+        .map_err(|e| crate::error::Error::io("wifi_ap_owner", e))?;
+    let owned_hostapd = hostapd_owners
+        .iter()
+        .filter(|identity| hostapd_process_matches_owned(identity, &hostapd_conf_file))
+        .cloned()
+        .collect::<Vec<_>>();
+    let (owned_dnsmasq, external_dnsmasq) =
+        partition_dnsmasq_owners(&dnsmasq_owners, &dnsmasq_conf_file, &dnsmasq_pid_file);
+    let external_hostapd = hostapd_owners
+        .iter()
+        .filter(|identity| !hostapd_process_matches_owned(identity, &hostapd_conf_file))
+        .map(process_summary)
+        .collect::<Vec<_>>();
+
+    let owned_pidfile_residue = own_pidfile_residue(
+        iface,
+        &hostapd_conf_file,
+        &dnsmasq_conf_file,
+        &hostapd_pid_file,
+        &dnsmasq_pid_file,
+    );
+
+    if !external_hostapd.is_empty() || !external_dnsmasq.is_empty() {
+        return Err(crate::error::Error::config(
+            "wifi_ap_owner",
+            format!(
+                "external AP/DHCP owner on iface '{}': {}",
+                iface,
+                summarize_string_owners(&external_hostapd, &external_dnsmasq)
+            ),
+        ));
+    }
+
+    if !owned_hostapd.is_empty() || !owned_dnsmasq.is_empty() || !owned_pidfile_residue.is_empty() {
+        let other_beetle_runs = other_beetle_runtime_summaries()?;
+        if !other_beetle_runs.is_empty() {
+            return Err(crate::error::Error::config(
+                "wifi_ap_owner",
+                format!(
+                    "another `beetle run` instance is already active; refusing to reclaim Beetle-owned AP/DHCP on '{}': runtimes=[{}], hostapd=[{}], dnsmasq=[{}], pidfiles=[{}]",
+                    iface,
+                    other_beetle_runs.join(", "),
+                    summarize_owners(&owned_hostapd),
+                    summarize_owners(&owned_dnsmasq),
+                    owned_pidfile_residue.join(", ")
+                ),
+            ));
+        }
+        log::warn!(
+            "[hostapd] Beetle-owned AP/DHCP residue on '{}'; cleaning before start: hostapd=[{}], dnsmasq=[{}], pidfiles=[{}]",
+            iface,
+            summarize_owners(&owned_hostapd),
+            summarize_owners(&owned_dnsmasq),
+            owned_pidfile_residue.join(", ")
+        );
+        stop_ap(iface);
+
+        let remaining_owned_hostapd = owned_hostapd_owners(iface, &hostapd_conf_file);
+        let remaining_dnsmasq_owners =
+            linux_owner::resolve_listener_owners("67", LinuxSocketProtocol::Udp)
+                .map_err(|e| crate::error::Error::io("wifi_ap_owner", e))?;
+        let (remaining_owned_dnsmasq, remaining_external_dnsmasq) = partition_dnsmasq_owners(
+            &remaining_dnsmasq_owners,
+            &dnsmasq_conf_file,
+            &dnsmasq_pid_file,
+        );
+        if !remaining_owned_hostapd.is_empty() || !remaining_owned_dnsmasq.is_empty() {
+            return Err(crate::error::Error::config(
+                "wifi_ap_owner",
+                format!(
+                    "Beetle-owned AP/DHCP residue still present after cleanup on '{}': hostapd=[{}], dnsmasq=[{}]",
+                    iface,
+                    summarize_owners(&remaining_owned_hostapd),
+                    summarize_owners(&remaining_owned_dnsmasq)
+                ),
+            ));
+        }
+        if !remaining_external_dnsmasq.is_empty() {
+            return Err(crate::error::Error::config(
+                "wifi_ap_owner",
+                format!(
+                    "external DHCP owner still present after Beetle cleanup on '{}': dnsmasq=[{}]",
+                    iface,
+                    remaining_external_dnsmasq.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn config_dir() -> PathBuf {
@@ -156,6 +423,7 @@ pub fn start_ap_on_channel(iface: &str, ssid: &str, ip: &str, channel: u8) -> Re
         );
         DEFAULT_SOFTAP_CHANNEL
     };
+    preflight_ap_start(iface)?;
     net::wait_iface_kernel_ready(iface, "wifi_ap_iface_ready")?;
     net::setup_ap_address(iface, &format!("{}/24", ip))?;
 
@@ -230,11 +498,29 @@ pub fn start_ap_on_channel(iface: &str, ssid: &str, ip: &str, channel: u8) -> Re
 /// 3. Scan /proc for any remaining beetle-owned dnsmasq not covered by PID files
 ///    (e.g. prior crash without cleanup) and kill them so port 67 is free.
 pub fn stop_ap(iface: &str) {
-    hostapd_ctrl::try_terminate(iface, Duration::from_secs(3));
-
     let dnsmasq_conf = dnsmasq_conf_path();
     let dnsmasq_pid_path = pidfile("dnsmasq");
+    let hostapd_conf = hostapd_conf_path();
+    let hostapd_pid_path = pidfile("hostapd");
+    let hostapd_socket = hostapd_socket_path(iface);
     let mut killed_pids = HashSet::new();
+
+    let hostapd_socket_owners = process::unix_socket_owners(&hostapd_socket);
+    let owned_hostapd_socket = hostapd_socket_owners
+        .iter()
+        .filter(|identity| hostapd_process_matches_owned(identity, &hostapd_conf))
+        .cloned()
+        .collect::<Vec<_>>();
+    let owned_hostapd_pidfile = pidfile_matches_owned_hostapd(&hostapd_pid_path, &hostapd_conf);
+    if !owned_hostapd_socket.is_empty() || owned_hostapd_pidfile.is_some() {
+        hostapd_ctrl::try_terminate(iface, Duration::from_secs(3));
+    } else if !hostapd_socket_owners.is_empty() {
+        log::warn!(
+            "[hostapd] skip terminate on '{}' because ctrl socket is owned by external process(es): {}",
+            iface,
+            summarize_owners(&hostapd_socket_owners)
+        );
+    }
 
     // Kill PID-file-tracked processes; wait for each to release its sockets.
     for name in ["dnsmasq", "hostapd"] {
@@ -242,21 +528,71 @@ pub fn stop_ap(iface: &str) {
         if let Ok(raw) = std::fs::read_to_string(&pid_path) {
             if let Ok(pid) = raw.trim().parse::<u32>() {
                 if pid > 0 {
-                    killed_pids.insert(pid);
-                    kill_and_wait(pid);
+                    let expected_owned = if name == "dnsmasq" {
+                        process::read_process_identity(pid)
+                            .map(|identity| {
+                                dnsmasq_process_matches_owned(
+                                    &identity,
+                                    &dnsmasq_conf,
+                                    &dnsmasq_pid_path,
+                                )
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        process::read_process_identity(pid)
+                            .map(|identity| hostapd_process_matches_owned(&identity, &hostapd_conf))
+                            .unwrap_or(false)
+                    };
+                    if expected_owned {
+                        killed_pids.insert(pid);
+                        kill_and_wait(pid);
+                    } else {
+                        log::warn!(
+                            "[hostapd] refuse to kill non-Beetle pidfile owner '{}' -> pid={} (stale pidfile removed)",
+                            name,
+                            pid
+                        );
+                    }
                 }
             }
         }
         let _ = std::fs::remove_file(&pid_path);
     }
 
-    // Kill any remaining beetle-owned dnsmasq not tracked by our PID file.
-    for pid in find_owned_dnsmasq_pids(&dnsmasq_conf, &dnsmasq_pid_path) {
-        if killed_pids.contains(&pid) {
+    // Kill any remaining Beetle-owned hostapd residue not covered by the PID file.
+    for identity in owned_hostapd_owners(iface, &hostapd_conf) {
+        if killed_pids.contains(&identity.pid) {
             continue;
         }
-        log::debug!("[hostapd] killing owned untracked dnsmasq pid={}", pid);
-        kill_and_wait(pid);
+        log::debug!(
+            "[hostapd] killing owned untracked hostapd process {}",
+            process_summary(&identity)
+        );
+        kill_and_wait(identity.pid);
+    }
+
+    // Kill any remaining beetle-owned dnsmasq not tracked by our PID file.
+    for owner in linux_owner::resolve_listener_owners("67", LinuxSocketProtocol::Udp)
+        .map(|owners| {
+            owners
+                .into_iter()
+                .filter(|identity| {
+                    process::read_process_identity(identity.pid).is_some_and(|proc| {
+                        dnsmasq_process_matches_owned(&proc, &dnsmasq_conf, &dnsmasq_pid_path)
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+    {
+        if killed_pids.contains(&owner.pid) {
+            continue;
+        }
+        log::debug!(
+            "[hostapd] killing owned untracked dnsmasq process {}",
+            owner.summary()
+        );
+        kill_and_wait(owner.pid);
     }
 
     let sock = Path::new(HOSTAPD_CTRL_INTERFACE_DIR).join(iface);
@@ -316,6 +652,38 @@ mod tests {
             b"dnsmasq\0--pid-file\0/tmp/beetle/wifi/linux/dnsmasq.pid\0",
             conf,
             pidfile,
+        ));
+    }
+
+    #[test]
+    fn ownership_helpers_recognize_owned_process_shapes() {
+        let hostapd_conf = Path::new("/tmp/beetle/wifi/linux/hostapd.conf");
+        let dnsmasq_conf = Path::new("/tmp/beetle/wifi/linux/dnsmasq.conf");
+        let dnsmasq_pidfile = Path::new("/tmp/beetle/wifi/linux/dnsmasq.pid");
+        let hostapd = crate::platform::wifi::linux_ctrl::process::ProcessIdentity {
+            pid: 101,
+            comm: "hostapd".to_string(),
+            args: vec![
+                "-B".to_string(),
+                "-P".to_string(),
+                "/tmp/beetle/wifi/linux/hostapd.pid".to_string(),
+                "/tmp/beetle/wifi/linux/hostapd.conf".to_string(),
+            ],
+        };
+        let dnsmasq = crate::platform::wifi::linux_ctrl::process::ProcessIdentity {
+            pid: 102,
+            comm: "dnsmasq".to_string(),
+            args: vec![
+                "dnsmasq".to_string(),
+                "--conf-file=/tmp/beetle/wifi/linux/dnsmasq.conf".to_string(),
+                "--pid-file=/tmp/beetle/wifi/linux/dnsmasq.pid".to_string(),
+            ],
+        };
+        assert!(super::hostapd_process_matches_owned(&hostapd, hostapd_conf));
+        assert!(super::dnsmasq_process_matches_owned(
+            &dnsmasq,
+            dnsmasq_conf,
+            dnsmasq_pidfile
         ));
     }
 }

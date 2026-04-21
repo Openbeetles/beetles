@@ -4575,9 +4575,6 @@ mod tests {
                 external_wss_managed_present: false,
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
-                supervisor_present: false,
-                supervisor_alive: false,
-                supervisor_agent_alive: false,
                 recovery_safe_mode_active: false,
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
@@ -4676,9 +4673,6 @@ mod tests {
                 external_wss_managed_present: false,
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
-                supervisor_present: false,
-                supervisor_alive: false,
-                supervisor_agent_alive: false,
                 recovery_safe_mode_active: false,
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
@@ -4898,9 +4892,6 @@ mod tests {
                 external_wss_managed_present: false,
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
-                supervisor_present: false,
-                supervisor_alive: false,
-                supervisor_agent_alive: false,
                 recovery_safe_mode_active: false,
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
@@ -5614,9 +5605,6 @@ mod tests {
             external_wss_managed_present: false,
             external_wss_suspend_requested: false,
             external_wss_suspended: false,
-            supervisor_present: false,
-            supervisor_alive: false,
-            supervisor_agent_alive: false,
             recovery_safe_mode_active: false,
             action_budget: crate::runtime::RuntimeModeActionBudget {
                 allow_periodic_maintenance: true,
@@ -7618,9 +7606,6 @@ mod tests {
                 external_wss_managed_present: false,
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
-                supervisor_present: false,
-                supervisor_alive: false,
-                supervisor_agent_alive: false,
                 recovery_safe_mode_active: false,
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,

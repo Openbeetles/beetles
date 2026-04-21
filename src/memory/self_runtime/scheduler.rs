@@ -673,15 +673,31 @@ pub(super) fn idle_memory_hygiene_budget_allows_run() -> bool {
         && snap.outbound_depth == 0
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn idle_self_runtime_block_reason() -> Option<&'static str> {
-    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+fn base_idle_self_runtime_block_reason(
+    runtime_mode: crate::runtime::RuntimeModeSnapshot,
+    wall_clock_valid: bool,
+) -> Option<&'static str> {
     if !runtime_mode.action_budget.allow_idle_self_runtime {
         return Some(
             runtime_mode
                 .mode_block_reason()
                 .unwrap_or("runtime_mode_blocked"),
         );
+    }
+    if !wall_clock_valid {
+        return Some("clock_unsynchronized");
+    }
+    None
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn idle_self_runtime_block_reason() -> Option<&'static str> {
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if let Some(reason) = base_idle_self_runtime_block_reason(
+        runtime_mode,
+        crate::platform::time::wall_clock_is_trustworthy(),
+    ) {
+        return Some(reason);
     }
     let pressure = crate::orchestrator::refresh_heap_if_stale();
     let snap = crate::orchestrator::snapshot();
@@ -708,14 +724,10 @@ fn idle_self_runtime_block_reason() -> Option<&'static str> {
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn idle_self_runtime_block_reason() -> Option<&'static str> {
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if !runtime_mode.action_budget.allow_idle_self_runtime {
-        return Some(
-            runtime_mode
-                .mode_block_reason()
-                .unwrap_or("runtime_mode_blocked"),
-        );
-    }
-    None
+    base_idle_self_runtime_block_reason(
+        runtime_mode,
+        crate::platform::time::wall_clock_is_trustworthy(),
+    )
 }
 
 fn detached_job_kind_for_trigger(trigger: SelfRuntimeTrigger) -> DetachedJobKind {
@@ -754,6 +766,30 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn idle_self_runtime_block_reason_reports_clock_unsynchronized_before_queueing() {
+        let runtime_mode = crate::runtime::mode::snapshot_from_source(
+            crate::runtime::mode::RuntimeModeSource::default(),
+        );
+        assert_eq!(
+            base_idle_self_runtime_block_reason(runtime_mode, false),
+            Some("clock_unsynchronized")
+        );
+    }
+
+    #[test]
+    fn idle_self_runtime_block_reason_keeps_runtime_mode_priority_over_clock() {
+        let runtime_mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                background_maintenance_active: true,
+                ..Default::default()
+            });
+        assert_eq!(
+            base_idle_self_runtime_block_reason(runtime_mode, false),
+            Some("background_maintenance_active")
+        );
+    }
 
     fn test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

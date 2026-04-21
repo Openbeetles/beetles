@@ -1,5 +1,5 @@
 //! GET /api/system_info：供系统信息页展示用，返回设备摘要字段。
-//! `current_time`：Host 用系统时钟；ESP 在 SNTP 同步后由 `util::current_unix_secs()` 提供 UTC 字符串，未同步时返回 "—"。
+//! `current_time`：仅在墙钟可信时返回 UTC 字符串；未同步时返回 "—"。
 //! `lan_ip`：ESP 为 STA IPv4；Linux 为当前默认上行接口的 IPv4（点分十进制）；不可用时为 "—"。
 //! `board_id`：运行期拼装（ESP：`esp_chip_info`+Flash 与 manifest 档位对齐；Linux：`linux`）。`hardware_model`：ESP 为摘要句；Linux 为设备树/DMI 等（若有）。
 
@@ -7,30 +7,11 @@ use super::HandlerContext;
 use crate::config;
 use crate::platform::http_server::common::to_io;
 
-/// SNTP 未同步时系统时间多在 1970 附近；低于此阈值不在 API 中冒充墙钟。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const MIN_TRUSTWORTHY_UNIX_SECS: u64 = 1577836800; // 2020-01-01 00:00:00 UTC
-
 fn current_unix_secs_wallclock() -> Option<u64> {
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs())
-    }
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        Some(crate::util::current_unix_secs())
-    }
+    crate::platform::time::trusted_wall_clock_unix_secs()
 }
 
 fn format_unix_utc(secs: u64) -> String {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if secs < MIN_TRUSTWORTHY_UNIX_SECS {
-        return "—".to_string();
-    }
     let t = secs % 86400;
     let h = (t / 3600) as u32;
     let m = (t % 3600 / 60) as u32;
@@ -44,7 +25,11 @@ fn format_unix_utc(secs: u64) -> String {
 }
 
 fn current_time_str() -> String {
-    match current_unix_secs_wallclock() {
+    render_current_time(current_unix_secs_wallclock())
+}
+
+fn render_current_time(secs: Option<u64>) -> String {
+    match secs {
         Some(secs) => format_unix_utc(secs),
         None => "—".to_string(),
     }
@@ -171,7 +156,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::body;
+    use super::{body, format_unix_utc, render_current_time};
     use serde_json::Value;
 
     #[test]
@@ -228,5 +213,23 @@ mod tests {
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
         crate::platform::http_server::handlers::build_default_test_handler_context()
+    }
+
+    #[test]
+    fn format_unix_utc_renders_expected_timestamp() {
+        assert_eq!(format_unix_utc(1_700_000_000), "2023-11-14 22:13:20 UTC");
+    }
+
+    #[test]
+    fn render_current_time_hides_untrusted_wall_clock() {
+        assert_eq!(render_current_time(None), "—");
+    }
+
+    #[test]
+    fn render_current_time_formats_trusted_wall_clock() {
+        assert_eq!(
+            render_current_time(Some(1_700_000_000)),
+            "2023-11-14 22:13:20 UTC"
+        );
     }
 }

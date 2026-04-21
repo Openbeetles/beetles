@@ -20,6 +20,8 @@ pub mod http_server;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub(crate) mod linux_owner;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod memory_linux;
 pub mod memory_operator_surface;
 pub mod nvs;
@@ -60,6 +62,8 @@ pub use heartbeat_file::read_heartbeat_file;
 pub use http_client::EspHttpClient;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use linux::LinuxPlatform;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use linux_owner::other_beetle_run_summaries;
 pub use nvs::{
     default_config_store, default_config_store_arc, erase_namespace, init_nvs, read_string,
     write_string, NvsConfigStore,

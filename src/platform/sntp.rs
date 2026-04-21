@@ -1,6 +1,10 @@
-//! SNTP 时间同步：WiFi STA 连接后调用 init_sntp() 启动后台同步。
+//! SNTP 时间同步：`init_sntp()` 启动后台同步。
+//! ESP 侧仍在 WiFi 栈 ready 后启动；Linux 侧允许在 WiFi/bootstrap 失败后继续启动，
+//! 以便继承上行、以太网或其它可用链路时也能尽快修复墙钟。
 //! ESP-IDF 5.x 使用 esp_netif_sntp API；同步成功后 gettimeofday / SystemTime 自动更新。
-//! SNTP time sync: call init_sntp() after WiFi STA is connected.
+//! SNTP time sync: `init_sntp()` starts background sync. ESP still starts it after the
+//! WiFi stack is ready, while Linux may start it after a failed WiFi/bootstrap attempt so
+//! another usable uplink can still repair the wall clock.
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use esp_idf_svc::sys;
@@ -18,11 +22,11 @@ use std::sync::Once;
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
     target_os = "linux"
 ))]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const TAG: &str = "platform::sntp";
 
-/// 启动 SNTP 后台同步（非阻塞）；WiFi 连接后调用一次即可。
+/// 启动 SNTP 后台同步（非阻塞）；ESP 在 WiFi 栈 ready 后调用一次即可。
 /// ESP-IDF 5.x 使用 esp_sntp_setoperatingmode + esp_sntp_setservername + esp_sntp_init。
 /// 同步成功后系统时钟自动更新，std::time::SystemTime 即为正确 UTC 时间。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -66,12 +70,6 @@ const SNTP_RETRY_SECS: u64 = 5;
     target_os = "linux"
 ))]
 const SNTP_QUERY_TIMEOUT_SECS: u64 = 5;
-#[cfg(all(
-    not(any(target_arch = "xtensa", target_arch = "riscv32")),
-    target_os = "linux"
-))]
-const UNIX_TIME_SYNC_THRESHOLD_SECS: u64 = 1_700_000_000;
-
 /// 每 6 小时重新同步一次，防止长时间运行后漂移。
 #[cfg(all(
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
@@ -89,13 +87,13 @@ pub fn init_sntp() {
             log::info!("[{}] Linux SNTP background sync started", TAG);
 
             // 先判断系统时间是否已正确（RTC 或 NTP 已设置过）。
-            if current_unix_secs() >= UNIX_TIME_SYNC_THRESHOLD_SECS {
+            if crate::platform::time::wall_clock_is_trustworthy() {
                 log::info!("[{}] system time already looks valid (>2023)", TAG);
             } else {
                 // 不再严格等待 STA：先快速尝试几次（可能有有线网络、其它连接方式）。
                 let mut synced = false;
                 for attempt in 0u32..60 {
-                    if current_unix_secs() >= UNIX_TIME_SYNC_THRESHOLD_SECS {
+                    if crate::platform::time::wall_clock_is_trustworthy() {
                         log::info!("[{}] system time became valid during wait", TAG);
                         synced = true;
                         break;
@@ -122,7 +120,7 @@ pub fn init_sntp() {
             }
 
             // 周期重同步：已同步则 6h 间隔；未同步则 30s 快轮询直到成功。
-            let mut ever_synced = current_unix_secs() >= UNIX_TIME_SYNC_THRESHOLD_SECS;
+            let mut ever_synced = crate::platform::time::wall_clock_is_trustworthy();
             loop {
                 let interval = if ever_synced {
                     SNTP_RESYNC_SECS
@@ -227,17 +225,6 @@ fn set_system_time(epoch_secs: u64) -> crate::error::Result<()> {
         ));
     }
     Ok(())
-}
-
-#[cfg(all(
-    not(any(target_arch = "xtensa", target_arch = "riscv32")),
-    target_os = "linux"
-))]
-fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(all(

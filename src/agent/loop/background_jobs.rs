@@ -448,6 +448,19 @@ fn run_self_runtime_job(
             };
         }
     };
+    if payload.trigger != crate::memory::SelfRuntimeTrigger::OperatorRequested
+        && !crate::platform::time::wall_clock_is_trustworthy()
+    {
+        log::debug!(
+            "[self_runtime] defer chat_id={} trigger={:?} because wall clock is not trustworthy yet",
+            msg.chat_id,
+            payload.trigger
+        );
+        return DetachedJobRunDisposition::RetryLater {
+            reason: "clock_unsynchronized",
+            delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+        };
+    }
     let locale = (config.resolve_locale)();
     let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
     let outcome = run_self_runtime(

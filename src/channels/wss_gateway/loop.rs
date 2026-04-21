@@ -50,6 +50,10 @@ fn should_pause_external_wss_connect_for_pressure(
     pressure == crate::orchestrator::PressureLevel::Critical
 }
 
+fn should_defer_external_wss_for_wall_clock(wall_clock_valid: bool) -> bool {
+    !wall_clock_valid
+}
+
 /// 阻塞等待 WiFi STA 就绪，每 2s 轮询，最多 `WIFI_WAIT_MAX_SECS`。返回 true 表示已就绪，false 表示超时仍继续尝试。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_wifi(tag: &str) -> bool {
@@ -104,6 +108,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         crate::network::set_external_wss_managed_present(true);
     }
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
+    let mut waiting_for_wall_clock = false;
     loop {
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
         if !runtime_mode.action_budget.allow_external_wss_connect {
@@ -125,6 +130,25 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             );
             sleep_with_wdt(sleep_secs);
             continue;
+        }
+        let wall_clock_valid = crate::platform::time::wall_clock_is_trustworthy();
+        if should_defer_external_wss_for_wall_clock(wall_clock_valid) {
+            if !waiting_for_wall_clock {
+                log::info!(
+                    "[{}] defer external WSS connect until wall clock is trustworthy",
+                    tag
+                );
+                waiting_for_wall_clock = true;
+            }
+            sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+            continue;
+        }
+        if waiting_for_wall_clock {
+            log::info!(
+                "[{}] wall clock trustworthy; resuming external WSS connect",
+                tag
+            );
+            waiting_for_wall_clock = false;
         }
         crate::network::wait_for_external_wss_resume(tag);
         wait_for_wifi(tag);
@@ -458,7 +482,8 @@ fn sleep_with_wdt(secs: u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_pause_external_wss_connect_for_pressure, tls_admission_retry_sleep_secs_for_pressure,
+        should_defer_external_wss_for_wall_clock, should_pause_external_wss_connect_for_pressure,
+        tls_admission_retry_sleep_secs_for_pressure,
     };
     use crate::orchestrator::PressureLevel;
 
@@ -489,5 +514,11 @@ mod tests {
             tls_admission_retry_sleep_secs_for_pressure(PressureLevel::Critical),
             30
         );
+    }
+
+    #[test]
+    fn untrusted_wall_clock_defers_external_wss_connect() {
+        assert!(should_defer_external_wss_for_wall_clock(false));
+        assert!(!should_defer_external_wss_for_wall_clock(true));
     }
 }

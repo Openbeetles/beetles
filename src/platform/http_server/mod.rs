@@ -19,6 +19,10 @@ pub(crate) mod common;
 pub(crate) mod handlers;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) mod linux_runtime;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub(crate) mod listen_preflight;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use listen_preflight::bind_tcp_listener;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CONFIG_PLANE_POLL_MS: u64 = 500;
@@ -106,8 +110,22 @@ pub fn run(
 const LINUX_HTTP_WORKERS: usize = 4;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn linux_config_http_listen_addr() -> String {
+    std::env::var("BEETLE_CONFIG_HTTP_LISTEN").unwrap_or_else(|_| "0.0.0.0:80".to_string())
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn bind_linux_config_http_listener() -> Result<(String, std::net::TcpListener)> {
+    let listen = linux_config_http_listen_addr();
+    let listener = bind_tcp_listener(&listen, "http_config_listen")?;
+    Ok((listen, listener))
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[allow(clippy::too_many_arguments)]
-pub fn run(
+pub fn run_with_bound_listener(
+    listener: std::net::TcpListener,
+    listen: String,
     platform: std::sync::Arc<dyn crate::platform::Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
     channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
@@ -149,8 +167,6 @@ pub fn run(
         qq_secret,
     );
     let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
-    let listen =
-        std::env::var("BEETLE_CONFIG_HTTP_LISTEN").unwrap_or_else(|_| "0.0.0.0:80".to_string());
     let dispatch_ctx = Arc::clone(&ctx);
     let dispatch_router_env = router_env.clone();
     let restart_platform = Arc::clone(&ctx.platform);
@@ -162,7 +178,7 @@ pub fn run(
                 "beetle HTTP config API listening on {} (override with BEETLE_CONFIG_HTTP_LISTEN)",
                 listen
             ),
-            listen_addr: listen,
+            listener,
             worker_name_prefix: "http_config_worker_",
             worker_count: LINUX_HTTP_WORKERS,
         },
@@ -200,5 +216,50 @@ pub fn run(
                 },
             );
         },
+    )
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    platform: std::sync::Arc<dyn crate::platform::Platform>,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
+    channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+    outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
+    memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
+    session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
+    system_inbound_tx: crate::bus::SystemInboundTx,
+    skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
+    inbound_tx: crate::bus::InboundTx,
+    msg_id_cache: crate::channels::QqMsgIdCache,
+    inbound_dedup_store: crate::channels::QqInboundDedupStore,
+    qq_webhook_enabled: bool,
+    qq_app_id: String,
+    qq_secret: String,
+    shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
+    llm_stream_enabled: bool,
+) -> Result<()> {
+    let (listen, listener) = bind_linux_config_http_listener()?;
+    run_with_bound_listener(
+        listener,
+        listen,
+        platform,
+        tool_registry,
+        channel_capability_registry,
+        inbound_depth,
+        outbound_depth,
+        memory_store,
+        session_store,
+        system_inbound_tx,
+        skill_prompt_cache,
+        inbound_tx,
+        msg_id_cache,
+        inbound_dedup_store,
+        qq_webhook_enabled,
+        qq_app_id,
+        qq_secret,
+        shared_config,
+        llm_stream_enabled,
     )
 }

@@ -277,11 +277,15 @@ fn compute_refresh_secs(
 #[cfg(feature = "config_api")]
 fn spawn_http_config_server(
     ctx: HttpServerSpawnContext,
-) -> std::io::Result<beetle::util::TaskHandle> {
+) -> beetle::Result<beetle::util::TaskHandle> {
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let (linux_config_listen, linux_config_listener) =
+        beetle::platform::http_server::bind_linux_config_http_listener()?;
     // Wrapper thread still owns the control-plane lifecycle and route registration surface;
     // keep the historical stack headroom while the direct/worker split is under validation.
     spawn_planned_handle("config_plane_watch", 6144, move || {
-        if let Err(e) = beetle::platform::http_server::run(
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        let result = beetle::platform::http_server::run(
             ctx.platform,
             ctx.tool_registry,
             ctx.channel_capability_registry,
@@ -292,22 +296,36 @@ fn spawn_http_config_server(
             ctx.system_inbound_tx,
             ctx.skill_prompt_cache,
             ctx.inbound_tx,
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            ctx.shared_config,
+            ctx.llm_stream_enabled,
+        );
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        let result = beetle::platform::http_server::run_with_bound_listener(
+            linux_config_listener,
+            linux_config_listen,
+            ctx.platform,
+            ctx.tool_registry,
+            ctx.channel_capability_registry,
+            ctx.inbound_depth,
+            ctx.outbound_depth,
+            ctx.memory_store,
+            ctx.session_store,
+            ctx.system_inbound_tx,
+            ctx.skill_prompt_cache,
+            ctx.inbound_tx,
             ctx.msg_id_cache,
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.inbound_dedup_store,
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.qq_webhook_enabled,
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.qq_app_id,
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             ctx.qq_secret,
             ctx.shared_config,
             ctx.llm_stream_enabled,
-        ) {
+        );
+        if let Err(e) = result {
             log::warn!("[{}] HTTP config API server error: {}", TAG, e);
         }
     })
+    .map_err(|error| beetle::Error::io("config_plane_spawn", error))
 }
 
 fn spawn_voice_session_if_ready(
@@ -1987,8 +2005,28 @@ fn log_launch_role(role: &str) {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn ensure_linux_single_run() -> beetle::Result<()> {
+    let others = beetle::platform::other_beetle_run_summaries()
+        .map_err(|error| beetle::Error::io("linux_runtime_guard", error))?;
+    if others.is_empty() {
+        return Ok(());
+    }
+    Err(beetle::Error::config(
+        "linux_runtime_guard",
+        format!(
+            "another `beetle run` instance is already active: {}",
+            others.join(", ")
+        ),
+    ))
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
     log_launch_role("agent");
+    if let Err(error) = ensure_linux_single_run() {
+        log::error!("[{}] duplicate runtime start blocked: {}", TAG, error);
+        std::process::exit(1);
+    }
     register_platform_memory_snapshot_provider(&platform);
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
@@ -2387,8 +2425,7 @@ fn start_support_planes(
             qq_app_id: assembly.config.qq_channel_app_id.clone(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             qq_secret: assembly.config.qq_channel_secret.clone(),
-        })
-        .map_err(|error| beetle::Error::io("config_plane_spawn", error))?;
+        })?;
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         beetle::orchestrator::log_startup_memory_checkpoint("config_api_spawned");
     }

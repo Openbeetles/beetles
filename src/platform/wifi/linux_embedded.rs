@@ -298,9 +298,9 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let ap_ip = choose_ap_ip(&iface);
     let mut ap_channel = choose_ap_channel(&iface);
 
-    // Stop any existing AP stack on the physical interface before deciding whether
-    // we will re-create AP on the physical iface or a virtual iface.
-    hostapd::stop_ap(&iface);
+    // Preflight owner before deciding whether we will re-create AP on the physical
+    // iface or a virtual iface.
+    hostapd::preflight_ap_start(&iface)?;
     if let Err(e) = net::clear_ipv4_addresses(&iface) {
         log::warn!(
             "[{}] failed to clear stale IPv4 addresses on '{}': {}",

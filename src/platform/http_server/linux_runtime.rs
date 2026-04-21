@@ -1,4 +1,4 @@
-//! Shared Linux `tiny_http` serving skeleton for config and supervisor control planes.
+//! Shared Linux `tiny_http` serving skeleton for config and control planes.
 
 use super::common::{self, CORS_HEADERS};
 use super::router::{IncomingRequest, OutgoingResponse, RestartAction};
@@ -9,8 +9,8 @@ use std::sync::Arc;
 pub(crate) struct LinuxHttpServerSpec {
     pub log_tag: &'static str,
     pub listen_stage: &'static str,
-    pub listen_addr: String,
     pub listen_log: String,
+    pub listener: std::net::TcpListener,
     pub worker_name_prefix: &'static str,
     pub worker_count: usize,
 }
@@ -40,13 +40,12 @@ where
     H: Fn(IncomingRequest) -> OutgoingResponse + Send + Sync + 'static,
     A: Fn(&str, RestartAction) + Send + Sync + 'static,
 {
-    let server =
-        Arc::new(
-            tiny_http::Server::http(&spec.listen_addr).map_err(|e| Error::Other {
-                source: Box::new(std::io::Error::other(e.to_string())),
-                stage: spec.listen_stage,
-            })?,
-        );
+    let server = Arc::new(
+        tiny_http::Server::from_listener(spec.listener, None).map_err(|e| Error::Other {
+            source: Box::new(std::io::Error::other(e.to_string())),
+            stage: spec.listen_stage,
+        })?,
+    );
     log::info!("{}", spec.listen_log);
 
     let handler = Arc::new(handler);

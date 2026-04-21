@@ -57,9 +57,6 @@ pub struct RuntimeModeSource {
     pub external_wss_managed_present: bool,
     pub external_wss_suspend_requested: bool,
     pub external_wss_suspended: bool,
-    pub supervisor_present: bool,
-    pub supervisor_alive: bool,
-    pub supervisor_agent_alive: bool,
     pub recovery_safe_mode_active: bool,
 }
 
@@ -82,9 +79,6 @@ pub struct RuntimeModeSnapshot {
     pub external_wss_managed_present: bool,
     pub external_wss_suspend_requested: bool,
     pub external_wss_suspended: bool,
-    pub supervisor_present: bool,
-    pub supervisor_alive: bool,
-    pub supervisor_agent_alive: bool,
     pub recovery_safe_mode_active: bool,
     pub action_budget: RuntimeModeActionBudget,
 }
@@ -143,9 +137,6 @@ pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
         external_wss_managed_present: source.external_wss_managed_present,
         external_wss_suspend_requested: source.external_wss_suspend_requested,
         external_wss_suspended: source.external_wss_suspended,
-        supervisor_present: source.supervisor_present,
-        supervisor_alive: source.supervisor_alive,
-        supervisor_agent_alive: source.supervisor_agent_alive,
         recovery_safe_mode_active: source.recovery_safe_mode_active,
         action_budget: action_budget_for_mode(current_mode),
     }

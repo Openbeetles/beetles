@@ -2,6 +2,7 @@
 //! 应用启动引导工具。
 
 use crate::config::{self, AppConfig};
+use crate::memory::MemorySystemKind;
 use crate::Platform;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use crate::{
@@ -11,6 +12,13 @@ use crate::{
 use std::sync::Arc;
 
 const TAG: &str = "bootstrap";
+
+fn should_init_sntp_after_wifi_attempt(
+    memory_system_kind: MemorySystemKind,
+    wifi_init_ok: bool,
+) -> bool {
+    wifi_init_ok || memory_system_kind == MemorySystemKind::LinuxFull
+}
 
 fn handle_heap_checkpoint_result(
     log_tag: &'static str,
@@ -92,7 +100,6 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
                 "[{}] WiFi stack ready (SoftAP + scan; STA may still be negotiating)",
                 TAG
             );
-            platform.init_sntp();
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             if platform.display_available() {
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 2 });
@@ -108,6 +115,15 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
             false
         }
     };
+    if should_init_sntp_after_wifi_attempt(platform.memory_system_kind(), wifi_init_ok) {
+        if !wifi_init_ok {
+            log::info!(
+                "[{}] starting SNTP background sync despite WiFi init failure (Linux may still have a usable uplink)",
+                TAG
+            );
+        }
+        platform.init_sntp();
+    }
 
     // HTTP config API (all targets): CSRF must be initialized regardless of WiFi outcome.
     if let Err(e) = crate::platform::csrf::init() {
@@ -239,6 +255,29 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
 
 #[cfg(test)]
 mod tests {
+    use super::should_init_sntp_after_wifi_attempt;
+    use crate::memory::MemorySystemKind;
+
+    #[test]
+    fn linux_full_keeps_sntp_alive_even_when_wifi_bootstrap_failed() {
+        assert!(should_init_sntp_after_wifi_attempt(
+            MemorySystemKind::LinuxFull,
+            false
+        ));
+    }
+
+    #[test]
+    fn esp_compact_still_requires_wifi_stack_ready_before_sntp() {
+        assert!(!should_init_sntp_after_wifi_attempt(
+            MemorySystemKind::EspCompact,
+            false
+        ));
+        assert!(should_init_sntp_after_wifi_attempt(
+            MemorySystemKind::EspCompact,
+            true
+        ));
+    }
+
     #[test]
     fn heap_checkpoint_error_returns_false_without_panicking() {
         let outcome = std::panic::catch_unwind(|| {

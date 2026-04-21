@@ -72,9 +72,6 @@ pub struct OperatorStatusSnapshot {
     pub tool_governance: Option<ToolExecutionGovernanceState>,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub supervisor: Option<crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot>,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
@@ -217,8 +214,6 @@ pub fn build_operator_status(
     programmable_reasoning.operator_summary =
         summarize_programmable_reasoning_operator(&programmable_reasoning);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let supervisor = presence.supervisor.clone();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let release = presence.release.clone();
     Ok(OperatorStatusSnapshot {
         platform_contract: OperatorPlatformContract {
@@ -247,8 +242,6 @@ pub fn build_operator_status(
         capability_planes,
         runtime_capabilities,
         tool_governance,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        supervisor,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         release,
     })
@@ -472,19 +465,6 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
             plane.candidate_count,
             plane.mount_model,
         ));
-    }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    if let Some(supervisor) = snapshot.supervisor.as_ref() {
-        out.push_str(&format!(
-            "  supervisor_alive: {}\n  supervisor_state: {}\n  agent_alive: {}\n  agent_state: {}\n",
-            supervisor.supervisor_alive,
-            supervisor.state.current_state,
-            supervisor.agent_alive,
-            supervisor.state.agent.state,
-        ));
-        if let Some(reason) = supervisor.state.safe_mode_reason.as_deref() {
-            out.push_str(&format!("  safe_mode_reason: {}\n", reason));
-        }
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     if let Some(release) = snapshot.release.as_ref() {

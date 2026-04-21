@@ -61,9 +61,6 @@ pub struct PresenceSnapshot {
     pub soul_kernel: SoulKernelStatus,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub supervisor: Option<crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot>,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
@@ -99,24 +96,10 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
     let resource = orchestrator::snapshot();
     let soul_kernel = runtime::inspect_platform_soul_kernel(platform, now_secs);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let supervisor = crate::runtime::linux_supervisor::read_status_snapshot()
-        .ok()
-        .flatten();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let release = Some(crate::runtime::inspect_platform_linux_release(
         platform, now_secs,
     ));
-
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let mut runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    if let Some(snapshot) = supervisor.as_ref() {
-        runtime_mode_source.supervisor_present = true;
-        runtime_mode_source.supervisor_alive = snapshot.supervisor_alive;
-        runtime_mode_source.supervisor_agent_alive = snapshot.agent_alive;
-    }
     let runtime_mode = crate::runtime::mode::snapshot_from_source(runtime_mode_source);
     let busy = resource.active_agent_tasks > 0
         || resource.active_http_count > 0
@@ -143,8 +126,6 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
         display_sleep_candidate: matches!(state, PresenceState::Idle | PresenceState::NoWifi),
         runtime_mode,
         soul_kernel,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        supervisor,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         release,
     }
@@ -276,9 +257,6 @@ mod tests {
             external_wss_managed_present: false,
             external_wss_suspend_requested: false,
             external_wss_suspended: false,
-            supervisor_present: false,
-            supervisor_alive: false,
-            supervisor_agent_alive: false,
             recovery_safe_mode_active: mode == RuntimeMode::RecoverySafeMode,
             action_budget: crate::runtime::mode::snapshot_from_source(
                 crate::runtime::mode::RuntimeModeSource {
@@ -360,8 +338,6 @@ mod tests {
             display_sleep_candidate: false,
             runtime_mode: runtime_mode(RuntimeMode::Normal),
             soul_kernel: crate::runtime::SoulKernelStatus::default(),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            supervisor: None,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             release: None,
         }

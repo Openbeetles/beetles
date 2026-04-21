@@ -730,7 +730,9 @@ pub trait Platform: Send + Sync {
         log::warn!("request_restart: not implemented on this platform");
     }
 
-    /// 启动 SNTP 时间同步。WiFi 连接后调用。
+    /// 启动 SNTP 时间同步。调用时机由平台决定：
+    /// ESP 在 WiFi 栈 ready 后启动；Linux 可在 WiFi/bootstrap 失败后继续尝试，
+    /// 以便通过其它可用上行修复墙钟。
     fn init_sntp(&self) {
         log::info!("init_sntp: no-op on this platform");
     }

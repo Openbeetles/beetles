@@ -16,8 +16,6 @@ pub enum BeetleOsPlane {
     SoulKernel,
     Initiative,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    Supervisor,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     Release,
 }
 
@@ -28,8 +26,6 @@ impl BeetleOsPlane {
             Self::Presence => "presence",
             Self::SoulKernel => "soul_kernel",
             Self::Initiative => "initiative",
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            Self::Supervisor => "supervisor",
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             Self::Release => "release",
         }
@@ -82,7 +78,6 @@ pub fn inspect_beetle_os_closure(
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         {
             let mut planes = planes;
-            planes.push(inspect_supervisor_plane(presence.supervisor.as_ref()));
             planes.push(inspect_release_plane(presence.release.as_ref()));
             planes
         }
@@ -333,49 +328,6 @@ fn inspect_initiative_plane(initiative: &InitiativeSnapshot) -> BeetleOsPlaneRep
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn inspect_supervisor_plane(
-    supervisor: Option<&crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot>,
-) -> BeetleOsPlaneReport {
-    let mut outstanding = Vec::new();
-    let Some(supervisor) = supervisor else {
-        outstanding.push("supervisor_status_missing".to_string());
-        return plane_report(
-            BeetleOsPlane::Supervisor,
-            "linux_supervisor_contract_ready",
-            outstanding,
-        );
-    };
-    if !supervisor.supervisor_alive {
-        outstanding.push("supervisor_not_alive".to_string());
-    }
-    if supervisor.state.current_state == "running" && !supervisor.agent_alive {
-        outstanding.push("running_supervisor_without_agent".to_string());
-    }
-    if supervisor.state.current_state == "safe_mode"
-        && supervisor
-            .state
-            .safe_mode_reason
-            .as_deref()
-            .is_none_or(|reason| reason.trim().is_empty())
-    {
-        outstanding.push("safe_mode_without_reason".to_string());
-    }
-    if supervisor
-        .state
-        .safe_mode_reason
-        .as_deref()
-        .is_some_and(|reason| reason.trim().is_empty())
-    {
-        outstanding.push("empty_safe_mode_reason".to_string());
-    }
-    plane_report(
-        BeetleOsPlane::Supervisor,
-        "linux_supervisor_contract_ready",
-        outstanding,
-    )
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn inspect_release_plane(
     release: Option<&crate::runtime::LinuxReleaseStatus>,
 ) -> BeetleOsPlaneReport {
@@ -494,9 +446,6 @@ mod tests {
             external_wss_managed_present: false,
             external_wss_suspend_requested: mode == RuntimeMode::VoiceExclusive,
             external_wss_suspended: mode == RuntimeMode::VoiceExclusive,
-            supervisor_present: true,
-            supervisor_alive: true,
-            supervisor_agent_alive: true,
             recovery_safe_mode_active: mode == RuntimeMode::RecoverySafeMode,
             action_budget,
         }
@@ -566,35 +515,6 @@ mod tests {
             display_sleep_candidate: true,
             runtime_mode: runtime_mode(RuntimeMode::Normal),
             soul_kernel: soul_kernel(),
-            supervisor: Some(
-                crate::runtime::linux_supervisor::LinuxSupervisorStatusSnapshot {
-                    supervisor_alive: true,
-                    agent_alive: true,
-                    state: crate::runtime::linux_supervisor::LinuxSupervisorState {
-                        supervisor_pid: 1,
-                        current_state: "running".to_string(),
-                        started_at: 1,
-                        last_start_at: 1,
-                        restart_count: 0,
-                        failure_burst_count: 0,
-                        failure_burst_started_at: None,
-                        safe_mode_entered_at: None,
-                        safe_mode_reason: None,
-                        config_path: None,
-                        last_event: "running".to_string(),
-                        last_error: None,
-                        agent: crate::runtime::linux_supervisor::LinuxSupervisorAgentState {
-                            pid: Some(2),
-                            state: "running".to_string(),
-                            last_started_at: Some(1),
-                            last_exited_at: None,
-                            last_exit_code: None,
-                            last_exit_signal: None,
-                            last_exit_reason: String::new(),
-                        },
-                    },
-                },
-            ),
             release: Some(crate::runtime::LinuxReleaseStatus {
                 inspection_degraded: false,
                 state_readable: true,
@@ -665,17 +585,12 @@ mod tests {
         assert!(steady.ready, "{steady:?}");
 
         let mut unmanaged_presence = base_presence.clone();
-        unmanaged_presence.supervisor = None;
         unmanaged_presence.release = Some(crate::runtime::LinuxReleaseStatus {
             managed: false,
             ..unmanaged_presence.release.clone().unwrap_or_default()
         });
         let unmanaged = inspect_beetle_os_closure(&unmanaged_presence, &base_initiative);
         assert!(!unmanaged.ready, "{unmanaged:?}");
-        assert!(unmanaged
-            .outstanding
-            .iter()
-            .any(|item| item == "supervisor:supervisor_status_missing"));
         assert!(unmanaged
             .outstanding
             .iter()
@@ -804,25 +719,5 @@ mod tests {
             .outstanding
             .iter()
             .any(|item| item == "release:init_script_inconsistent"));
-    }
-
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[test]
-    fn acceptance_flags_linux_supervisor_safe_mode_without_reason() {
-        let mut broken_presence = presence();
-        let mut supervisor = broken_presence
-            .supervisor
-            .clone()
-            .expect("linux supervisor");
-        supervisor.state.current_state = "safe_mode".to_string();
-        supervisor.state.safe_mode_reason = None;
-        broken_presence.supervisor = Some(supervisor);
-
-        let report = inspect_beetle_os_closure(&broken_presence, &initiative());
-        assert!(!report.ready, "{report:?}");
-        assert!(report
-            .outstanding
-            .iter()
-            .any(|item| item == "supervisor:safe_mode_without_reason"));
     }
 }

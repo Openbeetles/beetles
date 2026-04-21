@@ -194,7 +194,7 @@ pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
 /// 返回未做额外平台补充的运行模式源信号。
 ///
 /// 该函数只聚合线程注册表与全局运行态布尔值。
-/// 若调用方需要把 pairing / supervisor safe mode 等平台语义纳入同一 mode contract，
+/// 若调用方需要把 pairing 等平台语义纳入同一 mode contract，
 /// 应在此基础上补齐对应 source 字段，再交给 `snapshot_from_source(...)` 收口。
 pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
     let plane = runtime_plane_flags();
@@ -216,9 +216,6 @@ pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
         external_wss_managed_present: ext_wss.managed_present,
         external_wss_suspend_requested: ext_wss.suspend_requested,
         external_wss_suspended: ext_wss.suspended,
-        supervisor_present: false,
-        supervisor_alive: false,
-        supervisor_agent_alive: false,
         recovery_safe_mode_active: crate::state::recovery_safe_mode_active(),
     }
 }
