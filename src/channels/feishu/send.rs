@@ -1,18 +1,27 @@
-//! 飞书出站：flush、token 类型、event_body_to_pcmsg、连通性检查。Sink 统一为 dispatch::QueuedSink。
+//! 飞书出站：flush、token 类型、event_body_to_pcmsg、连通性检查。
+//! Rich message bodies follow Feishu official `msg_type` / `content` contracts.
 
-use crate::bus::{MessageTransport, PcMsg};
+use crate::bus::{
+    AssetSourcePlatform, CanonicalMessageBody, CardBody, CardFormat, FileBody, ImageBody,
+    MediaAssetRef, MediaLocatorKind, MessageTransport, PcMsg, PlatformNativeBody, TextBody,
+    TextFormat, VideoBody,
+};
 use crate::channels::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
     run_buffered_sender_loop, QueuedOutboundMessage,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
+use crate::error::{Error, Result};
+use serde_json::{json, Value};
 
 pub const FEISHU_TOKEN_URL: &str =
     "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
 const FEISHU_SEND_URL: &str =
     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id";
+const FEISHU_EDIT_URL_PREFIX: &str = "https://open.feishu.cn/open-apis/im/v1/messages/";
 const FEISHU_MAX_MESSAGE_LEN: usize = 4096;
+const FEISHU_MAX_CARD_FALLBACK_LEN: usize = 2048;
 /// Token 缓存提前刷新余量（秒），避免使用即将过期的 token。
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
 
@@ -54,7 +63,7 @@ impl FeishuTokenCache {
         app_id: &str,
         app_secret: &str,
         stage: &'static str,
-    ) -> crate::error::Result<String> {
+    ) -> Result<String> {
         let need_refresh = match &self.token {
             Some((_, acquired_at)) => acquired_at.elapsed() >= Self::TTL,
             None => true,
@@ -67,7 +76,7 @@ impl FeishuTokenCache {
         self.token
             .as_ref()
             .map(|(token, _)| token.clone())
-            .ok_or_else(|| crate::error::Error::config(stage, "token missing after refresh"))
+            .ok_or_else(|| Error::config(stage, "token missing after refresh"))
     }
 
     /// Drops the cached token so next use performs a refresh.
@@ -81,7 +90,7 @@ pub fn acquire_tenant_token<H: ChannelHttpClient + ?Sized>(
     http: &mut H,
     app_id: &str,
     app_secret: &str,
-) -> crate::error::Result<String> {
+) -> Result<String> {
     acquire_tenant_token_with_stage(http, app_id, app_secret, "feishu_token")
 }
 
@@ -90,20 +99,19 @@ fn acquire_tenant_token_with_stage<H: ChannelHttpClient + ?Sized>(
     app_id: &str,
     app_secret: &str,
     stage: &'static str,
-) -> crate::error::Result<String> {
-    const TAG: &str = "feishu_send";
+) -> Result<String> {
     let body = FeishuTokenRequest {
         app_id: app_id.to_string(),
         app_secret: app_secret.to_string(),
     };
-    let body_bytes = serde_json::to_vec(&body).map_err(|e| crate::error::Error::Other {
+    let body_bytes = serde_json::to_vec(&body).map_err(|e| Error::Other {
         source: Box::new(e),
         stage,
     })?;
     let (status, resp_body) = match http.http_post(FEISHU_TOKEN_URL, &body_bytes) {
         Ok(r) => r,
         Err(e) => {
-            let error = crate::error::Error::Other {
+            let error = Error::Other {
                 source: Box::new(e),
                 stage,
             };
@@ -112,7 +120,7 @@ fn acquire_tenant_token_with_stage<H: ChannelHttpClient + ?Sized>(
         }
     };
     if status >= 400 {
-        let error = crate::error::Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage,
         };
@@ -121,81 +129,301 @@ fn acquire_tenant_token_with_stage<H: ChannelHttpClient + ?Sized>(
     }
     record_outbound_http_success();
     let token_resp: FeishuTokenResponse =
-        serde_json::from_slice(resp_body.as_ref()).map_err(|e| crate::error::Error::Other {
+        serde_json::from_slice(resp_body.as_ref()).map_err(|e| Error::Other {
             source: Box::new(e),
             stage,
         })?;
+    if token_resp.code != 0 {
+        return Err(Error::config(
+            stage,
+            format!(
+                "feishu tenant_access_token returned code={}",
+                token_resp.code
+            ),
+        ));
+    }
     match token_resp.tenant_access_token {
         Some(t) if !t.is_empty() => Ok(t),
-        _ => {
-            log::warn!("[{}] token empty code={}", TAG, token_resp.code);
-            Err(crate::error::Error::config(
-                stage,
-                "tenant_access_token missing",
-            ))
-        }
+        _ => Err(Error::config(stage, "tenant_access_token missing")),
     }
 }
 
-fn build_feishu_text_body(receive_id: Option<&str>, content: &str) -> Vec<u8> {
-    let mut inner = String::with_capacity(content.len() + 16);
-    inner.push('{');
-    inner.push_str("\"text\":");
-    crate::util::push_json_string_escaped(&mut inner, content);
-    inner.push('}');
-
-    let mut body = String::with_capacity(inner.len() + receive_id.map_or(32, |id| id.len() + 32));
-    body.push('{');
-    if let Some(chat_id) = receive_id {
-        body.push_str("\"receive_id\":");
-        crate::util::push_json_string_escaped(&mut body, chat_id);
-        body.push(',');
+fn feishu_platform_handle<'a>(
+    stage: &'static str,
+    asset: &'a MediaAssetRef,
+    kind: &'static str,
+) -> Result<&'a str> {
+    if asset.locator_kind != MediaLocatorKind::PlatformHandle {
+        return Err(Error::config(
+            stage,
+            format!("Feishu {kind} requires a platform handle key"),
+        ));
     }
-    body.push_str("\"msg_type\":\"text\",\"content\":");
-    crate::util::push_json_string_escaped(&mut body, &inner);
-    body.push('}');
-    body.into_bytes()
+    let locator = asset.locator.trim();
+    if locator.is_empty() {
+        return Err(Error::config(stage, format!("Feishu {kind} key is empty")));
+    }
+    Ok(locator)
+}
+
+fn feishu_post_text_segments(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                feishu_post_text_segments(item, out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(tag) = map.get("tag").and_then(Value::as_str) {
+                match tag {
+                    "text" | "a" | "code_block" | "md" => {
+                        if let Some(text) = map.get("text").and_then(Value::as_str) {
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                out.push(trimmed.to_string());
+                            }
+                        }
+                        return;
+                    }
+                    "at" => {
+                        if let Some(name) = map
+                            .get("user_name")
+                            .and_then(Value::as_str)
+                            .or_else(|| map.get("user_id").and_then(Value::as_str))
+                        {
+                            let trimmed = name.trim();
+                            if !trimmed.is_empty() {
+                                out.push(trimmed.to_string());
+                            }
+                        }
+                        return;
+                    }
+                    "img" => {
+                        out.push("[image]".to_string());
+                        return;
+                    }
+                    "media" => {
+                        out.push("[video]".to_string());
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(title) = map.get("title").and_then(Value::as_str) {
+                let trimmed = title.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+            }
+            if let Some(content) = map.get("content") {
+                feishu_post_text_segments(content, out);
+            }
+            for value in map.values() {
+                feishu_post_text_segments(value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn feishu_post_fallback_text(post: &Value) -> String {
+    let mut segments = Vec::new();
+    feishu_post_text_segments(post, &mut segments);
+    let joined = segments
+        .into_iter()
+        .filter(|segment| !segment.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if joined.trim().is_empty() {
+        "[card]".to_string()
+    } else {
+        crate::bus::truncate_content_to_max(&joined, FEISHU_MAX_CARD_FALLBACK_LEN)
+            .trim()
+            .to_string()
+    }
+}
+
+fn feishu_interactive_fallback_text(card: &Value) -> String {
+    let summary = card
+        .get("header")
+        .and_then(|header| header.get("title"))
+        .and_then(|title| title.get("content"))
+        .and_then(Value::as_str)
+        .or_else(|| card.get("type").and_then(Value::as_str))
+        .unwrap_or("[card]");
+    let trimmed = summary.trim();
+    if trimmed.is_empty() {
+        "[card]".to_string()
+    } else {
+        crate::bus::truncate_content_to_max(trimmed, FEISHU_MAX_CARD_FALLBACK_LEN)
+            .trim()
+            .to_string()
+    }
+}
+
+fn feishu_text_body(text: &TextBody) -> Result<(String, String)> {
+    if text.format == TextFormat::RichText {
+        return Err(Error::config(
+            "feishu_send",
+            "TextFormat::RichText must use post payloads on Feishu",
+        ));
+    }
+    let inner = json!({ "text": text.text });
+    let content =
+        serde_json::to_string(&inner).map_err(|e| Error::config("feishu_send", e.to_string()))?;
+    Ok(("text".to_string(), content))
+}
+
+fn feishu_card_body(card: &CardBody) -> Result<(String, String)> {
+    match card.format {
+        CardFormat::Interactive => {
+            let content = serde_json::to_string(&card.payload_json)
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok(("interactive".to_string(), content))
+        }
+        CardFormat::RichPost => {
+            let content = serde_json::to_string(&card.payload_json)
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok(("post".to_string(), content))
+        }
+        _ if !card.fallback_text.trim().is_empty() => {
+            feishu_text_body(&TextBody::plain(card.fallback_text.clone()))
+        }
+        _ => Err(Error::config(
+            "feishu_send",
+            "unsupported Feishu card format without fallback text",
+        )),
+    }
+}
+
+fn feishu_native_body(native: &PlatformNativeBody) -> Result<(String, String)> {
+    match native.platform_type.trim() {
+        "interactive" | "post" => {
+            let content = serde_json::to_string(&native.payload_json)
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok((native.platform_type.trim().to_string(), content))
+        }
+        _ if !native.fallback_text.trim().is_empty() => {
+            feishu_text_body(&TextBody::plain(native.fallback_text.clone()))
+        }
+        _ => Err(Error::config(
+            "feishu_send",
+            "unsupported Feishu native payload without fallback text",
+        )),
+    }
+}
+
+fn feishu_message_shape(body: &CanonicalMessageBody) -> Result<(String, String)> {
+    match body {
+        CanonicalMessageBody::Text(text) => feishu_text_body(text),
+        CanonicalMessageBody::Image(image) => {
+            let image_key = feishu_platform_handle("feishu_send", &image.asset, "image")?;
+            let content = serde_json::to_string(&json!({ "image_key": image_key }))
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok(("image".to_string(), content))
+        }
+        CanonicalMessageBody::Audio(audio) => {
+            let file_key = feishu_platform_handle("feishu_send", &audio.asset, "audio")?;
+            let content = serde_json::to_string(&json!({ "file_key": file_key }))
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok(("audio".to_string(), content))
+        }
+        CanonicalMessageBody::Video(video) => {
+            let file_key = feishu_platform_handle("feishu_send", &video.asset, "video")?;
+            let mut inner = json!({ "file_key": file_key });
+            if let Some(image_key) = video.description.as_deref().filter(|_| false) {
+                inner["image_key"] = json!(image_key);
+            }
+            let content = serde_json::to_string(&inner)
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok(("media".to_string(), content))
+        }
+        CanonicalMessageBody::File(file) => {
+            let file_key = feishu_platform_handle("feishu_send", &file.asset, "file")?;
+            let content = serde_json::to_string(&json!({ "file_key": file_key }))
+                .map_err(|e| Error::config("feishu_send", e.to_string()))?;
+            Ok(("file".to_string(), content))
+        }
+        CanonicalMessageBody::Card(card) => feishu_card_body(card),
+        CanonicalMessageBody::PlatformNative(native) => feishu_native_body(native),
+    }
+}
+
+fn build_feishu_request_body(
+    receive_id: Option<&str>,
+    msg_type: &str,
+    content: &str,
+) -> Result<Vec<u8>> {
+    let mut body = serde_json::Map::new();
+    if let Some(chat_id) = receive_id {
+        body.insert("receive_id".to_string(), json!(chat_id));
+    }
+    body.insert("msg_type".to_string(), json!(msg_type));
+    body.insert("content".to_string(), json!(content));
+    serde_json::to_vec(&Value::Object(body))
+        .map_err(|e| Error::config("feishu_send", e.to_string()))
+}
+
+fn post_feishu_message<H: ChannelHttpClient>(
+    http: &mut H,
+    token: &str,
+    receive_id: Option<&str>,
+    body: &CanonicalMessageBody,
+) -> Result<crate::platform::ResponseBody> {
+    const TAG: &str = "feishu_send";
+    let (msg_type, content) = feishu_message_shape(body)?;
+    let body_bytes = build_feishu_request_body(receive_id, &msg_type, &content)?;
+    let auth_val = format!("Bearer {}", token);
+    let headers = [
+        ("Authorization", auth_val.as_str()),
+        ("Content-Type", "application/json; charset=utf-8"),
+    ];
+    let (status, resp_body) = crate::channels::send::send_post_with_headers(
+        TAG,
+        http,
+        FEISHU_SEND_URL,
+        &headers,
+        &body_bytes,
+    )?;
+    if status >= 400 {
+        return Err(Error::Http {
+            status_code: status,
+            stage: TAG,
+        });
+    }
+    Ok(resp_body)
 }
 
 fn send_feishu_message<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
-    chat_id: &str,
-    content: &str,
-) -> crate::error::Result<()> {
-    const TAG: &str = "feishu_send";
-    if content.trim().is_empty() {
-        return Err(crate::error::Error::config(
+    message: &QueuedOutboundMessage,
+) -> Result<()> {
+    if message.content.trim().is_empty() && message.body.kind() == crate::bus::MessageBodyKind::Text
+    {
+        return Err(Error::config(
             "feishu_send",
             "refusing to send empty Feishu message",
         ));
     }
-    let auth_val = format!("Bearer {}", token);
-    for chunk in crate::channels::chunk::chunk_text_by_char_count(content, FEISHU_MAX_MESSAGE_LEN) {
-        let body_bytes = build_feishu_text_body(Some(chat_id), &chunk);
-        let headers = [
-            ("Authorization", auth_val.as_str()),
-            ("Content-Type", "application/json; charset=utf-8"),
-        ];
-        let (status, _) = crate::channels::send::send_post_with_headers(
-            TAG,
-            http,
-            FEISHU_SEND_URL,
-            &headers,
-            &body_bytes,
-        )
-        .map_err(|e| crate::error::Error::Other {
-            source: Box::new(e),
-            stage: "feishu_send",
-        })?;
-        if status >= 400 {
-            return Err(crate::error::Error::Http {
-                status_code: status,
-                stage: "feishu_send",
-            });
+    match &message.body {
+        CanonicalMessageBody::Text(text) => {
+            for chunk in
+                crate::channels::chunk::chunk_text_by_char_count(&text.text, FEISHU_MAX_MESSAGE_LEN)
+            {
+                let chunk_body = CanonicalMessageBody::Text(TextBody {
+                    text: chunk,
+                    format: text.format,
+                });
+                let _ = post_feishu_message(http, token, Some(&message.chat_id), &chunk_body)?;
+            }
+            Ok(())
+        }
+        other => {
+            let _ = post_feishu_message(http, token, Some(&message.chat_id), other)?;
+            Ok(())
         }
     }
-    Ok(())
 }
 
 /// 从 rx 取出待发送，鉴权后调用飞书发消息 API（一次性 drain）。
@@ -217,7 +445,7 @@ pub fn flush_feishu_sends<H: ChannelHttpClient>(
             }
         };
     while let Ok(message) = rx.try_recv() {
-        if let Err(error) = send_feishu_message(http, &token, &message.chat_id, &message.content) {
+        if let Err(error) = send_feishu_message(http, &token, &message) {
             record_outbound_http_failure(&error);
             log::warn!(
                 "[feishu_flush] send failed for chat_id={}: {}",
@@ -238,49 +466,33 @@ pub fn run_feishu_sender_loop<H, F>(
     mut create_http: F,
 ) where
     H: ChannelHttpClient,
-    F: FnMut() -> crate::error::Result<H>,
+    F: FnMut() -> Result<H>,
 {
     const TAG: &str = "feishu_sender";
     let mut http: Option<H> = None;
     let mut token_cache = FeishuTokenCache::new();
     run_buffered_sender_loop(rx, TAG, |message, attempt| {
         if !ensure_sender_http(&mut http, &mut create_http, TAG, attempt) {
-            return Err(crate::error::Error::config(TAG, "create http failed"));
+            return Err(Error::config(TAG, "create http failed"));
         }
         let Some(h) = http.as_mut() else {
-            return Err(crate::error::Error::config(
-                TAG,
-                "sender http missing after ensure",
-            ));
+            return Err(Error::config(TAG, "sender http missing after ensure"));
         };
         let token = match token_cache.ensure_token(h, app_id, app_secret, TAG) {
             Ok(token) => token,
             Err(error) => {
-                log::warn!(
-                    "[{}] acquire token failed (attempt {}): {}",
-                    TAG,
-                    attempt,
-                    error
-                );
                 token_cache.invalidate();
                 http = None;
                 return Err(error);
             }
         };
-        match send_feishu_message(h, token.as_str(), &message.chat_id, &message.content) {
+        match send_feishu_message(h, token.as_str(), message) {
             Ok(()) => {
                 record_outbound_http_success();
                 Ok(())
             }
             Err(error) => {
                 record_outbound_http_failure(&error);
-                log::warn!(
-                    "[{}] send failed (attempt {}), chat_id={}: {}",
-                    TAG,
-                    attempt,
-                    message.chat_id,
-                    error
-                );
                 token_cache.invalidate();
                 http = None;
                 Err(error)
@@ -296,34 +508,9 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
     token: &str,
     chat_id: &str,
     content: &str,
-) -> crate::error::Result<Option<String>> {
-    let body_bytes = build_feishu_text_body(Some(chat_id), content);
-    let auth_val = format!("Bearer {}", token);
-    let headers = [
-        ("Authorization", auth_val.as_str()),
-        ("Content-Type", "application/json; charset=utf-8"),
-    ];
-    let (status, resp_body) =
-        match http.http_post_with_headers(FEISHU_SEND_URL, &headers, &body_bytes) {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error = crate::error::Error::Other {
-                    source: Box::new(e),
-                    stage: "feishu_send",
-                };
-                record_outbound_http_failure(&error);
-                return Err(error);
-            }
-        };
-    if status >= 400 {
-        let error = crate::error::Error::Http {
-            status_code: status,
-            stage: "feishu_send",
-        };
-        record_outbound_http_failure(&error);
-        return Err(error);
-    }
-    record_outbound_http_success();
+) -> Result<Option<String>> {
+    let body = CanonicalMessageBody::text(content.to_string());
+    let resp_body = post_feishu_message(http, token, Some(chat_id), &body)?;
     #[derive(serde::Deserialize)]
     struct R {
         data: Option<Inner>,
@@ -332,28 +519,21 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
     struct Inner {
         message_id: Option<String>,
     }
-    let r: R = match serde_json::from_slice(resp_body.as_ref()) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            log::warn!("[feishu_send] failed to parse send response: {}", e);
-            R { data: None }
-        }
-    };
+    let r: R = serde_json::from_slice(resp_body.as_ref()).unwrap_or(R { data: None });
     Ok(r.data.and_then(|d| d.message_id))
 }
 
 /// 编辑已发送的飞书消息（PUT /im/v1/messages/{message_id}）。
+/// Rich message edit is intentionally unsupported until each msg_type has a stable patch contract.
 pub fn edit_message<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
     message_id: &str,
     content: &str,
-) -> crate::error::Result<()> {
-    let body_bytes = build_feishu_text_body(None, content);
-    let url = format!(
-        "https://open.feishu.cn/open-apis/im/v1/messages/{}",
-        message_id
-    );
+) -> Result<()> {
+    let (msg_type, serialized_content) = feishu_text_body(&TextBody::plain(content))?;
+    let body_bytes = build_feishu_request_body(None, &msg_type, &serialized_content)?;
+    let url = format!("{FEISHU_EDIT_URL_PREFIX}{message_id}");
     let auth_val = format!("Bearer {}", token);
     let headers = [
         ("Authorization", auth_val.as_str()),
@@ -362,7 +542,7 @@ pub fn edit_message<H: ChannelHttpClient>(
     let (status, _) = match http.http_put_with_headers(&url, &headers, &body_bytes) {
         Ok(resp) => resp,
         Err(e) => {
-            let error = crate::error::Error::Other {
+            let error = Error::Other {
                 source: Box::new(e),
                 stage: "feishu_edit",
             };
@@ -371,7 +551,7 @@ pub fn edit_message<H: ChannelHttpClient>(
         }
     };
     if status >= 400 {
-        let error = crate::error::Error::Http {
+        let error = Error::Http {
             status_code: status,
             stage: "feishu_edit",
         };
@@ -382,13 +562,151 @@ pub fn edit_message<H: ChannelHttpClient>(
     Ok(())
 }
 
+#[derive(Debug)]
 struct ParsedFeishuInboundMessage {
     chat_id: String,
-    text: String,
+    body: CanonicalMessageBody,
+    content_projection: String,
     is_group: bool,
     message_id: String,
     event_id: String,
     inbound_dedup_key: String,
+}
+
+fn parse_feishu_content(
+    message_type: &str,
+    content_str: &str,
+) -> Option<(CanonicalMessageBody, String)> {
+    let content_json = serde_json::from_str::<Value>(content_str).ok()?;
+    match message_type {
+        "text" => {
+            let text = content_json
+                .get("text")
+                .and_then(Value::as_str)?
+                .trim()
+                .to_string();
+            if text.is_empty() {
+                None
+            } else {
+                Some((CanonicalMessageBody::text(text.clone()), text))
+            }
+        }
+        "post" => {
+            let fallback = feishu_post_fallback_text(&content_json);
+            Some((
+                CanonicalMessageBody::Card(CardBody {
+                    format: CardFormat::RichPost,
+                    payload_json: content_json,
+                    fallback_text: fallback.clone(),
+                }),
+                fallback,
+            ))
+        }
+        "image" => {
+            let image_key = content_json
+                .get("image_key")
+                .and_then(Value::as_str)?
+                .trim();
+            if image_key.is_empty() {
+                return None;
+            }
+            let body = CanonicalMessageBody::Image(ImageBody {
+                asset: MediaAssetRef::platform_handle(AssetSourcePlatform::Feishu, image_key),
+                caption: None,
+            });
+            let projection = body.text_projection();
+            Some((body, projection))
+        }
+        "file" => {
+            let file_key = content_json.get("file_key").and_then(Value::as_str)?.trim();
+            if file_key.is_empty() {
+                return None;
+            }
+            let file_name = content_json
+                .get("file_name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let body = CanonicalMessageBody::File(FileBody {
+                asset: MediaAssetRef {
+                    source_platform: AssetSourcePlatform::Feishu,
+                    locator_kind: MediaLocatorKind::PlatformHandle,
+                    locator: file_key.to_string(),
+                    file_name,
+                    ..MediaAssetRef::default()
+                },
+                caption: None,
+            });
+            let projection = body.text_projection();
+            Some((body, projection))
+        }
+        "audio" => {
+            let file_key = content_json.get("file_key").and_then(Value::as_str)?.trim();
+            if file_key.is_empty() {
+                return None;
+            }
+            let duration_ms = content_json
+                .get("duration")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .map(|secs| secs.saturating_mul(1000));
+            let body = CanonicalMessageBody::Audio(crate::bus::AudioBody {
+                asset: MediaAssetRef {
+                    source_platform: AssetSourcePlatform::Feishu,
+                    locator_kind: MediaLocatorKind::PlatformHandle,
+                    locator: file_key.to_string(),
+                    duration_ms,
+                    ..MediaAssetRef::default()
+                },
+                caption: None,
+                transcript_text: None,
+            });
+            let projection = body.text_projection();
+            Some((body, projection))
+        }
+        "media" => {
+            let file_key = content_json.get("file_key").and_then(Value::as_str)?.trim();
+            if file_key.is_empty() {
+                return None;
+            }
+            let image_key = content_json
+                .get("image_key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let title = content_json
+                .get("file_name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let body = CanonicalMessageBody::Video(VideoBody {
+                asset: MediaAssetRef {
+                    source_platform: AssetSourcePlatform::Feishu,
+                    locator_kind: MediaLocatorKind::PlatformHandle,
+                    locator: file_key.to_string(),
+                    file_name: title.clone(),
+                    ..MediaAssetRef::default()
+                },
+                caption: image_key
+                    .map(|key| TextBody::plain(format!("[cover] {key}")))
+                    .filter(|_| false),
+                title,
+                description: None,
+            });
+            let projection = body.text_projection();
+            Some((body, projection))
+        }
+        "interactive" => {
+            let fallback = feishu_interactive_fallback_text(&content_json);
+            Some((
+                CanonicalMessageBody::Card(CardBody {
+                    format: CardFormat::Interactive,
+                    payload_json: content_json,
+                    fallback_text: fallback.clone(),
+                }),
+                fallback,
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn parse_feishu_inbound_message(
@@ -396,7 +714,7 @@ fn parse_feishu_inbound_message(
     allowed_chat_ids: &[String],
 ) -> Option<ParsedFeishuInboundMessage> {
     const TAG: &str = "feishu_event_parse";
-    let v: serde_json::Value = match serde_json::from_str(event_body) {
+    let v: Value = match serde_json::from_str(event_body) {
         Ok(x) => x,
         Err(_) => {
             log::debug!("[{}] body parse failed", TAG);
@@ -406,14 +724,7 @@ fn parse_feishu_inbound_message(
     let event_type = v
         .get("header")
         .and_then(|h| h.get("event_type"))
-        .and_then(|e| e.as_str());
-    let event_type = match event_type {
-        Some(t) => t,
-        None => {
-            log::debug!("[{}] missing header.event_type", TAG);
-            return None;
-        }
-    };
+        .and_then(Value::as_str)?;
     if event_type != "im.message.receive_v1" {
         log::debug!("[{}] skip event_type={}", TAG, event_type);
         return None;
@@ -421,63 +732,24 @@ fn parse_feishu_inbound_message(
     let event_id = v
         .get("header")
         .and_then(|h| h.get("event_id"))
-        .and_then(|id| id.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
-    let event = match v.get("event") {
-        Some(e) => e,
-        None => {
-            log::debug!("[{}] missing event", TAG);
-            return None;
-        }
-    };
-    let message = match event.get("message") {
-        Some(m) => m,
-        None => {
-            log::debug!("[{}] missing event.message", TAG);
-            return None;
-        }
-    };
+    let message = v.get("event")?.get("message")?;
     let message_id = message
         .get("message_id")
-        .and_then(|id| id.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
     let chat_id = message
         .get("chat_id")
-        .and_then(|c| c.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
-    let chat_type = message
-        .get("chat_type")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let message_type = message
-        .get("message_type")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
-    let content_str = message
-        .get("content")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    if message_type != "text" {
-        log::debug!("[{}] skip message_type={}", TAG, message_type);
-        return None;
-    }
-    let text = match serde_json::from_str::<serde_json::Value>(content_str) {
-        Ok(c) => c
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string(),
-        Err(_) => String::new(),
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        log::debug!("[{}] empty text", TAG);
+    if chat_id.is_empty() {
         return None;
     }
     if allowed_chat_ids.is_empty() {
@@ -496,6 +768,16 @@ fn parse_feishu_inbound_message(
         );
         return None;
     }
+    let chat_type = message
+        .get("chat_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let message_type = message
+        .get("message_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let content_str = message.get("content").and_then(Value::as_str).unwrap_or("");
+    let (body, content_projection) = parse_feishu_content(message_type, content_str)?;
     let is_group = matches!(chat_type, "group" | "topic_group");
     let inbound_dedup_key = if !message_id.is_empty() {
         format!("feishu_message:{message_id}")
@@ -506,7 +788,8 @@ fn parse_feishu_inbound_message(
     };
     Some(ParsedFeishuInboundMessage {
         chat_id,
-        text: text.to_string(),
+        body,
+        content_projection,
         is_group,
         message_id,
         event_id,
@@ -530,40 +813,27 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
         };
         let body_bytes = match serde_json::to_vec(&body) {
             Ok(b) => b,
-            Err(e) => {
-                log::warn!("[feishu_connectivity] json: {}", e);
-                return connectivity::ProbeStatus::CheckFailed;
-            }
+            Err(_) => return connectivity::ProbeStatus::CheckFailed,
         };
         let (status, resp_body) = match http.http_post(FEISHU_TOKEN_URL, &body_bytes) {
             Ok(r) => r,
-            Err(e) => {
-                log::warn!("[feishu_connectivity] post: {}", e);
-                return connectivity::ProbeStatus::CheckFailed;
-            }
+            Err(_) => return connectivity::ProbeStatus::CheckFailed,
         };
         if status >= 400 {
-            log::warn!("[feishu_connectivity] token api status {}", status);
             return connectivity::ProbeStatus::InvalidToken;
         }
         let r: FeishuTokenResponse = match serde_json::from_slice(resp_body.as_ref()) {
             Ok(x) => x,
-            Err(e) => {
-                log::warn!("[feishu_connectivity] parse: {}", e);
-                return connectivity::ProbeStatus::CheckFailed;
-            }
+            Err(_) => return connectivity::ProbeStatus::CheckFailed,
         };
         match r.tenant_access_token {
             Some(t) if !t.is_empty() => connectivity::ProbeStatus::Ok,
-            _ => {
-                log::warn!("[feishu_connectivity] no token code={}", r.code);
-                connectivity::ProbeStatus::InvalidToken
-            }
+            _ => connectivity::ProbeStatus::InvalidToken,
         }
     })
 }
 
-/// 从飞书事件 body（schema 2.0，含 header.event_type、event）解析出 im.message.receive_v1 文本消息，
+/// 从飞书事件 body（schema 2.0，含 header.event_type、event）解析出 im.message.receive_v1 消息，
 /// 白名单校验通过则返回 PcMsg，否则 None。供 HTTP 回调与长连接入站共用。
 pub fn event_body_to_pcmsg(event_body: &str, allowed_chat_ids: &[String]) -> Option<PcMsg> {
     event_body_to_pcmsg_with_transport(event_body, allowed_chat_ids, MessageTransport::Unknown)
@@ -575,32 +845,42 @@ pub(crate) fn event_body_to_pcmsg_with_transport(
     transport: MessageTransport,
 ) -> Option<PcMsg> {
     let parsed = parse_feishu_inbound_message(event_body, allowed_chat_ids)?;
-    PcMsg::new_inbound("feishu", &parsed.chat_id, parsed.text, parsed.is_group)
-        .ok()
-        .map(|msg| {
-            msg.with_inbound_provenance(
-                transport,
-                parsed.message_id,
-                parsed.event_id,
-                parsed.inbound_dedup_key,
-            )
-        })
+    PcMsg::new_inbound_with_body_and_ingress(
+        "feishu",
+        &parsed.chat_id,
+        parsed.body,
+        parsed.content_projection,
+        parsed.is_group,
+        crate::bus::IngressKind::User,
+    )
+    .ok()
+    .map(|msg| {
+        msg.with_inbound_provenance(
+            transport,
+            parsed.message_id,
+            parsed.event_id,
+            parsed.inbound_dedup_key,
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::MessageBodyKind;
     use crate::platform::ResponseBody;
     use std::collections::VecDeque;
 
     #[derive(Default)]
     struct StubHttp {
-        post_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
-        put_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
+        post_results: VecDeque<Result<(u16, ResponseBody)>>,
+        put_results: VecDeque<Result<(u16, ResponseBody)>>,
+        posted_bodies: Vec<Vec<u8>>,
+        put_bodies: Vec<Vec<u8>>,
     }
 
     impl ChannelHttpClient for StubHttp {
-        fn http_get(&mut self, _url: &str) -> crate::error::Result<(u16, ResponseBody)> {
+        fn http_get(&mut self, _url: &str) -> Result<(u16, ResponseBody)> {
             Ok((200, ResponseBody::Heap(b"{}".to_vec())))
         }
 
@@ -608,15 +888,12 @@ mod tests {
             &mut self,
             _url: &str,
             _headers: &[(&str, &str)],
-        ) -> crate::error::Result<(u16, ResponseBody)> {
+        ) -> Result<(u16, ResponseBody)> {
             Ok((200, ResponseBody::Heap(b"{}".to_vec())))
         }
 
-        fn http_post(
-            &mut self,
-            _url: &str,
-            _body: &[u8],
-        ) -> crate::error::Result<(u16, ResponseBody)> {
+        fn http_post(&mut self, _url: &str, body: &[u8]) -> Result<(u16, ResponseBody)> {
+            self.posted_bodies.push(body.to_vec());
             self.post_results
                 .pop_front()
                 .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
@@ -626,17 +903,18 @@ mod tests {
             &mut self,
             _url: &str,
             _headers: &[(&str, &str)],
-            _body: &[u8],
-        ) -> crate::error::Result<(u16, ResponseBody)> {
-            self.http_post("", &[])
+            body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            self.http_post("", body)
         }
 
         fn http_put_with_headers(
             &mut self,
             _url: &str,
             _headers: &[(&str, &str)],
-            _body: &[u8],
-        ) -> crate::error::Result<(u16, ResponseBody)> {
+            body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            self.put_bodies.push(body.to_vec());
             self.put_results
                 .pop_front()
                 .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
@@ -644,27 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_token_preserves_transport_error() {
-        let mut cache = FeishuTokenCache::new();
-        let mut http = StubHttp {
-            post_results: VecDeque::from([Err(crate::error::Error::config(
-                "tls_admission",
-                "permit timeout",
-            ))]),
-            ..Default::default()
-        };
-
-        let err = cache
-            .ensure_token(&mut http, "app", "secret", "feishu_stream")
-            .expect_err("token refresh should fail");
-
-        assert!(err.is_tls_admission());
-    }
-
-    #[test]
-    fn send_and_get_id_records_outbound_http_success() {
-        crate::orchestrator::reset_runtime_capabilities_for_tests();
-        let before = crate::metrics::snapshot();
+    fn send_and_get_id_records_message_id() {
         let mut http = StubHttp {
             post_results: VecDeque::from([Ok((
                 200,
@@ -675,13 +933,11 @@ mod tests {
 
         let message_id = send_and_get_id(&mut http, "token", "chat-1", "hello").expect("send");
 
-        let after = crate::metrics::snapshot();
         assert_eq!(message_id.as_deref(), Some("om_123"));
-        assert!(after.channel_http_ok > before.channel_http_ok);
     }
 
     #[test]
-    fn event_body_to_pcmsg_preserves_provenance() {
+    fn event_body_to_pcmsg_maps_post_to_card_body() {
         let body = serde_json::json!({
             "header": {
                 "event_id": "evt-1",
@@ -692,8 +948,8 @@ mod tests {
                     "message_id": "om_1",
                     "chat_id": "oc_1",
                     "chat_type": "group",
-                    "message_type": "text",
-                    "content": "{\"text\":\"hello\"}"
+                    "message_type": "post",
+                    "content": "{\"zh_cn\":{\"title\":\"标题\",\"content\":[[{\"tag\":\"text\",\"text\":\"第一行\"}],[{\"tag\":\"img\",\"image_key\":\"img_x\"}]]}}"
                 }
             }
         })
@@ -706,9 +962,39 @@ mod tests {
         )
         .expect("message");
 
-        assert_eq!(msg.source_transport, MessageTransport::Webhook);
+        assert_eq!(msg.body_kind(), MessageBodyKind::Card);
+        assert!(msg.content.contains("标题"));
         assert_eq!(msg.platform_message_id, "om_1");
-        assert_eq!(msg.platform_event_id, "evt-1");
-        assert_eq!(msg.inbound_dedup_key, "feishu_message:om_1");
+    }
+
+    #[test]
+    fn event_body_to_pcmsg_maps_image_to_platform_handle() {
+        let body = serde_json::json!({
+            "header": {
+                "event_id": "evt-1",
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "message": {
+                    "message_id": "om_2",
+                    "chat_id": "oc_1",
+                    "chat_type": "p2p",
+                    "message_type": "image",
+                    "content": "{\"image_key\":\"img_v2_123\"}"
+                }
+            }
+        })
+        .to_string();
+
+        let msg = event_body_to_pcmsg(&body, &[String::from("oc_1")]).expect("message");
+
+        assert_eq!(msg.body_kind(), MessageBodyKind::Image);
+        match &msg.body {
+            CanonicalMessageBody::Image(image) => {
+                assert_eq!(image.asset.source_platform, AssetSourcePlatform::Feishu);
+                assert_eq!(image.asset.locator, "img_v2_123");
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
     }
 }

@@ -1464,7 +1464,7 @@ fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> 
 }
 
 enum GateResult {
-    Proceed(PcMsg),
+    Proceed(Box<PcMsg>),
     Skipped,
 }
 
@@ -1479,7 +1479,7 @@ fn handle_llm_gate(
 ) -> GateResult {
     crate::orchestrator::refresh_heap_if_stale();
     match crate::orchestrator::can_call_llm_pub() {
-        LlmDecision::Proceed => GateResult::Proceed(msg),
+        LlmDecision::Proceed => GateResult::Proceed(Box::new(msg)),
         LlmDecision::RetryLater { delay_ms } => {
             let is_system = msg.ingress == IngressKind::System;
             msg.enqueue_ts_ms = now_unix_ms();
@@ -1699,7 +1699,7 @@ pub fn run_agent_loop(
     )
 }
 enum AgentRecvStatus {
-    Message(PcMsg),
+    Message(Box<PcMsg>),
     Timeout,
     Disconnected,
 }
@@ -1767,7 +1767,7 @@ fn run_agent_loop_main(
             prefer_system_once,
             &mut before_poll,
         ) {
-            AgentRecvStatus::Message(m) => m,
+            AgentRecvStatus::Message(m) => *m,
             AgentRecvStatus::Timeout => {
                 crate::platform::task_wdt::feed_current_task();
                 metrics::record_wdt_feed();

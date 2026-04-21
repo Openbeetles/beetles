@@ -1,5 +1,5 @@
 use super::{TaskTerminalVisibilityStatus, TurnVisibilityFact};
-use crate::bus::{IngressKind, OutboundKind, OutboundTx, PcMsg};
+use crate::bus::{CanonicalMessageBody, IngressKind, OutboundKind, OutboundTx, PcMsg};
 use crate::channel_capability::ChannelDeliveryOrderingModel;
 use crate::error::Result;
 use crate::i18n::Locale as UiLocale;
@@ -332,7 +332,11 @@ impl<'a> DeliverySession<'a> {
         intent: &ToolOutboundIntent,
     ) -> Result<ToolIntentDelivery> {
         self.bump_tool_intent_seen();
-        let text = normalize_visible_update(&intent.content, crate::bus::MAX_CONTENT_LEN);
+        let body = intent
+            .body
+            .clone()
+            .unwrap_or_else(|| CanonicalMessageBody::text(intent.content.clone()));
+        let text = normalize_visible_update(&body.text_projection(), crate::bus::MAX_CONTENT_LEN);
         if text.is_empty() {
             self.bump_tool_intent_suppressed();
             return Ok(ToolIntentDelivery::Suppressed);
@@ -353,6 +357,7 @@ impl<'a> DeliverySession<'a> {
                     chat_id,
                     self.req_id,
                     map_tool_outbound_kind(intent.delivery_kind),
+                    &body,
                     &text,
                 )
                 .map_err(|()| {
@@ -1154,9 +1159,19 @@ fn send_visible_update_explicit(
     chat_id: &str,
     req_id: &str,
     outbound_kind: OutboundKind,
+    body: &CanonicalMessageBody,
     content: &str,
 ) -> std::result::Result<(), ()> {
-    let mut msg = match PcMsg::new(channel, chat_id, content) {
+    let channel = std::sync::Arc::<str>::from(channel.to_string());
+    let chat_id = std::sync::Arc::<str>::from(chat_id.to_string());
+    let mut msg = match PcMsg::new_outbound_for_chat_with_body(
+        &channel,
+        &chat_id,
+        body.clone(),
+        content.to_string(),
+        Some(req_id.to_string()),
+        false,
+    ) {
         Ok(msg) => msg,
         Err(error) => {
             log::warn!(
@@ -1206,7 +1221,7 @@ fn map_tool_outbound_kind(delivery_kind: ToolOutboundDeliveryKind) -> OutboundKi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{new_inbound_channel, OutboundKind};
+    use crate::bus::{new_inbound_channel, OutboundKind, TextBody, TextFormat};
     use crate::channel_capability::{
         ChannelCapabilityContract, ChannelCapabilityEntry, ChannelDeliveryOrderingModel,
     };
@@ -1290,7 +1305,14 @@ mod tests {
                 supports_explicit_target: true,
                 supports_attachment: false,
                 supports_typing_or_chat_action: false,
+                supported_body_kinds: &[crate::bus::MessageBodyKind::Text],
+                supported_text_formats: &[crate::bus::TextFormat::Plain],
+                requires_pre_upload_for_media: false,
+                supports_platform_handle_reuse: false,
+                supports_http_url_media: false,
+                requires_passive_reply_anchor: false,
                 max_text_bytes: 4096,
+                max_caption_bytes: 0,
                 delivery_ordering_model: if supports_stream_edit {
                     ChannelDeliveryOrderingModel::EditableSingleMessage
                 } else {
@@ -1647,28 +1669,28 @@ mod tests {
         );
 
         let supplemental = delivery
-            .deliver_tool_outbound_intent(&ToolOutboundIntent {
-                target: ToolOutboundTarget::CurrentChat,
-                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
-                content: "补充说明".to_string(),
-            })
+            .deliver_tool_outbound_intent(&ToolOutboundIntent::text(
+                ToolOutboundTarget::CurrentChat,
+                ToolOutboundDeliveryKind::Supplemental,
+                "补充说明",
+            ))
             .expect("supplemental intent");
         let primary = delivery
-            .deliver_tool_outbound_intent(&ToolOutboundIntent {
-                target: ToolOutboundTarget::CurrentChat,
-                delivery_kind: ToolOutboundDeliveryKind::Primary,
-                content: "主答复".to_string(),
-            })
+            .deliver_tool_outbound_intent(&ToolOutboundIntent::text(
+                ToolOutboundTarget::CurrentChat,
+                ToolOutboundDeliveryKind::Primary,
+                "主答复",
+            ))
             .expect("suppressed primary intent");
         let explicit = delivery
-            .deliver_tool_outbound_intent(&ToolOutboundIntent {
-                target: ToolOutboundTarget::Explicit {
+            .deliver_tool_outbound_intent(&ToolOutboundIntent::text(
+                ToolOutboundTarget::Explicit {
                     channel: "telegram".to_string(),
                     chat_id: "chat-2".to_string(),
                 },
-                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
-                content: "不应再发送".to_string(),
-            })
+                ToolOutboundDeliveryKind::Supplemental,
+                "不应再发送",
+            ))
             .expect("explicit intent");
 
         assert_eq!(supplemental, ToolIntentDelivery::Suppressed);
@@ -1710,6 +1732,10 @@ mod tests {
                 },
                 delivery_kind: ToolOutboundDeliveryKind::Primary,
                 content: "显式主答复".to_string(),
+                body: Some(CanonicalMessageBody::Text(TextBody {
+                    text: "显式主答复".to_string(),
+                    format: TextFormat::Markdown,
+                })),
             })
             .expect("explicit intent");
 
@@ -1719,6 +1745,13 @@ mod tests {
         assert_eq!(outbound.chat_id.as_ref(), "chat-2");
         assert_eq!(outbound.content, "显式主答复");
         assert_eq!(outbound.outbound_kind, OutboundKind::Primary);
+        assert!(matches!(
+            outbound.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Markdown,
+                ..
+            })
+        ));
         assert_eq!(delivery.report().tool_outbound_intents_seen, 1);
         assert_eq!(delivery.report().tool_visible_updates_sent, 1);
         assert_eq!(delivery.report().explicit_outbound_sent, 1);

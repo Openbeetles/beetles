@@ -1,7 +1,7 @@
 //! 出站分发：从 outbound_rx 取 PcMsg，按 channel 调用对应 MessageSink；按通道熔断，避免单通道拖垮全局。
 //! Outbound dispatch: recv from outbound_rx, send via MessageSink; per-channel circuit breaker.
 
-use crate::bus::{OutboundKind, OutboundRx, MAX_CONTENT_LEN};
+use crate::bus::{CanonicalMessageBody, OutboundKind, OutboundRx, PcMsg, MAX_CONTENT_LEN};
 use crate::config::AppConfig;
 use crate::constants::VOICE_CHANNEL_NAME;
 use crate::error::Result;
@@ -18,6 +18,15 @@ use std::time::Duration;
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。
 pub trait MessageSink: Send + Sync {
     fn send(&self, chat_id: &str, content: &str) -> Result<()>;
+
+    fn send_message(&self, msg: &PcMsg, content: &str) -> Result<()> {
+        self.send_with_req(
+            &msg.chat_id,
+            content,
+            msg.req_id.as_deref(),
+            msg.outbound_kind,
+        )
+    }
 
     fn send_with_req(
         &self,
@@ -61,6 +70,24 @@ impl MessageSink for QueuedSink {
         self.send_with_req(chat_id, content, None, OutboundKind::Primary)
     }
 
+    fn send_message(&self, msg: &PcMsg, content: &str) -> Result<()> {
+        let content = truncate_content_to_max(content, MAX_CONTENT_LEN);
+        self.tx
+            .try_send(super::send::QueuedOutboundMessage {
+                transport_send_id: super::send::next_queued_outbound_id(),
+                chat_id: msg.chat_id.to_string(),
+                content: content.into_owned(),
+                body: msg.body.clone(),
+                platform_thread_id: msg.platform_thread_id.clone(),
+                req_id: msg.req_id.clone(),
+                outbound_kind: msg.outbound_kind,
+            })
+            .map_err(|e| crate::error::Error::Other {
+                source: Box::new(e),
+                stage: self.stage,
+            })
+    }
+
     fn send_with_req(
         &self,
         chat_id: &str,
@@ -69,11 +96,14 @@ impl MessageSink for QueuedSink {
         outbound_kind: OutboundKind,
     ) -> Result<()> {
         let content = truncate_content_to_max(content, MAX_CONTENT_LEN);
+        let projection = content.as_ref().to_string();
         self.tx
             .try_send(super::send::QueuedOutboundMessage {
                 transport_send_id: super::send::next_queued_outbound_id(),
                 chat_id: chat_id.to_string(),
-                content: content.into_owned(),
+                content: projection.clone(),
+                body: CanonicalMessageBody::text(projection),
+                platform_thread_id: String::new(),
                 req_id: req_id.map(str::to_string),
                 outbound_kind,
             })
@@ -209,12 +239,7 @@ fn dispatch_via_sink(
     crate::platform::task_wdt::feed_current_task();
 
     if msg.outbound_kind.is_supplemental() {
-        match sink.send_with_req(
-            &msg.chat_id,
-            content,
-            msg.req_id.as_deref(),
-            msg.outbound_kind,
-        ) {
+        match sink.send_message(msg, content) {
             Ok(()) => {
                 metrics::record_dispatch_send(true);
                 log::debug!(
@@ -257,12 +282,7 @@ fn dispatch_via_sink(
             std::thread::sleep(Duration::from_millis(SEND_RETRY_DELAY_MS));
             crate::platform::task_wdt::feed_current_task();
         }
-        match sink.send_with_req(
-            &msg.chat_id,
-            content,
-            msg.req_id.as_deref(),
-            msg.outbound_kind,
-        ) {
+        match sink.send_message(msg, content) {
             Ok(()) => {
                 log::debug!(
                     "[latency][dispatch] req_id={} channel={} attempt={} status=ok",

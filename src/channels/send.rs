@@ -2,7 +2,7 @@
 //! Shared POST + log-on-failure for channel outbound; reduces duplicate match/log code.
 
 use super::ChannelHttpClient;
-use crate::bus::OutboundKind;
+use crate::bus::{CanonicalMessageBody, OutboundKind};
 use crate::error::{Error, Result};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -16,6 +16,8 @@ pub struct QueuedOutboundMessage {
     pub transport_send_id: u32,
     pub chat_id: String,
     pub content: String,
+    pub body: CanonicalMessageBody,
+    pub platform_thread_id: String,
     pub req_id: Option<String>,
     pub outbound_kind: OutboundKind,
 }
@@ -24,7 +26,7 @@ pub(crate) const CHANNEL_SENDER_MAX_RETRIES: u8 = 3;
 const CHANNEL_SENDER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) enum SenderLoopEvent {
-    Message(QueuedOutboundMessage),
+    Message(Box<QueuedOutboundMessage>),
     Timeout,
     Disconnected,
 }
@@ -98,7 +100,7 @@ pub(crate) fn recv_sender_loop_event(
     tag: &str,
 ) -> SenderLoopEvent {
     match rx.recv_timeout(CHANNEL_SENDER_RECV_TIMEOUT) {
-        Ok(message) => SenderLoopEvent::Message(message),
+        Ok(message) => SenderLoopEvent::Message(Box::new(message)),
         Err(RecvTimeoutError::Timeout) => {
             feed_sender_loop_wdt();
             SenderLoopEvent::Timeout
@@ -137,7 +139,7 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
     loop {
         if pending.is_empty() {
             match recv_sender_loop_event(&rx, tag) {
-                SenderLoopEvent::Message(message) => pending.push_back(message),
+                SenderLoopEvent::Message(message) => pending.push_back(*message),
                 SenderLoopEvent::Timeout => continue,
                 SenderLoopEvent::Disconnected => break,
             }
@@ -333,6 +335,8 @@ mod tests {
             transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-a".to_string(),
             content: "first".to_string(),
+            body: CanonicalMessageBody::text("first"),
+            platform_thread_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -341,6 +345,8 @@ mod tests {
             transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-b".to_string(),
             content: "second".to_string(),
+            body: CanonicalMessageBody::text("second"),
+            platform_thread_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -349,6 +355,8 @@ mod tests {
             transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-c".to_string(),
             content: "third".to_string(),
+            body: CanonicalMessageBody::text("third"),
+            platform_thread_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -382,6 +390,8 @@ mod tests {
             transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-a".to_string(),
             content: "broken".to_string(),
+            body: CanonicalMessageBody::text("broken"),
+            platform_thread_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -411,6 +421,8 @@ mod tests {
             transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-a".to_string(),
             content: "supplemental".to_string(),
+            body: CanonicalMessageBody::text("supplemental"),
+            platform_thread_id: String::new(),
             req_id: Some("req-1".to_string()),
             outbound_kind: OutboundKind::Supplemental,
         })

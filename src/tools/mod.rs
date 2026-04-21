@@ -469,6 +469,29 @@ pub struct ToolOutboundIntent {
     pub target: ToolOutboundTarget,
     pub delivery_kind: ToolOutboundDeliveryKind,
     pub content: String,
+    pub body: Option<crate::bus::CanonicalMessageBody>,
+}
+
+impl ToolOutboundIntent {
+    pub fn text(
+        target: ToolOutboundTarget,
+        delivery_kind: ToolOutboundDeliveryKind,
+        content: impl Into<String>,
+    ) -> Self {
+        let content = content.into();
+        Self {
+            target,
+            delivery_kind,
+            body: Some(crate::bus::CanonicalMessageBody::text(content.clone())),
+            content,
+        }
+    }
+
+    pub fn with_body(mut self, body: crate::bus::CanonicalMessageBody) -> Self {
+        self.content = body.text_projection();
+        self.body = Some(body);
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -495,11 +518,23 @@ impl ToolExecutionOutcome {
     }
 
     pub fn with_current_chat_reply(mut self, content: impl Into<String>) -> Self {
-        self.outbound_intents.push(ToolOutboundIntent {
-            target: ToolOutboundTarget::CurrentChat,
-            delivery_kind: ToolOutboundDeliveryKind::Primary,
-            content: content.into(),
-        });
+        self.outbound_intents.push(ToolOutboundIntent::text(
+            ToolOutboundTarget::CurrentChat,
+            ToolOutboundDeliveryKind::Primary,
+            content,
+        ));
+        self
+    }
+
+    pub fn with_current_chat_reply_body(mut self, body: crate::bus::CanonicalMessageBody) -> Self {
+        self.outbound_intents.push(
+            ToolOutboundIntent::text(
+                ToolOutboundTarget::CurrentChat,
+                ToolOutboundDeliveryKind::Primary,
+                body.text_projection(),
+            )
+            .with_body(body),
+        );
         self
     }
 

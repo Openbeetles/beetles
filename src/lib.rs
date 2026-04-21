@@ -102,7 +102,11 @@ pub use agent::{
     build_context, run_agent_loop, AgentLoopConfig, ContextParams, StreamEditor, TypingNotifier,
     DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, SESSION_RECENT_N,
 };
-pub use bus::{MessageBus, PcMsg, DEFAULT_CAPACITY, MAX_CONTENT_LEN};
+pub use bus::{
+    AssetSourcePlatform, AudioBody, CanonicalMessageBody, CardBody, CardFormat, FileBody,
+    ImageBody, MediaAssetRef, MediaLocatorKind, MessageBodyKind, MessageBus, PcMsg,
+    PlatformNativeBody, TextBody, TextFormat, VideoBody, DEFAULT_CAPACITY, MAX_CONTENT_LEN,
+};
 #[cfg(feature = "feishu")]
 pub use channels::run_feishu_ws_loop;
 pub use channels::{

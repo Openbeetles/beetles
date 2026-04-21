@@ -1,8 +1,11 @@
 //! QQ 频道/群聊/私聊：入站 HTTP 回调（验签）与 WSS 入站；出站 Sink/flush、msg_id 被动回复，连通性检查。
 //! 支持 AT_MESSAGE_CREATE（频道）、GROUP_AT_MESSAGE_CREATE（群聊）、C2C_MESSAGE_CREATE（私聊）。
 
-use crate::bus::{MessageTransport, PcMsg};
+use crate::bus::{
+    CanonicalMessageBody, CardBody, CardFormat, MessageTransport, PcMsg, TextBody, TextFormat,
+};
 use crate::error::Result;
+use serde_json::Value;
 
 mod msg_id;
 mod send;
@@ -24,9 +27,65 @@ pub use webhook::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
 
 pub use ws::{run_qq_ws_loop, QqWsLoopConfig};
 
-pub(crate) fn build_inbound_message(
+pub(crate) fn build_inbound_body_from_parts(
+    content: Option<&str>,
+    markdown: Option<&Value>,
+    ark: Option<&Value>,
+    embed: Option<&Value>,
+) -> (CanonicalMessageBody, String) {
+    let content = content.unwrap_or("").trim();
+    if let Some(markdown) = markdown {
+        let markdown_content = markdown
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or(content)
+            .trim()
+            .to_string();
+        return (
+            CanonicalMessageBody::Text(TextBody {
+                text: markdown_content.clone(),
+                format: TextFormat::Markdown,
+            }),
+            markdown_content,
+        );
+    }
+    if let Some(ark) = ark {
+        let fallback = if content.is_empty() {
+            "[ark]".to_string()
+        } else {
+            content.to_string()
+        };
+        return (
+            CanonicalMessageBody::Card(CardBody {
+                format: CardFormat::Ark,
+                payload_json: ark.clone(),
+                fallback_text: fallback.clone(),
+            }),
+            fallback,
+        );
+    }
+    if let Some(embed) = embed {
+        let fallback = if content.is_empty() {
+            "[embed]".to_string()
+        } else {
+            content.to_string()
+        };
+        return (
+            CanonicalMessageBody::Card(CardBody {
+                format: CardFormat::Embed,
+                payload_json: embed.clone(),
+                fallback_text: fallback.clone(),
+            }),
+            fallback,
+        );
+    }
+    (CanonicalMessageBody::text(content), content.to_string())
+}
+
+pub(crate) fn build_inbound_message_with_body(
     chat_id: &str,
-    content: &str,
+    content_projection: &str,
+    body: CanonicalMessageBody,
     source_transport: MessageTransport,
     platform_message_id: Option<&str>,
     platform_event_id: Option<&str>,
@@ -40,16 +99,19 @@ pub(crate) fn build_inbound_message(
     } else {
         String::new()
     };
-    Ok(PcMsg::new_inbound(
+    Ok(PcMsg::new_inbound_with_body_and_ingress(
         "qq_channel",
         chat_id,
-        content,
+        body,
+        content_projection,
         chat_id.starts_with("group:"),
+        crate::bus::IngressKind::User,
     )?
     .with_inbound_provenance(
         source_transport,
         platform_message_id,
         platform_event_id,
         inbound_dedup_key,
-    ))
+    )
+    .with_platform_thread_id(""))
 }

@@ -1,16 +1,74 @@
 //! Channel capability contract and runtime snapshot.
 //! 通道能力合同与运行态快照。
 
-use crate::bus::MAX_CONTENT_LEN;
+use crate::bus::{MessageBodyKind, TextFormat, MAX_CONTENT_LEN};
 use crate::config::AppConfig;
 use serde::Serialize;
 use std::collections::HashMap;
 
 const TELEGRAM_MAX_TEXT_BYTES: usize = 4096;
+const TELEGRAM_MAX_CAPTION_BYTES: usize = 1024;
 const FEISHU_MAX_TEXT_BYTES: usize = 4096;
+const FEISHU_MAX_CAPTION_BYTES: usize = 0;
 const DINGTALK_MAX_TEXT_BYTES: usize = 4096;
+const DINGTALK_MAX_CAPTION_BYTES: usize = 0;
 const WECOM_MAX_TEXT_BYTES: usize = 2048;
+const WECOM_MAX_CAPTION_BYTES: usize = 0;
 const QQ_CHANNEL_MAX_TEXT_BYTES: usize = 4096;
+const QQ_CHANNEL_MAX_CAPTION_BYTES: usize = 0;
+
+const BODY_KINDS_TEXT_ONLY: &[MessageBodyKind] = &[MessageBodyKind::Text];
+const BODY_KINDS_TELEGRAM: &[MessageBodyKind] = &[
+    MessageBodyKind::Text,
+    MessageBodyKind::Image,
+    MessageBodyKind::Audio,
+    MessageBodyKind::Video,
+    MessageBodyKind::File,
+];
+const BODY_KINDS_FEISHU: &[MessageBodyKind] = &[
+    MessageBodyKind::Text,
+    MessageBodyKind::Image,
+    MessageBodyKind::Audio,
+    MessageBodyKind::Video,
+    MessageBodyKind::File,
+    MessageBodyKind::Card,
+];
+const BODY_KINDS_DINGTALK: &[MessageBodyKind] = &[
+    MessageBodyKind::Text,
+    MessageBodyKind::Image,
+    MessageBodyKind::Audio,
+    MessageBodyKind::Video,
+    MessageBodyKind::File,
+    MessageBodyKind::Card,
+];
+const BODY_KINDS_WECOM: &[MessageBodyKind] = &[
+    MessageBodyKind::Text,
+    MessageBodyKind::Image,
+    MessageBodyKind::Audio,
+    MessageBodyKind::Video,
+    MessageBodyKind::File,
+    MessageBodyKind::Card,
+];
+const BODY_KINDS_QQ: &[MessageBodyKind] = &[
+    MessageBodyKind::Text,
+    MessageBodyKind::Image,
+    MessageBodyKind::Audio,
+    MessageBodyKind::Video,
+    MessageBodyKind::File,
+    MessageBodyKind::Card,
+];
+
+const TEXT_FORMATS_PLAIN_ONLY: &[TextFormat] = &[TextFormat::Plain];
+const TEXT_FORMATS_TELEGRAM: &[TextFormat] =
+    &[TextFormat::Plain, TextFormat::Markdown, TextFormat::Html];
+const TEXT_FORMATS_FEISHU: &[TextFormat] = &[TextFormat::Plain, TextFormat::RichText];
+const TEXT_FORMATS_DINGTALK: &[TextFormat] = &[
+    TextFormat::Plain,
+    TextFormat::Markdown,
+    TextFormat::RichText,
+];
+const TEXT_FORMATS_WECOM: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
+const TEXT_FORMATS_QQ: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
 
 pub const CHANNEL_TELEGRAM: &str = "telegram";
 pub const CHANNEL_FEISHU: &str = "feishu";
@@ -49,7 +107,14 @@ pub struct ChannelCapabilityContract {
     pub supports_explicit_target: bool,
     pub supports_attachment: bool,
     pub supports_typing_or_chat_action: bool,
+    pub supported_body_kinds: &'static [MessageBodyKind],
+    pub supported_text_formats: &'static [TextFormat],
+    pub requires_pre_upload_for_media: bool,
+    pub supports_platform_handle_reuse: bool,
+    pub supports_http_url_media: bool,
+    pub requires_passive_reply_anchor: bool,
     pub max_text_bytes: usize,
+    pub max_caption_bytes: usize,
     pub delivery_ordering_model: ChannelDeliveryOrderingModel,
 }
 
@@ -95,7 +160,14 @@ pub struct ChannelCapabilitySnapshot {
     pub supports_explicit_target: bool,
     pub supports_attachment: bool,
     pub supports_typing_or_chat_action: bool,
+    pub supported_body_kinds: Vec<MessageBodyKind>,
+    pub supported_text_formats: Vec<TextFormat>,
+    pub requires_pre_upload_for_media: bool,
+    pub supports_platform_handle_reuse: bool,
+    pub supports_http_url_media: bool,
+    pub requires_passive_reply_anchor: bool,
     pub max_text_bytes: usize,
+    pub max_caption_bytes: usize,
     pub delivery_ordering_model: ChannelDeliveryOrderingModel,
     pub stream_edit_active: bool,
     pub typing_active: bool,
@@ -154,7 +226,14 @@ pub fn build_channel_capability_snapshots_for_registry(
                 supports_explicit_target: entry.contract.supports_explicit_target,
                 supports_attachment: entry.contract.supports_attachment,
                 supports_typing_or_chat_action: entry.contract.supports_typing_or_chat_action,
+                supported_body_kinds: entry.contract.supported_body_kinds.to_vec(),
+                supported_text_formats: entry.contract.supported_text_formats.to_vec(),
+                requires_pre_upload_for_media: entry.contract.requires_pre_upload_for_media,
+                supports_platform_handle_reuse: entry.contract.supports_platform_handle_reuse,
+                supports_http_url_media: entry.contract.supports_http_url_media,
+                requires_passive_reply_anchor: entry.contract.requires_passive_reply_anchor,
                 max_text_bytes: entry.contract.max_text_bytes,
+                max_caption_bytes: entry.contract.max_caption_bytes,
                 delivery_ordering_model: entry.contract.delivery_ordering_model,
                 stream_edit_active,
                 typing_active,
@@ -172,9 +251,16 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_edit: false,
             supports_stream_edit: false,
             supports_explicit_target: true,
-            supports_attachment: false,
+            supports_attachment: true,
             supports_typing_or_chat_action: true,
+            supported_body_kinds: BODY_KINDS_TELEGRAM,
+            supported_text_formats: TEXT_FORMATS_TELEGRAM,
+            requires_pre_upload_for_media: false,
+            supports_platform_handle_reuse: true,
+            supports_http_url_media: true,
+            requires_passive_reply_anchor: false,
             max_text_bytes: TELEGRAM_MAX_TEXT_BYTES,
+            max_caption_bytes: TELEGRAM_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         CHANNEL_FEISHU => Some(ChannelCapabilityContract {
@@ -183,9 +269,16 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_edit: true,
             supports_stream_edit: true,
             supports_explicit_target: true,
-            supports_attachment: false,
+            supports_attachment: true,
             supports_typing_or_chat_action: false,
+            supported_body_kinds: BODY_KINDS_FEISHU,
+            supported_text_formats: TEXT_FORMATS_FEISHU,
+            requires_pre_upload_for_media: true,
+            supports_platform_handle_reuse: true,
+            supports_http_url_media: false,
+            requires_passive_reply_anchor: false,
             max_text_bytes: FEISHU_MAX_TEXT_BYTES,
+            max_caption_bytes: FEISHU_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::EditableSingleMessage,
         }),
         CHANNEL_DINGTALK => Some(ChannelCapabilityContract {
@@ -194,9 +287,16 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_edit: false,
             supports_stream_edit: false,
             supports_explicit_target: false,
-            supports_attachment: false,
+            supports_attachment: true,
             supports_typing_or_chat_action: false,
+            supported_body_kinds: BODY_KINDS_DINGTALK,
+            supported_text_formats: TEXT_FORMATS_DINGTALK,
+            requires_pre_upload_for_media: true,
+            supports_platform_handle_reuse: true,
+            supports_http_url_media: false,
+            requires_passive_reply_anchor: false,
             max_text_bytes: DINGTALK_MAX_TEXT_BYTES,
+            max_caption_bytes: DINGTALK_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::StatelessWebhook,
         }),
         CHANNEL_WECOM => Some(ChannelCapabilityContract {
@@ -205,9 +305,16 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_edit: false,
             supports_stream_edit: false,
             supports_explicit_target: true,
-            supports_attachment: false,
+            supports_attachment: true,
             supports_typing_or_chat_action: false,
+            supported_body_kinds: BODY_KINDS_WECOM,
+            supported_text_formats: TEXT_FORMATS_WECOM,
+            requires_pre_upload_for_media: true,
+            supports_platform_handle_reuse: true,
+            supports_http_url_media: false,
+            requires_passive_reply_anchor: false,
             max_text_bytes: WECOM_MAX_TEXT_BYTES,
+            max_caption_bytes: WECOM_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         CHANNEL_QQ_CHANNEL => Some(ChannelCapabilityContract {
@@ -216,9 +323,16 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_edit: false,
             supports_stream_edit: false,
             supports_explicit_target: true,
-            supports_attachment: false,
+            supports_attachment: true,
             supports_typing_or_chat_action: false,
+            supported_body_kinds: BODY_KINDS_QQ,
+            supported_text_formats: TEXT_FORMATS_QQ,
+            requires_pre_upload_for_media: true,
+            supports_platform_handle_reuse: true,
+            supports_http_url_media: false,
+            requires_passive_reply_anchor: true,
             max_text_bytes: QQ_CHANNEL_MAX_TEXT_BYTES,
+            max_caption_bytes: QQ_CHANNEL_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         CHANNEL_WEBSOCKET => Some(ChannelCapabilityContract {
@@ -229,7 +343,14 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_explicit_target: true,
             supports_attachment: false,
             supports_typing_or_chat_action: false,
+            supported_body_kinds: BODY_KINDS_TEXT_ONLY,
+            supported_text_formats: TEXT_FORMATS_PLAIN_ONLY,
+            requires_pre_upload_for_media: false,
+            supports_platform_handle_reuse: false,
+            supports_http_url_media: false,
+            requires_passive_reply_anchor: false,
             max_text_bytes: MAX_CONTENT_LEN,
+            max_caption_bytes: 0,
             delivery_ordering_model: ChannelDeliveryOrderingModel::SessionSocket,
         }),
         CHANNEL_VOICE => Some(ChannelCapabilityContract {
@@ -240,7 +361,14 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_explicit_target: false,
             supports_attachment: false,
             supports_typing_or_chat_action: false,
+            supported_body_kinds: BODY_KINDS_TEXT_ONLY,
+            supported_text_formats: TEXT_FORMATS_PLAIN_ONLY,
+            requires_pre_upload_for_media: false,
+            supports_platform_handle_reuse: false,
+            supports_http_url_media: false,
+            requires_passive_reply_anchor: false,
             max_text_bytes: MAX_CONTENT_LEN,
+            max_caption_bytes: 0,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AudioPlayback,
         }),
         _ => None,
@@ -301,6 +429,11 @@ mod tests {
         assert!(telegram.configured);
         assert!(telegram.enabled);
         assert!(!telegram.contract.supports_stream_edit);
+        assert_eq!(telegram.contract.supported_body_kinds, BODY_KINDS_TELEGRAM);
+        assert_eq!(
+            telegram.contract.supported_text_formats,
+            TEXT_FORMATS_TELEGRAM
+        );
 
         let qq = registry
             .get(CHANNEL_QQ_CHANNEL)
@@ -308,6 +441,7 @@ mod tests {
         assert!(qq.configured);
         assert!(!qq.enabled);
         assert!(qq.contract.supports_explicit_target);
+        assert!(qq.contract.requires_passive_reply_anchor);
 
         let voice = registry.get(CHANNEL_VOICE).expect("voice capability");
         assert!(voice.enabled);
@@ -333,6 +467,8 @@ mod tests {
 
         assert!(feishu.enabled);
         assert!(feishu.stream_edit_active);
+        assert_eq!(feishu.supported_body_kinds, BODY_KINDS_FEISHU);
+        assert_eq!(feishu.supported_text_formats, TEXT_FORMATS_FEISHU);
         assert!(feishu.degraded_reasons.is_empty());
     }
 }

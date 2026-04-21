@@ -71,7 +71,7 @@ pub(super) fn admit_turn(
         outbound_tx,
         config,
     ) {
-        GateResult::Proceed(msg) => msg,
+        GateResult::Proceed(msg) => *msg,
         GateResult::Skipped => return None,
     };
 

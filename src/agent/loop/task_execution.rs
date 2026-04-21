@@ -451,20 +451,16 @@ pub(super) fn try_run_task_execution(
         let step_request =
             super::build_task_step_request(&record, &current_step, &current_artifacts);
         let step_req_id = format!("{}-{}", record.run.run_id, current_step.step_id);
-        let step_msg = PcMsg {
-            channel: msg.channel.clone(),
-            chat_id: msg.chat_id.clone(),
-            content: step_request,
-            req_id: Some(step_req_id.clone()),
-            outbound_kind: crate::bus::OutboundKind::Primary,
-            ingress: IngressKind::System,
-            enqueue_ts_ms: super::now_unix_ms(),
-            source_transport: crate::bus::MessageTransport::Internal,
-            platform_message_id: String::new(),
-            platform_event_id: String::new(),
-            inbound_dedup_key: String::new(),
-            is_group: false,
-        };
+        let mut step_msg = PcMsg::new_inbound_with_ingress(
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+            step_request,
+            false,
+            IngressKind::System,
+        )?;
+        step_msg.req_id = Some(step_req_id.clone());
+        step_msg.source_transport = crate::bus::MessageTransport::Internal;
+        step_msg.enqueue_ts_ms = super::now_unix_ms();
         let mut step_repeat = HashMap::new();
         let super::turn_execution::ExecutedTurn {
             outcome: step_outcome,

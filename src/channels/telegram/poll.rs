@@ -3,7 +3,10 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::bus::{InboundTx, MessageTransport, OutboundTx, PcMsg, MAX_CONTENT_LEN};
+use crate::bus::{
+    AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, InboundTx,
+    MediaAssetRef, MessageTransport, OutboundTx, PcMsg, TextBody, VideoBody, MAX_CONTENT_LEN,
+};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
@@ -49,8 +52,26 @@ struct TelegramMessage {
     chat: TelegramChat,
     #[serde(default)]
     message_id: i64,
+    #[serde(default)]
+    message_thread_id: Option<i64>,
+    #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
     entities: Option<Vec<MessageEntity>>,
+    #[serde(default)]
+    caption: Option<String>,
+    #[serde(default)]
+    caption_entities: Option<Vec<MessageEntity>>,
+    #[serde(default)]
+    photo: Option<Vec<TelegramPhotoSize>>,
+    #[serde(default)]
+    audio: Option<TelegramAudio>,
+    #[serde(default)]
+    voice: Option<TelegramVoice>,
+    #[serde(default)]
+    video: Option<TelegramVideo>,
+    #[serde(default)]
+    document: Option<TelegramDocument>,
 }
 
 #[derive(serde::Deserialize)]
@@ -66,6 +87,196 @@ struct MessageEntity {
     type_: String,
     offset: Option<i32>,
     length: Option<i32>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct TelegramPhotoSize {
+    file_id: String,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct TelegramAudio {
+    file_id: String,
+    #[serde(default)]
+    duration: Option<u32>,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct TelegramVoice {
+    file_id: String,
+    #[serde(default)]
+    duration: Option<u32>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct TelegramVideo {
+    file_id: String,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    duration: Option<u32>,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct TelegramDocument {
+    file_id: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+}
+
+fn caption_body(caption: Option<&str>) -> Option<TextBody> {
+    caption
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(TextBody::plain)
+}
+
+fn duration_ms(duration_secs: Option<u32>) -> Option<u32> {
+    duration_secs.map(|duration| duration.saturating_mul(1000))
+}
+
+fn richest_photo_asset(photo_sizes: &[TelegramPhotoSize]) -> Option<MediaAssetRef> {
+    photo_sizes
+        .iter()
+        .max_by_key(|photo| {
+            let width = u64::from(photo.width.unwrap_or(0));
+            let height = u64::from(photo.height.unwrap_or(0));
+            (width.saturating_mul(height), photo.file_size.unwrap_or(0))
+        })
+        .map(|photo| MediaAssetRef {
+            source_platform: AssetSourcePlatform::Telegram,
+            locator_kind: crate::bus::MediaLocatorKind::PlatformHandle,
+            locator: photo.file_id.clone(),
+            width_px: photo.width,
+            height_px: photo.height,
+            size_bytes: photo.file_size,
+            ..MediaAssetRef::default()
+        })
+}
+
+fn parse_telegram_body(message: &TelegramMessage) -> Option<CanonicalMessageBody> {
+    if let Some(text) = message
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        let projection = if text.len() > MAX_CONTENT_LEN {
+            text.chars().take(MAX_CONTENT_LEN).collect::<String>()
+        } else {
+            text.to_string()
+        };
+        return Some(CanonicalMessageBody::text(projection));
+    }
+
+    if let Some(photo_sizes) = message.photo.as_deref() {
+        let asset = richest_photo_asset(photo_sizes)?;
+        return Some(CanonicalMessageBody::Image(ImageBody {
+            asset,
+            caption: caption_body(message.caption.as_deref()),
+        }));
+    }
+
+    if let Some(audio) = message.audio.as_ref() {
+        return Some(CanonicalMessageBody::Audio(AudioBody {
+            asset: MediaAssetRef {
+                source_platform: AssetSourcePlatform::Telegram,
+                locator_kind: crate::bus::MediaLocatorKind::PlatformHandle,
+                locator: audio.file_id.clone(),
+                file_name: audio.file_name.clone(),
+                mime_type: audio.mime_type.clone(),
+                size_bytes: audio.file_size,
+                duration_ms: duration_ms(audio.duration),
+                ..MediaAssetRef::default()
+            },
+            caption: caption_body(message.caption.as_deref()),
+            transcript_text: None,
+        }));
+    }
+
+    if let Some(voice) = message.voice.as_ref() {
+        return Some(CanonicalMessageBody::Audio(AudioBody {
+            asset: MediaAssetRef {
+                source_platform: AssetSourcePlatform::Telegram,
+                locator_kind: crate::bus::MediaLocatorKind::PlatformHandle,
+                locator: voice.file_id.clone(),
+                mime_type: voice
+                    .mime_type
+                    .clone()
+                    .or_else(|| Some("audio/ogg".to_string())),
+                size_bytes: voice.file_size,
+                duration_ms: duration_ms(voice.duration),
+                ..MediaAssetRef::default()
+            },
+            caption: caption_body(message.caption.as_deref()),
+            transcript_text: None,
+        }));
+    }
+
+    if let Some(video) = message.video.as_ref() {
+        return Some(CanonicalMessageBody::Video(VideoBody {
+            asset: MediaAssetRef {
+                source_platform: AssetSourcePlatform::Telegram,
+                locator_kind: crate::bus::MediaLocatorKind::PlatformHandle,
+                locator: video.file_id.clone(),
+                file_name: video.file_name.clone(),
+                mime_type: video.mime_type.clone(),
+                size_bytes: video.file_size,
+                width_px: video.width,
+                height_px: video.height,
+                duration_ms: duration_ms(video.duration),
+                ..MediaAssetRef::default()
+            },
+            caption: caption_body(message.caption.as_deref()),
+            title: None,
+            description: None,
+        }));
+    }
+
+    if let Some(document) = message.document.as_ref() {
+        return Some(CanonicalMessageBody::File(FileBody {
+            asset: MediaAssetRef {
+                source_platform: AssetSourcePlatform::Telegram,
+                locator_kind: crate::bus::MediaLocatorKind::PlatformHandle,
+                locator: document.file_id.clone(),
+                file_name: document.file_name.clone(),
+                mime_type: document.mime_type.clone(),
+                size_bytes: document.file_size,
+                ..MediaAssetRef::default()
+            },
+            caption: caption_body(message.caption.as_deref()),
+        }));
+    }
+
+    None
 }
 
 fn message_mentions_bot(
@@ -162,8 +373,12 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                 );
                 continue;
             }
-            let text = msg.text.unwrap_or_default();
-            if text.is_empty() {
+            let gating_text = msg
+                .text
+                .as_deref()
+                .or(msg.caption.as_deref())
+                .unwrap_or_default();
+            if gating_text.is_empty() && parse_telegram_body(&msg).is_none() {
                 continue;
             }
             let is_group = msg
@@ -173,8 +388,8 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                 .is_some_and(|t| t == "group" || t == "supergroup");
             if is_group && group_activation == "mention" {
                 let mentioned = message_mentions_bot(
-                    &text,
-                    msg.entities.as_deref(),
+                    gating_text,
+                    msg.entities.as_deref().or(msg.caption_entities.as_deref()),
                     bot_username.unwrap_or(""),
                 );
                 if !mentioned {
@@ -183,7 +398,12 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
             }
             if let Some(ctx) = cmd_ctx {
                 let loc_cmd = resolve_locale();
-                if text.starts_with('/') {
+                if msg
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with('/'))
+                {
+                    let text = msg.text.as_deref().unwrap_or_default();
                     let parts: Vec<&str> = text.split_whitespace().collect();
                     let handled = match parts.as_slice() {
                         ["/activation", "mention"] => {
@@ -244,29 +464,32 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                     }
                 }
             }
-            let content = if text.len() > MAX_CONTENT_LEN {
-                text.chars().take(MAX_CONTENT_LEN).collect::<String>()
-            } else {
-                text
+            let Some(body) = parse_telegram_body(&msg) else {
+                continue;
             };
             let _ = set_message_reaction(http, token, &chat_id, msg.message_id, "👍");
-            let pc = PcMsg {
-                channel: Arc::from("telegram"),
-                chat_id: Arc::from(chat_id.as_str()),
-                content,
-                req_id: None,
-                outbound_kind: crate::bus::OutboundKind::Primary,
-                ingress: crate::bus::IngressKind::User,
-                enqueue_ts_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
-                    .unwrap_or(0),
-                source_transport: MessageTransport::Poll,
-                platform_message_id: msg.message_id.to_string(),
-                platform_event_id: String::new(),
-                inbound_dedup_key: format!("telegram_message:{}", msg.message_id),
-                is_group,
-            };
+            let pc = match PcMsg::new_inbound_with_body("telegram", &chat_id, body, is_group) {
+                Ok(message) => message.with_inbound_provenance(
+                    MessageTransport::Poll,
+                    msg.message_id.to_string(),
+                    "",
+                    format!("telegram_message:{}", msg.message_id),
+                ),
+                Err(error) => {
+                    log::warn!(
+                        "[{}] failed to build telegram inbound message chat_id={}: {}",
+                        TAG_POLL,
+                        chat_id,
+                        error
+                    );
+                    continue;
+                }
+            }
+            .with_platform_thread_id(
+                msg.message_thread_id
+                    .map(|thread_id| thread_id.to_string())
+                    .unwrap_or_default(),
+            );
             let mut enqueued = false;
             for _ in 0..3 {
                 match inbound_tx.try_send(pc.clone()) {
@@ -298,6 +521,197 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
         }
     }
     Ok(next_offset)
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use crate::bus::{new_inbound_channel, MessageBodyKind};
+    use crate::platform::ResponseBody;
+    use std::collections::VecDeque;
+
+    #[derive(Default)]
+    struct StubHttp {
+        get_results: VecDeque<Result<(u16, ResponseBody)>>,
+        post_results: VecDeque<Result<(u16, ResponseBody)>>,
+    }
+
+    impl ChannelHttpClient for StubHttp {
+        fn http_get(&mut self, _url: &str) -> Result<(u16, ResponseBody)> {
+            self.get_results
+                .pop_front()
+                .unwrap_or_else(|| Ok((200, ResponseBody::Heap(br#"{"result":[]}"#.to_vec()))))
+        }
+
+        fn http_get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            self.http_get(_url)
+        }
+
+        fn http_post(&mut self, _url: &str, _body: &[u8]) -> Result<(u16, ResponseBody)> {
+            self.post_results
+                .pop_front()
+                .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
+        }
+
+        fn http_post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            self.http_post(_url, _body)
+        }
+    }
+
+    #[derive(Default)]
+    struct StubPendingRetryStore;
+
+    impl PendingRetryStore for StubPendingRetryStore {
+        fn save_pending_retry(&self, _msg: &PcMsg) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_pending_retry(&self) -> Result<Option<PcMsg>> {
+            Ok(None)
+        }
+
+        fn clear_pending_retry(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn poll_single_update(body: serde_json::Value) -> PcMsg {
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let mut http = StubHttp {
+            get_results: VecDeque::from([Ok((
+                200,
+                ResponseBody::Heap(body.to_string().into_bytes()),
+            ))]),
+            ..Default::default()
+        };
+        let pending_retry = StubPendingRetryStore;
+        let resolve_locale: std::sync::Arc<dyn Fn() -> UiLocale + Send + Sync> =
+            std::sync::Arc::new(|| UiLocale::Zh);
+
+        let next_offset = poll_telegram_once(
+            &mut http,
+            "token",
+            None,
+            &inbound_tx,
+            &pending_retry,
+            &[String::from("1234")],
+            "always",
+            Some("beetle_bot"),
+            None,
+            &resolve_locale,
+        )
+        .expect("poll ok");
+
+        assert_eq!(next_offset, Some(2));
+        inbound_rx.try_recv().expect("inbound message")
+    }
+
+    #[test]
+    fn poll_telegram_once_maps_photo_update_to_image_body() {
+        let msg = poll_single_update(serde_json::json!({
+            "result": [{
+                "update_id": 1,
+                "message": {
+                    "message_id": 9,
+                    "chat": {"id": 1234, "type": "private"},
+                    "caption": "photo caption",
+                    "photo": [
+                        {"file_id": "small", "width": 100, "height": 100, "file_size": 10},
+                        {"file_id": "large", "width": 800, "height": 600, "file_size": 20}
+                    ]
+                }
+            }]
+        }));
+
+        assert_eq!(msg.body_kind(), MessageBodyKind::Image);
+        assert_eq!(msg.content, "photo caption");
+        match &msg.body {
+            CanonicalMessageBody::Image(image) => {
+                assert_eq!(image.asset.locator, "large");
+                assert_eq!(image.asset.width_px, Some(800));
+                assert_eq!(
+                    image.caption.as_ref().map(|caption| caption.text.as_str()),
+                    Some("photo caption")
+                );
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
+        assert_eq!(msg.platform_message_id, "9");
+    }
+
+    #[test]
+    fn poll_telegram_once_maps_voice_update_to_audio_body() {
+        let msg = poll_single_update(serde_json::json!({
+            "result": [{
+                "update_id": 1,
+                "message": {
+                    "message_id": 10,
+                    "chat": {"id": 1234, "type": "private"},
+                    "voice": {
+                        "file_id": "voice_1",
+                        "duration": 2,
+                        "file_size": 99
+                    }
+                }
+            }]
+        }));
+
+        assert_eq!(msg.body_kind(), MessageBodyKind::Audio);
+        assert_eq!(msg.content, "[audio]");
+        match &msg.body {
+            CanonicalMessageBody::Audio(audio) => {
+                assert_eq!(audio.asset.locator, "voice_1");
+                assert_eq!(audio.asset.duration_ms, Some(2000));
+                assert_eq!(audio.asset.mime_type.as_deref(), Some("audio/ogg"));
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn poll_telegram_once_maps_document_update_to_file_body() {
+        let msg = poll_single_update(serde_json::json!({
+            "result": [{
+                "update_id": 1,
+                "message": {
+                    "message_id": 11,
+                    "message_thread_id": 88,
+                    "chat": {"id": 1234, "type": "supergroup"},
+                    "caption": "doc caption",
+                    "document": {
+                        "file_id": "doc_1",
+                        "file_name": "report.pdf",
+                        "mime_type": "application/pdf",
+                        "file_size": 123
+                    }
+                }
+            }]
+        }));
+
+        assert_eq!(msg.body_kind(), MessageBodyKind::File);
+        assert_eq!(msg.platform_thread_id, "88");
+        match &msg.body {
+            CanonicalMessageBody::File(file) => {
+                assert_eq!(file.asset.locator, "doc_1");
+                assert_eq!(file.asset.file_name.as_deref(), Some("report.pdf"));
+                assert_eq!(
+                    file.caption.as_ref().map(|caption| caption.text.as_str()),
+                    Some("doc caption")
+                );
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
+    }
 }
 
 /// 启动 Telegram 长轮询循环（阻塞，应在独立线程调用）。

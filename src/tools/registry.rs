@@ -2338,6 +2338,9 @@ mod tests {
                 target: crate::tools::ToolOutboundTarget::CurrentChat,
                 delivery_kind: crate::tools::ToolOutboundDeliveryKind::Primary,
                 content: "tool delivered reply".to_string(),
+                body: Some(crate::bus::CanonicalMessageBody::text(
+                    "tool delivered reply",
+                )),
             }]
         );
     }

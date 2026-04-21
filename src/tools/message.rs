@@ -1,3 +1,4 @@
+use crate::bus::{CanonicalMessageBody, CardBody, PlatformNativeBody, TextBody, TextFormat};
 use crate::error::Result;
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolApprovalMode, ToolClarificationField,
@@ -32,7 +33,7 @@ impl Tool for MessageTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"content":{"type":"string","description":"Message body to send."},"channel":{"type":"string","description":"Explicit target channel."},"chat_id":{"type":"string","description":"Explicit target chat id."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"supplemental = visible update; primary = canonical reply for the explicit target.","default":"supplemental"}},"required":["content","channel","chat_id"]}"#
+        r#"{"type":"object","properties":{"content":{"type":"string","description":"Text content or fallback text to send."},"body":{"description":"Canonical rich message body. When present it is authoritative."},"body_kind":{"type":"string","enum":["text","card","platform_native"],"description":"Shortcut body kind when not passing a full canonical body.","default":"text"},"text_format":{"type":"string","enum":["plain","markdown","html","rich_text"],"description":"Text formatting mode for text bodies.","default":"plain"},"payload_json":{"description":"Card or platform-native payload JSON for non-text bodies."},"platform_type":{"type":"string","description":"Platform-specific type when body_kind=platform_native."},"channel":{"type":"string","description":"Explicit target channel."},"chat_id":{"type":"string","description":"Explicit target chat id."},"delivery_kind":{"type":"string","enum":["supplemental","primary"],"description":"supplemental = visible update; primary = canonical reply for the explicit target.","default":"supplemental"}},"required":["channel","chat_id"],"anyOf":[{"required":["content"]},{"required":["body"]},{"required":["body_kind"]}]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -48,12 +49,7 @@ impl Tool for MessageTool {
         if let Some(outcome) = missing_message_field_outcome(&obj) {
             return Ok(outcome);
         }
-        let content = obj
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .expect("content blocker should have returned before required extraction");
+        let content = message_content(&obj);
 
         let delivery_kind = obj
             .get("delivery_kind")
@@ -81,6 +77,8 @@ impl Tool for MessageTool {
         }
         let channel = channel.to_string();
         let chat_id = chat_id.to_string();
+        let body = build_message_body(&obj, content)?;
+        let content_projection = body.text_projection();
 
         let primary = match delivery_kind {
             "supplemental" => false,
@@ -127,6 +125,32 @@ impl Tool for MessageTool {
                 "target channel does not support explicit outbound targets",
             );
         }
+        if !capability
+            .contract
+            .supported_body_kinds
+            .contains(&body.kind())
+        {
+            return unsupported_message_outcome(
+                Some(&channel),
+                Some(&chat_id),
+                delivery_kind,
+                "target channel does not support this outbound body kind",
+            );
+        }
+        if let CanonicalMessageBody::Text(text) = &body {
+            if !capability
+                .contract
+                .supported_text_formats
+                .contains(&text.format)
+            {
+                return unsupported_message_outcome(
+                    Some(&channel),
+                    Some(&chat_id),
+                    delivery_kind,
+                    "target channel does not support this text format",
+                );
+            }
+        }
         if !ctx.supports_explicit_outbound_message() {
             return runtime_blocked_message_outcome(
                 Some(&channel),
@@ -156,7 +180,7 @@ impl Tool for MessageTool {
                 delivery_kind: if primary { "primary" } else { "supplemental" },
                 channel: channel.as_str(),
                 chat_id: chat_id.as_str(),
-                sent_chars: content.chars().count(),
+                sent_chars: content_projection.chars().count(),
                 submitted_to_runtime: true,
             },
         )?;
@@ -169,7 +193,8 @@ impl Tool for MessageTool {
                 } else {
                     ToolOutboundDeliveryKind::Supplemental
                 },
-                content: content.to_string(),
+                content: content_projection,
+                body: Some(body),
             }),
         )
     }
@@ -204,6 +229,8 @@ impl Tool for MessageTool {
         &[
             r#"{"channel":"telegram","chat_id":"demo","delivery_kind":"supplemental","content":"hi"}"#,
             r#"{"channel":"telegram","chat_id":"demo","delivery_kind":"primary","content":"hi"}"#,
+            r##"{"channel":"telegram","chat_id":"demo","delivery_kind":"supplemental","content":"# Status","text_format":"markdown"}"##,
+            r#"{"channel":"feishu","chat_id":"demo","delivery_kind":"primary","body_kind":"card","content":"Order created","payload_json":{"header":{"title":"Order created"}}}"#,
         ]
     }
 }
@@ -248,18 +275,100 @@ fn message_ignored_payload(
     .to_string()
 }
 
+fn message_content(obj: &serde_json::Map<String, Value>) -> Option<&str> {
+    obj.get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn message_body_kind_hint(obj: &serde_json::Map<String, Value>) -> Option<&str> {
+    obj.get("body_kind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_text_format(value: Option<&str>) -> Result<TextFormat> {
+    match value.unwrap_or("plain") {
+        "plain" => Ok(TextFormat::Plain),
+        "markdown" => Ok(TextFormat::Markdown),
+        "html" => Ok(TextFormat::Html),
+        "rich_text" => Ok(TextFormat::RichText),
+        other => Err(crate::error::Error::config(
+            "tool_message",
+            format!("text_format must be one of plain, markdown, html, rich_text; got {other}"),
+        )),
+    }
+}
+
+fn build_message_body(
+    obj: &serde_json::Map<String, Value>,
+    content: Option<&str>,
+) -> Result<CanonicalMessageBody> {
+    if let Some(body_value) = obj.get("body") {
+        return serde_json::from_value::<CanonicalMessageBody>(body_value.clone()).map_err(
+            |error| {
+                crate::error::Error::config(
+                    "tool_message",
+                    format!("body must match CanonicalMessageBody: {error}"),
+                )
+            },
+        );
+    }
+
+    match message_body_kind_hint(obj).unwrap_or("text") {
+        "text" => Ok(CanonicalMessageBody::Text(TextBody {
+            text: content.unwrap_or_default().to_string(),
+            format: parse_text_format(obj.get("text_format").and_then(Value::as_str))?,
+        })),
+        "card" => Ok(CanonicalMessageBody::Card(CardBody {
+            format: crate::bus::CardFormat::Interactive,
+            payload_json: obj
+                .get("payload_json")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            fallback_text: content.unwrap_or_default().to_string(),
+        })),
+        "platform_native" => {
+            let platform_type = obj
+                .get("platform_type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    crate::error::Error::config(
+                        "tool_message",
+                        "platform_type is required when body_kind=platform_native",
+                    )
+                })?;
+            Ok(CanonicalMessageBody::PlatformNative(PlatformNativeBody {
+                platform_type: platform_type.to_string(),
+                payload_json: obj
+                    .get("payload_json")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                fallback_text: content.unwrap_or_default().to_string(),
+            }))
+        }
+        other => Err(crate::error::Error::config(
+            "tool_message",
+            format!("body_kind must be one of text, card, platform_native; got {other}"),
+        )),
+    }
+}
+
 fn missing_message_field_outcome(
     obj: &serde_json::Map<String, Value>,
 ) -> Option<ToolExecutionOutcome> {
     let mut missing_fields = Vec::new();
     let mut clarification_fields = Vec::new();
-    if obj
-        .get("content")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
+    let requires_text_content = obj.get("body").is_none()
+        && !matches!(
+            message_body_kind_hint(obj),
+            Some("card") | Some("platform_native")
+        );
+    if requires_text_content && message_content(obj).is_none() {
         missing_fields.push("content".to_string());
         clarification_fields.push(ToolClarificationField {
             key: "content".to_string(),
@@ -509,7 +618,81 @@ mod tests {
                 supports_explicit_target,
                 supports_attachment: false,
                 supports_typing_or_chat_action: false,
+                supported_body_kinds: &[
+                    crate::bus::MessageBodyKind::Text,
+                    crate::bus::MessageBodyKind::Card,
+                    crate::bus::MessageBodyKind::PlatformNative,
+                ],
+                supported_text_formats: &[
+                    crate::bus::TextFormat::Plain,
+                    crate::bus::TextFormat::Markdown,
+                    crate::bus::TextFormat::Html,
+                    crate::bus::TextFormat::RichText,
+                ],
+                requires_pre_upload_for_media: false,
+                supports_platform_handle_reuse: false,
+                supports_http_url_media: false,
+                requires_passive_reply_anchor: false,
                 max_text_bytes: 4096,
+                max_caption_bytes: 0,
+                delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
+            },
+        }
+    }
+
+    fn markdown_capability_entry(id: &'static str) -> ChannelCapabilityEntry {
+        ChannelCapabilityEntry {
+            id,
+            configured: true,
+            enabled: true,
+            contract: ChannelCapabilityContract {
+                supports_primary_reply: true,
+                supports_supplemental_reply: true,
+                supports_edit: false,
+                supports_stream_edit: false,
+                supports_explicit_target: true,
+                supports_attachment: false,
+                supports_typing_or_chat_action: false,
+                supported_body_kinds: &[crate::bus::MessageBodyKind::Text],
+                supported_text_formats: &[
+                    crate::bus::TextFormat::Plain,
+                    crate::bus::TextFormat::Markdown,
+                ],
+                requires_pre_upload_for_media: false,
+                supports_platform_handle_reuse: false,
+                supports_http_url_media: false,
+                requires_passive_reply_anchor: false,
+                max_text_bytes: 4096,
+                max_caption_bytes: 0,
+                delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
+            },
+        }
+    }
+
+    fn card_capability_entry(id: &'static str) -> ChannelCapabilityEntry {
+        ChannelCapabilityEntry {
+            id,
+            configured: true,
+            enabled: true,
+            contract: ChannelCapabilityContract {
+                supports_primary_reply: true,
+                supports_supplemental_reply: true,
+                supports_edit: false,
+                supports_stream_edit: false,
+                supports_explicit_target: true,
+                supports_attachment: true,
+                supports_typing_or_chat_action: false,
+                supported_body_kinds: &[
+                    crate::bus::MessageBodyKind::Text,
+                    crate::bus::MessageBodyKind::Card,
+                ],
+                supported_text_formats: &[crate::bus::TextFormat::Plain],
+                requires_pre_upload_for_media: false,
+                supports_platform_handle_reuse: false,
+                supports_http_url_media: false,
+                requires_passive_reply_anchor: false,
+                max_text_bytes: 4096,
+                max_caption_bytes: 0,
                 delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
             },
         }
@@ -563,7 +746,7 @@ mod tests {
             current_chat_id: Some("chat-1".to_string()),
             channel_capabilities: capability_map(&[
                 capability_entry("qq_channel", true, true, true, true),
-                capability_entry("telegram", true, true, true, true),
+                markdown_capability_entry("telegram"),
             ]),
             supports_current_chat_outbound_message: true,
             supports_explicit_outbound_message: true,
@@ -587,6 +770,89 @@ mod tests {
                 },
                 delivery_kind: ToolOutboundDeliveryKind::Supplemental,
                 content: "ping".to_string(),
+                body: Some(CanonicalMessageBody::Text(TextBody {
+                    text: "ping".to_string(),
+                    format: TextFormat::Plain,
+                })),
+            }]
+        );
+    }
+
+    #[test]
+    fn markdown_explicit_message_builds_rich_text_body() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                markdown_capability_entry("telegram"),
+            ]),
+            supports_current_chat_outbound_message: true,
+            supports_explicit_outbound_message: true,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+        };
+        let tool = MessageTool;
+        let outcome = tool
+            .execute_outcome(
+                r#"{"content":"**ping**","channel":"telegram","chat_id":"chat-2","text_format":"markdown"}"#,
+                &mut ctx,
+            )
+            .expect("markdown message tool");
+
+        assert_eq!(
+            outcome.outbound_intents.as_slice(),
+            &[ToolOutboundIntent {
+                target: ToolOutboundTarget::Explicit {
+                    channel: "telegram".to_string(),
+                    chat_id: "chat-2".to_string(),
+                },
+                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
+                content: "**ping**".to_string(),
+                body: Some(CanonicalMessageBody::Text(TextBody {
+                    text: "**ping**".to_string(),
+                    format: TextFormat::Markdown,
+                })),
+            }]
+        );
+    }
+
+    #[test]
+    fn card_explicit_message_builds_card_body_without_text_content() {
+        let mut ctx = StubToolContext {
+            current_channel: Some("qq_channel".to_string()),
+            current_chat_id: Some("chat-1".to_string()),
+            channel_capabilities: capability_map(&[
+                capability_entry("qq_channel", true, true, true, true),
+                card_capability_entry("feishu"),
+            ]),
+            supports_current_chat_outbound_message: true,
+            supports_explicit_outbound_message: true,
+            outbound_message_budget: 2,
+            outbound_message_count: 0,
+        };
+        let tool = MessageTool;
+        let outcome = tool
+            .execute_outcome(
+                r#"{"channel":"feishu","chat_id":"chat-2","body_kind":"card","payload_json":{"header":{"title":"Build passed"}}}"#,
+                &mut ctx,
+            )
+            .expect("card message tool");
+
+        assert_eq!(
+            outcome.outbound_intents.as_slice(),
+            &[ToolOutboundIntent {
+                target: ToolOutboundTarget::Explicit {
+                    channel: "feishu".to_string(),
+                    chat_id: "chat-2".to_string(),
+                },
+                delivery_kind: ToolOutboundDeliveryKind::Supplemental,
+                content: "[card]".to_string(),
+                body: Some(CanonicalMessageBody::Card(CardBody {
+                    format: crate::bus::CardFormat::Interactive,
+                    payload_json: serde_json::json!({"header":{"title":"Build passed"}}),
+                    fallback_text: String::new(),
+                })),
             }]
         );
     }

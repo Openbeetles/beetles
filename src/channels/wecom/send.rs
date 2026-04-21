@@ -1,12 +1,14 @@
 //! 企业微信通道：出站经 MessageSink 队列，由 main 用 HTTP 鉴权后发送应用消息；入站无。
 //! 鉴权 GET gettoken，发送 POST message/send；text 按 2048 字节分片（官方限制）。Sink 统一为 dispatch::QueuedSink。
 
+use crate::bus::{CanonicalMessageBody, CardBody, MediaLocatorKind, TextBody, TextFormat};
 use crate::channels::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
     run_buffered_sender_loop,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
+use serde_json::{Map, Value};
 
 pub const WECOM_GETTOKEN_BASE: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
 pub const WECOM_SEND_BASE: &str = "https://qyapi.weixin.qq.com/cgi-bin/message/send";
@@ -225,39 +227,288 @@ fn acquire_wecom_token<H: ChannelHttpClient>(
         .map(|(t, _)| t)
 }
 
+fn resolve_touser<'a>(chat_id: &'a str, default_touser: &'a str) -> &'a str {
+    if chat_id.trim().is_empty() {
+        default_touser.trim()
+    } else {
+        chat_id.trim()
+    }
+}
+
+fn send_url(token: &str) -> String {
+    format!("{}?access_token={}", WECOM_SEND_BASE, token)
+}
+
+fn media_handle<'a>(
+    asset: &'a crate::bus::MediaAssetRef,
+    body_kind: &str,
+) -> crate::error::Result<&'a str> {
+    if asset.locator_kind != MediaLocatorKind::PlatformHandle {
+        return Err(crate::error::Error::config(
+            "wecom_send",
+            format!("WeCom {body_kind} outbound requires a platform_handle media locator"),
+        ));
+    }
+    let locator = asset.locator.trim();
+    if locator.is_empty() {
+        return Err(crate::error::Error::config(
+            "wecom_send",
+            format!("WeCom {body_kind} outbound requires a non-empty media handle"),
+        ));
+    }
+    Ok(locator)
+}
+
+fn build_text_payloads(
+    touser: &str,
+    agent_id_u32: u32,
+    text: &TextBody,
+    fallback_content: &str,
+) -> crate::error::Result<Vec<Value>> {
+    let mut normalized = text.text.trim().to_string();
+    if normalized.is_empty() {
+        normalized = fallback_content.trim().to_string();
+    }
+    if normalized.is_empty() {
+        return Err(crate::error::Error::config(
+            "wecom_send",
+            "refusing to send empty WeCom text body",
+        ));
+    }
+    match text.format {
+        TextFormat::Plain => Ok(crate::channels::chunk::chunk_text_by_utf8_bytes(
+            &normalized,
+            WECOM_MAX_TEXT_BYTES,
+        )
+        .into_iter()
+        .map(|chunk| {
+            serde_json::json!({
+                "touser": touser,
+                "msgtype": "text",
+                "agentid": agent_id_u32,
+                "text": { "content": chunk }
+            })
+        })
+        .collect()),
+        TextFormat::Markdown => Ok(crate::channels::chunk::chunk_text_by_utf8_bytes(
+            &normalized,
+            WECOM_MAX_TEXT_BYTES,
+        )
+        .into_iter()
+        .map(|chunk| {
+            serde_json::json!({
+                "touser": touser,
+                "msgtype": "markdown",
+                "agentid": agent_id_u32,
+                "markdown": { "content": chunk }
+            })
+        })
+        .collect()),
+        TextFormat::Html => Err(crate::error::Error::config(
+            "wecom_send",
+            "WeCom does not support HTML text bodies",
+        )),
+        TextFormat::RichText => Err(crate::error::Error::config(
+            "wecom_send",
+            "WeCom rich_text body requires a CardBody payload",
+        )),
+    }
+}
+
+fn wrap_wecom_payload(
+    touser: &str,
+    agent_id_u32: u32,
+    msgtype: &str,
+    nested_key: &str,
+    nested_value: Value,
+) -> Value {
+    let mut map = Map::new();
+    map.insert("touser".to_string(), Value::String(touser.to_string()));
+    map.insert("msgtype".to_string(), Value::String(msgtype.to_string()));
+    map.insert("agentid".to_string(), Value::from(agent_id_u32));
+    map.insert(nested_key.to_string(), nested_value);
+    Value::Object(map)
+}
+
+fn payload_object(payload: &Value) -> crate::error::Result<&Map<String, Value>> {
+    payload.as_object().ok_or_else(|| {
+        crate::error::Error::config(
+            "wecom_send",
+            "WeCom CardBody payload_json must be a JSON object",
+        )
+    })
+}
+
+fn build_card_payload(
+    touser: &str,
+    agent_id_u32: u32,
+    card: &CardBody,
+) -> crate::error::Result<Value> {
+    let payload = payload_object(&card.payload_json)?;
+    if let Some(msgtype) = payload.get("msgtype").and_then(Value::as_str) {
+        let nested_key = match msgtype {
+            "textcard" => "textcard",
+            "news" => "news",
+            "mpnews" => "mpnews",
+            "template_card" => "template_card",
+            "taskcard" => "taskcard",
+            other => {
+                return Err(crate::error::Error::config(
+                    "wecom_send",
+                    format!("unsupported WeCom card msgtype={other}"),
+                ))
+            }
+        };
+        let nested = payload.get(nested_key).cloned().ok_or_else(|| {
+            crate::error::Error::config(
+                "wecom_send",
+                format!("WeCom card payload missing nested object for msgtype={msgtype}"),
+            )
+        })?;
+        let mut obj = payload.clone();
+        obj.insert("touser".to_string(), Value::String(touser.to_string()));
+        obj.insert("agentid".to_string(), Value::from(agent_id_u32));
+        obj.insert(nested_key.to_string(), nested);
+        return Ok(Value::Object(obj));
+    }
+
+    let title = payload
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            crate::error::Error::config("wecom_send", "WeCom textcard payload requires title")
+        })?;
+    let description = payload
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            crate::error::Error::config("wecom_send", "WeCom textcard payload requires description")
+        })?;
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            crate::error::Error::config("wecom_send", "WeCom textcard payload requires url")
+        })?;
+    let mut textcard = serde_json::json!({
+        "title": title,
+        "description": description,
+        "url": url,
+    });
+    if let Some(btntxt) = payload
+        .get("btntxt")
+        .or_else(|| payload.get("btntext"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        textcard["btntxt"] = Value::String(btntxt.to_string());
+    }
+    Ok(wrap_wecom_payload(
+        touser,
+        agent_id_u32,
+        "textcard",
+        "textcard",
+        textcard,
+    ))
+}
+
+fn build_wecom_payloads(
+    touser: &str,
+    agent_id_u32: u32,
+    message: &crate::channels::send::QueuedOutboundMessage,
+) -> crate::error::Result<Vec<Value>> {
+    match &message.body {
+        CanonicalMessageBody::Text(text) => {
+            build_text_payloads(touser, agent_id_u32, text, &message.content)
+        }
+        CanonicalMessageBody::Image(image) => Ok(vec![wrap_wecom_payload(
+            touser,
+            agent_id_u32,
+            "image",
+            "image",
+            serde_json::json!({ "media_id": media_handle(&image.asset, "image")? }),
+        )]),
+        CanonicalMessageBody::Audio(audio) => Ok(vec![wrap_wecom_payload(
+            touser,
+            agent_id_u32,
+            "voice",
+            "voice",
+            serde_json::json!({ "media_id": media_handle(&audio.asset, "voice")? }),
+        )]),
+        CanonicalMessageBody::Video(video) => {
+            let mut payload = serde_json::json!({
+                "media_id": media_handle(&video.asset, "video")?,
+            });
+            if let Some(title) = video
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                payload["title"] = Value::String(title.to_string());
+            }
+            if let Some(description) = video
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                payload["description"] = Value::String(description.to_string());
+            }
+            Ok(vec![wrap_wecom_payload(
+                touser,
+                agent_id_u32,
+                "video",
+                "video",
+                payload,
+            )])
+        }
+        CanonicalMessageBody::File(file) => Ok(vec![wrap_wecom_payload(
+            touser,
+            agent_id_u32,
+            "file",
+            "file",
+            serde_json::json!({ "media_id": media_handle(&file.asset, "file")? }),
+        )]),
+        CanonicalMessageBody::Card(card) => {
+            Ok(vec![build_card_payload(touser, agent_id_u32, card)?])
+        }
+        CanonicalMessageBody::PlatformNative(native) => {
+            if native.payload_json.is_object() {
+                Ok(vec![native.payload_json.clone()])
+            } else {
+                Err(crate::error::Error::config(
+                    "wecom_send",
+                    "WeCom PlatformNativeBody payload_json must be a JSON object",
+                ))
+            }
+        }
+    }
+}
+
 fn send_one_wecom<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
     agent_id_u32: u32,
-    chat_id: &str,
+    message: &crate::channels::send::QueuedOutboundMessage,
     default_touser: &str,
-    content: &str,
 ) -> crate::error::Result<()> {
     const TAG: &str = "wecom_send";
-    if content.trim().is_empty() {
-        return Err(crate::error::Error::config(
-            "wecom_send",
-            "refusing to send empty WeCom message",
-        ));
-    }
-    let touser = if chat_id.trim().is_empty() {
-        default_touser
-    } else {
-        chat_id.trim()
-    };
+    let touser = resolve_touser(&message.chat_id, default_touser);
     if touser.is_empty() {
         return Ok(());
     }
-    for chunk in crate::channels::chunk::chunk_text_by_utf8_bytes(content, WECOM_MAX_TEXT_BYTES) {
-        let body = serde_json::json!({
-            "touser": touser,
-            "msgtype": "text",
-            "agentid": agent_id_u32,
-            "text": { "content": chunk }
-        });
+    let send_url = send_url(token);
+    for body in build_wecom_payloads(touser, agent_id_u32, message)? {
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| crate::error::Error::config("wecom_send", e.to_string()))?;
-        let send_url = format!("{}?access_token={}", WECOM_SEND_BASE, token);
         let (status, resp_body) =
             crate::channels::send::send_post(TAG, http, &send_url, &body_bytes)?;
         if status >= 400 {
@@ -305,14 +556,7 @@ pub fn flush_wecom_sends<H: ChannelHttpClient>(
         None => return,
     };
     while let Ok(message) = rx.try_recv() {
-        if let Err(error) = send_one_wecom(
-            http,
-            &token,
-            agent_id_u32,
-            &message.chat_id,
-            default_touser,
-            &message.content,
-        ) {
+        if let Err(error) = send_one_wecom(http, &token, agent_id_u32, &message, default_touser) {
             record_outbound_http_failure(&error);
             log::warn!(
                 "[wecom_flush] send failed for chat_id={}: {}",
@@ -406,14 +650,7 @@ pub fn run_wecom_sender_loop<H, F>(
                 "sender http missing after token refresh",
             ));
         };
-        match send_one_wecom(
-            h,
-            &token,
-            agent_id_u32,
-            &message.chat_id,
-            default_touser,
-            &message.content,
-        ) {
+        match send_one_wecom(h, &token, agent_id_u32, message, default_touser) {
             Ok(()) => {
                 record_outbound_http_success();
                 Ok(())
@@ -433,4 +670,102 @@ pub fn run_wecom_sender_loop<H, F>(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::send_one_wecom;
+    use crate::bus::{
+        AssetSourcePlatform, CanonicalMessageBody, CardBody, ImageBody, MediaAssetRef, OutboundKind,
+    };
+    use crate::channels::send::QueuedOutboundMessage;
+    use crate::channels::ChannelHttpClient;
+    use crate::platform::ResponseBody;
+
+    #[derive(Default)]
+    struct FakeHttp {
+        posts: Vec<(String, Vec<u8>)>,
+    }
+
+    impl ChannelHttpClient for FakeHttp {
+        fn http_get(&mut self, _url: &str) -> crate::error::Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_post(
+            &mut self,
+            url: &str,
+            body: &[u8],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            self.posts.push((url.to_string(), body.to_vec()));
+            Ok((200, ResponseBody::Heap(b"{}".to_vec())))
+        }
+
+        fn http_post_with_headers(
+            &mut self,
+            url: &str,
+            _headers: &[(&str, &str)],
+            body: &[u8],
+        ) -> crate::error::Result<(u16, ResponseBody)> {
+            self.http_post(url, body)
+        }
+    }
+
+    fn queued_message(body: CanonicalMessageBody) -> QueuedOutboundMessage {
+        QueuedOutboundMessage {
+            transport_send_id: 1,
+            chat_id: "user-1".to_string(),
+            content: body.text_projection(),
+            body,
+            platform_thread_id: String::new(),
+            req_id: Some("req-1".to_string()),
+            outbound_kind: OutboundKind::Primary,
+        }
+    }
+
+    #[test]
+    fn send_one_wecom_renders_image_media_id_payload() {
+        let message = queued_message(CanonicalMessageBody::Image(ImageBody {
+            asset: MediaAssetRef::platform_handle(AssetSourcePlatform::WeCom, "MEDIA123"),
+            caption: None,
+        }));
+        let mut http = FakeHttp::default();
+
+        send_one_wecom(&mut http, "token-1", 100, &message, "").expect("send image");
+
+        assert_eq!(http.posts.len(), 1);
+        let posted: serde_json::Value = serde_json::from_slice(&http.posts[0].1).expect("json");
+        assert_eq!(posted["msgtype"], "image");
+        assert_eq!(posted["image"]["media_id"], "MEDIA123");
+    }
+
+    #[test]
+    fn send_one_wecom_builds_textcard_from_card_payload() {
+        let message = queued_message(CanonicalMessageBody::Card(CardBody {
+            format: crate::bus::CardFormat::TemplateCard,
+            payload_json: serde_json::json!({
+                "title": "Alert",
+                "description": "Line 1",
+                "url": "https://example.invalid",
+                "btntxt": "More"
+            }),
+            fallback_text: "Alert".to_string(),
+        }));
+        let mut http = FakeHttp::default();
+
+        send_one_wecom(&mut http, "token-1", 100, &message, "").expect("send card");
+
+        let posted: serde_json::Value = serde_json::from_slice(&http.posts[0].1).expect("json");
+        assert_eq!(posted["msgtype"], "textcard");
+        assert_eq!(posted["textcard"]["title"], "Alert");
+        assert_eq!(posted["textcard"]["btntxt"], "More");
+    }
 }

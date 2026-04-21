@@ -1,5 +1,6 @@
 //! QQ 频道出站与连通性检查。Sink 统一为 dispatch::QueuedSink。
 
+use crate::bus::{CanonicalMessageBody, CardFormat, MediaLocatorKind, MessageBodyKind, TextFormat};
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error as BeetleError, Result as BeetleResult};
@@ -151,10 +152,17 @@ fn reserve_fresh_send_reservation(
     turn_tracker: &mut QqTurnReservationTracker,
     message: &QueuedOutboundMessage,
 ) -> QqRetryableSendReservation {
-    let chunk_count =
-        crate::channels::chunk::chunk_str_by_char_count_iter(&message.content, QQ_MAX_MESSAGE_LEN)
+    let chunk_count = match &message.body {
+        CanonicalMessageBody::Text(body) if body.format == TextFormat::Plain => {
+            crate::channels::chunk::chunk_str_by_char_count_iter(
+                &message.content,
+                QQ_MAX_MESSAGE_LEN,
+            )
             .count()
-            .max(1);
+            .max(1)
+        }
+        _ => 1,
+    };
     turn_tracker.reserve(cache, message, chunk_count)
 }
 
@@ -272,43 +280,308 @@ fn build_qq_send_body(content: &str, msg_id: Option<&str>, msg_seq: Option<u64>)
     body.into_bytes()
 }
 
+fn push_reply_metadata(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    msg_id: Option<&str>,
+    msg_seq: Option<u64>,
+) {
+    if let Some(seq) = msg_seq {
+        map.insert("msg_seq".to_string(), serde_json::json!(seq));
+    }
+    if let Some(msg_id) = msg_id {
+        map.insert("msg_id".to_string(), serde_json::json!(msg_id));
+    }
+}
+
+fn build_qq_markdown_body(
+    content: &str,
+    msg_id: Option<&str>,
+    msg_seq: Option<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let mut map = serde_json::Map::new();
+    map.insert("msg_type".to_string(), serde_json::json!(2));
+    map.insert(
+        "markdown".to_string(),
+        serde_json::json!({
+            "content": content,
+        }),
+    );
+    push_reply_metadata(&mut map, msg_id, msg_seq);
+    serde_json::to_vec(&serde_json::Value::Object(map))
+        .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))
+}
+
+fn build_qq_card_body(
+    msg_type: i32,
+    field: &str,
+    payload: &serde_json::Value,
+    msg_id: Option<&str>,
+    msg_seq: Option<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let mut map = serde_json::Map::new();
+    map.insert("msg_type".to_string(), serde_json::json!(msg_type));
+    map.insert(field.to_string(), payload.clone());
+    push_reply_metadata(&mut map, msg_id, msg_seq);
+    serde_json::to_vec(&serde_json::Value::Object(map))
+        .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))
+}
+
+fn build_qq_media_body(
+    file_info: &str,
+    msg_id: Option<&str>,
+    msg_seq: Option<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let mut map = serde_json::Map::new();
+    map.insert("msg_type".to_string(), serde_json::json!(7));
+    map.insert(
+        "media".to_string(),
+        serde_json::json!({
+            "file_info": file_info,
+        }),
+    );
+    push_reply_metadata(&mut map, msg_id, msg_seq);
+    serde_json::to_vec(&serde_json::Value::Object(map))
+        .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))
+}
+
+fn qq_media_file_type(body: &CanonicalMessageBody) -> Option<i32> {
+    match body.kind() {
+        MessageBodyKind::Image => Some(1),
+        MessageBodyKind::Video => Some(2),
+        MessageBodyKind::Audio => Some(3),
+        MessageBodyKind::File => Some(4),
+        _ => None,
+    }
+}
+
+fn qq_message_text_fallback(message: &QueuedOutboundMessage) -> String {
+    let text = message.body.text_projection();
+    if text.trim().is_empty() {
+        message.content.clone()
+    } else {
+        text
+    }
+}
+
+fn qq_upload_media_url(chat_id: &str) -> crate::error::Result<String> {
+    if let Some(group_openid) = chat_id.strip_prefix("group:") {
+        return Ok(format!("{QQ_V2_BASE}/groups/{group_openid}/files"));
+    }
+    if let Some(user_openid) = chat_id.strip_prefix("c2c:") {
+        return Ok(format!("{QQ_V2_BASE}/users/{user_openid}/files"));
+    }
+    Err(crate::error::Error::config(
+        "qq_send",
+        format!("qq media upload unsupported for chat_id={chat_id}"),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct QqRichMediaUploadResponse {
+    #[serde(default)]
+    file_info: Option<String>,
+    #[serde(default)]
+    ttl: Option<u32>,
+}
+
+fn resolve_qq_media_file_info<H: ChannelHttpClient>(
+    http: &mut H,
+    token: &str,
+    chat_id: &str,
+    message: &QueuedOutboundMessage,
+) -> crate::error::Result<String> {
+    let body = match &message.body {
+        CanonicalMessageBody::Image(image) => &image.asset,
+        CanonicalMessageBody::Audio(audio) => &audio.asset,
+        CanonicalMessageBody::Video(video) => &video.asset,
+        CanonicalMessageBody::File(file) => &file.asset,
+        _ => {
+            return Err(crate::error::Error::config(
+                "qq_send",
+                "qq media send requires media body",
+            ));
+        }
+    };
+    match body.locator_kind {
+        MediaLocatorKind::PlatformHandle => {
+            let locator = body.locator.trim();
+            if locator.is_empty() {
+                return Err(crate::error::Error::config(
+                    "qq_send",
+                    "qq media platform handle is empty",
+                ));
+            }
+            Ok(locator.to_string())
+        }
+        MediaLocatorKind::ExternalUrl => {
+            let locator = body.locator.trim();
+            if locator.is_empty() {
+                return Err(crate::error::Error::config(
+                    "qq_send",
+                    "qq media external url is empty",
+                ));
+            }
+            let file_type = qq_media_file_type(&message.body).ok_or_else(|| {
+                crate::error::Error::config("qq_send", "unsupported qq media body kind")
+            })?;
+            if file_type == 4 && chat_id.starts_with("group:") {
+                return Err(crate::error::Error::config(
+                    "qq_send",
+                    "qq group rich media upload does not support file body",
+                ));
+            }
+            let url = qq_upload_media_url(chat_id)?;
+            let auth_header = format!("QQBot {token}");
+            let headers = [
+                ("Authorization", auth_header.as_str()),
+                ("content-type", "application/json"),
+            ];
+            let body_bytes = serde_json::to_vec(&serde_json::json!({
+                "file_type": file_type,
+                "url": locator,
+                "srv_send_msg": false,
+            }))
+            .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))?;
+            let (status, response_body) = crate::channels::send::send_post_with_headers(
+                "qq_send",
+                http,
+                &url,
+                &headers,
+                &body_bytes,
+            )?;
+            if status >= 400 {
+                return Err(crate::error::Error::http("qq_send_http", status));
+            }
+            let response: QqRichMediaUploadResponse =
+                serde_json::from_slice(response_body.as_ref())
+                    .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))?;
+            let file_info = response.file_info.unwrap_or_default();
+            if file_info.trim().is_empty() {
+                return Err(crate::error::Error::config(
+                    "qq_send",
+                    "qq rich media upload returned empty file_info",
+                ));
+            }
+            if let Some(ttl) = response.ttl {
+                log::debug!(
+                    "[qq_send] uploaded rich media chat_id={} ttl_seconds={}",
+                    chat_id,
+                    ttl
+                );
+            }
+            Ok(file_info)
+        }
+        MediaLocatorKind::BeetleBlob => Err(crate::error::Error::config(
+            "qq_send",
+            "qq media send does not support BeetleBlob yet",
+        )),
+    }
+}
+
+fn render_qq_send_payloads<H: ChannelHttpClient>(
+    http: &mut H,
+    token: &str,
+    message: &QueuedOutboundMessage,
+    msg_id: Option<&str>,
+    msg_seq: Option<QqMsgSeqReservation>,
+) -> crate::error::Result<Vec<Vec<u8>>> {
+    match &message.body {
+        CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
+            Ok(vec![build_qq_markdown_body(
+                &body.text,
+                msg_id,
+                msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+            )?])
+        }
+        CanonicalMessageBody::Text(_) => {
+            let is_v2 = is_v2_chat(&message.chat_id);
+            let chunks = crate::channels::chunk::chunk_text_by_char_count(
+                &message.content,
+                QQ_MAX_MESSAGE_LEN,
+            );
+            let mut payloads = Vec::with_capacity(chunks.len().max(1));
+            for (index, chunk) in chunks.iter().enumerate() {
+                payloads.push(build_qq_send_body(
+                    chunk,
+                    if index == 0 { msg_id } else { None },
+                    if is_v2 {
+                        msg_seq.and_then(|reservation| reservation.seq_for_chunk(index))
+                    } else {
+                        None
+                    },
+                ));
+            }
+            Ok(payloads)
+        }
+        CanonicalMessageBody::Card(body) => match body.format {
+            CardFormat::Ark => Ok(vec![build_qq_card_body(
+                3,
+                "ark",
+                &body.payload_json,
+                msg_id,
+                msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+            )?]),
+            CardFormat::Embed => Ok(vec![build_qq_card_body(
+                4,
+                "embed",
+                &body.payload_json,
+                msg_id,
+                msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+            )?]),
+            _ => Ok(vec![build_qq_send_body(
+                &qq_message_text_fallback(message),
+                msg_id,
+                msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+            )]),
+        },
+        CanonicalMessageBody::Image(_)
+        | CanonicalMessageBody::Audio(_)
+        | CanonicalMessageBody::Video(_)
+        | CanonicalMessageBody::File(_) => {
+            let file_info = resolve_qq_media_file_info(http, token, &message.chat_id, message)?;
+            Ok(vec![build_qq_media_body(
+                &file_info,
+                msg_id,
+                msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+            )?])
+        }
+        CanonicalMessageBody::PlatformNative(_) => Ok(vec![build_qq_send_body(
+            &qq_message_text_fallback(message),
+            msg_id,
+            msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+        )]),
+    }
+}
+
 /// 发送单条 QQ 消息（含自动分片）。返回 `Ok(())` 表示所有分片都成功（HTTP 2xx）。
 /// 任一分片 HTTP 失败或 4xx+ 即返回 `Err`，供 sender loop 决定重试/熔断。
 fn send_one_qq<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
-    chat_id: &str,
-    content: &str,
+    message: &QueuedOutboundMessage,
     msg_id: Option<&str>,
     msg_seq: Option<QqMsgSeqReservation>,
 ) -> crate::error::Result<()> {
     const TAG: &str = "qq_send";
-    if content.trim().is_empty() {
+    if message.content.trim().is_empty() && message.body.kind() == MessageBodyKind::Text {
         return Err(crate::error::Error::config(
             "qq_send_empty",
             "refusing to send empty QQ message",
         ));
     }
-    if is_v2_chat(chat_id) && msg_id.is_none() {
+    if is_v2_chat(&message.chat_id) && msg_id.is_none() {
         return Err(crate::error::Error::config(
             "qq_send",
-            format!("missing msg_id for QQ v2 passive reply chat_id={}", chat_id),
+            format!(
+                "missing msg_id for QQ v2 passive reply chat_id={}",
+                message.chat_id
+            ),
         ));
     }
     let send_start = std::time::Instant::now();
-    let url = build_qq_message_url(chat_id);
-    let v2 = is_v2_chat(chat_id);
-    let chunks = crate::channels::chunk::chunk_text_by_char_count(content, QQ_MAX_MESSAGE_LEN);
-    for (i, chunk) in chunks.iter().enumerate() {
-        let body_bytes = build_qq_send_body(
-            chunk,
-            if i == 0 { msg_id } else { None },
-            if v2 {
-                msg_seq.and_then(|reservation| reservation.seq_for_chunk(i))
-            } else {
-                None
-            },
-        );
+    let url = build_qq_message_url(&message.chat_id);
+    let payloads = render_qq_send_payloads(http, token, message, msg_id, msg_seq)?;
+    for (i, body_bytes) in payloads.iter().enumerate() {
         let auth_header = format!("QQBot {}", token);
         let mut cl_buf = [0u8; 20];
         let content_length = crate::util::usize_to_decimal_buf(&mut cl_buf, body_bytes.len());
@@ -318,8 +591,7 @@ fn send_one_qq<H: ChannelHttpClient>(
             ("content-length", content_length),
         ];
         let http_start = std::time::Instant::now();
-        match crate::channels::send::send_post_with_headers(TAG, http, &url, &headers, &body_bytes)
-        {
+        match crate::channels::send::send_post_with_headers(TAG, http, &url, &headers, body_bytes) {
             Ok((status, ref body)) if status >= 400 => {
                 let preview =
                     String::from_utf8_lossy(&body.as_ref()[..body.as_ref().len().min(256)]);
@@ -328,9 +600,9 @@ fn send_one_qq<H: ChannelHttpClient>(
                     TAG,
                     status,
                     preview,
-                    chat_id,
+                    message.chat_id,
                     i + 1,
-                    chunks.len(),
+                    payloads.len(),
                     http_start.elapsed().as_millis(),
                     send_start.elapsed().as_millis()
                 );
@@ -341,9 +613,9 @@ fn send_one_qq<H: ChannelHttpClient>(
                     "[{}] send error: {} chat_id={} chunk={}/{} http_ms={} total_ms={}",
                     TAG,
                     e,
-                    chat_id,
+                    message.chat_id,
                     i + 1,
-                    chunks.len(),
+                    payloads.len(),
                     http_start.elapsed().as_millis(),
                     send_start.elapsed().as_millis()
                 );
@@ -354,8 +626,8 @@ fn send_one_qq<H: ChannelHttpClient>(
     }
     log::debug!(
         "[latency][qq_http] chat_id={} chunks={} total_ms={}",
-        chat_id,
-        chunks.len(),
+        message.chat_id,
+        payloads.len(),
         send_start.elapsed().as_millis()
     );
     Ok(())
@@ -396,8 +668,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
         if let Err(e) = send_one_qq(
             http,
             token.as_deref().unwrap_or_default(),
-            &message.chat_id,
-            &message.content,
+            &message,
             reservation.msg_id.as_deref(),
             reservation.msg_seq,
         ) {
@@ -505,8 +776,7 @@ where
     match send_one_qq(
         h,
         &token,
-        &message.chat_id,
-        &message.content,
+        message,
         reservation.msg_id.as_deref(),
         reservation.msg_seq,
     ) {
@@ -614,10 +884,30 @@ mod tests {
         req_id: Option<&str>,
         outbound_kind: OutboundKind,
     ) -> QueuedOutboundMessage {
+        queued_message_with_body(
+            transport_send_id,
+            chat_id,
+            content,
+            crate::bus::CanonicalMessageBody::text(content),
+            req_id,
+            outbound_kind,
+        )
+    }
+
+    fn queued_message_with_body(
+        transport_send_id: u32,
+        chat_id: &str,
+        content: &str,
+        body: crate::bus::CanonicalMessageBody,
+        req_id: Option<&str>,
+        outbound_kind: OutboundKind,
+    ) -> QueuedOutboundMessage {
         QueuedOutboundMessage {
             transport_send_id,
             chat_id: chat_id.to_string(),
             content: content.to_string(),
+            body,
+            platform_thread_id: String::new(),
             req_id: req_id.map(str::to_string),
             outbound_kind,
         }
@@ -863,15 +1153,9 @@ mod tests {
     #[test]
     fn v2_send_requires_cached_msg_id_for_passive_reply() {
         let mut http = StubHttp::default();
-        let err = send_one_qq(
-            &mut http,
-            "qq-token",
-            "c2c:chat-1",
-            "final reply",
-            None,
-            None,
-        )
-        .expect_err("missing msg_id should be rejected");
+        let message = queued_message(1, "c2c:chat-1", "final reply", None, OutboundKind::Primary);
+        let err = send_one_qq(&mut http, "qq-token", &message, None, None)
+            .expect_err("missing msg_id should be rejected");
 
         match err {
             crate::error::Error::Config { stage, .. } => assert_eq!(stage, "qq_send"),
@@ -883,6 +1167,108 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
             .sent_bodies
             .is_empty());
+    }
+
+    #[test]
+    fn send_one_qq_renders_markdown_body_with_msg_type_two() {
+        let mut http = StubHttp::default();
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            "## Hello",
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: "## Hello".to_string(),
+                format: crate::bus::TextFormat::Markdown,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("markdown send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.sent_bodies.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            payload
+                .get("markdown")
+                .and_then(|markdown| markdown.get("content"))
+                .and_then(|content| content.as_str()),
+            Some("## Hello")
+        );
+    }
+
+    #[test]
+    fn send_one_qq_uploads_external_image_before_sending_media_payload() {
+        let state = Arc::new(Mutex::new(StubHttpState {
+            token_results: VecDeque::new(),
+            send_results: VecDeque::from([
+                Ok((
+                    200,
+                    ResponseBody::Heap(br#"{"file_info":"file-1","ttl":60}"#.to_vec()),
+                )),
+                Ok((200, ResponseBody::Heap(b"{}".to_vec()))),
+            ]),
+            sent_bodies: Vec::new(),
+        }));
+        let mut http = StubHttp {
+            state: Arc::clone(&state),
+        };
+        let message = queued_message_with_body(
+            2,
+            "c2c:user-1",
+            "[image] kitten",
+            crate::bus::CanonicalMessageBody::Image(crate::bus::ImageBody {
+                asset: crate::bus::MediaAssetRef::external_url("https://example.com/cat.png"),
+                caption: None,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("media send");
+
+        let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.sent_bodies.len(), 2);
+        let upload_payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("upload payload");
+        assert_eq!(upload_payload.get("file_type"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            upload_payload.get("srv_send_msg"),
+            Some(&serde_json::json!(false))
+        );
+        let send_payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[1]).expect("send payload");
+        assert_eq!(send_payload.get("msg_type"), Some(&serde_json::json!(7)));
+        assert_eq!(
+            send_payload
+                .get("media")
+                .and_then(|media| media.get("file_info"))
+                .and_then(|file_info| file_info.as_str()),
+            Some("file-1")
+        );
     }
 
     #[test]

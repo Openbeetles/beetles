@@ -68,6 +68,12 @@ struct QqGatewayData {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    markdown: Option<serde_json::Value>,
+    #[serde(default)]
+    ark: Option<serde_json::Value>,
+    #[serde(default)]
+    embed: Option<serde_json::Value>,
+    #[serde(default)]
     id: Option<String>,
     #[serde(default)]
     author: Option<QqGatewayAuthor>,
@@ -310,10 +316,19 @@ impl WssGatewayDriver for QqWssDriver {
                         // 频道消息：chat_id = channel_id
                         if let Some(d) = d {
                             let channel_id = d.channel_id.as_deref();
-                            let content = d.content.as_deref();
                             let msg_id = d.id.as_deref();
-                            if let (Some(ch), Some(content)) = (channel_id, content) {
-                                if !ch.is_empty() && !content.is_empty() {
+                            if let Some(ch) = channel_id {
+                                let (body, content_projection) =
+                                    super::build_inbound_body_from_parts(
+                                        d.content.as_deref(),
+                                        d.markdown.as_ref(),
+                                        d.ark.as_ref(),
+                                        d.embed.as_ref(),
+                                    );
+                                if !ch.is_empty()
+                                    && (body.kind() != crate::bus::MessageBodyKind::Text
+                                        || !content_projection.is_empty())
+                                {
                                     if let Some(mid) = msg_id {
                                         if self.dedup.contains_or_insert(mid) {
                                             log::info!(
@@ -325,9 +340,10 @@ impl WssGatewayDriver for QqWssDriver {
                                         }
                                         self.cache_msg_id(ch, mid);
                                     }
-                                    if let Ok(msg) = super::build_inbound_message(
+                                    if let Ok(msg) = super::build_inbound_message_with_body(
                                         ch,
-                                        content,
+                                        &content_projection,
+                                        body,
                                         crate::bus::MessageTransport::Wss,
                                         msg_id,
                                         None,
@@ -350,10 +366,19 @@ impl WssGatewayDriver for QqWssDriver {
                         // 群聊 @ 消息：chat_id = "group:{group_openid}"
                         if let Some(d) = d {
                             let group_openid = d.group_openid.as_deref();
-                            let content = d.content.as_deref();
                             let msg_id = d.id.as_deref();
-                            if let (Some(gid), Some(content)) = (group_openid, content) {
-                                if !gid.is_empty() && !content.is_empty() {
+                            if let Some(gid) = group_openid {
+                                let (body, content_projection) =
+                                    super::build_inbound_body_from_parts(
+                                        d.content.as_deref(),
+                                        d.markdown.as_ref(),
+                                        d.ark.as_ref(),
+                                        d.embed.as_ref(),
+                                    );
+                                if !gid.is_empty()
+                                    && (body.kind() != crate::bus::MessageBodyKind::Text
+                                        || !content_projection.is_empty())
+                                {
                                     let chat_id = format!("group:{}", gid);
                                     if let Some(mid) = msg_id {
                                         if self.dedup.contains_or_insert(mid) {
@@ -366,9 +391,10 @@ impl WssGatewayDriver for QqWssDriver {
                                         }
                                         self.cache_msg_id(&chat_id, mid);
                                     }
-                                    if let Ok(msg) = super::build_inbound_message(
+                                    if let Ok(msg) = super::build_inbound_message_with_body(
                                         &chat_id,
-                                        content,
+                                        &content_projection,
+                                        body,
                                         crate::bus::MessageTransport::Wss,
                                         msg_id,
                                         None,
@@ -392,10 +418,19 @@ impl WssGatewayDriver for QqWssDriver {
                         if let Some(d) = d {
                             let user_openid =
                                 d.author.as_ref().and_then(|a| a.user_openid.as_deref());
-                            let content = d.content.as_deref();
                             let msg_id = d.id.as_deref();
-                            if let (Some(uid), Some(content)) = (user_openid, content) {
-                                if !uid.is_empty() && !content.is_empty() {
+                            if let Some(uid) = user_openid {
+                                let (body, content_projection) =
+                                    super::build_inbound_body_from_parts(
+                                        d.content.as_deref(),
+                                        d.markdown.as_ref(),
+                                        d.ark.as_ref(),
+                                        d.embed.as_ref(),
+                                    );
+                                if !uid.is_empty()
+                                    && (body.kind() != crate::bus::MessageBodyKind::Text
+                                        || !content_projection.is_empty())
+                                {
                                     let chat_id = format!("c2c:{}", uid);
                                     if let Some(mid) = msg_id {
                                         if self.dedup.contains_or_insert(mid) {
@@ -408,9 +443,10 @@ impl WssGatewayDriver for QqWssDriver {
                                         }
                                         self.cache_msg_id(&chat_id, mid);
                                     }
-                                    if let Ok(msg) = super::build_inbound_message(
+                                    if let Ok(msg) = super::build_inbound_message_with_body(
                                         &chat_id,
-                                        content,
+                                        &content_projection,
+                                        body,
                                         crate::bus::MessageTransport::Wss,
                                         msg_id,
                                         None,

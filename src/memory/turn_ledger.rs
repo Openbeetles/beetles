@@ -1,7 +1,7 @@
 //! 最近一轮执行账本：记录对话最近一次请求的执行与交付摘要。
 //! Latest turn ledger: execution and delivery summary for the most recent request.
 
-use crate::bus::{IngressKind, MessageTransport, PcMsg};
+use crate::bus::{IngressKind, MessageBodyKind, MessageTransport, PcMsg};
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
@@ -638,6 +638,10 @@ pub struct TurnLedger {
     #[serde(default)]
     pub inbound_dedup_key: String,
     #[serde(default)]
+    pub body_kind: MessageBodyKind,
+    #[serde(default)]
+    pub has_media: bool,
+    #[serde(default)]
     pub user_preview: String,
     #[serde(default)]
     pub reply_preview: String,
@@ -718,6 +722,8 @@ pub fn build_turn_ledger_start(msg: &PcMsg, started_at_ms: u64) -> TurnLedger {
         platform_message_id: msg.platform_message_id.clone(),
         platform_event_id: msg.platform_event_id.clone(),
         inbound_dedup_key: msg.inbound_dedup_key.clone(),
+        body_kind: msg.body_kind(),
+        has_media: msg.has_media_body(),
         user_preview: normalize_turn_preview(&msg.content),
         started_at_ms,
         updated_at_ms: started_at_ms,

@@ -41,6 +41,12 @@ struct QqWebhookData {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    markdown: Option<serde_json::Value>,
+    #[serde(default)]
+    ark: Option<serde_json::Value>,
+    #[serde(default)]
+    embed: Option<serde_json::Value>,
+    #[serde(default)]
     id: Option<String>,
     #[serde(default)]
     author: Option<QqWebhookAuthor>,
@@ -98,20 +104,18 @@ pub fn handle_webhook(
         let t = value.t.as_deref().unwrap_or("");
         let d = value.d.as_ref();
         if let Some(d) = d {
-            let (chat_id, content, msg_id) = match t {
+            let (chat_id, msg_id) = match t {
                 "AT_MESSAGE_CREATE" => {
                     // 频道消息：chat_id = channel_id
                     let ch = d.channel_id.clone();
-                    let ct = d.content.clone();
                     let mid = d.id.clone();
-                    (ch, ct, mid)
+                    (ch, mid)
                 }
                 "GROUP_AT_MESSAGE_CREATE" => {
                     // 群聊 @ 消息：chat_id = "group:{group_openid}"
                     let gid = d.group_openid.as_deref().map(|s| format!("group:{}", s));
-                    let ct = d.content.clone();
                     let mid = d.id.clone();
-                    (gid, ct, mid)
+                    (gid, mid)
                 }
                 "C2C_MESSAGE_CREATE" => {
                     // C2C 单聊：与 WSS/发送链路保持一致，统一用 author.user_openid 作为 chat_id。
@@ -120,18 +124,27 @@ pub fn handle_webhook(
                         .as_ref()
                         .and_then(|a| a.user_openid.as_deref())
                         .map(|s| format!("c2c:{}", s));
-                    let ct = d.content.clone();
                     let mid = d.id.clone();
-                    (uid, ct, mid)
+                    (uid, mid)
                 }
-                _ => (None, None, None),
+                _ => (None, None),
             };
-            if let (Some(id), Some(ch), Some(content)) = (msg_id, chat_id, content) {
-                if !ch.is_empty() && !content.is_empty() {
+            if let (Some(id), Some(ch)) = (msg_id, chat_id) {
+                let (body, content_projection) = super::build_inbound_body_from_parts(
+                    d.content.as_deref(),
+                    d.markdown.as_ref(),
+                    d.ark.as_ref(),
+                    d.embed.as_ref(),
+                );
+                if !ch.is_empty()
+                    && (body.kind() != crate::bus::MessageBodyKind::Text
+                        || !content_projection.is_empty())
+                {
                     cache_msg_id(&msg_id_cache, &ch, &id)?;
-                    let msg = super::build_inbound_message(
+                    let msg = super::build_inbound_message_with_body(
                         &ch,
-                        &content,
+                        &content_projection,
+                        body,
                         crate::bus::MessageTransport::Webhook,
                         Some(&id),
                         None,

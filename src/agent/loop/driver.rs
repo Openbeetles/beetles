@@ -44,7 +44,7 @@ pub(super) fn recv_next_agent_msg(
         before_poll();
         if prefer_system_once && !system_disconnected {
             match system_inbound_rx.try_recv() {
-                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Ok(msg) => return AgentRecvStatus::Message(Box::new(msg)),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => system_disconnected = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -52,7 +52,7 @@ pub(super) fn recv_next_agent_msg(
 
         if !user_disconnected {
             match user_inbound_rx.try_recv() {
-                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Ok(msg) => return AgentRecvStatus::Message(Box::new(msg)),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => user_disconnected = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -60,7 +60,7 @@ pub(super) fn recv_next_agent_msg(
 
         if !system_disconnected {
             match system_inbound_rx.try_recv() {
-                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Ok(msg) => return AgentRecvStatus::Message(Box::new(msg)),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => system_disconnected = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -79,7 +79,7 @@ pub(super) fn recv_next_agent_msg(
         before_poll();
         if !user_disconnected {
             match user_inbound_rx.recv_timeout(wait) {
-                Ok(msg) => return AgentRecvStatus::Message(msg),
+                Ok(msg) => return AgentRecvStatus::Message(Box::new(msg)),
                 Err(RecvTimeoutError::Disconnected) => user_disconnected = true,
                 Err(RecvTimeoutError::Timeout) => {}
             }
