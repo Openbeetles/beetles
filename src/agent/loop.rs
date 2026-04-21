@@ -1659,9 +1659,7 @@ pub struct AgentLoopConfig {
     pub tg_group_activation: Arc<str>,
     pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     pub strategy: AgentRunStrategy,
-    /// 全局 LLM 流式模式；true 时 agent 使用 chat_with_progress 回调。
-    pub llm_stream: bool,
-    /// 流式编辑器；llm_stream 开且通道支持编辑时由 main 传入。
+    /// 流式编辑器；仅当前通道支持 stream-edit 时由 main 传入。
     pub stream_editor: Option<Arc<dyn StreamEditor + Send + Sync>>,
     /// 流式编辑器对应的通道名；仅当前消息来自该通道时才允许流式编辑。
     pub stream_editor_channel: Option<Arc<str>>,
@@ -3706,7 +3704,6 @@ mod tests {
                 &config, false,
             )),
             strategy: AgentRunStrategy::Embedded,
-            llm_stream: false,
             stream_editor: None,
             stream_editor_channel: None,
             resolve_locale: Arc::new(|| UiLocale::Zh),

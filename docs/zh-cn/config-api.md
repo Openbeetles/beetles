@@ -174,7 +174,6 @@
 字段：
 
 - `llm_sources`
-- `llm_stream`
 - `llm_router_source_index`
 - `llm_worker_source_index`
 
@@ -199,7 +198,6 @@
       "max_tokens": 1024
     }
   ],
-  "llm_stream": true,
   "llm_router_source_index": 0,
   "llm_worker_source_index": 0
 }

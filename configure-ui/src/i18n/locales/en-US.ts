@@ -463,8 +463,6 @@ export const enUS = {
     config: {
       sectionLlm: 'LLM',
       sectionLlmDesc: 'API key, model, multi-source and fallback.',
-      llmStream: 'Streaming',
-      llmStreamHelp: 'Enable SSE streaming for LLM responses, reducing peak memory usage.',
       sectionChannels: 'Channels',
       sectionChannelsDesc: 'Telegram, Feishu, DingTalk, WeCom, QQ Channel, WebSocket.',
       enabledChannel: 'Enabled channel',

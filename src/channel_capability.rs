@@ -127,29 +127,22 @@ pub fn build_channel_capability_registry(
 pub fn build_channel_capability_snapshots(
     config: &AppConfig,
     voice_channel_enabled: bool,
-    llm_stream_enabled: bool,
 ) -> Vec<ChannelCapabilitySnapshot> {
     let registry = build_channel_capability_registry(config, voice_channel_enabled);
-    build_channel_capability_snapshots_for_registry(&registry, llm_stream_enabled)
+    build_channel_capability_snapshots_for_registry(&registry)
 }
 
 /// Build operator/runtime snapshots from an already materialized registry.
 /// 基于已构建的 registry 生成运行态/运维快照。
 pub fn build_channel_capability_snapshots_for_registry(
     registry: &ChannelCapabilityRegistry,
-    llm_stream_enabled: bool,
 ) -> Vec<ChannelCapabilitySnapshot> {
     registry
         .list()
         .into_iter()
         .map(|entry| {
-            let mut degraded_reasons = Vec::new();
-            let stream_edit_active =
-                entry.enabled && llm_stream_enabled && entry.contract.supports_stream_edit;
+            let stream_edit_active = entry.enabled && entry.contract.supports_stream_edit;
             let typing_active = entry.enabled && entry.contract.supports_typing_or_chat_action;
-            if entry.enabled && entry.contract.supports_stream_edit && !llm_stream_enabled {
-                degraded_reasons.push("llm_stream_disabled".to_string());
-            }
             ChannelCapabilitySnapshot {
                 id: entry.id.to_string(),
                 configured: entry.configured,
@@ -165,7 +158,7 @@ pub fn build_channel_capability_snapshots_for_registry(
                 delivery_ordering_model: entry.contract.delivery_ordering_model,
                 stream_edit_active,
                 typing_active,
-                degraded_reasons,
+                degraded_reasons: Vec::new(),
             }
         })
         .collect()
@@ -323,20 +316,20 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_mark_stream_edit_degraded_when_llm_stream_is_disabled() {
+    fn snapshots_activate_stream_edit_for_enabled_editable_channel() {
         let mut config = AppConfig::load_from_env();
         config.enabled_channel = CHANNEL_FEISHU.to_string();
         config.feishu_app_id = "app".to_string();
         config.feishu_app_secret = "secret".to_string();
 
-        let snapshots = build_channel_capability_snapshots(&config, false, false);
+        let snapshots = build_channel_capability_snapshots(&config, false);
         let feishu = snapshots
             .into_iter()
             .find(|snapshot| snapshot.id == CHANNEL_FEISHU)
             .expect("feishu snapshot");
 
         assert!(feishu.enabled);
-        assert!(!feishu.stream_edit_active);
-        assert_eq!(feishu.degraded_reasons, vec!["llm_stream_disabled"]);
+        assert!(feishu.stream_edit_active);
+        assert!(feishu.degraded_reasons.is_empty());
     }
 }

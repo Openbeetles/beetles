@@ -399,7 +399,6 @@ impl CapabilityPackageToolPolicySet {
 
 pub fn build_capability_package_runtime_capabilities(
     channel_registry: &ChannelCapabilityRegistry,
-    llm_stream_enabled: bool,
 ) -> CapabilityPackageRuntimeCapabilities {
     let mut available = BTreeSet::from([
         "skills".to_string(),
@@ -408,9 +407,6 @@ pub fn build_capability_package_runtime_capabilities(
         "tool_governance".to_string(),
         "channel_capability_contract".to_string(),
     ]);
-    if llm_stream_enabled {
-        available.insert("llm_stream".to_string());
-    }
     for entry in channel_registry.list() {
         if entry.configured || entry.enabled {
             available.insert(format!("channel:{}", entry.id));

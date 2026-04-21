@@ -49,7 +49,6 @@ pub fn run(
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
-    llm_stream_enabled: bool,
 ) -> Result<()> {
     use crate::platform::http_server::common::MAX_OPEN_SOCKETS;
     use esp_idf_svc::http::server::{Configuration, EspHttpServer};
@@ -88,7 +87,6 @@ pub fn run(
             Some(system_inbound_tx.clone()),
             Arc::clone(&skill_prompt_cache),
             Arc::clone(&shared_config),
-            llm_stream_enabled,
             handlers::ControlPlaneRouteContract::FULL,
         ));
 
@@ -142,7 +140,6 @@ pub fn run_with_bound_listener(
     qq_app_id: String,
     qq_secret: String,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
-    llm_stream_enabled: bool,
 ) -> Result<()> {
     let ctx = Arc::new(handlers::build_runtime_handler_context(
         Arc::clone(&platform),
@@ -155,7 +152,6 @@ pub fn run_with_bound_listener(
         Some(system_inbound_tx),
         skill_prompt_cache,
         shared_config,
-        llm_stream_enabled,
         handlers::ControlPlaneRouteContract::FULL,
     ));
     let router_env = router::RouterEnv::new(
@@ -238,7 +234,6 @@ pub fn run(
     qq_app_id: String,
     qq_secret: String,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
-    llm_stream_enabled: bool,
 ) -> Result<()> {
     let (listen, listener) = bind_linux_config_http_listener()?;
     run_with_bound_listener(
@@ -260,6 +255,5 @@ pub fn run(
         qq_app_id,
         qq_secret,
         shared_config,
-        llm_stream_enabled,
     )
 }

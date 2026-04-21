@@ -29,7 +29,6 @@ pub struct CliContext {
     pub tool_registry: Arc<crate::tools::ToolRegistry>,
     pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     pub capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
-    pub llm_stream_enabled: bool,
     /// 入站/出站队列深度（实时读取）；None 表示 bus 未暴露深度。
     pub inbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub outbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -46,7 +45,6 @@ impl CliContext {
         tool_registry: Arc<crate::tools::ToolRegistry>,
         channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
         capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
-        llm_stream_enabled: bool,
         inbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
         outbound_depth: Option<Arc<std::sync::atomic::AtomicUsize>>,
     ) -> Self {
@@ -59,7 +57,6 @@ impl CliContext {
             tool_registry,
             channel_capability_registry,
             capability_package_runtime_capabilities,
-            llm_stream_enabled,
             inbound_depth,
             outbound_depth,
         }

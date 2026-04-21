@@ -39,7 +39,6 @@ pub struct HandlerContext {
     pub version: Arc<str>,
     pub board_id: Arc<str>,
     pub cached_config: Arc<RwLock<AppConfig>>,
-    pub llm_stream_enabled: bool,
     pub route_contract: ControlPlaneRouteContract,
     #[cfg(all(
         test,
@@ -92,7 +91,6 @@ pub fn build_runtime_handler_context(
     system_inbound_tx: Option<crate::bus::SystemInboundTx>,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     cached_config: Arc<RwLock<AppConfig>>,
-    llm_stream_enabled: bool,
     route_contract: ControlPlaneRouteContract,
 ) -> HandlerContext {
     let config_store = platform.config_store();
@@ -101,11 +99,9 @@ pub fn build_runtime_handler_context(
     )));
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
-    let capability_package_runtime_capabilities =
-        Arc::new(crate::build_capability_package_runtime_capabilities(
-            channel_capability_registry.as_ref(),
-            llm_stream_enabled,
-        ));
+    let capability_package_runtime_capabilities = Arc::new(
+        crate::build_capability_package_runtime_capabilities(channel_capability_registry.as_ref()),
+    );
 
     HandlerContext {
         config_store,
@@ -125,7 +121,6 @@ pub fn build_runtime_handler_context(
         version: Arc::from(env!("CARGO_PKG_VERSION")),
         board_id: Arc::from(crate::platform::runtime_board::resolved_board_id()),
         cached_config,
-        llm_stream_enabled,
         route_contract,
         #[cfg(all(
             test,
@@ -189,7 +184,6 @@ pub(crate) fn build_test_handler_context(
         capability_package_runtime_capabilities: Arc::new(
             crate::build_capability_package_runtime_capabilities(
                 channel_capability_registry.as_ref(),
-                false,
             ),
         ),
         inbound_depth: Arc::new(AtomicUsize::new(0)),
@@ -198,7 +192,6 @@ pub(crate) fn build_test_handler_context(
         version: Arc::from("0.0.0"),
         board_id: Arc::from(board_id),
         cached_config: Arc::new(RwLock::new(config)),
-        llm_stream_enabled: false,
         route_contract,
         #[cfg(all(
             test,

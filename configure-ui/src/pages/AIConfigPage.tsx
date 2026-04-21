@@ -7,10 +7,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import Button from "@mui/material/Button";
-import Switch from "@mui/material/Switch";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import AddRounded from "@mui/icons-material/AddRounded";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
@@ -31,7 +28,6 @@ import { SettingsSection } from "../components/SettingsSection";
 import {
   PAGE_COLUMN_FILL_SX,
   PAGE_STACK_OUTER_SX,
-  TEXT_BODY_TERTIARY_SX,
   TEXT_COLOR,
 } from "../theme/panelStyles";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
@@ -80,7 +76,6 @@ type LlmDraftState = {
   sources: SourceFormRow[];
   routerIndex: number | null;
   workerIndex: number | null;
-  llmStream: boolean;
 };
 
 function toSourceRows(sources: LlmSource[]): SourceFormRow[] {
@@ -180,7 +175,6 @@ export function AIConfigPage() {
         sources: [],
         routerIndex: null,
         workerIndex: null,
-        llmStream: false,
       };
     }
     const list =
@@ -198,11 +192,10 @@ export function AIConfigPage() {
       sources: toSourceRows(list),
       routerIndex: config.llm_router_source_index ?? null,
       workerIndex: config.llm_worker_source_index ?? null,
-      llmStream: config.llm_stream ?? false,
     };
   }, [config]);
   const [draft, setDraft] = useSyncedState(syncedDraft);
-  const { sources, routerIndex, workerIndex, llmStream } = draft;
+  const { sources, routerIndex, workerIndex } = draft;
 
   const addSource = () => {
     setDirty(true);
@@ -277,7 +270,6 @@ export function AIConfigPage() {
       llm_sources,
       llm_router_source_index: routerIndex,
       llm_worker_source_index: workerIndex,
-      llm_stream: llmStream,
     });
     saveFeedback.finishFromResult(result);
     if (result.ok) setDirty(false);
@@ -381,28 +373,6 @@ export function AIConfigPage() {
           />
         ) : (
         <Stack spacing={0}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={llmStream}
-                onChange={(e) => {
-                  setDirty(true);
-                  setDraft((prev) => ({
-                    ...prev,
-                    llmStream: e.target.checked,
-                  }));
-                }}
-              />
-            }
-            label={t("config.llmStream")}
-            sx={{ mb: 1 }}
-          />
-          <Typography
-            variant="caption"
-            sx={{ ml: 7, mt: -1, mb: 2, ...TEXT_BODY_TERTIARY_SX }}
-          >
-            {t("config.llmStreamHelp")}
-          </Typography>
           {sources.map((row, i) => (
             <FormSectionSubCollapsible
               key={i}

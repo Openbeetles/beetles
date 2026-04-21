@@ -107,12 +107,10 @@ pub fn build_llm_clients(
 ) -> Box<dyn LlmClient + Send + Sync> {
     const TAG: &str = "beetle";
 
-    let global_stream = config.llm_stream;
-
     let llm_clients: Vec<Box<dyn LlmClient + Send + Sync>> = llm_fallback_source_indices(config)
         .into_iter()
         .filter_map(|i| config.llm_sources.get(i))
-        .map(|s| box_client_for_source(s, global_stream))
+        .map(|s| box_client_for_source(s, true))
         .collect();
 
     if llm_clients.is_empty() {

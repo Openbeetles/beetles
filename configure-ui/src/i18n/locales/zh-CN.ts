@@ -463,8 +463,6 @@ export const zhCN = {
     config: {
       sectionLlm: 'LLM',
       sectionLlmDesc: 'API Key、模型、多源与回退配置。',
-      llmStream: '流式输出',
-      llmStreamHelp: '启用后使用 SSE 逐块读取 LLM 响应，降低峰值内存占用。',
       sectionChannels: '通道',
       sectionChannelsDesc: 'Telegram、飞书、钉钉、企微、QQ 频道、WebSocket。',
       enabledChannel: '启用通道',

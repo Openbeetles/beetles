@@ -195,10 +195,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub locale: Option<String>,
 
-    /// SSE 流式模式（全局）；true 时所有 LLM 客户端使用 SSE 逐块读取响应，降低峰值内存。默认 false。
-    #[serde(default)]
-    pub llm_stream: bool,
-
     /// 优先使用的 `llm_sources` 下标；None 表示按列表顺序构建回退链（与 Web UI「主用源」一致）。
     #[serde(default)]
     pub llm_router_source_index: Option<u32>,
@@ -312,9 +308,6 @@ impl AppConfig {
             locale: option_env!("BEETLE_LOCALE")
                 .filter(|s| *s == "zh" || *s == "en")
                 .map(String::from),
-            llm_stream: option_env!("BEETLE_LLM_STREAM")
-                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
             llm_router_source_index: None,
             llm_worker_source_index: None,
             hardware_devices: vec![],
@@ -466,7 +459,6 @@ impl AppConfig {
     pub fn merge_llm_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
         match deserialize_spiffs_json_loose_tail::<LlmSegment>(json) {
             Ok(seg) => {
-                self.llm_stream = seg.llm_stream;
                 self.llm_router_source_index = seg.llm_router_source_index;
                 self.llm_worker_source_index = seg.llm_worker_source_index;
                 if !seg.llm_sources.is_empty() {
@@ -949,8 +941,6 @@ pub fn set_locale(store: &dyn ConfigStore, locale: &str) -> Result<()> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LlmSegment {
     pub llm_sources: Vec<LlmSource>,
-    #[serde(default)]
-    pub llm_stream: bool,
     #[serde(default)]
     pub llm_router_source_index: Option<u32>,
     #[serde(default)]

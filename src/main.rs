@@ -149,7 +149,6 @@ struct HttpServerSpawnContext {
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
-    llm_stream_enabled: bool,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     msg_id_cache: beetle::channels::QqMsgIdCache,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -297,7 +296,6 @@ fn spawn_http_config_server(
             ctx.skill_prompt_cache,
             ctx.inbound_tx,
             ctx.shared_config,
-            ctx.llm_stream_enabled,
         );
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         let result = beetle::platform::http_server::run_with_bound_listener(
@@ -319,7 +317,6 @@ fn spawn_http_config_server(
             ctx.qq_app_id,
             ctx.qq_secret,
             ctx.shared_config,
-            ctx.llm_stream_enabled,
         );
         if let Err(e) = result {
             log::warn!("[{}] HTTP config API server error: {}", TAG, e);
@@ -2296,11 +2293,9 @@ fn prepare_runtime_assembly(
         config.as_ref(),
         voice_channel_enabled,
     ));
-    let capability_package_runtime_capabilities =
-        Arc::new(beetle::build_capability_package_runtime_capabilities(
-            channel_capability_registry.as_ref(),
-            config.llm_stream,
-        ));
+    let capability_package_runtime_capabilities = Arc::new(
+        beetle::build_capability_package_runtime_capabilities(channel_capability_registry.as_ref()),
+    );
     registry.set_llm_visibility_overlay_provider(Arc::new({
         let state_fs = platform.state_fs();
         let runtime_capabilities = Arc::clone(&capability_package_runtime_capabilities);
@@ -2413,7 +2408,6 @@ fn start_support_planes(
             skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
             inbound_tx: assembly.bus.user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
-            llm_stream_enabled: assembly.config.llm_stream,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             msg_id_cache: Arc::clone(&assembly.qq_msg_id_cache),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -2763,39 +2757,37 @@ fn start_agent_plane(
             _ => None,
         });
 
-    let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> =
-        if assembly.config.llm_stream
-            && assembly
-                .channel_capability_registry
-                .get(assembly.config.enabled_channel.as_str())
-                .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
-                .unwrap_or(false)
-        {
-            let make_http = assembly
-                .network_governor
-                .http_factory(HttpClientClass::Interactive);
-            match assembly.config.enabled_channel.as_str() {
-                beetle::CHANNEL_TELEGRAM if !assembly.config.tg_token.trim().is_empty() => {
-                    Some(Arc::new(TelegramStreamEditor {
-                        token: assembly.config.tg_token.clone(),
-                        create_http: Arc::clone(&make_http),
-                    })
-                        as Arc<dyn beetle::StreamEditor + Send + Sync>)
-                }
-                beetle::CHANNEL_FEISHU if !assembly.config.feishu_app_id.trim().is_empty() => {
-                    Some(Arc::new(FeishuStreamEditor {
-                        app_id: assembly.config.feishu_app_id.clone(),
-                        app_secret: assembly.config.feishu_app_secret.clone(),
-                        create_http: Arc::clone(&make_http),
-                        state: Mutex::new(beetle::FeishuTokenCache::new()),
-                    })
-                        as Arc<dyn beetle::StreamEditor + Send + Sync>)
-                }
-                _ => None,
+    let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> = if assembly
+        .channel_capability_registry
+        .get(assembly.config.enabled_channel.as_str())
+        .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
+        .unwrap_or(false)
+    {
+        let make_http = assembly
+            .network_governor
+            .http_factory(HttpClientClass::Interactive);
+        match assembly.config.enabled_channel.as_str() {
+            beetle::CHANNEL_TELEGRAM if !assembly.config.tg_token.trim().is_empty() => {
+                Some(Arc::new(TelegramStreamEditor {
+                    token: assembly.config.tg_token.clone(),
+                    create_http: Arc::clone(&make_http),
+                })
+                    as Arc<dyn beetle::StreamEditor + Send + Sync>)
             }
-        } else {
-            None
-        };
+            beetle::CHANNEL_FEISHU if !assembly.config.feishu_app_id.trim().is_empty() => {
+                Some(Arc::new(FeishuStreamEditor {
+                    app_id: assembly.config.feishu_app_id.clone(),
+                    app_secret: assembly.config.feishu_app_secret.clone(),
+                    create_http: Arc::clone(&make_http),
+                    state: Mutex::new(beetle::FeishuTokenCache::new()),
+                })
+                    as Arc<dyn beetle::StreamEditor + Send + Sync>)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let stream_editor_channel = stream_editor
         .as_ref()
         .map(|_| Arc::<str>::from(assembly.config.enabled_channel.as_str()));
@@ -2812,7 +2804,6 @@ fn start_agent_plane(
         tg_group_activation: Arc::<str>::from(assembly.config.tg_group_activation.as_str()),
         channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
         strategy: agent_strategy,
-        llm_stream: assembly.config.llm_stream,
         stream_editor,
         stream_editor_channel,
         resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
@@ -2829,7 +2820,6 @@ fn start_agent_plane(
             Arc::clone(&assembly.registry),
             Arc::clone(&assembly.channel_capability_registry),
             Arc::clone(&assembly.capability_package_runtime_capabilities),
-            assembly.config.llm_stream,
             Some(Arc::clone(&assembly.bus.user_inbound_depth)),
             Some(Arc::clone(&assembly.bus.outbound_depth)),
         );

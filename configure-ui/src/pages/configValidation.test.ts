@@ -53,7 +53,6 @@ function createSystemConfig(): AppConfig {
     llm_sources: [],
     llm_router_source_index: null,
     llm_worker_source_index: null,
-    llm_stream: false,
   };
 }
 

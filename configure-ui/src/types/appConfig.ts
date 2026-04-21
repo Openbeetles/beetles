@@ -42,8 +42,6 @@ export interface AppConfig {
   llm_sources: LlmSource[]
   llm_router_source_index: number | null
   llm_worker_source_index: number | null
-  /** SSE 流式模式（全局）；true 时使用 SSE 逐块读取响应，降低峰值内存。 */
-  llm_stream: boolean
 }
 
 /** POST /api/config/llm 请求体。 */
@@ -51,7 +49,6 @@ export interface LlmConfigSegment {
   llm_sources: LlmSource[]
   llm_router_source_index?: number | null
   llm_worker_source_index?: number | null
-  llm_stream?: boolean
 }
 
 /** 可选启用通道值，与后端 ALLOWED_ENABLED_CHANNELS 一致。 */

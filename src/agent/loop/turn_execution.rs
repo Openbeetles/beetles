@@ -343,8 +343,7 @@ pub(super) fn execute_turn(
     );
     latency.request_semantics_ms = request_semantics_started.elapsed().as_millis();
     let channel_capability = config.channel_capability_registry.get(msg.channel.as_ref());
-    let editor = if config.llm_stream
-        && config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
+    let editor = if config.stream_editor_channel.as_deref() == Some(msg.channel.as_ref())
         && channel_capability
             .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
             .unwrap_or(false)
@@ -544,39 +543,29 @@ pub(super) fn execute_turn(
         let llm_round_start = Instant::now();
         let mut first_token_marked = latency.ttft_ms.is_some();
         let round_tools = request_plan.request_tools();
-        let response = if config.llm_stream {
-            let progress_base = worker_start;
-            let mut progress_cb = |_delta: &str, accumulated: &str| {
-                crate::platform::task_wdt::feed_current_task();
-                if !first_token_marked && !accumulated.is_empty() {
-                    latency.ttft_ms = Some(progress_base.elapsed().as_millis());
-                    first_token_marked = true;
-                }
-                if matches!(
-                    crate::orchestrator::current_pressure(),
-                    crate::orchestrator::PressureLevel::Critical
-                ) {
-                    return;
-                }
-                delivery.on_stream_delta(accumulated);
-            };
-            worker_llm.chat_with_progress(
-                &mut tool_ctx,
-                &system,
-                &messages,
-                round_tools,
-                request_plan.tool_choice(round, any_tool_used),
-                &mut progress_cb,
-            )
-        } else {
-            worker_llm.chat(
-                &mut tool_ctx,
-                &system,
-                &messages,
-                round_tools,
-                request_plan.tool_choice(round, any_tool_used),
-            )
+        let progress_base = worker_start;
+        let mut progress_cb = |_delta: &str, accumulated: &str| {
+            crate::platform::task_wdt::feed_current_task();
+            if !first_token_marked && !accumulated.is_empty() {
+                latency.ttft_ms = Some(progress_base.elapsed().as_millis());
+                first_token_marked = true;
+            }
+            if matches!(
+                crate::orchestrator::current_pressure(),
+                crate::orchestrator::PressureLevel::Critical
+            ) {
+                return;
+            }
+            delivery.on_stream_delta(accumulated);
         };
+        let response = worker_llm.chat_with_progress(
+            &mut tool_ctx,
+            &system,
+            &messages,
+            round_tools,
+            request_plan.tool_choice(round, any_tool_used),
+            &mut progress_cb,
+        );
         let response = match response {
             Ok(r) => {
                 metrics::record_llm_call_end(t0);
