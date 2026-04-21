@@ -14,7 +14,9 @@ import {
   PanelStateLoading,
   FormSectionSub,
   InlineAlert,
+  PageLoadErrorState,
   SaveFeedback,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
@@ -128,11 +130,16 @@ export function SystemConfigPage() {
     !form && !loading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
     !form && !loading && ready && deviceConnected && !hasPairing;
-  const inlineError = showConnectState || showPairingState ? null : error;
+  const loadErrorState = splitPageErrorState({
+    hasData: Boolean(form),
+    loading,
+    error,
+    suppress: showConnectState || showPairingState || showConnectionLoading,
+  });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={inlineError} onRetry={loadConfig} />
+      <InlineAlert message={loadErrorState.inlineError} onRetry={loadConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
@@ -181,6 +188,11 @@ export function SystemConfigPage() {
             icon={<Os3dIcon src={OS_ICON_NAV["/system-config"]} variant="inline" />}
             title={t("device.pairingCodeRequired")}
             description={t("config.needPairingDesc")}
+          />
+        ) : loadErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={loadErrorState.blockingError}
+            onRetry={loadConfig}
           />
         ) : !form ? (
           <PanelStateBlock

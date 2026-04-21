@@ -8,8 +8,10 @@ import Typography from "@mui/material/Typography";
 import {
   InlineAlert,
   PanelStateBlock,
+  PageLoadErrorState,
   PanelStateLoading,
   SectionLoadingSkeleton,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
@@ -117,11 +119,20 @@ export function SystemLogsPage() {
   };
   const showConnectionLoading = ready && connectionChecking && !deviceConnected;
   const showConnectState = !showConnectionLoading && (!ready || !deviceConnected);
-  const inlineError = showConnectState ? null : logsState.error || null;
+  const hasLogData =
+    Boolean(logsState.data.health) ||
+    Boolean(logsState.data.metrics) ||
+    logsState.data.diagnose.length > 0;
+  const logsErrorState = splitPageErrorState({
+    hasData: hasLogData,
+    loading: logsState.loading,
+    error: logsState.error,
+    suppress: showConnectState || showConnectionLoading,
+  });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={inlineError} onRetry={loadLogs} />
+      <InlineAlert message={logsErrorState.inlineError} onRetry={loadLogs} />
       <SettingsSection
         pinHeader
         surfaceTone={logsState.loading ? "loading" : "default"}
@@ -144,6 +155,11 @@ export function SystemLogsPage() {
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>
+        ) : logsErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={logsErrorState.blockingError}
+            onRetry={loadLogs}
+          />
         ) : (
           <Box
             sx={{

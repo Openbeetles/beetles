@@ -8,7 +8,11 @@ import type { SxProps, Theme } from "@mui/material/styles";
 import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { OS_ICON_DASHBOARD } from "../config/osIcons";
-import { InlineAlert, SettingsRow } from "../components/form";
+import {
+  PageLoadErrorState,
+  SettingsRow,
+  splitPageErrorState,
+} from "../components/form";
 import { ChannelConnectivityPanel } from "../components/ChannelConnectivityPanel";
 import { BeetleIcon } from "../components/BeetleIcon";
 import { useDeviceApi } from "../hooks/useDeviceApi";
@@ -382,6 +386,15 @@ export function DevicePage() {
     queueMicrotask(() => {
       setUrlInput(nextUrl);
       setCodeInput(nextCode);
+      setSystemInfo(null);
+      setChannelList([]);
+      setChannelLoading(false);
+      setChannelError("");
+      setHealthData(null);
+      setResourceData(null);
+      setMetricsData(null);
+      setHealthLoading(false);
+      setHealthError("");
     });
   }, [deviceSessionKey, baseUrl, pairingCode]);
 
@@ -402,6 +415,12 @@ export function DevicePage() {
     [systemInfo, healthData, runtimeStatusKey],
   );
   const dashboardReady = Boolean(healthData && resourceData && metricsData);
+  const dashboardErrorState = splitPageErrorState({
+    hasData: dashboardReady,
+    loading: healthLoading,
+    error: healthError,
+    suppress: !deviceConnected,
+  });
 
   useEffect(() => {
     setDirty(connectionDraftDirty);
@@ -477,6 +496,7 @@ export function DevicePage() {
         if (!active || healthLoadRequestIdRef.current !== requestId) return;
         setHealthLoading(false);
         if (result.ok) {
+          setHealthError("");
           setHealthData(result.data.health);
           setResourceData(result.data.resource);
           setMetricsData(result.data.metrics);
@@ -523,10 +543,11 @@ export function DevicePage() {
         (result) => {
           if (!active || channelLoadRequestIdRef.current !== requestId) return;
           setChannelLoading(false);
-          if (result.ok) {
-            setChannelList(result.data);
-            return;
-          }
+        if (result.ok) {
+          setChannelError("");
+          setChannelList(result.data);
+          return;
+        }
           setChannelError(result.error);
           if (notify) {
             showToast(
@@ -918,15 +939,32 @@ export function DevicePage() {
         {t("device.systemStatusLoading")}
       </Typography>
       <SectionLoadProgress
-        loading={!healthError}
+        loading={healthLoading}
         idleHint={t("device.systemStatusLoading")}
       />
-      {healthError && !healthLoading ? (
-        <InlineAlert
-          message={`${t("device.systemStatusLoadFail")}: ${healthError}`}
-          onRetry={reloadHealth}
-        />
-      ) : null}
+    </Box>
+  );
+
+  const renderDashboardLoadErrorState = () => (
+    <Box
+      sx={{
+        ...CONFIG_PANEL_LOADING_SX,
+        minHeight: 220,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        gap: 2,
+        px: { xs: 2.5, sm: 3 },
+        py: { xs: 3, sm: 4 },
+      }}
+    >
+      <Typography variant="subtitle2" sx={TEXT_DASHBOARD_CARD_TITLE_SX}>
+        {t("device.pageTitle")}
+      </Typography>
+      <PageLoadErrorState
+        message={dashboardErrorState.blockingError}
+        onRetry={reloadHealth}
+      />
     </Box>
   );
 
@@ -1081,7 +1119,9 @@ export function DevicePage() {
             gap: DASHBOARD_HOME_GRID_GAP,
           }}
         >
-          {renderDashboardLoadingState()}
+          {dashboardErrorState.blockingError
+            ? renderDashboardLoadErrorState()
+            : renderDashboardLoadingState()}
         </Box>
       ) : (
         <Box
@@ -1091,6 +1131,12 @@ export function DevicePage() {
             gap: DASHBOARD_HOME_GRID_GAP,
           }}
         >
+          {dashboardErrorState.inlineError ? (
+            <PageLoadErrorState
+              message={dashboardErrorState.inlineError}
+              onRetry={reloadHealth}
+            />
+          ) : null}
           <Box
             sx={{
               display: "grid",

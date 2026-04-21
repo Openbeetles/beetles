@@ -56,6 +56,8 @@ export function SoulUserConfigProvider({ children }: { children: ReactNode }) {
 
   const [soulState, setSoulState] = useState(createAsyncState(""));
   const [userState, setUserState] = useState(createAsyncState(""));
+  const [soulLoadedOnce, setSoulLoadedOnce] = useState(false);
+  const [userLoadedOnce, setUserLoadedOnce] = useState(false);
   const [savedSoul, setSavedSoul] = useState(() =>
     serializeSoul(defaultSoulForm()),
   );
@@ -81,7 +83,7 @@ export function SoulUserConfigProvider({ children }: { children: ReactNode }) {
 
   const loadSoul = useCallback(() => {
     if (!ready) return;
-    setSoulState((prev) => ({ ...prev, loading: true }));
+    setSoulState((prev) => ({ ...prev, loading: true, error: "" }));
     setLoadError("");
     api.soul
       .get()
@@ -89,6 +91,7 @@ export function SoulUserConfigProvider({ children }: { children: ReactNode }) {
         if (res.ok) {
           const data = res.data ?? "";
           setSoulState({ data, loading: false, error: "" });
+          setSoulLoadedOnce(true);
           const parsed = parseSoul(data);
           const nextForm = parsed.ok ? parsed.data : defaultSoulForm();
           setSoulForm(nextForm);
@@ -106,13 +109,14 @@ export function SoulUserConfigProvider({ children }: { children: ReactNode }) {
 
   const loadUser = useCallback(() => {
     if (!ready) return;
-    setUserState((prev) => ({ ...prev, loading: true }));
+    setUserState((prev) => ({ ...prev, loading: true, error: "" }));
     api.user
       .get()
       .then((res) => {
         if (res.ok) {
           const data = res.data ?? "";
           setUserState({ data, loading: false, error: "" });
+          setUserLoadedOnce(true);
           const parsed = parseUser(data);
           const nextForm = parsed.ok ? parsed.data : defaultUserForm();
           setUserForm(nextForm);
@@ -211,6 +215,8 @@ export function SoulUserConfigProvider({ children }: { children: ReactNode }) {
       setUserForm,
       soulState,
       userState,
+      soulLoadedOnce,
+      userLoadedOnce,
       soulSaveStatus,
       userSaveStatus,
       soulError,
@@ -229,6 +235,8 @@ export function SoulUserConfigProvider({ children }: { children: ReactNode }) {
       userForm,
       soulState,
       userState,
+      soulLoadedOnce,
+      userLoadedOnce,
       soulSaveStatus,
       userSaveStatus,
       soulError,

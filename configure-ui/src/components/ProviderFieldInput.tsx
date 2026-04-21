@@ -29,6 +29,12 @@ export interface ProviderFieldInputProps {
   onChange: (value: string) => void;
 }
 
+function fieldIsConfigured(
+  field: ProviderFieldInputProps["field"],
+): field is ProviderFieldInputProps["field"] & { configured: boolean } {
+  return "configured" in field && field.configured === true;
+}
+
 export function ProviderFieldInput({
   field,
   value,
@@ -36,6 +42,13 @@ export function ProviderFieldInput({
 }: ProviderFieldInputProps) {
   const { t } = useTranslation();
   const secret = field.secret || field.value_kind === "secret";
+  const configuredSecret = secret && fieldIsConfigured(field);
+  const helperText =
+    configuredSecret
+      ? t("accounts.keepExistingSecret")
+      : field.description.trim()
+        ? field.description
+        : undefined;
   const multiline =
     "multiple" in field ? Boolean(field.multiple) : false;
   const options = "options" in field ? field.options ?? [] : [];
@@ -72,9 +85,7 @@ export function ProviderFieldInput({
             </MenuItem>
           ))}
         </Select>
-        {field.description ? (
-          <FormHelperText>{field.description}</FormHelperText>
-        ) : null}
+        {helperText ? <FormHelperText>{helperText}</FormHelperText> : null}
       </FormControl>
     );
   }
@@ -86,7 +97,7 @@ export function ProviderFieldInput({
       label={field.label}
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      helperText={field.description || undefined}
+      helperText={helperText}
       multiline={multiline}
       minRows={multiline ? 3 : undefined}
       inputProps={{

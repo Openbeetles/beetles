@@ -444,6 +444,7 @@ export const zhCN = {
       discardChanges: '放弃修改',
       import: '导入',
       retry: '重试',
+      inlineErrorTitle: '当前内容暂时无法加载',
       yes: '是',
       no: '否',
       error: '操作失败',

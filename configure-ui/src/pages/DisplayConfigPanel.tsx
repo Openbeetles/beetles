@@ -11,10 +11,13 @@ import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateBlock,
   PanelStateLoading,
   FormSectionSub,
   InlineAlert,
+  PageLoadErrorState,
   SaveFeedback,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
@@ -56,10 +59,16 @@ export function DisplayConfigPanel() {
   });
   const [draft, setDraft] = useState<DisplayConfig | null>(null);
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
-  const form = draft ?? displayConfig ?? defaultDisplayConfig();
+  const formSource = draft ?? displayConfig;
+  const form = formSource ?? defaultDisplayConfig();
   const isLinuxRuntime = runtimeKind === "linux";
   const showLinuxFramebuffer = isLinuxRuntime && form.driver === "framebuffer";
   const showLinuxSpiByteSwap = isLinuxRuntime && !showLinuxFramebuffer;
+  const loadErrorState = splitPageErrorState({
+    hasData: Boolean(formSource),
+    loading: displayLoading,
+    error: displayError,
+  });
 
   const sectionDesc = useMemo(() => {
     if (isLinuxRuntime) return t("displayConfig.sectionMainDescLinux");
@@ -75,7 +84,7 @@ export function DisplayConfigPanel() {
     setDraft((prev) => ({ ...(prev ?? form), [key]: value }));
   };
 
-  if (displayLoading && !displayConfig && !draft) {
+  if (displayLoading && !formSource) {
     return (
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
@@ -88,6 +97,34 @@ export function DisplayConfigPanel() {
           <PanelStateLoading>
             <FormLoadingSkeleton />
           </PanelStateLoading>
+        </SettingsSection>
+      </Box>
+    );
+  }
+
+  if (!formSource) {
+    return (
+      <Box sx={PAGE_STACK_OUTER_SX}>
+        <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
+          icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.display} />}
+          label={t("displayConfig.sectionMain")}
+          description={sectionDesc}
+        >
+          {loadErrorState.blockingError ? (
+            <PageLoadErrorState
+              message={loadErrorState.blockingError}
+              onRetry={loadDisplayConfig}
+            />
+          ) : (
+            <PanelStateBlock
+              tone="neutral"
+              icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.display} variant="inline" />}
+              title={t("config.unavailableTitle")}
+              description={t("config.unavailableDesc")}
+            />
+          )}
         </SettingsSection>
       </Box>
     );
@@ -124,7 +161,10 @@ export function DisplayConfigPanel() {
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={displayError} onRetry={loadDisplayConfig} />
+      <InlineAlert
+        message={loadErrorState.inlineError}
+        onRetry={loadDisplayConfig}
+      />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}

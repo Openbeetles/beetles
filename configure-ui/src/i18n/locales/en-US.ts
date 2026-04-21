@@ -444,6 +444,7 @@ export const enUS = {
       discardChanges: 'Discard changes',
       import: 'Import',
       retry: 'Retry',
+      inlineErrorTitle: 'This content is temporarily unavailable',
       yes: 'Yes',
       no: 'No',
       error: 'Operation failed',

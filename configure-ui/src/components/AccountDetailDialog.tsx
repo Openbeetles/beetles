@@ -11,10 +11,13 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import CloseRounded from "@mui/icons-material/CloseRounded";
 import {
+  InlineAlert,
+  PageLoadErrorState,
   PanelStateBlock,
   PanelStateLoading,
   SaveFeedback,
   SectionLoadingSkeleton,
+  splitPageErrorState,
 } from "./form";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Os3dIcon } from "./Os3dIcon";
@@ -76,7 +79,6 @@ export function AccountDetailDialog({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
-  const [clearSecretKeys, setClearSecretKeys] = useState<Record<string, boolean>>({});
   const saveFeedback = useSaveFeedback(t);
   const {
     status: saveStatus,
@@ -91,6 +93,11 @@ export function AccountDetailDialog({
   const localizedDetailFields = detail?.fields.map((field) =>
     localizeProviderField(t, field),
   ) ?? [];
+  const detailErrorState = splitPageErrorState({
+    hasData: Boolean(detail),
+    loading,
+    error,
+  });
 
   const load = useCallback(async () => {
     if (!ready || !accountKey) return;
@@ -109,7 +116,6 @@ export function AccountDetailDialog({
           nextValues[field.key] = field.current_value ?? "";
         }
         setFieldValues(nextValues);
-        setClearSecretKeys({});
       } else {
         setError(res.error ?? t("accounts.detailLoadFailed"));
         setDetail(null);
@@ -129,7 +135,6 @@ export function AccountDetailDialog({
           setError("");
           setProbeMsg(null);
           setFieldValues({});
-          setClearSecretKeys({});
           dismissSaveFeedback();
         });
       }
@@ -194,7 +199,6 @@ export function AccountDetailDialog({
     const invalid = localizedDetailFields.filter(
       (field) =>
         field.required &&
-        !clearSecretKeys[field.key] &&
         !(fieldValues[field.key] ?? "").trim() &&
         !(field.secret && field.configured),
     );
@@ -212,10 +216,6 @@ export function AccountDetailDialog({
     const clear_fields: string[] = [];
     for (const field of detail.fields) {
       const raw = (fieldValues[field.key] ?? "").trim();
-      if (clearSecretKeys[field.key]) {
-        clear_fields.push(field.key);
-        continue;
-      }
       if (raw) {
         fields[field.key] = raw;
         continue;
@@ -247,7 +247,6 @@ export function AccountDetailDialog({
           nextValues[field.key] = field.current_value ?? "";
         }
         setFieldValues(nextValues);
-        setClearSecretKeys({});
         setProbeMsg(null);
       } else if (!res.ok) {
         setError(res.error ?? t("accounts.saveConfigFailed"));
@@ -401,16 +400,20 @@ export function AccountDetailDialog({
               }}
             >
               <Stack spacing={3} sx={DIALOG_FORM_SCROLL_WELL_SX}>
-              {error ? (
-                <Typography color="error" variant="body2" sx={{ mb: 2 }}>
-                  {error}
-                </Typography>
-              ) : null}
+              <InlineAlert
+                message={detailErrorState.inlineError}
+                onRetry={() => void load()}
+              />
 
               {loading ? (
                 <PanelStateLoading>
                   <SectionLoadingSkeleton />
                 </PanelStateLoading>
+              ) : detailErrorState.blockingError ? (
+                <PageLoadErrorState
+                  message={detailErrorState.blockingError}
+                  onRetry={() => void load()}
+                />
               ) : !detail || !a ? (
                 <PanelStateBlock
                   tone="neutral"
@@ -525,41 +528,8 @@ export function AccountDetailDialog({
                                 ...prev,
                                 [field.key]: nextValue,
                               }));
-                              setClearSecretKeys((prev) => {
-                                if (!prev[field.key]) return prev;
-                                const next = { ...prev };
-                                delete next[field.key];
-                                return next;
-                              });
                             }}
                           />
-                          {field.secret && field.configured ? (
-                            <Stack
-                              direction="row"
-                              alignItems="center"
-                              justifyContent="space-between"
-                              gap={1}
-                              sx={{ mt: 1 }}
-                            >
-                              <Typography variant="caption" color="text.secondary">
-                                {clearSecretKeys[field.key]
-                                  ? t("accounts.clearStoredSecretPending")
-                                  : t("accounts.keepExistingSecret")}
-                              </Typography>
-                              <Button
-                                size="small"
-                                variant="text"
-                                onClick={() =>
-                                  setClearSecretKeys((prev) => ({
-                                    ...prev,
-                                    [field.key]: !prev[field.key],
-                                  }))
-                                }
-                              >
-                                {t("accounts.clearStoredSecret")}
-                              </Button>
-                            </Stack>
-                          ) : null}
                         </Box>
                       ))}
                     </Stack>

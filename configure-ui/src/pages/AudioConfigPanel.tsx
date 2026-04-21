@@ -19,11 +19,14 @@ import type { SelectChangeEvent } from '@mui/material/Select'
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateBlock,
   PanelStateLoading,
   FormSectionSub,
   FormSectionSubCollapsible,
   InlineAlert,
+  PageLoadErrorState,
   SaveFeedback,
+  splitPageErrorState,
 } from '../components/form'
 import { Os3dIcon } from '../components/Os3dIcon'
 import { SettingsSection } from '../components/SettingsSection'
@@ -123,7 +126,8 @@ export function AudioConfigPanel() {
   const [usbAudioLoading, setUsbAudioLoading] = useState(false)
   const [usbAudioError, setUsbAudioError] = useState<string | null>(null)
   const linuxRuntime = runtimeKind === 'linux'
-  const rawForm = normalizeAudioConfigFromDevice(draft ?? audioConfig ?? defaultAudioConfig())
+  const formSource = draft ?? audioConfig
+  const rawForm = normalizeAudioConfigFromDevice(formSource ?? defaultAudioConfig())
   const form: AudioConfig = linuxRuntime
     ? {
         ...rawForm,
@@ -138,6 +142,11 @@ export function AudioConfigPanel() {
         },
       }
     : rawForm
+  const loadErrorState = splitPageErrorState({
+    hasData: Boolean(formSource),
+    loading: audioLoading,
+    error: audioError,
+  })
   const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins)
 
   const saveDisabled = editor.saveDisabled
@@ -219,7 +228,7 @@ export function AudioConfigPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- USB 列表随音频开关/设备类型刷新
   }, [audioOn, api.hardware, form.speaker.device_type, linuxRuntime, spkOn])
 
-  if (audioLoading && !audioConfig && !draft) {
+  if (audioLoading && !formSource) {
     return (
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
@@ -232,6 +241,34 @@ export function AudioConfigPanel() {
           <PanelStateLoading>
             <FormLoadingSkeleton />
           </PanelStateLoading>
+        </SettingsSection>
+      </Box>
+    )
+  }
+
+  if (!formSource) {
+    return (
+      <Box sx={PAGE_STACK_OUTER_SX}>
+        <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
+          icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.audio} />}
+          label={t('audioConfig.sectionMain')}
+          description={t('audioConfig.sectionMainDesc')}
+        >
+          {loadErrorState.blockingError ? (
+            <PageLoadErrorState
+              message={loadErrorState.blockingError}
+              onRetry={loadAudioConfig}
+            />
+          ) : (
+            <PanelStateBlock
+              tone="neutral"
+              icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.audio} variant="inline" />}
+              title={t('config.unavailableTitle')}
+              description={t('config.unavailableDesc')}
+            />
+          )}
         </SettingsSection>
       </Box>
     )
@@ -284,7 +321,7 @@ export function AudioConfigPanel() {
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={audioError} onRetry={loadAudioConfig} />
+      <InlineAlert message={loadErrorState.inlineError} onRetry={loadAudioConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}

@@ -4,9 +4,11 @@ import Button from "@mui/material/Button";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   InlineAlert,
+  PageLoadErrorState,
   PanelStateLoading,
   SaveFeedback,
   SectionLoadingSkeleton,
+  splitPageErrorState,
 } from "../../components/form";
 import { Os3dIcon } from "../../components/Os3dIcon";
 import { SettingsSection } from "../../components/SettingsSection";
@@ -24,19 +26,24 @@ export function SoulUserUserPanel() {
     userForm,
     setUserForm,
     userState,
+    userLoadedOnce,
     userSaveStatus,
     userError,
     handleSaveUser,
     dismissUserSaveFeedback,
   } = useSoulUserConfig();
 
-  const userAlert = userState.error || null;
+  const userErrorState = splitPageErrorState({
+    hasData: userLoadedOnce,
+    loading: userState.loading,
+    error: userState.error,
+  });
   const saveDisabled =
     !ready || userSaveStatus === "saving" || userState.loading;
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={userAlert} onRetry={retryLoadUser} />
+      <InlineAlert message={userErrorState.inlineError} onRetry={retryLoadUser} />
       <SettingsSection
         pinHeader
         surfaceTone={userState.loading ? "loading" : "default"}
@@ -73,6 +80,11 @@ export function SoulUserUserPanel() {
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>
+        ) : userErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={userErrorState.blockingError}
+            onRetry={retryLoadUser}
+          />
         ) : (
           <UserFormBody form={userForm} setForm={setUserForm} t={t} />
         )}

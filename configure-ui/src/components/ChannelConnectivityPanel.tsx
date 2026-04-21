@@ -9,6 +9,7 @@ import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import type { TFunction } from "i18next";
 import type { ChannelConnectivityItem } from "../api/endpoints/system";
+import { PanelStateBlock } from "./PanelStateBlock";
 import { SectionLoadProgress } from "./SectionLoadProgress";
 import { DASHBOARD_INSET_WELL_BG } from "../theme/panelStyles";
 
@@ -220,16 +221,25 @@ function ChannelRow({
             alignItems: "flex-start",
             ...(!ok
               ? {
-                  pl: 1.125,
-                  pr: 1.125,
-                  py: 0.75,
+                  px: 1.125,
+                  py: 0.85,
                   borderRadius: "var(--radius-chip)",
-                  borderLeft: "3px solid",
-                  borderLeftColor: "var(--semantic-danger)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--semantic-danger) 14%, var(--border))",
                   bgcolor:
-                    "color-mix(in srgb, var(--semantic-danger) 9%, var(--card))",
-                  boxShadow:
-                    "inset 0 0 0 1px color-mix(in srgb, var(--semantic-danger) 18%, transparent)",
+                    "color-mix(in srgb, var(--card) 78%, transparent)",
+                  backgroundImage: [
+                    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 64%)",
+                    "linear-gradient(135deg, color-mix(in srgb, var(--semantic-danger) 5%, transparent) 0%, transparent 42%, color-mix(in srgb, var(--accent) 4%, transparent) 100%)",
+                  ].join(", "),
+                  boxShadow: [
+                    "0 14px 26px -24px color-mix(in srgb, var(--semantic-danger) 18%, transparent)",
+                    "inset 0 1px 0 color-mix(in srgb, #fff 52%, transparent)",
+                  ].join(", "),
+                  backdropFilter:
+                    "blur(calc(var(--glass-blur) * 0.45)) saturate(1.03)",
+                  WebkitBackdropFilter:
+                    "blur(calc(var(--glass-blur) * 0.45)) saturate(1.03)",
                 }
               : {
                   py: 0.125,
@@ -283,65 +293,18 @@ function LoadFailedState({
   retryLabel: string;
 }) {
   return (
-    <Box
-      role="alert"
-      sx={{
-        display: "flex",
-        flexDirection: { xs: "column", sm: "row" },
-        alignItems: { xs: "stretch", sm: "flex-start" },
-        gap: 1.5,
-        p: 1.75,
-        ...SECTION_PANEL_SX,
-        borderLeftWidth: "var(--accent-line-width)",
-        borderLeftStyle: "solid",
-        borderLeftColor:
-          "color-mix(in srgb, var(--semantic-danger) 72%, var(--border-subtle))",
-        bgcolor: "color-mix(in srgb, var(--semantic-danger) 4%, var(--card))",
-      }}
-    >
-      <Box
-        sx={{
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: { xs: "100%", sm: 44 },
-          height: 44,
-          ...MICRO_CELL_SX,
-          color:
-            "color-mix(in srgb, var(--semantic-danger) 88%, var(--foreground))",
-        }}
-      >
-        <HubOutlined sx={{ fontSize: "var(--icon-size-lg)" }} aria-hidden />
-      </Box>
-      <Box sx={{ flex: "1 1 auto", minWidth: 0 }}>
-        <Typography
-          sx={{
-            fontSize: "var(--font-size-body-sm)",
-            fontWeight: 400,
-            color: "var(--foreground)",
-            lineHeight: "var(--line-height-snug)",
-            mb: 0.5,
-          }}
-        >
-          {title}
-        </Typography>
-        <Typography
-          sx={{
-            fontSize: "var(--font-size-caption)",
-            color: "var(--text-tertiary)",
-            lineHeight: "var(--line-height-relaxed)",
-            mb: 1.5,
-          }}
-        >
-          {detail}
-        </Typography>
+    <PanelStateBlock
+      tone="danger"
+      presentation="notice"
+      size="compact"
+      icon={<HubOutlined sx={{ fontSize: "var(--icon-size-lg)" }} aria-hidden />}
+      title={title}
+      description={detail}
+      actions={
         <Button
           size="small"
           variant="outlined"
-          startIcon={
-            <RefreshRounded sx={{ fontSize: "var(--icon-size-sm)" }} />
-          }
+          startIcon={<RefreshRounded sx={{ fontSize: "var(--icon-size-sm)" }} />}
           onClick={onRetry}
           sx={{
             alignSelf: "flex-start",
@@ -351,8 +314,8 @@ function LoadFailedState({
         >
           {retryLabel}
         </Button>
-      </Box>
-    </Box>
+      }
+    />
   );
 }
 
@@ -438,62 +401,33 @@ export function ChannelConnectivityPanel({
           </Box>
 
           {showStaleHint && (
-            <Box
-              role="alert"
-              sx={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 1.125,
-                px: 1.5,
-                py: 1.35,
-                ...SECTION_PANEL_SX,
-                borderLeftWidth: "3px",
-                borderLeftStyle: "solid",
-                borderLeftColor: "var(--semantic-warning)",
-                bgcolor:
-                  "color-mix(in srgb, var(--semantic-warning) 10%, var(--card))",
-                boxShadow: [
-                  "var(--os3d-inset-panel-stack)",
-                  "inset 0 0 0 1px color-mix(in srgb, var(--semantic-warning) 22%, transparent)",
-                ].join(", "),
-              }}
-            >
-              <WarningAmberRounded
-                sx={{
-                  fontSize: "var(--icon-size-md)",
-                  color: "var(--semantic-warning)",
-                  mt: "0.1rem",
-                  flexShrink: 0,
-                }}
-                aria-hidden
-              />
-              <Typography
-                sx={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: "var(--font-size-body-sm)",
-                  color: "var(--foreground)",
-                  fontWeight: 500,
-                  lineHeight: "var(--line-height-normal)",
-                }}
-              >
-                {t("device.channelConnectivityStale")}
-              </Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                color="warning"
-                onClick={onRetry}
-                sx={{
-                  flexShrink: 0,
-                  minWidth: 0,
-                  borderRadius: "var(--radius-control)",
-                  fontWeight: 600,
-                }}
-              >
-                {t("common.retry")}
-              </Button>
-            </Box>
+            <PanelStateBlock
+              tone="warning"
+              presentation="notice"
+              size="compact"
+              icon={
+                <WarningAmberRounded
+                  sx={{ fontSize: "var(--icon-size-md)" }}
+                  aria-hidden
+                />
+              }
+              title={t("device.channelConnectivityStale")}
+              actions={
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                  onClick={onRetry}
+                  sx={{
+                    minWidth: 0,
+                    borderRadius: "var(--radius-control)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {t("common.retry")}
+                </Button>
+              }
+            />
           )}
 
           <Box

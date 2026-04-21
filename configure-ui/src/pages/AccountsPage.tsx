@@ -13,8 +13,10 @@ import { AccountDetailDialog } from "../components/AccountDetailDialog";
 import {
   InlineAlert,
   PanelStateBlock,
+  PageLoadErrorState,
   PanelStateLoading,
   SectionLoadingSkeleton,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
@@ -216,6 +218,12 @@ export function AccountsPage() {
   }, [ready, load]);
 
   const showConnectHint = ready && !hasPairing;
+  const listErrorState = splitPageErrorState({
+    hasData: items.length > 0,
+    loading,
+    error,
+    suppress: unsupportedEndpoint || showConnectHint,
+  });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
@@ -231,7 +239,7 @@ export function AccountsPage() {
           setDialog({ kind: "detail", accountKey: key });
         }}
       />
-      <InlineAlert message={error || null} onRetry={load} />
+      <InlineAlert message={listErrorState.inlineError} onRetry={load} />
       <SettingsSection
         pinHeader
         surfaceTone={loading ? "loading" : "default"}
@@ -270,6 +278,11 @@ export function AccountsPage() {
             icon={<Os3dIcon src={OS_ICON_NAV["/accounts"]} variant="inline" />}
             title={t("accounts.unsupportedTitle")}
             description={t("accounts.unsupportedDesc")}
+          />
+        ) : listErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={listErrorState.blockingError}
+            onRetry={load}
           />
         ) : (
           <Stack spacing={2} sx={{ width: "100%" }}>

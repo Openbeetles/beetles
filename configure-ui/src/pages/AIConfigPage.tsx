@@ -22,7 +22,9 @@ import {
   PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
+  PageLoadErrorState,
   SaveFeedback,
+  splitPageErrorState,
 } from "../components/form";
 import { SettingsSection } from "../components/SettingsSection";
 import {
@@ -300,11 +302,16 @@ export function AIConfigPage() {
     !config && !loading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
     !config && !loading && ready && deviceConnected && !hasPairing;
-  const inlineError = showConnectState || showPairingState ? null : error;
+  const loadErrorState = splitPageErrorState({
+    hasData: Boolean(config),
+    loading,
+    error,
+    suppress: showConnectState || showPairingState || showConnectionLoading,
+  });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={inlineError} onRetry={loadConfig} />
+      <InlineAlert message={loadErrorState.inlineError} onRetry={loadConfig} />
       <ConfirmDialog
         open={removeSourceIndex != null}
         onClose={() => setRemoveSourceIndex(null)}
@@ -363,6 +370,11 @@ export function AIConfigPage() {
             icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} variant="inline" />}
             title={t("device.pairingCodeRequired")}
             description={t("config.needPairingDesc")}
+          />
+        ) : loadErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={loadErrorState.blockingError}
+            onRetry={loadConfig}
           />
         ) : !config ? (
           <PanelStateBlock

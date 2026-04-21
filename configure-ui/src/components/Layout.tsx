@@ -272,7 +272,6 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               sx={{
                 ...statusOverlayCardSx,
                 justifyContent: "center",
-                borderLeft: "var(--accent-line-width) solid var(--form-outline-rest)",
               }}
             >
               <Typography

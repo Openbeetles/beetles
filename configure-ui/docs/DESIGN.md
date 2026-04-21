@@ -79,7 +79,9 @@
   - 配置保存（LLM/通道/系统等带标题行「保存」的区块）仅用页内 `SaveFeedback`，经 `SettingsSection` 的 `belowTitleRow` 放在标题行下方全宽（标题行仍为单行 flex），`SaveFeedback placement="belowTitle"`，禁止重复 Toast。
   - 设备连接/配对前置条件使用 `DeviceBanner` + 侧栏禁用提示；点击禁用导航可用 warning Toast。
   - 全局生命周期事件（如重启完成/超时）与无锚点操作（如技能导入/删除）使用 Toast。
-  - 页面加载失败使用 `InlineAlert` + 重试，不用 Toast 抢焦点。
+  - 页面加载失败使用 `InlineAlert` + 重试，不用 Toast 抢焦点；`InlineAlert` 必须把 `Failed to fetch` 这类底层 transport 文案归一化为产品语义，并使用轻奶玻璃状态条表达语义色，禁止左侧粗强调线和浏览器式整条红色错误横幅。
+  - 页面主体状态必须互斥：`loading`、阻塞性 `error`、`empty` / `unsupported` / `connect-first`、正式内容四者只能出现一种；只有在“已有旧数据、刷新失败”时，才允许在正式内容上方叠一条 `InlineAlert`。
+  - `PanelStateBlock`、`DeviceBanner`、面板内 warning / danger notice 统一使用柔和毛玻璃语义面，不再用左侧竖向强调条。
   - 局部操作失败（如 WiFi 扫描）优先在操作区就地展示错误并提供重试。
 - **可访问性**：错误 Toast 使用 `role=\"alert\"` + `aria-live=\"assertive\"`；成功/警告使用 `aria-live=\"polite\"`。
 

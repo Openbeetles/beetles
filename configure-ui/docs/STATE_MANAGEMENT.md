@@ -20,6 +20,9 @@
 5. 错误展示优先 i18n key；原始错误文案仅作为兜底。
 6. 若页面需要“延迟显示 loading 以避免闪烁”，必须使用可取消的 deferred-loading helper；禁止直接写 `setTimeout(() => setLoading(true), 0)` 后再并行发请求，否则缓存命中/会话合并命中时会出现“数据已渲染但 loading 条卡住”的竞态。
 7. 面向设备能力可裁剪的页面（如 `skills` / `tools` / 深观测页）在收到 404 时，必须结合 `GET /` 返回的 endpoint inventory 再判定一次：若根清单里根本没有该接口，应展示“当前设备运行时不支持”而不是裸报 404。
+8. 页面主体状态必须互斥：`loading`、阻塞性 `error`、`empty/unsupported/connect-first`、正式内容只能渲染一种。若已有成功数据、后续刷新失败，错误只能退化为顶部 `InlineAlert`，不得和 loading/empty/form 主体并存。
+9. 任意重新加载动作开始前必须先清空上一轮页面级错误；禁止保留旧 error 再切回 loading，否则会出现“加载中 + 错误同时可见”的竞态。
+10. 页面级 transport / runtime 错误文案必须先归一化为产品语义（i18n key 或统一映射），禁止把 `Failed to fetch`、`operator window required` 一类底层异常直接暴露给用户。
 
 ## 3. 新页面接入清单
 

@@ -24,6 +24,7 @@ import {
 } from "../theme/panelStyles";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import {
+  PageLoadErrorState,
   PanelStateLoading,
   SectionLoadingSkeleton,
 } from "./form";
@@ -308,9 +309,7 @@ export function AccountCreateForm({
 
   if (catalogError) {
     return (
-      <Typography color="error" variant="body2">
-        {catalogError}
-      </Typography>
+      <PageLoadErrorState message={catalogError} onRetry={() => void loadCatalog()} />
     );
   }
 

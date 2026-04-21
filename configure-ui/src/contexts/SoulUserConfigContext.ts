@@ -13,6 +13,8 @@ export type SoulUserConfigContextValue = {
   setUserForm: Dispatch<SetStateAction<UserFormState>>;
   soulState: AsyncState<string>;
   userState: AsyncState<string>;
+  soulLoadedOnce: boolean;
+  userLoadedOnce: boolean;
   soulSaveStatus: "idle" | "saving" | "ok" | "fail";
   userSaveStatus: "idle" | "saving" | "ok" | "fail";
   soulError: string;

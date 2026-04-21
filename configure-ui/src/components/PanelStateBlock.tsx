@@ -28,6 +28,15 @@ const TONE_BORDER: Record<PanelStateTone, string> = {
   danger: "var(--semantic-danger)",
 };
 
+const TONE_NOTICE_TINT: Record<PanelStateTone, string> = {
+  neutral:
+    "color-mix(in srgb, var(--foreground) 5%, transparent)",
+  warning:
+    "color-mix(in srgb, var(--semantic-warning) 7%, transparent)",
+  danger:
+    "color-mix(in srgb, var(--semantic-danger) 6%, transparent)",
+};
+
 /** `row`：左图右文（面板空态）；`stack`：图标置顶居中 + 文案居中（与 `ConfirmDialog` 一致）。 */
 export type PanelStateHeroLayout = "row" | "stack";
 
@@ -167,7 +176,7 @@ export interface PanelStateBlockProps {
 }
 
 /**
- * 区块内「空 / 警告 / 错误」统一版式：柔光体积 + 左侧语义线 + 3D 插画与标题层级。
+ * 区块内「空 / 警告 / 错误」统一版式：柔光体积 + 奶玻璃语义色，不再使用左侧强调线。
  * Use for empty lists, connect-first, and inline danger (not page-level `InlineAlert`).
  */
 export function PanelStateBlock({
@@ -184,8 +193,11 @@ export function PanelStateBlock({
   const resolvedPresentation =
     presentation ?? (compact ? "notice" : tone === "neutral" ? "empty" : "notice");
   const emptyPresentation = resolvedPresentation === "empty";
-  const accentEdge =
-    resolvedPresentation === "notice" && tone !== "neutral";
+  const noticeTint = TONE_NOTICE_TINT[tone];
+  const noticeBorder =
+    tone === "neutral"
+      ? "color-mix(in srgb, var(--primary) 12%, var(--border))"
+      : `color-mix(in srgb, ${TONE_BORDER[tone]} 16%, var(--border))`;
 
   return (
     <Box
@@ -199,27 +211,32 @@ export function PanelStateBlock({
           : { py: 2.5 }),
         px: emptyPresentation ? 2.5 : 2,
         borderRadius: "var(--radius-card)",
-        border: "none",
-        ...(accentEdge
-          ? {
-              borderLeft: `${LAYOUT_TOKENS.accentLineWidth}px solid ${TONE_BORDER[tone]}`,
-            }
-          : {}),
+        border: emptyPresentation ? "none" : `1px solid ${noticeBorder}`,
         backgroundColor: emptyPresentation
           ? "color-mix(in srgb, var(--surface) 68%, var(--card))"
-          : "var(--input-idle-well)",
+          : "color-mix(in srgb, var(--card) 78%, transparent)",
         backgroundImage: emptyPresentation
           ? [
               "linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 48%)",
               "linear-gradient(180deg, color-mix(in srgb, var(--surface) 32%, transparent) 0%, transparent 100%)",
             ].join(", ")
-          : undefined,
+          : [
+              "linear-gradient(180deg, color-mix(in srgb, #fff 22%, transparent) 0%, transparent 52%, color-mix(in srgb, #fff 8%, transparent) 100%)",
+              `linear-gradient(135deg, ${noticeTint} 0%, transparent 44%, color-mix(in srgb, var(--accent) 4%, transparent) 100%)`,
+            ].join(", "),
         boxShadow: emptyPresentation
           ? "var(--os3d-section-module-stack)"
           : [
-              "0 6px 20px -8px color-mix(in srgb, var(--foreground) 8%, transparent)",
-              "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent)",
+              "0 18px 36px -32px color-mix(in srgb, var(--foreground) 14%, transparent)",
+              `0 12px 28px -28px ${noticeTint}`,
+              "inset 0 1px 0 color-mix(in srgb, #fff 52%, transparent)",
             ].join(", "),
+        backdropFilter: emptyPresentation
+          ? undefined
+          : "blur(calc(var(--glass-blur) * 0.55)) saturate(1.04)",
+        WebkitBackdropFilter: emptyPresentation
+          ? undefined
+          : "blur(calc(var(--glass-blur) * 0.55)) saturate(1.04)",
         boxSizing: "border-box",
       }}
     >

@@ -41,11 +41,22 @@ export function DeviceBanner() {
         justifyContent: "space-between",
         gap: 2,
         py: 1.25,
-        borderBottom: "var(--divider-row)",
-        borderLeft: "var(--accent-line-width) solid var(--semantic-warning)",
+        borderRadius: "var(--radius-card)",
+        border:
+          "1px solid color-mix(in srgb, var(--semantic-warning) 14%, var(--border))",
         backgroundColor:
-          "color-mix(in srgb, var(--semantic-warning) 4%, var(--surface))",
-        boxShadow: "var(--os3d-banner-ribbon-stack)",
+          "color-mix(in srgb, var(--card) 80%, transparent)",
+        backgroundImage: [
+          "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 58%)",
+          "linear-gradient(135deg, color-mix(in srgb, var(--semantic-warning) 7%, transparent) 0%, transparent 42%, color-mix(in srgb, var(--accent) 4%, transparent) 100%)",
+        ].join(", "),
+        boxShadow: [
+          "0 18px 34px -30px color-mix(in srgb, var(--semantic-warning) 18%, transparent)",
+          "inset 0 1px 0 color-mix(in srgb, #fff 52%, transparent)",
+        ].join(", "),
+        backdropFilter: "blur(calc(var(--glass-blur) * 0.55)) saturate(1.04)",
+        WebkitBackdropFilter:
+          "blur(calc(var(--glass-blur) * 0.55)) saturate(1.04)",
       }}
     >
       <Typography

@@ -11,10 +11,13 @@ import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormFieldStack,
   FormLoadingSkeleton,
+  PanelStateBlock,
   PanelStateLoading,
   FormSectionSubCollapsible,
   InlineAlert,
+  PageLoadErrorState,
   SaveFeedback,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
@@ -118,6 +121,13 @@ export function HardwareGpioPanel() {
   const [i2cRawInitDraft, setI2cRawInitDraft] = useState<Record<number, string>>(
     {},
   );
+  const hasSegmentSource =
+    hardwareSegment !== null || draftDevices !== null || draftI2cSensors !== null;
+  const loadErrorState = splitPageErrorState({
+    hasData: hasSegmentSource,
+    loading: hardwareLoading,
+    error: hardwareError,
+  });
 
   const devices = useMemo(
     () => draftDevices ?? hardwareSegment?.hardware_devices ?? [],
@@ -233,6 +243,34 @@ export function HardwareGpioPanel() {
     );
   }
 
+  if (!hasSegmentSource) {
+    return (
+      <Box sx={PAGE_STACK_OUTER_SX}>
+        <SettingsSection
+          pinHeader
+          sx={{ flex: 1, minHeight: 0 }}
+          icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.hardware} />}
+          label={t("hardwareConfig.sectionMain")}
+          description={t("hardwareConfig.sectionMainDesc")}
+        >
+          {loadErrorState.blockingError ? (
+            <PageLoadErrorState
+              message={loadErrorState.blockingError}
+              onRetry={loadHardwareConfig}
+            />
+          ) : (
+            <PanelStateBlock
+              tone="neutral"
+              icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.hardware} variant="inline" />}
+              title={t("config.unavailableTitle")}
+              description={t("config.unavailableDesc")}
+            />
+          )}
+        </SettingsSection>
+      </Box>
+    );
+  }
+
   const fieldGridSx = {
     display: "grid",
     gap: 2,
@@ -245,7 +283,10 @@ export function HardwareGpioPanel() {
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={hardwareError} onRetry={loadHardwareConfig} />
+      <InlineAlert
+        message={loadErrorState.inlineError}
+        onRetry={loadHardwareConfig}
+      />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}

@@ -42,6 +42,27 @@ import {
 /** 运行策略「行为列表」与「预算」图标列同宽，保证与正文左缘对齐 */
 const STRATEGY_ALIGN_ICON_PX = 28;
 
+function buildStatusNoticeSx(accent: string) {
+  return {
+    mt: 2,
+    p: 2,
+    borderRadius: "var(--radius-chip)",
+    border: `1px solid color-mix(in srgb, ${accent} 16%, var(--border))`,
+    bgcolor: "color-mix(in srgb, var(--card) 78%, transparent)",
+    backgroundImage: [
+      "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, transparent 62%)",
+      `linear-gradient(135deg, color-mix(in srgb, ${accent} 6%, transparent) 0%, transparent 46%, color-mix(in srgb, var(--accent) 4%, transparent) 100%)`,
+    ].join(", "),
+    boxShadow: [
+      `0 18px 32px -30px color-mix(in srgb, ${accent} 20%, transparent)`,
+      "inset 0 1px 0 color-mix(in srgb, #fff 52%, transparent)",
+    ].join(", "),
+    backdropFilter: "blur(calc(var(--glass-blur) * 0.45)) saturate(1.03)",
+    WebkitBackdropFilter:
+      "blur(calc(var(--glass-blur) * 0.45)) saturate(1.03)",
+  } as const;
+}
+
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value < 0) return String(value);
   if (value < 1024) return `${value} B`;
@@ -786,7 +807,7 @@ export function SystemStatusPanel({
             ))}
           </Box>
           {met?.wifi_last_failure_stage && met.wifi_last_failure_stage !== "none" && (
-            <Box sx={{ mt: 2, p: 2, bgcolor: "color-mix(in srgb, var(--semantic-warning) 10%, transparent)", borderRadius: "var(--radius-chip)", borderLeft: "4px solid var(--semantic-warning)" }}>
+            <Box sx={buildStatusNoticeSx("var(--semantic-warning)")}>
               <Typography variant="caption" sx={{ color: "var(--semantic-warning)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
                 {t("device.systemStatusWifiLastFail")}
               </Typography>
@@ -798,7 +819,7 @@ export function SystemStatusPanel({
           
           {/* Last Error Log */}
           {healthData.last_error && healthData.last_error !== "none" && (
-            <Box sx={{ mt: 2, p: 2, bgcolor: "color-mix(in srgb, var(--semantic-danger) 10%, transparent)", borderRadius: "var(--radius-chip)", borderLeft: "4px solid var(--semantic-danger)" }}>
+            <Box sx={buildStatusNoticeSx("var(--semantic-danger)")}>
               <Typography variant="caption" sx={{ color: "var(--semantic-danger)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
                 {t("device.systemStatusLastError")}
               </Typography>

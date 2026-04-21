@@ -31,8 +31,10 @@ import {
   FormFieldStack,
   InlineAlert,
   PanelStateBlock,
+  PageLoadErrorState,
   PanelStateLoading,
   SectionLoadingSkeleton,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SkillMonogramBadge } from "../components/SkillMonogramBadge";
@@ -348,10 +350,15 @@ export function SkillsPage() {
   const missingFromOrder = skills.filter((s) => !displayOrder.includes(s.name));
   const listToShow = [...orderedSkills, ...missingFromOrder];
   const enabledCount = listToShow.filter((skill) => skill.enabled).length;
+  const listErrorState = splitPageErrorState({
+    hasData: listToShow.length > 0,
+    loading: listState.loading,
+    error: listState.error,
+  });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={listState.error || null} onRetry={loadList} />
+      <InlineAlert message={listErrorState.inlineError} onRetry={loadList} />
       <SettingsSection
         pinHeader
         surfaceTone={listState.loading ? "loading" : "default"}
@@ -405,6 +412,11 @@ export function SkillsPage() {
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>
+        ) : listErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={listErrorState.blockingError}
+            onRetry={loadList}
+          />
         ) : listToShow.length === 0 ? (
           <PanelStateBlock
             tone="neutral"

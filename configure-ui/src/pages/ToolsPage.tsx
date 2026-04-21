@@ -8,8 +8,10 @@ import ListItemText from "@mui/material/ListItemText";
 import {
   InlineAlert,
   PanelStateBlock,
+  PageLoadErrorState,
   PanelStateLoading,
   SectionLoadingSkeleton,
+  splitPageErrorState,
 } from "../components/form";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
@@ -78,11 +80,16 @@ export function ToolsPage() {
 
   const showConnectionLoading = ready && connectionChecking && !deviceConnected;
   const showConnectState = !showConnectionLoading && (!ready || !deviceConnected);
-  const inlineError = showConnectState || unsupportedEndpoint ? null : state.error || null;
+  const listErrorState = splitPageErrorState({
+    hasData: state.data.length > 0,
+    loading: state.loading,
+    error: state.error,
+    suppress: showConnectState || showConnectionLoading || unsupportedEndpoint,
+  });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={inlineError} onRetry={load} />
+      <InlineAlert message={listErrorState.inlineError} onRetry={load} />
       <SettingsSection
         pinHeader
         surfaceTone={state.loading ? "loading" : "default"}
@@ -113,7 +120,12 @@ export function ToolsPage() {
             title={t("tools.unsupportedTitle")}
             description={t("tools.unsupportedDesc")}
           />
-        ) : state.error ? null : state.data.length === 0 ? (
+        ) : listErrorState.blockingError ? (
+          <PageLoadErrorState
+            message={listErrorState.blockingError}
+            onRetry={load}
+          />
+        ) : state.data.length === 0 ? (
           <PanelStateBlock
             tone="neutral"
             icon={<Os3dIcon src={OS_ICON_NAV["/tools"]} />}
