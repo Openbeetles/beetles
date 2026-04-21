@@ -1,6 +1,5 @@
 //! QQ 频道出站与连通性检查。Sink 统一为 dispatch::QueuedSink。
 
-use crate::bus::OutboundKind;
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error as BeetleError, Result as BeetleResult};
@@ -21,8 +20,8 @@ use super::token::{
 
 /// 单条消息最大字符数，与现有通道对齐。
 const QQ_MAX_MESSAGE_LEN: usize = 4096;
-const QQ_MSG_SEQ_TTL_SECS: u64 = 300;
-const QQ_MSG_SEQ_CACHE_MAX: usize = 64;
+const QQ_TURN_RESERVATION_TTL_SECS: u64 = 300;
+const QQ_TURN_RESERVATION_CACHE_MAX: usize = 64;
 
 const QQ_MESSAGES_BASE: &str = "https://api.sgroup.qq.com/channels";
 const QQ_V2_BASE: &str = "https://api.sgroup.qq.com/v2";
@@ -34,7 +33,7 @@ struct QqSendRuntime<'a, H, F> {
     shared_token_cache: &'a SharedQqTokenCache,
     http: &'a mut Option<H>,
     token_cache: &'a mut Option<CachedQqToken>,
-    msg_seq_tracker: &'a mut QqMsgSeqTracker,
+    turn_tracker: &'a mut QqTurnReservationTracker,
     active_reservation: &'a mut Option<QqRetryableSendReservation>,
     create_http: &'a mut F,
 }
@@ -54,52 +53,69 @@ impl QqMsgSeqReservation {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct QqMsgSeqCursor {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct QqTurnKey {
+    chat_id: String,
+    req_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct QqTurnReservationState {
+    msg_id: Option<String>,
     next_seq: u64,
     last_used_at_secs: u64,
 }
 
 #[derive(Default)]
-struct QqMsgSeqTracker {
-    by_chat: HashMap<String, QqMsgSeqCursor>,
+struct QqTurnReservationTracker {
+    by_turn: HashMap<QqTurnKey, QqTurnReservationState>,
 }
 
-impl QqMsgSeqTracker {
-    fn reserve(&mut self, chat_id: &str, chunk_count: usize) -> QqMsgSeqReservation {
+impl QqTurnReservationTracker {
+    fn reserve(
+        &mut self,
+        cache: &QqMsgIdCache,
+        message: &QueuedOutboundMessage,
+        chunk_count: usize,
+    ) -> QqRetryableSendReservation {
         let normalized_chunk_count = chunk_count.max(1);
         let now_secs = qq_now_unix_secs();
-        self.by_chat.retain(|_, cursor| {
-            now_secs.saturating_sub(cursor.last_used_at_secs) <= QQ_MSG_SEQ_TTL_SECS
+        self.by_turn.retain(|_, state| {
+            now_secs.saturating_sub(state.last_used_at_secs) <= QQ_TURN_RESERVATION_TTL_SECS
         });
-        while self.by_chat.len() > QQ_MSG_SEQ_CACHE_MAX {
-            let Some(oldest_chat_id) = self
-                .by_chat
+        while self.by_turn.len() > QQ_TURN_RESERVATION_CACHE_MAX {
+            let Some(oldest_key) = self
+                .by_turn
                 .iter()
-                .min_by_key(|(_, cursor)| cursor.last_used_at_secs)
-                .map(|(chat_id, _)| chat_id.clone())
+                .min_by_key(|(_, state)| state.last_used_at_secs)
+                .map(|(key, _)| key.clone())
             else {
                 break;
             };
-            self.by_chat.remove(&oldest_chat_id);
+            self.by_turn.remove(&oldest_key);
         }
-        let seed = qq_now_unix_millis().max(1);
-        let entry = self
-            .by_chat
-            .entry(chat_id.to_string())
-            .or_insert(QqMsgSeqCursor {
-                next_seq: seed,
+        let state = self
+            .by_turn
+            .entry(turn_key_for_message(message))
+            .or_insert_with(|| QqTurnReservationState {
+                msg_id: pop_msg_id(cache, &message.chat_id),
+                next_seq: 1,
                 last_used_at_secs: now_secs,
             });
-        if entry.next_seq < seed {
-            entry.next_seq = seed;
-        }
-        let start = entry.next_seq;
-        entry.next_seq = entry.next_seq.saturating_add(normalized_chunk_count as u64);
-        entry.last_used_at_secs = now_secs;
-        QqMsgSeqReservation {
-            start,
-            chunk_count: normalized_chunk_count,
+        let start = state.next_seq;
+        state.next_seq = state.next_seq.saturating_add(normalized_chunk_count as u64);
+        state.last_used_at_secs = now_secs;
+        QqRetryableSendReservation {
+            transport_send_id: message.transport_send_id,
+            msg_id: state.msg_id.clone(),
+            msg_seq: if is_v2_chat(&message.chat_id) {
+                Some(QqMsgSeqReservation {
+                    start,
+                    chunk_count: normalized_chunk_count,
+                })
+            } else {
+                None
+            },
         }
     }
 }
@@ -118,37 +134,33 @@ fn qq_now_unix_secs() -> u64 {
         .as_secs()
 }
 
-fn qq_now_unix_millis() -> u64 {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    millis.min(u64::MAX as u128) as u64
+fn turn_key_for_message(message: &QueuedOutboundMessage) -> QqTurnKey {
+    QqTurnKey {
+        chat_id: message.chat_id.clone(),
+        req_id: message
+            .req_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("-")
+            .to_string(),
+    }
 }
 
 fn reserve_fresh_send_reservation(
     cache: &QqMsgIdCache,
-    msg_seq_tracker: &mut QqMsgSeqTracker,
+    turn_tracker: &mut QqTurnReservationTracker,
     message: &QueuedOutboundMessage,
 ) -> QqRetryableSendReservation {
     let chunk_count =
         crate::channels::chunk::chunk_str_by_char_count_iter(&message.content, QQ_MAX_MESSAGE_LEN)
             .count()
             .max(1);
-    QqRetryableSendReservation {
-        transport_send_id: message.transport_send_id,
-        msg_id: pop_msg_id_for_outbound_kind(cache, &message.chat_id, message.outbound_kind),
-        msg_seq: if is_v2_chat(&message.chat_id) {
-            Some(msg_seq_tracker.reserve(&message.chat_id, chunk_count))
-        } else {
-            None
-        },
-    }
+    turn_tracker.reserve(cache, message, chunk_count)
 }
 
 fn resolve_retryable_send_reservation(
     active: &mut Option<QqRetryableSendReservation>,
-    msg_seq_tracker: &mut QqMsgSeqTracker,
+    turn_tracker: &mut QqTurnReservationTracker,
     cache: &QqMsgIdCache,
     message: &QueuedOutboundMessage,
 ) -> QqRetryableSendReservation {
@@ -157,7 +169,7 @@ fn resolve_retryable_send_reservation(
             return existing.clone();
         }
     }
-    let reservation = reserve_fresh_send_reservation(cache, msg_seq_tracker, message);
+    let reservation = reserve_fresh_send_reservation(cache, turn_tracker, message);
     *active = Some(reservation.clone());
     reservation
 }
@@ -348,7 +360,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
         return;
     }
     let mut token: Option<String> = None;
-    let mut msg_seq_tracker = QqMsgSeqTracker::default();
+    let mut turn_tracker = QqTurnReservationTracker::default();
     while let Ok(message) = rx.try_recv() {
         if token.is_none() {
             if message.outbound_kind.is_supplemental() {
@@ -367,7 +379,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
                 }
             };
         }
-        let reservation = reserve_fresh_send_reservation(&cache, &mut msg_seq_tracker, &message);
+        let reservation = reserve_fresh_send_reservation(&cache, &mut turn_tracker, &message);
         if let Err(e) = send_one_qq(
             http,
             token.as_deref().unwrap_or_default(),
@@ -393,18 +405,6 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
 
 /// QQ access_token 缓存提前刷新余量（秒），避免用即将过期的 token。
 const QQ_TOKEN_CACHE_MARGIN_SECS: u64 = 120;
-
-fn pop_msg_id_for_outbound_kind(
-    cache: &QqMsgIdCache,
-    chat_id: &str,
-    outbound_kind: OutboundKind,
-) -> Option<String> {
-    if outbound_kind.is_supplemental() {
-        None
-    } else {
-        pop_msg_id(cache, chat_id)
-    }
-}
 
 fn send_queued_qq_message<H, F>(
     message: &QueuedOutboundMessage,
@@ -484,7 +484,7 @@ where
 
     let reservation = resolve_retryable_send_reservation(
         runtime.active_reservation,
-        runtime.msg_seq_tracker,
+        runtime.turn_tracker,
         runtime.cache,
         message,
     );
@@ -562,7 +562,7 @@ pub fn run_qq_sender_loop<H, F>(
     }
     let mut http: Option<H> = None;
     let mut token_cache: Option<CachedQqToken> = None;
-    let mut msg_seq_tracker = QqMsgSeqTracker::default();
+    let mut turn_tracker = QqTurnReservationTracker::default();
     let mut active_reservation: Option<QqRetryableSendReservation> = None;
     let mut runtime = QqSendRuntime {
         app_id,
@@ -571,7 +571,7 @@ pub fn run_qq_sender_loop<H, F>(
         shared_token_cache: &shared_token_cache,
         http: &mut http,
         token_cache: &mut token_cache,
-        msg_seq_tracker: &mut msg_seq_tracker,
+        turn_tracker: &mut turn_tracker,
         active_reservation: &mut active_reservation,
         create_http: &mut create_http,
     };
@@ -583,6 +583,8 @@ pub fn run_qq_sender_loop<H, F>(
 
 #[cfg(test)]
 mod tests {
+    use crate::bus::OutboundKind;
+
     use super::super::msg_id::cache_msg_id;
     use super::*;
     use crate::platform::ResponseBody;
@@ -607,45 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn supplemental_send_does_not_consume_cached_msg_id() {
-        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
-        cache_msg_id(&cache, "chat-1", "msg-1").expect("cache msg_id");
-
-        let supplemental =
-            pop_msg_id_for_outbound_kind(&cache, "chat-1", OutboundKind::Supplemental);
-        let primary = pop_msg_id_for_outbound_kind(&cache, "chat-1", OutboundKind::Primary);
-
-        assert_eq!(supplemental, None);
-        assert_eq!(primary.as_deref(), Some("msg-1"));
-    }
-
-    #[test]
-    fn retryable_reservation_reuses_primary_msg_id_and_msg_seq() {
-        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
-        cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
-        let message = queued_message(
-            41,
-            "c2c:chat-1",
-            "hello",
-            Some("req-1"),
-            OutboundKind::Primary,
-        );
-        let mut active = None;
-        let mut seq_tracker = QqMsgSeqTracker::default();
-
-        let first =
-            resolve_retryable_send_reservation(&mut active, &mut seq_tracker, &cache, &message);
-        let second =
-            resolve_retryable_send_reservation(&mut active, &mut seq_tracker, &cache, &message);
-
-        assert_eq!(first.msg_id.as_deref(), Some("msg-1"));
-        assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
-        assert_eq!(first.msg_seq, second.msg_seq);
-        assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
-    }
-
-    #[test]
-    fn msg_seq_tracker_advances_across_supplemental_then_primary_messages() {
+    fn supplemental_and_primary_share_same_turn_msg_id() {
         let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
         cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
         let supplemental = queued_message(
@@ -663,25 +627,83 @@ mod tests {
             OutboundKind::Primary,
         );
         let mut active = None;
-        let mut seq_tracker = QqMsgSeqTracker::default();
+        let mut turn_tracker = QqTurnReservationTracker::default();
 
         let first = resolve_retryable_send_reservation(
             &mut active,
-            &mut seq_tracker,
+            &mut turn_tracker,
             &cache,
             &supplemental,
         );
         release_retryable_send_reservation(&mut active, supplemental.transport_send_id);
         let second =
-            resolve_retryable_send_reservation(&mut active, &mut seq_tracker, &cache, &primary);
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &primary);
+
+        assert_eq!(first.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
+    }
+
+    #[test]
+    fn retryable_reservation_reuses_primary_msg_id_and_msg_seq() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
+        let message = queued_message(
+            41,
+            "c2c:chat-1",
+            "hello",
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+        let mut active = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+
+        let first =
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &message);
+        let second =
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &message);
+
+        assert_eq!(first.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(first.msg_seq, second.msg_seq);
+        assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
+    }
+
+    #[test]
+    fn msg_seq_advances_within_same_turn_from_one() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
+        let supplemental = queued_message(
+            7,
+            "c2c:chat-1",
+            "ack",
+            Some("req-1"),
+            OutboundKind::Supplemental,
+        );
+        let primary = queued_message(
+            8,
+            "c2c:chat-1",
+            "final reply",
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+        let mut active = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+
+        let first = resolve_retryable_send_reservation(
+            &mut active,
+            &mut turn_tracker,
+            &cache,
+            &supplemental,
+        );
+        release_retryable_send_reservation(&mut active, supplemental.transport_send_id);
+        let second =
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &primary);
 
         let first_seq = first.msg_seq.expect("supplemental seq");
         let second_seq = second.msg_seq.expect("primary seq");
-        assert!(second_seq.start > first_seq.start);
-        assert_eq!(
-            second_seq.start,
-            first_seq.start + first_seq.chunk_count as u64
-        );
+        assert_eq!(first_seq.start, 1);
+        assert_eq!(second_seq.start, 2);
         assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
     }
 
@@ -782,7 +804,7 @@ mod tests {
             state: Arc::clone(&shared_http_state),
         });
         let mut token_cache = None;
-        let mut msg_seq_tracker = QqMsgSeqTracker::default();
+        let mut turn_tracker = QqTurnReservationTracker::default();
         let mut active_reservation = None;
         let create_http_state = Arc::clone(&shared_http_state);
         let mut create_http = || -> crate::error::Result<StubHttp> {
@@ -797,7 +819,7 @@ mod tests {
             shared_token_cache: &shared_token_cache,
             http: &mut http,
             token_cache: &mut token_cache,
-            msg_seq_tracker: &mut msg_seq_tracker,
+            turn_tracker: &mut turn_tracker,
             active_reservation: &mut active_reservation,
             create_http: &mut create_http,
         };
