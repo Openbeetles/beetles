@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
 use super::msg_id::{cache_msg_id, consume_inbound_dedup_key, QqInboundDedupStore, QqMsgIdCache};
+use super::status::{register_shared_qq_ws_status, SharedQqWsStatus};
 use super::token::{
     cached_qq_token_value, clear_shared_cached_qq_token, ensure_cached_qq_token,
     fetch_and_cache_qq_token, invalidate_cached_qq_token, load_shared_cached_qq_token,
@@ -42,6 +43,7 @@ pub struct QqWsLoopConfig {
     pub msg_id_cache: QqMsgIdCache,
     pub inbound_dedup_store: QqInboundDedupStore,
     pub shared_token_cache: SharedQqTokenCache,
+    pub shared_ws_status: SharedQqWsStatus,
 }
 
 #[derive(serde::Deserialize)]
@@ -171,6 +173,7 @@ struct QqWssDriver {
     client_secret: String,
     cached_token: Option<CachedQqToken>,
     shared_token_cache: SharedQqTokenCache,
+    shared_ws_status: SharedQqWsStatus,
     last_seq: Option<u64>,
     msg_id_cache: QqMsgIdCache,
     inbound_dedup_store: QqInboundDedupStore,
@@ -184,12 +187,14 @@ impl QqWssDriver {
         msg_id_cache: QqMsgIdCache,
         inbound_dedup_store: QqInboundDedupStore,
         shared_token_cache: SharedQqTokenCache,
+        shared_ws_status: SharedQqWsStatus,
     ) -> Self {
         Self {
             app_id,
             client_secret,
             cached_token: None,
             shared_token_cache,
+            shared_ws_status,
             last_seq: None,
             msg_id_cache,
             inbound_dedup_store,
@@ -203,9 +208,21 @@ impl QqWssDriver {
             log::warn!("[{}] cache_msg_id failed: {}", TAG, e);
         }
     }
+
+    fn set_online(&self, online: bool) {
+        self.shared_ws_status.set_online(online);
+    }
 }
 
 impl WssGatewayDriver for QqWssDriver {
+    fn on_session_started(&mut self) {
+        self.set_online(true);
+    }
+
+    fn on_session_ended(&mut self) {
+        self.set_online(false);
+    }
+
     fn get_url(&mut self, http: &mut dyn ChannelHttpClient) -> Result<String> {
         if self.cached_token.is_none() {
             self.cached_token = load_shared_cached_qq_token(&self.shared_token_cache);
@@ -452,12 +469,14 @@ pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
     CreateHttp: FnMut() -> Result<H>,
     Conn: FnMut(&str) -> Result<C>,
 {
+    register_shared_qq_ws_status(config.shared_ws_status.clone());
     let driver = QqWssDriver::new(
         config.app_id,
         config.client_secret,
         config.msg_id_cache,
         config.inbound_dedup_store,
         config.shared_token_cache,
+        config.shared_ws_status,
     );
     run_wss_gateway_loop(TAG, driver, inbound_tx, pending_retry, create_http, connect);
 }
@@ -478,6 +497,7 @@ mod tests {
             cache,
             dedup_store,
             crate::channels::qq::new_shared_qq_token_cache(),
+            crate::channels::qq::new_shared_qq_ws_status(),
         );
         let payload = serde_json::json!({
             "op": 0,
@@ -555,6 +575,7 @@ mod tests {
             cache,
             dedup_store,
             crate::channels::qq::new_shared_qq_token_cache(),
+            crate::channels::qq::new_shared_qq_ws_status(),
         );
         let duplicate = driver
             .on_recv(

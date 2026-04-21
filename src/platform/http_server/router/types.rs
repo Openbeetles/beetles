@@ -3,13 +3,19 @@
 
 use crate::bus::InboundTx;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use crate::channels::{QqInboundDedupStore, QqMsgIdCache};
+use crate::channels::{
+    DingtalkSessionStore, FeishuMessageDedupStore, QqInboundDedupStore, QqMsgIdCache,
+};
 
 /// 与 webhook、QQ 回调相关的跨 handler 资源。
 /// Cross-handler resources for webhooks and QQ callbacks.
 #[derive(Clone)]
 pub struct RouterEnv {
     pub inbound_tx: InboundTx,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub feishu_message_dedup_store: FeishuMessageDedupStore,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub dingtalk_session_store: DingtalkSessionStore,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub qq_msg_id_cache: QqMsgIdCache,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -29,8 +35,11 @@ impl RouterEnv {
     }
 
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         inbound_tx: InboundTx,
+        feishu_message_dedup_store: FeishuMessageDedupStore,
+        dingtalk_session_store: DingtalkSessionStore,
         qq_msg_id_cache: QqMsgIdCache,
         qq_inbound_dedup_store: QqInboundDedupStore,
         qq_webhook_enabled: bool,
@@ -39,6 +48,8 @@ impl RouterEnv {
     ) -> Self {
         Self {
             inbound_tx,
+            feishu_message_dedup_store,
+            dingtalk_session_store,
             qq_msg_id_cache,
             qq_inbound_dedup_store,
             qq_webhook_enabled,

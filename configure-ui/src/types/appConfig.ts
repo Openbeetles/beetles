@@ -17,12 +17,17 @@ export interface AppConfig {
   tg_allowed_chat_ids: string
   feishu_app_id: string
   feishu_app_secret: string
+  feishu_verification_token: string
+  feishu_encrypt_key: string
   feishu_allowed_chat_ids: string
   dingtalk_webhook_url: string
   wecom_corp_id: string
   wecom_corp_secret: string
   wecom_agent_id: string
   wecom_default_touser: string
+  wecom_token: string
+  wecom_encoding_aes_key: string
+  dingtalk_app_secret: string
   qq_channel_app_id: string
   qq_channel_secret: string
   api_key: string
@@ -68,12 +73,17 @@ export interface ChannelsConfigSegment {
   tg_allowed_chat_ids: string
   feishu_app_id: string
   feishu_app_secret: string
+  feishu_verification_token: string
+  feishu_encrypt_key: string
   feishu_allowed_chat_ids: string
   dingtalk_webhook_url: string
   wecom_corp_id: string
   wecom_corp_secret: string
   wecom_agent_id: string
   wecom_default_touser: string
+  wecom_token: string
+  wecom_encoding_aes_key: string
+  dingtalk_app_secret: string
   qq_channel_app_id: string
   qq_channel_secret: string
   webhook_enabled: boolean

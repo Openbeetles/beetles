@@ -1,6 +1,6 @@
-//! 钉钉入站 Webhook：解析钉钉 Outgoing 机器人回调，提取 text.content 和 senderId 作为 PcMsg 入队。
+//! 钉钉入站 Webhook：解析应用机器人回调，缓存 sessionWebhook，并按官方消息体入队。
 
-use crate::bus::{InboundTx, PcMsg};
+use crate::bus::{InboundTx, MessageTransport, PcMsg};
 use crate::error::Result;
 
 const TAG: &str = "dingtalk_webhook";
@@ -10,12 +10,18 @@ const TAG: &str = "dingtalk_webhook";
 struct DingtalkCallbackBody {
     #[serde(default)]
     text: Option<DingtalkText>,
+    #[serde(default, rename = "msgId")]
+    msg_id: Option<String>,
     #[serde(default, rename = "senderId")]
     sender_id: Option<String>,
     #[serde(default, rename = "senderNick")]
     sender_nick: Option<String>,
     #[serde(default, rename = "conversationId")]
     conversation_id: Option<String>,
+    #[serde(default, rename = "sessionWebhook")]
+    session_webhook: Option<String>,
+    #[serde(default, rename = "sessionWebhookExpiredTime")]
+    session_webhook_expired_time: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -25,7 +31,11 @@ struct DingtalkText {
 }
 
 /// 处理钉钉回调 body，提取消息并入队。返回 Ok(()) 表示成功入队或无需入队。
-pub fn handle(body: &str, inbound_tx: &InboundTx) -> Result<()> {
+pub fn handle(
+    body: &str,
+    inbound_tx: &InboundTx,
+    session_store: &super::DingtalkSessionStore,
+) -> Result<()> {
     let cb: DingtalkCallbackBody = serde_json::from_str(body).map_err(|e| {
         log::warn!("[{}] parse body failed: {}", TAG, e);
         crate::error::Error::config("dingtalk_webhook", e.to_string())
@@ -52,6 +62,14 @@ pub fn handle(body: &str, inbound_tx: &InboundTx) -> Result<()> {
         .conversation_id
         .as_deref()
         .is_some_and(|id| !id.is_empty());
+    if let Some(session_webhook) = cb.session_webhook.as_deref() {
+        super::store_session_webhook(
+            session_store,
+            chat_id,
+            session_webhook,
+            cb.session_webhook_expired_time,
+        )?;
+    }
 
     let sender = cb.sender_nick.as_deref().unwrap_or("unknown");
     log::info!(
@@ -62,7 +80,18 @@ pub fn handle(body: &str, inbound_tx: &InboundTx) -> Result<()> {
         content.len()
     );
 
-    let msg = PcMsg::new_inbound("dingtalk", chat_id, content, is_group)?;
+    let msg_id = cb.msg_id.as_deref().unwrap_or("").trim();
+    let inbound_dedup_key = if msg_id.is_empty() {
+        String::new()
+    } else {
+        format!("dingtalk_message:{msg_id}")
+    };
+    let msg = PcMsg::new_inbound("dingtalk", chat_id, content, is_group)?.with_inbound_provenance(
+        MessageTransport::Webhook,
+        msg_id,
+        "",
+        inbound_dedup_key,
+    );
     if inbound_tx.send(msg).is_err() {
         log::warn!("[{}] inbound_tx send failed (queue full?)", TAG);
     }
@@ -73,6 +102,8 @@ pub fn handle(body: &str, inbound_tx: &InboundTx) -> Result<()> {
 mod tests {
     use super::handle;
     use crate::bus::new_inbound_channel;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn conversation_id_is_marked_as_group_message() {
@@ -83,8 +114,9 @@ mod tests {
         })
         .to_string();
         let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let session_store = Arc::new(Mutex::new(HashMap::new()));
 
-        handle(&body, &inbound_tx).expect("handle");
+        handle(&body, &inbound_tx, &session_store).expect("handle");
 
         let msg = inbound_rx.try_recv().expect("message");
         assert_eq!(msg.chat_id.as_ref(), "conv-1");

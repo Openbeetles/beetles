@@ -292,6 +292,14 @@ impl<T: platform::PlatformHttpClient + ?Sized> channels::ChannelHttpClient for T
     ) -> Result<(u16, platform::ResponseBody)> {
         platform::PlatformHttpClient::post(self, url, headers, body)
     }
+    fn http_put_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<(u16, platform::ResponseBody)> {
+        platform::PlatformHttpClient::put(self, url, headers, body)
+    }
     fn http_patch_with_headers(
         &mut self,
         url: &str,

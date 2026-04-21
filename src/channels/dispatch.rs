@@ -389,6 +389,9 @@ pub struct FeishuRxConfig {
 pub struct DingtalkRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub webhook_url: String,
+    pub app_secret: String,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub session_store: super::DingtalkSessionStore,
 }
 
 pub struct WecomRxConfig {
@@ -418,6 +421,8 @@ pub fn build_channel_sinks(
     config: &AppConfig,
     qq_msg_id_cache: &super::QqMsgIdCache,
     qq_token_cache: &super::SharedQqTokenCache,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    dingtalk_session_store: &super::DingtalkSessionStore,
 ) -> (ChannelSinks, ChannelRxSet) {
     let mut sinks = ChannelSinks::new();
     let enabled = config.enabled_channel.as_str();
@@ -448,7 +453,7 @@ pub fn build_channel_sinks(
         None
     };
 
-    let dingtalk = if enabled == "dingtalk" && !config.dingtalk_webhook_url.trim().is_empty() {
+    let dingtalk = if enabled == "dingtalk" {
         let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register(
             "dingtalk",
@@ -457,6 +462,9 @@ pub fn build_channel_sinks(
         Some(DingtalkRxConfig {
             rx,
             webhook_url: config.dingtalk_webhook_url.clone(),
+            app_secret: config.dingtalk_app_secret.clone(),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            session_store: Arc::clone(dingtalk_session_store),
         })
     } else {
         None
@@ -584,6 +592,9 @@ pub fn spawn_sender_threads(
         let f = Arc::clone(&create_http);
         let dt_rx = c.rx;
         let dt_url = c.webhook_url;
+        let dt_secret = c.app_secret;
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        let dt_session_store = c.session_store;
         spawn_sender_thread(
             TAG,
             "DingTalk sender thread started",
@@ -595,7 +606,14 @@ pub fn spawn_sender_threads(
                     Some(crate::util::SpawnCore::Core0),
                     crate::util::HttpThreadRole::Io,
                     move || {
-                        super::run_dingtalk_sender_loop(dt_rx, &dt_url, move || f());
+                        super::run_dingtalk_sender_loop(
+                            dt_rx,
+                            &dt_url,
+                            &dt_secret,
+                            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+                            &dt_session_store,
+                            move || f(),
+                        );
                     },
                 )
             },

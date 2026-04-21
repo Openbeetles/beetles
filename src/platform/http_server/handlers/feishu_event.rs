@@ -10,10 +10,24 @@ use super::HandlerContext;
 pub fn post(
     ctx: &HandlerContext,
     inbound_tx: &InboundTx,
+    dedup_store: &crate::channels::FeishuMessageDedupStore,
+    signature: &str,
+    timestamp: &str,
+    nonce: &str,
     body: &str,
 ) -> Result<ApiResponse, std::io::Error> {
     let config = ctx.config();
-    let r = handle_http_event(&config, inbound_tx, body);
+    let r = handle_http_event(
+        &config,
+        inbound_tx,
+        dedup_store,
+        crate::channels::FeishuRequestHeaders {
+            signature,
+            timestamp,
+            nonce,
+        },
+        body,
+    );
     let api = match r {
         FeishuEventResponse::Ok200Json(s) => ApiResponse::ok_200_json(&s),
         FeishuEventResponse::Err400(msg) => ApiResponse::err_400(msg),

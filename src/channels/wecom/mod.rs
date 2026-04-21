@@ -1,4 +1,4 @@
-//! 企业微信通道：出站 Sink/flush，连通性检查；入站 webhook。
+//! 企业微信通道：出站 Sink/flush，连通性检查；入站 webhook 回调协议处理。
 
 mod send;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

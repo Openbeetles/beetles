@@ -1,6 +1,6 @@
 //! 飞书出站：flush、token 类型、event_body_to_pcmsg、连通性检查。Sink 统一为 dispatch::QueuedSink。
 
-use crate::bus::PcMsg;
+use crate::bus::{MessageTransport, PcMsg};
 use crate::channels::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
     run_buffered_sender_loop, QueuedOutboundMessage,
@@ -342,7 +342,7 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
     Ok(r.data.and_then(|d| d.message_id))
 }
 
-/// 编辑已发送的飞书消息（PATCH /im/v1/messages/{message_id}）。
+/// 编辑已发送的飞书消息（PUT /im/v1/messages/{message_id}）。
 pub fn edit_message<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
@@ -359,7 +359,7 @@ pub fn edit_message<H: ChannelHttpClient>(
         ("Authorization", auth_val.as_str()),
         ("Content-Type", "application/json; charset=utf-8"),
     ];
-    let (status, _) = match http.http_patch_with_headers(&url, &headers, &body_bytes) {
+    let (status, _) = match http.http_put_with_headers(&url, &headers, &body_bytes) {
         Ok(resp) => resp,
         Err(e) => {
             let error = crate::error::Error::Other {
@@ -380,6 +380,138 @@ pub fn edit_message<H: ChannelHttpClient>(
     }
     record_outbound_http_success();
     Ok(())
+}
+
+struct ParsedFeishuInboundMessage {
+    chat_id: String,
+    text: String,
+    is_group: bool,
+    message_id: String,
+    event_id: String,
+    inbound_dedup_key: String,
+}
+
+fn parse_feishu_inbound_message(
+    event_body: &str,
+    allowed_chat_ids: &[String],
+) -> Option<ParsedFeishuInboundMessage> {
+    const TAG: &str = "feishu_event_parse";
+    let v: serde_json::Value = match serde_json::from_str(event_body) {
+        Ok(x) => x,
+        Err(_) => {
+            log::debug!("[{}] body parse failed", TAG);
+            return None;
+        }
+    };
+    let event_type = v
+        .get("header")
+        .and_then(|h| h.get("event_type"))
+        .and_then(|e| e.as_str());
+    let event_type = match event_type {
+        Some(t) => t,
+        None => {
+            log::debug!("[{}] missing header.event_type", TAG);
+            return None;
+        }
+    };
+    if event_type != "im.message.receive_v1" {
+        log::debug!("[{}] skip event_type={}", TAG, event_type);
+        return None;
+    }
+    let event_id = v
+        .get("header")
+        .and_then(|h| h.get("event_id"))
+        .and_then(|id| id.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let event = match v.get("event") {
+        Some(e) => e,
+        None => {
+            log::debug!("[{}] missing event", TAG);
+            return None;
+        }
+    };
+    let message = match event.get("message") {
+        Some(m) => m,
+        None => {
+            log::debug!("[{}] missing event.message", TAG);
+            return None;
+        }
+    };
+    let message_id = message
+        .get("message_id")
+        .and_then(|id| id.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let chat_id = message
+        .get("chat_id")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let chat_type = message
+        .get("chat_type")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let message_type = message
+        .get("message_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    let content_str = message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if message_type != "text" {
+        log::debug!("[{}] skip message_type={}", TAG, message_type);
+        return None;
+    }
+    let text = match serde_json::from_str::<serde_json::Value>(content_str) {
+        Ok(c) => c
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
+        Err(_) => String::new(),
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        log::debug!("[{}] empty text", TAG);
+        return None;
+    }
+    if allowed_chat_ids.is_empty() {
+        log::warn!(
+            "[{}] event dropped: allowed chat IDs not configured; add chat_id={} to channel config and save",
+            TAG,
+            chat_id
+        );
+        return None;
+    }
+    if !allowed_chat_ids.iter().any(|id| id.trim() == chat_id) {
+        log::warn!(
+            "[{}] event dropped: chat_id={} not in allowlist; add it to allowed chat IDs in channel config",
+            TAG,
+            chat_id
+        );
+        return None;
+    }
+    let is_group = matches!(chat_type, "group" | "topic_group");
+    let inbound_dedup_key = if !message_id.is_empty() {
+        format!("feishu_message:{message_id}")
+    } else if !event_id.is_empty() {
+        format!("feishu_event:{event_id}")
+    } else {
+        String::new()
+    };
+    Some(ParsedFeishuInboundMessage {
+        chat_id,
+        text: text.to_string(),
+        is_group,
+        message_id,
+        event_id,
+        inbound_dedup_key,
+    })
 }
 
 /// 连通性检查：供 GET /api/channel_connectivity 使用。
@@ -434,96 +566,25 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
 /// 从飞书事件 body（schema 2.0，含 header.event_type、event）解析出 im.message.receive_v1 文本消息，
 /// 白名单校验通过则返回 PcMsg，否则 None。供 HTTP 回调与长连接入站共用。
 pub fn event_body_to_pcmsg(event_body: &str, allowed_chat_ids: &[String]) -> Option<PcMsg> {
-    const TAG: &str = "feishu_event_parse";
-    let v: serde_json::Value = match serde_json::from_str(event_body) {
-        Ok(x) => x,
-        Err(_) => {
-            log::debug!("[{}] body parse failed", TAG);
-            return None;
-        }
-    };
-    let event_type = v
-        .get("header")
-        .and_then(|h| h.get("event_type"))
-        .and_then(|e| e.as_str());
-    let event_type = match event_type {
-        Some(t) => t,
-        None => {
-            log::debug!("[{}] missing header.event_type", TAG);
-            return None;
-        }
-    };
-    if event_type != "im.message.receive_v1" {
-        log::debug!("[{}] skip event_type={}", TAG, event_type);
-        return None;
-    }
-    let event = match v.get("event") {
-        Some(e) => e,
-        None => {
-            log::debug!("[{}] missing event", TAG);
-            return None;
-        }
-    };
-    let message = match event.get("message") {
-        Some(m) => m,
-        None => {
-            log::debug!("[{}] missing event.message", TAG);
-            return None;
-        }
-    };
-    let chat_id = message
-        .get("chat_id")
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let chat_type = message
-        .get("chat_type")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let message_type = message
-        .get("message_type")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
-    let content_str = message
-        .get("content")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    if message_type != "text" {
-        log::debug!("[{}] skip message_type={}", TAG, message_type);
-        return None;
-    }
-    let text = match serde_json::from_str::<serde_json::Value>(content_str) {
-        Ok(c) => c
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string(),
-        Err(_) => String::new(),
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        log::debug!("[{}] empty text", TAG);
-        return None;
-    }
-    if allowed_chat_ids.is_empty() {
-        log::warn!(
-            "[{}] event dropped: allowed chat IDs not configured; add chat_id={} to channel config and save",
-            TAG,
-            chat_id
-        );
-        return None;
-    }
-    if !allowed_chat_ids.iter().any(|id| id.trim() == chat_id) {
-        log::warn!(
-            "[{}] event dropped: chat_id={} not in allowlist; add it to allowed chat IDs in channel config",
-            TAG,
-            chat_id
-        );
-        return None;
-    }
-    let is_group = matches!(chat_type, "group" | "topic_group");
-    PcMsg::new_inbound("feishu", &chat_id, text, is_group).ok()
+    event_body_to_pcmsg_with_transport(event_body, allowed_chat_ids, MessageTransport::Unknown)
+}
+
+pub(crate) fn event_body_to_pcmsg_with_transport(
+    event_body: &str,
+    allowed_chat_ids: &[String],
+    transport: MessageTransport,
+) -> Option<PcMsg> {
+    let parsed = parse_feishu_inbound_message(event_body, allowed_chat_ids)?;
+    PcMsg::new_inbound("feishu", &parsed.chat_id, parsed.text, parsed.is_group)
+        .ok()
+        .map(|msg| {
+            msg.with_inbound_provenance(
+                transport,
+                parsed.message_id,
+                parsed.event_id,
+                parsed.inbound_dedup_key,
+            )
+        })
 }
 
 #[cfg(test)]
@@ -535,7 +596,7 @@ mod tests {
     #[derive(Default)]
     struct StubHttp {
         post_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
-        patch_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
+        put_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
     }
 
     impl ChannelHttpClient for StubHttp {
@@ -570,13 +631,13 @@ mod tests {
             self.http_post("", &[])
         }
 
-        fn http_patch_with_headers(
+        fn http_put_with_headers(
             &mut self,
             _url: &str,
             _headers: &[(&str, &str)],
             _body: &[u8],
         ) -> crate::error::Result<(u16, ResponseBody)> {
-            self.patch_results
+            self.put_results
                 .pop_front()
                 .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
         }
@@ -617,5 +678,37 @@ mod tests {
         let after = crate::metrics::snapshot();
         assert_eq!(message_id.as_deref(), Some("om_123"));
         assert!(after.channel_http_ok > before.channel_http_ok);
+    }
+
+    #[test]
+    fn event_body_to_pcmsg_preserves_provenance() {
+        let body = serde_json::json!({
+            "header": {
+                "event_id": "evt-1",
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "message": {
+                    "message_id": "om_1",
+                    "chat_id": "oc_1",
+                    "chat_type": "group",
+                    "message_type": "text",
+                    "content": "{\"text\":\"hello\"}"
+                }
+            }
+        })
+        .to_string();
+
+        let msg = event_body_to_pcmsg_with_transport(
+            &body,
+            &[String::from("oc_1")],
+            MessageTransport::Webhook,
+        )
+        .expect("message");
+
+        assert_eq!(msg.source_transport, MessageTransport::Webhook);
+        assert_eq!(msg.platform_message_id, "om_1");
+        assert_eq!(msg.platform_event_id, "evt-1");
+        assert_eq!(msg.inbound_dedup_key, "feishu_message:om_1");
     }
 }

@@ -3,7 +3,7 @@
 
 use super::ChannelHttpClient;
 use crate::bus::OutboundKind;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -160,9 +160,16 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
             if retry > 0 {
                 sleep_sender_retry_delay();
             }
-            if send_one(&message, attempt).is_ok() {
-                sent = true;
-                break;
+            match send_one(&message, attempt) {
+                Ok(()) => {
+                    sent = true;
+                    break;
+                }
+                Err(error) => {
+                    if matches!(error, Error::Config { .. }) {
+                        break;
+                    }
+                }
             }
         }
         if !sent {
@@ -355,7 +362,7 @@ mod tests {
             let mut guard = seen_clone.lock().unwrap_or_else(|e| e.into_inner());
             guard.push(format!("{}:{}", message.content, attempt));
             if message.content == "second" && attempt == 1 {
-                return Err(Error::config("test_sender", "synthetic failure"));
+                return Err(Error::http("test_sender", 500));
             }
             Ok(())
         });
@@ -365,6 +372,35 @@ mod tests {
             guard.as_slice(),
             ["first:1", "second:1", "second:2", "third:1"]
         );
+    }
+
+    #[test]
+    fn buffered_sender_loop_does_not_retry_config_error() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-a".to_string(),
+            content: "broken".to_string(),
+            req_id: None,
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("send broken");
+        drop(tx);
+
+        let attempts = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
+        let attempts_clone = std::sync::Arc::clone(&attempts);
+
+        run_buffered_sender_loop(rx, "test_sender", move |_message, attempt| {
+            attempts_clone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(attempt);
+            Err(Error::config("test_sender", "deterministic config failure"))
+        });
+
+        let attempts = attempts.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(attempts.as_slice(), &[1]);
     }
 
     #[test]

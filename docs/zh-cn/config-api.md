@@ -225,11 +225,20 @@
 
 - 通用：`enabled_channel`
 - Telegram：`tg_token`、`tg_allowed_chat_ids`
-- 飞书：`feishu_app_id`、`feishu_app_secret`、`feishu_allowed_chat_ids`
+- 飞书：`feishu_app_id`、`feishu_app_secret`、`feishu_verification_token`、`feishu_encrypt_key`、`feishu_allowed_chat_ids`
 - 钉钉：`dingtalk_webhook_url`、`dingtalk_app_secret`
 - 企业微信：`wecom_corp_id`、`wecom_corp_secret`、`wecom_agent_id`、`wecom_default_touser`、`wecom_token`、`wecom_encoding_aes_key`
 - QQ 频道：`qq_channel_app_id`、`qq_channel_secret`
 - 自定义 Webhook：`webhook_enabled`、`webhook_token`
+
+字段说明补充：
+
+- `feishu_verification_token`：飞书 HTTP 事件订阅的 Verification Token；明文与解密后的事件体都会校验。
+- `feishu_encrypt_key`：飞书 HTTP 事件订阅 Encrypt Key；配置后 `/api/feishu/event` 会按飞书官方规则校验 `X-Lark-Signature` 并解密 `encrypt`。
+- `dingtalk_webhook_url`：钉钉自定义机器人 Webhook；用于会话外主动发送，留空时 `enabled_channel=dingtalk` 仍可工作，但仅支持会话回调 `sessionWebhook` 回复。
+- `dingtalk_app_secret`：钉钉自定义机器人加签 secret；仅主动发送到 `dingtalk_webhook_url` 时使用。
+- `wecom_token`：企业微信回调 Token；`GET/POST /api/wecom/webhook` 都要求非空并做签名校验。
+- `wecom_encoding_aes_key`：企业微信安全模式回调的 EncodingAESKey；配置后 GET 验证会解密 `echostr`，POST 会解密 XML 中的 `Encrypt`。
 
 `enabled_channel` 允许值：
 
@@ -1360,3 +1369,10 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 - `GET /api/wecom/webhook`
 - `POST /api/wecom/webhook`
 - `POST /api/webhook/qq`
+
+当前实现口径：
+
+- 飞书：`/api/feishu/event` 支持 `url_verification` 与 `im.message.receive_v1`；会校验 `feishu_verification_token`，配置 `feishu_encrypt_key` 时会校验 `X-Lark-Signature` 并解密 `encrypt`，并按 `message_id` 做 HTTP webhook 幂等。
+- 钉钉：`/api/dingtalk/webhook` 接收应用机器人回调，缓存 `sessionWebhook` 作为会话内回复通道；主动消息仍走 `dingtalk_webhook_url`，若配置了 `dingtalk_app_secret` 会按钉钉自定义机器人规则附带签名。
+- 企业微信：`GET /api/wecom/webhook` 同时支持明文与安全模式 URL 校验；`POST /api/wecom/webhook` 同时支持明文 XML 与安全模式 `Encrypt` XML，安全模式会校验 `msg_signature` 并验证解密后的 `receiveid == wecom_corp_id`；无回复内容时返回 HTTP 200 空响应体。
+- QQ：`POST /api/webhook/qq` 继续按 QQ 机器人官方 Ed25519 规则验签；出站群聊/单聊回复要求已有被动回复 `msg_id`，频道连通性同时要求 access token 可用且 QQ WebSocket 在线。

@@ -87,12 +87,17 @@ export function ChannelsConfigPage() {
       tg_allowed_chat_ids: form.tg_allowed_chat_ids,
       feishu_app_id: form.feishu_app_id,
       feishu_app_secret: form.feishu_app_secret,
+      feishu_verification_token: form.feishu_verification_token,
+      feishu_encrypt_key: form.feishu_encrypt_key,
       feishu_allowed_chat_ids: form.feishu_allowed_chat_ids,
       dingtalk_webhook_url: form.dingtalk_webhook_url ?? "",
       wecom_corp_id: form.wecom_corp_id,
       wecom_corp_secret: form.wecom_corp_secret,
       wecom_agent_id: form.wecom_agent_id,
       wecom_default_touser: form.wecom_default_touser,
+      wecom_token: form.wecom_token,
+      wecom_encoding_aes_key: form.wecom_encoding_aes_key,
+      dingtalk_app_secret: form.dingtalk_app_secret,
       qq_channel_app_id: form.qq_channel_app_id,
       qq_channel_secret: form.qq_channel_secret,
       webhook_enabled: form.webhook_enabled,
@@ -289,6 +294,26 @@ export function ChannelsConfigPage() {
             }}
           />
           <TextField
+            label={t("config.feishuVerificationToken")}
+            value={form.feishu_verification_token}
+            onChange={(e) => update("feishu_verification_token", e.target.value)}
+            fullWidth
+            slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+          />
+          <TextField
+            label={t("config.feishuEncryptKey")}
+            value={form.feishu_encrypt_key}
+            onChange={(e) => update("feishu_encrypt_key", e.target.value)}
+            type={isRevealed("feishu_encrypt_key") ? "text" : "password"}
+            fullWidth
+            slotProps={{
+              htmlInput: {
+                maxLength: MAX_LEN,
+                ...getRevealHandlers("feishu_encrypt_key"),
+              },
+            }}
+          />
+          <TextField
             label={t("config.feishuAllowedChatIds")}
             value={form.feishu_allowed_chat_ids}
             onChange={(e) => update("feishu_allowed_chat_ids", e.target.value)}
@@ -312,6 +337,20 @@ export function ChannelsConfigPage() {
               htmlInput: {
                 maxLength: MAX_DINGTALK,
                 style: { fontFamily: "var(--font-mono)" },
+              },
+            }}
+          />
+          <TextField
+            label={t("config.dingtalkAppSecret")}
+            value={form.dingtalk_app_secret}
+            onChange={(e) => update("dingtalk_app_secret", e.target.value)}
+            type={isRevealed("dingtalk_app_secret") ? "text" : "password"}
+            fullWidth
+            helperText={t("config.dingtalkAppSecretHelp")}
+            slotProps={{
+              htmlInput: {
+                maxLength: MAX_LEN,
+                ...getRevealHandlers("dingtalk_app_secret"),
               },
             }}
           />
@@ -355,6 +394,26 @@ export function ChannelsConfigPage() {
             fullWidth
             helperText={`${t("config.wecomDefaultTouserHelp")} · ${form.wecom_default_touser.length}/${MAX_WECOM_TOUSER}`}
             slotProps={{ htmlInput: { maxLength: MAX_WECOM_TOUSER } }}
+          />
+          <TextField
+            label={t("config.wecomToken")}
+            value={form.wecom_token}
+            onChange={(e) => update("wecom_token", e.target.value)}
+            fullWidth
+            slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+          />
+          <TextField
+            label={t("config.wecomEncodingAesKey")}
+            value={form.wecom_encoding_aes_key}
+            onChange={(e) => update("wecom_encoding_aes_key", e.target.value)}
+            type={isRevealed("wecom_encoding_aes_key") ? "text" : "password"}
+            fullWidth
+            slotProps={{
+              htmlInput: {
+                maxLength: MAX_LEN,
+                ...getRevealHandlers("wecom_encoding_aes_key"),
+              },
+            }}
           />
         </FormSectionSubCollapsible>
 

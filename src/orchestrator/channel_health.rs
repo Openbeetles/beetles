@@ -70,12 +70,18 @@ pub fn is_channel_healthy(state: &OrchestratorState, channel: &str) -> bool {
 pub fn is_channel_healthy_by_index(state: &OrchestratorState, idx: usize) -> bool {
     let slot = &state.channel_health[idx];
     let failures = slot.consecutive_failures.load(Ordering::Relaxed);
-    if failures < CHANNEL_FAIL_THRESHOLD {
-        return true;
+    let healthy = if failures < CHANNEL_FAIL_THRESHOLD {
+        true
+    } else {
+        // 冷却期已过则恢复
+        let last = slot.last_failure_uptime_secs.load(Ordering::Relaxed);
+        uptime_secs().saturating_sub(last) >= CHANNEL_FAIL_COOLDOWN_SECS as u32
+    };
+    if idx == super::state::ChannelIndex::QqChannel as usize {
+        healthy && crate::channels::is_ws_online()
+    } else {
+        healthy
     }
-    // 冷却期已过则恢复
-    let last = slot.last_failure_uptime_secs.load(Ordering::Relaxed);
-    uptime_secs().saturating_sub(last) >= CHANNEL_FAIL_COOLDOWN_SECS as u32
 }
 
 /// 构建单通道健康快照（用于 ResourceSnapshot 序列化）。
@@ -91,6 +97,11 @@ pub fn snapshot_by_index(
     } else {
         let last = slot.last_failure_uptime_secs.load(Ordering::Relaxed);
         uptime_secs().saturating_sub(last) >= CHANNEL_FAIL_COOLDOWN_SECS as u32
+    };
+    let healthy = if idx == super::state::ChannelIndex::QqChannel as usize {
+        healthy && crate::channels::is_ws_online()
+    } else {
+        healthy
     };
     super::state::ChannelHealthSnapshot {
         consecutive_failures,

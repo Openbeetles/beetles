@@ -137,7 +137,9 @@ fn active_channel_configured(config: &AppConfig) -> bool {
         "feishu" => {
             !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty()
         }
-        "dingtalk" => !config.dingtalk_webhook_url.trim().is_empty(),
+        "dingtalk" => {
+            !config.dingtalk_webhook_url.trim().is_empty() || config.enabled_channel == "dingtalk"
+        }
         "wecom" => {
             !config.wecom_corp_id.trim().is_empty()
                 && !config.wecom_agent_id.trim().is_empty()

@@ -3,6 +3,7 @@
 
 mod chunk;
 mod connectivity;
+mod crypto;
 pub(crate) mod dingtalk;
 mod dispatch;
 pub(crate) mod feishu;
@@ -18,6 +19,8 @@ mod wss_gateway;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use connectivity::build_unavailable_snapshot;
 pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub use dingtalk::DingtalkSessionStore;
 pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};
 pub use dispatch::{build_channel_sinks, spawn_sender_threads, ChannelRxSet};
 pub use dispatch::{run_dispatch, ChannelSinks, MessageSink, QueuedSink};
@@ -28,11 +31,13 @@ pub use feishu::{
     feishu_send_and_get_id, flush_feishu_sends, run_feishu_sender_loop, FeishuTokenCache,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use feishu::{handle_http_event, FeishuEventResponse};
+pub use feishu::{
+    handle_http_event, FeishuEventResponse, FeishuMessageDedupStore, FeishuRequestHeaders,
+};
 pub use http_client::ChannelHttpClient;
 pub use qq::{
-    flush_qq_channel_sends, new_shared_qq_token_cache, run_qq_sender_loop, QqInboundDedupStore,
-    QqMsgIdCache, SharedQqTokenCache,
+    flush_qq_channel_sends, is_ws_online, new_shared_qq_token_cache, new_shared_qq_ws_status,
+    run_qq_sender_loop, QqInboundDedupStore, QqMsgIdCache, SharedQqTokenCache, SharedQqWsStatus,
 };
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use qq::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};

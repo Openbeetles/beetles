@@ -1131,25 +1131,50 @@ pub fn dispatch(
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("POST", "/api/feishu/event") => {
             let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::feishu_event::post(ctx, &env.inbound_tx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
+            let signature = incoming.header_ci("X-Lark-Signature").unwrap_or("");
+            let timestamp = incoming.header_ci("X-Lark-Request-Timestamp").unwrap_or("");
+            let nonce = incoming.header_ci("X-Lark-Request-Nonce").unwrap_or("");
+            let r = handlers::feishu_event::post(
+                ctx,
+                &env.inbound_tx,
+                &env.feishu_message_dedup_store,
+                signature,
+                timestamp,
+                nonce,
+                body_str,
+            )
+            .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("POST", "/api/dingtalk/webhook") => {
             let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::dingtalk_webhook::post(&env.inbound_tx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
+            let r = handlers::dingtalk_webhook::post(
+                &env.inbound_tx,
+                &env.dingtalk_session_store,
+                body_str,
+            )
+            .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         ("GET", "/api/wecom/webhook") => {
             let config = ctx.config();
-            let r = handlers::wecom_webhook::get_verify(uri, &config.wecom_token);
+            let r = handlers::wecom_webhook::get_verify(
+                uri,
+                &config.wecom_token,
+                &config.wecom_encoding_aes_key,
+                &config.wecom_corp_id,
+            );
+            let headers = if r.status == 200 {
+                CORS_AND_TEXT_PLAIN
+            } else {
+                CORS_HEADERS
+            };
             Ok(OutgoingResponse::json(
                 r.status,
                 r.status_text,
-                CORS_HEADERS,
+                headers,
                 r.body.to_vec(),
             ))
         }
@@ -1300,10 +1325,14 @@ mod tests {
             new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         {
+            let feishu_message_dedup_store = Arc::new(Mutex::new(HashMap::new()));
+            let dingtalk_session_store = Arc::new(Mutex::new(HashMap::new()));
             let qq_msg_id_cache = Arc::new(Mutex::new(HashMap::new()));
             let qq_inbound_dedup_store = Arc::new(Mutex::new(HashMap::new()));
             RouterEnv::new(
                 inbound_tx,
+                feishu_message_dedup_store,
+                dingtalk_session_store,
                 qq_msg_id_cache,
                 qq_inbound_dedup_store,
                 false,

@@ -41,4 +41,8 @@ pub trait WssGatewayDriver {
     fn on_recv(&mut self, data: &[u8]) -> Result<WssRecvAction>;
     /// 构造心跳帧；seq 为协议所需序号（QQ 为 s，飞书忽略）。
     fn build_heartbeat(&self, seq: Option<u64>) -> Result<Vec<u8>>;
+    /// 会话已进入可用态（已建连，且需要的话已完成协议鉴权）。
+    fn on_session_started(&mut self) {}
+    /// 会话已退出。
+    fn on_session_ended(&mut self) {}
 }

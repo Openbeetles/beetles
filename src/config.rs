@@ -127,6 +127,10 @@ pub struct AppConfig {
     // Feishu
     pub feishu_app_id: String,
     pub feishu_app_secret: String,
+    /// 飞书事件回调 Verification Token；Webhook 模式明文校验使用。
+    pub feishu_verification_token: String,
+    /// 飞书事件回调 Encrypt Key；配置后 HTTP 事件走签名校验 + AES-256-CBC 解密。
+    pub feishu_encrypt_key: String,
     /// 逗号分隔的 chat_id 白名单；空则拒绝所有入站。环境变量 BEETLE_FEISHU_ALLOWED_CHAT_IDS。
     pub feishu_allowed_chat_ids: String,
 
@@ -145,7 +149,7 @@ pub struct AppConfig {
     pub wecom_token: String,
     /// 企业微信回调 EncodingAESKey（用于消息加解密，可选）。
     pub wecom_encoding_aes_key: String,
-    /// 钉钉回调 App Secret（用于验签，可选）。
+    /// 钉钉自定义机器人加签密钥（自定义机器人安全设置的 secret，可选）。
     pub dingtalk_app_secret: String,
 
     /// QQ 频道机器人 App ID；与 qq_channel_secret 均非空时启用回调与出站。
@@ -258,6 +262,12 @@ impl AppConfig {
                 .into(),
             feishu_app_id: option_env!("BEETLE_FEISHU_APP_ID").unwrap_or("").into(),
             feishu_app_secret: option_env!("BEETLE_FEISHU_APP_SECRET").unwrap_or("").into(),
+            feishu_verification_token: option_env!("BEETLE_FEISHU_VERIFICATION_TOKEN")
+                .unwrap_or("")
+                .into(),
+            feishu_encrypt_key: option_env!("BEETLE_FEISHU_ENCRYPT_KEY")
+                .unwrap_or("")
+                .into(),
             feishu_allowed_chat_ids: option_env!("BEETLE_FEISHU_ALLOWED_CHAT_IDS")
                 .unwrap_or("")
                 .into(),
@@ -485,6 +495,8 @@ impl AppConfig {
                 self.tg_allowed_chat_ids = seg.tg_allowed_chat_ids;
                 self.feishu_app_id = seg.feishu_app_id;
                 self.feishu_app_secret = seg.feishu_app_secret;
+                self.feishu_verification_token = seg.feishu_verification_token;
+                self.feishu_encrypt_key = seg.feishu_encrypt_key;
                 self.feishu_allowed_chat_ids = seg.feishu_allowed_chat_ids;
                 self.dingtalk_webhook_url = seg.dingtalk_webhook_url;
                 self.wecom_corp_id = seg.wecom_corp_id;
@@ -681,6 +693,8 @@ impl AppConfig {
                 }
                 if self.feishu_app_id.len() > CONFIG_FIELD_MAX_LEN
                     || self.feishu_app_secret.len() > CONFIG_FIELD_MAX_LEN
+                    || self.feishu_verification_token.len() > CONFIG_FIELD_MAX_LEN
+                    || self.feishu_encrypt_key.len() > CONFIG_FIELD_MAX_LEN
                 {
                     return Err(Error::config(
                         "config",
@@ -689,12 +703,6 @@ impl AppConfig {
                 }
             }
             "dingtalk" => {
-                if self.dingtalk_webhook_url.trim().is_empty() {
-                    return Err(Error::config(
-                        "config",
-                        "enabled_channel=dingtalk requires dingtalk_webhook_url",
-                    ));
-                }
                 if self.dingtalk_webhook_url.len() > CONFIG_URL_MAX_LEN {
                     return Err(Error::config(
                         "config",
@@ -968,6 +976,10 @@ pub struct ChannelsSegment {
     pub feishu_app_id: String,
     #[serde(default)]
     pub feishu_app_secret: String,
+    #[serde(default)]
+    pub feishu_verification_token: String,
+    #[serde(default)]
+    pub feishu_encrypt_key: String,
     #[serde(default)]
     pub feishu_allowed_chat_ids: String,
     #[serde(default)]
@@ -1621,9 +1633,14 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
     if seg.tg_token.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_id.len() > CONFIG_FIELD_MAX_LEN
+        || seg.feishu_verification_token.len() > CONFIG_FIELD_MAX_LEN
+        || seg.feishu_encrypt_key.len() > CONFIG_FIELD_MAX_LEN
         || seg.wecom_corp_id.len() > CONFIG_FIELD_MAX_LEN
         || seg.wecom_corp_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.wecom_agent_id.len() > CONFIG_FIELD_MAX_LEN
+        || seg.wecom_token.len() > CONFIG_FIELD_MAX_LEN
+        || seg.wecom_encoding_aes_key.len() > CONFIG_FIELD_MAX_LEN
+        || seg.dingtalk_app_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.qq_channel_app_id.len() > CONFIG_FIELD_MAX_LEN
         || seg.qq_channel_secret.len() > CONFIG_FIELD_MAX_LEN
     {

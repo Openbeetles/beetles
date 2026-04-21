@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::memory::PendingRetryStore;
 
 use super::frame::pbbp2;
-use super::send::event_body_to_pcmsg;
+use super::send::event_body_to_pcmsg_with_transport;
 
 const TAG: &str = "feishu_ws";
 const FEISHU_WS_ENDPOINT: &str = "https://open.feishu.cn/callback/ws/endpoint";
@@ -216,7 +216,11 @@ impl WssGatewayDriver for FeishuWssDriver {
                 return Ok(WssRecvAction::DispatchAndAck(None, ack));
             }
         }
-        let msg = event_body_to_pcmsg(payload_str, &self.allowed_chat_ids);
+        let msg = event_body_to_pcmsg_with_transport(
+            payload_str,
+            &self.allowed_chat_ids,
+            crate::bus::MessageTransport::Wss,
+        );
         let ack = encode_control_frame("reply", frame.log_id, &frame.log_id_new)?;
         Ok(WssRecvAction::DispatchAndAck(msg, ack))
     }

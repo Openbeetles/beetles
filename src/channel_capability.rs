@@ -169,13 +169,13 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
         CHANNEL_TELEGRAM => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
-            supports_edit: true,
-            supports_stream_edit: true,
+            supports_edit: false,
+            supports_stream_edit: false,
             supports_explicit_target: true,
             supports_attachment: false,
             supports_typing_or_chat_action: true,
             max_text_bytes: TELEGRAM_MAX_TEXT_BYTES,
-            delivery_ordering_model: ChannelDeliveryOrderingModel::EditableSingleMessage,
+            delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         CHANNEL_FEISHU => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
@@ -253,7 +253,10 @@ fn channel_is_configured(channel: &str, config: &AppConfig, voice_channel_enable
         CHANNEL_FEISHU => {
             !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty()
         }
-        CHANNEL_DINGTALK => !config.dingtalk_webhook_url.trim().is_empty(),
+        CHANNEL_DINGTALK => {
+            !config.dingtalk_webhook_url.trim().is_empty()
+                || config.enabled_channel == CHANNEL_DINGTALK
+        }
         CHANNEL_WECOM => {
             !config.wecom_corp_id.trim().is_empty()
                 && !config.wecom_corp_secret.trim().is_empty()
@@ -297,7 +300,7 @@ mod tests {
         let telegram = registry.get(CHANNEL_TELEGRAM).expect("telegram capability");
         assert!(telegram.configured);
         assert!(telegram.enabled);
-        assert!(telegram.contract.supports_stream_edit);
+        assert!(!telegram.contract.supports_stream_edit);
 
         let qq = registry
             .get(CHANNEL_QQ_CHANNEL)

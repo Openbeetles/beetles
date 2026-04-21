@@ -225,11 +225,20 @@ Field groups:
 
 - Common: `enabled_channel`
 - Telegram: `tg_token`, `tg_allowed_chat_ids`
-- Feishu: `feishu_app_id`, `feishu_app_secret`, `feishu_allowed_chat_ids`
+- Feishu: `feishu_app_id`, `feishu_app_secret`, `feishu_verification_token`, `feishu_encrypt_key`, `feishu_allowed_chat_ids`
 - DingTalk: `dingtalk_webhook_url`, `dingtalk_app_secret`
 - WeCom: `wecom_corp_id`, `wecom_corp_secret`, `wecom_agent_id`, `wecom_default_touser`, `wecom_token`, `wecom_encoding_aes_key`
 - QQ Channel: `qq_channel_app_id`, `qq_channel_secret`
 - Custom webhook: `webhook_enabled`, `webhook_token`
+
+Field notes:
+
+- `feishu_verification_token`: Feishu HTTP event-subscription Verification Token; validated for both plaintext and decrypted event payloads.
+- `feishu_encrypt_key`: Feishu HTTP event-subscription Encrypt Key; when configured, `/api/feishu/event` verifies `X-Lark-Signature` and decrypts `encrypt` using Feishu's official scheme.
+- `dingtalk_webhook_url`: DingTalk custom-robot webhook for proactive sends outside the current conversation; when empty, `enabled_channel=dingtalk` still works in session-reply-only mode via callback `sessionWebhook`.
+- `dingtalk_app_secret`: DingTalk custom-robot signing secret; only used for proactive sends to `dingtalk_webhook_url`.
+- `wecom_token`: WeCom callback Token; `GET/POST /api/wecom/webhook` require it and verify signatures with it.
+- `wecom_encoding_aes_key`: WeCom secure-mode EncodingAESKey; when configured, GET verification decrypts `echostr` and POST decrypts the XML `Encrypt` payload.
 
 Allowed `enabled_channel` values:
 
@@ -1360,3 +1369,10 @@ These routes receive platform callback payloads directly. Request bodies, signat
 - `GET /api/wecom/webhook`
 - `POST /api/wecom/webhook`
 - `POST /api/webhook/qq`
+
+Current behavior:
+
+- Feishu: `/api/feishu/event` supports `url_verification` and `im.message.receive_v1`; it validates `feishu_verification_token`, verifies `X-Lark-Signature` and decrypts `encrypt` when `feishu_encrypt_key` is configured, and deduplicates HTTP webhook delivery by `message_id`.
+- DingTalk: `/api/dingtalk/webhook` receives app-robot callbacks and caches `sessionWebhook` for in-session replies; proactive sends still use `dingtalk_webhook_url`, signed with `dingtalk_app_secret` when configured.
+- WeCom: `GET /api/wecom/webhook` supports both plaintext and secure-mode URL verification; `POST /api/wecom/webhook` supports plaintext XML and secure-mode `Encrypt` XML, verifies `msg_signature`, and checks decrypted `receiveid == wecom_corp_id`; when no reply content is needed it returns HTTP 200 with an empty body.
+- QQ: `POST /api/webhook/qq` still verifies signatures with QQ Bot's Ed25519 scheme; outbound group/C2C replies require an existing passive-reply `msg_id`, and connectivity now requires both access-token exchange and an online QQ WebSocket session.

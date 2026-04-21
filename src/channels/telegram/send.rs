@@ -252,6 +252,12 @@ pub fn send_and_get_id<H: ChannelHttpClient>(
     chat_id: &str,
     content: &str,
 ) -> Result<Option<String>> {
+    if content.chars().count() > TELEGRAM_MAX_MESSAGE_LEN {
+        return Err(Error::config(
+            "telegram_send",
+            "content exceeds Telegram 4096-character limit",
+        ));
+    }
     let body = serde_json::json!({
         "chat_id": chat_id,
         "text": content,
@@ -301,6 +307,12 @@ pub fn edit_message_text<H: ChannelHttpClient>(
     message_id: &str,
     content: &str,
 ) -> Result<()> {
+    if content.chars().count() > TELEGRAM_MAX_MESSAGE_LEN {
+        return Err(Error::config(
+            "telegram_edit",
+            "content exceeds Telegram 4096-character limit",
+        ));
+    }
     let msg_id: i64 = message_id
         .parse()
         .map_err(|_| Error::config("telegram_edit", "invalid message_id"))?;

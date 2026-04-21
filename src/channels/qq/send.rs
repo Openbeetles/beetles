@@ -206,7 +206,14 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
             config.qq_channel_secret.trim(),
             "qq_connectivity",
         ) {
-            Ok(_) => connectivity::ProbeStatus::Ok,
+            Ok(_) => {
+                if crate::channels::is_ws_online() {
+                    connectivity::ProbeStatus::Ok
+                } else {
+                    log::warn!("[qq_connectivity] websocket offline");
+                    connectivity::ProbeStatus::CheckFailed
+                }
+            }
             Err(e) => {
                 log::warn!("[qq_connectivity] {}", e);
                 match e {
@@ -280,6 +287,12 @@ fn send_one_qq<H: ChannelHttpClient>(
         return Err(crate::error::Error::config(
             "qq_send_empty",
             "refusing to send empty QQ message",
+        ));
+    }
+    if is_v2_chat(chat_id) && msg_id.is_none() {
+        return Err(crate::error::Error::config(
+            "qq_send",
+            format!("missing msg_id for QQ v2 passive reply chat_id={}", chat_id),
         ));
     }
     let send_start = std::time::Instant::now();
@@ -535,9 +548,11 @@ where
                 http_send_start.elapsed().as_millis(),
                 msg_start.elapsed().as_millis()
             );
-            *runtime.http = None;
-            invalidate_cached_qq_token(runtime.token_cache);
-            clear_shared_cached_qq_token(runtime.shared_token_cache);
+            if !matches!(error, crate::error::Error::Config { .. }) {
+                *runtime.http = None;
+                invalidate_cached_qq_token(runtime.token_cache);
+                clear_shared_cached_qq_token(runtime.shared_token_cache);
+            }
             Err(error)
         }
     }
@@ -843,5 +858,52 @@ mod tests {
             serde_json::from_slice(&sent_bodies[1]).expect("second payload json");
         assert_eq!(first.get("msg_id"), second.get("msg_id"));
         assert_eq!(first.get("msg_seq"), second.get("msg_seq"));
+    }
+
+    #[test]
+    fn v2_send_requires_cached_msg_id_for_passive_reply() {
+        let mut http = StubHttp::default();
+        let err = send_one_qq(
+            &mut http,
+            "qq-token",
+            "c2c:chat-1",
+            "final reply",
+            None,
+            None,
+        )
+        .expect_err("missing msg_id should be rejected");
+
+        match err {
+            crate::error::Error::Config { stage, .. } => assert_eq!(stage, "qq_send"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(http
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sent_bodies
+            .is_empty());
+    }
+
+    #[test]
+    fn connectivity_requires_websocket_online_even_when_token_is_valid() {
+        let mut state = StubHttpState::default();
+        state.token_results.push_back(Ok((
+            200,
+            ResponseBody::Heap(br#"{"access_token":"qq-token","expires_in":7200}"#.to_vec()),
+        )));
+        let mut http = StubHttp {
+            state: Arc::new(Mutex::new(state)),
+        };
+        let mut config = AppConfig::load_from_env();
+        config.qq_channel_app_id = "app-id".to_string();
+        config.qq_channel_secret = "secret".to_string();
+
+        let item = check_connectivity(&config, &mut http, crate::i18n::Locale::Zh);
+
+        assert!(!item.ok);
+        assert_eq!(item.id, "qq_channel");
+        assert!(item.configured);
+        assert!(item.message.is_some());
     }
 }

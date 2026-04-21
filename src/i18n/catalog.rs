@@ -65,6 +65,7 @@ pub enum Message {
     ConnectivityNotConfigured,
     ConnectivityCheckFailed,
     ConnectivityTokenInvalid,
+    ConnectivitySessionReplyOnly,
     // --- 阶段 4+：Agent / 提醒 ---
     LowMemoryUserDefer,
     NodeMaintenance,
@@ -180,6 +181,9 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ConnectivityNotConfigured => zh("未配置"),
             Message::ConnectivityCheckFailed => zh("检查失败，请查看网络"),
             Message::ConnectivityTokenInvalid => zh("凭证无效或已过期"),
+            Message::ConnectivitySessionReplyOnly => {
+                zh("仅支持会话回调回复，未配置主动 Webhook")
+            }
             Message::LowMemoryUserDefer => zh("设备内存紧张，请稍后再试。"),
             Message::NodeMaintenance => zh("节点正在维护，请稍后..."),
             Message::ReplyTruncated => zh("（回复因长度限制被截断）"),
@@ -319,6 +323,9 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ConnectivityNotConfigured => en("Not configured"),
             Message::ConnectivityCheckFailed => en("Check failed, verify network connection"),
             Message::ConnectivityTokenInvalid => en("Invalid or expired credentials"),
+            Message::ConnectivitySessionReplyOnly => {
+                en("Session reply mode only; proactive webhook is not configured")
+            }
             Message::LowMemoryUserDefer => en("Device is low on memory, please try again later."),
             Message::NodeMaintenance => en("Node is under maintenance, please wait..."),
             Message::ReplyTruncated => en("(Reply truncated due to length limit)"),

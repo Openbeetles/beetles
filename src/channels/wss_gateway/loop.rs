@@ -252,6 +252,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 continue;
             }
         }
+        driver.on_session_started();
 
         let interval_ms =
             heartbeat_interval_ms.clamp(HEARTBEAT_INTERVAL_MIN_MS, HEARTBEAT_INTERVAL_MAX_MS);
@@ -449,6 +450,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             "[{}] disconnected, dropping connection before reconnect",
             tag
         );
+        driver.on_session_ended();
         drop(conn);
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         if crate::network::external_wss_suspend_requested() {

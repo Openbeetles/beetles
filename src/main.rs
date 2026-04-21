@@ -115,9 +115,14 @@ struct PreparedRuntimeAssembly {
     resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync>,
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     bus: RuntimeBus,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    dingtalk_session_store: beetle::channels::DingtalkSessionStore,
     qq_msg_id_cache: beetle::channels::QqMsgIdCache,
     qq_inbound_dedup_store: beetle::channels::QqInboundDedupStore,
     qq_token_cache: beetle::channels::SharedQqTokenCache,
+    qq_ws_status: beetle::channels::SharedQqWsStatus,
     registry: Arc<beetle::ToolRegistry>,
     baidu_token_cache: Option<Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
     voice_event_channel: Option<VoiceEventChannel>,
@@ -149,6 +154,10 @@ struct HttpServerSpawnContext {
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    dingtalk_session_store: beetle::channels::DingtalkSessionStore,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     msg_id_cache: beetle::channels::QqMsgIdCache,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -187,27 +196,6 @@ fn heap_used_percent(snapshot: &beetle::orchestrator::ResourceSnapshot) -> u8 {
     }
     let used = baseline - free;
     ((used as u64 * 100) / baseline as u64).min(100) as u8
-}
-
-/// Telegram 流式编辑器：复用同一 TLS 连接，避免每次 edit 重新握手。
-struct TelegramStreamEditor {
-    token: String,
-    create_http: Arc<HttpFactory>,
-}
-
-impl beetle::StreamEditor for TelegramStreamEditor {
-    fn send_initial(&self, chat_id: &str, content: &str) -> beetle::Result<Option<String>> {
-        execute_stream_http_op(
-            self.create_http.as_ref(),
-            "tg_stream_send_initial",
-            |http| beetle::tg_send_and_get_id(http, &self.token, chat_id, content),
-        )
-    }
-    fn edit(&self, chat_id: &str, message_id: &str, content: &str) -> beetle::Result<()> {
-        execute_stream_http_op(self.create_http.as_ref(), "tg_stream_edit", |http| {
-            beetle::tg_edit_message_text(http, &self.token, chat_id, message_id, content)
-        })
-    }
 }
 
 struct FeishuStreamEditor {
@@ -311,6 +299,8 @@ fn spawn_http_config_server(
             ctx.system_inbound_tx,
             ctx.skill_prompt_cache,
             ctx.inbound_tx,
+            ctx.feishu_message_dedup_store,
+            ctx.dingtalk_session_store,
             ctx.msg_id_cache,
             ctx.inbound_dedup_store,
             ctx.qq_webhook_enabled,
@@ -2264,10 +2254,17 @@ fn prepare_runtime_assembly(
         &bus.system_inbound_tx,
     );
 
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore =
+        Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let dingtalk_session_store: beetle::channels::DingtalkSessionStore =
+        Arc::new(Mutex::new(HashMap::new()));
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
     let qq_inbound_dedup_store: beetle::channels::QqInboundDedupStore =
         Arc::new(Mutex::new(HashMap::new()));
     let qq_token_cache = beetle::channels::new_shared_qq_token_cache();
+    let qq_ws_status = beetle::channels::new_shared_qq_ws_status();
     #[allow(unused_variables)]
     let (mut registry, baidu_token_cache) = beetle::build_default_registry(&config, &runtime);
 
@@ -2375,9 +2372,14 @@ fn prepare_runtime_assembly(
         resolve_locale_ui,
         skill_prompt_cache,
         bus,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        feishu_message_dedup_store,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        dingtalk_session_store,
         qq_msg_id_cache,
         qq_inbound_dedup_store,
         qq_token_cache,
+        qq_ws_status,
         registry,
         baidu_token_cache,
         voice_event_channel,
@@ -2408,6 +2410,10 @@ fn start_support_planes(
             skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
             inbound_tx: assembly.bus.user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            feishu_message_dedup_store: Arc::clone(&assembly.feishu_message_dedup_store),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            dingtalk_session_store: Arc::clone(&assembly.dingtalk_session_store),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             msg_id_cache: Arc::clone(&assembly.qq_msg_id_cache),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -2488,6 +2494,8 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         assembly.config.as_ref(),
         &assembly.qq_msg_id_cache,
         &assembly.qq_token_cache,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        &assembly.dingtalk_session_store,
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if assembly.runtime.platform.display_available() {
@@ -2574,6 +2582,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                     let qq_cache_ws = Arc::clone(&assembly.qq_msg_id_cache);
                     let qq_inbound_dedup_ws = Arc::clone(&assembly.qq_inbound_dedup_store);
                     let qq_token_cache_ws = assembly.qq_token_cache.clone();
+                    let qq_ws_status = assembly.qq_ws_status.clone();
                     let qq_pending = Arc::clone(&assembly.runtime.pending_retry_store);
                     let http_factory = assembly
                         .network_governor
@@ -2592,6 +2601,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                                     msg_id_cache: qq_cache_ws,
                                     inbound_dedup_store: qq_inbound_dedup_ws,
                                     shared_token_cache: qq_token_cache_ws,
+                                    shared_ws_status: qq_ws_status,
                                 },
                                 qq_tx,
                                 qq_pending.as_ref(),
@@ -2767,13 +2777,6 @@ fn start_agent_plane(
             .network_governor
             .http_factory(HttpClientClass::Interactive);
         match assembly.config.enabled_channel.as_str() {
-            beetle::CHANNEL_TELEGRAM if !assembly.config.tg_token.trim().is_empty() => {
-                Some(Arc::new(TelegramStreamEditor {
-                    token: assembly.config.tg_token.clone(),
-                    create_http: Arc::clone(&make_http),
-                })
-                    as Arc<dyn beetle::StreamEditor + Send + Sync>)
-            }
             beetle::CHANNEL_FEISHU if !assembly.config.feishu_app_id.trim().is_empty() => {
                 Some(Arc::new(FeishuStreamEditor {
                     app_id: assembly.config.feishu_app_id.clone(),
