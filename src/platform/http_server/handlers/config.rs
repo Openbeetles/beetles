@@ -1,4 +1,4 @@
-//! 配置 API：GET /api/config、POST /api/config/wifi、POST /api/config/llm、/channels、/system、/hardware。
+//! 配置 API：GET /api/config、GET/POST /api/config/llm、POST /api/config/wifi、/channels、/system、/hardware。
 
 use crate::config;
 use crate::i18n::{locale_from_store, tr, tr_error, Message};
@@ -35,6 +35,13 @@ pub fn get_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     j["build_package"] =
         serde_json::to_value(crate::current_build_package()).map_err(|e| to_io(e.to_string()))?;
     serde_json::to_string(&j).map_err(|e| to_io(e.to_string()))
+}
+
+/// GET /api/config/llm：从缓存返回独立 LLM 段 JSON，避免配置页为 LLM 读取整包 AppConfig。
+pub fn get_llm_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    let config = ctx.config();
+    let segment = config::LlmSegment::from_app_config(&config);
+    serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
 /// POST /api/config/wifi：body 为 JSON，写 WiFi SSID/密码到 NVS。成功时返回 restart_required 提示需重启生效。

@@ -430,6 +430,7 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
         EspBodyMode::Utf8(POST_BODY_MAX_LEN),
     ),
     EspRouteSpec::direct("/api/config/wifi", Method::Options, EspBodyMode::None),
+    EspRouteSpec::direct("/api/config/llm", Method::Get, EspBodyMode::None),
     EspRouteSpec::direct("/api/config/llm", Method::Options, EspBodyMode::None),
     EspRouteSpec::direct(
         "/api/config/llm",

@@ -111,6 +111,22 @@ Success response: `200 application/json`
 
 The response is the full config object, plus `locale` and `build_package`. It includes sensitive fields and should not be exposed to unauthenticated pages.
 
+**GET /api/config/llm**
+
+Purpose: read only the LLM config segment, so the AI settings page does not need to fetch the full config payload.
+
+Auth: `Pairing code`
+
+Success response: `200 application/json`
+
+Fields:
+
+- `llm_sources`
+- `llm_router_source_index`
+- `llm_worker_source_index`
+
+This route does not return `locale`, `build_package`, or any other config segments.
+
 **POST /api/config/wifi**
 
 Purpose: save network settings.

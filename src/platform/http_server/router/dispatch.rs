@@ -206,6 +206,16 @@ fn guard_pairing_csrf(
     None
 }
 
+/// 读操作鉴权：仅要求配对码；命中则返回已组装的 JSON 响应。
+#[inline(never)]
+fn guard_pairing(
+    store: &dyn crate::platform::ConfigStore,
+    uri: &str,
+    headers: &[(String, String)],
+) -> Option<OutgoingResponse> {
+    auth::require_pairing_code(store, uri, headers).map(api_to_out)
+}
+
 fn err_other(stage: &'static str, msg: impl std::fmt::Display) -> Error {
     Error::Other {
         source: Box::new(std::io::Error::other(msg.to_string())),
@@ -571,6 +581,19 @@ pub fn dispatch(
             let r = handlers::config::post_llm(ctx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
+        }
+        ("GET", "/api/config/llm") => {
+            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body = handlers::config::get_llm_body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
         }
         ("POST", "/api/config/channels") => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
@@ -1292,6 +1315,7 @@ fn dispatch_ota(
 mod tests {
     use super::dispatch;
     use crate::bus::new_inbound_channel;
+    use crate::config;
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
     };
@@ -1305,7 +1329,7 @@ mod tests {
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
-    use crate::config::{self, OfficeAccountsSegment};
+    use crate::config::OfficeAccountsSegment;
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -1536,6 +1560,46 @@ mod tests {
         let body = serde_json::to_string(&segment).expect("serialize accounts segment");
         config::save_office_accounts_segment(ctx.config_file_store.as_ref(), &body)
             .expect("save accounts");
+    }
+
+    #[test]
+    fn llm_config_route_returns_llm_segment_without_full_app_config_payload() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        let body = serde_json::json!({
+            "llm_sources": [{
+                "provider": "openai",
+                "api_key": "segment-key",
+                "model": "gpt-4o-mini",
+                "api_url": "https://api.openai.com/v1",
+                "max_tokens": 2048
+            }],
+            "llm_router_source_index": 0,
+            "llm_worker_source_index": 0
+        });
+        config::save_llm_segment(ctx.config_file_store.as_ref(), &body.to_string())
+            .expect("save llm segment");
+        ctx.reload_config();
+
+        let request = IncomingRequest {
+            method: "GET".to_string(),
+            uri: "/api/config/llm".to_string(),
+            headers: vec![("X-Pairing-Code".to_string(), "123456".to_string())],
+            body: Vec::new(),
+        };
+
+        let response = dispatch(&ctx, &env, request).expect("dispatch llm config route");
+        assert_eq!(response.status, 200);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse llm segment");
+        assert_eq!(parsed["llm_sources"][0]["provider"], "openai");
+        assert_eq!(parsed["llm_sources"][0]["api_key"], "segment-key");
+        assert_eq!(parsed["llm_sources"][0]["model"], "gpt-4o-mini");
+        assert_eq!(parsed["llm_router_source_index"], 0);
+        assert_eq!(parsed["llm_worker_source_index"], 0);
+        assert!(parsed.get("locale").is_none());
+        assert!(parsed.get("build_package").is_none());
     }
 
     #[test]

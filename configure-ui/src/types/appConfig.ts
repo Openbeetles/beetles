@@ -49,11 +49,30 @@ export interface AppConfig {
   llm_worker_source_index: number | null
 }
 
-/** POST /api/config/llm 请求体。 */
+/** GET/POST /api/config/llm 读写模型。 */
 export interface LlmConfigSegment {
   llm_sources: LlmSource[]
   llm_router_source_index?: number | null
   llm_worker_source_index?: number | null
+}
+
+export function llmConfigSegmentFromAppConfig(config: AppConfig): LlmConfigSegment {
+  const sources =
+    config.llm_sources?.length > 0
+      ? config.llm_sources
+      : [
+          {
+            provider: config.model_provider || "",
+            api_key: config.api_key || "",
+            model: config.model || "",
+            api_url: config.api_url || "",
+          },
+        ]
+  return {
+    llm_sources: sources.map((source) => ({ ...source })),
+    llm_router_source_index: config.llm_router_source_index ?? null,
+    llm_worker_source_index: config.llm_worker_source_index ?? null,
+  }
 }
 
 /** 可选启用通道值，与后端 ALLOWED_ENABLED_CHANNELS 一致。 */

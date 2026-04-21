@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { clearCsrfToken, fetchCsrfToken } from '../client.ts'
 import {
+  getConfig,
+  getLlm,
   createAccount,
   deleteAccount,
   getAccount,
@@ -63,6 +65,37 @@ test('account config GET endpoints hit the expected routes', async () => {
         'GET http://device/api/config/accounts?capability=calendar&provider_kind=feishu_calendar',
         'GET http://device/api/config/accounts/work-feishu',
       ],
+    )
+    for (const call of calls) {
+      assert.equal(call.headers.get('x-pairing-code'), '654321')
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
+test('config GET endpoints hit the expected routes', async () => {
+  clearCsrfToken()
+  const calls: Array<{ url: string; method: string; headers: Headers }> = []
+  const originalFetch = globalThis.fetch
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    const headers = new Headers(init?.headers)
+    calls.push({ url, method, headers })
+
+    return jsonResponse({ body: { ok: true } })
+  }) as typeof fetch
+
+  try {
+    await getConfig('http://device', '654321')
+    await getLlm('http://device', '654321')
+
+    assert.deepEqual(
+      calls.map(({ url, method }) => `${method} ${url}`),
+      ['GET http://device/api/config', 'GET http://device/api/config/llm'],
     )
     for (const call of calls) {
       assert.equal(call.headers.get('x-pairing-code'), '654321')

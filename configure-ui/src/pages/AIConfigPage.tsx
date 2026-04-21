@@ -159,43 +159,32 @@ function validateSources(
 export function AIConfigPage() {
   const { t } = useTranslation();
   const { ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
-  const { config, loadConfig, saveLlm, loading, error } = useConfig();
+  const { llmConfig, loadLlmConfig, saveLlm, llmLoading, llmError } = useConfig();
   const { setDirty } = useUnsaved();
   const [removeSourceIndex, setRemoveSourceIndex] = useState<number | null>(null);
   const saveFeedback = useSaveFeedback(t);
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
   useConfigPageLoad({
-    hasConfig: config !== null,
-    loading,
-    loadConfig,
+    hasConfig: llmConfig !== null,
+    loading: llmLoading,
+    loadConfig: loadLlmConfig,
     canLoad: ready && deviceConnected,
   });
   const syncedDraft = useMemo<LlmDraftState>(() => {
-    if (!config) {
+    if (!llmConfig) {
       return {
         sources: [],
         routerIndex: null,
         workerIndex: null,
       };
     }
-    const list =
-      config.llm_sources?.length > 0
-        ? config.llm_sources
-        : [
-            {
-              provider: config.model_provider || "",
-              api_key: config.api_key || "",
-              model: config.model || "",
-              api_url: config.api_url || "",
-            },
-          ];
     return {
-      sources: toSourceRows(list),
-      routerIndex: config.llm_router_source_index ?? null,
-      workerIndex: config.llm_worker_source_index ?? null,
+      sources: toSourceRows(llmConfig.llm_sources),
+      routerIndex: llmConfig.llm_router_source_index ?? null,
+      workerIndex: llmConfig.llm_worker_source_index ?? null,
     };
-  }, [config]);
+  }, [llmConfig]);
   const [draft, setDraft] = useSyncedState(syncedDraft);
   const { sources, routerIndex, workerIndex } = draft;
 
@@ -255,7 +244,7 @@ export function AIConfigPage() {
   };
 
   const handleSave = async () => {
-    if (!config) return;
+    if (!llmConfig) return;
     const err = validateSources(sources, routerIndex, workerIndex, t);
     if (err) {
       saveFeedback.fail(err);
@@ -277,7 +266,7 @@ export function AIConfigPage() {
     if (result.ok) setDirty(false);
   };
 
-  if (loading && !config) {
+  if (llmLoading && !llmConfig) {
     return (
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
@@ -295,23 +284,23 @@ export function AIConfigPage() {
     );
   }
 
-  const saveDisabled = !config || saveFeedback.status === "saving";
+  const saveDisabled = !llmConfig || saveFeedback.status === "saving";
   const showConnectionLoading =
-    !config && !loading && ready && connectionChecking && !deviceConnected;
+    !llmConfig && !llmLoading && ready && connectionChecking && !deviceConnected;
   const showConnectState =
-    !config && !loading && !showConnectionLoading && (!ready || !deviceConnected);
+    !llmConfig && !llmLoading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
-    !config && !loading && ready && deviceConnected && !hasPairing;
+    !llmConfig && !llmLoading && ready && deviceConnected && !hasPairing;
   const loadErrorState = splitPageErrorState({
-    hasData: Boolean(config),
-    loading,
-    error,
+    hasData: Boolean(llmConfig),
+    loading: llmLoading,
+    error: llmError,
     suppress: showConnectState || showPairingState || showConnectionLoading,
   });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={loadErrorState.inlineError} onRetry={loadConfig} />
+      <InlineAlert message={loadErrorState.inlineError} onRetry={loadLlmConfig} />
       <ConfirmDialog
         open={removeSourceIndex != null}
         onClose={() => setRemoveSourceIndex(null)}
@@ -335,7 +324,7 @@ export function AIConfigPage() {
             startIcon={<SaveRounded />}
             onClick={handleSave}
             disabled={saveDisabled}
-            title={!config ? t("config.hintSaveNeedDevice") : undefined}
+            title={!llmConfig ? t("config.hintSaveNeedDevice") : undefined}
             sx={{ borderRadius: "var(--radius-control)" }}
           >
             {saveFeedback.status === "saving" ? t("common.saving") : t("common.save")}
@@ -374,9 +363,9 @@ export function AIConfigPage() {
         ) : loadErrorState.blockingError ? (
           <PageLoadErrorState
             message={loadErrorState.blockingError}
-            onRetry={loadConfig}
+            onRetry={loadLlmConfig}
           />
-        ) : !config ? (
+        ) : !llmConfig ? (
           <PanelStateBlock
             tone="neutral"
             icon={<Os3dIcon src={OS_ICON_NAV["/ai-config"]} variant="inline" />}

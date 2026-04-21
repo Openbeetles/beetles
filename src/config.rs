@@ -945,7 +945,7 @@ pub fn set_locale(store: &dyn ConfigStore, locale: &str) -> Result<()> {
     Ok(())
 }
 
-/// POST /api/config/llm 请求体。
+/// GET/POST /api/config/llm 读写模型。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LlmSegment {
     pub llm_sources: Vec<LlmSource>,
@@ -953,6 +953,28 @@ pub struct LlmSegment {
     pub llm_router_source_index: Option<u32>,
     #[serde(default)]
     pub llm_worker_source_index: Option<u32>,
+}
+
+impl LlmSegment {
+    /// 从运行态 AppConfig 投影出当前 LLM 配置段；保留 legacy 单源字段回退语义。
+    pub fn from_app_config(config: &AppConfig) -> Self {
+        let llm_sources = if !config.llm_sources.is_empty() {
+            config.llm_sources.clone()
+        } else {
+            vec![LlmSource {
+                provider: config.model_provider.clone(),
+                api_key: config.api_key.clone(),
+                model: config.model.clone(),
+                api_url: config.api_url.clone(),
+                max_tokens: None,
+            }]
+        };
+        Self {
+            llm_sources,
+            llm_router_source_index: config.llm_router_source_index,
+            llm_worker_source_index: config.llm_worker_source_index,
+        }
+    }
 }
 
 /// 允许的 enabled_channel 取值；空表示不启用任何通道。
@@ -2824,6 +2846,46 @@ pub fn parse_allowed_chat_ids(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn llm_segment_from_app_config_prefers_runtime_llm_sources() {
+        let mut config = AppConfig::load_from_env();
+        config.llm_sources = vec![LlmSource {
+            provider: "openai".to_string(),
+            api_key: "source-key".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_url: "https://api.openai.com/v1".to_string(),
+            max_tokens: Some(2048),
+        }];
+        config.llm_router_source_index = Some(0);
+        config.llm_worker_source_index = Some(0);
+
+        let segment = LlmSegment::from_app_config(&config);
+        assert_eq!(segment.llm_sources.len(), 1);
+        assert_eq!(segment.llm_sources[0].api_key, "source-key");
+        assert_eq!(segment.llm_sources[0].model, "gpt-4o-mini");
+        assert_eq!(segment.llm_sources[0].max_tokens, Some(2048));
+        assert_eq!(segment.llm_router_source_index, Some(0));
+        assert_eq!(segment.llm_worker_source_index, Some(0));
+    }
+
+    #[test]
+    fn llm_segment_from_app_config_falls_back_to_legacy_single_source_fields() {
+        let mut config = AppConfig::load_from_env();
+        config.llm_sources.clear();
+        config.model_provider = "deepseek".to_string();
+        config.api_key = "legacy-key".to_string();
+        config.model = "deepseek-chat".to_string();
+        config.api_url = "https://api.deepseek.com".to_string();
+
+        let segment = LlmSegment::from_app_config(&config);
+        assert_eq!(segment.llm_sources.len(), 1);
+        assert_eq!(segment.llm_sources[0].provider, "deepseek");
+        assert_eq!(segment.llm_sources[0].api_key, "legacy-key");
+        assert_eq!(segment.llm_sources[0].model, "deepseek-chat");
+        assert_eq!(segment.llm_sources[0].api_url, "https://api.deepseek.com");
+        assert_eq!(segment.llm_sources[0].max_tokens, None);
+    }
 
     #[test]
     fn audio_validation_allows_empty_speech_fallback_when_wake_word_disabled() {

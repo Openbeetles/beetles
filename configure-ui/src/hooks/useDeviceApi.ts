@@ -45,6 +45,7 @@ export function useDeviceApi() {
     () => ({
       config: {
         get: () => configApi.getConfig(baseUrl ?? '', (pairingCode ?? '').trim()),
+        getLlm: () => configApi.getLlm(baseUrl ?? '', (pairingCode ?? '').trim()),
         saveLlm: (body: LlmConfigSegment) =>
           configApi.saveLlm(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveChannels: (body: ChannelsConfigSegment) =>

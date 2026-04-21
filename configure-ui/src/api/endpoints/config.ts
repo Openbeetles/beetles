@@ -39,6 +39,16 @@ export async function getConfig(baseUrl: string, pairingCode?: string): Promise<
   })
 }
 
+export async function getLlm(
+  baseUrl: string,
+  pairingCode?: string,
+): Promise<ApiResult<LlmConfigSegment>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  return request<LlmConfigSegment>(baseUrl, '/api/config/llm', {
+    pairingCode: pairingCode?.trim(),
+  })
+}
+
 export async function saveLlm(
   baseUrl: string,
   pairingCode: string,

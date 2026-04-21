@@ -14,6 +14,10 @@ export interface ConfigContextValue {
   loading: boolean
   error: string | null
   loadConfig: () => Promise<void>
+  llmConfig: LlmConfigSegment | null
+  llmLoading: boolean
+  llmError: string | null
+  loadLlmConfig: () => Promise<void>
   refreshCachedConfig: () => Promise<{ ok: boolean; error?: string }>
   clearCachedConfig: () => void
   saveLlm: (body: LlmConfigSegment) => Promise<{ ok: boolean; error?: string }>

@@ -6,6 +6,7 @@ import type {
   ChannelsConfigSegment,
   SystemConfigSegment,
 } from "../types/appConfig";
+import { llmConfigSegmentFromAppConfig } from "../types/appConfig";
 import type { DisplayConfig } from "../types/displayConfig";
 import { normalizeDisplayConfig } from "../types/displayConfig";
 import type { HardwareSegment } from "../types/hardwareConfig";
@@ -90,6 +91,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [llmConfig, setLlmConfig] = useState<LlmConfigSegment | null>(null);
+  const [llmLoading, setLlmLoading] = useState(false);
+  const [llmError, setLlmError] = useState<string | null>(null);
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig | null>(
     null,
   );
@@ -116,6 +120,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     setConfig(null);
     setLoading(false);
     setError(null);
+    setLlmConfig(null);
+    setLlmLoading(false);
+    setLlmError(null);
     setDisplayConfig(null);
     setDisplayLoading(false);
     setDisplayError(null);
@@ -145,8 +152,27 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       setLoading,
       setError,
       fetch: () => api.config.get() as Promise<ApiResult<AppConfig>>,
-      applySuccess: (data) => setConfig(data),
-      clearData: () => setConfig(null),
+      applySuccess: (data) => {
+        setConfig(data);
+        setLlmConfig(llmConfigSegmentFromAppConfig(data));
+      },
+      clearData: () => {
+        setConfig(null);
+        setLlmConfig(null);
+      },
+      isCurrent: () => deviceSessionKeyRef.current === sessionKey,
+    });
+  }, [api.config, deviceSessionKey, ready]);
+
+  const loadLlmConfig = useCallback(async () => {
+    const sessionKey = deviceSessionKey;
+    await loadDeviceSegment({
+      ready,
+      setLoading: setLlmLoading,
+      setError: setLlmError,
+      fetch: () => api.config.getLlm() as Promise<ApiResult<LlmConfigSegment>>,
+      applySuccess: (data) => setLlmConfig(data),
+      clearData: () => setLlmConfig(null),
       isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
   }, [api.config, deviceSessionKey, ready]);
@@ -165,7 +191,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: undefined };
     }
     if (res.ok && res.data != null && typeof res.data === "object") {
-      setConfig(res.data as AppConfig);
+      const data = res.data as AppConfig;
+      setConfig(data);
+      setLlmConfig(llmConfigSegmentFromAppConfig(data));
       setError(null);
       markDeviceReachable();
       return { ok: true };
@@ -177,10 +205,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async <TBody extends object,>(
       save: (body: TBody) => Promise<ApiResult<unknown>>,
       body: TBody,
+      applySuccess?: (body: TBody) => void,
     ): Promise<{ ok: boolean; error?: string }> => {
       const sessionKey = deviceSessionKey;
       const res = await save(body);
       if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+        applySuccess?.(body);
         setConfig((prev) => (prev ? { ...prev, ...body } : null));
       }
       return { ok: res.ok ?? false, error: mapSaveError(res.error) };
@@ -192,7 +222,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: LlmConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveConfigSegment(api.config.saveLlm, body);
+      return saveConfigSegment(api.config.saveLlm, body, setLlmConfig);
     },
     [api.config.saveLlm, saveConfigSegment],
   );
@@ -338,6 +368,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       loading,
       error,
       loadConfig,
+      llmConfig,
+      llmLoading,
+      llmError,
+      loadLlmConfig,
       refreshCachedConfig,
       clearCachedConfig,
       saveLlm,
@@ -364,6 +398,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       loading,
       error,
       loadConfig,
+      llmConfig,
+      llmLoading,
+      llmError,
+      loadLlmConfig,
       refreshCachedConfig,
       clearCachedConfig,
       saveLlm,

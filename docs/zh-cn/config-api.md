@@ -111,6 +111,22 @@
 
 返回体是完整配置对象，并额外带上 `locale` 和 `build_package`。这个结果包含敏感字段，不能直接暴露给无鉴权页面。
 
+**GET /api/config/llm**
+
+用途：只读取大模型配置段，避免为了 AI 配置页加载整包总配置。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+字段：
+
+- `llm_sources`
+- `llm_router_source_index`
+- `llm_worker_source_index`
+
+这个接口不返回 `locale`、`build_package`，也不携带其他配置段。
+
 **POST /api/config/wifi**
 
 用途：保存网络配置。
