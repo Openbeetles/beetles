@@ -5,11 +5,15 @@ use super::ChannelHttpClient;
 use crate::bus::OutboundKind;
 use crate::error::Result;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
+static NEXT_QUEUED_OUTBOUND_ID: AtomicU32 = AtomicU32::new(1);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueuedOutboundMessage {
+    pub transport_send_id: u32,
     pub chat_id: String,
     pub content: String,
     pub req_id: Option<String>,
@@ -23,6 +27,10 @@ pub(crate) enum SenderLoopEvent {
     Message(QueuedOutboundMessage),
     Timeout,
     Disconnected,
+}
+
+pub(crate) fn next_queued_outbound_id() -> u32 {
+    NEXT_QUEUED_OUTBOUND_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 /// 根据 POST 结果打一次 warn：Err 或 status >= 400。
@@ -315,6 +323,7 @@ mod tests {
         let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
         tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-a".to_string(),
             content: "first".to_string(),
             req_id: None,
@@ -322,6 +331,7 @@ mod tests {
         })
         .expect("send first");
         tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-b".to_string(),
             content: "second".to_string(),
             req_id: None,
@@ -329,6 +339,7 @@ mod tests {
         })
         .expect("send second");
         tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-c".to_string(),
             content: "third".to_string(),
             req_id: None,
@@ -361,6 +372,7 @@ mod tests {
         let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
             chat_id: "chat-a".to_string(),
             content: "supplemental".to_string(),
             req_id: Some("req-1".to_string()),

@@ -124,7 +124,21 @@ export function TopBar() {
     boxShadow: "var(--os3d-breadcrumb-lift-stack)",
   } as const;
 
-  const macTitlebarLaneInset = "88px";
+  if (macTauriWindow) {
+    return (
+      <Box
+        component="header"
+        sx={{
+          flexShrink: 0,
+          minHeight: titlebarMinHeight,
+          backgroundColor: "transparent",
+          backgroundImage: "none",
+          borderBottom: "none",
+        }}
+        data-tauri-drag-region=""
+      />
+    );
+  }
 
   return (
     <Box
@@ -135,11 +149,7 @@ export function TopBar() {
         display: "flex",
         alignItems: "stretch",
         justifyContent: "flex-start",
-        pl: macTauriWindow
-          ? macTitlebarLaneInset
-          : desktopShellWindow
-            ? "16px"
-            : { xs: 2, sm: 3 },
+        pl: desktopShellWindow ? "16px" : { xs: 2, sm: 3 },
         pr: desktopShellWindow ? "16px" : { xs: 2, sm: 3 },
         pt: titlebarPaddingTop,
         position: "relative",
@@ -147,7 +157,6 @@ export function TopBar() {
         borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
         gap: 0,
       }}
-      data-tauri-drag-region={macTauriWindow ? "" : undefined}
     >
       <Stack
         direction="row"
@@ -178,7 +187,6 @@ export function TopBar() {
                 alignItems: "center",
                 justifyContent: "center",
               }}
-              data-tauri-drag-region={macTauriWindow ? "" : undefined}
             >
               {meta?.iconSrc ? (
                 <Os3dIcon
@@ -237,11 +245,10 @@ export function TopBar() {
           </Tooltip>
         )}
         {desktopShellWindow ? (
-          <Box sx={{ flex: 1 }} data-tauri-drag-region={macTauriWindow ? "" : undefined} />
+          <Box sx={{ flex: 1 }} />
         ) : (
           <Box
             sx={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center" }}
-            data-tauri-drag-region={macTauriWindow ? "" : undefined}
           >
             <Box
               sx={{

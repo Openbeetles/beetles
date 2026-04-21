@@ -71,6 +71,7 @@ impl MessageSink for QueuedSink {
         let content = truncate_content_to_max(content, MAX_CONTENT_LEN);
         self.tx
             .try_send(super::send::QueuedOutboundMessage {
+                transport_send_id: super::send::next_queued_outbound_id(),
                 chat_id: chat_id.to_string(),
                 content: content.into_owned(),
                 req_id: req_id.map(str::to_string),

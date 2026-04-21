@@ -6,7 +6,7 @@ use crate::platform::state_mount_path;
 use crate::platform::wifi::linux_ctrl::hostapd_ctrl;
 use crate::platform::wifi::linux_ctrl::net;
 use crate::platform::wifi::linux_ctrl::process::{
-    is_pid_alive, run_checked, signal_pid as signal_process, write_secure_atomic,
+    self, is_pid_alive, run_checked, signal_pid as signal_process, write_secure_atomic,
 };
 use crate::platform::wifi::linux_ctrl::HOSTAPD_CTRL_INTERFACE_DIR;
 use std::collections::HashSet;
@@ -56,6 +56,7 @@ fn hostapd_process_matches_owned(identity: &process::ProcessIdentity, conf_path:
 }
 
 /// Parse dnsmasq argv and confirm it points at beetle-owned config or pidfile.
+#[cfg(test)]
 fn dnsmasq_cmdline_matches_owned_paths(
     cmdline: &[u8],
     conf_path: &Path,
