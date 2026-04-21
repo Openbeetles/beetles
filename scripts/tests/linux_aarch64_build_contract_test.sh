@@ -25,13 +25,13 @@ assert_absent() {
   fi
 }
 
-assert_contains '5\) BUILD_TARGET="aarch64-unknown-linux-musl"' \
+assert_contains 'BUILD_TARGET="aarch64-unknown-linux-musl"' \
   "Linux aarch64 cross-build default must remain musl before native Linux overrides are applied"
 
 gnu_assignment_lines=$(rg -n 'BUILD_TARGET="aarch64-unknown-linux-gnu"' "$BUILD_SH" | cut -d: -f1 || true)
 gnu_assignment_count=$(printf '%s\n' "$gnu_assignment_lines" | sed '/^$/d' | wc -l | tr -d ' ')
-if [[ "$gnu_assignment_count" != "2" ]]; then
-  echo "FAIL: Linux native aarch64 and remote aarch64 paths must both assign the GNU target" >&2
+if [[ "$gnu_assignment_count" != "3" ]]; then
+  echo "FAIL: Linux native, remote, and Docker aarch64 paths must all assign the GNU target" >&2
   rg -n 'BUILD_TARGET="aarch64-unknown-linux-gnu"' "$BUILD_SH" >&2 || true
   exit 1
 fi
@@ -40,8 +40,12 @@ assert_contains 'elif \[\[ \$PLATFORM_CHOICE -eq 5 \]\] && \[\[ "\$CURRENT_ARCH"
   "Linux native aarch64 path must explicitly switch option 5 to GNU"
 assert_contains 'REMOTE_BUILD_TARGET_ENV="linux-aarch64"' \
   "remote aarch64 builds must still keep the dedicated GNU remote target contract"
+assert_contains 'linux_apply_docker_target_for_platform\(\)' \
+  "Linux Docker path must keep a dedicated target-selection override hook"
 assert_contains 'BUILD_TARGET="aarch64-unknown-linux-gnu"' \
-  "Linux native and remote aarch64 paths must keep the GNU target contract"
+  "Linux Docker aarch64 path must also switch option 5 to the GNU target"
+assert_contains 'BUILD_TARGET="aarch64-unknown-linux-gnu"' \
+  "Linux native, remote, and Docker aarch64 paths must keep the GNU target contract"
 assert_contains 'linux-full\)' \
   "linux-full package profile branch must exist"
 assert_contains 'linux-full\)[[:space:]]*$' \

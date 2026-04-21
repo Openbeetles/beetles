@@ -23,24 +23,44 @@ if [[ ! -f "$SCRIPT_PATH" ]]; then
   exit 1
 fi
 
-assert_contains "$SCRIPT_PATH" 'CONTAINER_NAME="beetle-linux-aarch64"' \
-  "bootstrap script must pin the beginner-facing container name"
-assert_contains "$SCRIPT_PATH" 'IMAGE="rust:1-bookworm"' \
-  "bootstrap script must use the official Rust Bookworm image"
-assert_contains "$SCRIPT_PATH" '--platform linux/arm64' \
-  "bootstrap script must create a Linux arm64 container"
-assert_contains "$SCRIPT_PATH" '-v "\$ROOT_DIR:/workspace"' \
-  "bootstrap script must mount the Beetle repository into /workspace"
-assert_contains "$SCRIPT_PATH" 'sleep infinity' \
-  "bootstrap script must create a persistent container instead of a one-shot build"
-assert_contains "$SCRIPT_PATH" 'apt-get install -y build-essential pkg-config libasound2-dev libudev-dev ca-certificates curl wget git' \
-  "bootstrap script must install the Linux build prerequisites"
-assert_contains "$SCRIPT_PATH" 'docker exec -it \$CONTAINER_NAME bash' \
-  "bootstrap script must print the command for entering the container"
-assert_contains "$SCRIPT_PATH" 'cargo build --release --target aarch64-unknown-linux-gnu' \
-  "bootstrap script must guide users to the GNU aarch64 build command"
+assert_contains "$SCRIPT_PATH" '^CONTAINER_NAME="beetle-linux-aarch64"$' \
+  "aarch64 helper must keep the public container name stable"
+assert_contains "$SCRIPT_PATH" '^IMAGE="rust:1-bookworm"$' \
+  "aarch64 helper must use the official Rust Bookworm image"
+assert_contains "$SCRIPT_PATH" '^WORKDIR_IN_CONTAINER="/workspace/beetle"$' \
+  "aarch64 helper must mount beetle at the shared workspace path"
+assert_contains "$SCRIPT_PATH" '^BUILD_TARGET="aarch64-unknown-linux-gnu"$' \
+  "aarch64 helper must target the GNU aarch64 build"
+assert_contains "$SCRIPT_PATH" '^TARGET_LINKER="aarch64-linux-gnu-gcc"$' \
+  "aarch64 helper must define the GNU cross linker"
+assert_contains "$SCRIPT_PATH" '^CONTAINER_PATH="/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"$' \
+  "aarch64 helper must preserve cargo and rustup on PATH inside the container"
+assert_contains "$SCRIPT_PATH" '^DOCKER_PLATFORM="\$\(host_docker_platform\)"$' \
+  "aarch64 helper must choose the Docker platform from the host architecture"
+assert_contains "$SCRIPT_PATH" '^uses_cross_toolchain\(\) \{$' \
+  "aarch64 helper must distinguish native arm64 hosts from cross-build hosts"
+assert_contains "$SCRIPT_PATH" 'docker "\$\{docker_create_args\[@\]\}" "\$IMAGE" sleep infinity >/dev/null' \
+  "aarch64 helper must create a reusable named container"
+assert_contains "$SCRIPT_PATH" '--platform "\$DOCKER_PLATFORM"' \
+  "aarch64 helper must use the host-architecture Docker platform instead of a fixed qemu path"
+assert_contains "$SCRIPT_PATH" '-v "\$ROOT_DIR:/workspace/beetle"' \
+  "aarch64 helper must bind-mount the Beetle repo into the container"
+assert_contains "$SCRIPT_PATH" 'dpkg --print-foreign-architectures \| grep -qx arm64 \|\| dpkg --add-architecture arm64' \
+  "aarch64 helper must enable arm64 multiarch when cross-building from non-arm64 hosts"
+assert_contains "$SCRIPT_PATH" 'apt-get update -o Acquire::Retries=5' \
+  "aarch64 helper must retry apt metadata refresh for transient mirror failures"
+assert_contains "$SCRIPT_PATH" 'apt-get install -y -o Acquire::Retries=5 --fix-missing' \
+  "aarch64 helper must retry package downloads for transient mirror failures"
+assert_contains "$SCRIPT_PATH" '^retry_in_container\(\) \{$' \
+  "aarch64 helper must centralize transient network retries in one helper"
+assert_contains "$SCRIPT_PATH" 'retry_in_container "rustup target add \$BUILD_TARGET"' \
+  "aarch64 helper must retry rustup target downloads for transient network failures"
+assert_contains "$SCRIPT_PATH" 'rustup target add \$BUILD_TARGET' \
+  "aarch64 helper must install the Rust aarch64 GNU target"
+assert_contains "$SCRIPT_PATH" 'cargo build --release --target aarch64-unknown-linux-gnu --no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor,capability_office' \
+  "aarch64 helper must advertise the exact GNU container build command"
 
-assert_contains "$BUILD_SH" 'scripts/docker/linux_aarch64_build_docker\.sh' \
-  "build.sh help should point Linux aarch64 users at the one-shot Docker bootstrap script"
+assert_contains "$BUILD_SH" 'bash "\$SCRIPT_ROOT/scripts/docker/linux_aarch64_build_docker\.sh"' \
+  "build.sh must invoke the internal aarch64 helper from the public Docker build path"
 
 echo "linux_aarch64_build_docker_bootstrap_test: ok"

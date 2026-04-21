@@ -1,13 +1,13 @@
-Beetle Linux bundle (musl)
-==========================
+Beetle Linux bundle
+===================
 
 Audience
 --------
-This tarball is for integrators and manual trials. **End-user one-click / SSH install is not the story yet**—that will follow in a separate product flow. Optional context: docs/en-us/linux-release-rollback.md (or docs/zh-cn/linux-release-rollback.md).
+This tarball is for manual installs, integrators, and release inspection. The primary public SSH deploy flow is still `./build.sh --deploy-linux`. Optional context: docs/en-us/linux-release-rollback.md (or docs/zh-cn/linux-release-rollback.md).
 
 Binary
 ------
-- `beetle`: statically linked (musl). `./build.sh --deploy-linux` installs to `/opt/beetle/releases/<release>/`, updates `/opt/beetle/current`, maintains `/opt/beetle/rollback` for the previous release, and creates `/usr/local/bin/beetle -> /opt/beetle/current/beetle` as the global command entry. Start the Linux runtime with `beetle run`; control plane and agent share the same process.
+- `beetle`: the exact Linux ABI depends on the build target (`musl` or GNU). `./build.sh --deploy-linux` installs to `/opt/beetle/releases/<release>/`, updates `/opt/beetle/current`, maintains `/opt/beetle/rollback`, and creates `/usr/local/bin/beetle -> /opt/beetle/current/beetle` as the primary global command entry. On embedded shells whose default `PATH` omits `/usr/local/bin`, deploy also creates `/usr/bin/beetle` as a fallback command entry. Start the Linux runtime with `beetle run`; control plane and agent share the same process.
 - The deploy flow writes `/var/lib/beetle/runtime/linux_release/state.json` with rollout state `pending_validation`. The runtime marks the release `steady` after it survives the validation window, or flips back to `rollback` on repeated quick failures.
 - The deploy flow also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote state root `skills/` directory. Existing user-created runtime skills on the device are left in place unless a shipped file has the same name.
 - **WiFi addressing**: Beetle sets AP/STA addresses via **rtnetlink** in-process; the **`ip` utility is not required** for those steps (you still need `wpa_supplicant` / `hostapd` / `dnsmasq` / `iw` where the code invokes them).

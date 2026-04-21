@@ -25,7 +25,17 @@ assert_contains 'run_linux_docker_build "\$BUILD_TARGET" "\$\{RELEASE_ARGS\[@\]\
   "docker build helper call sites must forward RELEASE_ARGS so features and build args are preserved"
 assert_contains 'rustup target add x86_64-unknown-linux-musl && \$cargo_cmd' \
   "x86_64 docker helper must run the shared cargo command"
-assert_contains 'bash -c "\$cargo_cmd"' \
-  "armv7/aarch64 docker helpers must run the shared cargo command"
+assert_contains 'bash "\$SCRIPT_ROOT/scripts/docker/linux_armv7_build_docker\.sh"' \
+  "armv7 docker build must bootstrap the shared GNU helper container"
+assert_contains 'docker exec beetle-linux-armv7-gnu-cross /bin/bash -lc' \
+  "armv7 docker build must compile inside the prepared helper container"
+assert_contains 'bash "\$SCRIPT_ROOT/scripts/docker/linux_aarch64_build_docker\.sh"' \
+  "aarch64 docker build must bootstrap the shared GNU helper container"
+assert_contains 'docker exec beetle-linux-aarch64 /bin/bash -lc' \
+  "aarch64 docker build must compile inside the prepared helper container"
+assert_contains 'Docker build target \$target is deprecated' \
+  "deprecated ARM musl docker targets must fail explicitly instead of silently using stale paths"
+assert_contains 'if \[\[ -z "\$\{USE_DOCKER:-\}" \]\]; then' \
+  "local rustup target installation must stay behind the non-Docker guard"
 
 echo "linux_docker_build_contract_test: ok"

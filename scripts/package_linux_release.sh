@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build one or more beetle-${VERSION}-linux-<arch>-musl.tar.gz bundles from cross-built binaries
+# Build one or more beetle-${VERSION}-linux-<arch>.tar.gz bundles from cross-built binaries
 # plus packaging/linux templates.
 # Usage:
 #   ./scripts/package_linux_release.sh --version v0.1.0 --armv7 path/to/beetle [--aarch64 path/to/beetle] [--riscv64 path/to/beetle] [--output-dir dist]
@@ -54,7 +54,7 @@ mkdir -p "$OUTPUT_DIR"
 make_tarball() {
   local triple="$1"
   local bin_path="$2"
-  local name="beetle-${VERSION}-linux-${triple}-musl"
+  local name="beetle-${VERSION}-linux-${triple}"
   local stag_dir
   stag_dir="$(mktemp -d "${TMPDIR:-/tmp}/beetle-pkg-${triple}.XXXXXX")"
   mkdir -p "$stag_dir/$name"

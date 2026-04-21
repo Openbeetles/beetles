@@ -12,6 +12,7 @@
 - `/opt/beetle/current`
 - `/opt/beetle/rollback`
 - `/usr/local/bin/beetle`
+- `/usr/bin/beetle`（当目标 shell 默认 `PATH` 不含 `/usr/local/bin` 时作为兼容入口）
 - `/var/lib/beetle`
 
 其中：
@@ -19,6 +20,7 @@
 - `current` 指向当前版本
 - `rollback` 指向上一个可回退版本
 - `/usr/local/bin/beetle` 是全局命令入口
+- 某些嵌入式 shell 不搜 `/usr/local/bin` 时，会额外创建 `/usr/bin/beetle`
 
 ## 运行入口
 
@@ -60,11 +62,14 @@ Linux 服务入口现在是：
 - 回滚版本： `/opt/beetle/rollback`
 - 发布状态： `/var/lib/beetle/runtime/linux_release/state.json`
 - 全局命令： `/usr/local/bin/beetle`
+- 兼容命令： `/usr/bin/beetle`（如果存在）
 
 ## 直接命令
 
 - 看发布状态： `beetle release status`
 - 请求回滚： `beetle release rollback`
+- 重启托管服务： `beetle restart`
+- 停止托管服务： `beetle stop`
 
 ## 几个直接结论
 

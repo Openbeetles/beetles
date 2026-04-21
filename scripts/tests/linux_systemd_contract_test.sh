@@ -33,8 +33,6 @@ assert_absent() {
 
 assert_contains "$ROOT_DIR/src/runtime/mod.rs" '^pub mod linux_systemd;$' \
   "runtime::linux_systemd must be exposed on Linux builds"
-assert_contains "$MAIN_RS" 'linux_systemd::run_beetle_systemd_action' \
-  "main.rs must delegate Linux service actions through runtime::linux_systemd"
 assert_contains "$RELEASE_RS" 'linux_systemd::inspect_beetle_systemd_unit_consistency' \
   "linux_release.rs must delegate systemd unit inspection through runtime::linux_systemd"
 

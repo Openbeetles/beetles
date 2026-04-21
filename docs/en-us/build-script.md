@@ -83,7 +83,6 @@ TARGET=linux ./build.sh
 TARGET=linux-armv7 ./build.sh
 TARGET=linux-aarch64 ./build.sh
 ./build.sh --deploy-linux
-./scripts/docker/linux_armv7_build_docker.sh
 ```
 
 Direct takeaways:
@@ -91,7 +90,8 @@ Direct takeaways:
 - On an interactive terminal, a successful Linux build asks whether to deploy over SSH right away
 - `--deploy-linux` does not compile; it only deploys an existing artifact
 - `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetle state root `skills/` directory; it does not remove user-created skills already on the device
-- `scripts/docker/linux_armv7_build_docker.sh` prepares the dedicated local armv7 GNU build container used for the Orange Pi class workflow
+- `./build.sh` is the only public Linux build/deploy entry; the Docker helper scripts are internal helpers behind `BUILD_METHOD=docker`
+- For ARM Linux targets, `BUILD_METHOD=docker` automatically boots the matching host-architecture GNU build container
 - Deployment modes, paths, and rollback live in [linux-release-rollback.md](linux-release-rollback.md)
 
 ## Package Profiles
@@ -144,9 +144,8 @@ BUILD_METHOD=remote TARGET=linux ./build.sh
 Direct takeaways:
 
 - On Linux hosts, `auto` usually becomes a local build
-- On macOS building Linux, `auto` prefers Docker; if the Docker daemon is not running, it falls back to local musl-cross
+- On macOS building Linux, `auto` prefers Docker; if the Docker daemon is not running, it falls back to the local non-Docker Linux path for the selected target
 - `remote` is only for Linux targets; the script then asks for the remote host, remote directory, and what to do with the artifact after build
-- If you only want a ready Linux aarch64 GNU build container, use `./scripts/docker/linux_aarch64_build_docker.sh`
 
 ## Interactive Prompt And Non-Interactive Use
 

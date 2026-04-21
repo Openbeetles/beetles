@@ -12,6 +12,7 @@ The current deploy script maintains these paths:
 - `/opt/beetle/current`
 - `/opt/beetle/rollback`
 - `/usr/local/bin/beetle`
+- `/usr/bin/beetle` (fallback on shells whose default `PATH` omits `/usr/local/bin`)
 - `/var/lib/beetle`
 
 In practice:
@@ -19,6 +20,7 @@ In practice:
 - `current` points to the active release
 - `rollback` points to the previous rollback candidate
 - `/usr/local/bin/beetle` is the global command entry
+- some embedded shells also receive `/usr/bin/beetle` as a compatibility entry
 
 ## Runtime entrypoints
 
@@ -60,11 +62,14 @@ If it fails quickly and repeatedly during the validation window, Beetle prefers 
 - rollback candidate: `/opt/beetle/rollback`
 - release state: `/var/lib/beetle/runtime/linux_release/state.json`
 - global command: `/usr/local/bin/beetle`
+- compatibility command: `/usr/bin/beetle` (when present)
 
 ## Direct commands
 
 - show release status: `beetle release status`
 - request rollback: `beetle release rollback`
+- restart the managed service: `beetle restart`
+- stop the managed service: `beetle stop`
 
 ## Direct takeaways
 

@@ -16,22 +16,51 @@
 
 DAEMON="/opt/beetle/current/beetle"
 PIDFILE="/var/run/beetle.pid"
+PIDDIR="$(dirname "$PIDFILE")"
+
+is_running() {
+  if [ ! -f "$PIDFILE" ]; then
+    return 1
+  fi
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
 
 case "$1" in
   start)
+    if is_running; then
+      echo "beetle already running"
+      exit 0
+    fi
     echo "Starting beetle..."
+    mkdir -p "$PIDDIR"
     start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -- run || exit 1
     ;;
   stop)
+    if ! is_running; then
+      echo "beetle is not running"
+      rm -f "$PIDFILE"
+      exit 0
+    fi
     echo "Stopping beetle..."
     start-stop-daemon -K -p "$PIDFILE" || exit 1
+    rm -f "$PIDFILE"
     ;;
   restart)
     "$0" stop
     "$0" start
     ;;
+  status)
+    if is_running; then
+      echo "beetle is running"
+      exit 0
+    fi
+    echo "beetle is stopped"
+    exit 1
+    ;;
   *)
-    echo "Usage: $0 {start|stop|restart}"
+    echo "Usage: $0 {start|stop|restart|status}"
     exit 1
     ;;
 esac

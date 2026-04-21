@@ -437,13 +437,7 @@ fn inspect_systemd_unit_consistency() -> Option<bool> {
 }
 
 fn inspect_init_script_consistency() -> Option<bool> {
-    let path = Path::new("/etc/init.d/beetle");
-    let content = std::fs::read_to_string(path).ok()?;
-    Some(
-        content
-            .lines()
-            .any(|line| line.contains("start-stop-daemon -S") && line.contains("-- supervise")),
-    )
+    crate::runtime::linux_service::inspect_beetle_init_script_consistency()
 }
 
 fn atomic_symlink(target: &Path, link_path: &Path) -> Result<()> {

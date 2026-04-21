@@ -1771,15 +1771,6 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
         beetle::util::current_unix_secs(),
     );
     let os_closure = beetle::runtime::inspect_beetle_os_closure(&presence, &initiative);
-    match presence.supervisor.as_ref() {
-        Some(snapshot) => {
-            println!(
-                "✓ Supervisor status readable (pid={} alive={} agent_alive={})",
-                snapshot.state.supervisor_pid, snapshot.supervisor_alive, snapshot.agent_alive
-            );
-        }
-        None => println!("⚠ Supervisor status not found"),
-    }
     println!(
         "✓ Presence resolved (state={} runtime_mode={})",
         presence.state.as_str(),
@@ -1842,48 +1833,45 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_restart_command() {
-    match beetle::runtime::linux_systemd::run_beetle_systemd_action("restart") {
+    match beetle::runtime::linux_service::run_beetle_service_action("restart") {
         Ok(Some(status)) if status.success() => {
             println!("beetle service restart requested.");
             return;
         }
         Ok(Some(status)) => {
-            eprintln!(
-                "systemctl restart beetle failed with exit status: {}",
-                status
-            );
+            eprintln!("beetle service restart failed with exit status: {}", status);
             std::process::exit(status.code().unwrap_or(1));
         }
         Ok(None) => {}
         Err(error) => {
-            eprintln!("failed to run systemctl restart beetle: {}", error);
+            eprintln!("failed to run beetle service restart: {}", error);
             std::process::exit(1);
         }
     }
 
-    eprintln!("restart requires a systemd-managed beetle service.");
+    eprintln!("restart requires a managed beetle service (systemd or /etc/init.d/beetle).");
     std::process::exit(1);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_stop_command() {
-    match beetle::runtime::linux_systemd::run_beetle_systemd_action("stop") {
+    match beetle::runtime::linux_service::run_beetle_service_action("stop") {
         Ok(Some(status)) if status.success() => {
             println!("beetle service stop requested.");
             return;
         }
         Ok(Some(status)) => {
-            eprintln!("systemctl stop beetle failed with exit status: {}", status);
+            eprintln!("beetle service stop failed with exit status: {}", status);
             std::process::exit(status.code().unwrap_or(1));
         }
         Ok(None) => {}
         Err(error) => {
-            eprintln!("failed to run systemctl stop beetle: {}", error);
+            eprintln!("failed to run beetle service stop: {}", error);
             std::process::exit(1);
         }
     }
 
-    eprintln!("stop requires a systemd-managed beetle service.");
+    eprintln!("stop requires a managed beetle service (systemd or /etc/init.d/beetle).");
     std::process::exit(1);
 }
 
@@ -2317,6 +2305,7 @@ fn prepare_runtime_assembly(
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let state_fs_ready = platform.spiffs_usage().is_some();
+    let wall_clock_valid = beetle::platform::time::wall_clock_is_trustworthy();
     let http_client_ready = network_governor
         .open_http_client(HttpClientClass::Background)
         .is_ok();
@@ -2329,10 +2318,11 @@ fn prepare_runtime_assembly(
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
         .unwrap_or_else(|| "N/A".to_string());
     log::info!(
-        "[{}] startup self-check ok (storage readable, wifi_init={}, sta_up={}, spiffs={})",
+        "[{}] startup self-check ok (storage readable, wifi_init={}, sta_up={}, wall_clock_valid={}, spiffs={})",
         TAG,
         wifi_init_status,
         sta_up,
+        wall_clock_valid,
         spiffs_info
     );
     beetle::orchestrator::observe_runtime_capabilities_from_platform(
@@ -2400,19 +2390,7 @@ fn start_support_planes(
         })
         .map_err(|error| beetle::Error::io("config_plane_spawn", error))?;
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            log::info!(
-                "[{}] HTTP config API server started (ESP WiFi config API; bootstrap SoftAP at {})",
-                TAG,
-                SOFTAP_DEFAULT_IPV4
-            );
-            beetle::orchestrator::log_startup_memory_checkpoint("config_api_started");
-        }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        log::info!(
-            "[{}] HTTP config API server started (config API on LAN; BEETLE_CONFIG_HTTP_LISTEN, default 0.0.0.0:80)",
-            TAG
-        );
+        beetle::orchestrator::log_startup_memory_checkpoint("config_api_spawned");
     }
 
     beetle::bg_timer::run_bg_timer(beetle::bg_timer::BgTimerContext {

@@ -7,7 +7,7 @@ INIT_SCRIPT="$ROOT_DIR/packaging/linux/beetle.init"
 
 assert_contains() {
   local pattern="$1"
-  if ! grep -Eq "$pattern" "$INIT_SCRIPT"; then
+  if ! grep -Eq -- "$pattern" "$INIT_SCRIPT"; then
     echo "FAIL: missing pattern '$pattern' in $INIT_SCRIPT" >&2
     exit 1
   fi
@@ -21,5 +21,7 @@ assert_contains '^# Default-Start:[[:space:]]+2 3 4 5$'
 assert_contains '^# Default-Stop:[[:space:]]+0 1 6$'
 assert_contains '^# Short-Description:[[:space:]]+Beetle runtime$'
 assert_contains '^### END INIT INFO$'
+assert_contains '-- run'
+assert_contains 'status\)'
 
 echo "linux_sysv_init_header_test: ok"

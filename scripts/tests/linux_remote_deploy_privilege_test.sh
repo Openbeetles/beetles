@@ -33,16 +33,48 @@ assert_contains 'linux_remote_prepare_privileged_prefix\(\)' \
   "remote deploy should detect whether sudo is needed before writing system paths"
 assert_contains 'PRIVILEGED_PREFIX' \
   "remote deploy/install commands should run under a sudo-aware privileged prefix"
+assert_contains 'DEPLOY_ALT_GLOBAL_BIN="/usr/bin/beetle"' \
+  "deploy should define a fallback global command for shells that omit /usr/local/bin from PATH"
+assert_contains 'DEPLOY_PIDFILE="/var/run/beetle.pid"' \
+  "deploy should keep a shared init-service pidfile path for non-systemd hosts"
 assert_contains 'linux_deploy_upload_embed_deps \|\| return 1' \
   "embed-deps upload failures must stop deployment"
 assert_contains 'linux_deploy_install_payloads \|\| return 1' \
   "payload install failures must stop deployment before success messaging"
+assert_contains 'linux_remote_run_script_with_optional_sudo "\$remote_cmd" << '\''REMOTE_EOF'\'' \|\| return 1' \
+  "payload install must propagate remote install failures back to the deploy flow"
 assert_contains 'linux_deploy_manage_service \|\| return 1' \
   "service-management failures must stop deployment before success messaging"
 assert_contains 'linux_deploy_verify_remote_install \|\| return 1' \
   "remote verification failures must stop deployment before showing success"
 assert_contains 'linux_deploy_verify_remote_install' \
   "remote deployment should still verify the installed layout"
+assert_contains 'command -v systemctl >/dev/null 2>&1 \|\| \[ -d "\$service_dir" \]' \
+  "full deploy must skip installing a systemd unit on hosts that do not provide systemd"
+assert_contains 'mkdir -p "\$env_dir"' \
+  "full deploy must create the env-file directory before installing beetle.env.example"
+assert_contains 'ln -sfn "\$DEPLOY_CURRENT_LINK/beetle" "\$DEPLOY_ALT_GLOBAL_BIN"' \
+  "deploy must create the fallback /usr/bin command when /usr/local/bin is not on PATH"
+assert_contains 'Fallback command: \$DEPLOY_ALT_GLOBAL_BIN' \
+  "deployment summary should mention the fallback global command path"
+assert_contains 'DEPLOY_INIT_PATH='\''\$DEPLOY_INIT_PATH'\''' \
+  "remote verification must receive the init-script path for non-systemd hosts"
+assert_contains 'elif \[ -f "\$DEPLOY_INIT_PATH" \]; then' \
+  "remote verification must accept the installed init script on non-systemd hosts"
+assert_contains 'echo "     - Init script: \$DEPLOY_INIT_PATH"' \
+  "deployment summary must print the init script path on non-systemd hosts"
+assert_contains 'if \[ "\$REMOTE_HAS_SYSTEMD" = "1" \]; then' \
+  "remote install state should distinguish systemd and non-systemd service managers"
+assert_contains 'elif \[ -f "\$DEPLOY_INIT_PATH" \]; then' \
+  "service handling must manage beetle through the init script when systemd is unavailable"
+assert_contains '"\$DEPLOY_INIT_PATH" start' \
+  "full deploy on non-systemd hosts must be able to start the installed init service"
+assert_contains '"\$DEPLOY_INIT_PATH" restart' \
+  "smart update on non-systemd hosts must be able to restart an active init service"
+assert_contains 'Init service: active' \
+  "remote verification should report init-service state when the init script is installed"
+assert_contains 'init script is installed but currently stopped' \
+  "deployment summary should give the same operator guidance on non-systemd hosts"
 
 verify_line=$(rg -n 'linux_deploy_verify_remote_install' "$BUILD_SH" | head -n1 | cut -d: -f1)
 show_line=$(rg -n 'linux_deploy_show_next_steps' "$BUILD_SH" | head -n1 | cut -d: -f1)

@@ -47,15 +47,14 @@ Quick examples:
   TARGET=linux ./build.sh --package-profile linux-full
   TARGET=linux-armv7 ./build.sh
   TARGET=linux-aarch64 ./build.sh
-  ./scripts/docker/linux_aarch64_build_docker.sh
   TARGET=esp ./build.sh
   TARGET=esp ./build.sh --package-profile voice
   TARGET=esp ./build.sh --flash
   ./build.sh --deploy-linux
 
 Notes:
-  - On macOS building Linux musl, auto mode uses Docker only if the daemon is running; otherwise musl-cross (Homebrew).
-  - For option 5 beginner setup, run: ./scripts/docker/linux_aarch64_build_docker.sh
+  - On macOS building Linux, auto mode uses Docker only if the daemon is running; otherwise the selected local Linux cross-build path.
+  - BUILD_METHOD=docker bootstraps the required internal helper containers for ARM Linux targets automatically.
   - Force local: BUILD_METHOD=local ./build.sh
   - Force Docker: BUILD_METHOD=docker ./build.sh
   - Force remote: BUILD_METHOD=remote ./build.sh
@@ -747,9 +746,11 @@ DEPLOY_RELEASES_DIR="$DEPLOY_ROOT/releases"
 DEPLOY_CURRENT_LINK="$DEPLOY_ROOT/current"
 DEPLOY_ROLLBACK_LINK="$DEPLOY_ROOT/rollback"
 DEPLOY_GLOBAL_BIN="/usr/local/bin/beetle"
+DEPLOY_ALT_GLOBAL_BIN="/usr/bin/beetle"
 DEPLOY_STATE_DIR="/var/lib/beetle"
 DEPLOY_SERVICE_PATH="/etc/systemd/system/beetle.service"
 DEPLOY_INIT_PATH="/etc/init.d/beetle"
+DEPLOY_PIDFILE="/var/run/beetle.pid"
 DEPLOY_ENV_PATH="/etc/default/beetle"
 PRIVILEGED_PREFIX=""
 
@@ -952,8 +953,8 @@ linux_remote_select_build_role() {
 linux_apply_docker_target_for_platform() {
     case "$PLATFORM_CHOICE" in
         3) BUILD_TARGET="x86_64-unknown-linux-musl" ;;
-        4) BUILD_TARGET="armv7-unknown-linux-musleabihf" ;;
-        5) BUILD_TARGET="aarch64-unknown-linux-musl" ;;
+        4) BUILD_TARGET="armv7-unknown-linux-gnueabihf" ;;
+        5) BUILD_TARGET="aarch64-unknown-linux-gnu" ;;
     esac
 }
 
@@ -1089,8 +1090,10 @@ linux_deploy_probe_remote_install_state() {
 
     REMOTE_HAS_SYSTEMD=0
     REMOTE_HAS_SERVICE=0
+    REMOTE_HAS_INIT=0
     REMOTE_SERVICE_ACTIVE=0
     REMOTE_SERVICE_ENABLED=0
+    REMOTE_INIT_ACTIVE=0
     REMOTE_HAS_CURRENT_BIN=0
     REMOTE_HAS_GLOBAL_BIN=0
     REMOTE_CURRENT_TARGET=""
@@ -1108,6 +1111,11 @@ linux_deploy_probe_remote_install_state() {
             else
                 echo HAS_SERVICE=0
             fi
+            if [ -f /etc/init.d/beetle ]; then
+                echo HAS_INIT=1
+            else
+                echo HAS_INIT=0
+            fi
             if [ -x /opt/beetle/current/beetle ]; then
                 echo HAS_CURRENT_BIN=1
             else
@@ -1123,6 +1131,16 @@ linux_deploy_probe_remote_install_state() {
                 echo CURRENT_TARGET=$target
             else
                 echo CURRENT_TARGET=
+            fi
+            if [ -f /var/run/beetle.pid ]; then
+                pid=$(cat /var/run/beetle.pid 2>/dev/null || true)
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    echo INIT_ACTIVE=1
+                else
+                    echo INIT_ACTIVE=0
+                fi
+            else
+                echo INIT_ACTIVE=0
             fi
             if command -v systemctl >/dev/null 2>&1 && [ -e /etc/systemd/system/beetle.service ]; then
                 if systemctl is-active --quiet beetle; then
@@ -1148,8 +1166,10 @@ linux_deploy_probe_remote_install_state() {
         case "$key" in
             HAS_SYSTEMD) REMOTE_HAS_SYSTEMD=${value:-0} ;;
             HAS_SERVICE) REMOTE_HAS_SERVICE=${value:-0} ;;
+            HAS_INIT) REMOTE_HAS_INIT=${value:-0} ;;
             SERVICE_ACTIVE) REMOTE_SERVICE_ACTIVE=${value:-0} ;;
             SERVICE_ENABLED) REMOTE_SERVICE_ENABLED=${value:-0} ;;
+            INIT_ACTIVE) REMOTE_INIT_ACTIVE=${value:-0} ;;
             HAS_CURRENT_BIN) REMOTE_HAS_CURRENT_BIN=${value:-0} ;;
             HAS_GLOBAL_BIN) REMOTE_HAS_GLOBAL_BIN=${value:-0} ;;
             CURRENT_TARGET) REMOTE_CURRENT_TARGET=$value ;;
@@ -1158,6 +1178,8 @@ linux_deploy_probe_remote_install_state() {
 
     if [ "$REMOTE_HAS_SYSTEMD" = "1" ]; then
         echo "  Service manager: systemd"
+    elif [ "$REMOTE_HAS_INIT" = "1" ]; then
+        echo "  Service manager: init.d"
     else
         echo "  Service manager: none detected"
     fi
@@ -1165,6 +1187,11 @@ linux_deploy_probe_remote_install_state() {
         echo "  beetle.service: present"
     else
         echo "  beetle.service: missing"
+    fi
+    if [ "$REMOTE_HAS_INIT" = "1" ]; then
+        echo "  beetle init script: present"
+    else
+        echo "  beetle init script: missing"
     fi
     if [ "$REMOTE_HAS_CURRENT_BIN" = "1" ]; then
         echo "  Current release: $DEPLOY_CURRENT_LINK"
@@ -1185,6 +1212,12 @@ linux_deploy_probe_remote_install_state() {
         else
             echo "  Service status: installed and disabled/stopped"
         fi
+    elif [ "$REMOTE_HAS_INIT" = "1" ]; then
+        if [ "$REMOTE_INIT_ACTIVE" = "1" ]; then
+            echo "  Init service status: active"
+        else
+            echo "  Init service status: installed but not running"
+        fi
     fi
     echo ""
 }
@@ -1192,7 +1225,7 @@ linux_deploy_probe_remote_install_state() {
 # Select deployment mode
 linux_deploy_select_deploy_mode() {
     local default_mode="2"
-    if [ "${REMOTE_HAS_SERVICE:-0}" = "1" ] || [ "${REMOTE_HAS_CURRENT_BIN:-0}" = "1" ] || [ "${REMOTE_HAS_GLOBAL_BIN:-0}" = "1" ]; then
+    if [ "${REMOTE_HAS_SERVICE:-0}" = "1" ] || [ "${REMOTE_HAS_INIT:-0}" = "1" ] || [ "${REMOTE_HAS_CURRENT_BIN:-0}" = "1" ] || [ "${REMOTE_HAS_GLOBAL_BIN:-0}" = "1" ]; then
         default_mode="3"
     fi
 
@@ -1465,8 +1498,8 @@ linux_deploy_install_payloads() {
     echo "========== Installing Payload =========="
     echo ""
 
-    local remote_cmd="env DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' REMOTE_TMP_SKILLS_DIR='$REMOTE_TMP_SKILLS_DIR' sh -s"
-    linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF'
+    local remote_cmd="env DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_RELEASES_DIR='$DEPLOY_RELEASES_DIR' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_ROLLBACK_LINK='$DEPLOY_ROLLBACK_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_ALT_GLOBAL_BIN='$DEPLOY_ALT_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_ENV_PATH='$DEPLOY_ENV_PATH' DEPLOY_RELEASE_NAME='$DEPLOY_RELEASE_NAME' REMOTE_TMP_BIN='$REMOTE_TMP_BIN' REMOTE_TMP_SERVICE='$REMOTE_TMP_SERVICE' REMOTE_TMP_INIT='$REMOTE_TMP_INIT' REMOTE_TMP_ENV='$REMOTE_TMP_ENV' REMOTE_TMP_README='$REMOTE_TMP_README' REMOTE_TMP_HWJSON='$REMOTE_TMP_HWJSON' REMOTE_TMP_SKILLS_DIR='$REMOTE_TMP_SKILLS_DIR' sh -s"
+    linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF' || return 1
 set -eu
 
 release_dir="$DEPLOY_RELEASES_DIR/$DEPLOY_RELEASE_NAME"
@@ -1527,6 +1560,17 @@ else
     rm -f "$DEPLOY_ROLLBACK_LINK"
 fi
 ln -sfn "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_GLOBAL_BIN"
+if [ -n "${DEPLOY_ALT_GLOBAL_BIN:-}" ] && [ "$DEPLOY_ALT_GLOBAL_BIN" != "$DEPLOY_GLOBAL_BIN" ]; then
+    case ":${PATH:-}:" in
+        *":$(dirname "$DEPLOY_GLOBAL_BIN"):"*)
+            ;;
+        *)
+            if [ ! -e "$DEPLOY_ALT_GLOBAL_BIN" ] || [ -L "$DEPLOY_ALT_GLOBAL_BIN" ]; then
+                ln -sfn "$DEPLOY_CURRENT_LINK/beetle" "$DEPLOY_ALT_GLOBAL_BIN"
+            fi
+            ;;
+    esac
+fi
 if [ -f "$release_dir/README.txt" ]; then
     ln -sfn "$DEPLOY_CURRENT_LINK/README.txt" "$DEPLOY_ROOT/README.txt"
 fi
@@ -1571,14 +1615,22 @@ fi
 } > "$state_schema_path"
 
 if [ -f "$REMOTE_TMP_SERVICE" ]; then
-    mv "$REMOTE_TMP_SERVICE" "$DEPLOY_SERVICE_PATH"
-    chmod 644 "$DEPLOY_SERVICE_PATH"
+    service_dir="$(dirname "$DEPLOY_SERVICE_PATH")"
+    if command -v systemctl >/dev/null 2>&1 || [ -d "$service_dir" ]; then
+        mkdir -p "$service_dir"
+        mv "$REMOTE_TMP_SERVICE" "$DEPLOY_SERVICE_PATH"
+        chmod 644 "$DEPLOY_SERVICE_PATH"
+    else
+        rm -f "$REMOTE_TMP_SERVICE"
+    fi
 fi
 if [ -f "$REMOTE_TMP_INIT" ] && [ -d /etc/init.d ]; then
     mv "$REMOTE_TMP_INIT" "$DEPLOY_INIT_PATH"
     chmod 755 "$DEPLOY_INIT_PATH"
 fi
 if [ -f "$REMOTE_TMP_ENV" ]; then
+    env_dir="$(dirname "$DEPLOY_ENV_PATH")"
+    mkdir -p "$env_dir"
     if [ ! -f "$DEPLOY_ENV_PATH" ]; then
         mv "$REMOTE_TMP_ENV" "$DEPLOY_ENV_PATH"
         chmod 644 "$DEPLOY_ENV_PATH"
@@ -1598,6 +1650,9 @@ else
     echo "✓ Rollback symlink: none"
 fi
 echo "✓ Global command: $DEPLOY_GLOBAL_BIN -> $DEPLOY_CURRENT_LINK/beetle"
+if [ -n "${DEPLOY_ALT_GLOBAL_BIN:-}" ] && [ "$(readlink -f "$DEPLOY_ALT_GLOBAL_BIN" 2>/dev/null || true)" = "$release_dir/beetle" ]; then
+    echo "✓ Fallback command: $DEPLOY_ALT_GLOBAL_BIN -> $DEPLOY_CURRENT_LINK/beetle"
+fi
 REMOTE_EOF
 
     echo ""
@@ -1613,9 +1668,18 @@ linux_deploy_manage_service() {
         return 0
     fi
 
-    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' sh -s"
+    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_PIDFILE='$DEPLOY_PIDFILE' sh -s"
     linux_remote_run_script_with_optional_sudo "$remote_cmd" << 'REMOTE_EOF'
 set -eu
+
+init_service_active() {
+    if [ ! -f "$DEPLOY_PIDFILE" ]; then
+        return 1
+    fi
+    pid=$(cat "$DEPLOY_PIDFILE" 2>/dev/null || true)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
 
 if command -v systemctl >/dev/null 2>&1; then
     if [ "$DEPLOY_MODE" = "2" ]; then
@@ -1646,8 +1710,27 @@ if command -v systemctl >/dev/null 2>&1; then
     else
         echo "No beetle.service on device; binary updated only."
     fi
-elif [ "$DEPLOY_MODE" = "2" ] && [ -f "$DEPLOY_INIT_PATH" ]; then
-    echo "systemd not detected; installed init example at $DEPLOY_INIT_PATH"
+elif [ -f "$DEPLOY_INIT_PATH" ]; then
+    if [ "$DEPLOY_MODE" = "2" ]; then
+        if command -v update-rc.d >/dev/null 2>&1; then
+            update-rc.d beetle defaults >/dev/null 2>&1 || true
+        elif command -v chkconfig >/dev/null 2>&1; then
+            chkconfig --add beetle >/dev/null 2>&1 || true
+            chkconfig beetle on >/dev/null 2>&1 || true
+        fi
+        if init_service_active; then
+            "$DEPLOY_INIT_PATH" restart
+            echo "✓ beetle init service restarted"
+        else
+            "$DEPLOY_INIT_PATH" start
+            echo "✓ beetle init service started"
+        fi
+    elif init_service_active; then
+        "$DEPLOY_INIT_PATH" restart
+        echo "✓ beetle init service restarted"
+    else
+        echo "beetle init script exists but is stopped; left unchanged."
+    fi
 else
     echo "No service manager automation available; binary updated only."
 fi
@@ -1660,12 +1743,21 @@ linux_deploy_verify_remote_install() {
     echo "========== Remote Verification =========="
     echo ""
 
-    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' OFFICIAL_SKILLS_EXPECTED='${OFFICIAL_SKILLS_EXPECTED:-0}' sh -s"
+    local remote_cmd="env DEPLOY_MODE='$DEPLOY_MODE' DEPLOY_ROOT='$DEPLOY_ROOT' DEPLOY_CURRENT_LINK='$DEPLOY_CURRENT_LINK' DEPLOY_GLOBAL_BIN='$DEPLOY_GLOBAL_BIN' DEPLOY_ALT_GLOBAL_BIN='$DEPLOY_ALT_GLOBAL_BIN' DEPLOY_STATE_DIR='$DEPLOY_STATE_DIR' DEPLOY_SERVICE_PATH='$DEPLOY_SERVICE_PATH' DEPLOY_INIT_PATH='$DEPLOY_INIT_PATH' DEPLOY_PIDFILE='$DEPLOY_PIDFILE' OFFICIAL_SKILLS_EXPECTED='${OFFICIAL_SKILLS_EXPECTED:-0}' sh -s"
     ssh "${SSH_MUX_OPTS[@]}" -p "$SSH_PORT" "${DEVICE_USER}@${DEVICE_IP}" \
-        "$remote_cmd" << 'REMOTE_EOF'
+        "$remote_cmd" << 'REMOTE_EOF' || return 1
 set -eu
 
 missing=0
+
+init_service_active() {
+    if [ ! -f "$DEPLOY_PIDFILE" ]; then
+        return 1
+    fi
+    pid=$(cat "$DEPLOY_PIDFILE" 2>/dev/null || true)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
 
 echo "Paths:"
 if [ -L "$DEPLOY_CURRENT_LINK" ]; then
@@ -1681,10 +1773,16 @@ else
     echo "  global command -> missing"
     missing=1
 fi
+if [ -n "${DEPLOY_ALT_GLOBAL_BIN:-}" ] && [ -e "$DEPLOY_ALT_GLOBAL_BIN" ]; then
+    echo "  fallback command:"
+    ls -l "$DEPLOY_ALT_GLOBAL_BIN"
+fi
 if [ -e "$DEPLOY_SERVICE_PATH" ]; then
     echo "  service file -> $DEPLOY_SERVICE_PATH"
+elif [ -f "$DEPLOY_INIT_PATH" ]; then
+    echo "  init script -> $DEPLOY_INIT_PATH"
 elif [ "$DEPLOY_MODE" = "2" ]; then
-    echo "  service file -> missing"
+    echo "  service/install hook -> missing"
     missing=1
 fi
 if [ -d "$DEPLOY_STATE_DIR" ]; then
@@ -1707,6 +1805,15 @@ if [ "${OFFICIAL_SKILLS_EXPECTED:-0}" -gt 0 ]; then
     fi
 fi
 echo ""
+
+if [ -f "$DEPLOY_INIT_PATH" ]; then
+    if init_service_active; then
+        echo "Init service: active"
+    else
+        echo "Init service: installed but not running"
+    fi
+    echo ""
+fi
 
 if command -v systemctl >/dev/null 2>&1 && [ -f "$DEPLOY_SERVICE_PATH" ]; then
     exec_start_line=$(grep -E '^ExecStart=' "$DEPLOY_SERVICE_PATH" 2>/dev/null || true)
@@ -1760,8 +1867,13 @@ linux_deploy_show_next_steps() {
     echo "  1. Main paths:"
     echo "     - Current release: $DEPLOY_CURRENT_LINK"
     echo "     - Global command: $DEPLOY_GLOBAL_BIN"
+    echo "     - Fallback command: $DEPLOY_ALT_GLOBAL_BIN (used when /usr/local/bin is not on PATH)"
     echo "     - State directory: $DEPLOY_STATE_DIR"
-    echo "     - Service config: $DEPLOY_SERVICE_PATH"
+    if [ "${REMOTE_HAS_SYSTEMD:-0}" = "1" ]; then
+        echo "     - Service config: $DEPLOY_SERVICE_PATH"
+    else
+        echo "     - Init script: $DEPLOY_INIT_PATH"
+    fi
     echo ""
     echo "  2. Start beetle manually if needed:"
     echo "     - Direct run: beetle run"
@@ -1778,6 +1890,16 @@ linux_deploy_show_next_steps() {
         else
             echo "  3. systemd service is installed but disabled:"
             echo "     systemctl enable --now beetle"
+        fi
+        echo ""
+        echo "  4. Configure WiFi (after WiFi stack works):"
+    elif [ "${REMOTE_HAS_INIT:-0}" = "1" ]; then
+        if [ "${REMOTE_INIT_ACTIVE:-0}" = "1" ]; then
+            echo "  3. init service is already active; restart if needed:"
+            echo "     $DEPLOY_INIT_PATH restart"
+        else
+            echo "  3. init script is installed but currently stopped:"
+            echo "     $DEPLOY_INIT_PATH start"
         fi
         echo ""
         echo "  4. Configure WiFi (after WiFi stack works):"
@@ -1812,6 +1934,7 @@ linux_deploy_main() {
     linux_deploy_manage_service || return 1
     linux_deploy_report_wifi_tools_on_device || return 1
     linux_deploy_verify_remote_install || return 1
+    linux_deploy_probe_remote_install_state >/dev/null 2>&1 || true
     linux_deploy_show_next_steps
 }
 
@@ -1827,6 +1950,7 @@ run_linux_docker_build() {
   local cargo_args=("$@")
   local cargo_args_quoted=""
   local cargo_cmd="cargo build"
+  local helper_path_env="/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   local arg
 
   if [[ "$BUILD_PROFILE" == "release" ]]; then
@@ -1846,14 +1970,17 @@ run_linux_docker_build() {
     docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/workspace -w /workspace \
       rust:latest \
       bash -c "rustup target add x86_64-unknown-linux-musl && $cargo_cmd"
-  elif [[ "$target" == "armv7-unknown-linux-musleabihf" ]]; then
-    docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
-      messense/rust-musl-cross:armv7-musleabihf \
-      bash -c "$cargo_cmd"
-  elif [[ "$target" == "aarch64-unknown-linux-musl" ]]; then
-    docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/home/rust/src -w /home/rust/src \
-      messense/rust-musl-cross:aarch64-musl \
-      bash -c "$cargo_cmd"
+  elif [[ "$target" == "armv7-unknown-linux-gnueabihf" ]]; then
+    bash "$SCRIPT_ROOT/scripts/docker/linux_armv7_build_docker.sh"
+    docker exec beetle-linux-armv7-gnu-cross /bin/bash -lc \
+      "export PATH='$helper_path_env'; cd /workspace/beetle && $cargo_cmd"
+  elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+    bash "$SCRIPT_ROOT/scripts/docker/linux_aarch64_build_docker.sh"
+    docker exec beetle-linux-aarch64 /bin/bash -lc \
+      "export PATH='$helper_path_env'; cd /workspace/beetle && $cargo_cmd"
+  elif [[ "$target" == "armv7-unknown-linux-musleabihf" || "$target" == "aarch64-unknown-linux-musl" ]]; then
+    echo "Error: Docker build target $target is deprecated. Re-run with the current GNU Docker path." >&2
+    exit 1
   else
     echo "Error: Docker build not supported for target: $target" >&2
     exit 1
@@ -3328,10 +3455,10 @@ EOF
     ensure_local_stable_toolchain
     ensure_local_linux_native_build_prereqs
     ensure_local_linux_musl_build_prereqs
-  fi
-  if ! rustup +stable target list --installed | grep -q "$BUILD_TARGET"; then
-    echo "  Adding target: $BUILD_TARGET"
-    rustup +stable target add "$BUILD_TARGET"
+    if ! rustup +stable target list --installed | grep -q "$BUILD_TARGET"; then
+      echo "  Adding target: $BUILD_TARGET"
+      rustup +stable target add "$BUILD_TARGET"
+    fi
   fi
 
   # 跳过 ESP 工具链检查
@@ -3412,6 +3539,16 @@ fi
 
 # Linux 构建用 stable 工具链
 if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
+  if [[ -n "${USE_DOCKER:-}" ]]; then
+    run_linux_docker_build "$BUILD_TARGET" "${RELEASE_ARGS[@]}"
+    echo ""
+    echo "========== $MSG_BUILD_COMPLETE =========="
+    echo "  $MSG_BINARY: $BIN"
+    ls -lh "$BIN" 2>/dev/null || echo "  (check target/$BUILD_TARGET/release/beetle)"
+    prompt_deploy_maybe
+    exit 0
+  fi
+
   if ! cargo +stable build --release "${RELEASE_ARGS[@]}"; then
     # Auto fallback: local musl build failed on macOS, retry with Docker if available.
     if [[ "$(uname -s)" == "Darwin" ]] && [[ "$BUILD_TARGET" =~ -unknown-linux-musl ]] && [[ -z "${USE_DOCKER:-}" ]] && command -v docker &>/dev/null && docker info &>/dev/null; then
