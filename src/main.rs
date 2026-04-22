@@ -15,23 +15,35 @@ use beetle::bus::IngressKind;
 ))]
 #[cfg_attr(test, allow(unused_imports))]
 use beetle::constants::SOFTAP_DEFAULT_IPV4;
-use beetle::network::{execute_stream_http_op, HttpClientClass, HttpFactory, NetworkGovernor};
+#[cfg(feature = "feishu")]
+use beetle::network::{execute_stream_http_op, HttpFactory};
+use beetle::network::{HttpClientClass, NetworkGovernor};
+#[cfg(any(feature = "telegram", feature = "feishu"))]
+use beetle::parse_allowed_chat_ids;
 #[cfg(feature = "feishu")]
 use beetle::run_feishu_ws_loop;
 #[cfg(feature = "cli")]
 use beetle::runtime::spawn_planned;
 use beetle::runtime::{spawn_planned_handle, thread_plan};
+#[cfg(feature = "telegram")]
+use beetle::send_chat_action;
+#[cfg(any(feature = "feishu", feature = "qq_channel"))]
+use beetle::util::STACK_CHANNEL_WS;
 use beetle::util::STACK_VOICE_CONTROL;
-use beetle::util::{STACK_AGENT_LOOP, STACK_CHANNEL_SENDER, STACK_CHANNEL_WS, STACK_DISPATCH};
+use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use beetle::Esp32Platform;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use beetle::LinuxPlatform;
 use beetle::Platform;
-use beetle::{
-    parse_allowed_chat_ids, run_agent_loop, run_dispatch, send_chat_action, AppConfig, MessageBus,
-    DEFAULT_CAPACITY,
-};
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+use beetle::DISPLAY_CHANNEL_CAPACITY;
+use beetle::{run_agent_loop, run_dispatch, AppConfig, MessageBus, DEFAULT_CAPACITY};
 #[cfg(any(
     test,
     target_arch = "xtensa",
@@ -43,8 +55,10 @@ use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, Display
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use clap::Parser;
 
+#[cfg(any(feature = "feishu", feature = "dingtalk", feature = "qq_channel"))]
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(any(feature = "feishu", feature = "dingtalk", feature = "qq_channel"))]
 use std::sync::Mutex;
 #[cfg(feature = "config_api")]
 use std::sync::RwLock;
@@ -74,6 +88,7 @@ struct StartedVoiceSession {
     tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
 }
 
+#[cfg(feature = "telegram")]
 struct TelegramTypingNotifier {
     token: String,
 }
@@ -115,13 +130,23 @@ struct PreparedRuntimeAssembly {
     resolve_locale_ui: Arc<dyn Fn() -> beetle::i18n::Locale + Send + Sync>,
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     bus: RuntimeBus,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "feishu",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     dingtalk_session_store: beetle::channels::DingtalkSessionStore,
+    #[cfg(feature = "qq_channel")]
     qq_msg_id_cache: beetle::channels::QqMsgIdCache,
+    #[cfg(feature = "qq_channel")]
     qq_inbound_dedup_store: beetle::channels::QqInboundDedupStore,
+    #[cfg(feature = "qq_channel")]
     qq_token_cache: beetle::channels::SharedQqTokenCache,
+    #[cfg(feature = "qq_channel")]
     qq_ws_status: beetle::channels::SharedQqWsStatus,
     registry: Arc<beetle::ToolRegistry>,
     baidu_token_cache: Option<Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
@@ -133,6 +158,7 @@ struct PreparedRuntimeAssembly {
     communication_plane: CommunicationPlaneStartup,
 }
 
+#[cfg(feature = "telegram")]
 impl beetle::TypingNotifier for TelegramTypingNotifier {
     fn notify(&mut self, channel: &str, chat_id: &str, http: &mut dyn beetle::PlatformHttpClient) {
         if channel == beetle::CHANNEL_TELEGRAM {
@@ -154,19 +180,40 @@ struct HttpServerSpawnContext {
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "feishu",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     dingtalk_session_store: beetle::channels::DingtalkSessionStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     msg_id_cache: beetle::channels::QqMsgIdCache,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     inbound_dedup_store: beetle::channels::QqInboundDedupStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     qq_webhook_enabled: bool,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     qq_app_id: String,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     qq_secret: String,
 }
 
@@ -198,6 +245,7 @@ fn heap_used_percent(snapshot: &beetle::orchestrator::ResourceSnapshot) -> u8 {
     ((used as u64 * 100) / baseline as u64).min(100) as u8
 }
 
+#[cfg(feature = "feishu")]
 struct FeishuStreamEditor {
     app_id: String,
     app_secret: String,
@@ -205,6 +253,7 @@ struct FeishuStreamEditor {
     state: Mutex<beetle::FeishuTokenCache>,
 }
 
+#[cfg(feature = "feishu")]
 impl beetle::StreamEditor for FeishuStreamEditor {
     fn send_initial(&self, chat_id: &str, content: &str) -> beetle::Result<Option<String>> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -299,12 +348,19 @@ fn spawn_http_config_server(
             ctx.system_inbound_tx,
             ctx.skill_prompt_cache,
             ctx.inbound_tx,
+            #[cfg(feature = "feishu")]
             ctx.feishu_message_dedup_store,
+            #[cfg(feature = "dingtalk")]
             ctx.dingtalk_session_store,
+            #[cfg(feature = "qq_channel")]
             ctx.msg_id_cache,
+            #[cfg(feature = "qq_channel")]
             ctx.inbound_dedup_store,
+            #[cfg(feature = "qq_channel")]
             ctx.qq_webhook_enabled,
+            #[cfg(feature = "qq_channel")]
             ctx.qq_app_id,
+            #[cfg(feature = "qq_channel")]
             ctx.qq_secret,
             ctx.shared_config,
         );
@@ -383,6 +439,7 @@ fn voice_sink_sender(
         .map(|session| session.tx.clone())
 }
 
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
 fn finalize_required_thread_start<F>(
     tag: &str,
     started_label: &str,
@@ -399,6 +456,7 @@ where
     Ok(())
 }
 
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
 fn spawn_required_planned_thread<F>(
     tag: &str,
     name: &str,
@@ -496,7 +554,7 @@ mod tests {
         finalize_required_thread_start, register_process_memory_snapshot_provider,
         startup_banner_lines, voice_sink_sender, StartedVoiceSession, VERSION,
     };
-    use beetle::config::default_disabled_audio_segment;
+    use beetle::{config::default_disabled_audio_segment, DISPLAY_CHANNEL_CAPACITY};
     use std::sync::{Arc, Mutex};
 
     struct TestMemoryStore {
@@ -753,30 +811,40 @@ mod tests {
         let channels = [
             DisplayChannelStatus {
                 name: "qq",
+                display_label: "QQ",
+                visible: true,
                 enabled: true,
                 healthy: true,
                 consecutive_failures: 0,
             },
             DisplayChannelStatus {
                 name: "tg",
+                display_label: "TG",
+                visible: true,
                 enabled: false,
                 healthy: false,
                 consecutive_failures: 2,
             },
             DisplayChannelStatus {
                 name: "fs",
+                display_label: "FS",
+                visible: true,
                 enabled: false,
                 healthy: true,
                 consecutive_failures: 0,
             },
             DisplayChannelStatus {
                 name: "dt",
+                display_label: "DT",
+                visible: true,
                 enabled: false,
                 healthy: true,
                 consecutive_failures: 0,
             },
             DisplayChannelStatus {
                 name: "wc",
+                display_label: "WC",
+                visible: true,
                 enabled: false,
                 healthy: true,
                 consecutive_failures: 0,
@@ -817,7 +885,7 @@ mod tests {
             last_state: Some(DisplaySystemState::Busy),
             last_presence_subtitle: Some("busy".to_string()),
             last_ip: "192.168.4.1".to_string(),
-            last_channels: [(true, false, 3); 5],
+            last_channels: [(true, false, 3); DISPLAY_CHANNEL_CAPACITY],
             last_pressure: Some(DisplayPressureLevel::Critical),
             last_heap: 77,
             last_msg_in: 11,
@@ -831,7 +899,10 @@ mod tests {
         assert_eq!(state.last_state, None);
         assert_eq!(state.last_presence_subtitle, None);
         assert!(state.last_ip.is_empty());
-        assert_eq!(state.last_channels, [(false, false, 0); 5]);
+        assert_eq!(
+            state.last_channels,
+            [(false, false, 0); DISPLAY_CHANNEL_CAPACITY]
+        );
         assert_eq!(state.last_pressure, None);
         assert_eq!(state.last_heap, 255);
         assert_eq!(state.last_msg_in, u32::MAX);
@@ -1018,7 +1089,7 @@ struct DisplayLoopState {
     last_state: Option<DisplaySystemState>,
     last_presence_subtitle: Option<String>,
     last_ip: String,
-    last_channels: [(bool, bool, u32); 5],
+    last_channels: [(bool, bool, u32); DISPLAY_CHANNEL_CAPACITY],
     last_pressure: Option<DisplayPressureLevel>,
     last_heap: u8,
     last_msg_in: u32,
@@ -1056,7 +1127,7 @@ impl Default for DisplayLoopState {
             last_state: None,
             last_presence_subtitle: None,
             last_ip: String::new(),
-            last_channels: [(false, false, 0); 5],
+            last_channels: [(false, false, 0); DISPLAY_CHANNEL_CAPACITY],
             last_pressure: None,
             last_heap: 255,
             last_msg_in: u32::MAX,
@@ -1174,7 +1245,7 @@ fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopSta
     loop_state.last_state = None;
     loop_state.last_presence_subtitle = None;
     loop_state.last_ip.clear();
-    loop_state.last_channels = [(false, false, 0); 5];
+    loop_state.last_channels = [(false, false, 0); DISPLAY_CHANNEL_CAPACITY];
     loop_state.last_pressure = None;
     loop_state.last_heap = 255;
     loop_state.last_msg_in = u32::MAX;
@@ -1192,7 +1263,7 @@ fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopSta
 struct DisplayLoopCacheUpdate<'a> {
     presence_subtitle: &'a Option<String>,
     ip: &'a String,
-    channels: &'a [DisplayChannelStatus; 5],
+    channels: &'a [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
     pressure: Option<DisplayPressureLevel>,
     heap_percent: Option<u8>,
     msg_in: Option<u32>,
@@ -1255,39 +1326,25 @@ fn update_display_loop_cache(
 fn build_display_channels(
     enabled: &str,
     snapshot: &beetle::orchestrator::ResourceSnapshot,
-) -> [DisplayChannelStatus; 5] {
-    [
-        DisplayChannelStatus {
-            name: "telegram",
-            enabled: enabled == "telegram",
-            healthy: snapshot.channels.telegram.healthy,
-            consecutive_failures: snapshot.channels.telegram.consecutive_failures,
-        },
-        DisplayChannelStatus {
-            name: "feishu",
-            enabled: enabled == "feishu",
-            healthy: snapshot.channels.feishu.healthy,
-            consecutive_failures: snapshot.channels.feishu.consecutive_failures,
-        },
-        DisplayChannelStatus {
-            name: "dingtalk",
-            enabled: enabled == "dingtalk",
-            healthy: snapshot.channels.dingtalk.healthy,
-            consecutive_failures: snapshot.channels.dingtalk.consecutive_failures,
-        },
-        DisplayChannelStatus {
-            name: "wecom",
-            enabled: enabled == "wecom",
-            healthy: snapshot.channels.wecom.healthy,
-            consecutive_failures: snapshot.channels.wecom.consecutive_failures,
-        },
-        DisplayChannelStatus {
-            name: "qq_channel",
-            enabled: enabled == "qq_channel",
-            healthy: snapshot.channels.qq_channel.healthy,
-            consecutive_failures: snapshot.channels.qq_channel.consecutive_failures,
-        },
-    ]
+) -> [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY] {
+    let mut channels = [DisplayChannelStatus::hidden(); DISPLAY_CHANNEL_CAPACITY];
+    let normalized_enabled = beetle::normalize_compiled_enabled_channel(enabled);
+    for (index, entry) in beetle::display_channel_entries().enumerate() {
+        let (healthy, consecutive_failures) = snapshot
+            .channels
+            .get(entry.id)
+            .map(|channel| (channel.healthy, channel.consecutive_failures))
+            .unwrap_or((false, 0));
+        channels[index] = DisplayChannelStatus {
+            name: entry.id,
+            display_label: entry.display_label,
+            visible: true,
+            enabled: normalized_enabled == entry.id,
+            healthy,
+            consecutive_failures,
+        };
+    }
+    channels
 }
 
 #[cfg(any(
@@ -2286,16 +2343,26 @@ fn prepare_runtime_assembly(
         &bus.system_inbound_tx,
     );
 
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "feishu",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     let feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore =
         Arc::new(Mutex::new(HashMap::new()));
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     let dingtalk_session_store: beetle::channels::DingtalkSessionStore =
         Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(feature = "qq_channel")]
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(feature = "qq_channel")]
     let qq_inbound_dedup_store: beetle::channels::QqInboundDedupStore =
         Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(feature = "qq_channel")]
     let qq_token_cache = beetle::channels::new_shared_qq_token_cache();
+    #[cfg(feature = "qq_channel")]
     let qq_ws_status = beetle::channels::new_shared_qq_ws_status();
     #[allow(unused_variables)]
     let (mut registry, baidu_token_cache) = beetle::build_default_registry(&config, &runtime);
@@ -2398,13 +2465,23 @@ fn prepare_runtime_assembly(
         resolve_locale_ui,
         skill_prompt_cache,
         bus,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "feishu",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         feishu_message_dedup_store,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "dingtalk",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         dingtalk_session_store,
+        #[cfg(feature = "qq_channel")]
         qq_msg_id_cache,
+        #[cfg(feature = "qq_channel")]
         qq_inbound_dedup_store,
+        #[cfg(feature = "qq_channel")]
         qq_token_cache,
+        #[cfg(feature = "qq_channel")]
         qq_ws_status,
         registry,
         baidu_token_cache,
@@ -2436,20 +2513,41 @@ fn start_support_planes(
             skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
             inbound_tx: assembly.bus.user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "feishu",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             feishu_message_dedup_store: Arc::clone(&assembly.feishu_message_dedup_store),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "dingtalk",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             dingtalk_session_store: Arc::clone(&assembly.dingtalk_session_store),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "qq_channel",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             msg_id_cache: Arc::clone(&assembly.qq_msg_id_cache),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "qq_channel",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             inbound_dedup_store: Arc::clone(&assembly.qq_inbound_dedup_store),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "qq_channel",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             qq_webhook_enabled: !assembly.config.qq_channel_app_id.trim().is_empty()
                 && !assembly.config.qq_channel_secret.trim().is_empty(),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "qq_channel",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             qq_app_id: assembly.config.qq_channel_app_id.clone(),
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "qq_channel",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             qq_secret: assembly.config.qq_channel_secret.clone(),
         })?;
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -2521,9 +2619,14 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     #[allow(unused_mut)]
     let (mut sinks, mut channel_rx_set) = beetle::channels::build_channel_sinks(
         assembly.config.as_ref(),
+        #[cfg(feature = "qq_channel")]
         &assembly.qq_msg_id_cache,
+        #[cfg(feature = "qq_channel")]
         &assembly.qq_token_cache,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "dingtalk",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         &assembly.dingtalk_session_store,
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
@@ -2534,7 +2637,8 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
             .display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
     }
 
-    let enabled_channel = assembly.config.enabled_channel.as_str();
+    let enabled_channel =
+        beetle::normalize_compiled_enabled_channel(assembly.config.enabled_channel.as_str());
     log::info!(
         "[{}] enabled_channel='{}'",
         TAG,
@@ -2567,41 +2671,43 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
 
     if assembly.communication_plane.start_http_backed_ingress {
         #[cfg(feature = "feishu")]
-        if let Some(ref c) = channel_rx_set.feishu {
-            let tx = assembly.bus.user_inbound_tx.clone();
-            let id = c.app_id.clone();
-            let sec = c.app_secret.clone();
-            let allowed = parse_allowed_chat_ids(&assembly.config.feishu_allowed_chat_ids);
-            let pending = Arc::clone(&assembly.runtime.pending_retry_store);
-            let http_factory = assembly
-                .network_governor
-                .http_factory(HttpClientClass::Background);
-            spawn_required_planned_thread(
-                TAG,
-                "feishu_ws",
-                STACK_CHANNEL_WS,
-                "Feishu WS loop started",
-                "feishu_ws_spawn",
-                move || {
-                    run_feishu_ws_loop(
-                        id,
-                        sec,
-                        allowed,
-                        tx,
-                        pending.as_ref(),
-                        move || http_factory(),
-                        beetle::network::connect_external_wss,
-                    )
-                },
-            )?;
-        } else if enabled_channel == "feishu" {
-            #[cfg(feature = "feishu")]
-            log::warn!(
-                "[{}] Feishu WS not started: app_id or app_secret empty (check channels config)",
-                TAG
-            );
+        {
+            if let Some(ref c) = channel_rx_set.feishu {
+                let tx = assembly.bus.user_inbound_tx.clone();
+                let id = c.app_id.clone();
+                let sec = c.app_secret.clone();
+                let allowed = parse_allowed_chat_ids(&assembly.config.feishu_allowed_chat_ids);
+                let pending = Arc::clone(&assembly.runtime.pending_retry_store);
+                let http_factory = assembly
+                    .network_governor
+                    .http_factory(HttpClientClass::Background);
+                spawn_required_planned_thread(
+                    TAG,
+                    "feishu_ws",
+                    STACK_CHANNEL_WS,
+                    "Feishu WS loop started",
+                    "feishu_ws_spawn",
+                    move || {
+                        run_feishu_ws_loop(
+                            id,
+                            sec,
+                            allowed,
+                            tx,
+                            pending.as_ref(),
+                            move || http_factory(),
+                            beetle::network::connect_external_wss,
+                        )
+                    },
+                )?;
+            } else if enabled_channel == "feishu" {
+                log::warn!(
+                    "[{}] Feishu WS not started: app_id or app_secret empty (check channels config)",
+                    TAG
+                );
+            }
         }
 
+        #[cfg(feature = "qq_channel")]
         if enabled_channel == "qq_channel" {
             if let Some(ref c) = channel_rx_set.qq_channel {
                 if !c.app_id.trim().is_empty() && !c.app_secret.trim().is_empty() {
@@ -2642,11 +2748,21 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                 }
             }
         }
-    } else if enabled_channel == "feishu" || enabled_channel == "qq_channel" {
-        log::warn!(
-            "[{}] HTTP-backed ingress not started: create_http_client failed, so external WSS ingress stays offline with dispatch/sender/agent",
-            TAG
-        );
+    } else {
+        #[cfg(all(feature = "feishu", feature = "qq_channel"))]
+        if enabled_channel == "feishu" || enabled_channel == "qq_channel" {
+            log::warn!(
+                "[{}] HTTP-backed ingress not started: create_http_client failed, so external WSS ingress stays offline with dispatch/sender/agent",
+                TAG
+            );
+        }
+        #[cfg(all(not(feature = "feishu"), feature = "qq_channel"))]
+        if enabled_channel == "qq_channel" {
+            log::warn!(
+                "[{}] HTTP-backed ingress not started: create_http_client failed, so external WSS ingress stays offline with dispatch/sender/agent",
+                TAG
+            );
+        }
     }
 
     if !assembly.communication_plane.start_dispatch || !assembly.communication_plane.start_senders {
@@ -2671,6 +2787,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
 
+    #[cfg(feature = "telegram")]
     if assembly.communication_plane.start_poll_ingress
         && enabled_channel == "telegram"
         && !assembly.config.tg_token.trim().is_empty()
@@ -2692,7 +2809,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         spawn_required_planned_thread(
             TAG,
             "tg_poll",
-            STACK_CHANNEL_SENDER,
+            beetle::util::STACK_CHANNEL_SENDER,
             "Telegram poll loop started",
             "tg_poll_spawn",
             move || {
@@ -2788,11 +2905,14 @@ fn start_agent_plane(
         }
     });
     let session_max = assembly.config.session_max_messages.clamp(1, 128) as usize;
+    let enabled_channel =
+        beetle::normalize_compiled_enabled_channel(assembly.config.enabled_channel.as_str());
     let typing_notifier: Option<Box<dyn beetle::TypingNotifier>> = assembly
         .channel_capability_registry
-        .get(assembly.config.enabled_channel.as_str())
+        .get(enabled_channel)
         .filter(|entry| entry.enabled && entry.contract.supports_typing_or_chat_action)
         .and_then(|entry| match entry.id {
+            #[cfg(feature = "telegram")]
             beetle::CHANNEL_TELEGRAM if !assembly.config.tg_token.trim().is_empty() => {
                 Some(Box::new(TelegramTypingNotifier {
                     token: assembly.config.tg_token.clone(),
@@ -2803,15 +2923,16 @@ fn start_agent_plane(
 
     let stream_editor: Option<Arc<dyn beetle::StreamEditor + Send + Sync>> = if assembly
         .channel_capability_registry
-        .get(assembly.config.enabled_channel.as_str())
+        .get(enabled_channel)
         .map(|entry| entry.enabled && entry.contract.supports_stream_edit)
         .unwrap_or(false)
     {
-        let make_http = assembly
-            .network_governor
-            .http_factory(HttpClientClass::Interactive);
-        match assembly.config.enabled_channel.as_str() {
+        match enabled_channel {
+            #[cfg(feature = "feishu")]
             beetle::CHANNEL_FEISHU if !assembly.config.feishu_app_id.trim().is_empty() => {
+                let make_http = assembly
+                    .network_governor
+                    .http_factory(HttpClientClass::Interactive);
                 Some(Arc::new(FeishuStreamEditor {
                     app_id: assembly.config.feishu_app_id.clone(),
                     app_secret: assembly.config.feishu_app_secret.clone(),
@@ -2827,7 +2948,7 @@ fn start_agent_plane(
     };
     let stream_editor_channel = stream_editor
         .as_ref()
-        .map(|_| Arc::<str>::from(assembly.config.enabled_channel.as_str()));
+        .map(|_| Arc::<str>::from(enabled_channel));
     let agent_strategy = if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
         beetle::agent::AgentRunStrategy::Embedded
     } else {

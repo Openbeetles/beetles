@@ -44,6 +44,7 @@ pub fn chunk_text_by_char_count(s: &str, max_chars: usize) -> Vec<String> {
 }
 
 /// 按最多 max_bytes 个 UTF-8 字节迭代分片，不拆开多字节字符。
+#[cfg(feature = "wecom")]
 pub fn chunk_str_by_utf8_bytes_iter<'a>(
     s: &'a str,
     max_bytes: usize,
@@ -90,6 +91,7 @@ pub fn chunk_str_by_utf8_bytes_iter<'a>(
 }
 
 /// 优先按段落/换行边界切分，超长段落再回退到 UTF-8 字节分片。
+#[cfg(feature = "wecom")]
 pub fn chunk_text_by_utf8_bytes(s: &str, max_bytes: usize) -> Vec<String> {
     chunk_text_by_utf8_bytes_with_separator(s, max_bytes, "\n\n")
 }
@@ -186,6 +188,7 @@ fn append_long_char_block(chunks: &mut Vec<String>, block: &str, max_chars: usiz
     }
 }
 
+#[cfg(feature = "wecom")]
 fn chunk_text_by_utf8_bytes_with_separator(
     s: &str,
     max_bytes: usize,
@@ -214,6 +217,7 @@ fn chunk_text_by_utf8_bytes_with_separator(
     chunks
 }
 
+#[cfg(feature = "wecom")]
 fn append_utf8_block(
     chunks: &mut Vec<String>,
     current: &mut String,
@@ -243,6 +247,7 @@ fn append_utf8_block(
     append_long_utf8_block(chunks, block, max_bytes);
 }
 
+#[cfg(feature = "wecom")]
 fn append_long_utf8_block(chunks: &mut Vec<String>, block: &str, max_bytes: usize) {
     let mut current = String::new();
     for line in block.split('\n') {
@@ -280,7 +285,9 @@ fn append_long_utf8_block(chunks: &mut Vec<String>, block: &str, max_bytes: usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_text_by_char_count, chunk_text_by_utf8_bytes};
+    use super::chunk_text_by_char_count;
+    #[cfg(feature = "wecom")]
+    use super::chunk_text_by_utf8_bytes;
 
     #[test]
     fn paragraph_chunking_prefers_block_boundaries() {
@@ -297,6 +304,7 @@ mod tests {
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 6));
     }
 
+    #[cfg(feature = "wecom")]
     #[test]
     fn utf8_chunking_preserves_multibyte_boundaries() {
         let input = "甲壳虫\n\n你好世界你好世界";

@@ -1,6 +1,7 @@
 import { createContext } from 'react'
 import type {
   AppConfig,
+  ChannelsConfigView,
   LlmConfigSegment,
   ChannelsConfigSegment,
   SystemConfigSegment,
@@ -18,6 +19,10 @@ export interface ConfigContextValue {
   llmLoading: boolean
   llmError: string | null
   loadLlmConfig: () => Promise<void>
+  channelsConfig: ChannelsConfigView | null
+  channelsLoading: boolean
+  channelsError: string | null
+  loadChannelsConfig: () => Promise<void>
   refreshCachedConfig: () => Promise<{ ok: boolean; error?: string }>
   clearCachedConfig: () => void
   saveLlm: (body: LlmConfigSegment) => Promise<{ ok: boolean; error?: string }>

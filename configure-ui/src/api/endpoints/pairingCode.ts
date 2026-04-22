@@ -1,5 +1,5 @@
-import { request, API_ERROR } from '../client'
-import type { ApiResult } from '../client'
+import { request, API_ERROR } from '../client.ts'
+import type { ApiResult } from '../client.ts'
 
 export interface PairingCodeResponse {
   code_set: boolean
@@ -16,4 +16,19 @@ export async function getPairingCode(
     return res as ApiResult<PairingCodeResponse>
   }
   return { ok: false, error: res.error ?? 'common.invalid_response', data: undefined }
+}
+
+export async function postPairingCode(
+  baseUrl: string,
+  code: string,
+): Promise<ApiResult<{ ok: boolean }>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  const normalized = code.trim()
+  if (!/^\d{6}$/.test(normalized)) {
+    return { ok: false, error: 'pairing.code_must_be_6_digits' }
+  }
+  return request<{ ok: boolean }>(baseUrl, '/api/pairing_code', {
+    method: 'POST',
+    body: { code: normalized },
+  })
 }

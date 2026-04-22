@@ -8,6 +8,8 @@ import type { SxProps, Theme } from "@mui/material/styles";
 import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { OS_ICON_DASHBOARD } from "../config/osIcons";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { WifiCredentialFields } from "../components/WifiCredentialFields";
 import {
   PageLoadErrorState,
   SettingsRow,
@@ -19,7 +21,8 @@ import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useToast } from "../hooks/useToast";
-import { useDeviceRuntimeKind } from "../store/deviceStatusStore";
+import { getConfig } from "../api/endpoints/config";
+import { getPairingCode } from "../api/endpoints/pairingCode";
 import {
   type SystemInfoData,
   type ChannelConnectivityItem,
@@ -35,7 +38,10 @@ import {
 } from "../components/deviceStatusBarHelpers";
 import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
+import { useConfig } from "../hooks/useConfig";
 import { useUnsaved } from "../hooks/useUnsaved";
+import { useWifiScanController } from "../hooks/useWifiScanController";
+import { translateApiError } from "../i18n/apiErrors";
 import { runDeferredLoading } from "../util/deferredLoading";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 import {
@@ -59,12 +65,19 @@ import {
   TEXT_BODY_TERTIARY_SX,
   TEXT_DASHBOARD_CARD_TITLE_SX,
 } from "../theme/panelStyles";
-
-const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
-
-function normalizeDeviceUrl(u: string): string {
-  return u.trim().replace(/\/$/, "") || DEFAULT_DEVICE_BASE_URL;
-}
+import {
+  setDeviceProbeState,
+  setDeviceSessionState,
+  setRestartPending,
+  useDeviceRuntimeKind,
+} from "../store/deviceStatusStore";
+import {
+  DEFAULT_DEVICE_BASE_URL,
+  deriveDeviceAccessStage,
+  deriveDeviceSetupCardModel,
+  normalizeDeviceUrl,
+  validatePairingCodeDraft,
+} from "./deviceAccessFlow";
 
 type ConnectionEditorVariant = "dashboard" | "setup";
 
@@ -84,6 +97,7 @@ interface ConnectionEditorProps {
   pairingCodePlaceholder: string;
   saveLabel: string;
   probeLabel: string;
+  showPairingCode?: boolean;
 }
 
 function ConnectionEditor({
@@ -102,6 +116,7 @@ function ConnectionEditor({
   pairingCodePlaceholder,
   saveLabel,
   probeLabel,
+  showPairingCode = true,
 }: ConnectionEditorProps) {
   const isDashboard = variant === "dashboard";
 
@@ -176,29 +191,31 @@ function ConnectionEditor({
             }}
           />
         </SettingsRow>
-        <SettingsRow label={pairingCodeLabel} divider={false}>
-          <TextField
-            hiddenLabel
-            placeholder={pairingCodePlaceholder}
-            value={codeValue}
-            type={pairingCodeReveal.type}
-            onChange={(e) => onCodeChange(e.target.value)}
-            variant="outlined"
-            fullWidth
-            aria-label={pairingCodeLabel}
-            slotProps={{
-              htmlInput: {
-                maxLength: 6,
-                style: {
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "var(--font-size-caption)",
-                  letterSpacing: "0.2em",
+        {showPairingCode ? (
+          <SettingsRow label={pairingCodeLabel} divider={false}>
+            <TextField
+              hiddenLabel
+              placeholder={pairingCodePlaceholder}
+              value={codeValue}
+              type={pairingCodeReveal.type}
+              onChange={(e) => onCodeChange(e.target.value)}
+              variant="outlined"
+              fullWidth
+              aria-label={pairingCodeLabel}
+              slotProps={{
+                htmlInput: {
+                  maxLength: 6,
+                  style: {
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "var(--font-size-caption)",
+                    letterSpacing: "0.2em",
+                  },
+                  ...pairingCodeReveal.inputProps,
                 },
-                ...pairingCodeReveal.inputProps,
-              },
-            }}
-          />
-        </SettingsRow>
+              }}
+            />
+          </SettingsRow>
+        ) : null}
         {actionButtons}
       </Box>
     );
@@ -225,26 +242,118 @@ function ConnectionEditor({
           htmlInput: { style: { fontFamily: "var(--font-mono)" } },
         }}
       />
+      {showPairingCode ? (
+        <TextField
+          label={pairingCodeLabel}
+          placeholder={pairingCodePlaceholder}
+          value={codeValue}
+          type={pairingCodeReveal.type}
+          onChange={(e) => onCodeChange(e.target.value)}
+          variant="outlined"
+          fullWidth
+          slotProps={{
+            htmlInput: {
+              maxLength: 6,
+              style: {
+                fontFamily: "var(--font-mono)",
+                letterSpacing: "0.2em",
+              },
+              ...pairingCodeReveal.inputProps,
+            },
+          }}
+        />
+      ) : null}
+      {actionButtons}
+    </Box>
+  );
+}
+
+function SetupConnectionEditor({
+  urlValue,
+  pairingCodeValue,
+  pairingCodeReveal,
+  onUrlChange,
+  onCodeChange,
+  onPrimaryAction,
+  primaryLabel,
+  primaryDisabled,
+  baseUrlLabel,
+  baseUrlPlaceholder,
+  pairingCodeLabel,
+  pairingCodePlaceholder,
+  showPairingCodeField,
+}: {
+  urlValue: string;
+  pairingCodeValue: string;
+  pairingCodeReveal: ReturnType<typeof useRevealedPassword>;
+  onUrlChange: (value: string) => void;
+  onCodeChange: (value: string) => void;
+  onPrimaryAction: () => void;
+  primaryLabel: string;
+  primaryDisabled: boolean;
+  baseUrlLabel: string;
+  baseUrlPlaceholder: string;
+  pairingCodeLabel: string;
+  pairingCodePlaceholder: string;
+  showPairingCodeField: boolean;
+}) {
+  return (
+    <Box
+      sx={{
+        position: "relative",
+        zIndex: 1,
+        display: "flex",
+        flexDirection: "column",
+        gap: LAYOUT_TOKENS.spacingFormFields,
+      }}
+    >
       <TextField
-        label={pairingCodeLabel}
-        placeholder={pairingCodePlaceholder}
-        value={codeValue}
-        type={pairingCodeReveal.type}
-        onChange={(e) => onCodeChange(e.target.value)}
+        label={baseUrlLabel}
+        placeholder={baseUrlPlaceholder}
+        value={urlValue}
+        onChange={(e) => onUrlChange(e.target.value)}
         variant="outlined"
         fullWidth
         slotProps={{
-          htmlInput: {
-            maxLength: 6,
-            style: {
-              fontFamily: "var(--font-mono)",
-              letterSpacing: "0.2em",
-            },
-            ...pairingCodeReveal.inputProps,
-          },
+          htmlInput: { style: { fontFamily: "var(--font-mono)" } },
         }}
       />
-      {actionButtons}
+      {showPairingCodeField ? (
+        <TextField
+          label={pairingCodeLabel}
+          placeholder={pairingCodePlaceholder}
+          value={pairingCodeValue}
+          type={pairingCodeReveal.type}
+          onChange={(e) => onCodeChange(e.target.value)}
+          variant="outlined"
+          fullWidth
+          slotProps={{
+            htmlInput: {
+              maxLength: 6,
+              style: {
+                fontFamily: "var(--font-mono)",
+                letterSpacing: "0.2em",
+              },
+              ...pairingCodeReveal.inputProps,
+            },
+          }}
+        />
+      ) : null}
+      <Button
+        variant="contained"
+        onClick={onPrimaryAction}
+        disabled={primaryDisabled}
+        size="large"
+        sx={{
+          borderRadius: "var(--radius-full)",
+          py: 1.25,
+          fontWeight: 600,
+          boxShadow: "none",
+          "&:hover": { boxShadow: "none" },
+        }}
+      >
+        {primaryLabel}
+      </Button>
     </Box>
   );
 }
@@ -351,15 +460,26 @@ export function DevicePage() {
   const { t } = useTranslation();
   const { setDirty } = useUnsaved();
   const { baseUrl, pairingCode, setBaseUrl, setPairingCode } = useDevice();
+  const { config, loadConfig, loading: configLoading, error: configError } =
+    useConfig();
   const runtimeKind = useDeviceRuntimeKind();
   const [urlInput, setUrlInput] = useState(baseUrl || DEFAULT_DEVICE_BASE_URL);
   const [codeInput, setCodeInput] = useState(pairingCode);
+  const [pairingInitCodeInput, setPairingInitCodeInput] = useState("");
+  const [pairingInitConfirmOpen, setPairingInitConfirmOpen] = useState(false);
+  const [setupDetectedPairingState, setSetupDetectedPairingState] = useState<
+    "unknown" | "uninitialized" | "initialized"
+  >("unknown");
   const pairingCodeReveal = useRevealedPassword();
-  const { api, deviceConnected } = useDeviceApi();
+  const { api, appMode, canAccessProtectedApis } = useDeviceApi();
+  const accessStage = deriveDeviceAccessStage(appMode);
   const { showToast } = useToast();
   const [probeStatus, setProbeStatus] = useState<
     "idle" | "checking" | "ok" | "fail"
   >("idle");
+  const [pairingSubmitting, setPairingSubmitting] = useState<
+    null | "init_pairing" | "unlock"
+  >(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfoData | null>(null);
   const [channelList, setChannelList] = useState<ChannelConnectivityItem[]>([]);
   const [channelLoading, setChannelLoading] = useState(false);
@@ -373,11 +493,34 @@ export function DevicePage() {
   );
   const [healthLoading, setHealthLoading] = useState(false);
   const [healthError, setHealthError] = useState("");
+  const [wifiConfigSeeded, setWifiConfigSeeded] = useState(false);
+  const [wifiSsidInput, setWifiSsidInput] = useState("");
+  const [wifiInitialSsid, setWifiInitialSsid] = useState("");
+  const [wifiPassInput, setWifiPassInput] = useState("");
+  const [wifiActionState, setWifiActionState] = useState<
+    "idle" | "saving" | "ok" | "fail"
+  >("idle");
+  const [wifiActionMessage, setWifiActionMessage] = useState("");
+  const [wifiRestartRequired, setWifiRestartRequired] = useState(false);
+  const [wifiRestarting, setWifiRestarting] = useState(false);
+  const {
+    wifiScanList,
+    wifiScanLoading,
+    wifiScanError,
+    handleWifiScan,
+    resetWifiScan,
+  } = useWifiScanController({
+    canScan: canAccessProtectedApis && Boolean(baseUrl?.trim()),
+    scan: api.system.wifiScan,
+    t,
+  });
 
   const deviceSessionKey = `${baseUrl ?? ""}\0${pairingCode ?? ""}`;
   const prevDeviceSessionKeyRef = useRef(deviceSessionKey);
   const healthLoadRequestIdRef = useRef(0);
   const channelLoadRequestIdRef = useRef(0);
+  const wifiConfigRequestedRef = useRef(false);
+  const wifiConfigSeededRef = useRef(false);
   useEffect(() => {
     if (deviceSessionKey === prevDeviceSessionKeyRef.current) return;
     prevDeviceSessionKeyRef.current = deviceSessionKey;
@@ -386,6 +529,9 @@ export function DevicePage() {
     queueMicrotask(() => {
       setUrlInput(nextUrl);
       setCodeInput(nextCode);
+      setPairingInitCodeInput("");
+      setPairingInitConfirmOpen(false);
+      setSetupDetectedPairingState("unknown");
       setSystemInfo(null);
       setChannelList([]);
       setChannelLoading(false);
@@ -395,8 +541,19 @@ export function DevicePage() {
       setMetricsData(null);
       setHealthLoading(false);
       setHealthError("");
+      wifiConfigRequestedRef.current = false;
+      wifiConfigSeededRef.current = false;
+      setWifiConfigSeeded(false);
+      setWifiSsidInput("");
+      setWifiInitialSsid("");
+      setWifiPassInput("");
+      setWifiActionState("idle");
+      setWifiActionMessage("");
+      setWifiRestartRequired(false);
+      setWifiRestarting(false);
+      resetWifiScan();
     });
-  }, [deviceSessionKey, baseUrl, pairingCode]);
+  }, [deviceSessionKey, baseUrl, pairingCode, resetWifiScan]);
 
   const connectionDraftDirty = useMemo(() => {
     const draftUrl = normalizeDeviceUrl(urlInput);
@@ -405,11 +562,38 @@ export function DevicePage() {
     const savedCode = (pairingCode ?? "").trim();
     return draftUrl !== savedUrl || draftCode !== savedCode;
   }, [urlInput, codeInput, baseUrl, pairingCode]);
+  const pairingInitDirty = useMemo(
+    () => pairingInitCodeInput.trim().length > 0,
+    [pairingInitCodeInput],
+  );
+  const wifiDraftDirty = useMemo(
+    () =>
+      accessStage === "ready" &&
+      (wifiSsidInput.trim() !== wifiInitialSsid.trim() ||
+        wifiPassInput.trim().length > 0),
+    [accessStage, wifiInitialSsid, wifiPassInput, wifiSsidInput],
+  );
 
   const runtimeStatusKey = useMemo(
     () => buildDeviceOperationalStatusKey(healthData, resourceData),
     [healthData, resourceData],
   );
+  const targetDirty = useMemo(() => {
+    if (accessStage === "ready") return false;
+    return normalizeDeviceUrl(urlInput) !== normalizeDeviceUrl(baseUrl ?? "");
+  }, [accessStage, baseUrl, urlInput]);
+  const setupDisplayMode = useMemo(() => {
+    if (targetDirty || appMode !== "probing") return appMode;
+    if (setupDetectedPairingState === "initialized") return "unlock";
+    if (setupDetectedPairingState === "uninitialized") return "init_pairing";
+    return appMode;
+  }, [appMode, setupDetectedPairingState, targetDirty]);
+  const setupCardModel = useMemo(
+    () => deriveDeviceSetupCardModel(setupDisplayMode, { targetDirty }),
+    [setupDisplayMode, targetDirty],
+  );
+  const setupPairingCodeValue =
+    setupCardModel.stage === "init_pairing" ? pairingInitCodeInput : codeInput;
   const deviceSummaryFields = useMemo(
     () => buildDeviceSummaryFields(systemInfo, healthData, runtimeStatusKey),
     [systemInfo, healthData, runtimeStatusKey],
@@ -419,26 +603,26 @@ export function DevicePage() {
     hasData: dashboardReady,
     loading: healthLoading,
     error: healthError,
-    suppress: !deviceConnected,
+    suppress: !canAccessProtectedApis,
   });
 
   useEffect(() => {
-    setDirty(connectionDraftDirty);
-  }, [connectionDraftDirty, setDirty]);
+    setDirty(connectionDraftDirty || pairingInitDirty || wifiDraftDirty);
+  }, [connectionDraftDirty, pairingInitDirty, setDirty, wifiDraftDirty]);
 
   useEffect(() => {
     return () => setDirty(false);
   }, [setDirty]);
 
-  const handleSave = () => {
-    const url = urlInput.trim().replace(/\/$/, "") || DEFAULT_DEVICE_BASE_URL;
+  const handleSaveAccess = () => {
+    const url = normalizeDeviceUrl(urlInput);
     setBaseUrl(url);
     setPairingCode(codeInput.trim());
     showToast(t("common.saveOk"), { variant: "success" });
   };
 
   const handleProbe = async () => {
-    const url = urlInput.trim().replace(/\/$/, "") || DEFAULT_DEVICE_BASE_URL;
+    const url = normalizeDeviceUrl(urlInput);
     setProbeStatus("checking");
     const res = await api.device.probe(url);
     if (res.ok) {
@@ -452,8 +636,213 @@ export function DevicePage() {
     }
   };
 
+  const handleSetupProbe = useCallback(async () => {
+    const url = normalizeDeviceUrl(urlInput);
+    setProbeStatus("checking");
+    const res = await getPairingCode(url);
+    if (!res.ok || !res.data) {
+      setProbeStatus("fail");
+      setSetupDetectedPairingState("unknown");
+      showToast(
+        `${t("device.probeFail")}: ${translateApiError(t, res.error, "common.error")}`,
+        {
+          variant: "error",
+        },
+      );
+      return;
+    }
+
+    setProbeStatus("ok");
+    setSetupDetectedPairingState(
+      res.data.code_set ? "initialized" : "uninitialized",
+    );
+    setBaseUrl(url);
+    setPairingCode("");
+    setCodeInput("");
+    setPairingInitCodeInput("");
+    setPairingInitConfirmOpen(false);
+    setDeviceSessionState({
+      hasTarget: true,
+      localPairing: "absent",
+    });
+    setDeviceProbeState({
+      transport: "reachable",
+      devicePairing: res.data.code_set ? "initialized" : "uninitialized",
+    });
+    showToast(t("device.probeOk"), { variant: "success" });
+  }, [setBaseUrl, setPairingCode, showToast, t, urlInput]);
+
+  const validateProtectedAccess = useCallback(
+    async (url: string, candidatePairingCode: string) => {
+      const result = await getConfig(url, candidatePairingCode);
+      if (result.ok) return null;
+      return translateApiError(t, result.error, "device.pairingValidateFailed");
+    },
+    [t],
+  );
+
+  const handleRequestPairingInitialization = useCallback(() => {
+    const validationKey = validatePairingCodeDraft(pairingInitCodeInput);
+    if (validationKey) {
+      showToast(t(validationKey), { variant: "error" });
+      return;
+    }
+    setPairingInitConfirmOpen(true);
+  }, [pairingInitCodeInput, showToast, t]);
+
+  const handleInitializePairing = useCallback(async () => {
+    setPairingSubmitting("init_pairing");
+    const normalizedCode = pairingInitCodeInput.trim();
+    const initResult = await api.pairing.initialize(normalizedCode);
+    if (!initResult.ok) {
+      if (initResult.error === "pairing.code_already_set") {
+        setDeviceProbeState({
+          transport: "reachable",
+          devicePairing: "initialized",
+        });
+      }
+      showToast(translateApiError(t, initResult.error, "common.error"), {
+        variant: "error",
+      });
+      setPairingSubmitting(null);
+      return;
+    }
+    const url = normalizeDeviceUrl(baseUrl ?? urlInput);
+    setDeviceProbeState({
+      transport: "reachable",
+      devicePairing: "initialized",
+    });
+    setCodeInput(normalizedCode);
+    const validationError = await validateProtectedAccess(url, normalizedCode);
+    if (validationError) {
+      showToast(validationError, { variant: "error" });
+      setPairingSubmitting(null);
+      return;
+    }
+    setPairingCode(normalizedCode);
+    setPairingInitCodeInput("");
+    showToast(t("device.pairingInitSuccess"), { variant: "success" });
+    setPairingSubmitting(null);
+  }, [
+    api.pairing,
+    baseUrl,
+    pairingInitCodeInput,
+    setPairingCode,
+    showToast,
+    t,
+    urlInput,
+    validateProtectedAccess,
+  ]);
+
+  const handleUnlock = useCallback(async () => {
+    const validationKey = validatePairingCodeDraft(codeInput);
+    if (validationKey) {
+      showToast(t(validationKey), { variant: "error" });
+      return;
+    }
+    setPairingSubmitting("unlock");
+    const normalizedCode = codeInput.trim();
+    const url = normalizeDeviceUrl(baseUrl ?? urlInput);
+    const validationError = await validateProtectedAccess(url, normalizedCode);
+    if (validationError) {
+      showToast(validationError, { variant: "error" });
+      setPairingSubmitting(null);
+      return;
+    }
+    setPairingCode(normalizedCode);
+    showToast(t("device.unlockSuccess"), { variant: "success" });
+    setPairingSubmitting(null);
+  }, [
+    baseUrl,
+    codeInput,
+    setPairingCode,
+    showToast,
+    t,
+    urlInput,
+    validateProtectedAccess,
+  ]);
+
+  const handleSaveWifi = useCallback(async () => {
+    if (wifiPassInput.trim() && !wifiSsidInput.trim()) {
+      setWifiActionState("fail");
+      setWifiActionMessage(t("config.validation.wifiSsidRequired"));
+      return;
+    }
+    setWifiActionState("saving");
+    setWifiActionMessage("");
+    const result = await api.config.saveWifi({
+      wifi_ssid: wifiSsidInput.trim(),
+      wifi_pass: wifiPassInput,
+    });
+    if (result.ok) {
+      const nextSsid = wifiSsidInput.trim();
+      setWifiInitialSsid(nextSsid);
+      setWifiSsidInput(nextSsid);
+      setWifiPassInput("");
+      setWifiRestartRequired(Boolean(result.data?.restart_required));
+      setWifiActionState("ok");
+      setWifiActionMessage(
+        result.data?.restart_required
+          ? t("device.wifiRestartRequired")
+          : t("device.wifiSaveSuccess"),
+      );
+      return;
+    }
+    setWifiActionState("fail");
+    setWifiActionMessage(translateApiError(t, result.error, "common.error"));
+  }, [api.config, t, wifiPassInput, wifiSsidInput]);
+
+  const handleRestartDevice = useCallback(async () => {
+    if (wifiRestarting) return;
+    setWifiRestarting(true);
+    const result = await api.system.restart();
+    if (result.ok) {
+      setRestartPending();
+      showToast(t("device.restartSent"), { variant: "success" });
+    } else {
+      showToast(translateApiError(t, result.error, "device.restartFail"), {
+        variant: "error",
+      });
+    }
+    setWifiRestarting(false);
+  }, [api.system, showToast, t, wifiRestarting]);
+
   useEffect(() => {
-    if (!deviceConnected || !baseUrl?.trim()) return;
+    if (
+      accessStage !== "ready" ||
+      !canAccessProtectedApis ||
+      !baseUrl?.trim() ||
+      wifiConfigRequestedRef.current ||
+      config != null ||
+      configLoading
+    ) {
+      return;
+    }
+    wifiConfigRequestedRef.current = true;
+    void loadConfig();
+  }, [
+    accessStage,
+    baseUrl,
+    canAccessProtectedApis,
+    config,
+    configLoading,
+    loadConfig,
+  ]);
+
+  useEffect(() => {
+    if (!config || wifiConfigSeededRef.current) return;
+    wifiConfigSeededRef.current = true;
+    const nextSsid = config.wifi_ssid ?? "";
+    queueMicrotask(() => {
+      setWifiInitialSsid(nextSsid);
+      setWifiSsidInput(nextSsid);
+      setWifiPassInput("");
+      setWifiConfigSeeded(true);
+    });
+  }, [config, wifiConfigSeeded]);
+
+  useEffect(() => {
+    if (!canAccessProtectedApis || !baseUrl?.trim()) return;
     const code = (pairingCode ?? "").trim();
     return runDeferredLoading({
       run: () =>
@@ -473,7 +862,7 @@ export function DevicePage() {
       },
       onError: () => {},
     });
-  }, [api.system, deviceConnected, baseUrl, pairingCode]);
+  }, [api.system, canAccessProtectedApis, baseUrl, pairingCode]);
 
   const runHealthLoad = useCallback(
     ({
@@ -483,7 +872,7 @@ export function DevicePage() {
       notify: boolean;
       clearError: boolean;
     }) => {
-      if (!deviceConnected || !baseUrl?.trim()) return undefined;
+      if (!canAccessProtectedApis || !baseUrl?.trim()) return undefined;
       const requestId = ++healthLoadRequestIdRef.current;
       if (clearError) setHealthError("");
       setHealthLoading(true);
@@ -513,7 +902,7 @@ export function DevicePage() {
         active = false;
       };
     },
-    [api.system, deviceConnected, baseUrl, showToast, t],
+    [api.system, baseUrl, canAccessProtectedApis, showToast, t],
   );
 
   const reloadHealth = useCallback(() => {
@@ -521,10 +910,10 @@ export function DevicePage() {
   }, [runHealthLoad]);
 
   useEffect(() => {
-    if (!deviceConnected || !baseUrl?.trim()) return;
+    if (!canAccessProtectedApis || !baseUrl?.trim()) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial device sync intentionally enters loading as soon as the session becomes reachable
     return runHealthLoad({ notify: false, clearError: false });
-  }, [deviceConnected, baseUrl, runHealthLoad]);
+  }, [canAccessProtectedApis, baseUrl, runHealthLoad]);
 
   const runChannelLoad = useCallback(
     ({
@@ -534,7 +923,7 @@ export function DevicePage() {
       notify: boolean;
       clearError: boolean;
     }) => {
-      if (!deviceConnected || !baseUrl?.trim()) return undefined;
+      if (!canAccessProtectedApis || !baseUrl?.trim()) return undefined;
       const requestId = ++channelLoadRequestIdRef.current;
       if (clearError) setChannelError("");
       setChannelLoading(true);
@@ -561,7 +950,7 @@ export function DevicePage() {
         active = false;
       };
     },
-    [api.system, deviceConnected, baseUrl, showToast, t],
+    [api.system, baseUrl, canAccessProtectedApis, showToast, t],
   );
 
   const reloadChannelConnectivity = useCallback(() => {
@@ -569,10 +958,10 @@ export function DevicePage() {
   }, [runChannelLoad]);
 
   useEffect(() => {
-    if (!deviceConnected || !baseUrl?.trim()) return;
+    if (!canAccessProtectedApis || !baseUrl?.trim()) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial device sync intentionally enters loading as soon as the session becomes reachable
     return runChannelLoad({ notify: false, clearError: false });
-  }, [deviceConnected, baseUrl, runChannelLoad]);
+  }, [canAccessProtectedApis, baseUrl, runChannelLoad]);
 
   const channelNameKey: Record<string, string> = {
     telegram: "channelTelegram",
@@ -981,7 +1370,7 @@ export function DevicePage() {
         pairingCodeReveal={pairingCodeReveal}
         onUrlChange={setUrlInput}
         onCodeChange={setCodeInput}
-        onSave={handleSave}
+        onSave={handleSaveAccess}
         onProbe={handleProbe}
         probeChecking={probeStatus === "checking"}
         baseUrlLabel={t("device.baseUrlLabel")}
@@ -996,7 +1385,120 @@ export function DevicePage() {
     </DashboardCard>
   );
 
-  const renderSetupCard = () => (
+  const renderWifiCard = () => (
+    <DashboardCard
+      title={t("device.wifiSetupTitle")}
+      icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} variant="tile" />}
+      sx={{ height: "100%" }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          height: "100%",
+        }}
+      >
+        <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
+          {t("device.wifiSetupDesc")}
+        </Typography>
+        {configLoading && !wifiConfigSeeded ? (
+          <SectionLoadProgress
+            loading
+            idleHint={t("device.wifiConfigLoading")}
+          />
+        ) : null}
+        {configError && !wifiConfigSeeded ? (
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: LAYOUT_TOKENS.spacingInlineTight,
+              flexWrap: "wrap",
+            }}
+          >
+            <Typography variant="caption" sx={{ color: "var(--semantic-warning)" }}>
+              {translateApiError(t, configError, "device.wifiConfigLoadFailed")}
+            </Typography>
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => {
+                wifiConfigRequestedRef.current = true;
+                void loadConfig();
+              }}
+              sx={{ borderRadius: "var(--radius-control)" }}
+            >
+              {t("common.retry")}
+            </Button>
+          </Box>
+        ) : null}
+        <WifiCredentialFields
+          ssid={wifiSsidInput}
+          password={wifiPassInput}
+          onSsidChange={setWifiSsidInput}
+          onPasswordChange={setWifiPassInput}
+          canScan={canAccessProtectedApis}
+          onScan={() => {
+            void handleWifiScan();
+          }}
+          scanLoading={wifiScanLoading}
+          scanError={wifiScanError}
+          scanList={wifiScanList}
+        />
+        {wifiActionState !== "idle" ? (
+          <Typography
+            variant="caption"
+            sx={{
+              color:
+                wifiActionState === "fail"
+                  ? "var(--semantic-danger)"
+                  : "var(--semantic-success)",
+              fontWeight: 500,
+            }}
+          >
+            {wifiActionMessage}
+          </Typography>
+        ) : null}
+        <Box
+          sx={{
+            display: "flex",
+            gap: LAYOUT_TOKENS.spacingTitleToContent,
+            flexWrap: "wrap",
+            mt: "auto",
+          }}
+        >
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleSaveWifi();
+            }}
+            disabled={wifiActionState === "saving"}
+            sx={{ borderRadius: "var(--radius-full)", fontWeight: 600 }}
+          >
+            {wifiActionState === "saving" ? t("common.saving") : t("device.wifiSave")}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => {
+              void handleRestartDevice();
+            }}
+            disabled={wifiRestarting}
+            sx={{ borderRadius: "var(--radius-full)", fontWeight: 600 }}
+          >
+            {wifiRestarting ? t("device.restarting") : t("device.restart")}
+          </Button>
+        </Box>
+        {wifiRestartRequired ? (
+          <Typography variant="caption" sx={{ color: "var(--semantic-warning)" }}>
+            {t("device.wifiRestartRequired")}
+          </Typography>
+        ) : null}
+      </Box>
+    </DashboardCard>
+  );
+
+  const renderSetupSurface = (children: React.ReactNode) => (
     <Box
       sx={{
         width: "100%",
@@ -1076,82 +1578,112 @@ export function DevicePage() {
           </Typography>
         </Box>
 
-        <ConnectionEditor
-          variant="setup"
-          urlValue={urlInput}
-          codeValue={codeInput}
-          pairingCodeReveal={pairingCodeReveal}
-          onUrlChange={setUrlInput}
-          onCodeChange={setCodeInput}
-          onSave={handleSave}
-          onProbe={handleProbe}
-          probeChecking={probeStatus === "checking"}
-          baseUrlLabel={t("device.baseUrlLabel")}
-          baseUrlPlaceholder={t("device.baseUrlPlaceholder")}
-          pairingCodeLabel={t("device.pairingCodeLabel")}
-          pairingCodePlaceholder={t("device.pairingCodePlaceholder")}
-          saveLabel={t("device.save")}
-          probeLabel={
-            probeStatus === "checking" ? t("device.probing") : t("device.probe")
-          }
-        />
+        {children}
       </Box>
     </Box>
   );
 
+  const renderSetupCard = () => {
+    const submitting =
+      pairingSubmitting === "init_pairing" || pairingSubmitting === "unlock";
+    const primaryLabel =
+      submitting
+        ? t("common.saving")
+        : probeStatus === "checking"
+        ? t("device.probing")
+        : setupCardModel.primaryAction === "probe"
+          ? t("device.probe")
+          : setupCardModel.primaryAction === "save_new_pairing"
+            ? t("device.pairingInitSubmit")
+            : t("device.save");
+
+    return renderSetupSurface(
+      <SetupConnectionEditor
+        urlValue={urlInput}
+        pairingCodeValue={setupPairingCodeValue}
+        pairingCodeReveal={pairingCodeReveal}
+        onUrlChange={setUrlInput}
+        onCodeChange={
+          setupCardModel.stage === "init_pairing"
+            ? setPairingInitCodeInput
+            : setCodeInput
+        }
+        onPrimaryAction={() => {
+          if (setupCardModel.primaryAction === "probe") {
+            void handleSetupProbe();
+            return;
+          }
+          if (setupCardModel.primaryAction === "save_new_pairing") {
+            handleRequestPairingInitialization();
+            return;
+          }
+          void handleUnlock();
+        }}
+        primaryLabel={primaryLabel}
+        primaryDisabled={probeStatus === "checking" || submitting}
+        baseUrlLabel={t("device.baseUrlLabel")}
+        baseUrlPlaceholder={t("device.baseUrlPlaceholder")}
+        pairingCodeLabel={t("device.pairingCodeLabel")}
+        pairingCodePlaceholder={t("device.pairingCodePlaceholder")}
+        showPairingCodeField={setupCardModel.showPairingCodeField}
+      />,
+    );
+  };
+
   return (
-    <Box
-      data-app-scroll-region
-      sx={{
-        ...PAGE_SCROLL_CANVAS_SX,
-        gap: DASHBOARD_HOME_GRID_GAP,
-        py: { xs: 2, sm: 2.5, lg: 3 },
-        boxSizing: "border-box",
-      }}
-    >
-      {!deviceConnected ? (
-        renderSetupCard()
-      ) : !dashboardReady ? (
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            gap: DASHBOARD_HOME_GRID_GAP,
-          }}
-        >
-          {dashboardErrorState.blockingError
-            ? renderDashboardLoadErrorState()
-            : renderDashboardLoadingState()}
-        </Box>
-      ) : (
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            gap: DASHBOARD_HOME_GRID_GAP,
-          }}
-        >
-          {dashboardErrorState.inlineError ? (
-            <PageLoadErrorState
-              message={dashboardErrorState.inlineError}
-              onRetry={reloadHealth}
-            />
-          ) : null}
+    <>
+      <Box
+        data-app-scroll-region
+        sx={{
+          ...PAGE_SCROLL_CANVAS_SX,
+          gap: DASHBOARD_HOME_GRID_GAP,
+          py: { xs: 2, sm: 2.5, lg: 3 },
+          boxSizing: "border-box",
+        }}
+      >
+        {accessStage !== "ready" ? (
+          renderSetupCard()
+        ) : !dashboardReady ? (
           <Box
             sx={{
-              display: "grid",
-              gridTemplateColumns: {
-                xs: "repeat(4, 1fr)",
-                sm: "repeat(8, 1fr)",
-                lg: "repeat(12, 1fr)",
-              },
-              gridAutoRows: "minmax(120px, auto)",
-              gridAutoFlow: "row dense",
+              display: "flex",
+              flexDirection: "column",
               gap: DASHBOARD_HOME_GRID_GAP,
-              opacity: 1,
-              pointerEvents: "auto",
             }}
           >
+            {dashboardErrorState.blockingError
+              ? renderDashboardLoadErrorState()
+              : renderDashboardLoadingState()}
+          </Box>
+        ) : (
+          <Box
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              gap: DASHBOARD_HOME_GRID_GAP,
+            }}
+          >
+            {dashboardErrorState.inlineError ? (
+              <PageLoadErrorState
+                message={dashboardErrorState.inlineError}
+                onRetry={reloadHealth}
+              />
+            ) : null}
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: {
+                  xs: "repeat(4, 1fr)",
+                  sm: "repeat(8, 1fr)",
+                  lg: "repeat(12, 1fr)",
+                },
+                gridAutoRows: "minmax(120px, auto)",
+                gridAutoFlow: "row dense",
+                gap: DASHBOARD_HOME_GRID_GAP,
+                opacity: 1,
+                pointerEvents: "auto",
+              }}
+            >
             {/* Row 1: Hero (8) + Connection (4) */}
             <Box
               sx={{
@@ -1169,6 +1701,15 @@ export function DevicePage() {
               }}
             >
               {renderConnectionCard()}
+            </Box>
+
+            <Box
+              sx={{
+                gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" },
+                gridRow: { xs: "span 2", lg: "span 2" },
+              }}
+            >
+              {renderWifiCard()}
             </Box>
 
             {/* Row 2: Device Details (4) + Channels (8) */}
@@ -1234,9 +1775,20 @@ export function DevicePage() {
               runtimeKind={runtimeKind}
               t={t}
             />
+            </Box>
           </Box>
-        </Box>
-      )}
-    </Box>
+        )}
+      </Box>
+      <ConfirmDialog
+        open={pairingInitConfirmOpen}
+        onClose={() => setPairingInitConfirmOpen(false)}
+        title={t("device.pairingInitConfirmTitle")}
+        description={t("device.pairingInitConfirmDesc")}
+        confirmLabel={t("device.pairingInitSubmit")}
+        onConfirm={() => handleInitializePairing()}
+        confirmDisabled={pairingSubmitting === "init_pairing"}
+        requireExplicitAction
+      />
+    </>
   );
 }

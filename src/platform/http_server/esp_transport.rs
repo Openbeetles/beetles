@@ -450,6 +450,7 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
         Method::Post,
         EspBodyMode::Utf8(POST_BODY_MAX_LEN),
     ),
+    EspRouteSpec::direct("/api/config/channels", Method::Get, EspBodyMode::None),
     EspRouteSpec::direct("/api/config/channels", Method::Options, EspBodyMode::None),
     EspRouteSpec::direct(
         "/api/config/channels",

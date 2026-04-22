@@ -1,6 +1,7 @@
 //! Display configuration and command types.
 //! 显示配置与指令模型（平台无关纯数据）。
 
+use crate::channel_catalog::DISPLAY_CHANNEL_CAPACITY;
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -110,10 +111,25 @@ pub struct DisplayConfig {
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct DisplayChannelStatus {
     pub name: &'static str,
+    pub display_label: &'static str,
+    pub visible: bool,
     pub enabled: bool,
     pub healthy: bool,
     /// 连续失败次数（F5: 通道失败计数）。
     pub consecutive_failures: u32,
+}
+
+impl DisplayChannelStatus {
+    pub const fn hidden() -> Self {
+        Self {
+            name: "",
+            display_label: "",
+            visible: false,
+            enabled: false,
+            healthy: false,
+            consecutive_failures: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,7 +170,7 @@ pub enum DisplayCommand {
         presence_subtitle: Option<String>,
         wifi_connected: bool,
         ip_address: Option<String>,
-        channels: [DisplayChannelStatus; 5],
+        channels: [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
         pressure: DisplayPressureLevel,
         heap_percent: u8,
         messages_in: u32,
@@ -198,7 +214,7 @@ pub enum DisplayCommand {
         error_flash: bool,
     },
     UpdateChannels {
-        channels: [DisplayChannelStatus; 5],
+        channels: [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
     },
     /// F8: 启动进度条。stage: 0=WiFi前, 1=WiFi后, 2=SNTP后, 3=Channels后, 4=Agent前。
     UpdateBootProgress {

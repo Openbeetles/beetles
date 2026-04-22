@@ -1,10 +1,7 @@
 //! Capability package contract and runtime overlays.
 //! 能力包合同与运行时覆盖层。
 
-use crate::channel_capability::{
-    ChannelCapabilityRegistry, CHANNEL_DINGTALK, CHANNEL_FEISHU, CHANNEL_QQ_CHANNEL,
-    CHANNEL_TELEGRAM, CHANNEL_VOICE, CHANNEL_WEBSOCKET, CHANNEL_WECOM,
-};
+use crate::channel_capability::ChannelCapabilityRegistry;
 use crate::error::{Error, Result};
 use crate::tools::ToolPolicyContext;
 use crate::StateFs;
@@ -970,16 +967,7 @@ fn validate_manifest(manifest: &CapabilityPackageManifest) -> Result<()> {
         }
     }
     for channel in &manifest.channel_compatibility {
-        if !matches!(
-            channel.as_str(),
-            "*" | CHANNEL_TELEGRAM
-                | CHANNEL_FEISHU
-                | CHANNEL_DINGTALK
-                | CHANNEL_WECOM
-                | CHANNEL_QQ_CHANNEL
-                | CHANNEL_WEBSOCKET
-                | CHANNEL_VOICE
-        ) {
+        if channel != "*" && !crate::channel_catalog::channel_is_compiled(channel) {
             return Err(Error::config(
                 "capability_package",
                 "unknown channel compatibility value",

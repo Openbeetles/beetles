@@ -171,7 +171,7 @@ type AccountsDialogState =
 
 export function AccountsPage() {
   const { t } = useTranslation();
-  const { api, ready, hasPairing } = useDeviceApi();
+  const { api, ready, canAccessProtectedApis } = useDeviceApi();
   const [capFilter, setCapFilter] = useState<CapabilityFilter>("all");
   const [items, setItems] = useState<AccountSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -218,7 +218,7 @@ export function AccountsPage() {
     return () => window.clearTimeout(id);
   }, [ready, load]);
 
-  const showConnectHint = ready && !hasPairing;
+  const showConnectHint = ready && !canAccessProtectedApis;
   const listErrorState = splitPageErrorState({
     hasData: items.length > 0,
     loading,
@@ -253,7 +253,7 @@ export function AccountsPage() {
             variant="contained"
             size="small"
             startIcon={<AddRounded />}
-            disabled={!hasPairing || showConnectHint || unsupportedEndpoint}
+            disabled={!canAccessProtectedApis || showConnectHint || unsupportedEndpoint}
             onClick={() => setDialog({ kind: "create" })}
           >
             {t("accounts.addAccount")}

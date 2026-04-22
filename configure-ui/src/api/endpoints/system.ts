@@ -1,4 +1,4 @@
-import { request, API_ERROR } from '../client'
+import { request, requestProtected, API_ERROR } from '../client'
 import type { ApiResult } from '../client'
 
 /** 与固件 `metrics::MetricsSnapshot` serde 字段一致。 */
@@ -194,7 +194,7 @@ export async function postRestart(
 ): Promise<ApiResult<{ ok: boolean }>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<{ ok: boolean }>(baseUrl, '/api/restart', {
+  return requestProtected<{ ok: boolean }>(baseUrl, '/api/restart', {
     method: 'POST',
     pairingCode: pairingCode.trim(),
   })

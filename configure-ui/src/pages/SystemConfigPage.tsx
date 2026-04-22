@@ -1,13 +1,10 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Slider from "@mui/material/Slider";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import MenuItem from "@mui/material/MenuItem";
 import SaveRounded from "@mui/icons-material/SaveRounded";
-import WifiFind from "@mui/icons-material/WifiFind";
 import {
   FormLoadingSkeleton,
   PanelStateBlock,
@@ -26,16 +23,14 @@ import {
   PAGE_STACK_OUTER_SX,
   TEXT_BODY_TERTIARY_SX,
 } from "../theme/panelStyles";
-import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
-import { translateApiError } from "../i18n/apiErrors";
-import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
-import type { WifiApEntry } from "../api/endpoints/system";
 import type { AppConfig } from "../types/appConfig";
+import { WifiCredentialFields } from "../components/WifiCredentialFields";
+import { useWifiScanController } from "../hooks/useWifiScanController";
 import {
   buildSystemConfigSegment,
   isValidProxyUrl,
@@ -44,14 +39,10 @@ import {
   validateSystemConfig,
 } from "./systemConfigValidation";
 
-const WIFI_MANUAL = "__manual__";
-
-const MAX_LEN = 64;
-
 export function SystemConfigPage() {
   const { t } = useTranslation();
   const { baseUrl } = useDevice();
-  const { api, ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
+  const { api, ready, deviceConnected, canAccessProtectedApis, connectionChecking } = useDeviceApi();
   const { config, loadConfig, saveSystem, loading, error } = useConfig();
   const editor = useConfigEditorController({
     t,
@@ -61,27 +52,16 @@ export function SystemConfigPage() {
     canLoad: ready && deviceConnected,
   });
   const [form, setForm] = useSyncedNullableState<AppConfig>(config);
-  const [wifiScanList, setWifiScanList] = useState<WifiApEntry[] | null>(null);
-  const [wifiScanLoading, setWifiScanLoading] = useState(false);
-  const [wifiScanError, setWifiScanError] = useState("");
-  const { type: wifiPassType, inputProps: wifiPassInputProps } =
-    useRevealedPassword();
-
-  const handleWifiScan = async () => {
-    if (!baseUrl?.trim()) return;
-    setWifiScanLoading(true);
-    setWifiScanList(null);
-    setWifiScanError("");
-    const res = await api.system.wifiScan();
-    setWifiScanLoading(false);
-    if (res.ok && Array.isArray(res.data)) {
-      setWifiScanList(res.data);
-      setWifiScanError("");
-    } else {
-      setWifiScanList([]);
-      setWifiScanError(translateApiError(t, res.error, "config.wifiScanFailed"));
-    }
-  };
+  const {
+    wifiScanList,
+    wifiScanLoading,
+    wifiScanError,
+    handleWifiScan,
+  } = useWifiScanController({
+    canScan: Boolean(baseUrl?.trim()),
+    scan: api.system.wifiScan,
+    t,
+  });
 
   const update = (key: keyof AppConfig, value: string | number) => {
     editor.markDirty();
@@ -130,7 +110,7 @@ export function SystemConfigPage() {
   const showConnectState =
     !form && !loading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
-    !form && !loading && ready && deviceConnected && !hasPairing;
+    !form && !loading && ready && deviceConnected && !canAccessProtectedApis;
   const loadErrorState = splitPageErrorState({
     hasData: Boolean(form),
     loading,
@@ -205,109 +185,18 @@ export function SystemConfigPage() {
         ) : (
           <>
         <FormSectionSub title={t("config.wifi")}>
-          <Box
-            sx={{
-              display: "flex",
-              gap: LAYOUT_TOKENS.spacingInlineTight,
-              alignItems: "flex-start",
-              flexWrap: "wrap",
+          <WifiCredentialFields
+            ssid={form.wifi_ssid}
+            password={form.wifi_pass}
+            onSsidChange={(value) => update("wifi_ssid", value)}
+            onPasswordChange={(value) => update("wifi_pass", value)}
+            canScan={Boolean(baseUrl?.trim())}
+            onScan={() => {
+              void handleWifiScan();
             }}
-          >
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<WifiFind sx={{ fontSize: "var(--icon-size-sm)" }} />}
-              onClick={handleWifiScan}
-              disabled={!baseUrl?.trim() || wifiScanLoading}
-            >
-              {wifiScanLoading ? t("config.wifiScanning") : t("config.wifiScan")}
-            </Button>
-            {wifiScanError && (
-              <Button
-                variant="text"
-                size="small"
-                onClick={handleWifiScan}
-                disabled={!baseUrl?.trim() || wifiScanLoading}
-                sx={{ borderRadius: "var(--radius-control)" }}
-              >
-                {t("common.retry")}
-              </Button>
-            )}
-          </Box>
-          {wifiScanError && (
-            <Typography
-              variant="caption"
-              sx={{
-                display: "block",
-                mt: 0.5,
-                color: "var(--semantic-danger)",
-                fontWeight: 500,
-              }}
-            >
-              {wifiScanError}
-            </Typography>
-          )}
-          {wifiScanList && wifiScanList.length > 0 ? (
-            <>
-              <TextField
-                select
-                label={t("config.wifiSsid")}
-                value={
-                  wifiScanList.some((ap) => ap.ssid === form.wifi_ssid)
-                    ? form.wifi_ssid
-                    : WIFI_MANUAL
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v !== WIFI_MANUAL) update("wifi_ssid", v);
-                }}
-                fullWidth
-                slotProps={{
-                  inputLabel: { shrink: true },
-                }}
-              >
-                {wifiScanList.map((ap) => (
-                  <MenuItem key={ap.ssid} value={ap.ssid}>
-                    {ap.ssid} ({ap.rssi} dBm)
-                  </MenuItem>
-                ))}
-                <MenuItem value={WIFI_MANUAL}>{t("config.wifiSsidManual")}</MenuItem>
-              </TextField>
-              {(form.wifi_ssid === "" ||
-                !wifiScanList.some((ap) => ap.ssid === form.wifi_ssid)) && (
-                <TextField
-                  label={t("config.wifiSsidManual")}
-                  value={form.wifi_ssid}
-                  onChange={(e) => update("wifi_ssid", e.target.value)}
-                  fullWidth
-                  placeholder={t("config.wifiSsidHelp")}
-                  slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
-                />
-              )}
-            </>
-          ) : (
-            <TextField
-              label={t("config.wifiSsid")}
-              value={form.wifi_ssid}
-              onChange={(e) => update("wifi_ssid", e.target.value)}
-              fullWidth
-              helperText={t("config.wifiSsidHelp")}
-              slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
-            />
-          )}
-          <TextField
-            label={t("config.wifiPass")}
-            value={form.wifi_pass}
-            onChange={(e) => update("wifi_pass", e.target.value)}
-            type={wifiPassType}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                style: { fontFamily: "var(--font-mono)" },
-                ...wifiPassInputProps,
-              },
-            }}
+            scanLoading={wifiScanLoading}
+            scanError={wifiScanError}
+            scanList={wifiScanList}
           />
         </FormSectionSub>
 

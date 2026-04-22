@@ -249,13 +249,9 @@ mod tests {
             inbound_depth: 0,
             outbound_depth: 0,
             budget: budget_for_level(PressureLevel::Cautious),
-            channels: crate::orchestrator::state::ChannelsHealthSnapshot {
-                telegram: empty_channel_health(),
-                feishu: empty_channel_health(),
-                dingtalk: empty_channel_health(),
-                wecom: empty_channel_health(),
-                qq_channel: empty_channel_health(),
-            },
+            channels: crate::orchestrator::state::ChannelsHealthSnapshot::all(
+                empty_channel_health(),
+            ),
             session_count: 0,
             storage_used_kb: 0,
             storage_total_kb: 0,
@@ -273,11 +269,6 @@ mod tests {
     }
 
     fn empty_channel_health() -> crate::orchestrator::state::ChannelHealthSnapshot {
-        crate::orchestrator::state::ChannelHealthSnapshot {
-            consecutive_failures: 0,
-            total_failures: 0,
-            total_successes: 0,
-            healthy: true,
-        }
+        crate::orchestrator::state::ChannelHealthSnapshot::healthy()
     }
 }

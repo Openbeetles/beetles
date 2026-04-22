@@ -1,56 +1,104 @@
 //! 通道抽象与出站分发。仅依赖 bus、error、config；不依赖 agent、llm、tools。
 //! Channel sink trait and types; dispatch consumes outbound and sends to sinks.
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel",
+    test
+))]
 mod chunk;
 mod connectivity;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod crypto;
+#[cfg(feature = "dingtalk")]
 pub(crate) mod dingtalk;
 mod dispatch;
+#[cfg(feature = "feishu")]
 pub(crate) mod feishu;
 mod http_client;
 mod outbound_text;
+#[cfg(feature = "qq_channel")]
 mod qq;
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel",
+    test
+))]
 mod send;
+#[cfg(feature = "telegram")]
 pub(crate) mod telegram;
 pub(crate) mod voice_sink;
+#[cfg(feature = "websocket")]
 mod websocket;
+#[cfg(feature = "wecom")]
 pub(crate) mod wecom;
 mod wss_gateway;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use connectivity::build_unavailable_snapshot;
 pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use dingtalk::DingtalkSessionStore;
+#[cfg(feature = "dingtalk")]
 pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
+pub use dispatch::QueuedSink;
 pub use dispatch::{build_channel_sinks, spawn_sender_threads, ChannelRxSet};
-pub use dispatch::{run_dispatch, ChannelSinks, MessageSink, QueuedSink};
+pub use dispatch::{run_dispatch, ChannelSinks, MessageSink};
 #[cfg(feature = "feishu")]
 pub use feishu::run_feishu_ws_loop;
+#[cfg(feature = "feishu")]
 pub use feishu::{
     acquire_tenant_token as feishu_acquire_token, event_body_to_pcmsg, feishu_edit_message,
     feishu_send_and_get_id, flush_feishu_sends, run_feishu_sender_loop, FeishuTokenCache,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "feishu",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use feishu::{
     handle_http_event, FeishuEventResponse, FeishuMessageDedupStore, FeishuRequestHeaders,
 };
 pub use http_client::ChannelHttpClient;
+#[cfg(feature = "qq_channel")]
 pub use qq::{
     flush_qq_channel_sends, is_ws_online, new_shared_qq_token_cache, new_shared_qq_ws_status,
     run_qq_sender_loop, QqInboundDedupStore, QqMsgIdCache, SharedQqTokenCache, SharedQqWsStatus,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "qq_channel",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use qq::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(feature = "qq_channel")]
 pub use qq::{run_qq_ws_loop, QqWsLoopConfig};
 
+#[cfg(feature = "telegram")]
 pub use telegram::{
     edit_message_text as tg_edit_message_text, flush_telegram_sends, get_bot_username,
     poll_telegram_once, run_telegram_poll_loop, run_telegram_sender_loop, send_chat_action,
     tg_send_and_get_id, TelegramCommandCtx,
 };
 pub use voice_sink::VoiceSink;
+#[cfg(feature = "websocket")]
 pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};
+#[cfg(feature = "wecom")]
 pub use wecom::{flush_wecom_sends, run_wecom_sender_loop};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use wss_gateway::{connect_esp_wss, EspWssConnection};

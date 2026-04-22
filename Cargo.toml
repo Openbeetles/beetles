@@ -2,8 +2,8 @@
 name = "beetle"
 version = "0.1.0"
 edition = "2021"
-authors = ["Beetle Team"]
-description = "甲壳虫 (beetle) - ESP32-S3 AI Agent firmware"
+authors = ["Beetles OS Team"]
+description = "Beetles OS - AI agent os designed for edge hardware and embedded devices "
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Openbeetles/beetles"
 
@@ -34,10 +34,9 @@ remote_component = { name = "espressif/esp-dsp", version = "1.7.1", path = "../.
 # Thin C wrapper exposing stable ABI for Rust FFI; depends on esp-sr WakeNet internally.
 component_dirs = ["components"]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(esp_idf_version_at_least_6_0_0)',
-] }
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(esp_idf_version_at_least_6_0_0)']
 
 [build-dependencies]
 # `espidf` feature exposes `embuild::espidf` used when building for ESP targets.
@@ -51,8 +50,10 @@ log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-# QQ 频道 Ed25519 验签；关 default features 省体积（去掉 fast 预计算表、zeroize）
-ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+# QQ 频道 Ed25519 验签；仅在 qq_channel 编译面打开时引入。
+ed25519-dalek = { version = "2.1", optional = true, default-features = false, features = [
+    "std",
+] }
 hex = "0.4"
 getrandom = "0.2"
 indexmap = "2.0"
@@ -74,22 +75,41 @@ libc = "0.2"
 env_logger = "0.11"
 pdf-extract = "0.10"
 mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "sync"] }
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "macros",
+    "net",
+    "time",
+    "sync",
+] }
 futures = "0.3"
 # CLI 系统（仅 Linux）
 clap = { version = "4.5", features = ["derive", "cargo"] }
 # Step 7.2：Linux 配置 API（同步 HTTP，无 tokio）
 tiny_http = "0.12"
-ureq = { version = "2.12", default-features = false, features = ["tls", "gzip", "socks-proxy"] }
+ureq = { version = "2.12", default-features = false, features = [
+    "tls",
+    "gzip",
+    "socks-proxy",
+] }
 # Linux WSS（飞书/QQ 长连接）：同步客户端，rustls + webpki 根；禁止 default-features 以免拉 tokio。
-tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+tungstenite = { version = "0.24", default-features = false, features = [
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
 rustls = "0.23"
 rustls-pki-types = "1.14.0"
 tokio-rustls = "0.26.4"
 webpki-roots = "1.0.6"
-lettre = { version = "0.11.19", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+lettre = { version = "0.11.19", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "rustls-tls",
+] }
 mail-parser = "0.11.2"
-async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+async-imap = { version = "0.11", default-features = false, features = [
+    "runtime-tokio",
+] }
 quick-xml = "0.38"
 
 # Linux embedded WiFi：rtnetlink 控制面（仅 target_os=linux 编译进图）
@@ -106,13 +126,16 @@ spidev = "0.6"
 [features]
 default = [
     "default_runtime",
+    "telegram",
+    "feishu",
+    "wecom",
+    "qq_channel",
     "capability_voice",
     "capability_vision",
     "capability_sensor",
 ]
 default_runtime = [
     "config_api",
-    "feishu",
     "tools_diagnostics",
     "tools_network_extra",
     "thread_panic_catch",
@@ -122,8 +145,11 @@ capability_voice = []
 capability_vision = []
 capability_sensor = []
 config_api = []
+qq_channel = ["dep:ed25519-dalek"]
 telegram = []
-feishu = []  # 通道核心功能，默认开启
+feishu = [] # 通道核心功能；默认 cargo build 开启，ESP package profile 显式决定是否带入
+dingtalk = []
+wecom = []
 websocket = []
 cli = []
 ota = []

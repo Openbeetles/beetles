@@ -667,7 +667,7 @@ impl AppConfig {
 
     /// 启动期通道校验：enabled_channel 对应凭证非空且长度在界内；失败返回 Config 错误，不打印凭证。
     pub fn validate_for_channels(&self) -> Result<()> {
-        let ch = self.enabled_channel.as_str();
+        let ch = crate::normalize_compiled_enabled_channel(&self.enabled_channel);
         match ch {
             "telegram" => {
                 if self.tg_token.trim().is_empty() {
@@ -977,12 +977,18 @@ impl LlmSegment {
     }
 }
 
-/// 允许的 enabled_channel 取值；空表示不启用任何通道。
-pub const ALLOWED_ENABLED_CHANNELS: &[&str] =
-    &["", "telegram", "feishu", "dingtalk", "wecom", "qq_channel"];
+fn enabled_channel_validation_message() -> String {
+    let mut values = crate::compiled_enabled_channel_ids()
+        .iter()
+        .copied()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    values.insert(0, "empty");
+    format!("enabled_channel must be one of: {}", values.join(", "))
+}
 
 fn is_valid_enabled_channel(s: &str) -> bool {
-    ALLOWED_ENABLED_CHANNELS.contains(&s)
+    crate::compiled_enabled_channel_ids().contains(&s)
 }
 
 /// POST /api/config/channels 请求体；仅通道相关字段。
@@ -1028,6 +1034,34 @@ pub struct ChannelsSegment {
     pub webhook_enabled: bool,
     #[serde(default)]
     pub webhook_token: String,
+}
+
+impl ChannelsSegment {
+    pub fn from_app_config(config: &AppConfig) -> Self {
+        Self {
+            enabled_channel: crate::normalize_compiled_enabled_channel(&config.enabled_channel)
+                .to_string(),
+            tg_token: config.tg_token.clone(),
+            tg_allowed_chat_ids: config.tg_allowed_chat_ids.clone(),
+            feishu_app_id: config.feishu_app_id.clone(),
+            feishu_app_secret: config.feishu_app_secret.clone(),
+            feishu_verification_token: config.feishu_verification_token.clone(),
+            feishu_encrypt_key: config.feishu_encrypt_key.clone(),
+            feishu_allowed_chat_ids: config.feishu_allowed_chat_ids.clone(),
+            dingtalk_webhook_url: config.dingtalk_webhook_url.clone(),
+            wecom_corp_id: config.wecom_corp_id.clone(),
+            wecom_corp_secret: config.wecom_corp_secret.clone(),
+            wecom_agent_id: config.wecom_agent_id.clone(),
+            wecom_default_touser: config.wecom_default_touser.clone(),
+            wecom_token: config.wecom_token.clone(),
+            wecom_encoding_aes_key: config.wecom_encoding_aes_key.clone(),
+            dingtalk_app_secret: config.dingtalk_app_secret.clone(),
+            qq_channel_app_id: config.qq_channel_app_id.clone(),
+            qq_channel_secret: config.qq_channel_secret.clone(),
+            webhook_enabled: config.webhook_enabled,
+            webhook_token: config.webhook_token.clone(),
+        }
+    }
 }
 
 /// POST /api/config/system 请求体。
@@ -1649,7 +1683,7 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
     if !is_valid_enabled_channel(seg.enabled_channel.as_str()) {
         return Err(Error::config(
             "config",
-            "enabled_channel must be one of: empty, telegram, feishu, dingtalk, wecom, qq_channel",
+            enabled_channel_validation_message(),
         ));
     }
     if seg.tg_token.len() > CONFIG_FIELD_MAX_LEN

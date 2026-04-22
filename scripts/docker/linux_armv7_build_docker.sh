@@ -214,7 +214,7 @@ Enter the container:
   docker exec -it $CONTAINER_NAME /bin/bash
 
 Build Beetle for Linux armv7 GNU cross-target:
-  docker exec -it $CONTAINER_NAME /bin/bash -lc 'cd $WORKDIR_IN_CONTAINER && cargo build --release --target armv7-unknown-linux-gnueabihf --no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor,capability_office'
+  docker exec -it $CONTAINER_NAME /bin/bash -lc 'cd $WORKDIR_IN_CONTAINER && cargo build --release --target armv7-unknown-linux-gnueabihf --no-default-features --features default,capability_office,dingtalk'
 
 Inside the container, Beetle lives at:
   $WORKDIR_IN_CONTAINER

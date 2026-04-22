@@ -771,13 +771,7 @@ mod tests {
             inbound_depth: 0,
             outbound_depth: 0,
             budget: crate::orchestrator::current_budget(),
-            channels: crate::orchestrator::state::ChannelsHealthSnapshot {
-                telegram: healthy_channel(),
-                feishu: healthy_channel(),
-                dingtalk: healthy_channel(),
-                wecom: healthy_channel(),
-                qq_channel: healthy_channel(),
-            },
+            channels: crate::orchestrator::state::ChannelsHealthSnapshot::all(healthy_channel()),
             session_count: 0,
             storage_used_kb: 0,
             storage_total_kb: 0,
@@ -795,12 +789,7 @@ mod tests {
     }
 
     fn healthy_channel() -> crate::orchestrator::state::ChannelHealthSnapshot {
-        crate::orchestrator::state::ChannelHealthSnapshot {
-            consecutive_failures: 0,
-            total_failures: 0,
-            total_successes: 0,
-            healthy: true,
-        }
+        crate::orchestrator::state::ChannelHealthSnapshot::healthy()
     }
 
     fn target() -> InitiativeTarget {

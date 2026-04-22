@@ -1529,7 +1529,7 @@ struct DashboardParams<'a> {
     state: DisplaySystemState,
     presence_subtitle: Option<&'a str>,
     ip_address: Option<&'a str>,
-    channels: &'a [DisplayChannelStatus; 5],
+    channels: &'a [DisplayChannelStatus; crate::DISPLAY_CHANNEL_CAPACITY],
     pressure: &'a DisplayPressureLevel,
     heap_percent: u8,
     width: u16,
@@ -2223,30 +2223,10 @@ fn write_u64_to_buf(val: u64, buf: &mut [u8], mut pos: usize) -> usize {
     pos
 }
 
-/// 通道内部 ID → 屏上缩写（仅展示；不改变 orchestrator / 配置中的 ID）。
-/// 未知 ID：最多 4 字符 ASCII 大写写入 `scratch`。
-fn channel_display_label<'a>(name: &str, scratch: &'a mut [u8; 8]) -> &'a str {
-    match name {
-        "telegram" => "TG",
-        "feishu" => "FS",
-        "dingtalk" => "DT",
-        "wecom" => "WC",
-        "qq_channel" => "QQ",
-        _ => {
-            let bytes = name.as_bytes();
-            let n = bytes.len().min(4).min(scratch.len());
-            for i in 0..n {
-                scratch[i] = bytes[i].to_ascii_uppercase();
-            }
-            core::str::from_utf8(&scratch[..n]).unwrap_or("?")
-        }
-    }
-}
-
 /// Shared channel rendering logic (used by full dashboard and partial update).
 fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
-    channels: &[DisplayChannelStatus; 5],
+    channels: &[DisplayChannelStatus; crate::DISPLAY_CHANNEL_CAPACITY],
     width: u16,
     layout: &DisplayLayout,
 ) {
@@ -2260,7 +2240,12 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
     } else {
         2
     };
-    let rows_needed = channels.len().div_ceil(cols);
+    let visible_channels = channels
+        .iter()
+        .filter(|channel| channel.visible)
+        .count()
+        .max(1);
+    let rows_needed = visible_channels.div_ceil(cols);
     // 行高不得超过 middle_h / rows，避免 `clamp(14,24)` 在矮中间区把行画出面板底边。
     let row_step = (middle_h / rows_needed as i32).clamp(8, 24);
     let row_h = (row_step - 4).clamp(6, 18).min(row_step.saturating_sub(2));
@@ -2271,8 +2256,10 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
     let col_width = width as i32 / cols as i32;
     let mut col = 0i32;
     let mut row = 0i32;
-    let mut label_scratch = [0u8; 8];
     for ch in channels.iter() {
+        if !ch.visible {
+            continue;
+        }
         let px = margin_x + col * col_width;
         let row_y = middle_y + row * row_step + row_pad;
         let py = row_y + row_h / 2;
@@ -2317,7 +2304,11 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
         }
 
         let name_style = if ch.enabled { text_style } else { weak_style };
-        let label = channel_display_label(ch.name, &mut label_scratch);
+        let label = if ch.display_label.is_empty() {
+            ch.name
+        } else {
+            ch.display_label
+        };
         let _ =
             Text::new(label, Point::new(px + 14, row_y + text_base_dy), name_style).draw(target);
 
@@ -2472,7 +2463,7 @@ fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
 /// Partial update: repaint only the channel status (middle) region.
 fn render_channels_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
-    channels: &[DisplayChannelStatus; 5],
+    channels: &[DisplayChannelStatus; crate::DISPLAY_CHANNEL_CAPACITY],
     bg: Rgb565,
     width: u16,
     layout: &DisplayLayout,

@@ -18,6 +18,7 @@ pub enum WssRecvAction {
     /// 需入队消息（None 表示本帧不产生消息，如非 AT_MESSAGE_CREATE）
     Dispatch(Option<PcMsg>),
     /// 入队消息并立即回送 ACK 帧（飞书长连接需确认，否则服务端重复投递）
+    #[cfg(feature = "feishu")]
     DispatchAndAck(Option<PcMsg>, Vec<u8>),
     /// 需按协议发送心跳，seq 为下次心跳的 d 字段（如 QQ 的 s）
     SendHeartbeat(u64),

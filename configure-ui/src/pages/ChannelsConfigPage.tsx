@@ -31,8 +31,10 @@ import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { useRevealedPasswordFields } from "../hooks/useRevealedPassword";
 import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
-import { ENABLED_CHANNEL_OPTIONS } from "../types/appConfig";
-import type { AppConfig } from "../types/appConfig";
+import {
+  enabledChannelLabelKey,
+  type ChannelsConfigView,
+} from "../types/appConfig";
 
 const MAX_LEN = 64;
 const MAX_DINGTALK = 512;
@@ -40,7 +42,7 @@ const MAX_WECOM_TOUSER = 128;
 const TG_ACTIVATION_OPTIONS = ["mention", "always"] as const;
 
 function validateChannels(
-  config: AppConfig,
+  config: ChannelsConfigView,
   t: (k: string) => string,
 ): string | null {
   if (
@@ -57,27 +59,36 @@ function validateChannels(
 
 export function ChannelsConfigPage() {
   const { t } = useTranslation();
-  const { ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
-  const { config, loadConfig, saveChannels, loading, error } = useConfig();
+  const { ready, deviceConnected, canAccessProtectedApis, connectionChecking } = useDeviceApi();
+  const {
+    channelsConfig,
+    loadChannelsConfig,
+    saveChannels,
+    channelsLoading,
+    channelsError,
+  } = useConfig();
   const { setDirty } = useUnsaved();
-  const [form, setForm] = useSyncedNullableState<AppConfig>(config);
+  const [form, setForm] = useSyncedNullableState<ChannelsConfigView>(channelsConfig);
   const saveFeedback = useSaveFeedback(t);
   useConfigPageLoad({
-    hasConfig: config !== null,
-    loading,
-    loadConfig,
+    hasConfig: channelsConfig !== null,
+    loading: channelsLoading,
+    loadConfig: loadChannelsConfig,
     canLoad: ready && deviceConnected,
   });
 
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
-  const update = (key: keyof AppConfig, value: string | number | boolean) => {
+  const update = (
+    key: keyof ChannelsConfigView,
+    value: string | number | boolean,
+  ) => {
     setDirty(true);
     setForm((prev) => (prev ? { ...prev, [key]: value } : null));
   };
 
   const handleSave = async () => {
-    if (!config || !form) return;
+    if (!channelsConfig || !form) return;
     const err = validateChannels(form, t);
     if (err) {
       saveFeedback.fail(err);
@@ -87,6 +98,7 @@ export function ChannelsConfigPage() {
       enabled_channel: form.enabled_channel ?? "",
       tg_token: form.tg_token,
       tg_allowed_chat_ids: form.tg_allowed_chat_ids,
+      tg_group_activation: form.tg_group_activation,
       feishu_app_id: form.feishu_app_id,
       feishu_app_secret: form.feishu_app_secret,
       feishu_verification_token: form.feishu_verification_token,
@@ -111,7 +123,7 @@ export function ChannelsConfigPage() {
     if (result.ok) setDirty(false);
   };
 
-  if (loading && !config) {
+  if (channelsLoading && !channelsConfig) {
     return (
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
@@ -130,22 +142,25 @@ export function ChannelsConfigPage() {
   }
 
   const saveDisabled = saveFeedback.status === "saving" || !form;
+  const availableChannels = form
+    ? new Set(form.available_channels.filter((value) => value.trim().length > 0))
+    : new Set<string>();
   const showConnectionLoading =
-    !form && !loading && ready && connectionChecking && !deviceConnected;
+    !form && !channelsLoading && ready && connectionChecking && !deviceConnected;
   const showConnectState =
-    !form && !loading && !showConnectionLoading && (!ready || !deviceConnected);
+    !form && !channelsLoading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
-    !form && !loading && ready && deviceConnected && !hasPairing;
+    !form && !channelsLoading && ready && deviceConnected && !canAccessProtectedApis;
   const loadErrorState = splitPageErrorState({
     hasData: Boolean(form),
-    loading,
-    error,
+    loading: channelsLoading,
+    error: channelsError,
     suppress: showConnectState || showPairingState || showConnectionLoading,
   });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={loadErrorState.inlineError} onRetry={loadConfig} />
+      <InlineAlert message={loadErrorState.inlineError} onRetry={loadChannelsConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
@@ -198,7 +213,7 @@ export function ChannelsConfigPage() {
         ) : loadErrorState.blockingError ? (
           <PageLoadErrorState
             message={loadErrorState.blockingError}
-            onRetry={loadConfig}
+            onRetry={loadChannelsConfig}
           />
         ) : !form ? (
           <PanelStateBlock
@@ -209,6 +224,13 @@ export function ChannelsConfigPage() {
           />
         ) : (
           <>
+        {form.unavailable_enabled_channel ? (
+          <InlineAlert
+            message={t("config.unavailableEnabledChannel", {
+              channel: form.unavailable_enabled_channel,
+            })}
+          />
+        ) : null}
         <SettingsRow
           label={t("config.enabledChannel")}
           description={t("config.enabledChannelHelp")}
@@ -224,13 +246,14 @@ export function ChannelsConfigPage() {
               inputLabel: { shrink: true },
             }}
           >
-            {ENABLED_CHANNEL_OPTIONS.map((opt) => (
-              <MenuItem key={opt.value || "none"} value={opt.value}>
-                {t(opt.labelKey)}
+            {form.available_channels.map((channelId) => (
+              <MenuItem key={channelId || "none"} value={channelId}>
+                {t(enabledChannelLabelKey(channelId))}
               </MenuItem>
             ))}
           </TextField>
         </SettingsRow>
+        {availableChannels.has("telegram") ? (
         <FormSectionSubCollapsible
           title="Telegram"
           defaultOpen={!form.enabled_channel || form.enabled_channel === "telegram"}
@@ -280,7 +303,9 @@ export function ChannelsConfigPage() {
             </TextField>
           </SettingsRow>
         </FormSectionSubCollapsible>
+        ) : null}
 
+        {availableChannels.has("feishu") ? (
         <FormSectionSubCollapsible
           title={t("config.feishu")}
           defaultOpen={form.enabled_channel === "feishu"}
@@ -333,7 +358,9 @@ export function ChannelsConfigPage() {
             slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
           />
         </FormSectionSubCollapsible>
+        ) : null}
 
+        {availableChannels.has("dingtalk") ? (
         <FormSectionSubCollapsible
           title={t("config.dingtalk")}
           defaultOpen={form.enabled_channel === "dingtalk"}
@@ -367,7 +394,9 @@ export function ChannelsConfigPage() {
             }}
           />
         </FormSectionSubCollapsible>
+        ) : null}
 
+        {availableChannels.has("wecom") ? (
         <FormSectionSubCollapsible
           title={t("config.wecom")}
           defaultOpen={form.enabled_channel === "wecom"}
@@ -428,7 +457,9 @@ export function ChannelsConfigPage() {
             }}
           />
         </FormSectionSubCollapsible>
+        ) : null}
 
+        {availableChannels.has("qq_channel") ? (
         <FormSectionSubCollapsible
           title={t("config.qqChannel")}
           defaultOpen={form.enabled_channel === "qq_channel"}
@@ -454,6 +485,7 @@ export function ChannelsConfigPage() {
             }}
           />
         </FormSectionSubCollapsible>
+        ) : null}
 
         <FormSectionSubCollapsible title="Webhook" defaultOpen={form.webhook_enabled}>
           <FormControlLabel

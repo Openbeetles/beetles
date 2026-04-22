@@ -3,7 +3,9 @@
 //! 扩展新通道：实现 WssGatewayDriver，在 ESP 上提供 WssConnection 实现并调用 run_wss_gateway_loop。
 
 mod connection;
+#[cfg(any(feature = "feishu", feature = "qq_channel", test))]
 mod driver;
+#[cfg(any(feature = "feishu", feature = "qq_channel", test))]
 mod r#loop;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -14,7 +16,11 @@ mod linux_conn;
 
 #[allow(unused_imports)]
 pub use connection::{WssCloseInfo, WssConnectProfile, WssConnection, WssEvent};
+#[cfg(any(feature = "feishu", feature = "qq_channel", test))]
+#[allow(unused_imports)]
 pub use driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
+#[cfg(any(feature = "feishu", feature = "qq_channel", test))]
+#[allow(unused_imports)]
 pub use r#loop::run_wss_gateway_loop;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

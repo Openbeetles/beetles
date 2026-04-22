@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getPairingCode } from '../api/endpoints/pairingCode'
-import { clearCsrfToken, fetchCsrfToken } from '../api/client'
+import {
+  clearCsrfToken,
+  fetchCsrfToken,
+  setProtectedApiAuthObserver,
+} from '../api/client'
 import { resetSystemInfoCache } from '../session/systemInfoCoordinator'
 import {
+  deriveLocalPairingState,
+  markPairingAuthInvalid,
+  markPairingAuthValid,
+  resetPairingAuthState,
+  setDeviceProbeState,
+  setDeviceSessionState,
   resetDeviceRuntimeKind,
-  setDeviceStatus,
   updateRestartState,
 } from '../store/deviceStatusStore'
 import {
@@ -25,6 +34,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   const [pairingCode, setPairingCodeState] = useState(getStoredPairingCode)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollGenerationRef = useRef(0)
+  const previousBaseUrlRef = useRef((getStoredBaseUrl() ?? '').trim())
   /** 配对轮询元数据：避免每次成功都 GET /api/csrf_token；仅在换机后首次成功或 unreachable→reachable 时预热。 */
   const pollMetaRef = useRef<PollMeta>({ prevConnection: 'none', csrfPrimed: false })
 
@@ -41,7 +51,32 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     clearCsrfToken()
     resetSystemInfoCache()
+    const normalizedBaseUrl = baseUrl?.trim() ?? ''
+    const sameTarget = previousBaseUrlRef.current === normalizedBaseUrl
+    previousBaseUrlRef.current = normalizedBaseUrl
+    setDeviceSessionState({
+      hasTarget: Boolean(normalizedBaseUrl),
+      localPairing: deriveLocalPairingState(pairingCode),
+      preserveAuth: sameTarget,
+    })
   }, [baseUrl, pairingCode])
+
+  useEffect(() => {
+    setProtectedApiAuthObserver((event) => {
+      if (event.state === 'valid') {
+        markPairingAuthValid()
+        return
+      }
+      if (event.state === 'invalid') {
+        markPairingAuthInvalid()
+        return
+      }
+      resetPairingAuthState()
+    })
+    return () => {
+      setProtectedApiAuthObserver(null)
+    }
+  }, [])
 
   const applyPairingResult = useCallback((
     url: string,
@@ -56,11 +91,14 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
       const needCsrf = !meta.csrfPrimed || wasUnreachable
       if (needCsrf) void fetchCsrfToken(url)
       pollMetaRef.current = { prevConnection: 'reachable', csrfPrimed: true }
-      setDeviceStatus('reachable', res.data.code_set)
+      setDeviceProbeState({
+        transport: 'reachable',
+        devicePairing: res.data.code_set ? 'initialized' : 'uninitialized',
+      })
       updateRestartState('reachable')
     } else {
       pollMetaRef.current = { ...pollMetaRef.current, prevConnection: 'unreachable' }
-      setDeviceStatus('unreachable', null)
+      setDeviceProbeState({ transport: 'unreachable', devicePairing: 'unknown' })
       updateRestartState('unreachable')
     }
   }, [])
@@ -73,11 +111,10 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     const url = baseUrl?.trim()
     if (!url) {
       pollMetaRef.current = { prevConnection: 'none', csrfPrimed: false }
-      setDeviceStatus('none', null)
       return
     }
     pollMetaRef.current = { prevConnection: 'checking', csrfPrimed: false }
-    setDeviceStatus('checking', null)
+    setDeviceProbeState({ transport: 'checking', devicePairing: 'unknown' })
     let cancelled = false
     getPairingCode(url).then((res) => {
       applyPairingResult(url, generation, cancelled, res)

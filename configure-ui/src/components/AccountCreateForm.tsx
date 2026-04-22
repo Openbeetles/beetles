@@ -51,7 +51,7 @@ export function AccountCreateForm({
   onCreated,
 }: AccountCreateFormProps) {
   const { t } = useTranslation();
-  const { api, ready, hasPairing } = useDeviceApi();
+  const { api, ready, canAccessProtectedApis } = useDeviceApi();
 
   const [catalog, setCatalog] = useState<ProviderCatalogItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -159,7 +159,7 @@ export function AccountCreateForm({
   }, [providerAccountFields, providerConfigFields, selectedProvider]);
 
   const handleSubmit = async () => {
-    if (!hasPairing || !selectedProvider) return;
+    if (!canAccessProtectedApis || !selectedProvider) return;
     const invalid = localizedProviderInputFields.filter(
       (f) => f.required && !(fieldValues[f.key] ?? "").trim(),
     );
@@ -328,12 +328,12 @@ export function AccountCreateForm({
         fullWidth
         size="large"
         variant="contained"
-        disabled={!hasPairing || createBusy}
+        disabled={!canAccessProtectedApis || createBusy}
         onClick={() => void handleSubmit()}
       >
         {createBusy ? t("accounts.createBusy") : t("accounts.createSubmit")}
       </Button>
-      {!hasPairing ? (
+      {!canAccessProtectedApis ? (
         <FormHelperText sx={{ mx: 0 }}>
           {t("accounts.createNeedsPairing")}
         </FormHelperText>

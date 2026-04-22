@@ -152,12 +152,33 @@ pub fn control_plane_inventory(
         ];
         if inbound_webhooks_enabled {
             endpoints.push("POST /api/webhook");
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            #[cfg(all(
+                feature = "feishu",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
             {
                 endpoints.push("POST /api/feishu/event");
+            }
+            #[cfg(all(
+                feature = "dingtalk",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
+            {
                 endpoints.push("POST /api/dingtalk/webhook");
+            }
+            #[cfg(all(
+                feature = "wecom",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
+            {
                 endpoints.push("GET /api/wecom/webhook");
                 endpoints.push("POST /api/wecom/webhook");
+            }
+            #[cfg(all(
+                feature = "qq_channel",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
+            {
                 endpoints.push("POST /api/webhook/qq");
             }
         }

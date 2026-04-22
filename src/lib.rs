@@ -5,6 +5,7 @@ mod build_info;
 mod build_package;
 pub mod capability_package;
 pub mod channel_capability;
+pub mod channel_catalog;
 pub mod constants;
 pub mod device_capability;
 mod host_observability;
@@ -36,6 +37,12 @@ pub use channel_capability::{
     ChannelCapabilityContract, ChannelCapabilityEntry, ChannelCapabilityRegistry,
     ChannelCapabilitySnapshot, ChannelDeliveryOrderingModel, CHANNEL_DINGTALK, CHANNEL_FEISHU,
     CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM, CHANNEL_VOICE, CHANNEL_WEBSOCKET, CHANNEL_WECOM,
+};
+pub use channel_catalog::{
+    channel_display_label, channel_is_compiled, compiled_channel_entries,
+    compiled_enabled_channel_ids, connectivity_channel_entries, display_channel_entries,
+    normalize_compiled_enabled_channel, selectable_channel_entries, CompiledChannelEntry,
+    DISPLAY_CHANNEL_CAPACITY,
 };
 pub use device_capability::{
     build_device_capability_registry, build_device_capability_registry_from_input,
@@ -109,15 +116,37 @@ pub use bus::{
 };
 #[cfg(feature = "feishu")]
 pub use channels::run_feishu_ws_loop;
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
+pub use channels::QueuedSink;
+#[cfg(feature = "websocket")]
+pub use channels::WebSocketSink;
+#[cfg(feature = "feishu")]
 pub use channels::{
-    feishu_acquire_token, feishu_edit_message, feishu_send_and_get_id, flush_dingtalk_sends,
-    flush_feishu_sends, flush_qq_channel_sends, flush_telegram_sends, flush_wecom_sends,
-    get_bot_username, poll_telegram_once, run_dingtalk_sender_loop, run_dispatch,
-    run_feishu_sender_loop, run_qq_sender_loop, run_telegram_poll_loop, run_telegram_sender_loop,
-    run_wecom_sender_loop, send_chat_action, tg_edit_message_text, tg_send_and_get_id,
-    ChannelHttpClient, ChannelSinks, FeishuTokenCache, LogSink, MessageSink, QueuedSink,
-    WebSocketSink, WssConnectProfile,
+    feishu_acquire_token, feishu_edit_message, feishu_send_and_get_id, flush_feishu_sends,
+    run_feishu_sender_loop, FeishuTokenCache,
 };
+#[cfg(feature = "dingtalk")]
+pub use channels::{flush_dingtalk_sends, run_dingtalk_sender_loop};
+#[cfg(feature = "qq_channel")]
+pub use channels::{flush_qq_channel_sends, run_qq_sender_loop};
+#[cfg(feature = "telegram")]
+pub use channels::{
+    flush_telegram_sends, get_bot_username, poll_telegram_once, run_telegram_poll_loop,
+    run_telegram_sender_loop, send_chat_action, tg_edit_message_text, tg_send_and_get_id,
+    TelegramCommandCtx,
+};
+#[cfg(feature = "wecom")]
+pub use channels::{flush_wecom_sends, run_wecom_sender_loop};
+pub use channels::{
+    run_dispatch, ChannelHttpClient, ChannelSinks, LogSink, MessageSink, WssConnectProfile,
+};
+#[cfg(feature = "qq_channel")]
 pub use channels::{run_qq_ws_loop, QqWsLoopConfig};
 pub use config::{
     parse_allowed_chat_ids, save_hardware_segment, AppConfig, DeviceEntry, HardwareSegment,

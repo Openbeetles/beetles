@@ -1,11 +1,15 @@
 //! Shared channel-side crypto helpers for webhook integrations.
 //! 通道侧共享加解密辅助，供 webhook 协议实现复用。
 
+#[cfg(any(feature = "feishu", feature = "wecom"))]
 use aes::Aes256;
+#[cfg(any(feature = "feishu", feature = "wecom"))]
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 
+#[cfg(any(feature = "feishu", feature = "wecom"))]
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
+#[cfg(any(feature = "feishu", feature = "wecom"))]
 pub(crate) fn aes256_cbc_decrypt_pkcs7(
     key: &[u8; 32],
     iv: &[u8; 16],
@@ -19,6 +23,7 @@ pub(crate) fn aes256_cbc_decrypt_pkcs7(
     Ok(decrypted.to_vec())
 }
 
+#[cfg(feature = "feishu")]
 pub(crate) fn sha256_bytes(input: &[u8]) -> [u8; 32] {
     use sha2::Digest;
 

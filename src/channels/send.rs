@@ -57,6 +57,7 @@ pub fn send_post<H: ChannelHttpClient>(
 }
 
 /// 执行带 headers 的 POST，失败时打日志，返回结果。
+#[cfg(any(feature = "feishu", feature = "qq_channel"))]
 pub fn send_post_with_headers<H: ChannelHttpClient>(
     tag: &str,
     http: &mut H,

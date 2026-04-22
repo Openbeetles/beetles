@@ -1,4 +1,4 @@
-import { request, API_ERROR } from '../client'
+import { requestProtected, API_ERROR } from '../client'
 import type { ApiResult } from '../client'
 
 export interface SkillItem {
@@ -16,7 +16,7 @@ export async function listSkills(
   pairingCode?: string,
 ): Promise<ApiResult<SkillsListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  const res = await request<SkillsListResponse>(baseUrl, '/api/skills', {
+  const res = await requestProtected<SkillsListResponse>(baseUrl, '/api/skills', {
     pairingCode: pairingCode?.trim() || undefined,
   })
   if (res.ok && res.data) {
@@ -32,7 +32,7 @@ export async function getSkillContent(
   pairingCode?: string,
 ): Promise<ApiResult<string>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  const res = await request<unknown>(baseUrl, `/api/skills?name=${encodeURIComponent(name)}`, {
+  const res = await requestProtected<unknown>(baseUrl, `/api/skills?name=${encodeURIComponent(name)}`, {
     pairingCode: pairingCode?.trim() || undefined,
   })
   if (!res.ok) return res as ApiResult<string>
@@ -46,7 +46,7 @@ export async function postSkill(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/skills', {
+  return requestProtected<void>(baseUrl, '/api/skills', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
@@ -60,7 +60,7 @@ export async function deleteSkill(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, `/api/skills?name=${encodeURIComponent(name)}`, {
+  return requestProtected<void>(baseUrl, `/api/skills?name=${encodeURIComponent(name)}`, {
     method: 'DELETE',
     pairingCode: pairingCode.trim(),
   })
@@ -74,7 +74,7 @@ export async function importSkill(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/skills/import', {
+  return requestProtected<void>(baseUrl, '/api/skills/import', {
     method: 'POST',
     body: { url, name },
     pairingCode: pairingCode.trim(),

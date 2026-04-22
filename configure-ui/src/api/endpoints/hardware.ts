@@ -1,4 +1,4 @@
-import { API_ERROR, request, type ApiResult } from '../client'
+import { API_ERROR, requestProtected, type ApiResult } from '../client'
 import type { HardwareSegment } from '../../types/hardwareConfig'
 
 export type HardwareDiscoveryBus = 'usb'
@@ -24,7 +24,7 @@ export async function getHardwareConfig(
   pairingCode?: string,
 ): Promise<ApiResult<HardwareSegment>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<HardwareSegment>(baseUrl, '/api/config/hardware', {
+  return requestProtected<HardwareSegment>(baseUrl, '/api/config/hardware', {
     pairingCode: pairingCode?.trim(),
   })
 }
@@ -36,7 +36,7 @@ export async function saveHardwareConfig(
 ): Promise<ApiResult<{ ok: boolean }>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<{ ok: boolean }>(baseUrl, '/api/config/hardware', {
+  return requestProtected<{ ok: boolean }>(baseUrl, '/api/config/hardware', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
@@ -50,7 +50,7 @@ export async function discoverHardware(
   capability: HardwareDiscoveryCapability,
 ): Promise<ApiResult<HardwareDiscoveryResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<HardwareDiscoveryResponse>(
+  return requestProtected<HardwareDiscoveryResponse>(
     baseUrl,
     `/api/hardware/discovery?bus=${encodeURIComponent(bus)}&capability=${encodeURIComponent(capability)}`,
     {

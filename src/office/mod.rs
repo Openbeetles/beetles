@@ -1,16 +1,25 @@
 //! Office capability domain: accounts, policies, and resolver.
 
 mod account;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod assessment;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod authority_source;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 mod capability_runtime;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod config_management;
 mod credentials;
 #[cfg(all(
@@ -29,16 +38,31 @@ mod integration_topology;
 ))]
 mod microsoft_graph;
 mod policy;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod provider_schema;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod public_contract;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod resolver;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod service;
 mod status;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod tool_doctrine;
 #[cfg(all(
     feature = "capability_office",
@@ -54,12 +78,18 @@ mod wecom;
 pub use account::{
     OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
 };
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use assessment::{
     assess_office_account, OfficeAccountAssessment, OfficeConfigAssessment, OfficeConfigNextAction,
     OfficeConfigReadiness,
 };
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use authority_source::{
     OfficeAuthoritySource, ReloadingOfficeAuthoritySource, SnapshotOfficeAuthoritySource,
 };
@@ -71,9 +101,15 @@ pub(crate) use capability_runtime::{
     OfficeCapabilityCredentialAccess, OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime,
     OfficeSelectedRoute,
 };
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub(crate) use config_management::infer_single_capability_for_provider;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use config_management::{
     OfficeAccountConfigSaveRequest, OfficeAccountOnboardingDisposition,
     OfficeAccountOnboardingRequest, OfficeAccountOnboardingResult, OfficeAccountRecordInput,
@@ -114,27 +150,42 @@ pub use microsoft_graph::{
     MicrosoftGraphErrorEnvelope, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 pub use policy::OfficeSelectionPolicy;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use provider_schema::{
     office_provider_display_name_key, office_provider_schema, office_provider_schemas,
     OfficeProviderFieldLocation, OfficeProviderFieldSchema, OfficeProviderFieldValueKind,
     OfficeProviderSchema,
 };
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub(crate) use public_contract::parse_public_account_upsert_request_value;
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use resolver::{
     OfficeResolveAmbiguity, OfficeResolveAmbiguityReason, OfficeResolveCandidate,
     OfficeResolveMissing, OfficeResolveMissingReason, OfficeResolveRequest, OfficeResolveResult,
     OfficeResolveSelection, OfficeResolveSelectionReason, OfficeResolver,
 };
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use service::{OfficeAccountAuthorityStatus, OfficeAuthoritySummary, OfficeService};
 pub use status::{
     OfficeAccountRuntimeStatus, OfficeAccountStatusSummary, OfficeRuntimeStatusStore,
     REL_PATH_OFFICE_RUNTIME_STATUS,
 };
-#[cfg(feature = "capability_office")]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use tool_doctrine::{
     office_config_op_doctrine, office_config_op_doctrines, office_tool_doctrine,
     office_tool_doctrines, OfficeConfigOpDoctrine, OfficeConfigOpTier, OfficeToolDoctrine,
@@ -158,7 +209,11 @@ pub use wecom::{
     WECOM_DEFAULT_BASE_URL,
 };
 
-#[cfg(all(test, feature = "capability_office"))]
+#[cfg(all(
+    test,
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod tool_doctrine_tests {
     use super::{
         office_config_op_doctrine, office_tool_doctrine, OfficeConfigOpTier, OfficeToolRole,

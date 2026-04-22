@@ -71,7 +71,7 @@ export function AccountDetailDialog({
   onCreated,
 }: AccountDetailDialogProps) {
   const { t } = useTranslation();
-  const { api, ready, hasPairing } = useDeviceApi();
+  const { api, ready, canAccessProtectedApis } = useDeviceApi();
   const [detail, setDetail] = useState<AccountDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -146,7 +146,7 @@ export function AccountDetailDialog({
   }, [open, mode, accountKey, load, dismissSaveFeedback]);
 
   const handleProbe = async () => {
-    if (!hasPairing || !accountKey) {
+    if (!canAccessProtectedApis || !accountKey) {
       setProbeMsg(t("accounts.needPairingTitle"));
       return;
     }
@@ -172,7 +172,7 @@ export function AccountDetailDialog({
   };
 
   const handleDelete = async () => {
-    if (!hasPairing || !accountKey) return;
+    if (!canAccessProtectedApis || !accountKey) return;
     setDeleteBusy(true);
     try {
       const res = await withTimeout(
@@ -196,7 +196,7 @@ export function AccountDetailDialog({
   };
 
   const handleSaveConfig = async () => {
-    if (!hasPairing || !accountKey || !detail) return;
+    if (!canAccessProtectedApis || !accountKey || !detail) return;
     const invalid = localizedDetailFields.filter(
       (field) =>
         field.required &&
@@ -272,7 +272,7 @@ export function AccountDetailDialog({
         <Button
           color="error"
           variant="outlined"
-          disabled={!hasPairing || deleteBusy}
+          disabled={!canAccessProtectedApis || deleteBusy}
           onClick={() => setDeleteOpen(true)}
           sx={{ minWidth: 112 }}
         >
@@ -280,7 +280,7 @@ export function AccountDetailDialog({
         </Button>
         <Button
           variant="contained"
-          disabled={!hasPairing || saveStatus === "saving"}
+          disabled={!canAccessProtectedApis || saveStatus === "saving"}
           onClick={() => void handleSaveConfig()}
           sx={{ minWidth: 128 }}
         >
@@ -497,7 +497,7 @@ export function AccountDetailDialog({
                         <Button
                           variant="outlined"
                           size="small"
-                          disabled={!hasPairing || probeBusy}
+                          disabled={!canAccessProtectedApis || probeBusy}
                           onClick={() => void handleProbe()}
                         >
                           {probeBusy ? t("accounts.probing") : t("accounts.probe")}

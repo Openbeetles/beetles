@@ -158,43 +158,26 @@ fn post_wifi_display_bootstrap(
                 observe_heap_checkpoint(TAG, "heap_after_display_init");
                 let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 0 });
                 observe_heap_checkpoint(TAG, "heap_after_display_boot_stage0");
+                let mut channels =
+                    [DisplayChannelStatus::hidden(); crate::DISPLAY_CHANNEL_CAPACITY];
+                let normalized_enabled =
+                    crate::normalize_compiled_enabled_channel(&config.enabled_channel);
+                for (index, entry) in crate::display_channel_entries().enumerate() {
+                    channels[index] = DisplayChannelStatus {
+                        name: entry.id,
+                        display_label: entry.display_label,
+                        visible: true,
+                        enabled: normalized_enabled == entry.id,
+                        healthy: false,
+                        consecutive_failures: 0,
+                    };
+                }
                 let _ = platform.display_command(DisplayCommand::RefreshDashboard {
                     state: DisplaySystemState::Booting,
                     presence_subtitle: Some("restoring runtime shell".to_string()),
                     wifi_connected: false,
                     ip_address: None,
-                    channels: [
-                        DisplayChannelStatus {
-                            name: "telegram",
-                            enabled: config.enabled_channel == "telegram",
-                            healthy: false,
-                            consecutive_failures: 0,
-                        },
-                        DisplayChannelStatus {
-                            name: "feishu",
-                            enabled: config.enabled_channel == "feishu",
-                            healthy: false,
-                            consecutive_failures: 0,
-                        },
-                        DisplayChannelStatus {
-                            name: "dingtalk",
-                            enabled: config.enabled_channel == "dingtalk",
-                            healthy: false,
-                            consecutive_failures: 0,
-                        },
-                        DisplayChannelStatus {
-                            name: "wecom",
-                            enabled: config.enabled_channel == "wecom",
-                            healthy: false,
-                            consecutive_failures: 0,
-                        },
-                        DisplayChannelStatus {
-                            name: "qq_channel",
-                            enabled: config.enabled_channel == "qq_channel",
-                            healthy: false,
-                            consecutive_failures: 0,
-                        },
-                    ],
+                    channels,
                     pressure: DisplayPressureLevel::Normal,
                     heap_percent: 0,
                     messages_in: 0,

@@ -2,29 +2,61 @@
 //! Request/response types for the router layer (no esp-idf types).
 
 use crate::bus::InboundTx;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use crate::channels::{
-    DingtalkSessionStore, FeishuMessageDedupStore, QqInboundDedupStore, QqMsgIdCache,
-};
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::channels::DingtalkSessionStore;
+#[cfg(all(
+    feature = "feishu",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::channels::FeishuMessageDedupStore;
+#[cfg(all(
+    feature = "qq_channel",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::channels::{QqInboundDedupStore, QqMsgIdCache};
 
 /// 与 webhook、QQ 回调相关的跨 handler 资源。
 /// Cross-handler resources for webhooks and QQ callbacks.
 #[derive(Clone)]
 pub struct RouterEnv {
     pub inbound_tx: InboundTx,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "feishu",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub feishu_message_dedup_store: FeishuMessageDedupStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub dingtalk_session_store: DingtalkSessionStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub qq_msg_id_cache: QqMsgIdCache,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub qq_inbound_dedup_store: QqInboundDedupStore,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub qq_webhook_enabled: bool,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub qq_app_id: String,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "qq_channel",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub qq_secret: String,
 }
 
@@ -38,22 +70,29 @@ impl RouterEnv {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         inbound_tx: InboundTx,
-        feishu_message_dedup_store: FeishuMessageDedupStore,
-        dingtalk_session_store: DingtalkSessionStore,
-        qq_msg_id_cache: QqMsgIdCache,
-        qq_inbound_dedup_store: QqInboundDedupStore,
-        qq_webhook_enabled: bool,
-        qq_app_id: String,
-        qq_secret: String,
+        #[cfg(feature = "feishu")] feishu_message_dedup_store: FeishuMessageDedupStore,
+        #[cfg(feature = "dingtalk")] dingtalk_session_store: DingtalkSessionStore,
+        #[cfg(feature = "qq_channel")] qq_msg_id_cache: QqMsgIdCache,
+        #[cfg(feature = "qq_channel")] qq_inbound_dedup_store: QqInboundDedupStore,
+        #[cfg(feature = "qq_channel")] qq_webhook_enabled: bool,
+        #[cfg(feature = "qq_channel")] qq_app_id: String,
+        #[cfg(feature = "qq_channel")] qq_secret: String,
     ) -> Self {
         Self {
             inbound_tx,
+            #[cfg(feature = "feishu")]
             feishu_message_dedup_store,
+            #[cfg(feature = "dingtalk")]
             dingtalk_session_store,
+            #[cfg(feature = "qq_channel")]
             qq_msg_id_cache,
+            #[cfg(feature = "qq_channel")]
             qq_inbound_dedup_store,
+            #[cfg(feature = "qq_channel")]
             qq_webhook_enabled,
+            #[cfg(feature = "qq_channel")]
             qq_app_id,
+            #[cfg(feature = "qq_channel")]
             qq_secret,
         }
     }

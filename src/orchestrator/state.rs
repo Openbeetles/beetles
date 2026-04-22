@@ -6,32 +6,16 @@ use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use super::channel_health::ChannelHealthSlot;
-
-/// 通道索引枚举，编译时确定，避免 HashMap + String 的堆分配。
-/// Channel index enum, compile-time fixed, avoids HashMap + String heap allocation.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum ChannelIndex {
-    Telegram = 0,
-    Feishu = 1,
-    DingTalk = 2,
-    WeCom = 3,
-    QqChannel = 4,
-}
-
 pub const MAX_CHANNELS: usize = 5;
 
-/// 通道名 → ChannelIndex 映射（编译时已知的 5 个通道）。
-/// Channel name to index mapping (5 channels known at compile time).
-pub fn channel_to_index(channel: &str) -> Option<ChannelIndex> {
-    match channel {
-        "telegram" => Some(ChannelIndex::Telegram),
-        "feishu" => Some(ChannelIndex::Feishu),
-        "dingtalk" => Some(ChannelIndex::DingTalk),
-        "wecom" => Some(ChannelIndex::WeCom),
-        "qq_channel" => Some(ChannelIndex::QqChannel),
-        _ => None,
-    }
+/// 通道健康槽位仍保持固定 5 个，避免原子状态面引入动态分配；
+/// 但槽位索引不再由另一份硬编码枚举维护，而是直接来自编译期通道目录。
+/// Channel health keeps a fixed 5-slot atomic array, while slot lookup now derives from the
+/// compile-time channel catalog instead of a second hard-coded enum.
+pub fn channel_to_index(channel: &str) -> Option<usize> {
+    crate::channel_catalog::connectivity_channel_entries()
+        .enumerate()
+        .find_map(|(index, entry)| (entry.id == channel).then_some(index))
 }
 
 /// Orchestrator 全局原子状态。零堆分配，仅使用 AtomicU32/AtomicU8（xtensa 兼容）。
@@ -138,7 +122,7 @@ impl OrchestratorState {
 
 /// 单通道健康快照（用于 API 序列化）。
 /// Per-channel health snapshot for API serialization.
-#[derive(serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ChannelHealthSnapshot {
     pub consecutive_failures: u32,
     pub total_failures: u32,
@@ -146,15 +130,78 @@ pub struct ChannelHealthSnapshot {
     pub healthy: bool,
 }
 
+impl ChannelHealthSnapshot {
+    pub const fn healthy() -> Self {
+        Self {
+            consecutive_failures: 0,
+            total_failures: 0,
+            total_successes: 0,
+            healthy: true,
+        }
+    }
+}
+
+impl Default for ChannelHealthSnapshot {
+    fn default() -> Self {
+        Self::healthy()
+    }
+}
+
 /// 全部通道健康快照（具名结构，API 输出更易读）。
 /// All channels health snapshot (named struct for readable API output).
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ChannelsHealthSnapshot {
+    #[cfg(feature = "telegram")]
     pub telegram: ChannelHealthSnapshot,
+    #[cfg(feature = "feishu")]
     pub feishu: ChannelHealthSnapshot,
+    #[cfg(feature = "dingtalk")]
     pub dingtalk: ChannelHealthSnapshot,
+    #[cfg(feature = "wecom")]
     pub wecom: ChannelHealthSnapshot,
+    #[cfg(feature = "qq_channel")]
     pub qq_channel: ChannelHealthSnapshot,
+}
+
+impl ChannelsHealthSnapshot {
+    pub const fn all(value: ChannelHealthSnapshot) -> Self {
+        #[cfg(not(any(
+            feature = "telegram",
+            feature = "feishu",
+            feature = "dingtalk",
+            feature = "wecom",
+            feature = "qq_channel"
+        )))]
+        let _ = value;
+        Self {
+            #[cfg(feature = "telegram")]
+            telegram: value,
+            #[cfg(feature = "feishu")]
+            feishu: value,
+            #[cfg(feature = "dingtalk")]
+            dingtalk: value,
+            #[cfg(feature = "wecom")]
+            wecom: value,
+            #[cfg(feature = "qq_channel")]
+            qq_channel: value,
+        }
+    }
+
+    pub fn get(&self, channel: &str) -> Option<&ChannelHealthSnapshot> {
+        match channel {
+            #[cfg(feature = "telegram")]
+            crate::channel_capability::CHANNEL_TELEGRAM => Some(&self.telegram),
+            #[cfg(feature = "feishu")]
+            crate::channel_capability::CHANNEL_FEISHU => Some(&self.feishu),
+            #[cfg(feature = "dingtalk")]
+            crate::channel_capability::CHANNEL_DINGTALK => Some(&self.dingtalk),
+            #[cfg(feature = "wecom")]
+            crate::channel_capability::CHANNEL_WECOM => Some(&self.wecom),
+            #[cfg(feature = "qq_channel")]
+            crate::channel_capability::CHANNEL_QQ_CHANNEL => Some(&self.qq_channel),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -226,19 +273,30 @@ impl ResourceSnapshot {
             super::pressure::PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
         let metrics = crate::metrics::snapshot();
         let channels = ChannelsHealthSnapshot {
-            telegram: super::channel_health::snapshot_by_index(
+            #[cfg(feature = "telegram")]
+            telegram: super::channel_health::snapshot_for_channel(
                 state,
-                ChannelIndex::Telegram as usize,
+                crate::channel_capability::CHANNEL_TELEGRAM,
             ),
-            feishu: super::channel_health::snapshot_by_index(state, ChannelIndex::Feishu as usize),
-            dingtalk: super::channel_health::snapshot_by_index(
+            #[cfg(feature = "feishu")]
+            feishu: super::channel_health::snapshot_for_channel(
                 state,
-                ChannelIndex::DingTalk as usize,
+                crate::channel_capability::CHANNEL_FEISHU,
             ),
-            wecom: super::channel_health::snapshot_by_index(state, ChannelIndex::WeCom as usize),
-            qq_channel: super::channel_health::snapshot_by_index(
+            #[cfg(feature = "dingtalk")]
+            dingtalk: super::channel_health::snapshot_for_channel(
                 state,
-                ChannelIndex::QqChannel as usize,
+                crate::channel_capability::CHANNEL_DINGTALK,
+            ),
+            #[cfg(feature = "wecom")]
+            wecom: super::channel_health::snapshot_for_channel(
+                state,
+                crate::channel_capability::CHANNEL_WECOM,
+            ),
+            #[cfg(feature = "qq_channel")]
+            qq_channel: super::channel_health::snapshot_for_channel(
+                state,
+                crate::channel_capability::CHANNEL_QQ_CHANNEL,
             ),
         };
         Self {

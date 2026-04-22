@@ -7,12 +7,12 @@ import {
   type ReactNode,
 } from "react";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DisconnectedCacheOverlay } from "./DisconnectedCacheOverlay";
-import { DeviceBanner } from "./DeviceBanner";
 import { ShellPageTransition } from "./ShellPageTransition";
 import { Taskbar } from "./Taskbar";
 import { TopBar } from "./TopBar";
@@ -20,6 +20,7 @@ import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { MAIN_CONTENT_INNER_SX } from "../theme/panelStyles";
 import { UnsavedContext } from "../contexts/UnsavedContext";
 import { useConfig } from "../hooks/useConfig";
+import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
 import {
   useDeviceConnected,
@@ -27,8 +28,9 @@ import {
   consumeReconnectedAfterRestart,
   consumeRestartTimeout,
 } from "../store/deviceStatusStore";
-import { OS_ICON_DIALOG } from "../config/osIcons";
+import { OS_ICON_DASHBOARD, OS_ICON_DIALOG, OS_ICON_NAV } from "../config/osIcons";
 import { Os3dIcon } from "./Os3dIcon";
+import { PanelStateBlock } from "./form";
 
 interface LayoutProps {
   onOpenSettings?: () => void;
@@ -88,6 +90,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const location = useLocation();
   const { dirty, setDirty } = useContext(UnsavedContext);
   const { config, clearCachedConfig, refreshCachedConfig } = useConfig();
+  const { appMode } = useDeviceApi();
   const { showToast } = useToast();
   const deviceConnected = useDeviceConnected();
   const restartPhase = useRestartPhase();
@@ -104,8 +107,13 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const showDisconnectedCacheBanner =
     !deviceConnected &&
     config != null &&
+    appMode === "ready" &&
     !showRestartBanner &&
     !suppressDisconnectedCacheOverlay;
+  const showProtectedRouteBlocker =
+    location.pathname !== "/device" &&
+    appMode !== "ready" &&
+    !showRestartBanner;
   useEffect(() => {
     if (!deviceConnected) return;
     queueMicrotask(() => setSuppressDisconnectedCacheOverlay(false));
@@ -153,7 +161,6 @@ export function Layout({ onOpenSettings }: LayoutProps) {
 
   const showUnsavedDialog = dirty && pendingPath != null;
   const useImmersiveMainSurface = location.pathname === "/device";
-  const showDeviceBanner = location.pathname !== "/device";
 
   const handleUnsavedConfirm = useCallback(() => {
     setDirty(false);
@@ -192,6 +199,92 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [showDisconnectedCacheBanner, refreshingCache, handleRefreshCachedConfig]);
+
+  const handleOpenDevicePage = useCallback(() => {
+    attemptNavigate("/device");
+  }, [attemptNavigate]);
+
+  const protectedRouteBlocker = (() => {
+    if (!showProtectedRouteBlocker) return null;
+    if (appMode === "no_target") {
+      return (
+        <PanelStateBlock
+          tone="neutral"
+          presentation="empty"
+          icon={<Os3dIcon src={OS_ICON_NAV["/device"]} variant="inline" />}
+          title={t("device.bannerNeedDevice")}
+          description={t("device.sectionConnectionDesc")}
+          actions={
+            <Button
+              variant="contained"
+              onClick={handleOpenDevicePage}
+              sx={{ borderRadius: "var(--radius-control)" }}
+            >
+              {t("nav.device")}
+            </Button>
+          }
+        />
+      );
+    }
+    if (appMode === "offline") {
+      return (
+        <PanelStateBlock
+          tone="warning"
+          presentation="empty"
+          icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceUnreachable} variant="inline" />}
+          title={t("device.notConnected")}
+          description={t("config.connectDesc")}
+          actions={
+            <Button
+              variant="contained"
+              onClick={handleOpenDevicePage}
+              sx={{ borderRadius: "var(--radius-control)" }}
+            >
+              {t("nav.device")}
+            </Button>
+          }
+        />
+      );
+    }
+    if (appMode === "init_pairing") {
+      return (
+        <PanelStateBlock
+          tone="neutral"
+          presentation="empty"
+          icon={<Os3dIcon src={OS_ICON_NAV["/device"]} variant="inline" />}
+          title={t("device.bannerDeviceNotActivated")}
+          description={t("device.sectionConnectionDesc")}
+          actions={
+            <Button
+              variant="contained"
+              onClick={handleOpenDevicePage}
+              sx={{ borderRadius: "var(--radius-control)" }}
+            >
+              {t("nav.device")}
+            </Button>
+          }
+        />
+      );
+    }
+    return (
+      <PanelStateBlock
+        tone="neutral"
+        presentation="empty"
+        icon={<Os3dIcon src={OS_ICON_NAV["/device"]} variant="inline" />}
+        title={t("device.bannerNeedPairing")}
+        description={t("config.needPairingDesc")}
+        actions={
+          <Button
+            variant="contained"
+            onClick={handleOpenDevicePage}
+            sx={{ borderRadius: "var(--radius-control)" }}
+          >
+            {t("nav.device")}
+          </Button>
+        }
+      />
+    );
+  })();
 
   /** 全屏磨砂底：拦截底层交互，避免可视蒙层下仍可点击 */
   const statusOverlayBackdropSx = {
@@ -327,10 +420,9 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             }}
           >
             <TopBar />
-            {showDeviceBanner ? <DeviceBanner /> : null}
           </Box>
           <MainSurface immersive={useImmersiveMainSurface}>
-            <ShellPageTransition />
+            {protectedRouteBlocker ?? <ShellPageTransition />}
           </MainSurface>
           <Taskbar onOpenSettings={onOpenSettings} />
         </Box>

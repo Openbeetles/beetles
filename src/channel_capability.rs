@@ -2,22 +2,34 @@
 //! 通道能力合同与运行态快照。
 
 use crate::bus::{MessageBodyKind, TextFormat, MAX_CONTENT_LEN};
+use crate::channel_catalog;
 use crate::config::AppConfig;
 use serde::Serialize;
 use std::collections::HashMap;
 
+#[cfg(feature = "telegram")]
 const TELEGRAM_MAX_TEXT_BYTES: usize = 4096;
+#[cfg(feature = "telegram")]
 const TELEGRAM_MAX_CAPTION_BYTES: usize = 1024;
+#[cfg(feature = "feishu")]
 const FEISHU_MAX_TEXT_BYTES: usize = 4096;
+#[cfg(feature = "feishu")]
 const FEISHU_MAX_CAPTION_BYTES: usize = 0;
+#[cfg(feature = "dingtalk")]
 const DINGTALK_MAX_TEXT_BYTES: usize = 4096;
+#[cfg(feature = "dingtalk")]
 const DINGTALK_MAX_CAPTION_BYTES: usize = 0;
+#[cfg(feature = "wecom")]
 const WECOM_MAX_TEXT_BYTES: usize = 2048;
+#[cfg(feature = "wecom")]
 const WECOM_MAX_CAPTION_BYTES: usize = 0;
+#[cfg(feature = "qq_channel")]
 const QQ_CHANNEL_MAX_TEXT_BYTES: usize = 4096;
+#[cfg(feature = "qq_channel")]
 const QQ_CHANNEL_MAX_CAPTION_BYTES: usize = 0;
 
 const BODY_KINDS_TEXT_ONLY: &[MessageBodyKind] = &[MessageBodyKind::Text];
+#[cfg(feature = "telegram")]
 const BODY_KINDS_TELEGRAM: &[MessageBodyKind] = &[
     MessageBodyKind::Text,
     MessageBodyKind::Image,
@@ -25,6 +37,7 @@ const BODY_KINDS_TELEGRAM: &[MessageBodyKind] = &[
     MessageBodyKind::Video,
     MessageBodyKind::File,
 ];
+#[cfg(feature = "feishu")]
 const BODY_KINDS_FEISHU: &[MessageBodyKind] = &[
     MessageBodyKind::Text,
     MessageBodyKind::Image,
@@ -33,6 +46,7 @@ const BODY_KINDS_FEISHU: &[MessageBodyKind] = &[
     MessageBodyKind::File,
     MessageBodyKind::Card,
 ];
+#[cfg(feature = "dingtalk")]
 const BODY_KINDS_DINGTALK: &[MessageBodyKind] = &[
     MessageBodyKind::Text,
     MessageBodyKind::Image,
@@ -41,6 +55,7 @@ const BODY_KINDS_DINGTALK: &[MessageBodyKind] = &[
     MessageBodyKind::File,
     MessageBodyKind::Card,
 ];
+#[cfg(feature = "wecom")]
 const BODY_KINDS_WECOM: &[MessageBodyKind] = &[
     MessageBodyKind::Text,
     MessageBodyKind::Image,
@@ -49,6 +64,7 @@ const BODY_KINDS_WECOM: &[MessageBodyKind] = &[
     MessageBodyKind::File,
     MessageBodyKind::Card,
 ];
+#[cfg(feature = "qq_channel")]
 const BODY_KINDS_QQ: &[MessageBodyKind] = &[
     MessageBodyKind::Text,
     MessageBodyKind::Image,
@@ -59,15 +75,20 @@ const BODY_KINDS_QQ: &[MessageBodyKind] = &[
 ];
 
 const TEXT_FORMATS_PLAIN_ONLY: &[TextFormat] = &[TextFormat::Plain];
+#[cfg(feature = "telegram")]
 const TEXT_FORMATS_TELEGRAM: &[TextFormat] =
     &[TextFormat::Plain, TextFormat::Markdown, TextFormat::Html];
+#[cfg(feature = "feishu")]
 const TEXT_FORMATS_FEISHU: &[TextFormat] = &[TextFormat::Plain, TextFormat::RichText];
+#[cfg(feature = "dingtalk")]
 const TEXT_FORMATS_DINGTALK: &[TextFormat] = &[
     TextFormat::Plain,
     TextFormat::Markdown,
     TextFormat::RichText,
 ];
+#[cfg(feature = "wecom")]
 const TEXT_FORMATS_WECOM: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
+#[cfg(feature = "qq_channel")]
 const TEXT_FORMATS_QQ: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
 
 pub const CHANNEL_TELEGRAM: &str = "telegram";
@@ -77,16 +98,6 @@ pub const CHANNEL_WECOM: &str = "wecom";
 pub const CHANNEL_QQ_CHANNEL: &str = "qq_channel";
 pub const CHANNEL_WEBSOCKET: &str = "websocket";
 pub const CHANNEL_VOICE: &str = "voice";
-
-const CHANNEL_CAPABILITY_ORDER: [&str; 7] = [
-    CHANNEL_TELEGRAM,
-    CHANNEL_FEISHU,
-    CHANNEL_DINGTALK,
-    CHANNEL_WECOM,
-    CHANNEL_QQ_CHANNEL,
-    CHANNEL_WEBSOCKET,
-    CHANNEL_VOICE,
-];
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -137,8 +148,9 @@ impl ChannelCapabilityRegistry {
     }
 
     pub fn list(&self) -> Vec<ChannelCapabilityEntry> {
-        CHANNEL_CAPABILITY_ORDER
+        channel_catalog::compiled_channel_entries()
             .iter()
+            .map(|entry| entry.id)
             .filter_map(|channel| self.entries.get(channel).copied())
             .collect()
     }
@@ -180,14 +192,19 @@ pub fn build_channel_capability_registry(
     voice_channel_enabled: bool,
 ) -> ChannelCapabilityRegistry {
     let mut registry = ChannelCapabilityRegistry::default();
-    for channel in CHANNEL_CAPABILITY_ORDER {
+    let normalized_enabled =
+        channel_catalog::normalize_compiled_enabled_channel(&config.enabled_channel);
+    for channel in channel_catalog::compiled_channel_entries()
+        .iter()
+        .map(|entry| entry.id)
+    {
         let Some(contract) = static_channel_capability_contract(channel) else {
             continue;
         };
         registry.insert(ChannelCapabilityEntry {
             id: channel,
             configured: channel_is_configured(channel, config, voice_channel_enabled),
-            enabled: channel_is_enabled(channel, config, voice_channel_enabled),
+            enabled: channel_is_enabled(channel, normalized_enabled, config, voice_channel_enabled),
             contract,
         });
     }
@@ -245,6 +262,7 @@ pub fn build_channel_capability_snapshots_for_registry(
 
 fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapabilityContract> {
     match channel {
+        #[cfg(feature = "telegram")]
         CHANNEL_TELEGRAM => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
@@ -263,6 +281,7 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             max_caption_bytes: TELEGRAM_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
+        #[cfg(feature = "feishu")]
         CHANNEL_FEISHU => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
@@ -281,6 +300,7 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             max_caption_bytes: FEISHU_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::EditableSingleMessage,
         }),
+        #[cfg(feature = "dingtalk")]
         CHANNEL_DINGTALK => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
@@ -299,6 +319,7 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             max_caption_bytes: DINGTALK_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::StatelessWebhook,
         }),
+        #[cfg(feature = "wecom")]
         CHANNEL_WECOM => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
@@ -317,6 +338,7 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             max_caption_bytes: WECOM_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
+        #[cfg(feature = "qq_channel")]
         CHANNEL_QQ_CHANNEL => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
@@ -335,6 +357,7 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             max_caption_bytes: QQ_CHANNEL_MAX_CAPTION_BYTES,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
+        #[cfg(feature = "websocket")]
         CHANNEL_WEBSOCKET => Some(ChannelCapabilityContract {
             supports_primary_reply: true,
             supports_supplemental_reply: true,
@@ -376,37 +399,57 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
 }
 
 fn channel_is_configured(channel: &str, config: &AppConfig, voice_channel_enabled: bool) -> bool {
+    #[cfg(not(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    )))]
+    let _ = config;
     match channel {
+        #[cfg(feature = "telegram")]
         CHANNEL_TELEGRAM => !config.tg_token.trim().is_empty(),
+        #[cfg(feature = "feishu")]
         CHANNEL_FEISHU => {
             !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty()
         }
+        #[cfg(feature = "dingtalk")]
         CHANNEL_DINGTALK => {
             !config.dingtalk_webhook_url.trim().is_empty()
                 || config.enabled_channel == CHANNEL_DINGTALK
         }
+        #[cfg(feature = "wecom")]
         CHANNEL_WECOM => {
             !config.wecom_corp_id.trim().is_empty()
                 && !config.wecom_corp_secret.trim().is_empty()
                 && config.wecom_agent_id.trim().parse::<u32>().is_ok()
         }
+        #[cfg(feature = "qq_channel")]
         CHANNEL_QQ_CHANNEL => {
             !config.qq_channel_app_id.trim().is_empty()
                 && !config.qq_channel_secret.trim().is_empty()
         }
+        #[cfg(feature = "websocket")]
         CHANNEL_WEBSOCKET => true,
         CHANNEL_VOICE => voice_channel_enabled,
         _ => false,
     }
 }
 
-fn channel_is_enabled(channel: &str, config: &AppConfig, voice_channel_enabled: bool) -> bool {
+fn channel_is_enabled(
+    channel: &str,
+    normalized_enabled_channel: &str,
+    config: &AppConfig,
+    voice_channel_enabled: bool,
+) -> bool {
     match channel {
+        #[cfg(feature = "websocket")]
         CHANNEL_WEBSOCKET => true,
         CHANNEL_VOICE => voice_channel_enabled,
         _ => {
             channel_is_configured(channel, config, voice_channel_enabled)
-                && config.enabled_channel == channel
+                && normalized_enabled_channel == channel
         }
     }
 }
@@ -415,13 +458,17 @@ fn channel_is_enabled(channel: &str, config: &AppConfig, voice_channel_enabled: 
 mod tests {
     use super::*;
 
+    #[cfg(feature = "telegram")]
     #[test]
     fn registry_marks_only_enabled_text_channel_as_active() {
         let mut config = AppConfig::load_from_env();
         config.enabled_channel = CHANNEL_TELEGRAM.to_string();
         config.tg_token = "tg-token".to_string();
-        config.qq_channel_app_id = "qq-app".to_string();
-        config.qq_channel_secret = "qq-secret".to_string();
+        #[cfg(feature = "qq_channel")]
+        {
+            config.qq_channel_app_id = "qq-app".to_string();
+            config.qq_channel_secret = "qq-secret".to_string();
+        }
 
         let registry = build_channel_capability_registry(&config, true);
 
@@ -435,23 +482,52 @@ mod tests {
             TEXT_FORMATS_TELEGRAM
         );
 
-        let qq = registry
-            .get(CHANNEL_QQ_CHANNEL)
-            .expect("qq capability should exist");
-        assert!(qq.configured);
-        assert!(!qq.enabled);
-        assert!(qq.contract.supports_explicit_target);
-        assert!(qq.contract.requires_passive_reply_anchor);
+        #[cfg(feature = "qq_channel")]
+        {
+            let qq = registry
+                .get(CHANNEL_QQ_CHANNEL)
+                .expect("qq capability should exist");
+            assert!(qq.configured);
+            assert!(!qq.enabled);
+            assert!(qq.contract.supports_explicit_target);
+            assert!(qq.contract.requires_passive_reply_anchor);
+        }
+
+        #[cfg(not(feature = "qq_channel"))]
+        assert!(registry.get(CHANNEL_QQ_CHANNEL).is_none());
 
         let voice = registry.get(CHANNEL_VOICE).expect("voice capability");
         assert!(voice.enabled);
 
-        let websocket = registry
-            .get(CHANNEL_WEBSOCKET)
-            .expect("websocket capability");
-        assert!(websocket.enabled);
+        #[cfg(feature = "websocket")]
+        {
+            let websocket = registry
+                .get(CHANNEL_WEBSOCKET)
+                .expect("websocket capability");
+            assert!(websocket.enabled);
+        }
+
+        #[cfg(not(feature = "websocket"))]
+        assert!(registry.get(CHANNEL_WEBSOCKET).is_none());
     }
 
+    #[cfg(not(feature = "telegram"))]
+    #[test]
+    fn registry_skips_uncompiled_telegram_channel() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = CHANNEL_TELEGRAM.to_string();
+        config.tg_token = "tg-token".to_string();
+
+        let registry = build_channel_capability_registry(&config, true);
+
+        assert!(registry.get(CHANNEL_TELEGRAM).is_none());
+        assert!(!registry
+            .list()
+            .iter()
+            .any(|entry| entry.id == CHANNEL_TELEGRAM));
+    }
+
+    #[cfg(feature = "feishu")]
     #[test]
     fn snapshots_activate_stream_edit_for_enabled_editable_channel() {
         let mut config = AppConfig::load_from_env();
@@ -470,5 +546,82 @@ mod tests {
         assert_eq!(feishu.supported_body_kinds, BODY_KINDS_FEISHU);
         assert_eq!(feishu.supported_text_formats, TEXT_FORMATS_FEISHU);
         assert!(feishu.degraded_reasons.is_empty());
+    }
+
+    #[cfg(not(feature = "feishu"))]
+    #[test]
+    fn snapshots_skip_uncompiled_feishu_channel() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = CHANNEL_FEISHU.to_string();
+        config.feishu_app_id = "app".to_string();
+        config.feishu_app_secret = "secret".to_string();
+
+        let snapshots = build_channel_capability_snapshots(&config, false);
+        assert!(!snapshots
+            .iter()
+            .any(|snapshot| snapshot.id == CHANNEL_FEISHU));
+    }
+
+    #[cfg(not(feature = "wecom"))]
+    #[test]
+    fn registry_skips_uncompiled_wecom_channel() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = CHANNEL_WECOM.to_string();
+        config.wecom_corp_id = "corp".to_string();
+        config.wecom_corp_secret = "secret".to_string();
+        config.wecom_agent_id = "100".to_string();
+
+        let registry = build_channel_capability_registry(&config, true);
+
+        assert!(registry.get(CHANNEL_WECOM).is_none());
+        assert!(!registry
+            .list()
+            .iter()
+            .any(|entry| entry.id == CHANNEL_WECOM));
+    }
+
+    #[cfg(not(feature = "dingtalk"))]
+    #[test]
+    fn registry_skips_uncompiled_dingtalk_channel() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = CHANNEL_DINGTALK.to_string();
+        config.dingtalk_webhook_url = "https://example.com/dingtalk".to_string();
+
+        let registry = build_channel_capability_registry(&config, true);
+
+        assert!(registry.get(CHANNEL_DINGTALK).is_none());
+        assert!(!registry
+            .list()
+            .iter()
+            .any(|entry| entry.id == CHANNEL_DINGTALK));
+    }
+
+    #[cfg(not(feature = "qq_channel"))]
+    #[test]
+    fn registry_skips_uncompiled_qq_channel() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = CHANNEL_QQ_CHANNEL.to_string();
+        config.qq_channel_app_id = "qq-app".to_string();
+        config.qq_channel_secret = "qq-secret".to_string();
+
+        let registry = build_channel_capability_registry(&config, true);
+
+        assert!(registry.get(CHANNEL_QQ_CHANNEL).is_none());
+        assert!(!registry
+            .list()
+            .iter()
+            .any(|entry| entry.id == CHANNEL_QQ_CHANNEL));
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    #[test]
+    fn registry_skips_uncompiled_websocket_channel() {
+        let registry = build_channel_capability_registry(&AppConfig::load_from_env(), true);
+
+        assert!(registry.get(CHANNEL_WEBSOCKET).is_none());
+        assert!(!registry
+            .list()
+            .iter()
+            .any(|entry| entry.id == CHANNEL_WEBSOCKET));
     }
 }

@@ -145,33 +145,34 @@ done
 
 package_profile_features() {
   local profile="$1"
+  local roots_csv=""
   case "$profile" in
     core-only)
-      printf '%s\n' '--no-default-features --features default_runtime'
+      roots_csv='default_runtime'
       ;;
     voice)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_voice'
+      roots_csv='default_runtime,capability_voice'
       ;;
     vision)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_vision'
+      roots_csv='default_runtime,capability_vision'
       ;;
     sensor)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_sensor'
+      roots_csv='default_runtime,capability_sensor'
       ;;
     voice+vision)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision'
+      roots_csv='default_runtime,capability_voice,capability_vision'
       ;;
     voice+sensor)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_sensor'
+      roots_csv='default_runtime,capability_voice,capability_sensor'
       ;;
     vision+sensor)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_vision,capability_sensor'
+      roots_csv='default_runtime,capability_vision,capability_sensor'
       ;;
     voice+vision+sensor)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor'
+      roots_csv='default_runtime,capability_voice,capability_vision,capability_sensor'
       ;;
     linux-full)
-      printf '%s\n' '--no-default-features --features default_runtime,capability_voice,capability_vision,capability_sensor,capability_office'
+      roots_csv='default,capability_office,dingtalk'
       ;;
     *)
       echo "Error: unsupported package profile: $profile" >&2
@@ -179,6 +180,14 @@ package_profile_features() {
       exit 1
       ;;
   esac
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 is required so build.sh can resolve package profiles from Cargo.toml." >&2
+    exit 1
+  fi
+  python3 "$SCRIPT_ROOT/scripts/expand_cargo_features.py" \
+    --manifest "$SCRIPT_ROOT/Cargo.toml" \
+    --roots "$roots_csv" \
+    --format shell-args
 }
 
 default_package_profile_for_target() {

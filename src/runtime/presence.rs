@@ -287,13 +287,7 @@ mod tests {
             inbound_depth: 0,
             outbound_depth: 0,
             budget: crate::orchestrator::current_budget(),
-            channels: ChannelsHealthSnapshot {
-                telegram: healthy_channel(),
-                feishu: healthy_channel(),
-                dingtalk: healthy_channel(),
-                wecom: healthy_channel(),
-                qq_channel: healthy_channel(),
-            },
+            channels: ChannelsHealthSnapshot::all(healthy_channel()),
             session_count: 0,
             storage_used_kb: 0,
             storage_total_kb: 0,
@@ -311,12 +305,7 @@ mod tests {
     }
 
     fn healthy_channel() -> ChannelHealthSnapshot {
-        ChannelHealthSnapshot {
-            consecutive_failures: 0,
-            total_failures: 0,
-            total_successes: 0,
-            healthy: true,
-        }
+        ChannelHealthSnapshot::healthy()
     }
 
     fn snapshot_with_state(

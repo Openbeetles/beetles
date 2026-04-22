@@ -15,6 +15,7 @@ const TLS_ADMISSION_RETRY_SLEEP_SECS: u64 = 5;
 const HEARTBEAT_INTERVAL_MIN_MS: u64 = 10_000;
 const HEARTBEAT_INTERVAL_MAX_MS: u64 = 300_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 120_000;
+#[cfg(feature = "feishu")]
 const ACK_SEND_DELAY_MS: u64 = 20;
 /// recv_timeout 单次上限（秒）；须小于 TWDT 超时（sdkconfig 60s），
 /// 避免长心跳间隔通道（如飞书 120s）在空闲时触发看门狗。
@@ -348,6 +349,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         Ok(WssRecvAction::Dispatch(None)) => {
                             log::debug!("[{}] dispatch ignored (no msg)", tag);
                         }
+                        #[cfg(feature = "feishu")]
                         Ok(WssRecvAction::DispatchAndAck(msg, ack)) => {
                             let enqueued = if let Some(msg) = msg {
                                 let chat_id = msg.chat_id.clone();

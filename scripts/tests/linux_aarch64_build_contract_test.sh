@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_SH="$ROOT_DIR/build.sh"
+FEATURE_EXPANDER="$ROOT_DIR/scripts/expand_cargo_features.py"
 
 assert_contains() {
   local pattern="$1"
@@ -21,6 +22,17 @@ assert_absent() {
   if rg -n "$pattern" "$BUILD_SH" >/dev/null 2>&1; then
     echo "FAIL: $message" >&2
     rg -n "$pattern" "$BUILD_SH" >&2 || true
+    exit 1
+  fi
+}
+
+assert_csv_contains() {
+  local csv="$1"
+  local feature_name="$2"
+  local message="$3"
+  if ! printf '%s\n' "$csv" | rg "(^|,)${feature_name}(,|$)" >/dev/null 2>&1; then
+    echo "FAIL: $message" >&2
+    echo "  csv: $csv" >&2
     exit 1
   fi
 }
@@ -50,7 +62,17 @@ assert_contains 'linux-full\)' \
   "linux-full package profile branch must exist"
 assert_contains 'linux-full\)[[:space:]]*$' \
   "linux-full package profile must be split out from generic voice+vision+sensor builds"
-assert_contains 'capability_sensor,capability_office' \
-  "linux-full must include capability_office so account-config APIs are compiled into Linux builds"
+assert_contains "roots_csv='default,capability_office,dingtalk'" \
+  "linux-full must resolve from Cargo default plus capability_office and dingtalk"
+
+linux_full_features="$(python3 "$FEATURE_EXPANDER" --manifest "$ROOT_DIR/Cargo.toml" --roots 'default,capability_office,dingtalk' --format csv)"
+assert_csv_contains "$linux_full_features" "capability_office" \
+  "linux-full expansion must keep capability_office so account-config APIs compile into Linux builds"
+assert_csv_contains "$linux_full_features" "default_runtime" \
+  "linux-full expansion must still include the default runtime closure"
+assert_csv_contains "$linux_full_features" "qq_channel" \
+  "linux-full expansion must inherit QQ from Cargo default"
+assert_csv_contains "$linux_full_features" "dingtalk" \
+  "linux-full expansion must keep DingTalk explicitly enabled"
 
 echo "linux_aarch64_build_contract_test: ok"

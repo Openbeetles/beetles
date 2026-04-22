@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_ERROR, type ApiResult } from "../api/client";
 import type {
   AppConfig,
+  ChannelsConfigView,
   LlmConfigSegment,
   ChannelsConfigSegment,
   SystemConfigSegment,
@@ -20,7 +21,7 @@ import { isDeviceOrPairingErrorKey } from "../i18n/apiErrors";
 import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import { markDeviceReachable } from "../store/deviceStatusStore";
 
-/** i18n keys for config load errors; 与顶栏横幅重复的配对/设备类不展示，由 DeviceBanner 处理 */
+/** i18n keys for config load errors; 与 shell blocker 重复的设备/配对类不在子页内重复展示 */
 const ERROR_KEY_NO_BASE = "device.bannerNeedDevice";
 const ERROR_KEY_LOAD_FAILED = "config.errorLoadFailed";
 
@@ -81,6 +82,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [llmConfig, setLlmConfig] = useState<LlmConfigSegment | null>(null);
   const [llmLoading, setLlmLoading] = useState(false);
   const [llmError, setLlmError] = useState<string | null>(null);
+  const [channelsConfig, setChannelsConfig] = useState<ChannelsConfigView | null>(
+    null,
+  );
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig | null>(
     null,
   );
@@ -110,6 +116,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     setLlmConfig(null);
     setLlmLoading(false);
     setLlmError(null);
+    setChannelsConfig(null);
+    setChannelsLoading(false);
+    setChannelsError(null);
     setDisplayConfig(null);
     setDisplayLoading(false);
     setDisplayError(null);
@@ -164,6 +173,20 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     });
   }, [api.config, deviceSessionKey, ready]);
 
+  const loadChannelsConfig = useCallback(async () => {
+    const sessionKey = deviceSessionKey;
+    await loadDeviceSegment({
+      ready,
+      setLoading: setChannelsLoading,
+      setError: setChannelsError,
+      fetch: () =>
+        api.config.getChannels() as Promise<ApiResult<ChannelsConfigView>>,
+      applySuccess: (data) => setChannelsConfig(data),
+      clearData: () => setChannelsConfig(null),
+      isCurrent: () => deviceSessionKeyRef.current === sessionKey,
+    });
+  }, [api.config, deviceSessionKey, ready]);
+
   /**
    * 在“断连但有缓存”场景下尝试刷新：成功则更新缓存，失败保留现有缓存不清空。
    */
@@ -199,6 +222,17 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       if (res.ok && deviceSessionKeyRef.current === sessionKey) {
         applySuccess?.(body);
         setConfig((prev) => (prev ? { ...prev, ...body } : null));
+        setChannelsConfig((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, ...body };
+          if (typeof (body as { enabled_channel?: unknown }).enabled_channel === "string") {
+            return {
+              ...next,
+              unavailable_enabled_channel: undefined,
+            };
+          }
+          return next;
+        });
       }
       return { ok: res.ok ?? false, error: mapSaveError(res.error) };
     },
@@ -359,6 +393,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       llmLoading,
       llmError,
       loadLlmConfig,
+      channelsConfig,
+      channelsLoading,
+      channelsError,
+      loadChannelsConfig,
       refreshCachedConfig,
       clearCachedConfig,
       saveLlm,
@@ -389,6 +427,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       llmLoading,
       llmError,
       loadLlmConfig,
+      channelsConfig,
+      channelsLoading,
+      channelsError,
+      loadChannelsConfig,
       refreshCachedConfig,
       clearCachedConfig,
       saveLlm,

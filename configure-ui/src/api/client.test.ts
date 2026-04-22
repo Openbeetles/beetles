@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { clearCsrfToken, fetchCsrfToken, request } from './client.ts'
+import {
+  clearCsrfToken,
+  fetchCsrfToken,
+  request,
+  setProtectedApiAuthObserver,
+} from './client.ts'
 
 interface MockResponseInit {
   status?: number
@@ -110,6 +115,68 @@ test('request surfaces error_key and upstream_error without falling back to raw 
     assert.equal(result.error, 'AADSTS7000215: Invalid client secret is provided.')
     assert.equal(result.upstreamError, 'AADSTS7000215: Invalid client secret is provided.')
   } finally {
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
+test('request notifies protected auth observer when a validated request succeeds', async () => {
+  clearCsrfToken()
+
+  const authEvents: string[] = []
+  const originalFetch = globalThis.fetch
+  setProtectedApiAuthObserver((event) => {
+    authEvents.push(event.state)
+  })
+  globalThis.fetch = (async () =>
+    jsonResponse({
+      body: {
+        wifi_ssid: 'Beetle',
+      },
+    })) as typeof fetch
+
+  try {
+    const result = await request('http://device', '/api/config', {
+      pairingCode: '123456',
+      authPolicy: 'validate',
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(authEvents, ['valid'])
+  } finally {
+    setProtectedApiAuthObserver(null)
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
+test('request notifies protected auth observer when a validated request gets pairing_invalid', async () => {
+  clearCsrfToken()
+
+  const authEvents: string[] = []
+  const originalFetch = globalThis.fetch
+  setProtectedApiAuthObserver((event) => {
+    authEvents.push(event.state)
+  })
+  globalThis.fetch = (async () =>
+    jsonResponse({
+      status: 403,
+      statusText: 'Forbidden',
+      body: {
+        error_key: 'auth.pairing_invalid',
+      },
+    })) as typeof fetch
+
+  try {
+    const result = await request('http://device', '/api/config', {
+      pairingCode: '123456',
+      authPolicy: 'validate',
+    })
+
+    assert.equal(result.ok, false)
+    assert.deepEqual(authEvents, ['invalid'])
+  } finally {
+    setProtectedApiAuthObserver(null)
     globalThis.fetch = originalFetch
     clearCsrfToken()
   }

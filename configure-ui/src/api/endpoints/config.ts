@@ -1,6 +1,7 @@
-import { request, API_ERROR } from '../client'
+import { requestProtected, API_ERROR } from '../client.ts'
 import type {
   AppConfig,
+  ChannelsConfigView,
   LlmConfigSegment,
   ChannelsConfigSegment,
   SystemConfigSegment,
@@ -20,7 +21,7 @@ import type {
   CapabilityStatusListResponse,
   ProviderCatalogResponse,
 } from '../../types/accountConfig'
-import type { ApiResult } from '../client'
+import type { ApiResult } from '../client.ts'
 
 function buildConfigQuery(path: string, query: Record<string, string | undefined>): string {
   const params = new URLSearchParams()
@@ -34,7 +35,7 @@ function buildConfigQuery(path: string, query: Record<string, string | undefined
 
 export async function getConfig(baseUrl: string, pairingCode?: string): Promise<ApiResult<AppConfig>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<AppConfig>(baseUrl, '/api/config', {
+  return requestProtected<AppConfig>(baseUrl, '/api/config', {
     pairingCode: pairingCode?.trim(),
   })
 }
@@ -44,7 +45,17 @@ export async function getLlm(
   pairingCode?: string,
 ): Promise<ApiResult<LlmConfigSegment>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<LlmConfigSegment>(baseUrl, '/api/config/llm', {
+  return requestProtected<LlmConfigSegment>(baseUrl, '/api/config/llm', {
+    pairingCode: pairingCode?.trim(),
+  })
+}
+
+export async function getChannels(
+  baseUrl: string,
+  pairingCode?: string,
+): Promise<ApiResult<ChannelsConfigView>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  return requestProtected<ChannelsConfigView>(baseUrl, '/api/config/channels', {
     pairingCode: pairingCode?.trim(),
   })
 }
@@ -56,7 +67,7 @@ export async function saveLlm(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/config/llm', {
+  return requestProtected<void>(baseUrl, '/api/config/llm', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
@@ -70,7 +81,7 @@ export async function saveChannels(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/config/channels', {
+  return requestProtected<void>(baseUrl, '/api/config/channels', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
@@ -84,11 +95,29 @@ export async function saveSystem(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/config/system', {
+  return requestProtected<void>(baseUrl, '/api/config/system', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
   })
+}
+
+export async function saveWifi(
+  baseUrl: string,
+  pairingCode: string,
+  body: { wifi_ssid: string; wifi_pass: string },
+): Promise<ApiResult<{ ok: boolean; restart_required?: boolean }>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
+  return requestProtected<{ ok: boolean; restart_required?: boolean }>(
+    baseUrl,
+    '/api/config/wifi',
+    {
+      method: 'POST',
+      body,
+      pairingCode: pairingCode.trim(),
+    },
+  )
 }
 
 export async function getProviders(
@@ -97,7 +126,7 @@ export async function getProviders(
   filters?: { capability?: AccountCapability },
 ): Promise<ApiResult<ProviderCatalogResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<ProviderCatalogResponse>(
+  return requestProtected<ProviderCatalogResponse>(
     baseUrl,
     buildConfigQuery('/api/config/providers', {
       capability: filters?.capability,
@@ -113,7 +142,7 @@ export async function getCapabilities(
   pairingCode?: string,
 ): Promise<ApiResult<CapabilityStatusListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<CapabilityStatusListResponse>(baseUrl, '/api/config/capabilities', {
+  return requestProtected<CapabilityStatusListResponse>(baseUrl, '/api/config/capabilities', {
     pairingCode: pairingCode?.trim(),
   })
 }
@@ -124,7 +153,7 @@ export async function getCapability(
   capability: AccountCapability,
 ): Promise<ApiResult<CapabilityStatus>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<CapabilityStatus>(
+  return requestProtected<CapabilityStatus>(
     baseUrl,
     `/api/config/capabilities/${encodeURIComponent(capability)}`,
     {
@@ -139,7 +168,7 @@ export async function getAccounts(
   filters?: AccountListFilters,
 ): Promise<ApiResult<AccountSummaryListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<AccountSummaryListResponse>(
+  return requestProtected<AccountSummaryListResponse>(
     baseUrl,
     buildConfigQuery('/api/config/accounts', {
       capability: filters?.capability,
@@ -158,7 +187,7 @@ export async function createAccount(
 ): Promise<ApiResult<AccountDetail>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<AccountDetail>(baseUrl, '/api/config/accounts', {
+  return requestProtected<AccountDetail>(baseUrl, '/api/config/accounts', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
@@ -171,7 +200,7 @@ export async function getAccount(
   accountKey: string,
 ): Promise<ApiResult<AccountDetail>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<AccountDetail>(
+  return requestProtected<AccountDetail>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}`,
     {
@@ -188,7 +217,7 @@ export async function saveAccountConfig(
 ): Promise<ApiResult<AccountDetail>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<AccountDetail>(
+  return requestProtected<AccountDetail>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}/config`,
     {
@@ -206,7 +235,7 @@ export async function probeAccount(
 ): Promise<ApiResult<AccountProbeResult>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<AccountProbeResult>(
+  return requestProtected<AccountProbeResult>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}/probe`,
     {
@@ -224,7 +253,7 @@ export async function revokeAccount(
 ): Promise<ApiResult<AccountRevokeResult>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<AccountRevokeResult>(
+  return requestProtected<AccountRevokeResult>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}/revoke`,
     {
@@ -242,7 +271,7 @@ export async function deleteAccount(
 ): Promise<ApiResult<AccountDeleteResult>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<AccountDeleteResult>(
+  return requestProtected<AccountDeleteResult>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}`,
     {

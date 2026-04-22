@@ -144,7 +144,7 @@ export function SkillsPage() {
   const { t } = useTranslation();
   const { themeMode } = useAppPreferences();
   const { showToast } = useToast();
-  const { api, ready, hasPairing } = useDeviceApi();
+  const { api, ready, canAccessProtectedApis } = useDeviceApi();
   const [listState, setListState] = useState(
     createAsyncState<{ skills: SkillItem[]; order: string[] }>({
       skills: [],
@@ -324,7 +324,7 @@ export function SkillsPage() {
       setImportError(t("config.validation.skillNameInvalid"));
       return;
     }
-    if (!ready || !hasPairing) {
+    if (!ready || !canAccessProtectedApis) {
       setImportError(t("device.pairingCodeRequired"));
       return;
     }

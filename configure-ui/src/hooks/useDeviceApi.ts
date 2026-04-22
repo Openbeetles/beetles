@@ -1,5 +1,9 @@
 import { useMemo } from 'react'
-import { useDeviceStatus, useDeviceConnected } from '../store/deviceStatusStore'
+import {
+  useAppMode,
+  useDeviceStatus,
+  useDeviceConnected,
+} from '../store/deviceStatusStore'
 import { useDevice } from './useDevice'
 import { API_ERROR } from '../api/client'
 import { request } from '../api/client'
@@ -7,6 +11,7 @@ import * as configApi from '../api/endpoints/config'
 import * as displayApi from '../api/endpoints/display'
 import * as hardwareApi from '../api/endpoints/hardware'
 import * as audioApi from '../api/endpoints/audio'
+import * as pairingCodeApi from '../api/endpoints/pairingCode'
 import * as soulUserApi from '../api/endpoints/soulUser'
 import * as skillsApi from '../api/endpoints/skills'
 import * as toolsApi from '../api/endpoints/tools'
@@ -39,13 +44,17 @@ export type DeviceHintReason = 'no_device' | 'device_not_activated' | 'no_pairin
 
 export function useDeviceApi() {
   const { baseUrl, pairingCode } = useDevice()
-  const { connectionStatus, activated } = useDeviceStatus()
+  const { connectionStatus, activated, localPairing } = useDeviceStatus()
+  const appMode = useAppMode()
 
   const api = useMemo(
     () => ({
       config: {
         get: () => configApi.getConfig(baseUrl ?? '', (pairingCode ?? '').trim()),
         getLlm: () => configApi.getLlm(baseUrl ?? '', (pairingCode ?? '').trim()),
+        getChannels: () => configApi.getChannels(baseUrl ?? '', (pairingCode ?? '').trim()),
+        saveWifi: (body: { wifi_ssid: string; wifi_pass: string }) =>
+          configApi.saveWifi(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveLlm: (body: LlmConfigSegment) =>
           configApi.saveLlm(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveChannels: (body: ChannelsConfigSegment) =>
@@ -73,6 +82,10 @@ export function useDeviceApi() {
           delete: (accountKey: string) =>
             configApi.deleteAccount(baseUrl ?? '', (pairingCode ?? '').trim(), accountKey),
         },
+      },
+      pairing: {
+        get: () => pairingCodeApi.getPairingCode(baseUrl ?? ''),
+        initialize: (code: string) => pairingCodeApi.postPairingCode(baseUrl ?? '', code),
       },
       display: {
         get: () => displayApi.getDisplayConfig(baseUrl ?? '', (pairingCode ?? '').trim()),
@@ -122,6 +135,7 @@ export function useDeviceApi() {
         info: () => systemApi.getSystemInfo(baseUrl ?? '', pairingCode ?? undefined),
         channelConnectivity: () =>
           systemApi.getChannelConnectivity(baseUrl ?? '', pairingCode ?? undefined),
+        restart: () => systemApi.postRestart(baseUrl ?? '', (pairingCode ?? '').trim()),
       },
       device: {
         probe: (targetBaseUrl?: string) => request(targetBaseUrl ?? baseUrl ?? '', '/'),
@@ -132,22 +146,32 @@ export function useDeviceApi() {
 
   const ready = !!baseUrl?.trim()
   const deviceConnected = useDeviceConnected()
-  const hasPairing = !!pairingCode?.trim()
+  const hasPairing = localPairing === 'present'
+  const canAccessProtectedApis = appMode === 'ready'
   /** 仅当设备可达时根据 activated / hasPairing 决定横幅；checking / unreachable 不展示横幅 */
   const deviceHintReason: DeviceHintReason =
-    !ready
+    appMode === 'no_target'
       ? 'no_device'
-      : connectionStatus !== 'reachable'
-        ? null
-        : activated === false
-          ? 'device_not_activated'
-          : activated === true && !hasPairing
-            ? 'no_pairing'
-            : null
+      : appMode === 'init_pairing'
+        ? 'device_not_activated'
+        : appMode === 'unlock'
+          ? 'no_pairing'
+          : null
   const needDeviceHint = deviceHintReason !== null
   const connectionChecking = connectionStatus === 'checking'
 
-  return { api, ready, deviceConnected, hasPairing, needDeviceHint, deviceHintReason, connectionChecking }
+  return {
+    api,
+    ready,
+    deviceConnected,
+    hasPairing,
+    needDeviceHint,
+    deviceHintReason,
+    connectionChecking,
+    appMode,
+    canAccessProtectedApis,
+    activated,
+  }
 }
 
 export type { SkillItem }

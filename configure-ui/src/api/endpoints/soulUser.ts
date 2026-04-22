@@ -1,4 +1,4 @@
-import { request, API_ERROR } from '../client'
+import { request, requestProtected, API_ERROR } from '../client'
 import type { ApiResult } from '../client'
 
 export async function getSoul(baseUrl: string): Promise<ApiResult<string>> {
@@ -16,7 +16,7 @@ export async function saveSoul(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/soul', {
+  return requestProtected<void>(baseUrl, '/api/soul', {
     method: 'POST',
     body: { content },
     pairingCode: pairingCode.trim(),
@@ -38,7 +38,7 @@ export async function saveUser(
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return request<void>(baseUrl, '/api/user', {
+  return requestProtected<void>(baseUrl, '/api/user', {
     method: 'POST',
     body: { content },
     pairingCode: pairingCode.trim(),

@@ -158,7 +158,7 @@ function validateSources(
 
 export function AIConfigPage() {
   const { t } = useTranslation();
-  const { ready, deviceConnected, hasPairing, connectionChecking } = useDeviceApi();
+  const { ready, deviceConnected, canAccessProtectedApis, connectionChecking } = useDeviceApi();
   const { llmConfig, loadLlmConfig, saveLlm, llmLoading, llmError } = useConfig();
   const { setDirty } = useUnsaved();
   const [removeSourceIndex, setRemoveSourceIndex] = useState<number | null>(null);
@@ -290,7 +290,7 @@ export function AIConfigPage() {
   const showConnectState =
     !llmConfig && !llmLoading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
-    !llmConfig && !llmLoading && ready && deviceConnected && !hasPairing;
+    !llmConfig && !llmLoading && ready && deviceConnected && !canAccessProtectedApis;
   const loadErrorState = splitPageErrorState({
     hasData: Boolean(llmConfig),
     loading: llmLoading,

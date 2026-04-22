@@ -42,7 +42,7 @@ export interface AppConfig {
   session_max_messages: number
   webhook_enabled: boolean
   webhook_token: string
-  /** 当前启用的通道（仅一个）："" | "telegram" | "feishu" | "dingtalk" | "wecom" | "qq_channel" */
+  /** 当前启用的通道（仅一个；可选值受当前固件编译产物约束）。 */
   enabled_channel: string
   llm_sources: LlmSource[]
   llm_router_source_index: number | null
@@ -75,21 +75,12 @@ export function llmConfigSegmentFromAppConfig(config: AppConfig): LlmConfigSegme
   }
 }
 
-/** 可选启用通道值，与后端 ALLOWED_ENABLED_CHANNELS 一致。 */
-export const ENABLED_CHANNEL_OPTIONS = [
-  { value: "", labelKey: "config.enabledChannel_none" },
-  { value: "telegram", labelKey: "config.enabledChannel_telegram" },
-  { value: "feishu", labelKey: "config.enabledChannel_feishu" },
-  { value: "dingtalk", labelKey: "config.enabledChannel_dingtalk" },
-  { value: "wecom", labelKey: "config.enabledChannel_wecom" },
-  { value: "qq_channel", labelKey: "config.enabledChannel_qq_channel" },
-] as const
-
 /** POST /api/config/channels 请求体。 */
 export interface ChannelsConfigSegment {
   enabled_channel: string
   tg_token: string
   tg_allowed_chat_ids: string
+  tg_group_activation: string
   feishu_app_id: string
   feishu_app_secret: string
   feishu_verification_token: string
@@ -109,7 +100,29 @@ export interface ChannelsConfigSegment {
   webhook_token: string
 }
 
+export interface ChannelsConfigView extends ChannelsConfigSegment {
+  available_channels: string[]
+  unavailable_enabled_channel?: string
+}
 
+export function enabledChannelLabelKey(channelId: string): string {
+  switch (channelId) {
+    case "":
+      return "config.enabledChannel_none"
+    case "telegram":
+      return "config.enabledChannel_telegram"
+    case "feishu":
+      return "config.enabledChannel_feishu"
+    case "dingtalk":
+      return "config.enabledChannel_dingtalk"
+    case "wecom":
+      return "config.enabledChannel_wecom"
+    case "qq_channel":
+      return "config.enabledChannel_qq_channel"
+    default:
+      return channelId
+  }
+}
 /** POST /api/config/system 请求体。 */
 export interface SystemConfigSegment {
   wifi_ssid: string

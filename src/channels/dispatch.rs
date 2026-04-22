@@ -1,7 +1,15 @@
 //! 出站分发：从 outbound_rx 取 PcMsg，按 channel 调用对应 MessageSink；按通道熔断，避免单通道拖垮全局。
 //! Outbound dispatch: recv from outbound_rx, send via MessageSink; per-channel circuit breaker.
 
-use crate::bus::{CanonicalMessageBody, OutboundKind, OutboundRx, PcMsg, MAX_CONTENT_LEN};
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
+use crate::bus::CanonicalMessageBody;
+use crate::bus::{OutboundKind, OutboundRx, PcMsg, MAX_CONTENT_LEN};
 use crate::channel_capability::ChannelCapabilityRegistry;
 use crate::config::AppConfig;
 use crate::constants::VOICE_CHANNEL_NAME;
@@ -9,9 +17,31 @@ use crate::error::Result;
 use crate::metrics;
 use crate::orchestrator::AdmissionDecision;
 use crate::platform::PlatformHttpClient;
+#[cfg(not(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+)))]
+use crate::util::truncate_content_to_max;
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 use crate::util::{truncate_content_to_max, STACK_CHANNEL_SENDER};
 use std::collections::HashMap;
 use std::collections::VecDeque;
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,11 +82,25 @@ pub trait MessageSink: Send + Sync {
 }
 
 /// 队列型 Sink：将 (chat_id, content) 送入 channel，由 main 的 flush_*_sends 消费。各通道仅 stage 不同。
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 pub struct QueuedSink {
     tx: std::sync::mpsc::SyncSender<super::send::QueuedOutboundMessage>,
     stage: &'static str,
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 impl QueuedSink {
     pub fn new(
         tx: std::sync::mpsc::SyncSender<super::send::QueuedOutboundMessage>,
@@ -66,6 +110,13 @@ impl QueuedSink {
     }
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 impl MessageSink for QueuedSink {
     fn send(&self, chat_id: &str, content: &str) -> Result<()> {
         self.send_with_req(chat_id, content, None, OutboundKind::Primary)
@@ -401,19 +452,26 @@ pub fn run_dispatch(
 
 /// 各通道的 rx 及 flush 所需凭证，由 build_channel_sinks 填充；未启用通道为 None。
 pub struct ChannelRxSet {
+    #[cfg(feature = "telegram")]
     pub telegram: Option<mpsc::Receiver<super::send::QueuedOutboundMessage>>,
+    #[cfg(feature = "feishu")]
     pub feishu: Option<FeishuRxConfig>,
+    #[cfg(feature = "dingtalk")]
     pub dingtalk: Option<DingtalkRxConfig>,
+    #[cfg(feature = "wecom")]
     pub wecom: Option<WecomRxConfig>,
+    #[cfg(feature = "qq_channel")]
     pub qq_channel: Option<QqChannelRxConfig>,
 }
 
+#[cfg(feature = "feishu")]
 pub struct FeishuRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub app_id: String,
     pub app_secret: String,
 }
 
+#[cfg(feature = "dingtalk")]
 pub struct DingtalkRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub webhook_url: String,
@@ -422,6 +480,7 @@ pub struct DingtalkRxConfig {
     pub session_store: super::DingtalkSessionStore,
 }
 
+#[cfg(feature = "wecom")]
 pub struct WecomRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub corp_id: String,
@@ -430,6 +489,7 @@ pub struct WecomRxConfig {
     pub default_touser: String,
 }
 
+#[cfg(feature = "qq_channel")]
 pub struct QqChannelRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
     pub app_id: String,
@@ -439,22 +499,72 @@ pub struct QqChannelRxConfig {
 }
 
 /// Sender 二级队列深度。ESP 受内存限制为 8，Linux 有充足内存用 32。
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const SENDER_QUEUE_DEPTH: usize = 8;
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 const SENDER_QUEUE_DEPTH: usize = 32;
 
 /// 根据 config.enabled_channel 与凭证创建 ChannelSinks 并注册，返回 sinks 与各通道 rx 集合。
 pub fn build_channel_sinks(
     config: &AppConfig,
-    qq_msg_id_cache: &super::QqMsgIdCache,
-    qq_token_cache: &super::SharedQqTokenCache,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(feature = "qq_channel")] qq_msg_id_cache: &super::QqMsgIdCache,
+    #[cfg(feature = "qq_channel")] qq_token_cache: &super::SharedQqTokenCache,
+    #[cfg(all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     dingtalk_session_store: &super::DingtalkSessionStore,
 ) -> (ChannelSinks, ChannelRxSet) {
+    #[cfg(not(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    )))]
+    let _ = config;
+    #[cfg(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel",
+        feature = "websocket"
+    ))]
     let mut sinks = ChannelSinks::new();
-    let enabled = config.enabled_channel.as_str();
+    #[cfg(not(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel",
+        feature = "websocket"
+    )))]
+    let sinks = ChannelSinks::new();
+    #[cfg(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    ))]
+    let enabled = crate::normalize_compiled_enabled_channel(&config.enabled_channel);
 
+    #[cfg(feature = "telegram")]
     let telegram = if enabled == "telegram" && !config.tg_token.trim().is_empty() {
         let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register(
@@ -465,7 +575,7 @@ pub fn build_channel_sinks(
     } else {
         None
     };
-
+    #[cfg(feature = "feishu")]
     let feishu = if enabled == "feishu"
         && !config.feishu_app_id.trim().is_empty()
         && !config.feishu_app_secret.trim().is_empty()
@@ -481,6 +591,7 @@ pub fn build_channel_sinks(
         None
     };
 
+    #[cfg(feature = "dingtalk")]
     let dingtalk = if enabled == "dingtalk" {
         let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register(
@@ -498,6 +609,7 @@ pub fn build_channel_sinks(
         None
     };
 
+    #[cfg(feature = "wecom")]
     let wecom = if enabled == "wecom"
         && !config.wecom_corp_id.trim().is_empty()
         && !config.wecom_corp_secret.trim().is_empty()
@@ -516,6 +628,7 @@ pub fn build_channel_sinks(
         None
     };
 
+    #[cfg(feature = "qq_channel")]
     let qq_channel = if enabled == "qq_channel"
         && !config.qq_channel_app_id.trim().is_empty()
         && !config.qq_channel_secret.trim().is_empty()
@@ -536,18 +649,31 @@ pub fn build_channel_sinks(
         None
     };
 
+    #[cfg(feature = "websocket")]
     sinks.register("websocket", Box::new(super::WebSocketSink::new("ws")));
 
     let rx_set = ChannelRxSet {
+        #[cfg(feature = "telegram")]
         telegram,
+        #[cfg(feature = "feishu")]
         feishu,
+        #[cfg(feature = "dingtalk")]
         dingtalk,
+        #[cfg(feature = "wecom")]
         wecom,
+        #[cfg(feature = "qq_channel")]
         qq_channel,
     };
     (sinks, rx_set)
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 fn spawn_sender_thread<F>(
     tag: &str,
     started_label: &str,
@@ -571,8 +697,35 @@ pub fn spawn_sender_threads(
     tg_token: &str,
     create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
 ) -> Result<()> {
+    #[cfg(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    ))]
     const TAG: &str = "beetle";
+    #[cfg(not(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    )))]
+    let _ = (&*rx_set, tg_token, &create_http);
+    #[cfg(all(
+        not(feature = "telegram"),
+        any(
+            feature = "telegram",
+            feature = "feishu",
+            feature = "dingtalk",
+            feature = "wecom",
+            feature = "qq_channel"
+        )
+    ))]
+    let _ = tg_token;
 
+    #[cfg(feature = "telegram")]
     if let Some(tg_rx) = rx_set.telegram.take() {
         let f = Arc::clone(&create_http);
         let tg_send_token = tg_token.to_string();
@@ -594,6 +747,7 @@ pub fn spawn_sender_threads(
         )?;
     }
 
+    #[cfg(feature = "feishu")]
     if let Some(c) = rx_set.feishu.take() {
         let f = Arc::clone(&create_http);
         let fs_rx = c.rx;
@@ -616,6 +770,8 @@ pub fn spawn_sender_threads(
             },
         )?;
     }
+
+    #[cfg(feature = "dingtalk")]
     if let Some(c) = rx_set.dingtalk.take() {
         let f = Arc::clone(&create_http);
         let dt_rx = c.rx;
@@ -647,6 +803,7 @@ pub fn spawn_sender_threads(
             },
         )?;
     }
+    #[cfg(feature = "wecom")]
     if let Some(c) = rx_set.wecom.take() {
         let f = Arc::clone(&create_http);
         let wc_rx = c.rx;
@@ -678,6 +835,7 @@ pub fn spawn_sender_threads(
             },
         )?;
     }
+    #[cfg(feature = "qq_channel")]
     if let Some(c) = rx_set.qq_channel.take() {
         let f = Arc::clone(&create_http);
         let qq_rx = c.rx;

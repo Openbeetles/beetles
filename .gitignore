@@ -48,3 +48,5 @@ code.md
 AGENTS.md
 .superpowers
 docs/superpowers/
+__pycache__/
+*.pyc

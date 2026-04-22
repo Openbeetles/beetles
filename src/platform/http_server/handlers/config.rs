@@ -54,6 +54,44 @@ pub fn get_llm_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
+#[derive(serde::Serialize)]
+struct ChannelsConfigView {
+    available_channels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable_enabled_channel: Option<String>,
+    tg_group_activation: String,
+    #[serde(flatten)]
+    segment: config::ChannelsSegment,
+}
+
+#[derive(serde::Deserialize)]
+struct ChannelsConfigSavePayload {
+    #[serde(default)]
+    tg_group_activation: Option<String>,
+    #[serde(flatten)]
+    segment: config::ChannelsSegment,
+}
+
+/// GET /api/config/channels：返回通道配置段 + 当前构建可见通道目录。
+pub fn get_channels_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    let config = ctx.config();
+    let unavailable_enabled_channel = (!config.enabled_channel.trim().is_empty()
+        && crate::normalize_compiled_enabled_channel(&config.enabled_channel).is_empty())
+    .then(|| config.enabled_channel.clone());
+    let segment = config::ChannelsSegment::from_app_config(&config);
+    let payload = ChannelsConfigView {
+        available_channels: crate::compiled_enabled_channel_ids()
+            .iter()
+            .copied()
+            .map(str::to_string)
+            .collect(),
+        unavailable_enabled_channel,
+        tg_group_activation: config.tg_group_activation.clone(),
+        segment,
+    };
+    serde_json::to_string(&payload).map_err(|e| to_io(e.to_string()))
+}
+
 /// POST /api/config/wifi：body 为 JSON，写 WiFi SSID/密码到 NVS。成功时返回 restart_required 提示需重启生效。
 pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let payload: WifiConfigPayload = match serde_json::from_str(body) {
@@ -86,9 +124,20 @@ pub fn post_llm(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io
     }
 }
 
-/// POST /api/config/channels：仅写通道段，body 为 ChannelsSegment JSON。
+/// POST /api/config/channels：写通道段；tg_group_activation 作为兼容 overlay 同步写回 NVS。
 pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    match config::save_channels_segment(ctx.config_file_store.as_ref(), body) {
+    let payload: ChannelsConfigSavePayload = match serde_json::from_str(body) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+    };
+    if let Some(value) = payload.tg_group_activation.as_deref() {
+        if let Err(error) = config::write_tg_group_activation(ctx.config_store.as_ref(), value) {
+            return Ok(ApiResponse::err_400_key(api_contract::error_key(&error)));
+        }
+    }
+    let segment_body = serde_json::to_string(&payload.segment)
+        .map_err(|e| to_io(crate::Error::config("serialize", e.to_string()).to_string()))?;
+    match config::save_channels_segment(ctx.config_file_store.as_ref(), &segment_body) {
         Ok(()) => {
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))

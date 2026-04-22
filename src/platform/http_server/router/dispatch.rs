@@ -11,7 +11,10 @@ use crate::platform::http_server::common::{
 };
 use crate::platform::http_server::handlers::{self, HandlerContext};
 use crate::platform::{HardwareCapability, HardwareDiscoveryBus};
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "qq_channel",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 use std::sync::Arc;
 
 const OPTIONS_BODY: &[u8] = b" ";
@@ -619,6 +622,19 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
+        ("GET", "/api/config/channels") => {
+            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body = handlers::config::get_channels_body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
+        }
         ("POST", "/api/config/channels") => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
@@ -1156,7 +1172,10 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "feishu",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         ("POST", "/api/feishu/event") => {
             let body_str = utf8_body(&incoming.body)?;
             let signature = incoming.header_ci("X-Lark-Signature").unwrap_or("");
@@ -1174,7 +1193,10 @@ pub fn dispatch(
             .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "dingtalk",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         ("POST", "/api/dingtalk/webhook") => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::dingtalk_webhook::post(
@@ -1185,7 +1207,10 @@ pub fn dispatch(
             .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "wecom",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         ("GET", "/api/wecom/webhook") => {
             let config = ctx.config();
             let r = handlers::wecom_webhook::get_verify(
@@ -1206,14 +1231,20 @@ pub fn dispatch(
                 r.body.to_vec(),
             ))
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "wecom",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         ("POST", "/api/wecom/webhook") => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::wecom_webhook::post(ctx, uri, &env.inbound_tx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        #[cfg(all(
+            feature = "qq_channel",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         ("POST", "/api/webhook/qq") => {
             if !env.qq_webhook_enabled {
                 return Ok(OutgoingResponse::json(
@@ -1354,18 +1385,29 @@ mod tests {
             new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         {
+            #[cfg(feature = "feishu")]
             let feishu_message_dedup_store = Arc::new(Mutex::new(HashMap::new()));
+            #[cfg(feature = "dingtalk")]
             let dingtalk_session_store = Arc::new(Mutex::new(HashMap::new()));
+            #[cfg(feature = "qq_channel")]
             let qq_msg_id_cache = Arc::new(Mutex::new(HashMap::new()));
+            #[cfg(feature = "qq_channel")]
             let qq_inbound_dedup_store = Arc::new(Mutex::new(HashMap::new()));
             RouterEnv::new(
                 inbound_tx,
+                #[cfg(feature = "feishu")]
                 feishu_message_dedup_store,
+                #[cfg(feature = "dingtalk")]
                 dingtalk_session_store,
+                #[cfg(feature = "qq_channel")]
                 qq_msg_id_cache,
+                #[cfg(feature = "qq_channel")]
                 qq_inbound_dedup_store,
+                #[cfg(feature = "qq_channel")]
                 false,
+                #[cfg(feature = "qq_channel")]
                 String::new(),
+                #[cfg(feature = "qq_channel")]
                 String::new(),
             )
         }

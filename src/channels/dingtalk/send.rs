@@ -25,8 +25,31 @@ type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DingtalkWebhookTarget {
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     SessionWebhook(String),
     CustomWebhook(String),
+}
+
+impl DingtalkWebhookTarget {
+    fn webhook_url(&self) -> &str {
+        match self {
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            Self::SessionWebhook(url) => url,
+            Self::CustomWebhook(url) => url,
+        }
+    }
+
+    fn supports_session_card(&self) -> bool {
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            matches!(self, Self::SessionWebhook(_))
+        }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            let _ = self;
+            false
+        }
+    }
 }
 
 fn signed_custom_webhook_url(webhook_url: &str, secret: &str) -> crate::error::Result<String> {
@@ -49,18 +72,10 @@ fn signed_custom_webhook_url(webhook_url: &str, secret: &str) -> crate::error::R
     ))
 }
 
-fn resolve_target_webhook(
-    chat_id: &str,
+fn resolve_custom_webhook(
     default_webhook_url: &str,
     app_secret: &str,
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    session_store: &super::DingtalkSessionStore,
 ) -> crate::error::Result<DingtalkWebhookTarget> {
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    if let Some(webhook_url) = active_session_webhook(session_store, chat_id)? {
-        return Ok(DingtalkWebhookTarget::SessionWebhook(webhook_url));
-    }
-
     if default_webhook_url.trim().is_empty() {
         return Err(crate::error::Error::config(
             "dingtalk_send",
@@ -70,6 +85,27 @@ fn resolve_target_webhook(
     Ok(DingtalkWebhookTarget::CustomWebhook(
         signed_custom_webhook_url(default_webhook_url, app_secret)?,
     ))
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn resolve_target_webhook(
+    default_webhook_url: &str,
+    app_secret: &str,
+) -> crate::error::Result<DingtalkWebhookTarget> {
+    resolve_custom_webhook(default_webhook_url, app_secret)
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn resolve_target_webhook(
+    chat_id: &str,
+    default_webhook_url: &str,
+    app_secret: &str,
+    session_store: &super::DingtalkSessionStore,
+) -> crate::error::Result<DingtalkWebhookTarget> {
+    if let Some(webhook_url) = active_session_webhook(session_store, chat_id)? {
+        return Ok(DingtalkWebhookTarget::SessionWebhook(webhook_url));
+    }
+    resolve_custom_webhook(default_webhook_url, app_secret)
 }
 
 fn markdown_title(markdown: &str) -> String {
@@ -147,7 +183,7 @@ fn render_card_payload(
         )
     })?;
     if let Some(msg_key) = payload.get("msgKey").and_then(serde_json::Value::as_str) {
-        if !matches!(target, DingtalkWebhookTarget::SessionWebhook(_)) {
+        if !target.supports_session_card() {
             return Err(crate::error::Error::config(
                 "dingtalk_send",
                 "msgKey/msgParam cards require an active DingTalk sessionWebhook target",
@@ -312,17 +348,14 @@ fn send_one_dingtalk<H: ChannelHttpClient>(
 ) -> crate::error::Result<()> {
     const TAG: &str = "dingtalk_send";
     let target = resolve_target_webhook(
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         &message.chat_id,
         default_webhook_url,
         app_secret,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         session_store,
     )?;
-    let webhook_url = match &target {
-        DingtalkWebhookTarget::SessionWebhook(url) | DingtalkWebhookTarget::CustomWebhook(url) => {
-            url.as_str()
-        }
-    };
+    let webhook_url = target.webhook_url();
     for body in render_dingtalk_payloads(message, &target)? {
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| crate::error::Error::config("dingtalk_send", e.to_string()))?;

@@ -467,6 +467,10 @@ impl ApiResponse {
             body: Self::json_error_body(msg),
         }
     }
+    #[cfg(all(
+        feature = "feishu",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     pub fn err_404(msg: &str) -> Self {
         Self {
             status: 404,

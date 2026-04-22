@@ -135,13 +135,13 @@ pub fn run_with_bound_listener(
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
-    feishu_message_dedup_store: crate::channels::FeishuMessageDedupStore,
-    dingtalk_session_store: crate::channels::DingtalkSessionStore,
-    msg_id_cache: crate::channels::QqMsgIdCache,
-    inbound_dedup_store: crate::channels::QqInboundDedupStore,
-    qq_webhook_enabled: bool,
-    qq_app_id: String,
-    qq_secret: String,
+    #[cfg(feature = "feishu")] feishu_message_dedup_store: crate::channels::FeishuMessageDedupStore,
+    #[cfg(feature = "dingtalk")] dingtalk_session_store: crate::channels::DingtalkSessionStore,
+    #[cfg(feature = "qq_channel")] msg_id_cache: crate::channels::QqMsgIdCache,
+    #[cfg(feature = "qq_channel")] inbound_dedup_store: crate::channels::QqInboundDedupStore,
+    #[cfg(feature = "qq_channel")] qq_webhook_enabled: bool,
+    #[cfg(feature = "qq_channel")] qq_app_id: String,
+    #[cfg(feature = "qq_channel")] qq_secret: String,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
     let ctx = Arc::new(handlers::build_runtime_handler_context(
@@ -159,12 +159,19 @@ pub fn run_with_bound_listener(
     ));
     let router_env = router::RouterEnv::new(
         inbound_tx.clone(),
+        #[cfg(feature = "feishu")]
         feishu_message_dedup_store,
+        #[cfg(feature = "dingtalk")]
         dingtalk_session_store,
+        #[cfg(feature = "qq_channel")]
         msg_id_cache.clone(),
+        #[cfg(feature = "qq_channel")]
         inbound_dedup_store.clone(),
+        #[cfg(feature = "qq_channel")]
         qq_webhook_enabled,
+        #[cfg(feature = "qq_channel")]
         qq_app_id,
+        #[cfg(feature = "qq_channel")]
         qq_secret,
     );
     let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
@@ -239,13 +246,13 @@ pub fn run(
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
-    feishu_message_dedup_store: crate::channels::FeishuMessageDedupStore,
-    dingtalk_session_store: crate::channels::DingtalkSessionStore,
-    msg_id_cache: crate::channels::QqMsgIdCache,
-    inbound_dedup_store: crate::channels::QqInboundDedupStore,
-    qq_webhook_enabled: bool,
-    qq_app_id: String,
-    qq_secret: String,
+    #[cfg(feature = "feishu")] feishu_message_dedup_store: crate::channels::FeishuMessageDedupStore,
+    #[cfg(feature = "dingtalk")] dingtalk_session_store: crate::channels::DingtalkSessionStore,
+    #[cfg(feature = "qq_channel")] msg_id_cache: crate::channels::QqMsgIdCache,
+    #[cfg(feature = "qq_channel")] inbound_dedup_store: crate::channels::QqInboundDedupStore,
+    #[cfg(feature = "qq_channel")] qq_webhook_enabled: bool,
+    #[cfg(feature = "qq_channel")] qq_app_id: String,
+    #[cfg(feature = "qq_channel")] qq_secret: String,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
     let (listen, listener) = bind_linux_config_http_listener()?;
@@ -262,12 +269,19 @@ pub fn run(
         system_inbound_tx,
         skill_prompt_cache,
         inbound_tx,
+        #[cfg(feature = "feishu")]
         feishu_message_dedup_store,
+        #[cfg(feature = "dingtalk")]
         dingtalk_session_store,
+        #[cfg(feature = "qq_channel")]
         msg_id_cache,
+        #[cfg(feature = "qq_channel")]
         inbound_dedup_store,
+        #[cfg(feature = "qq_channel")]
         qq_webhook_enabled,
+        #[cfg(feature = "qq_channel")]
         qq_app_id,
+        #[cfg(feature = "qq_channel")]
         qq_secret,
         shared_config,
     )
