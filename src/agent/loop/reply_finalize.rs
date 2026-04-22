@@ -2,7 +2,8 @@ use super::*;
 use crate::agent::final_reply::{
     build_canonical_reply, classify_reply_artifacts, finalize_user_visible_reply,
     reply_has_concrete_anchor, reply_looks_like_future_action_narration,
-    reply_looks_like_transition_colon_draft, CanonicalReply, ReplyArtifactState,
+    reply_looks_like_transition_colon_draft, strip_legacy_internal_reply_blocks, CanonicalReply,
+    ReplyArtifactState,
 };
 use crate::memory::EmotionSignalStore;
 
@@ -23,7 +24,6 @@ pub(super) struct FinalizedTurn {
     pub(super) external_content_used: bool,
     pub(super) pressure: crate::orchestrator::PressureLevel,
     pub(super) reply_surface: ReplySurface,
-    pub(super) foreground_work_packet: Option<crate::agent::ForegroundWorkPacket>,
     pub(super) prompt_recall_intent: crate::memory::PromptRecallIntent,
     pub(super) runtime_skill_selected_ids: Vec<String>,
     pub(super) task_learning_selected_ids: Vec<String>,
@@ -237,11 +237,8 @@ pub(super) fn finalize_turn(
             (s, false, false, true)
         }
     };
-    let foreground_work_packet = None;
     if !is_interrupt {
-        let (stripped_reply_content, _) =
-            crate::agent::extract_foreground_work_packet(&reply_content, false)?;
-        reply_content = stripped_reply_content;
+        reply_content = strip_legacy_internal_reply_blocks(&reply_content);
     }
 
     if !is_interrupt && apply_finalizer {
@@ -358,7 +355,6 @@ pub(super) fn finalize_turn(
         external_content_used,
         pressure,
         reply_surface,
-        foreground_work_packet,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,
@@ -410,7 +406,6 @@ pub(super) fn complete_turn(
         external_content_used,
         pressure,
         reply_surface,
-        foreground_work_packet: _foreground_work_packet,
         prompt_recall_intent,
         runtime_skill_selected_ids,
         task_learning_selected_ids,

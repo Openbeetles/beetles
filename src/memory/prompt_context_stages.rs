@@ -38,7 +38,6 @@ pub(crate) struct PromptSessionStage {
     pub recent_messages: Vec<SessionMessage>,
     pub summary_text: Option<String>,
     pub active_work: Option<Box<ActiveWorkRecord>>,
-    pub foreground_work_packet_text: Option<String>,
     pub work_continuity_text: Option<String>,
     pub execution_state_text: Option<String>,
     pub active_task_run: Option<Box<TaskRunRecord>>,
@@ -267,7 +266,6 @@ pub(crate) fn load_session_stage(
             .map(Box::new)
         })
         .flatten();
-    let foreground_work_packet_text = None;
     let execution_state_text = active_work.as_ref().and_then(|record| {
         render_execution_state_block(
             &record.execution_state_projection(),
@@ -305,7 +303,6 @@ pub(crate) fn load_session_stage(
         recent_messages,
         summary_text,
         active_work,
-        foreground_work_packet_text,
         work_continuity_text,
         execution_state_text,
         active_task_run,

@@ -51,16 +51,14 @@ pub(crate) struct PromptRecallRouterInput<'a> {
 impl PromptRecallRouterDecision {
     pub fn active_task_parts<'a>(
         self,
-        foreground_work_packet_text: Option<&'a str>,
         work_continuity_text: Option<&'a str>,
         recent_turn_observation_text: Option<&'a str>,
         task_workspace_text: Option<&'a str>,
         task_recall_text: Option<&'a str>,
         continuity_capsule_text: Option<&'a str>,
-    ) -> [Option<&'a str>; 6] {
+    ) -> [Option<&'a str>; 5] {
         match self.intent {
             PromptRecallIntent::Continuity => [
-                foreground_work_packet_text,
                 work_continuity_text,
                 recent_turn_observation_text,
                 continuity_capsule_text,
@@ -68,7 +66,6 @@ impl PromptRecallRouterDecision {
                 task_recall_text,
             ],
             _ => [
-                foreground_work_packet_text,
                 work_continuity_text,
                 recent_turn_observation_text,
                 task_workspace_text,

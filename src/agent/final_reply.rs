@@ -120,6 +120,15 @@ pub(crate) fn finalize_user_visible_reply(strategy: AgentRunStrategy, content: &
     }
 }
 
+pub(crate) fn strip_legacy_internal_reply_blocks(content: &str) -> String {
+    let normalized = normalize_line_endings(content);
+    strip_internal_reply_block(
+        &normalized,
+        "<foreground_work_packet>",
+        "</foreground_work_packet>",
+    )
+}
+
 struct ArtifactScan {
     has_artifact: bool,
     visible_without_artifacts: String,
@@ -176,9 +185,35 @@ fn internal_block_end_tag(line: &str) -> Option<&'static str> {
         Some("</tool_evidence_summary>")
     } else if line == "<memory_grounding>" {
         Some("</memory_grounding>")
+    } else if line == "<foreground_work_packet>" {
+        Some("</foreground_work_packet>")
     } else {
         None
     }
+}
+
+fn strip_internal_reply_block(content: &str, start_tag: &str, end_tag: &str) -> String {
+    let Some(open_start) = content.find(start_tag) else {
+        return content.trim().to_string();
+    };
+    let close_start = content[open_start..]
+        .find(end_tag)
+        .map(|value| open_start + value);
+    let visible_len = close_start
+        .map(|value| content.len().saturating_sub(value))
+        .unwrap_or_else(|| content.len().saturating_sub(open_start));
+    let mut visible = String::with_capacity(visible_len);
+    visible.push_str(content[..open_start].trim_end());
+    if let Some(close_start) = close_start {
+        let trailing = content[close_start + end_tag.len()..].trim_start();
+        if !trailing.is_empty() {
+            if !visible.trim().is_empty() {
+                visible.push_str("\n\n");
+            }
+            visible.push_str(trailing);
+        }
+    }
+    visible.trim().to_string()
 }
 
 fn looks_like_meta_instruction_reply(content: &str) -> bool {
@@ -366,5 +401,14 @@ mod tests {
         );
         let formatted = finalize_user_visible_reply(AgentRunStrategy::LinuxEnhanced, raw);
         assert!(formatted.contains("<tool_result id=\"call_1\" tool=\"x\" status=\"ok\">"));
+    }
+
+    #[test]
+    fn strip_legacy_internal_reply_blocks_removes_foreground_packet_wrapper() {
+        let raw = "已切到 Work 邮箱。\n<foreground_work_packet>\n{\"legacy\":true}\n</foreground_work_packet>";
+        assert_eq!(
+            strip_legacy_internal_reply_blocks(raw),
+            "已切到 Work 邮箱。"
+        );
     }
 }

@@ -799,16 +799,11 @@ pub(super) fn try_run_task_execution(
             TASK_EXECUTION_FINISHER_SYSTEM_SUFFIX,
             system_scratch,
         );
-        let mut finisher_system = finisher_system.to_string();
-        crate::agent::append_foreground_work_packet_guidance(
-            &mut finisher_system,
-            crate::orchestrator::current_budget().system_prompt_max,
-        );
         let finisher_started = Instant::now();
         let finisher_t0 = metrics::record_llm_call_start();
         match worker_llm.chat(
             tool_ctx,
-            &finisher_system,
+            finisher_system,
             &[Message {
                 role: Cow::Borrowed("user"),
                 content: finisher_request,
