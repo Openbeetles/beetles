@@ -1,81 +1,99 @@
-# Beetle Docs
+# Beetls OS Docs
 
 **中文** | [English below](#english)
 
-先看你现在要做什么，再选文档。
+公开文档按 `Start`、`Capabilities`、`Configure`、`Operate`、`Reference`、`Develop` 六层组织。
+建议按任务选择入口；只有在需要字段、接口或行为细节时再进入参考页。
+命令、服务名和文件路径仍使用 `beetle`。
 
-## 先看这些
+## Start
 
-| 你想做什么 | 中文 | English |
-|------------|------|---------|
-| 第一次把 Beetle 用起来 | [zh-cn/configuration.md](zh-cn/configuration.md) | [en-us/configuration.md](en-us/configuration.md) |
-| 看看 Beetle 能帮你做什么 | [zh-cn/tools.md](zh-cn/tools.md) | [en-us/tools.md](en-us/tools.md) |
+| 任务 | 中文 | English |
+|------|------|---------|
+| ESP32 首次部署与接入 | [zh-cn/getting-started-esp.md](zh-cn/getting-started-esp.md) | [en-us/getting-started-esp.md](en-us/getting-started-esp.md) |
+| Linux 首次部署与接入 | [zh-cn/getting-started-linux.md](zh-cn/getting-started-linux.md) | [en-us/getting-started-linux.md](en-us/getting-started-linux.md) |
+
+## Capabilities
+
+| 任务 | 中文 | English |
+|------|------|---------|
+| 能力概览与适用场景 | [zh-cn/capabilities.md](zh-cn/capabilities.md) | [en-us/capabilities.md](en-us/capabilities.md) |
+
+## Configure
+
+| 任务 | 中文 | English |
+|------|------|---------|
+| 配置范围与推荐顺序 | [zh-cn/configuration.md](zh-cn/configuration.md) | [en-us/configuration.md](en-us/configuration.md) |
 | 配置大模型服务 | [zh-cn/llm-providers.md](zh-cn/llm-providers.md) | [en-us/llm-providers.md](en-us/llm-providers.md) |
+| 配硬件和传感器 | [zh-cn/hardware.md](zh-cn/hardware.md)、[zh-cn/hardware-device-config.md](zh-cn/hardware-device-config.md) | [en-us/hardware.md](en-us/hardware.md)、[en-us/hardware-device-config.md](en-us/hardware-device-config.md) |
+| 配屏幕 | [zh-cn/display.md](zh-cn/display.md) | [en-us/display.md](en-us/display.md) |
+
+## Operate
+
+| 任务 | 中文 | English |
+|------|------|---------|
 | 通过终端构建、烧录或部署 | [zh-cn/build-script.md](zh-cn/build-script.md) | [en-us/build-script.md](en-us/build-script.md) |
-| 配硬件、传感器或屏幕 | [zh-cn/hardware.md](zh-cn/hardware.md)、[zh-cn/hardware-device-config.md](zh-cn/hardware-device-config.md)、[zh-cn/display.md](zh-cn/display.md) | [en-us/hardware.md](en-us/hardware.md)、[en-us/hardware-device-config.md](en-us/hardware-device-config.md)、[en-us/display.md](en-us/display.md) |
-| 部署 Linux 版 | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) |
-| 自己写页面、脚本或集成 | [zh-cn/config-api.md](zh-cn/config-api.md) | [en-us/config-api.md](en-us/config-api.md) |
-| 了解代码结构和扩展方式 | [zh-cn/architecture.md](zh-cn/architecture.md) | [en-us/architecture.md](en-us/architecture.md) |
+| Linux 部署、重启、停止与回滚 | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) |
 
-## 常见阅读顺序
+## Reference
 
-首次使用：
+| 任务 | 中文 | English |
+|------|------|---------|
+| 查配置和集成接口 | [zh-cn/config-api.md](zh-cn/config-api.md) | [en-us/config-api.md](en-us/config-api.md) |
+| 查单个工具面的能力 | [zh-cn/tools.md](zh-cn/tools.md) | [en-us/tools.md](en-us/tools.md) |
 
-1. `configuration`
-2. `tools`
-3. `llm-providers`
-4. 需要时再看 `hardware`、`display`
+## Develop
 
-要接硬件：
-
-1. `configuration`
-2. `hardware`
-3. `hardware-device-config`
-4. `display`
-
-要自己做前端或脚本：
-
-1. `configuration`
-2. `config-api`
-3. `tools`
+| 任务 | 中文 | English |
+|------|------|---------|
+| 系统结构与扩展点 | [zh-cn/architecture.md](zh-cn/architecture.md) | [en-us/architecture.md](en-us/architecture.md) |
 
 ---
 
 ## English
 
-Choose by task first.
+The docs are organized into six layers: `Start`, `Capabilities`, `Configure`, `Operate`, `Reference`, and `Develop`.
+Choose by task first. Do not begin with the reference section unless you already know you need it.
+Commands, service names, and filesystem paths still use `beetle`.
 
-### Start here
+### Start
 
-| What you want to do | English | 中文 |
-|---------------------|---------|------|
-| Set Beetle up for the first time | [en-us/configuration.md](en-us/configuration.md) | [zh-cn/configuration.md](zh-cn/configuration.md) |
-| See what Beetle can help with | [en-us/tools.md](en-us/tools.md) | [zh-cn/tools.md](zh-cn/tools.md) |
+| Task | English | 中文 |
+|------|---------|------|
+| Get Beetls OS running on ESP32 for the first time | [en-us/getting-started-esp.md](en-us/getting-started-esp.md) | [zh-cn/getting-started-esp.md](zh-cn/getting-started-esp.md) |
+| Get Beetls OS running on Linux for the first time | [en-us/getting-started-linux.md](en-us/getting-started-linux.md) | [zh-cn/getting-started-linux.md](zh-cn/getting-started-linux.md) |
+
+### Capabilities
+
+| Task | English | 中文 |
+|------|---------|------|
+| See what Beetls OS can do and what it fits | [en-us/capabilities.md](en-us/capabilities.md) | [zh-cn/capabilities.md](zh-cn/capabilities.md) |
+
+### Configure
+
+| Task | English | 中文 |
+|------|---------|------|
+| Understand the setup flow and configuration areas | [en-us/configuration.md](en-us/configuration.md) | [zh-cn/configuration.md](zh-cn/configuration.md) |
 | Configure model providers | [en-us/llm-providers.md](en-us/llm-providers.md) | [zh-cn/llm-providers.md](zh-cn/llm-providers.md) |
+| Configure hardware and sensors | [en-us/hardware.md](en-us/hardware.md), [en-us/hardware-device-config.md](en-us/hardware-device-config.md) | [zh-cn/hardware.md](zh-cn/hardware.md), [zh-cn/hardware-device-config.md](zh-cn/hardware-device-config.md) |
+| Configure a display | [en-us/display.md](en-us/display.md) | [zh-cn/display.md](zh-cn/display.md) |
+
+### Operate
+
+| Task | English | 中文 |
+|------|---------|------|
 | Build, flash, or deploy from a terminal | [en-us/build-script.md](en-us/build-script.md) | [zh-cn/build-script.md](zh-cn/build-script.md) |
-| Set up hardware, sensors, or a display | [en-us/hardware.md](en-us/hardware.md), [en-us/hardware-device-config.md](en-us/hardware-device-config.md), [en-us/display.md](en-us/display.md) | [zh-cn/hardware.md](zh-cn/hardware.md), [zh-cn/hardware-device-config.md](zh-cn/hardware-device-config.md), [zh-cn/display.md](zh-cn/display.md) |
-| Deploy Beetle on Linux | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) |
-| Build your own frontend, script, or integration | [en-us/config-api.md](en-us/config-api.md) | [zh-cn/config-api.md](zh-cn/config-api.md) |
-| Understand the code structure and extension points | [en-us/architecture.md](en-us/architecture.md) | [zh-cn/architecture.md](zh-cn/architecture.md) |
+| Deploy, restart, stop, and roll back on Linux | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) |
 
-### Common reading order
+### Reference
 
-First-time setup:
+| Task | English | 中文 |
+|------|---------|------|
+| Look up configuration and integration APIs | [en-us/config-api.md](en-us/config-api.md) | [zh-cn/config-api.md](zh-cn/config-api.md) |
+| Look up the individual tool surface | [en-us/tools.md](en-us/tools.md) | [zh-cn/tools.md](zh-cn/tools.md) |
 
-1. `configuration`
-2. `tools`
-3. `llm-providers`
-4. `hardware` and `display` only if needed
+### Develop
 
-Hardware work:
-
-1. `configuration`
-2. `hardware`
-3. `hardware-device-config`
-4. `display`
-
-Custom frontend or scripts:
-
-1. `configuration`
-2. `config-api`
-3. `tools`
+| Task | English | 中文 |
+|------|---------|------|
+| Understand architecture and extension points | [en-us/architecture.md](en-us/architecture.md) | [zh-cn/architecture.md](zh-cn/architecture.md) |

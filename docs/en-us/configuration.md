@@ -1,71 +1,61 @@
-# Configuration Guide
+# Configuration Overview
 
 [中文](../zh-cn/configuration.md) | **English** | [Doc index](../README.md)
 
-This page is only about getting Beetle working for the first time.
+After Beetls OS is reachable, most day-to-day setup happens in the browser.
+This page explains the setup areas and the order that usually works best.
 
-## Short Path
+## Setup Areas
 
-For first-time setup, do these four things first:
+| Area | What it controls |
+|------|------------------|
+| Pairing code | write protection for important operations |
+| Network | how the device reaches the outside world |
+| LLM | which model source is active |
+| Chat channels | where conversations happen |
+| Office accounts | mail, calendar, contacts, and documents |
+| Hardware | devices and sensors |
+| Display | screen output |
+| Audio | input and output voice path |
 
-1. find the device address
-2. set the pairing code
-3. connect the device to your network
-4. choose one LLM source and one chat channel
+## Recommended Order
 
-## Open the setup page first
+For most installs, this order keeps setup simple:
 
-There are two common ways to reach it:
+1. pairing code
+2. network
+3. one LLM source
+4. one chat channel
+5. office accounts only if you need them
+6. hardware, display, and audio after the base loop already works
 
-- On first use, connect to the device hotspot **Beetle** and open `http://192.168.4.1`
-- If the device is already on your local network, open its local IP
+If you need the exact first-time flow, go back to [getting-started-esp.md](getting-started-esp.md) or [getting-started-linux.md](getting-started-linux.md).
 
-The repo also includes `configure-ui`, which can connect to the device.
+## Opening the Setup Page
 
-## What the pairing code is for
+There are two common entry points:
 
-The pairing code protects important actions such as:
+- on first use, connect to the default hotspot named **Beetle** and open `http://192.168.4.1`
+- if the device is already on your local network, open its current local IP
 
-- saving settings
-- restarting the device
-- resetting settings
-- starting an online update
+## Pairing Code
 
-Set it the first time you open the page, and keep it for later.
+The pairing code protects actions such as saving configuration, restarting Beetls OS, resetting settings, and starting online updates.
 
-## What you will usually configure
-
-| Area | What it is for |
-|------|----------------|
-| Network | connect the device to your network |
-| LLM | let Beetle understand and reply |
-| Chat channels | use Beetle from your chat app |
-| Work accounts | let Beetle handle mail, calendar, documents, and contacts |
-| Hardware | control devices and read sensors |
-| Display | show status on a screen |
-| Audio | enable voice input and output |
-
-## Suggested order
-
-If your goal is simply to start using Beetle, this order is enough:
-
-1. network
-2. LLM
-3. chat channel
-
-You can add these later if needed:
-
-- work accounts
-- hardware
-- display
-- audio
+Set it once and keep it somewhere you can retrieve later.
 
 ## Common Problems
 
-- Cannot open the setup page: make sure you are on the device hotspot or the same local network
-- Cannot save settings: the pairing code is often wrong, or the page is stale, so reopen it and try again
-- The page opens but Beetle does not reply: check that both the LLM and chat channel are set up
-- Mail, calendar, or documents are missing: make sure the related account has been connected
-- Hardware does not respond: make sure the device is configured and the wiring matches the setup
+- Cannot open the setup page: make sure you are on the default **Beetle** hotspot or on the same local network
+- The page opens but Beetls OS never replies: make sure both an LLM source and a chat channel are configured
+- Saving fails: the pairing code is often wrong, or the page is stale, so reopen it and try again
+- Office features do not appear: connect the related account first
+- Hardware does not respond: check both wiring and saved hardware configuration
 
-If you want to build your own frontend or script, read [config-api.md](config-api.md).
+## Read Next
+
+- To get the first setup working on ESP32: [getting-started-esp.md](getting-started-esp.md)
+- To get the first setup working on Linux: [getting-started-linux.md](getting-started-linux.md)
+- To see what Beetls OS can do after setup: [capabilities.md](capabilities.md)
+- To configure model providers: [llm-providers.md](llm-providers.md)
+- To configure hardware or a display: [hardware.md](hardware.md), [hardware-device-config.md](hardware-device-config.md), [display.md](display.md)

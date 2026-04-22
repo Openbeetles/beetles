@@ -2,33 +2,35 @@
 
 **English** | [中文](../zh-cn/display.md) | [Doc index](../README.md)
 
-For normal use, set the display through the config UI first.
+Display setup starts only after you have chosen a screen for Beetls OS.
+For normal use, the config UI is still the easiest place to set display options first.
 
-This page explains which display fields exist now, so you can read the UI, API results, or saved config more easily.
-After saving, the same data ends up in `config/display.json`.
+## The Short Path
 
-## Supported `driver` values
+1. decide whether your display uses `spi` or `framebuffer`
+2. choose the matching `driver`
+3. fill resolution, rotation, and color settings
+4. save the config
+5. fix colors or offsets only if the image looks wrong
+
+Saved data ends up in `config/display.json`.
+
+## Supported `driver` Values
 
 - `st7789`
 - `ili9341`
 - `st7735`
 - `framebuffer`
 
-## Supported `bus` values
+## Supported `bus` Values
 
 - `spi`
 - `framebuffer`
 
-If you use a small SPI panel, the first three are the usual choices.
+If you use a small SPI panel, the first three drivers are the usual choices.
 If your system already exposes a display device, `framebuffer` is the usual path.
 
-## If you inspect the underlying data
-
-It maps to:
-
-- `config/display.json`
-
-## A common SPI example
+## A Common SPI Example
 
 ```json
 {
@@ -59,7 +61,7 @@ It maps to:
 }
 ```
 
-## A `framebuffer` example
+## A `framebuffer` Example
 
 ```json
 {
@@ -91,7 +93,7 @@ It maps to:
 }
 ```
 
-## Fields that matter most
+## Fields That Matter Most
 
 | Field | What it controls |
 |-------|------------------|
@@ -108,7 +110,7 @@ It maps to:
 | `fb_device` | framebuffer device path |
 | `backlight_sysfs` | Linux backlight path |
 
-## Direct takeaways
+## What Usually Fixes Problems
 
 - If you do not use a screen, set `enabled` to `false`
 - `framebuffer` currently supports only `rotation = 0`
@@ -117,7 +119,7 @@ It maps to:
 - If Linux SPI still looks wrong, try `linux_spi_swap_bytes` last
 - If the image is shifted, adjust `offset_x` and `offset_y`
 
-## What the screen shows
+## What The Screen Shows
 
 The screen mainly shows:
 
@@ -126,7 +128,7 @@ The screen mainly shows:
 - channel status
 - a few basic runtime details
 
-## Read next
+## Read Next
 
-- To get Beetle running first: [configuration.md](configuration.md)
+- To get Beetls OS running first: [configuration.md](configuration.md)
 - To connect hardware: [hardware-device-config.md](hardware-device-config.md)

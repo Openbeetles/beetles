@@ -2,7 +2,13 @@
 
 [English](../en-us/config-api.md) | **中文** | [文档索引](../README.md)
 
-这页给自己写前端、脚本或集成的人看。每个接口都按“做什么、怎么传、会返回什么”来写。
+配置接口是给自定义前端、脚本和集成用的参考页。
+如果基础配置还没跑通，先看 [configuration.md](configuration.md)。
+
+先看激活流程，再看配置接口。
+办公集成、维护接口和回调接口，等你真的需要时再往后读。
+
+每个接口都按“做什么、怎么传、会返回什么”来写。
 
 ## 调用约定
 
@@ -10,7 +16,7 @@
 - CORS：`/api/*` 支持跨域，`OPTIONS` 可直接调用。
 - 返回格式：除 `GET /api/soul`、`GET /api/user`、`GET /api/skills?name=...`、`GET /api/metrics?format=prometheus` 外，默认返回 JSON。
 - 错误格式：
-  - 产品面与正式配置面 API 统一返回 `{"error_key":"..."}`，作为 Beetle 自己生成错误的稳定合同。
+  - 产品面与正式配置面 API 统一返回 `{"error_key":"..."}`，作为系统生成错误的稳定合同。
   - 若失败来自第三方上游，还会附带 `upstream_error`，并可能带 `upstream_status`、`error_stage`、`provider_kind`。
   - debug / operator / 协议兼容接口不受这条约束，可继续返回英文原文或协议要求的原始 body。
 - 配对码：用查询参数 `?code=`，或请求头 `X-Pairing-Code`。
@@ -39,7 +45,7 @@
 
 ### 产品 API 错误合同
 
-除 debug/operator / 协议兼容这两类例外外，Beetle 的产品面与正式配置面 `/api/*` 统一遵循：
+除 debug/operator / 协议兼容这两类例外外，产品面与正式配置面 `/api/*` 统一遵循：
 
 ```json
 {
@@ -550,7 +556,7 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 - `display_name_key` 供前端翻译 provider 名称。
 - `account_fields` / `config_fields` 中的展示语义统一使用 `label_key`、`description_key`、option `label_key`。
-- 产品 API 不再返回 Beetle 自己生成的 `display_name`、`label`、`description` 原文。
+- 产品 API 不再返回系统生成的 `display_name`、`label`、`description` 原文。
 
 **GET /api/config/capabilities**
 
@@ -677,7 +683,7 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 账号 summary/detail 的展示字段也遵循同一合同：
 
 - `display_name_key` 用于翻译 provider / account 的展示名称。
-- 产品响应不再返回 Beetle 自己生成的 `display_name`、`label`、`description` 原文。
+- 产品响应不再返回系统生成的 `display_name`、`label`、`description` 原文。
 
 若请求缺少用户必须补充的事实，接口返回 `400`，body 为结构化 onboarding 结果，例如：
 
@@ -717,7 +723,7 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 - `account.display_name_key` 用于翻译 provider / account 的展示名称。
 - `fields` 与 `assessment.missing_field_details` 中的展示语义统一使用 `label_key` / `description_key` / option `label_key`。
-- 产品 API 不返回 Beetle 生成的 `display_name` / `label` / `description` 原文。
+- 产品 API 不返回系统生成的 `display_name` / `label` / `description` 原文。
 
 **POST /api/config/accounts/:account_key/config**
 

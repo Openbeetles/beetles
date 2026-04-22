@@ -1,10 +1,19 @@
-# Linux Deploy and Rollback
+# Linux Operations
 
 **English** | [中文](../zh-cn/linux-release-rollback.md) | [Doc index](../README.md)
 
-This page keeps to the deployment and rollback flow that actually exists on Linux today.
+On Linux, release management follows the deploy, restart, stop, and rollback flow below.
 
-## Common paths after deploy
+## The Short Path
+
+For a normal Linux release cycle:
+
+1. build the Linux artifact with [build-script.md](build-script.md)
+2. deploy it with `./build.sh --deploy-linux`
+3. check release state with `beetle release status`
+4. use `beetle restart`, `beetle stop`, or `beetle release rollback` only when needed
+
+## Common Paths After Deploy
 
 The current deploy script maintains these paths:
 
@@ -19,22 +28,23 @@ In practice:
 
 - `current` points to the active release
 - `rollback` points to the previous rollback candidate
-- `/usr/local/bin/beetle` is the global command entry
+- `/usr/local/bin/beetle` is the main global command entry
 - some embedded shells also receive `/usr/bin/beetle` as a compatibility entry
 
-## Runtime entrypoints
+## Runtime Entry Point
 
 The Linux service entrypoint is:
 
 - `beetle run`
 
-The control plane (HTTP API) and the agent run inside the same process — no child process is spawned.
+The control plane (HTTP API) and the agent run inside the same process.
+No child process is spawned for the main runtime.
 
 If you use `systemd`, `ExecStart` should point to:
 
 - `/opt/beetle/current/beetle run`
 
-## The three deploy modes
+## The Three Deploy Modes
 
 `./build.sh --deploy-linux` currently offers three modes:
 
@@ -47,16 +57,16 @@ If you use `systemd`, `ExecStart` should point to:
 
 If a release changes the service entrypoint or service files, do not rely on `Smart update` alone.
 
-## How rollback works
+## How Rollback Works
 
 A new release first enters:
 
 - `pending_validation`
 
 If it stays healthy, it becomes the stable release.
-If it fails quickly and repeatedly during the validation window, Beetle prefers to roll back to `rollback`.
+If it fails quickly and repeatedly during the validation window, the runtime prefers to roll back to `rollback`.
 
-## Where to look during manual checks
+## Where To Look During Manual Checks
 
 - active release: `/opt/beetle/current`
 - rollback candidate: `/opt/beetle/rollback`
@@ -64,16 +74,16 @@ If it fails quickly and repeatedly during the validation window, Beetle prefers 
 - global command: `/usr/local/bin/beetle`
 - compatibility command: `/usr/bin/beetle` (when present)
 
-## Direct commands
+## Direct Commands
 
 - show release status: `beetle release status`
 - request rollback: `beetle release rollback`
 - restart the managed service: `beetle restart`
-- stop the active Beetle runtime: `beetle stop` (prefer the managed service; when unmanaged, request the live `beetle run` process to exit gracefully)
+- stop the active runtime: `beetle stop` (prefer the managed service; when unmanaged, request the live `beetle run` process to exit gracefully)
 
-## Direct takeaways
+## Read Next
 
-- The Linux path now runs as a long-running service
-- The real startup entrypoint is `beetle run` (single process)
-- Rollback is not just swapping one file; it switches back to the previous release layout
-- For hardware setup, do not follow old Linux-only hardware examples; go straight to [hardware-device-config.md](hardware-device-config.md)
+- To get Beetls OS running on Linux the first time: [getting-started-linux.md](getting-started-linux.md)
+- To build or deploy Linux artifacts: [build-script.md](build-script.md)
+- To complete browser setup after deployment: [configuration.md](configuration.md)
+- To configure hardware on Linux-capable installs: [hardware-device-config.md](hardware-device-config.md)

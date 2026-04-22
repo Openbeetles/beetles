@@ -1,78 +1,51 @@
 <p align="center">
-  <img src="configure-ui/public/logo.png" alt="Beetle" width="132" height="132" />
+  <img src="configure-ui/public/logo.png" alt="Beetls OS" width="132" height="132" />
 </p>
 
-<h1 align="center">Beetle</h1>
+<h1 align="center">Beetls OS</h1>
 
 <p align="center">
   <strong>A chat-first device agent for ESP32 and Linux</strong><br/>
-  Rust · Chat channels · Daily work · Hardware control
+  Rust · Chat channels · Workflows · Hardware control
 </p>
 
 <p align="center">
   <a href="README.zh-CN.md">中文</a> · <strong>English</strong>
 </p>
 
-Beetle is a device agent you can talk to from chat and manage from a browser.
-It can reply, handle reminders and tasks, connect work accounts, and control hardware on supported devices.
+Beetls OS is a chat-first device agent that combines browser setup, chat interaction, model access, work-account integrations, and hardware control in one runtime.
+CLI commands, service names, and filesystem paths in this repo still use `beetle`.
 
-Some abilities depend on your device, hardware, and setup.
+## What Beetls OS Can Do
 
-## What Beetle Can Do
+- reply through chat channels such as Feishu, DingTalk, WeCom, and QQ Channel
+- handle reminders, tasks, and lightweight daily workflows
+- connect mail, calendar, contacts, and documents when office accounts are configured
+- read sensors and control devices on supported hardware
+- expose a browser setup flow plus configuration and status APIs
 
-- talk to you through supported chat channels
-- handle reminders, tasks, and simple daily work
-- connect mail, calendar, documents, and contacts when those accounts are set up
-- read sensors and control devices on supported boards
-- offer a browser-based setup page and status API
+## Common Product Shapes
 
-Common chat channels include Feishu, DingTalk, WeCom, and QQ Channel.
+| Shape | What Beetls OS contributes |
+|-------|-------------------------|
+| Desk companion | chat, reminders, documents, lightweight workflow help |
+| Front-desk device | visitor Q&A, display, routing, operational assistance |
+| Reminder terminal | recurring reminders, simple schedules, voice, notifications |
+| Monitoring node | sensors, threshold watch, alert delivery |
+| Device controller | GPIO, PWM, I2C, and simple actuation flows |
 
-## Where It Runs
+## Start Here
 
-| Target | Good fit |
-|--------|----------|
-| ESP32-S3 | device control, sensors, and always-on edge use |
-| ESP32-P4 | more demanding board-side work |
-| Linux | longer-running tasks, work-account integrations, and broader expansion |
-
-## Quick Start
-
-### 1. Flash or deploy Beetle
-
-Most ESP users start with:
-
-```bash
-./build.sh --flash
-```
-
-Common board-specific examples:
-
-```bash
-BOARD=esp32-s3-16mb ./build.sh --flash
-BOARD=esp32-p4-nano-16mb ./build.sh --flash
-./build.sh flash-all
-```
-
-If you are deploying on Linux, go straight to [docs/en-us/linux-release-rollback.md](docs/en-us/linux-release-rollback.md).
-
-### 2. Open the setup page
-
-On first use, Beetle usually exposes a hotspot named **Beetle**.
-Connect to it and open **http://192.168.4.1**.
-
-If the device is already on your local network, open its local IP instead.
-
-### 3. Finish the minimum setup
-
-Set these first:
-
-1. pairing code
-2. network
-3. one LLM source
-4. one chat channel
-
-After that, you can add work accounts, hardware, display, or audio if needed.
+| If you want to... | Read this |
+|-------------------|-----------|
+| Get Beetls OS running on ESP32 | [docs/en-us/getting-started-esp.md](docs/en-us/getting-started-esp.md) |
+| Get Beetls OS running on Linux | [docs/en-us/getting-started-linux.md](docs/en-us/getting-started-linux.md) |
+| See what Beetls OS can do | [docs/en-us/capabilities.md](docs/en-us/capabilities.md) |
+| Build, flash, or deploy from a terminal | [docs/en-us/build-script.md](docs/en-us/build-script.md) |
+| Configure Beetls OS after it is reachable | [docs/en-us/configuration.md](docs/en-us/configuration.md) |
+| Operate Beetls OS on Linux | [docs/en-us/linux-release-rollback.md](docs/en-us/linux-release-rollback.md) |
+| Build your own frontend or integration | [docs/en-us/config-api.md](docs/en-us/config-api.md) |
+| Browse the full docs portal | [docs/README.md](docs/README.md) |
 
 ## Supported Boards
 
@@ -83,18 +56,15 @@ After that, you can add work accounts, hardware, display, or audio if needed.
 | `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
 | `esp32-p4-nano-16mb` | 16MB | 32MB | dual-chip board |
 
-## Read Next
+## Docs Structure
 
-| If you want to... | Read this |
-|-------------------|-----------|
-| Set Beetle up for the first time | [docs/en-us/configuration.md](docs/en-us/configuration.md) |
-| See what Beetle can help with | [docs/en-us/tools.md](docs/en-us/tools.md) |
-| Connect a model provider | [docs/en-us/llm-providers.md](docs/en-us/llm-providers.md) |
-| Build, flash, or deploy from a terminal | [docs/en-us/build-script.md](docs/en-us/build-script.md) |
-| Set up hardware or a display | [docs/en-us/hardware.md](docs/en-us/hardware.md), [docs/en-us/hardware-device-config.md](docs/en-us/hardware-device-config.md), [docs/en-us/display.md](docs/en-us/display.md) |
-| Build your own frontend or script | [docs/en-us/config-api.md](docs/en-us/config-api.md) |
-| Browse the full docs set | [docs/README.md](docs/README.md) |
+- `Start`: first-time setup on ESP32 or Linux
+- `Capabilities`: what Beetls OS can do in real product shapes
+- `Configure`: model, channels, hardware, display, and setup flow
+- `Operate`: build, flash, deploy, restart, stop, rollback
+- `Reference`: API details and tool surface
+- `Develop`: architecture and extension points
 
 ## License
 
-Beetle is dual-licensed under **MIT OR Apache-2.0**. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+Beetls OS is dual-licensed under **MIT OR Apache-2.0**. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

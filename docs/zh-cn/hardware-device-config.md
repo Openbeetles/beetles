@@ -2,14 +2,22 @@
 
 [English](../en-us/hardware-device-config.md) | **中文** | [文档索引](../README.md)
 
-正常使用时，优先在配置页里添加和修改硬件。
+本页说明 Beetls OS 读取的硬件配置文件结构。
+内容聚焦字段定义与约束，不涉及接线教程。
 
-这页只说明硬件配置现在有哪些字段，方便你看懂配置页、接口返回，或者排查保存结果。
-保存之后，这些内容会落到 `config/hardware.json`。
+## 基本流程
 
-它现在不只管简单 GPIO，也能放 I2C 设备和 I2C 传感器。
+硬件配置通常按以下顺序完成：
 
-## 这组配置里有什么
+1. 在 `hardware_devices` 中定义运行时直接使用的设备
+2. 只有用到 I2C 时才配置 `i2c_bus`
+3. 需要时再补 `i2c_devices` 或 `i2c_sensors`
+4. 保存配置
+5. 保存后确认相关能力已在运行时出现
+
+保存后的数据会落到 `config/hardware.json`。
+
+## 配置结构
 
 当前结构是：
 
@@ -18,12 +26,11 @@
 - `i2c_devices`
 - `i2c_sensors`
 
-你可以只用其中一部分，不需要一次全配。
+无需一次性启用全部区块。
 
-## `hardware_devices` 是做什么的
+## `hardware_devices`
 
-这部分用来定义 Beetle 可以直接使用的设备。
-你要写清楚设备名、用途和接线。
+该区块用于定义运行时可以直接调用的设备，包括设备标识、用途与接线信息。
 
 当前支持的 `device_type`：
 
@@ -41,13 +48,13 @@
 | `id` | 设备名，必须唯一 |
 | `device_type` | 设备类型 |
 | `pins` | 接线信息 |
-| `what` | 这个设备是什么 |
-| `how` | 希望 Beetle 怎么使用它 |
+| `what` | 设备用途说明 |
+| `how` | 使用方式说明 |
 | `options` | 额外选项，不同设备可不同 |
 
 ## `i2c_bus`、`i2c_devices`、`i2c_sensors`
 
-如果你要用 I2C，还可以在同一个文件里继续写：
+如果你要用 I2C，还可以继续定义：
 
 - `i2c_bus`：I2C 总线本身
 - `i2c_devices`：普通 I2C 设备
@@ -67,10 +74,10 @@
 - `aht20`
 - `raw`
 
-如果你用 `raw`，需要额外填写它自己的读写参数。
+如果你用 `raw`，还要补它自己的读写选项。
 如果你用 `dht`，常见 `options.model` 是 `dht11`、`dht22` 或 `dht21`。
 
-## 如果你查看底层数据，样子大致是这样
+## 示例
 
 ```json
 {
@@ -109,25 +116,24 @@
 }
 ```
 
-## 配好之后会发生什么
+## 生效结果
 
-- `hardware_devices` 让 Beetle 知道有哪些设备可以直接使用
-- `i2c_devices` 让 Beetle 知道有哪些 I2C 设备可以访问
-- `i2c_sensors` 让 Beetle 知道有哪些 I2C 传感器可以读取和监控
+- `hardware_devices` 定义可直接调用的设备
+- `i2c_devices` 定义可访问的 I2C 设备
+- `i2c_sensors` 定义可读取和监控的 I2C 传感器
 
 如果配置不合法，这些能力不会正常出现。
 
-## 需要注意的真实限制
+## 限制
 
 - `hardware_devices` 最多 8 个
 - `pwm_out` 最多 4 个
 - 同一个引脚不能被多个设备重复使用
 - `adc_in` 只能用允许的 ADC 引脚
-- `i2c_sensors` 的 `id` 不能和 `hardware_devices` 冲突
+- `i2c_sensors.id` 不能和 `hardware_devices.id` 冲突
 
-## 接下来读什么
+## 相关文档
 
-- 想直接在页面里配置： [configuration.md](configuration.md)
-- 想看 Beetle 会怎么用这些能力： [tools.md](tools.md)
-- 想自己通过接口写配置： [config-api.md](config-api.md)
-- 想看板型和硬件方向： [hardware.md](hardware.md)
+- 板型与硬件范围：[hardware.md](hardware.md)
+- 运行时工具能力：[tools.md](tools.md)
+- 配置接口参考：[config-api.md](config-api.md)

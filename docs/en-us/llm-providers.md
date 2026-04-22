@@ -1,13 +1,21 @@
-# LLM Setup
+# LLM Providers
 
 [中文](../zh-cn/llm-providers.md) | **English** | [Doc index](../README.md)
 
-This page answers two practical questions:
+Connect Beetls OS to one model provider first.
+For a first working setup, keep it simple: one provider, one model, one valid API key.
 
-1. which `provider` values Beetle supports now
-2. how Beetle chooses between multiple sources
+## Fastest Working Path
 
-## Supported `provider` values
+1. choose one provider
+2. fill `api_key`
+3. fill `model`
+4. leave `api_url` empty unless you use a custom endpoint
+5. save the config and test one chat reply
+
+You can add multiple sources and routing preferences later.
+
+## Supported `provider` Values
 
 Current code supports:
 
@@ -21,9 +29,9 @@ Current code supports:
 - `ollama`
 - `anthropic`
 
-## How to fill `api_url`
+## How To Fill `api_url`
 
-If you want the built-in default endpoint, these can usually leave `api_url` empty:
+If you use the provider's normal default endpoint, these usually work with an empty `api_url`:
 
 - `openai`
 - `gemini`
@@ -34,32 +42,36 @@ If you want the built-in default endpoint, these can usually leave `api_url` emp
 - `ollama`
 - `anthropic`
 
-If you use your own endpoint, proxy, or hosted service, set `api_url` to that address.
+Set `api_url` only when:
 
-For `openai_compatible`, you will usually want to fill in the actual compatible endpoint you are using.
+- you use a custom endpoint
+- you are going through a proxy or compatible gateway
+- your provider requires a non-default base URL
 
-## How Beetle picks between sources
+For `openai_compatible`, you will usually want to set the actual compatible endpoint you use.
 
-Beetle can keep more than one LLM source at the same time.
+## How Beetls OS Chooses Between Multiple Sources
 
-By default, it tries them in the order they appear in `llm_sources`.
+Beetls OS can keep more than one LLM source at the same time.
 
-If you set these fields:
+By default, it tries sources in the order they appear in `llm_sources`.
+
+If you set:
 
 - `llm_router_source_index`
 - `llm_worker_source_index`
 
-then the order becomes:
+then Beetls OS prefers them in this order:
 
-1. try `llm_router_source_index` first
-2. try `llm_worker_source_index` next
-3. then continue through the rest of the usable list
+1. `llm_router_source_index`
+2. `llm_worker_source_index`
+3. the rest of the usable list
 
-You do not need to switch sources manually in chat.
+That means you do not need to switch providers manually during normal chat use.
 
-## Minimal examples
+## Minimal Examples
 
-### One source
+### One Source
 
 ```json
 {
@@ -74,7 +86,7 @@ You do not need to switch sources manually in chat.
 }
 ```
 
-### Multiple sources
+### Multiple Sources
 
 ```json
 {
@@ -103,9 +115,15 @@ You do not need to switch sources manually in chat.
 }
 ```
 
-## Direct takeaways
+## Direct Takeaways
 
 - `llm_sources` must not be empty
 - every source needs at least `provider`, `api_key`, and `model`
-- for local Ollama, the common address is `http://<host>:11434/v1`
-- model names in examples are only examples
+- for local Ollama, a common endpoint is `http://<host>:11434/v1`
+- example model names are examples only; Beetls OS does not require those exact names
+
+## Read Next
+
+- To complete browser setup: [configuration.md](configuration.md)
+- To see what Beetls OS can do after setup: [capabilities.md](capabilities.md)
+- To write config through the API: [config-api.md](config-api.md)

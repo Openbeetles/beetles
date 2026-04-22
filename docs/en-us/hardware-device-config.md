@@ -2,14 +2,22 @@
 
 **English** | [中文](../zh-cn/hardware-device-config.md) | [Doc index](../README.md)
 
-For normal use, add and edit hardware through the config UI first.
+This page explains the saved hardware configuration Beetls OS reads after you connect devices.
+It is a field guide, not a wiring tutorial.
 
-This page explains which hardware fields exist now, so you can read the UI, API results, or saved config more easily.
-After saving, the same data ends up in `config/hardware.json`.
+## The Short Path
 
-It no longer covers only simple GPIO. It can also hold I2C devices and I2C sensors.
+Most hardware setups follow this pattern:
 
-## What is in this config
+1. define direct-use devices under `hardware_devices`
+2. define `i2c_bus` only if you actually use I2C
+3. add `i2c_devices` or `i2c_sensors` only when needed
+4. save the config
+5. verify the capability appears in Beetls OS
+
+Saved data ends up in `config/hardware.json`.
+
+## What Lives In This Config
 
 The current structure is:
 
@@ -18,11 +26,11 @@ The current structure is:
 - `i2c_devices`
 - `i2c_sensors`
 
-You do not need to use every part.
+You do not need to use every section.
 
-## What `hardware_devices` is for
+## What `hardware_devices` Is For
 
-This section defines the devices Beetle can use directly.
+This section defines devices Beetls OS can use directly.
 You describe the device name, purpose, and wiring here.
 
 Current `device_type` values:
@@ -42,10 +50,10 @@ Each device uses these core fields:
 | `device_type` | device type |
 | `pins` | wiring info |
 | `what` | what the device is |
-| `how` | how Beetle should use it |
+| `how` | how Beetls OS should use it |
 | `options` | extra options, depending on the device |
 
-## `i2c_bus`, `i2c_devices`, and `i2c_sensors`
+## `i2c_bus`, `i2c_devices`, And `i2c_sensors`
 
 If you use I2C, the same file can also define:
 
@@ -67,10 +75,10 @@ Current `i2c_sensors.model` values are:
 - `aht20`
 - `raw`
 
-If you use `raw`, you need to provide its extra read/write options.
+If you use `raw`, you need its extra read and write options.
 If you use `dht`, common `options.model` values are `dht11`, `dht22`, or `dht21`.
 
-## What the underlying data looks like
+## Example Saved Shape
 
 ```json
 {
@@ -109,15 +117,15 @@ If you use `dht`, common `options.model` values are `dht11`, `dht22`, or `dht21`
 }
 ```
 
-## What happens after you save it
+## What Happens After Save
 
-- `hardware_devices` tells Beetle which devices it can use directly
-- `i2c_devices` tells Beetle which I2C devices it can access
-- `i2c_sensors` tells Beetle which I2C sensors it can read and monitor
+- `hardware_devices` tells Beetls OS which devices it can use directly
+- `i2c_devices` tells Beetls OS which I2C devices it can access
+- `i2c_sensors` tells Beetls OS which I2C sensors it can read and monitor
 
 If the config is invalid, those abilities do not appear normally.
 
-## Real limits worth knowing
+## Real Limits Worth Knowing
 
 - `hardware_devices`: up to 8 items
 - `pwm_out`: up to 4 items
@@ -125,9 +133,8 @@ If the config is invalid, those abilities do not appear normally.
 - `adc_in` must use allowed ADC pins
 - `i2c_sensors.id` cannot clash with `hardware_devices.id`
 
-## Read next
+## Read Next
 
-- To configure it in the UI first: [configuration.md](configuration.md)
-- To see how Beetle uses these abilities: [tools.md](tools.md)
+- To choose boards and hardware direction first: [hardware.md](hardware.md)
+- To understand how those abilities appear at runtime: [tools.md](tools.md)
 - To write config through the API: [config-api.md](config-api.md)
-- To choose boards and hardware direction: [hardware.md](hardware.md)

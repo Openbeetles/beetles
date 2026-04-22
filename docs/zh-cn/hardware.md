@@ -2,11 +2,15 @@
 
 [English](../en-us/hardware.md) | **中文** | [文档索引](../README.md)
 
-这页只讲和选设备最相关的事实。
+本页用于确定 Beetls OS 的部署平台与硬件范围，不涉及具体配置字段。
+
+## 平台选择建议
+
+- 主要任务是控外设、读传感器、做常驻边缘设备：选 **ESP32-S3**
+- 想走更高配的 ESP 路线：看 **ESP32-P4**
+- 想接更多外部系统、跑更久的任务、做主机侧扩展：选 **Linux**
 
 ## 当前板型预设
-
-仓库当前提供这些板型预设：
 
 | BOARD | Flash | PSRAM | 说明 |
 |------|-------|-------|------|
@@ -15,30 +19,21 @@
 | `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
 | `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
-## 怎么选
+## 当前硬件能力范围
 
-- 主要是控外设、读传感器：选 ESP32-S3
-- 想用更高配的 ESP 板：看 ESP32-P4
-- 想接更多外部能力、跑更长的任务：选 Linux
+- GPIO 设备
+- PWM 设备
+- 模拟量输入
+- DHT 传感器
+- I2C 设备和 I2C 传感器
+- SPI 屏幕
 
-## 你在硬件上最常会做的几件事
+如已明确设备类型和接线范围，继续阅读 [hardware-device-config.md](hardware-device-config.md)。
 
-- 接 GPIO 设备
-- 接 PWM 设备
-- 接模拟量输入
-- 接 DHT
-- 接 I2C 设备或 I2C 传感器
-- 接 SPI 屏幕
+## Linux 硬件发现
 
-对应文档：
-
-- 硬件控制配置： [hardware-device-config.md](hardware-device-config.md)
-- 屏幕配置： [display.md](display.md)
-
-## Linux 上额外有的方向
-
-Linux 这边除了常规运行外，还提供了硬件发现入口。
-当前公开的是 USB 方向的发现能力，常见分类包括：
+Linux 还提供了硬件发现能力。
+现在最常见的是 USB 方向，比如：
 
 - 音频输入
 - 音频输出
@@ -46,17 +41,23 @@ Linux 这边除了常规运行外，还提供了硬件发现入口。
 - 串口
 - HID
 
-## 遇到问题先看哪里
+## 文档分工
 
-- 配置页：先确认设备有没有被识别、配置有没有保存
-- [config-api.md](config-api.md)：需要自己查接口时再看
-- 串口或服务日志：看启动失败、配置失败、硬件初始化失败
+- 平台或板型选型：本页
+- 设备与接线配置：[hardware-device-config.md](hardware-device-config.md)
+- 显示配置：[display.md](display.md)
 
 ## 常见问题
 
 - `spiffs partition could not be found`
-  基本就是板型或分区表没用对
+  基本就是板型或分区表没用对。
 - 设备能启动但没有硬件能力
-  先确认配置已经写对，而且当前设备真的接了对应硬件
+  先确认配置已经存在，而且当前机器真的接了对应硬件。
 - 屏幕亮了但显示不对
-  直接看 [display.md](display.md)
+  参见 [display.md](display.md)。
+
+## 相关文档
+
+- 硬件与传感器配置：[hardware-device-config.md](hardware-device-config.md)
+- 显示配置：[display.md](display.md)
+- 运行时工具能力：[tools.md](tools.md)

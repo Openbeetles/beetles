@@ -1,12 +1,9 @@
-# Beetle 工具清单
+# 工具参考
 
 [English](../en-us/tools.md) | **中文** | [文档索引](../README.md)
 
-本页列的是当前代码里真实存在的工具名。
-你平时不用背名字，但这里会完整展示它们做什么、什么时候会出现。
-
-同名工具只列一次。
-比如 `task` 和 `remind_at` 默认就有；接入更多能力后，它们会在原来的名字上增加联动能力。
+本页列出当前运行时暴露的工具能力。
+如需了解产品层面的能力范围，参见 [capabilities.md](capabilities.md)。
 
 ## 基础工具
 
@@ -26,7 +23,7 @@
 
 | 工具名 | 做什么 | 什么时候会出现 |
 |--------|--------|----------------|
-| `private_garden` | 管理 Beetle 自己的私有笔记区、草稿和整理材料 | 默认 |
+| `private_garden` | 管理系统私有笔记区、草稿和整理材料 | 默认 |
 | `factual_memory` | 查看已经沉淀下来的稳定事实 | 默认 |
 | `memory_search` | 在历史记录、日记和回合记录里搜索线索 | 默认 |
 | `memory_get` | 打开一条历史记录详情 | 默认 |
@@ -63,12 +60,12 @@
 
 | 工具名 | 做什么 | 什么时候会出现 |
 |--------|--------|----------------|
-| `calendar` | 管理日历事件；办公账号状态/可用性先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
-| `mail` | 查看、搜索、发送、回复和转发邮件；办公账号状态/可用性先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
-| `contacts_directory` | 管理联系人目录，供邮件和日历查人；远端办公账号状态先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
-| `documents` | 查看、读取、搜索和总结文档库内容；办公账号状态/可用性先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `calendar` | 管理日历事件；办公账号状态先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `mail` | 查看、搜索、发送、回复和转发邮件；办公账号状态先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `contacts_directory` | 管理联系人目录，供邮件和日历查人；办公账号状态先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
+| `documents` | 查看、读取、搜索和总结文档库内容；办公账号状态先看 `office_status`，接入或修复走 `office_config` | 办公能力；主机侧部署 |
 | `office_config` | 完整的办公账号管理入口；主线路径是 `provider_schema`，再 `apply_account`，账号歧义时用 `resolve_account` | 办公能力；主机侧部署 |
-| `office_status` | LLM 侧唯一的办公账号状态/可用性/诊断入口 | 办公能力；主机侧部署 |
+| `office_status` | LLM 侧主要的办公账号状态、可用性和诊断入口 | 办公能力；主机侧部署 |
 
 ## 硬件与语音
 
@@ -97,10 +94,3 @@
 | `lua_tool_bridge` | 用 Lua 脚本根据工具清单生成调用建议，不直接执行工具 | Linux 部署 |
 | `capability_atoms_exchange` | 导出或导入能力条目交换数据 | Linux 部署 |
 | `capability_atoms_inspect` | 查看本地能力条目列表和交换准备情况 | Linux 部署 |
-
-## 什么时候看别的文档
-
-- 要先把 Beetle 跑起来：看 [configuration.md](configuration.md)
-- 要配置大模型：看 [llm-providers.md](llm-providers.md)
-- 要接硬件或传感器：看 [hardware.md](hardware.md) 和 [hardware-device-config.md](hardware-device-config.md)
-- 要自己写页面或脚本：看 [config-api.md](config-api.md)

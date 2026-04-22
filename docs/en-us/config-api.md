@@ -2,7 +2,13 @@
 
 [中文](../zh-cn/config-api.md) | **English** | [Doc index](../README.md)
 
-This page is for people building their own frontend, script, or integration. Each endpoint is described in terms of purpose, request, and response.
+The configuration API is the reference for custom frontends, scripts, and integrations.
+If basic setup is not finished yet, start with [configuration.md](configuration.md) first.
+
+Start with the activation flow, then the configuration routes.
+Come back to the later sections only when you need office integration, maintenance, or callback details.
+
+Each endpoint is described in terms of purpose, request, and response.
 
 ## Request rules
 
@@ -10,7 +16,7 @@ This page is for people building their own frontend, script, or integration. Eac
 - CORS: `/api/*` supports cross-origin access, and `OPTIONS` can be called directly.
 - Response format: everything is JSON except `GET /api/soul`, `GET /api/user`, `GET /api/skills?name=...`, and `GET /api/metrics?format=prometheus`.
 - Error format:
-  - Product and official configuration-surface APIs now return `{"error_key":"..."}` as the stable Beetle-generated error contract.
+  - Product and official configuration-surface APIs now return `{"error_key":"..."}` as the stable system-generated error contract.
   - If the failure comes from an upstream third-party provider, the body may also include `upstream_error`, `upstream_status`, `error_stage`, and `provider_kind`.
   - Debug / operator / protocol-compatibility routes are exempt and may still return raw English text or protocol-native bodies.
 - Pairing code: send it through `?code=` or `X-Pairing-Code`.
@@ -39,7 +45,7 @@ This page is for people building their own frontend, script, or integration. Eac
 
 ### Product API error contract
 
-Non-debug/operator Beetle product and official configuration-surface `/api/*` routes now follow:
+Non-debug/operator product and official configuration-surface `/api/*` routes now follow:
 
 ```json
 {
@@ -550,7 +556,7 @@ Notes:
 
 - `display_name_key` is the provider-name translation key.
 - Display semantics inside `account_fields` and `config_fields` use `label_key`, `description_key`, and option `label_key`.
-- Product APIs no longer return Beetle-generated `display_name`, `label`, or `description` prose.
+- Product APIs no longer return system-generated `display_name`, `label`, or `description` prose.
 
 **GET /api/config/capabilities**
 
@@ -677,7 +683,7 @@ The response is the account detail object.
 Account summary/detail display semantics follow the same contract:
 
 - `display_name_key` is the translation key for the provider/account display name.
-- Product responses do not return Beetle-generated `display_name`, `label`, or `description` prose.
+- Product responses do not return system-generated `display_name`, `label`, or `description` prose.
 
 If the request is missing user facts that must be supplied explicitly, the route returns `400` with a structured onboarding result, for example:
 
@@ -717,7 +723,7 @@ Notes:
 
 - `account.display_name_key` is the translation key for the provider/account display name.
 - Display semantics in `fields` and `assessment.missing_field_details` use `label_key`, `description_key`, and option `label_key`.
-- Product APIs do not return Beetle-generated `display_name` / `label` / `description` prose.
+- Product APIs do not return system-generated `display_name` / `label` / `description` prose.
 
 **POST /api/config/accounts/:account_key/config**
 

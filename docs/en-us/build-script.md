@@ -1,33 +1,32 @@
-# build.sh Guide
+# Build, Flash, and Deploy
 
 [中文](../zh-cn/build-script.md) | **English** | [Doc index](../README.md)
 
-Read this page if you build, flash, or deploy Beetle from a terminal.
+`build.sh` is the terminal-first path for building, flashing, and deploying Beetls OS.
 
-`build.sh` currently covers three jobs:
+## Common Tasks
+
+| What you want to do | Starting command |
+|---------------------|-----------------|
+| Flash Beetls OS to an ESP board | `./build.sh --flash` |
+| Build Linux x86_64 | `TARGET=linux ./build.sh` |
+| Build Linux armv7 | `TARGET=linux-armv7 ./build.sh` |
+| Build Linux aarch64 | `TARGET=linux-aarch64 ./build.sh` |
+| Deploy an existing Linux artifact | `./build.sh --deploy-linux` |
+| Flash the on-board C6 helper firmware | `./build.sh flash-c6` |
+| Flash C6 and then the P4 main firmware | `./build.sh flash-all` |
+
+## What `build.sh` Covers
+
+`build.sh` currently handles three main jobs:
 
 - building ESP firmware
 - building Linux targets and optionally deploying them
 - running the on-board C6 helper firmware flow
 
-## Most Common Commands
-
-| Command | What it does |
-|---------|---------------|
-| `./build.sh` | Interactive build; after success it asks whether to flash or deploy for the current target |
-| `./build.sh --flash` | Build and flash the current ESP target |
-| `./build.sh --flash-update` | Build and flash directly without entering the erase choice |
-| `TARGET=linux ./build.sh` | Build Linux x86_64 |
-| `TARGET=linux-armv7 ./build.sh` | Build Linux armv7 |
-| `TARGET=linux-aarch64 ./build.sh` | Build Linux aarch64 |
-| `./build.sh --deploy-linux` | Deploy an existing Linux build without compiling again |
-| `./build.sh build-c6` | Build the on-board C6 helper firmware |
-| `./build.sh flash-c6` | Flash the on-board C6 helper firmware |
-| `./build.sh flash-all` | Flash C6 first, then flash the P4 main firmware |
-
 ## How Target Selection Works
 
-The script decides the target in this order:
+The script chooses the target in this order:
 
 1. `TARGET`
 2. `BOARD`
@@ -68,13 +67,13 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 ./build.sh --flash --no-monitor
 ```
 
-Direct takeaways:
+What matters most:
 
-- `--flash` enters the flash flow immediately after build
-- `--flash` defaults to an update-style flash that keeps NVS; if you need a full erase, the script gives you that choice
+- `--flash` goes straight into the flash flow after build
+- `--flash` keeps NVS by default; if you need a full erase, the script offers that choice
 - `--flash-update` skips the erase choice and uses update-style flashing directly
 - `--no-monitor` means do not open the serial monitor after flashing
-- If there is only one clear serial port, the script usually picks it; otherwise it asks
+- if the serial port is obvious, the script usually picks it; otherwise it asks
 
 ## Common Linux Workflows
 
@@ -85,14 +84,13 @@ TARGET=linux-aarch64 ./build.sh
 ./build.sh --deploy-linux
 ```
 
-Direct takeaways:
+What matters most:
 
-- On an interactive terminal, a successful Linux build asks whether to deploy over SSH right away
-- `--deploy-linux` does not compile; it only deploys an existing artifact
-- `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetle state root `skills/` directory; it does not remove user-created skills already on the device
-- `./build.sh` is the only public Linux build/deploy entry; the Docker helper scripts are internal helpers behind `BUILD_METHOD=docker`
-- For ARM Linux targets, `BUILD_METHOD=docker` automatically boots the matching host-architecture GNU build container
-- Deployment modes, paths, and rollback live in [linux-release-rollback.md](linux-release-rollback.md)
+- on an interactive terminal, a successful Linux build asks whether to deploy over SSH right away
+- `--deploy-linux` does not compile; it deploys an existing artifact
+- `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetls OS state root `skills/` directory
+- `./build.sh` is the main Linux build and deploy entry; Docker helper scripts are internal helpers behind `BUILD_METHOD=docker`
+- for ARM Linux targets, `BUILD_METHOD=docker` automatically boots the matching host-architecture GNU build container
 
 ## Package Profiles
 
@@ -127,7 +125,7 @@ Defaults:
 `BUILD_METHOD` matters only for Linux targets.
 
 | Value | What it means |
-|-------|----------------|
+|-------|---------------|
 | `auto` | default; let the script choose |
 | `local` | build on the current machine |
 | `docker` | build Linux targets inside Docker |
@@ -140,12 +138,6 @@ BUILD_METHOD=local TARGET=linux ./build.sh
 BUILD_METHOD=docker TARGET=linux-aarch64 ./build.sh
 BUILD_METHOD=remote TARGET=linux ./build.sh
 ```
-
-Direct takeaways:
-
-- On Linux hosts, `auto` usually becomes a local build
-- On macOS building Linux, `auto` prefers Docker; if the Docker daemon is not running, it falls back to the local non-Docker Linux path for the selected target
-- `remote` is only for Linux targets; the script then asks for the remote host, remote directory, and what to do with the artifact after build
 
 ## Interactive Prompt And Non-Interactive Use
 
@@ -182,13 +174,14 @@ Both are useful for automation and CI.
 - Linux artifacts go to `target/<target>/release/beetle`
 - ESP artifacts go to `target/<target>/release-size/beetle`
 - ESP builds also emit `target/<target>/release-size/beetle.bin` for later flashing
-- That image is now produced through `espflash save-image`, so build-only runs do not depend on Python `esptool` module imports
-- After a successful build, the script prints the exact artifact path
+- that image is produced through `espflash save-image`, so build-only runs do not depend on Python `esptool` imports
+- after a successful build, the script prints the exact artifact path
 
 If you plan to use `--deploy-linux`, make sure the matching Linux artifact already exists.
 
 ## Read Next
 
+- To get started on ESP32: [getting-started-esp.md](getting-started-esp.md)
+- To get started on Linux: [getting-started-linux.md](getting-started-linux.md)
 - For Linux deploy modes and rollback: [linux-release-rollback.md](linux-release-rollback.md)
-- To get Beetle running first: [configuration.md](configuration.md)
 - To check boards and hardware direction: [hardware.md](hardware.md)

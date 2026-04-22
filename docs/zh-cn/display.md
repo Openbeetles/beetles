@@ -2,33 +2,34 @@
 
 [English](../en-us/display.md) | **中文** | [文档索引](../README.md)
 
-正常使用时，优先在配置页里设置屏幕。
+本页说明 Beetls OS 的显示配置。
+仅在设备接入屏幕时需要使用该配置项。
 
-这页只说明屏幕配置现在有哪些字段，方便你看懂配置页、接口返回，或者排查保存结果。
-保存之后，这些内容会落到 `config/display.json`。
+## 基本流程
 
-## 当前支持的 `driver`
+1. 先判断你的屏幕走 `spi` 还是 `framebuffer`
+2. 选对应的 `driver`
+3. 填好分辨率、旋转和颜色相关字段
+4. 保存配置
+5. 仅在显示异常时再调整颜色与偏移
+
+保存后的数据会落到 `config/display.json`。
+
+## 支持的 `driver`
 
 - `st7789`
 - `ili9341`
 - `st7735`
 - `framebuffer`
 
-## 当前支持的 `bus`
+## 支持的 `bus`
 
 - `spi`
 - `framebuffer`
 
-如果你用的是 SPI 小屏，常见是前三种驱动。
-如果系统已经有现成显示设备，一般用 `framebuffer`。
+SPI 小屏通常使用前三种驱动；系统已提供显示设备时通常使用 `framebuffer`。
 
-## 如果你查看底层数据
-
-对应的是：
-
-- `config/display.json`
-
-## 一个常见 SPI 示例
+## SPI 配置示例
 
 ```json
 {
@@ -59,7 +60,7 @@
 }
 ```
 
-## 一个 `framebuffer` 示例
+## `framebuffer` 配置示例
 
 ```json
 {
@@ -91,7 +92,7 @@
 }
 ```
 
-## 你最需要关心的字段
+## 关键字段
 
 | 字段 | 作用 |
 |------|------|
@@ -108,16 +109,16 @@
 | `fb_device` | framebuffer 设备路径 |
 | `backlight_sysfs` | Linux 背光路径 |
 
-## 几个直接结论
+## 常见问题修正项
 
-- 不用屏幕时，把 `enabled` 设为 `false`
-- `framebuffer` 模式当前只支持 `rotation = 0`
-- 颜色不对时，先试 `color_order`
-- 还像反色时，再试 `invert_colors`
-- Linux SPI 仍然不对时，最后再试 `linux_spi_swap_bytes`
-- 画面偏了，再调 `offset_x` 和 `offset_y`
+- 未接入屏幕时，将 `enabled` 设为 `false`
+- `framebuffer` 当前只支持 `rotation = 0`
+- 颜色异常时，优先检查 `color_order`
+- 仍存在反色时，再检查 `invert_colors`
+- Linux SPI 显示仍异常时，最后检查 `linux_spi_swap_bytes`
+- 画面偏移时，调整 `offset_x` 和 `offset_y`
 
-## 屏幕上会看到什么
+## 显示内容
 
 屏幕主要会显示这些内容：
 
@@ -126,7 +127,7 @@
 - 通道状态
 - 一些基础运行信息
 
-## 接下来读什么
+## 相关文档
 
-- 想先把设备跑起来： [configuration.md](configuration.md)
-- 想接硬件： [hardware-device-config.md](hardware-device-config.md)
+- 配置范围与顺序：[configuration.md](configuration.md)
+- 硬件配置：[hardware-device-config.md](hardware-device-config.md)

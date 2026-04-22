@@ -1,12 +1,9 @@
-# Beetle Tool List
+# Tool Reference
 
 [中文](../zh-cn/tools.md) | **English** | [Doc index](../README.md)
 
-This page lists the tool names that actually exist in the current codebase.
-In normal use, you do not need to memorize them, but this page shows what each tool does and when it appears.
-
-Tools with the same name are listed once.
-For example, `task` and `remind_at` already exist by default, and gain more integrations when more capabilities are connected.
+This page lists the individual tool surface behind the product capabilities of Beetls OS.
+For the product-level view, read [capabilities.md](capabilities.md) first.
 
 ## Core Tools
 
@@ -26,7 +23,7 @@ For example, `task` and `remind_at` already exist by default, and gain more inte
 
 | Tool | What it does | When it appears |
 |------|--------------|-----------------|
-| `private_garden` | Manage Beetle's own private notes, drafts, and working material | Default |
+| `private_garden` | Manage the system's private notes, drafts, and working material | Default |
 | `factual_memory` | Read stable facts that have already been retained | Default |
 | `memory_search` | Search past records, notes, and turn logs for evidence | Default |
 | `memory_get` | Open one specific record from history | Default |
@@ -68,7 +65,7 @@ For example, `task` and `remind_at` already exist by default, and gain more inte
 | `contacts_directory` | Manage the contacts directory used by mail and calendar flows; use `office_status` for remote office account readiness and `office_config` for onboarding or repair | Office capability; host deployments |
 | `documents` | List, read, search, and summarize document libraries; use `office_status` for office account readiness and `office_config` for onboarding or repair | Office capability; host deployments |
 | `office_config` | Full office account management entrypoint; mainline is `provider_schema`, then `apply_account`, then `resolve_account` when routing is ambiguous | Office capability; host deployments |
-| `office_status` | The unique office status/readiness/diagnostics entrypoint for the LLM | Office capability; host deployments |
+| `office_status` | The main office status, readiness, and diagnostics entrypoint for the LLM | Office capability; host deployments |
 
 ## Hardware And Voice
 
@@ -97,10 +94,3 @@ For example, `task` and `remind_at` already exist by default, and gain more inte
 | `lua_tool_bridge` | Use Lua to generate tool-call proposals from the tool list without executing tools directly | Linux deployments |
 | `capability_atoms_exchange` | Export or import capability item exchange data | Linux deployments |
 | `capability_atoms_inspect` | Inspect local capability items and exchange readiness | Linux deployments |
-
-## Read These Next When Needed
-
-- To get Beetle running first: [configuration.md](configuration.md)
-- To configure model providers: [llm-providers.md](llm-providers.md)
-- To connect hardware or sensors: [hardware.md](hardware.md) and [hardware-device-config.md](hardware-device-config.md)
-- To build your own frontend or script: [config-api.md](config-api.md)

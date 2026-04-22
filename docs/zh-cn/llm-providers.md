@@ -1,11 +1,19 @@
-# 大模型配置
+# 大模型服务
 
 [English](../en-us/llm-providers.md) | **中文** | [文档索引](../README.md)
 
-这页只讲两件事：
+本页说明 Beetls OS 的大模型提供方配置。
+首次接入建议采用单一 provider、单一 model 和一组可用密钥完成验证。
 
-1. `provider` 现在支持哪些值
-2. 多个来源时，Beetle 按什么顺序使用
+## 基础配置流程
+
+1. 选一个 provider
+2. 填 `api_key`
+3. 填 `model`
+4. 除非你用的是自定义地址，否则 `api_url` 先留空
+5. 保存后，通过已配置聊天通道执行一次联通验证
+
+多来源配置和路由优先级建议在单源验证完成后再启用。
 
 ## 支持的 `provider`
 
@@ -23,7 +31,7 @@
 
 ## `api_url` 怎么填
 
-如果你用官方默认地址，下面这些通常可以留空：
+如果你用的是提供商默认地址，下面这些通常可以留空：
 
 - `openai`
 - `gemini`
@@ -34,28 +42,32 @@
 - `ollama`
 - `anthropic`
 
-如果你用的是自建地址、代理地址或第三方兼容服务，就把 `api_url` 填成你自己的地址。
+下面这些情况再填写 `api_url`：
 
-对 `openai_compatible` 来说，通常应该填写你实际使用的兼容服务地址。
+- 你走的是自定义地址
+- 你走代理或兼容网关
+- 提供商要求非默认 base URL
 
-## 多个来源怎么选
+对 `openai_compatible` 来说，通常应该填你实际在用的兼容服务地址。
 
-Beetle 支持同时配置多个来源。
+## 多来源选择规则
+
+Beetls OS 支持同时配置多个来源。
 
 默认情况下，会按 `llm_sources` 里的顺序依次尝试。
 
-如果你设置了下面两个字段，顺序会变成：
+如果你设置了：
 
 - `llm_router_source_index`
 - `llm_worker_source_index`
 
-实际理解起来很简单：
+Beetls OS 会优先按这个顺序尝试：
 
-1. 先试 `llm_router_source_index`
-2. 再试 `llm_worker_source_index`
-3. 还不行，再按列表里的其余可用来源继续试
+1. `llm_router_source_index`
+2. `llm_worker_source_index`
+3. 列表里其余可用来源
 
-你不需要在聊天里手动切换。
+按该配置运行时会自动选择可用来源，无需在聊天过程中手动切换。
 
 ## 最小示例
 
@@ -103,9 +115,15 @@ Beetle 支持同时配置多个来源。
 }
 ```
 
-## 几个直接结论
+## 配置要点
 
 - `llm_sources` 不能为空
-- 每个来源都至少要有 `provider`、`api_key`、`model`
+- 每个来源至少要有 `provider`、`api_key`、`model`
 - 如果你用的是本地 Ollama，常见地址是 `http://<主机>:11434/v1`
-- 示例里的模型名只是示例，不代表 Beetle 固定要求这些名字
+- 示例里的模型名只是示例，不代表 Beetls OS 固定要求这些名字
+
+## 相关文档
+
+- 浏览器配置范围：[configuration.md](configuration.md)
+- 能力概览：[capabilities.md](capabilities.md)
+- 配置接口参考：[config-api.md](config-api.md)

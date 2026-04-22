@@ -2,25 +2,35 @@
 
 [Back to documentation index](../README.md)
 
-Choose by what you want to do next.
+Product-facing docs use the name Beetls OS. Commands, service names, and filesystem paths still use `beetle`.
 
-| Doc | When to read it |
-|-----|-----------------|
-| [configuration.md](configuration.md) | First-time Beetle setup |
-| [tools.md](tools.md) | See what Beetle can help with |
-| [llm-providers.md](llm-providers.md) | Configure model providers |
-| [build-script.md](build-script.md) | Build, flash, or deploy from a terminal |
-| [hardware.md](hardware.md) | Check boards, sensors, and hardware direction |
-| [hardware-device-config.md](hardware-device-config.md) | Let Beetle control real devices |
-| [display.md](display.md) | Set up a screen |
-| [config-api.md](config-api.md) | Build your own frontend, script, or integration |
-| [architecture.md](architecture.md) | Read the code and extend Beetle |
-| [linux-release-rollback.md](linux-release-rollback.md) | Deploy Beetle on Linux |
+## Start
 
-Suggested order:
+- [getting-started-esp.md](getting-started-esp.md): first-time Beetls OS setup on ESP32
+- [getting-started-linux.md](getting-started-linux.md): first-time Beetls OS setup on Linux
 
-1. `configuration`
-2. `tools`
-3. `llm-providers`
-4. Read `hardware` and `display` only if needed
-5. Read `config-api` and `architecture` only when you integrate or develop
+## Capabilities
+
+- [capabilities.md](capabilities.md): product shapes, capability areas, and platform fit
+
+## Configure
+
+- [configuration.md](configuration.md): setup flow and configuration areas
+- [llm-providers.md](llm-providers.md): provider and model setup
+- [hardware.md](hardware.md): board and hardware direction
+- [hardware-device-config.md](hardware-device-config.md): device and sensor config
+- [display.md](display.md): display config
+
+## Operate
+
+- [build-script.md](build-script.md): build, flash, and deploy
+- [linux-release-rollback.md](linux-release-rollback.md): Linux deploy, restart, stop, and rollback
+
+## Reference
+
+- [config-api.md](config-api.md): configuration and integration API reference
+- [tools.md](tools.md): tool reference
+
+## Develop
+
+- [architecture.md](architecture.md): system structure and extension points

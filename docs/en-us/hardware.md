@@ -2,11 +2,16 @@
 
 **English** | [中文](../zh-cn/hardware.md) | [Doc index](../README.md)
 
-This page keeps to the practical facts you need when choosing hardware.
+Choose platform and hardware scope here.
+This page stays practical and avoids low-level configuration detail.
 
-## Current board presets
+## Quick Decisions
 
-The repo currently ships these board presets:
+- Choose **ESP32-S3** if your main job is device control, sensors, and always-on edge behavior
+- Choose **ESP32-P4** if you want a higher-end ESP path
+- Choose **Linux** if you want broader integrations, longer-running work, and more host-side expansion
+
+## Current Board Presets
 
 | BOARD | Flash | PSRAM | Notes |
 |------|-------|-------|------|
@@ -15,30 +20,21 @@ The repo currently ships these board presets:
 | `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
 | `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
-## How to choose
-
-- If your main goal is device control and sensors, choose ESP32-S3
-- If you want a higher-end ESP board path, look at ESP32-P4
-- If you want broader expansion and longer-running work, choose Linux
-
-## Common hardware work in Beetle
+## Common Hardware Work In Beetls OS
 
 - GPIO devices
 - PWM devices
 - analog input
-- DHT
+- DHT sensors
 - I2C devices and I2C sensors
 - SPI displays
 
-Read these next:
+If you already know what hardware you want to connect, the next page is usually [hardware-device-config.md](hardware-device-config.md).
 
-- hardware control config: [hardware-device-config.md](hardware-device-config.md)
-- display setup: [display.md](display.md)
-
-## Extra direction on Linux
+## Extra Direction On Linux
 
 Linux also exposes hardware discovery.
-Right now the public discovery path is for USB, with common categories such as:
+The discovery path available today is mainly for USB-related devices such as:
 
 - audio input
 - audio output
@@ -46,17 +42,23 @@ Right now the public discovery path is for USB, with common categories such as:
 - serial
 - HID
 
-## Where to check first when something is wrong
+## When To Read Which Hardware Page
 
-- the config UI: check whether the device was found and whether settings were saved
-- [config-api.md](config-api.md): only when you need to inspect the API directly
-- serial or service logs: for boot failure, config failure, or hardware init failure
+- Still choosing a platform or board: stay on this page
+- Ready to describe devices and wiring: read [hardware-device-config.md](hardware-device-config.md)
+- Adding a screen: read [display.md](display.md)
 
-## Common problems
+## Common Problems
 
 - `spiffs partition could not be found`
-  This usually means the wrong board preset or partition table was used.
-- Beetle starts but hardware features do not appear
-  Check that the related config is present and the hardware is actually attached.
+  Usually means the wrong board preset or partition table was used.
+- Beetls OS starts but hardware features do not appear
+  Check that the related config exists and that the hardware is actually attached.
 - The screen turns on but looks wrong
   Go straight to [display.md](display.md).
+
+## Read Next
+
+- To define hardware and sensor config: [hardware-device-config.md](hardware-device-config.md)
+- To set up a screen: [display.md](display.md)
+- To see how those capabilities appear at runtime: [tools.md](tools.md)

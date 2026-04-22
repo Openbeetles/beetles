@@ -1,9 +1,9 @@
-# 架构概览
+# 架构说明
 
 [English](../en-us/architecture.md) | **中文** | [文档索引](../README.md)
 
-这篇给开发者看。
-如果你要读代码、接新通道、加新工具，先从这里看全局。
+本页说明 Beetls OS 的主要模块分层与扩展入口。
+若当前工作仅涉及部署或配置，可直接参见 [getting-started-esp.md](getting-started-esp.md)、[getting-started-linux.md](getting-started-linux.md) 或 [build-script.md](build-script.md)。
 
 ## 整体分层
 
@@ -16,7 +16,7 @@
 | `runtime` | 管理运行状态、资源和健康检查 |
 | `display` / HTTP API | 提供屏幕显示、配置页和状态入口 |
 
-## 一条消息怎么走
+## 消息处理流程
 
 1. 消息从聊天通道进入
 2. Agent 读取当前上下文和已保存信息
@@ -24,7 +24,7 @@
 4. 生成回复并发回对应通道
 5. 把重要结果写回存储
 
-## 你通常会改哪里
+## 扩展点
 
 ### 接一个新通道
 
@@ -48,17 +48,16 @@
 - 实现 `Platform` trait
 - 在组装入口注入新的平台实现
 
-## 开发时需要守住的边界
+## 实现边界
 
 - 硬件相关代码放在 `platform`
 - 业务层不要直接依赖硬件实现
 - 错误统一走 `beetle::Error`
 - 配置通过参数传递，不走全局可变状态
-- 文档要和代码一起更新
+- 文档和代码一起更新
 
 ## 相关文档
 
-- [configuration.md](configuration.md)
-- [tools.md](tools.md)
+- [capabilities.md](capabilities.md)
 - [config-api.md](config-api.md)
 - [hardware.md](hardware.md)
