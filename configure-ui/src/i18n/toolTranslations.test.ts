@@ -128,12 +128,26 @@ test('account provider labels are localized by provider kind with safe fallback'
     resolveLocaleKey(enUS.translation as unknown as Record<string, unknown>, key, options?.defaultValue)
 
   assert.equal(
+    localizeAccountProviderName(zhT, {
+      providerKind: 'wecom_documents',
+      displayNameKey: 'accounts.providers.feishu_documents',
+    }),
+    '飞书文档',
+  )
+  assert.equal(
     localizeAccountProviderName(zhT, 'wecom_documents'),
     '企业微信文档',
   )
   assert.equal(
     localizeAccountProviderName(enT, 'wecom_documents'),
     'WeCom Documents',
+  )
+  assert.equal(
+    localizeAccountProviderName(enT, {
+      providerKind: 'unknown_provider',
+      displayNameKey: 'accounts.providers.google_documents',
+    }),
+    'Google Documents',
   )
   assert.equal(
     localizeAccountProviderName(zhT, 'unknown_provider'),

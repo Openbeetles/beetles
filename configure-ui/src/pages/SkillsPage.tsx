@@ -58,6 +58,7 @@ import {
 } from "../api/rootInventory";
 import { SETTINGS_LIST_ROW_PLATE_SX } from "../theme/listItemStyles";
 import { CONTENT_MAX_WIDTH } from "../config/layout";
+import { translateApiError } from "../i18n/apiErrors";
 import "./skillsMdEditor.css";
 
 const MAX_CONTENT = 32 * 1024;
@@ -177,7 +178,7 @@ export function SkillsPage() {
       });
     } else {
       let nextError = res.error ?? "";
-      if (nextError === "Not Found" || nextError === "not found") {
+      if (res.errorKey === "common.not_found" || res.status === 404) {
         const probe = await api.device.probe();
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/skills")) {
@@ -249,7 +250,7 @@ export function SkillsPage() {
       setEditName(null);
       showToast(t("common.saveOk"), { variant: "success" });
     } else {
-      showToast(res.error ?? t("common.error"), { variant: "error" });
+      showToast(translateApiError(t, res.error, "common.error"), { variant: "error" });
     }
   };
 
@@ -264,7 +265,7 @@ export function SkillsPage() {
       showToast(t("skills.deleteOk"), { variant: "success" });
       loadList();
     } else {
-      showToast(res.error ?? t("common.error"), { variant: "error" });
+      showToast(translateApiError(t, res.error, "common.error"), { variant: "error" });
     }
   };
 
@@ -336,8 +337,9 @@ export function SkillsPage() {
       showToast(t("skills.importOk"), { variant: "success" });
       loadList();
     } else {
-      setImportError(res.error ?? "");
-      showToast(res.error ?? "", { variant: "error" });
+      const message = translateApiError(t, res.error, "common.error");
+      setImportError(message);
+      showToast(message, { variant: "error" });
     }
   };
 

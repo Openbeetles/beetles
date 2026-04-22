@@ -96,6 +96,7 @@ pub fn read_body_utf8_impl<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn read_body_utf8_impl_respects_max_len_with_known_content_length() {
@@ -104,6 +105,39 @@ mod tests {
         let body =
             read_body_utf8_impl(&mut cursor, Some(payload.len() as u64), 5).expect("read body");
         assert_eq!(body, "hello");
+    }
+
+    #[test]
+    fn api_response_error_body_uses_error_key_contract() {
+        let body = ApiResponse::err_400_key("common.invalid_json").body;
+        let parsed: Value = serde_json::from_slice(&body).expect("parse api error body");
+
+        assert_eq!(parsed["error_key"], "common.invalid_json");
+        assert!(
+            parsed.get("error").is_none(),
+            "body={}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[test]
+    fn api_response_error_body_can_include_upstream_error() {
+        let body = ApiResponse::err_400_key_with_upstream(
+            "office.provider_error",
+            Some("imap login failed"),
+            Some(401),
+        )
+        .body;
+        let parsed: Value = serde_json::from_slice(&body).expect("parse api error body");
+
+        assert_eq!(parsed["error_key"], "office.provider_error");
+        assert_eq!(parsed["upstream_error"], "imap login failed");
+        assert_eq!(parsed["upstream_status"], 401);
+        assert!(
+            parsed.get("error").is_none(),
+            "body={}",
+            String::from_utf8_lossy(&body)
+        );
     }
 }
 
@@ -226,6 +260,113 @@ impl ApiResponse {
         body
     }
 
+    fn json_error_key_body(
+        error_key: &str,
+        error_params: Option<serde_json::Value>,
+        error_stage: Option<&str>,
+        upstream_error: Option<&str>,
+        upstream_status: Option<u16>,
+        provider_kind: Option<&str>,
+        mut extra: serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<u8> {
+        extra.insert(
+            "error_key".to_string(),
+            serde_json::Value::String(error_key.to_string()),
+        );
+        if let Some(params) = error_params {
+            extra.insert("error_params".to_string(), params);
+        }
+        if let Some(stage) = error_stage {
+            extra.insert(
+                "error_stage".to_string(),
+                serde_json::Value::String(stage.to_string()),
+            );
+        }
+        if let Some(upstream_error) = upstream_error {
+            extra.insert(
+                "upstream_error".to_string(),
+                serde_json::Value::String(upstream_error.to_string()),
+            );
+        }
+        if let Some(upstream_status) = upstream_status {
+            extra.insert(
+                "upstream_status".to_string(),
+                serde_json::Value::Number(upstream_status.into()),
+            );
+        }
+        if let Some(provider_kind) = provider_kind {
+            extra.insert(
+                "provider_kind".to_string(),
+                serde_json::Value::String(provider_kind.to_string()),
+            );
+        }
+        serde_json::to_vec(&serde_json::Value::Object(extra))
+            .unwrap_or_else(|_| br#"{"error_key":"common.operation_failed"}"#.to_vec())
+    }
+
+    pub fn err_key(status: u16, status_text: &'static str, error_key: &str) -> Self {
+        Self {
+            status,
+            status_text,
+            body: Self::json_error_key_body(
+                error_key,
+                None,
+                None,
+                None,
+                None,
+                None,
+                serde_json::Map::new(),
+            ),
+        }
+    }
+
+    pub fn err_key_with_upstream(
+        status: u16,
+        status_text: &'static str,
+        error_key: &str,
+        upstream_error: Option<&str>,
+        upstream_status: Option<u16>,
+    ) -> Self {
+        Self {
+            status,
+            status_text,
+            body: Self::json_error_key_body(
+                error_key,
+                None,
+                None,
+                upstream_error,
+                upstream_status,
+                None,
+                serde_json::Map::new(),
+            ),
+        }
+    }
+
+    pub fn err_key_with_meta(
+        status: u16,
+        status_text: &'static str,
+        error_key: &str,
+        error_stage: Option<&str>,
+        upstream_error: Option<&str>,
+        upstream_status: Option<u16>,
+        provider_kind: Option<&str>,
+        extra: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            status,
+            status_text,
+            body: Self::json_error_key_body(
+                error_key,
+                None,
+                error_stage,
+                upstream_error,
+                upstream_status,
+                provider_kind,
+                extra,
+            ),
+        }
+    }
+
     pub fn ok_200_json(json: &str) -> Self {
         Self {
             status: 200,
@@ -239,6 +380,22 @@ impl ApiResponse {
             status_text: "Bad Request",
             body: Self::json_error_body(msg),
         }
+    }
+    pub fn err_400_key(error_key: &str) -> Self {
+        Self::err_key(400, "Bad Request", error_key)
+    }
+    pub fn err_400_key_with_upstream(
+        error_key: &str,
+        upstream_error: Option<&str>,
+        upstream_status: Option<u16>,
+    ) -> Self {
+        Self::err_key_with_upstream(
+            400,
+            "Bad Request",
+            error_key,
+            upstream_error,
+            upstream_status,
+        )
     }
     #[allow(dead_code)]
     pub fn err_401_pairing() -> Self {
@@ -255,12 +412,18 @@ impl ApiResponse {
             body: Self::json_error_body(msg),
         }
     }
+    pub fn err_401_key(error_key: &str) -> Self {
+        Self::err_key(401, "Unauthorized", error_key)
+    }
     pub fn err_403(msg: &str) -> Self {
         Self {
             status: 403,
             status_text: "Forbidden",
             body: Self::json_error_body(msg),
         }
+    }
+    pub fn err_403_key(error_key: &str) -> Self {
+        Self::err_key(403, "Forbidden", error_key)
     }
     pub fn err_500(msg: &str) -> Self {
         Self {
@@ -269,12 +432,31 @@ impl ApiResponse {
             body: Self::json_error_body(msg),
         }
     }
+    pub fn err_500_key(error_key: &str) -> Self {
+        Self::err_key(500, "Internal Server Error", error_key)
+    }
+    pub fn err_500_key_with_upstream(
+        error_key: &str,
+        upstream_error: Option<&str>,
+        upstream_status: Option<u16>,
+    ) -> Self {
+        Self::err_key_with_upstream(
+            500,
+            "Internal Server Error",
+            error_key,
+            upstream_error,
+            upstream_status,
+        )
+    }
     pub fn err_503(msg: &str) -> Self {
         Self {
             status: 503,
             status_text: "Service Unavailable",
             body: Self::json_error_body(msg),
         }
+    }
+    pub fn err_503_key(error_key: &str) -> Self {
+        Self::err_key(503, "Service Unavailable", error_key)
     }
     pub fn err_413(msg: &str) -> Self {
         Self {
@@ -289,6 +471,9 @@ impl ApiResponse {
             status_text: "Not Found",
             body: Self::json_error_body(msg),
         }
+    }
+    pub fn err_404_key(error_key: &str) -> Self {
+        Self::err_key(404, "Not Found", error_key)
     }
     #[allow(dead_code)]
     pub fn err_502(msg: &str) -> Self {

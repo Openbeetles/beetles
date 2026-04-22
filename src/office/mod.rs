@@ -116,8 +116,9 @@ pub use microsoft_graph::{
 pub use policy::OfficeSelectionPolicy;
 #[cfg(feature = "capability_office")]
 pub use provider_schema::{
-    office_provider_schema, office_provider_schemas, OfficeProviderFieldLocation,
-    OfficeProviderFieldSchema, OfficeProviderFieldValueKind, OfficeProviderSchema,
+    office_provider_display_name_key, office_provider_schema, office_provider_schemas,
+    OfficeProviderFieldLocation, OfficeProviderFieldSchema, OfficeProviderFieldValueKind,
+    OfficeProviderSchema,
 };
 #[cfg(feature = "capability_office")]
 pub(crate) use public_contract::parse_public_account_upsert_request_value;

@@ -1,7 +1,6 @@
 //! 配对 / CSRF 检查，替代仅 ESP 宏可用的逻辑。
 //! Pairing and CSRF checks (replaces macros that need Esp request types).
 
-use crate::i18n::{locale_from_store, tr, Message};
 use crate::platform::csrf;
 use crate::platform::http_server::common::{self, ApiResponse};
 use crate::platform::pairing;
@@ -10,9 +9,7 @@ use crate::platform::ConfigStore;
 /// 未激活则返回 401 JSON（与 `require_activated!` 一致）。
 pub fn require_activated(store: &dyn ConfigStore) -> Option<ApiResponse> {
     if !pairing::code_set(store) {
-        let loc = locale_from_store(store);
-        let msg = tr(Message::PairingRequired, loc);
-        return Some(ApiResponse::err_401(&msg));
+        return Some(ApiResponse::err_401_key("auth.pairing_required"));
     }
     None
 }
@@ -25,9 +22,7 @@ pub fn require_pairing_code(
     headers: &[(String, String)],
 ) -> Option<ApiResponse> {
     if !pairing::code_set(store) {
-        let loc = locale_from_store(store);
-        let msg = tr(Message::PairingRequired, loc);
-        return Some(ApiResponse::err_401(&msg));
+        return Some(ApiResponse::err_401_key("auth.pairing_required"));
     }
     let code = common::code_from_uri(uri)
         .map(String::from)
@@ -35,15 +30,11 @@ pub fn require_pairing_code(
     match code.as_deref() {
         Some(c) if !c.is_empty() => {
             if !pairing::verify_code(store, c) {
-                let loc = locale_from_store(store);
-                let msg = tr(Message::PairingCodeWrong, loc);
-                return Some(ApiResponse::err_401(&msg));
+                return Some(ApiResponse::err_401_key("auth.pairing_invalid"));
             }
         }
         _ => {
-            let loc = locale_from_store(store);
-            let msg = tr(Message::PairingCodeWrong, loc);
-            return Some(ApiResponse::err_401(&msg));
+            return Some(ApiResponse::err_401_key("auth.pairing_invalid"));
         }
     }
     None
@@ -57,12 +48,11 @@ fn header_ci<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str>
 }
 
 /// CSRF（与 `require_csrf!` 一致）。
-pub fn require_csrf(store: &dyn ConfigStore, headers: &[(String, String)]) -> Option<ApiResponse> {
-    let loc = locale_from_store(store);
+pub fn require_csrf(_store: &dyn ConfigStore, headers: &[(String, String)]) -> Option<ApiResponse> {
     let token = header_ci(headers, "X-CSRF-Token").or_else(|| header_ci(headers, "x-csrf-token"));
     match token {
         Some(t) if csrf::verify_token(t) => None,
-        Some(_) => Some(ApiResponse::err_403(&tr(Message::CsrfInvalidToken, loc))),
-        None => Some(ApiResponse::err_403(&tr(Message::CsrfTokenRequired, loc))),
+        Some(_) => Some(ApiResponse::err_403_key("auth.csrf_invalid")),
+        None => Some(ApiResponse::err_403_key("auth.csrf_required")),
     }
 }

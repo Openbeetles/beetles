@@ -2,7 +2,7 @@
 //! ESP HTTP server thin adapter: map `Request` → `router::IncomingRequest` → write response.
 
 use crate::error::Result;
-use crate::i18n::{locale_from_store, tr, Message};
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{
     self, ApiResponse, BodyReadError, HandlerResult, CORS_HEADERS, POST_BODY_MAX_LEN,
 };
@@ -159,18 +159,35 @@ impl EspRouteExecutor {
 }
 
 fn internal_server_error_response(
-    store: &dyn ConfigStore,
+    _store: &dyn ConfigStore,
     stage: &'static str,
     detail: String,
 ) -> OutgoingResponse {
     log::warn!("{}: {}", stage, detail);
-    let loc = locale_from_store(store);
-    let msg = tr(Message::OperationFailed, loc);
     OutgoingResponse {
         status: 500,
         status_text: "Internal Server Error",
         headers: CORS_HEADERS,
-        body: ApiResponse::err_500(&msg).body,
+        body: ApiResponse::err_500_key(api_contract::COMMON_OPERATION_FAILED).body,
+        restart: RestartAction::None,
+    }
+}
+
+fn routed_error_response(_store: &dyn ConfigStore, error: crate::error::Error) -> OutgoingResponse {
+    let detail = error.to_string();
+    let stage = error.stage();
+    let error_key = api_contract::error_key(&error);
+    let (status, status_text) = if error_key == api_contract::COMMON_INVALID_UTF8 {
+        (400, "Bad Request")
+    } else {
+        (500, "Internal Server Error")
+    };
+    log::warn!("{}: {}", stage, detail);
+    OutgoingResponse {
+        status,
+        status_text,
+        headers: CORS_HEADERS,
+        body: ApiResponse::err_key(status, status_text, error_key).body,
         restart: RestartAction::None,
     }
 }
@@ -183,7 +200,7 @@ fn dispatch_incoming(
 ) -> OutgoingResponse {
     match router::dispatch(ctx.as_ref(), env, incoming) {
         Ok(out) => out,
-        Err(e) => internal_server_error_response(store, "http_router_dispatch", e.to_string()),
+        Err(error) => routed_error_response(store, error),
     }
 }
 
@@ -198,11 +215,7 @@ fn run_esp_route_executor(
             Ok(job) => {
                 let out = match router::dispatch(ctx.as_ref(), &env, job.incoming) {
                     Ok(out) => out,
-                    Err(e) => internal_server_error_response(
-                        store.as_ref(),
-                        "http_router_dispatch",
-                        e.to_string(),
-                    ),
+                    Err(error) => routed_error_response(store.as_ref(), error),
                 };
                 let _ = job.reply_tx.send(out);
             }
@@ -261,14 +274,14 @@ fn read_body_esp<C: Connection>(
         EspBodyMode::Utf8(max) => match common::read_body_utf8_impl(req, req.content_len(), max) {
             Ok(s) => Ok(s.into_bytes()),
             Err(BodyReadError::ReadFailed) => {
-                let loc = crate::i18n::locale_from_store(store);
-                let msg = crate::i18n::tr(crate::i18n::Message::BodyReadFailed, loc);
-                Err(ApiResponse::err_500(&msg))
+                let _ = store;
+                Err(ApiResponse::err_500_key(
+                    api_contract::COMMON_BODY_READ_FAILED,
+                ))
             }
             Err(BodyReadError::InvalidUtf8) => {
-                let loc = crate::i18n::locale_from_store(store);
-                let msg = crate::i18n::tr(crate::i18n::Message::InvalidUtf8, loc);
-                Err(ApiResponse::err_400(&msg))
+                let _ = store;
+                Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
             }
         },
         EspBodyMode::Utf8SoulUser => {
@@ -276,14 +289,14 @@ fn read_body_esp<C: Connection>(
             match common::read_body_utf8_impl(req, req.content_len(), max) {
                 Ok(s) => Ok(s.into_bytes()),
                 Err(BodyReadError::ReadFailed) => {
-                    let loc = crate::i18n::locale_from_store(store);
-                    let msg = crate::i18n::tr(crate::i18n::Message::BodyReadFailed, loc);
-                    Err(ApiResponse::err_500(&msg))
+                    let _ = store;
+                    Err(ApiResponse::err_500_key(
+                        api_contract::COMMON_BODY_READ_FAILED,
+                    ))
                 }
                 Err(BodyReadError::InvalidUtf8) => {
-                    let loc = crate::i18n::locale_from_store(store);
-                    let msg = crate::i18n::tr(crate::i18n::Message::InvalidUtf8, loc);
-                    Err(ApiResponse::err_400(&msg))
+                    let _ = store;
+                    Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
                 }
             }
         }

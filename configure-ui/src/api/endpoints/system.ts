@@ -105,7 +105,7 @@ export async function getDiagnose(baseUrl: string): Promise<ApiResult<DiagnoseIt
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   const res = await request<DiagnoseItem[]>(baseUrl, '/api/diagnose')
   if (res.ok && Array.isArray(res.data)) return res
-  return { ok: false, error: res.error ?? 'Invalid response', data: [] }
+  return { ok: false, error: res.error ?? 'common.invalid_response', data: [] }
 }
 
 /** GET /api/wifi/scan 返回项；设备扫描周边 WiFi，按 rssi 降序。 */
@@ -118,7 +118,7 @@ export async function getWifiScan(baseUrl: string): Promise<ApiResult<WifiApEntr
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   const res = await request<WifiApEntry[]>(baseUrl, '/api/wifi/scan')
   if (res.ok && Array.isArray(res.data)) return res
-  return { ok: false, error: res.error ?? 'Scan failed', data: [] }
+  return { ok: false, error: res.error ?? 'common.invalid_response', data: [] }
 }
 
 /** GET /api/system_info 返回；需已激活（配对码已设置）。 */
@@ -169,7 +169,7 @@ export interface ChannelConnectivityItem {
   id: string
   configured: boolean
   ok: boolean
-  message: string | null
+  message_key: string | null
 }
 
 /** GET /api/channel_connectivity 响应 */

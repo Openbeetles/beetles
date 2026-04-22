@@ -2,7 +2,7 @@
 //! GET /api/ota/check：按板型与渠道查 manifest，返回是否有更新及 url。
 
 use crate::error::Error;
-use crate::i18n::{locale_from_store, tr, tr_error, Message};
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::ApiResponse;
 
 use super::HandlerContext;
@@ -38,55 +38,41 @@ fn semver_gt(a: &str, b: &str) -> bool {
 pub fn get_check(ctx: &HandlerContext, channel: &str) -> Result<String, std::io::Error> {
     use crate::platform::http_server::common::to_io;
 
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let current = ctx.version.as_ref();
-
-    if crate::ota_manifest_url().is_empty() {
-        let err_msg = tr(Message::OtaChannelNotConfigured, loc);
-        let json = serde_json::json!({
+    let error_payload = |error_key: &'static str| {
+        serde_json::json!({
             "current_version": current,
             "update_available": false,
-            "error": err_msg,
-        });
-        return serde_json::to_string(&json).map_err(to_io);
+            "error_key": error_key,
+        })
+    };
+
+    if crate::ota_manifest_url().is_empty() {
+        return serde_json::to_string(&error_payload(api_contract::OTA_CHANNEL_NOT_CONFIGURED))
+            .map_err(to_io);
     }
 
     let body = match ctx.fetch_url(crate::ota_manifest_url(), MAX_MANIFEST_LEN) {
         Ok(b) => b,
         Err(_) => {
-            let err_msg = tr(Message::OtaCheckFail, loc);
-            let json = serde_json::json!({
-                "current_version": current,
-                "update_available": false,
-                "error": err_msg,
-            });
-            return serde_json::to_string(&json).map_err(to_io);
+            return serde_json::to_string(&error_payload(api_contract::OTA_CHECK_FAILED))
+                .map_err(to_io);
         }
     };
 
     let body_str = match std::str::from_utf8(&body) {
         Ok(s) => s,
         Err(_) => {
-            let err_msg = tr(Message::OtaCheckFail, loc);
-            let json = serde_json::json!({
-                "current_version": current,
-                "update_available": false,
-                "error": err_msg,
-            });
-            return serde_json::to_string(&json).map_err(to_io);
+            return serde_json::to_string(&error_payload(api_contract::OTA_CHECK_FAILED))
+                .map_err(to_io);
         }
     };
 
     let root: serde_json::Value = match serde_json::from_str(body_str) {
         Ok(v) => v,
         Err(_) => {
-            let err_msg = tr(Message::OtaCheckFail, loc);
-            let json = serde_json::json!({
-                "current_version": current,
-                "update_available": false,
-                "error": err_msg,
-            });
-            return serde_json::to_string(&json).map_err(to_io);
+            return serde_json::to_string(&error_payload(api_contract::OTA_CHECK_FAILED))
+                .map_err(to_io);
         }
     };
 
@@ -153,7 +139,6 @@ pub fn get_check(ctx: &HandlerContext, channel: &str) -> Result<String, std::io:
 /// body 为请求体 UTF-8 字符串。返回 (ApiResponse, should_spawn_restart)。
 #[cfg(feature = "ota")]
 pub fn post(ctx: &HandlerContext, body: &str) -> Result<(ApiResponse, bool), std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let url = match serde_json::from_str::<serde_json::Value>(body) {
         Ok(v) => v
             .get("url")
@@ -164,28 +149,45 @@ pub fn post(ctx: &HandlerContext, body: &str) -> Result<(ApiResponse, bool), std
     };
     let url = match url {
         Some(u) => u,
-        None => return Ok((ApiResponse::err_400(&tr(Message::InvalidUrl, loc)), false)),
+        None => {
+            return Ok((
+                ApiResponse::err_400_key(api_contract::COMMON_INVALID_URL),
+                false,
+            ))
+        }
     };
     let valid = (url.starts_with("http://") || url.starts_with("https://")) && url.len() > 8;
     if !valid {
-        return Ok((ApiResponse::err_400(&tr(Message::InvalidUrl, loc)), false));
+        return Ok((
+            ApiResponse::err_400_key(api_contract::COMMON_INVALID_URL),
+            false,
+        ));
     }
     match ctx.platform.ota_from_url(&url) {
         Ok(()) => Ok((ApiResponse::ok_200_json("{\"ok\":true}"), true)),
         Err(e) => {
-            let msg = match &e {
-                Error::Esp { stage, .. } => {
-                    let m = match *stage {
-                        "ota_download" => Message::OtaDownload,
-                        "ota_validate" => Message::OtaValidate,
-                        "ota_write" => Message::OtaWrite,
-                        _ => Message::OperationFailed,
-                    };
-                    tr(m, loc)
-                }
-                _ => tr_error(&e, loc),
+            let (error_key, upstream_error) = match &e {
+                Error::Esp { stage, .. } => match *stage {
+                    "ota_download" => (api_contract::OTA_DOWNLOAD_FAILED, Some(e.to_string())),
+                    "ota_validate" => (api_contract::OTA_VALIDATE_FAILED, None),
+                    "ota_write" => (api_contract::OTA_WRITE_FAILED, None),
+                    _ => (api_contract::COMMON_OPERATION_FAILED, None),
+                },
+                _ => (api_contract::error_key(&e), None),
             };
-            Ok((ApiResponse::err_500(&msg), false))
+            Ok((
+                ApiResponse::err_key_with_meta(
+                    500,
+                    "Internal Server Error",
+                    error_key,
+                    Some(e.stage()),
+                    upstream_error.as_deref(),
+                    e.http_status_code(),
+                    None,
+                    serde_json::Map::new(),
+                ),
+                false,
+            ))
         }
     }
 }

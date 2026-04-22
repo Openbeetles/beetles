@@ -27,6 +27,7 @@ import {
 import { SETTINGS_LIST_ROW_PLATE_SX } from "../theme/listItemStyles";
 import { PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
+import { translateApiError } from "../i18n/apiErrors";
 
 export function ToolsPage() {
   const { t } = useTranslation();
@@ -47,7 +48,7 @@ export function ToolsPage() {
     } else {
       let nextError = res.error ?? "";
       let nextUnsupported = false;
-      if (nextError === "Not Found" || nextError === "not found") {
+      if (res.errorKey === "common.not_found" || res.status === 404) {
         const probe = await api.device.probe();
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/tools")) {
@@ -59,10 +60,10 @@ export function ToolsPage() {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: nextError,
+        error: nextUnsupported ? "" : translateApiError(t, nextError, "common.error"),
       }));
     }
-  }, [api.device, api.tools, deviceConnected, ready]);
+  }, [api.device, api.tools, deviceConnected, ready, t]);
 
   useEffect(() => {
     if (!ready || !deviceConnected) {

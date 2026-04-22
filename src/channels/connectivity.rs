@@ -5,8 +5,15 @@
 //! 做真实探测；其余通道返回“当前未启用”的占位结果，避免无意义的串行外网请求。
 
 use crate::config::AppConfig;
-use crate::i18n::{tr, Locale, Message};
+use crate::i18n::Locale;
 use serde::Serialize;
+
+pub const CONNECTIVITY_NOT_CONFIGURED_KEY: &str = "network.connectivity_not_configured";
+pub const CONNECTIVITY_CHECK_FAILED_KEY: &str = "network.connectivity_check_failed";
+pub const CONNECTIVITY_TOKEN_INVALID_KEY: &str = "network.connectivity_token_invalid";
+pub const CONNECTIVITY_SESSION_REPLY_ONLY_KEY: &str = "network.connectivity_session_reply_only";
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY: &str = "network.channel_connectivity_unavailable";
 
 /// 单通道连通性结果；与前端约定字段名。
 #[derive(Debug, Clone, Serialize)]
@@ -14,7 +21,7 @@ pub struct ChannelConnectivityItem {
     pub id: String,
     pub configured: bool,
     pub ok: bool,
-    pub message: Option<String>,
+    pub message_key: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,13 +37,13 @@ pub(crate) fn item(
     id: &'static str,
     configured: bool,
     ok: bool,
-    message: Option<String>,
+    message_key: Option<&'static str>,
 ) -> ChannelConnectivityItem {
     ChannelConnectivityItem {
         id: id.to_string(),
         configured,
         ok,
-        message,
+        message_key,
     }
 }
 
@@ -50,37 +57,17 @@ pub(crate) enum ProbeStatus {
 
 /// Builds a connectivity item from a common "configured -> probe -> normalized message" flow.
 /// 统一处理“已配置 -> 探测 -> 归一化消息”的通道连通性骨架。
-pub(crate) fn probe_item<F>(
-    id: &'static str,
-    configured: bool,
-    loc: Locale,
-    probe: F,
-) -> ChannelConnectivityItem
+pub(crate) fn probe_item<F>(id: &'static str, configured: bool, probe: F) -> ChannelConnectivityItem
 where
     F: FnOnce() -> ProbeStatus,
 {
     if !configured {
-        return item(
-            id,
-            false,
-            false,
-            Some(tr(Message::ConnectivityNotConfigured, loc)),
-        );
+        return item(id, false, false, Some(CONNECTIVITY_NOT_CONFIGURED_KEY));
     }
     match probe() {
         ProbeStatus::Ok => item(id, true, true, None),
-        ProbeStatus::InvalidToken => item(
-            id,
-            true,
-            false,
-            Some(tr(Message::ConnectivityTokenInvalid, loc)),
-        ),
-        ProbeStatus::CheckFailed => item(
-            id,
-            true,
-            false,
-            Some(tr(Message::ConnectivityCheckFailed, loc)),
-        ),
+        ProbeStatus::InvalidToken => item(id, true, false, Some(CONNECTIVITY_TOKEN_INVALID_KEY)),
+        ProbeStatus::CheckFailed => item(id, true, false, Some(CONNECTIVITY_CHECK_FAILED_KEY)),
     }
 }
 
@@ -88,46 +75,33 @@ fn webhook_configured(c: &AppConfig) -> bool {
     c.webhook_enabled && !c.webhook_token.trim().is_empty()
 }
 
-fn disabled_item(id: &'static str, loc: Locale) -> ChannelConnectivityItem {
-    item(
-        id,
-        false,
-        false,
-        Some(tr(Message::ConnectivityNotConfigured, loc)),
-    )
+fn disabled_item(id: &'static str) -> ChannelConnectivityItem {
+    item(id, false, false, Some(CONNECTIVITY_NOT_CONFIGURED_KEY))
 }
 
 fn active_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
-    loc: Locale,
+    _loc: Locale,
 ) -> Option<ChannelConnectivityItem> {
     match config.enabled_channel.as_str() {
-        "telegram" => Some(crate::channels::telegram::check_connectivity(
-            config, http, loc,
-        )),
-        "feishu" => Some(crate::channels::feishu::check_connectivity(
-            config, http, loc,
-        )),
-        "dingtalk" => Some(crate::channels::dingtalk::check_connectivity(
-            config, http, loc,
-        )),
-        "wecom" => Some(crate::channels::wecom::check_connectivity(
-            config, http, loc,
-        )),
-        "qq_channel" => Some(crate::channels::qq::check_connectivity(config, http, loc)),
+        "telegram" => Some(crate::channels::telegram::check_connectivity(config, http)),
+        "feishu" => Some(crate::channels::feishu::check_connectivity(config, http)),
+        "dingtalk" => Some(crate::channels::dingtalk::check_connectivity(config, http)),
+        "wecom" => Some(crate::channels::wecom::check_connectivity(config, http)),
+        "qq_channel" => Some(crate::channels::qq::check_connectivity(config, http)),
         _ => None,
     }
 }
 
-fn webhook_item(config: &AppConfig, loc: Locale) -> ChannelConnectivityItem {
+fn webhook_item(config: &AppConfig) -> ChannelConnectivityItem {
     let configured = webhook_configured(config);
-    let message = if configured {
+    let message_key = if configured {
         None
     } else {
-        Some(tr(Message::ConnectivityNotConfigured, loc))
+        Some(CONNECTIVITY_NOT_CONFIGURED_KEY)
     };
-    item("webhook", configured, configured, message)
+    item("webhook", configured, configured, message_key)
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -154,38 +128,38 @@ fn active_channel_configured(config: &AppConfig) -> bool {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub fn build_unavailable_snapshot(config: &AppConfig, loc: Locale) -> ChannelConnectivitySnapshot {
+pub fn build_unavailable_snapshot(config: &AppConfig, _loc: Locale) -> ChannelConnectivitySnapshot {
     let active_id = config.enabled_channel.as_str();
     let active_configured = active_channel_configured(config);
-    let unavailable = Some(tr(Message::ChannelConnectivityUnavailable, loc));
+    let unavailable = Some(CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY);
     ChannelConnectivitySnapshot {
         channels: vec![
             if active_id == "telegram" {
                 item("telegram", active_configured, false, unavailable.clone())
             } else {
-                disabled_item("telegram", loc)
+                disabled_item("telegram")
             },
             if active_id == "feishu" {
                 item("feishu", active_configured, false, unavailable.clone())
             } else {
-                disabled_item("feishu", loc)
+                disabled_item("feishu")
             },
             if active_id == "dingtalk" {
                 item("dingtalk", active_configured, false, unavailable.clone())
             } else {
-                disabled_item("dingtalk", loc)
+                disabled_item("dingtalk")
             },
             if active_id == "wecom" {
                 item("wecom", active_configured, false, unavailable.clone())
             } else {
-                disabled_item("wecom", loc)
+                disabled_item("wecom")
             },
             if active_id == "qq_channel" {
                 item("qq_channel", active_configured, false, unavailable)
             } else {
-                disabled_item("qq_channel", loc)
+                disabled_item("qq_channel")
             },
-            webhook_item(config, loc),
+            webhook_item(config),
         ],
         checked_at_unix_secs: Some(crate::util::current_unix_secs()),
         stale: true,
@@ -205,23 +179,23 @@ pub fn build_snapshot<H: crate::channels::ChannelHttpClient + ?Sized>(
             active
                 .clone()
                 .filter(|item| item.id == "telegram")
-                .unwrap_or_else(|| disabled_item("telegram", loc)),
+                .unwrap_or_else(|| disabled_item("telegram")),
             active
                 .clone()
                 .filter(|item| item.id == "feishu")
-                .unwrap_or_else(|| disabled_item("feishu", loc)),
+                .unwrap_or_else(|| disabled_item("feishu")),
             active
                 .clone()
                 .filter(|item| item.id == "dingtalk")
-                .unwrap_or_else(|| disabled_item("dingtalk", loc)),
+                .unwrap_or_else(|| disabled_item("dingtalk")),
             active
                 .clone()
                 .filter(|item| item.id == "wecom")
-                .unwrap_or_else(|| disabled_item("wecom", loc)),
+                .unwrap_or_else(|| disabled_item("wecom")),
             active
                 .filter(|item| item.id == "qq_channel")
-                .unwrap_or_else(|| disabled_item("qq_channel", loc)),
-            webhook_item(config, loc),
+                .unwrap_or_else(|| disabled_item("qq_channel")),
+            webhook_item(config),
         ],
         checked_at_unix_secs: Some(crate::util::current_unix_secs()),
         stale: false,

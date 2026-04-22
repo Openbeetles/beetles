@@ -42,13 +42,16 @@ export type ProbeDisposition = 'ready' | 'missing_credential' | 'unsupported'
 
 export interface ProviderFieldOption {
   value: string
-  label: string
+  label_key: string
+  label?: string
 }
 
 export interface ProviderCreateFieldSchema {
   key: string
-  label: string
-  description: string
+  label_key: string
+  description_key: string
+  label?: string
+  description?: string
   value_kind: ProviderFieldValueKind
   required: boolean
   secret: boolean
@@ -60,8 +63,10 @@ export interface ProviderCreateFieldSchema {
 
 export interface ProviderFieldSchema {
   key: string
-  label: string
-  description: string
+  label_key: string
+  description_key: string
+  label?: string
+  description?: string
   location: ProviderFieldLocation
   value_kind: ProviderFieldValueKind
   required: boolean
@@ -71,6 +76,7 @@ export interface ProviderFieldSchema {
 
 export interface ProviderCatalogItem {
   provider_kind: string
+  display_name_key: string
   capabilities: AccountCapability[]
   account_fields: ProviderCreateFieldSchema[]
   config_fields: ProviderFieldSchema[]
@@ -84,6 +90,7 @@ export interface ProviderCatalogResponse {
 export interface AccountSummary {
   account_key: string
   provider_kind: string
+  display_name_key: string
   account_label: string
   identity_class: AccountIdentityClass
   enabled_capabilities: AccountCapability[]
@@ -119,6 +126,7 @@ export interface AccountCredentialStatus {
 export interface AccountAuthorityStatus {
   account_key: string
   provider_kind: string
+  display_name_key: string
   external_account_id: string
   account_label: string
   identity_class: AccountIdentityClass

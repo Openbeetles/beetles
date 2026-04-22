@@ -8,7 +8,6 @@ use crate::channels::send::{
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
-use crate::i18n::{tr, Message};
 
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
@@ -255,18 +254,17 @@ fn sender_has_any_target(webhook_url: &str, session_store: &super::DingtalkSessi
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
-    loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     if config.dingtalk_webhook_url.trim().is_empty() && config.enabled_channel == "dingtalk" {
         return crate::channels::connectivity::item(
             "dingtalk",
             true,
             true,
-            Some(tr(Message::ConnectivitySessionReplyOnly, loc)),
+            Some(crate::channels::connectivity::CONNECTIVITY_SESSION_REPLY_ONLY_KEY),
         );
     }
     let configured = !config.dingtalk_webhook_url.trim().is_empty();
-    crate::channels::connectivity::probe_item("dingtalk", configured, loc, || {
+    crate::channels::connectivity::probe_item("dingtalk", configured, || {
         let body = serde_json::json!({
             "msgtype": "text",
             "text": { "content": CONNECTIVITY_MESSAGE }

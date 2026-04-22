@@ -10,6 +10,7 @@ function t(key: string) {
 const baseAccount: AccountSummary = {
   account_key: "imap-smtp-other-657778650-qq-com",
   provider_kind: "imap_smtp",
+  display_name_key: "accounts.providers.imap_smtp",
   account_label: "657778650@qq.com",
   identity_class: "other",
   enabled_capabilities: ["mail"],
@@ -42,6 +43,7 @@ test("buildAccountCardModel avoids duplicating the raw key in the footer when it
       account_label: "   ",
       account_key: "plain-key",
       provider_kind: "google_calendar",
+      display_name_key: "accounts.providers.google_calendar",
       enabled_capabilities: ["calendar"],
       selected_for_capabilities: [],
       next_action: "none",

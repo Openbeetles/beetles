@@ -60,7 +60,9 @@ pub enum OfficeProviderFieldValueKind {
 pub struct OfficeProviderFieldSchema {
     pub key: String,
     pub label: String,
+    pub label_key: String,
     pub description: String,
+    pub description_key: String,
     pub location: OfficeProviderFieldLocation,
     pub value_kind: OfficeProviderFieldValueKind,
     #[serde(default)]
@@ -75,10 +77,26 @@ pub struct OfficeProviderFieldSchema {
 pub struct OfficeProviderSchema {
     pub provider_kind: String,
     pub display_name: String,
+    pub display_name_key: String,
     #[serde(default)]
     pub capabilities: Vec<OfficeCapability>,
     #[serde(default)]
     pub fields: Vec<OfficeProviderFieldSchema>,
+}
+
+pub fn office_provider_display_name_key(provider_kind: &str) -> String {
+    format!("accounts.providers.{provider_kind}")
+}
+
+fn provider_field_label_key(field_key: &str) -> String {
+    match field_key {
+        "identity_class" => "accounts.identityLabel".to_string(),
+        other => format!("accounts.providerFieldLabels.{other}"),
+    }
+}
+
+fn provider_field_description_key(field_key: &str) -> String {
+    format!("accounts.providerFieldDescriptions.{field_key}")
 }
 
 pub fn office_provider_schema(provider_kind: &str) -> Option<OfficeProviderSchema> {
@@ -128,6 +146,7 @@ fn imap_smtp_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "imap_smtp".to_string(),
         display_name: "IMAP / SMTP".to_string(),
+        display_name_key: office_provider_display_name_key("imap_smtp"),
         capabilities: vec![OfficeCapability::Mail],
         fields: vec![
             access_token_field(),
@@ -231,6 +250,7 @@ fn feishu_mail_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "feishu_mail".to_string(),
         display_name: "Feishu Mail".to_string(),
+        display_name_key: office_provider_display_name_key("feishu_mail"),
         capabilities: vec![OfficeCapability::Mail],
         fields: vec![
             access_token_field(),
@@ -302,6 +322,7 @@ fn wecom_mail_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "wecom_mail".to_string(),
         display_name: "WeCom Mail".to_string(),
+        display_name_key: office_provider_display_name_key("wecom_mail"),
         capabilities: vec![OfficeCapability::Mail],
         fields: vec![
             access_token_field(),
@@ -345,6 +366,7 @@ fn microsoft365_mail_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "microsoft365_mail".to_string(),
         display_name: "Microsoft 365 Mail".to_string(),
+        display_name_key: office_provider_display_name_key("microsoft365_mail"),
         capabilities: vec![OfficeCapability::Mail],
         fields: vec![
             access_token_field(),
@@ -386,6 +408,7 @@ fn google_mail_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "google_mail".to_string(),
         display_name: "Google Mail".to_string(),
+        display_name_key: office_provider_display_name_key("google_mail"),
         capabilities: vec![OfficeCapability::Mail],
         fields: vec![
             access_token_field(),
@@ -427,6 +450,7 @@ fn caldav_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "caldav".to_string(),
         display_name: "CalDAV".to_string(),
+        display_name_key: office_provider_display_name_key("caldav"),
         capabilities: vec![OfficeCapability::Calendar],
         fields: vec![
             access_token_field(),
@@ -476,6 +500,7 @@ fn feishu_calendar_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "feishu_calendar".to_string(),
         display_name: "Feishu Calendar".to_string(),
+        display_name_key: office_provider_display_name_key("feishu_calendar"),
         capabilities: vec![OfficeCapability::Calendar],
         fields: vec![
             access_token_field(),
@@ -513,6 +538,7 @@ fn wecom_calendar_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "wecom_calendar".to_string(),
         display_name: "WeCom Calendar".to_string(),
+        display_name_key: office_provider_display_name_key("wecom_calendar"),
         capabilities: vec![OfficeCapability::Calendar],
         fields: vec![
             access_token_field(),
@@ -550,6 +576,7 @@ fn microsoft365_calendar_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "microsoft365_calendar".to_string(),
         display_name: "Microsoft 365 Calendar".to_string(),
+        display_name_key: office_provider_display_name_key("microsoft365_calendar"),
         capabilities: vec![OfficeCapability::Calendar],
         fields: vec![
             access_token_field(),
@@ -583,6 +610,7 @@ fn google_calendar_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "google_calendar".to_string(),
         display_name: "Google Calendar".to_string(),
+        display_name_key: office_provider_display_name_key("google_calendar"),
         capabilities: vec![OfficeCapability::Calendar],
         fields: vec![
             access_token_field(),
@@ -616,6 +644,7 @@ fn webdav_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "webdav".to_string(),
         display_name: "WebDAV".to_string(),
+        display_name_key: office_provider_display_name_key("webdav"),
         capabilities: vec![OfficeCapability::Documents],
         fields: vec![
             access_token_field(),
@@ -655,6 +684,7 @@ fn feishu_documents_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "feishu_documents".to_string(),
         display_name: "Feishu Documents".to_string(),
+        display_name_key: office_provider_display_name_key("feishu_documents"),
         capabilities: vec![OfficeCapability::Documents],
         fields: vec![
             access_token_field(),
@@ -690,6 +720,7 @@ fn wecom_documents_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "wecom_documents".to_string(),
         display_name: "WeCom Documents".to_string(),
+        display_name_key: office_provider_display_name_key("wecom_documents"),
         capabilities: vec![OfficeCapability::Documents],
         fields: vec![
             access_token_field(),
@@ -733,6 +764,7 @@ fn microsoft365_documents_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "microsoft365_documents".to_string(),
         display_name: "Microsoft 365 Documents".to_string(),
+        display_name_key: office_provider_display_name_key("microsoft365_documents"),
         capabilities: vec![OfficeCapability::Documents],
         fields: vec![
             access_token_field(),
@@ -774,6 +806,7 @@ fn google_documents_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "google_documents".to_string(),
         display_name: "Google Documents".to_string(),
+        display_name_key: office_provider_display_name_key("google_documents"),
         capabilities: vec![OfficeCapability::Documents],
         fields: vec![
             access_token_field(),
@@ -815,6 +848,7 @@ fn feishu_contacts_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "feishu_contacts_directory".to_string(),
         display_name: "Feishu Contacts Directory".to_string(),
+        display_name_key: office_provider_display_name_key("feishu_contacts_directory"),
         capabilities: vec![OfficeCapability::ContactsDirectory],
         fields: vec![
             access_token_field(),
@@ -842,6 +876,7 @@ fn wecom_contacts_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "wecom_contacts_directory".to_string(),
         display_name: "WeCom Contacts Directory".to_string(),
+        display_name_key: office_provider_display_name_key("wecom_contacts_directory"),
         capabilities: vec![OfficeCapability::ContactsDirectory],
         fields: vec![
             access_token_field(),
@@ -869,6 +904,7 @@ fn microsoft365_contacts_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "microsoft365_contacts_directory".to_string(),
         display_name: "Microsoft 365 People Directory".to_string(),
+        display_name_key: office_provider_display_name_key("microsoft365_contacts_directory"),
         capabilities: vec![OfficeCapability::ContactsDirectory],
         fields: vec![
             access_token_field(),
@@ -890,6 +926,7 @@ fn google_contacts_schema() -> OfficeProviderSchema {
     OfficeProviderSchema {
         provider_kind: "google_contacts_directory".to_string(),
         display_name: "Google People Directory".to_string(),
+        display_name_key: office_provider_display_name_key("google_contacts_directory"),
         capabilities: vec![OfficeCapability::ContactsDirectory],
         fields: vec![
             access_token_field(),
@@ -911,7 +948,9 @@ fn access_token_field() -> OfficeProviderFieldSchema {
     OfficeProviderFieldSchema {
         key: "access_token".to_string(),
         label: "Access token / app secret".to_string(),
+        label_key: provider_field_label_key("access_token"),
         description: "Secret used to authenticate the provider account.".to_string(),
+        description_key: provider_field_description_key("access_token"),
         location: OfficeProviderFieldLocation::AccessToken,
         value_kind: OfficeProviderFieldValueKind::Secret,
         required: true,
@@ -924,7 +963,9 @@ fn refresh_token_field() -> OfficeProviderFieldSchema {
     OfficeProviderFieldSchema {
         key: "refresh_token".to_string(),
         label: "Refresh token".to_string(),
+        label_key: provider_field_label_key("refresh_token"),
         description: "Optional refresh token for OAuth-backed providers.".to_string(),
+        description_key: provider_field_description_key("refresh_token"),
         location: OfficeProviderFieldLocation::RefreshToken,
         value_kind: OfficeProviderFieldValueKind::Secret,
         required: false,
@@ -937,7 +978,9 @@ fn token_endpoint_field() -> OfficeProviderFieldSchema {
     OfficeProviderFieldSchema {
         key: "token_endpoint".to_string(),
         label: "Token endpoint".to_string(),
+        label_key: provider_field_label_key("token_endpoint"),
         description: "Optional OAuth token endpoint override.".to_string(),
+        description_key: provider_field_description_key("token_endpoint"),
         location: OfficeProviderFieldLocation::TokenEndpoint,
         value_kind: OfficeProviderFieldValueKind::Url,
         required: false,
@@ -950,7 +993,9 @@ fn external_account_id_field(label: &str, description: &str) -> OfficeProviderFi
     OfficeProviderFieldSchema {
         key: "external_account_id".to_string(),
         label: label.to_string(),
+        label_key: provider_field_label_key("external_account_id"),
         description: description.to_string(),
+        description_key: provider_field_description_key("external_account_id"),
         location: OfficeProviderFieldLocation::ExternalAccountId,
         value_kind: OfficeProviderFieldValueKind::Identifier,
         required: false,
@@ -970,7 +1015,9 @@ fn metadata_field(
     OfficeProviderFieldSchema {
         key: key.to_string(),
         label: label.to_string(),
+        label_key: provider_field_label_key(key),
         description: description.to_string(),
+        description_key: provider_field_description_key(key),
         location: OfficeProviderFieldLocation::Metadata,
         value_kind,
         required,

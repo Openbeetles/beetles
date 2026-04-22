@@ -8,7 +8,7 @@ function buildUrl(baseUrl: string, path: string): string {
 
 export const API_ERROR = {
   NO_BASE_URL: 'NO_BASE_URL',
-  PAIRING_REQUIRED: 'PAIRING_REQUIRED',
+  PAIRING_REQUIRED: 'auth.pairing_required',
 } as const
 
 let csrfToken: string | null = null
@@ -45,8 +45,12 @@ export interface ApiRequestOptions {
 
 export interface ApiResult<T = unknown> {
   ok: boolean
+  status?: number
   data?: T
   error?: string
+  errorKey?: string
+  upstreamError?: string
+  openEndpoint?: string
 }
 
 export async function request<T = unknown>(
@@ -93,9 +97,28 @@ async function requestInternal<T = unknown>(
     }
 
     if (!res.ok) {
-      if (res.status === 403 && typeof data === 'object' && data !== null && 'error' in data) {
-        const errMsg = String((data as { error: unknown }).error)
-        if (errMsg.includes('CSRF') && csrfRetryCount < 1) {
+      const errorKey =
+        typeof data === 'object' && data !== null && 'error_key' in data
+          ? String((data as { error_key: unknown }).error_key)
+          : undefined
+      const upstreamError =
+        typeof data === 'object' && data !== null && 'upstream_error' in data
+          ? String((data as { upstream_error: unknown }).upstream_error)
+          : undefined
+      const rawError =
+        typeof data === 'object' && data !== null && 'error' in data
+          ? String((data as { error: unknown }).error)
+          : undefined
+      const openEndpoint =
+        typeof data === 'object' && data !== null && 'open_endpoint' in data
+          ? String((data as { open_endpoint: unknown }).open_endpoint)
+          : undefined
+
+      if (res.status === 403) {
+        if (
+          (errorKey === 'auth.csrf_invalid' || errorKey === 'auth.csrf_required') &&
+          csrfRetryCount < 1
+        ) {
           const refreshedToken = await fetchCsrfToken(baseUrl)
           if (refreshedToken) {
             return requestInternal<T>(
@@ -108,7 +131,7 @@ async function requestInternal<T = unknown>(
           }
         }
         if (
-          errMsg.includes('operator window required') &&
+          errorKey === 'system.operator_window_required' &&
           pairingCode?.trim() &&
           path !== '/api/operator/window' &&
           operatorWindowRetryCount < 1
@@ -134,13 +157,23 @@ async function requestInternal<T = unknown>(
           }
         }
       }
-      const err = typeof data === 'object' && data !== null && 'error' in data
-        ? String((data as { error: unknown }).error)
-        : res.statusText
-      return { ok: false, error: err } as ApiResult<T>
+      const err = upstreamError ?? errorKey ?? rawError ?? 'common.http_status'
+      return {
+        ok: false,
+        status: res.status,
+        error: err,
+        errorKey,
+        upstreamError,
+        openEndpoint,
+      } as ApiResult<T>
     }
-    return { ok: true, data: data as T }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'Network error' } as ApiResult<T>
+    return { ok: true, status: res.status, data: data as T }
+  } catch {
+    return {
+      ok: false,
+      error: 'network.request_failed',
+      errorKey: 'network.request_failed',
+      upstreamError: undefined,
+    } as ApiResult<T>
   }
 }

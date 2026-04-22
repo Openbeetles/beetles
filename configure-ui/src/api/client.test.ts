@@ -36,7 +36,10 @@ test('request opens operator window and retries the original request once', asyn
       return jsonResponse({
         status: 403,
         statusText: 'Forbidden',
-        body: { error: 'operator window required', open_endpoint: 'POST /api/operator/window' },
+        body: {
+          error_key: 'system.operator_window_required',
+          open_endpoint: 'POST /api/operator/window',
+        },
       })
     }
     if (url.endsWith('/api/csrf_token')) {
@@ -74,6 +77,38 @@ test('request opens operator window and retries the original request once', asyn
         'GET http://device/api/tools',
       ],
     )
+  } finally {
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
+test('request surfaces error_key and upstream_error without falling back to raw status text', async () => {
+  clearCsrfToken()
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    jsonResponse({
+      status: 400,
+      statusText: 'Bad Request',
+      body: {
+        error_key: 'office.provider_error',
+        upstream_error: 'AADSTS7000215: Invalid client secret is provided.',
+        upstream_status: 401,
+      },
+    })) as typeof fetch
+
+  try {
+    const result = await request('http://device', '/api/config/accounts/probe', {
+      method: 'POST',
+      pairingCode: '123456',
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 400)
+    assert.equal(result.errorKey, 'office.provider_error')
+    assert.equal(result.error, 'AADSTS7000215: Invalid client secret is provided.')
+    assert.equal(result.upstreamError, 'AADSTS7000215: Invalid client secret is provided.')
   } finally {
     globalThis.fetch = originalFetch
     clearCsrfToken()

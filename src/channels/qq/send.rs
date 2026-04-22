@@ -199,16 +199,12 @@ fn release_retryable_send_reservation(
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
-    loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
     let configured =
         !config.qq_channel_app_id.trim().is_empty() && !config.qq_channel_secret.trim().is_empty();
-    connectivity::probe_item(
-        "qq_channel",
-        configured,
-        loc,
-        || match fetch_qq_access_token(
+    connectivity::probe_item("qq_channel", configured, || {
+        match fetch_qq_access_token(
             http,
             config.qq_channel_app_id.trim(),
             config.qq_channel_secret.trim(),
@@ -232,8 +228,8 @@ pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
                     _ => connectivity::ProbeStatus::CheckFailed,
                 }
             }
-        },
-    )
+        }
+    })
 }
 
 fn acquire_qq_token<H: ChannelHttpClient>(
@@ -1285,11 +1281,11 @@ mod tests {
         config.qq_channel_app_id = "app-id".to_string();
         config.qq_channel_secret = "secret".to_string();
 
-        let item = check_connectivity(&config, &mut http, crate::i18n::Locale::Zh);
+        let item = check_connectivity(&config, &mut http);
 
         assert!(!item.ok);
         assert_eq!(item.id, "qq_channel");
         assert!(item.configured);
-        assert!(item.message.is_some());
+        assert!(item.message_key.is_some());
     }
 }

@@ -65,7 +65,7 @@ test("loadDeviceHealthBundle normalizes thrown transport errors to config.errorN
 
 test("loadDeviceChannelConnectivity returns the channel list when the endpoint succeeds", async () => {
   const channels: ChannelConnectivityResponse["channels"] = [
-    { id: "telegram", configured: true, ok: true, message: null },
+    { id: "telegram", configured: true, ok: true, message_key: null },
   ];
 
   const result = await loadDeviceChannelConnectivity(async () => ({
@@ -100,6 +100,6 @@ test("loadDeviceChannelConnectivity falls back to a default error when payload i
 
   assert.deepEqual(result, {
     ok: false,
-    error: "channel connectivity unavailable",
+    error: "network.channel_connectivity_unavailable",
   });
 });

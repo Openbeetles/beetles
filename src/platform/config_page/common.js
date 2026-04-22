@@ -11,7 +11,20 @@
       nav_wifi:'WiFi 配置',
       wifi_title:'WiFi 配置', wifi_h2:'连接 WiFi', wifi_ssid_label:'WiFi 名称 (SSID)', wifi_ssid_ph:'留空则仅使用设备热点',
       wifi_pass_label:'WiFi 密码', wifi_pass_ph:'开放网络可留空', wifi_save:'保存', wifi_restart:'重启设备',
-      wifi_saved_msg:'保存成功，重启后生效。', wifi_save_fail:'保存失败', wifi_restarting:'设备重启中…', wifi_restart_fail:'重启请求失败'
+      wifi_saved_msg:'保存成功，重启后生效。', wifi_save_fail:'保存失败', wifi_restarting:'设备重启中…', wifi_restart_fail:'重启请求失败',
+      'auth.pairing_required':'请先在设备上设置配对码',
+      'auth.pairing_invalid':'配对码错误',
+      'auth.csrf_required':'缺少安全令牌',
+      'auth.csrf_invalid':'安全令牌已失效，请重试',
+      'common.invalid_json':'请求体不是合法 JSON',
+      'common.operation_failed':'操作失败',
+      'common.invalid_url':'无效的 URL',
+      'config.rejected':'配置未通过校验',
+      'config.field_too_long':'一个或多个字段过长',
+      'network.request_failed':'网络异常，请检查连接后重试。',
+      'pairing.code_already_set':'配对码已设置',
+      'pairing.code_must_be_6_digits':'配对码必须为 6 位数字',
+      'pairing.failed_to_save_code':'保存配对码失败'
     },
     en:{
       pairing_title:'Pairing', pairing_h2:'Set 6-digit pairing code', pairing_desc:'Set a pairing code for the first time. You will need it for save, restart, etc.',
@@ -21,7 +34,20 @@
       nav_wifi:'WiFi',
       wifi_title:'WiFi', wifi_h2:'Connect WiFi', wifi_ssid_label:'WiFi name (SSID)', wifi_ssid_ph:'Leave blank to use device AP only',
       wifi_pass_label:'Password', wifi_pass_ph:'Leave blank for open network', wifi_save:'Save', wifi_restart:'Restart device',
-      wifi_saved_msg:'Save successful, will take effect after restart.', wifi_save_fail:'Save failed', wifi_restarting:'Restarting…', wifi_restart_fail:'Restart failed'
+      wifi_saved_msg:'Save successful, will take effect after restart.', wifi_save_fail:'Save failed', wifi_restarting:'Restarting…', wifi_restart_fail:'Restart failed',
+      'auth.pairing_required':'Please set the pairing code on the device first',
+      'auth.pairing_invalid':'Wrong pairing code',
+      'auth.csrf_required':'Security token required',
+      'auth.csrf_invalid':'Security token expired. Please retry.',
+      'common.invalid_json':'Request body is not valid JSON',
+      'common.operation_failed':'Operation failed',
+      'common.invalid_url':'Invalid URL',
+      'config.rejected':'Configuration was rejected',
+      'config.field_too_long':'One or more fields are too long',
+      'network.request_failed':'Network error. Check connection and retry.',
+      'pairing.code_already_set':'Pairing code is already set',
+      'pairing.code_must_be_6_digits':'Pairing code must be 6 digits',
+      'pairing.failed_to_save_code':'Could not save the pairing code'
     }
   };
   function showMsg(el,text,isErr){
@@ -59,7 +85,7 @@
           fetch(BASE+url,opts).then(function(r){
             return r.json().then(function(j){ return {ok:r.ok,j:j,status:r.status}; });
           }).then(function(x){
-            if(!x.ok && x.status===403 && x.j && x.j.error && String(x.j.error).indexOf('CSRF')>=0 && csrfRetry<1){
+            if(!x.ok && x.status===403 && x.j && (x.j.error_key==='auth.csrf_invalid' || x.j.error_key==='auth.csrf_required') && csrfRetry<1){
               csrfRetry++;
               return fetch(BASE+'/api/csrf_token').then(function(r){ return r.json(); }).then(function(j){
                 csrfToken=j.csrf_token||null;
@@ -67,14 +93,14 @@
               });
             }
             done({ok:x.ok,j:x.j});
-          }).catch(function(){ done({ok:false,j:{error:G.PC.t('pairing_network')}}); });
+          }).catch(function(){ done({ok:false,j:{error_key:'network.request_failed'}}); });
         }
         function ensureCsrfThenSend(){
           if(csrfToken){ send(); return; }
           fetch(BASE+'/api/csrf_token').then(function(r){ return r.json(); }).then(function(j){
             csrfToken=j.csrf_token||null;
             send();
-          }).catch(function(){ done({ok:false,j:{error:G.PC.t('pairing_network')}}); });
+          }).catch(function(){ done({ok:false,j:{error_key:'network.request_failed'}}); });
         }
         ensureCsrfThenSend();
       }
@@ -125,11 +151,18 @@
       container.appendChild(li);
     });
   }
+  function apiErrorText(payload,fallbackKey){
+    if(payload&&payload.upstream_error)return String(payload.upstream_error);
+    if(payload&&payload.error_key)return G.PC.t(String(payload.error_key));
+    if(payload&&payload.error)return String(payload.error);
+    return G.PC.t(fallbackKey);
+  }
   G.PC={
     BASE:BASE,
     locale:'zh',
     T:T,
     t:function(k){ return (T[this.locale]&&T[this.locale][k])||T.zh[k]||k; },
+    apiErrorText:apiErrorText,
     setLocale:function(l){ this.locale=(l==='en'?'en':'zh'); document.documentElement.lang=this.locale==='en'?'en':'zh-CN'; if(this.applyT)this.applyT(); },
     applyT:applyT,
     showMsg:showMsg,

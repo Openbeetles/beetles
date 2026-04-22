@@ -80,7 +80,7 @@ export async function loadDeviceChannelConnectivity(
     }
     return {
       ok: false,
-      error: result.error ?? "channel connectivity unavailable",
+      error: result.error ?? "network.channel_connectivity_unavailable",
     };
   } catch {
     return {

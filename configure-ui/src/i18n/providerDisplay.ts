@@ -3,6 +3,13 @@ type ProviderTranslator = (
   options?: { defaultValue?: string },
 ) => string;
 
+type ProviderDisplayInput =
+  | string
+  | {
+      providerKind: string;
+      displayNameKey?: string | null;
+    };
+
 const ACCOUNT_PROVIDER_LABEL_KEYS: Record<string, string> = {
   imap_smtp: "accounts.providers.imap_smtp",
   feishu_mail: "accounts.providers.feishu_mail",
@@ -27,8 +34,15 @@ const ACCOUNT_PROVIDER_LABEL_KEYS: Record<string, string> = {
 
 export function localizeAccountProviderName(
   t: ProviderTranslator,
-  providerKind: string,
+  provider: ProviderDisplayInput,
 ): string {
+  const providerKind =
+    typeof provider === "string" ? provider : provider.providerKind;
+  const displayNameKey =
+    typeof provider === "string" ? undefined : provider.displayNameKey;
+  if (displayNameKey) {
+    return t(displayNameKey, { defaultValue: providerKind });
+  }
   const key = ACCOUNT_PROVIDER_LABEL_KEYS[providerKind];
   if (!key) return providerKind;
   return t(key, { defaultValue: providerKind });

@@ -33,6 +33,7 @@ import {
   localizeProviderField,
   localizeProviderFieldLabel,
 } from "../i18n/providerFields";
+import { translateApiError } from "../i18n/apiErrors";
 import { ProviderFieldInput } from "./ProviderFieldInput";
 import { errorMessage, withTimeout } from "../util/withTimeout";
 
@@ -77,7 +78,7 @@ export function AccountCreateForm({
         setCatalog(res.data.items);
       } else {
         setCatalog([]);
-        setCatalogError(res.error ?? t("accounts.providersLoadFailed"));
+        setCatalogError(translateApiError(t, res.error, "accounts.providersLoadFailed"));
       }
     } catch (error) {
       setCatalog([]);
@@ -166,7 +167,7 @@ export function AccountCreateForm({
       setCreateError(
         t("accounts.createRequiredFields", {
           fields: invalid
-            .map((f) => localizeProviderFieldLabel(t, f.key, f.label))
+            .map((f) => localizeProviderFieldLabel(t, f))
             .join(", "),
         }),
       );
@@ -291,7 +292,7 @@ export function AccountCreateForm({
       if (res.ok && res.data) {
         onCreated(res.data.account.account_key);
       } else {
-        setCreateError(res.error ?? t("accounts.createFailed"));
+        setCreateError(translateApiError(t, res.error, "accounts.createFailed"));
       }
     } catch (error) {
       setCreateBusy(false);
@@ -372,7 +373,10 @@ export function AccountCreateForm({
           >
             {catalog.map((p) => (
               <MenuItem key={p.provider_kind} value={p.provider_kind}>
-                {localizeAccountProviderName(t, p.provider_kind)}
+                {localizeAccountProviderName(t, {
+                  providerKind: p.provider_kind,
+                  displayNameKey: p.display_name_key,
+                })}
               </MenuItem>
             ))}
           </Select>

@@ -150,10 +150,10 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
                 format!("channel.{}.ok", active_item.id),
                 active_item.ok.to_string(),
             ));
-            if let Some(message) = active_item.message.as_deref() {
+            if let Some(message_key) = active_item.message_key {
                 evidence.push(DiagnosisEvidence::new(
-                    format!("channel.{}.message", active_item.id),
-                    message,
+                    format!("channel.{}.message_key", active_item.id),
+                    message_key,
                 ));
             }
             if !active_item.configured {
@@ -442,7 +442,7 @@ mod tests {
                     id: "qq_channel".to_string(),
                     configured: true,
                     ok: false,
-                    message: Some("probe failed".to_string()),
+                    message_key: Some("network.connectivity_check_failed"),
                 }],
                 checked_at_unix_secs: Some(1),
                 stale: false,

@@ -6,11 +6,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
 import { useDeviceApi, API_ERROR } from "../hooks/useDeviceApi";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { createAsyncState } from "../types/asyncState";
+import { translateApiError } from "../i18n/apiErrors";
 import {
   defaultSoulForm,
   defaultUserForm,
@@ -38,11 +40,11 @@ function soulUserTabFromPathname(pathname: string): "soul" | "user" {
 
 function apiErrorMessage(
   error: string | undefined,
-  t: (k: string) => string,
+  t: TFunction,
 ): string {
   if (error === API_ERROR.PAIRING_REQUIRED)
     return t("device.pairingCodeRequired");
-  return error ?? "";
+  return translateApiError(t, error, "common.error");
 }
 
 export function SoulUserConfigProvider({ children }: { children: ReactNode }) {

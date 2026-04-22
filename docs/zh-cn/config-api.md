@@ -9,7 +9,10 @@
 - 基础地址：首次配置常用 `http://192.168.4.1`；设备入网后用设备当前地址。
 - CORS：`/api/*` 支持跨域，`OPTIONS` 可直接调用。
 - 返回格式：除 `GET /api/soul`、`GET /api/user`、`GET /api/skills?name=...`、`GET /api/metrics?format=prometheus` 外，默认返回 JSON。
-- 错误格式：常见错误返回 `{"error":"..."}`。
+- 错误格式：
+  - 产品面与正式配置面 API 统一返回 `{"error_key":"..."}`，作为 Beetle 自己生成错误的稳定合同。
+  - 若失败来自第三方上游，还会附带 `upstream_error`，并可能带 `upstream_status`、`error_stage`、`provider_kind`。
+  - debug / operator / 协议兼容接口不受这条约束，可继续返回英文原文或协议要求的原始 body。
 - 配对码：用查询参数 `?code=`，或请求头 `X-Pairing-Code`。
 - CSRF：用请求头 `X-CSRF-Token`；先调用 `GET /api/csrf_token` 获取。
 - 保存配置类接口提交完整对象，不支持只传要改的单个字段：
@@ -33,6 +36,34 @@
 - `404`：资源不存在。
 - `500`：服务端处理失败。
 - `503`：当前不可用，例如扫描器未就绪、队列不可用。
+
+### 产品 API 错误合同
+
+除 debug/operator / 协议兼容这两类例外外，Beetle 的产品面与正式配置面 `/api/*` 统一遵循：
+
+```json
+{
+  "error_key": "common.not_found"
+}
+```
+
+如果失败来自第三方上游，可同时返回：
+
+```json
+{
+  "error_key": "office.provider_error",
+  "provider_kind": "microsoft365_mail",
+  "error_stage": "office_probe",
+  "upstream_status": 401,
+  "upstream_error": "AADSTS7000215: Invalid client secret is provided."
+}
+```
+
+说明：
+
+- `error_key` 是稳定语义合同，供前端或内置页面翻译。
+- `upstream_error` 是原始排障文本，不做翻译，也不保证语言统一。
+- 只有第三方协议兼容接口和 debug/operator 接口不受这条合同约束。
 
 ## 激活与安全
 
@@ -510,9 +541,16 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 `items` 中每一项包含：
 
 - `provider_kind`
+- `display_name_key`
 - `capabilities`
 - `account_fields`
 - `config_fields`
+
+说明：
+
+- `display_name_key` 供前端翻译 provider 名称。
+- `account_fields` / `config_fields` 中的展示语义统一使用 `label_key`、`description_key`、option `label_key`。
+- 产品 API 不再返回 Beetle 自己生成的 `display_name`、`label`、`description` 原文。
 
 **GET /api/config/capabilities**
 
@@ -580,6 +618,7 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 - `account_key`
 - `provider_kind`
+- `display_name_key`
 - `account_label`
 - `identity_class`
 - `enabled_capabilities`
@@ -599,28 +638,66 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 请求体：`application/json`
 
-顶层字段：
+顶层字段采用公开扁平合同，不再接受旧的嵌套 `account` / `credential` / `config` wrapper：
 
-- `account`
-- `set_defaults`
-- `clear_defaults`
-- `policy_patch`
-- `config`
-
-`account` 字段：
-
-- `account_key`
 - `provider_kind`
-- `external_account_id`
-- `account_label`
+- `provider`
+- `capability`
 - `identity_class`
-- `enabled_capabilities`
+- `account_label`
+- `display_name`
+- `external_account_id`
+- `email`
+- `account_id`
+- `username`
+- `password`
+- `access_token`
+- `refresh_token`
+- `token_endpoint`
+- `mail_username`
+- `mail_from_address`
+- `imap_host`
+- `imap_port`
+- `imap_tls`
+- `smtp_host`
+- `smtp_port`
+- `smtp_tls`
+- `metadata`
 
-`config` 字段和 `POST /api/config/accounts/:account_key/config` 的请求体结构相同。
+说明：
+
+- `provider` 是 `provider_kind` 的公开别名。
+- `display_name` / `label` 只作为输入别名参与归一化，不是产品响应合同字段。
+- provider 自定义字段可直接放在顶层，或放进 `metadata`；后端会按 provider schema 归一化进配置字段。
 
 成功响应：`200 application/json`
 
 返回体是账号详情对象。
+
+账号 summary/detail 的展示字段也遵循同一合同：
+
+- `display_name_key` 用于翻译 provider / account 的展示名称。
+- 产品响应不再返回 Beetle 自己生成的 `display_name`、`label`、`description` 原文。
+
+若请求缺少用户必须补充的事实，接口返回 `400`，body 为结构化 onboarding 结果，例如：
+
+```json
+{
+  "disposition": "needs_user_facts",
+  "reason": "missing_user_facts",
+  "missing_fields": ["identity_class"],
+  "missing_field_details": [
+    {
+      "key": "identity_class",
+      "label_key": "accounts.identityLabel",
+      "description_key": "accounts.identityDescription",
+      "options": [
+        { "value": "work", "label_key": "accounts.identity.work" }
+      ]
+    }
+  ]
+}
+```
 
 **GET /api/config/accounts/:account_key**
 
@@ -635,6 +712,12 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 - `account`
 - `assessment`
 - `fields`
+
+说明：
+
+- `account.display_name_key` 用于翻译 provider / account 的展示名称。
+- `fields` 与 `assessment.missing_field_details` 中的展示语义统一使用 `label_key` / `description_key` / option `label_key`。
+- 产品 API 不返回 Beetle 生成的 `display_name` / `label` / `description` 原文。
 
 **POST /api/config/accounts/:account_key/config**
 
@@ -677,6 +760,14 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 - `configured`
 - `disposition`
 - `reason`
+
+如果失败来自第三方上游，返回 `400`，body 为：
+
+- `error_key`
+- 可选 `provider_kind`
+- 可选 `error_stage`
+- 可选 `upstream_status`
+- 可选 `upstream_error`
 
 **POST /api/config/accounts/:account_key/revoke**
 

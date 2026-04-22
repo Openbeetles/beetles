@@ -16,6 +16,7 @@ import { ensureHardwareDeviceIds } from "../util/hardwareDeviceId";
 import { ConfigContext } from "./ConfigContext";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
+import { isDeviceOrPairingErrorKey } from "../i18n/apiErrors";
 import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import { markDeviceReachable } from "../store/deviceStatusStore";
 
@@ -23,26 +24,12 @@ import { markDeviceReachable } from "../store/deviceStatusStore";
 const ERROR_KEY_NO_BASE = "device.bannerNeedDevice";
 const ERROR_KEY_LOAD_FAILED = "config.errorLoadFailed";
 
-/** API 返回的原始配对/设备类文案，子页不重复展示 */
-function isDeviceOrPairingHint(err: string | undefined): boolean {
-  if (!err) return false;
-  const s = err.trim();
-  return (
-    s === "请先设置配对码" ||
-    s === "请先填写设备地址" ||
-    s === "配对码错误" ||
-    s === "Please set pairing code first" ||
-    s === "Please enter device URL" ||
-    s === "Wrong pairing code"
-  );
-}
-
 function mapSegmentLoadError(res: ApiResult<unknown>): string | null {
   return res.error === API_ERROR.NO_BASE_URL
     ? ERROR_KEY_NO_BASE
-    : isDeviceOrPairingHint(res.error ?? "")
+    : isDeviceOrPairingErrorKey(res.error ?? "")
       ? null
-      : ERROR_KEY_LOAD_FAILED;
+      : (res.error ?? ERROR_KEY_LOAD_FAILED);
 }
 
 function mapSaveError(error: string | undefined): string | undefined {

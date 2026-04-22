@@ -42,6 +42,7 @@ import {
 } from "./AccountCreateForm";
 import { ProviderFieldInput } from "./ProviderFieldInput";
 import { formatProbeMessage } from "./accountDetailDialogHelpers";
+import { translateApiError } from "../i18n/apiErrors";
 import { errorMessage, withTimeout } from "../util/withTimeout";
 
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
@@ -117,7 +118,7 @@ export function AccountDetailDialog({
         }
         setFieldValues(nextValues);
       } else {
-        setError(res.error ?? t("accounts.detailLoadFailed"));
+        setError(translateApiError(t, res.error, "accounts.detailLoadFailed"));
         setDetail(null);
       }
     } catch (error) {
@@ -162,7 +163,7 @@ export function AccountDetailDialog({
         setProbeMsg(formatProbeMessage(res.data.disposition, res.data.reason, t));
         void load();
       } else {
-        setProbeMsg(res.error ?? t("accounts.probeFailed"));
+        setProbeMsg(translateApiError(t, res.error, "accounts.probeFailed"));
       }
     } catch (error) {
       setProbeBusy(false);
@@ -185,7 +186,7 @@ export function AccountDetailDialog({
         onDeleted?.();
         onClose();
       } else {
-        setError(res.error ?? t("accounts.deleteFailed"));
+        setError(translateApiError(t, res.error, "accounts.deleteFailed"));
       }
     } catch (error) {
       setDeleteBusy(false);
@@ -206,7 +207,7 @@ export function AccountDetailDialog({
       setError(
         t("accounts.createRequiredFields", {
           fields: invalid
-            .map((field) => localizeProviderFieldLabel(t, field.key, field.label))
+            .map((field) => localizeProviderFieldLabel(t, field))
             .join(", "),
         }),
       );
@@ -249,7 +250,7 @@ export function AccountDetailDialog({
         setFieldValues(nextValues);
         setProbeMsg(null);
       } else if (!res.ok) {
-        setError(res.error ?? t("accounts.saveConfigFailed"));
+        setError(translateApiError(t, res.error, "accounts.saveConfigFailed"));
       }
     } catch (error) {
       const message = errorMessage(error, t("accounts.saveConfigFailed"));
@@ -433,7 +434,10 @@ export function AccountDetailDialog({
                       {t("accounts.detailProvider")}
                     </Typography>
                     <Typography fontWeight={700}>
-                      {localizeAccountProviderName(t, a.provider_kind)}
+                      {localizeAccountProviderName(t, {
+                        providerKind: a.provider_kind,
+                        displayNameKey: a.display_name_key,
+                      })}
                     </Typography>
                     <Typography
                       variant="body2"
@@ -476,11 +480,9 @@ export function AccountDetailDialog({
                               const matchingField = localizedDetailFields.find(
                                 (field) => field.key === fieldKey,
                               );
-                              return localizeProviderFieldLabel(
-                                t,
-                                fieldKey,
-                                matchingField?.label ?? fieldKey,
-                              );
+                              return matchingField
+                                ? localizeProviderFieldLabel(t, matchingField)
+                                : fieldKey;
                             })
                             .join(", ")}
                         </Typography>

@@ -2,10 +2,10 @@ use crate::error::Result;
 #[cfg(feature = "capability_office")]
 use crate::office::{assess_office_account, OfficeAccountAssessment};
 use crate::office::{
-    OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeAccountRuntimeStatus,
-    OfficeCapability, OfficeCredential, OfficeCredentialStatus, OfficeCredentialStore,
-    OfficeResolveRequest, OfficeResolveResult, OfficeResolver, OfficeRuntimeStatusStore,
-    OfficeSelectionPolicy,
+    office_provider_display_name_key, OfficeAccount, OfficeAccountIdentityClass,
+    OfficeAccountRegistry, OfficeAccountRuntimeStatus, OfficeCapability, OfficeCredential,
+    OfficeCredentialStatus, OfficeCredentialStore, OfficeResolveRequest, OfficeResolveResult,
+    OfficeResolver, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub struct OfficeAccountAuthorityStatus {
     pub account_key: String,
     pub provider_kind: String,
+    pub display_name_key: String,
     pub external_account_id: String,
     pub account_label: String,
     pub identity_class: OfficeAccountIdentityClass,
@@ -209,6 +210,7 @@ impl OfficeService {
             .map(|account| OfficeAccountAuthorityStatus {
                 account_key: account.account_key.clone(),
                 provider_kind: account.provider_kind.clone(),
+                display_name_key: office_provider_display_name_key(&account.provider_kind),
                 external_account_id: account.external_account_id.clone(),
                 account_label: account.account_label.clone(),
                 identity_class: account.identity_class,

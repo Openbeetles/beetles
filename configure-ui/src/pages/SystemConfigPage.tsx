@@ -31,6 +31,7 @@ import { useConfig } from "../hooks/useConfig";
 import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
+import { translateApiError } from "../i18n/apiErrors";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
 import type { WifiApEntry } from "../api/endpoints/system";
@@ -78,7 +79,7 @@ export function SystemConfigPage() {
       setWifiScanError("");
     } else {
       setWifiScanList([]);
-      setWifiScanError(res.error ?? t("config.wifiScanFailed"));
+      setWifiScanError(translateApiError(t, res.error, "config.wifiScanFailed"));
     }
   };
 

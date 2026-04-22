@@ -4,7 +4,7 @@
 use super::auth;
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
-use crate::i18n::{locale_from_store, tr, Message};
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{
     self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS, CSS_HEADERS,
     HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,
@@ -186,7 +186,7 @@ fn api_to_out(r: ApiResponse) -> OutgoingResponse {
 fn utf8_body(body: &[u8]) -> Result<&str> {
     std::str::from_utf8(body).map_err(|_| Error::Other {
         source: Box::new(std::io::Error::other("invalid utf8")),
-        stage: "http_router_dispatch",
+        stage: "http_body_utf8",
     })
 }
 
@@ -255,7 +255,9 @@ fn dispatch_account_config(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+                Err(_) => Some(api_to_out(ApiResponse::err_400_key(
+                    api_contract::COMMON_OPERATION_FAILED,
+                ))),
             }
         }
         ("POST", AccountConfigRoute::Collection) => {
@@ -278,7 +280,9 @@ fn dispatch_account_config(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+                Err(_) => Some(api_to_out(ApiResponse::err_400_key(
+                    api_contract::COMMON_OPERATION_FAILED,
+                ))),
             }
         }
         ("DELETE", AccountConfigRoute::Detail(account_key)) => {
@@ -347,7 +351,9 @@ fn dispatch_capability_config(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+                Err(_) => Some(api_to_out(ApiResponse::err_400_key(
+                    api_contract::COMMON_OPERATION_FAILED,
+                ))),
             }
         }
         ("GET", CapabilityConfigRoute::Detail(capability)) => {
@@ -361,7 +367,7 @@ fn dispatch_capability_config(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+                Err(error) => Some(api_to_out(office_config_error_response(&error))),
             }
         }
         _ => None,
@@ -397,7 +403,7 @@ fn dispatch_provider_config(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(error) => Some(api_to_out(ApiResponse::err_400(&error.to_string()))),
+                Err(error) => Some(api_to_out(office_config_error_response(&error))),
             }
         }
         _ => None,
@@ -405,19 +411,37 @@ fn dispatch_provider_config(
     Ok(response)
 }
 
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn office_config_error_response(error: &Error) -> ApiResponse {
+    let error_key = api_contract::error_key(error);
+    if error_key == api_contract::OFFICE_CAPABILITY_INVALID {
+        ApiResponse::err_400_key(error_key)
+    } else {
+        ApiResponse::err_500_key(error_key)
+    }
+}
+
 fn operator_window_required_response(path: &str) -> OutgoingResponse {
-    let body = serde_json::json!({
-        "error": "operator window required",
-        "path": path,
-        "open_endpoint": "POST /api/operator/window",
-    });
-    OutgoingResponse::json(
+    let mut extra = serde_json::Map::new();
+    extra.insert("path".to_string(), serde_json::json!(path));
+    extra.insert(
+        "open_endpoint".to_string(),
+        serde_json::json!("POST /api/operator/window"),
+    );
+    let body = ApiResponse::err_key_with_meta(
         403,
         "Forbidden",
-        CORS_HEADERS,
-        serde_json::to_vec(&body)
-            .unwrap_or_else(|_| br#"{"error":"operator window required"}"#.to_vec()),
-    )
+        "system.operator_window_required",
+        None,
+        None,
+        None,
+        None,
+        extra,
+    );
+    OutgoingResponse::json(body.status, body.status_text, CORS_HEADERS, body.body)
 }
 
 /// 配置 API 唯一入口：ESP / Linux 在组装 `IncomingRequest` 后调用。
@@ -698,23 +722,15 @@ pub fn dispatch(
                 CORS_HEADERS,
                 body.into_bytes(),
             )),
-            Err(handlers::wifi_scan::WifiScanError::Unavailable) => {
-                let body = serde_json::json!({ "error": "wifi scan not available (non-ESP or wifi not ready)" }).to_string();
-                Ok(OutgoingResponse::json(
-                    503,
-                    "Service Unavailable",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                ))
-            }
-            Err(handlers::wifi_scan::WifiScanError::Other(e)) => {
-                let body = serde_json::json!({ "error": e.to_string() }).to_string();
-                Ok(OutgoingResponse::json(
-                    500,
-                    "Internal Server Error",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                ))
+            Err(handlers::wifi_scan::WifiScanError::Unavailable) => Ok(api_to_out(
+                ApiResponse::err_503_key("network.wifi_scan_unavailable"),
+            )),
+            Err(handlers::wifi_scan::WifiScanError::Other(error)) => {
+                Ok(api_to_out(ApiResponse::err_500_key_with_upstream(
+                    api_contract::COMMON_OPERATION_FAILED,
+                    Some(&error.to_string()),
+                    error.http_status_code(),
+                )))
             }
         },
         ("GET", "/api/hardware/discovery") => {
@@ -722,11 +738,13 @@ pub fn dispatch(
                 return Ok(api_to_out(r));
             }
             let Some(bus) = hardware_bus_from_uri(uri) else {
-                return Ok(api_to_out(ApiResponse::err_400("missing or invalid bus")));
+                return Ok(api_to_out(ApiResponse::err_400_key(
+                    "hardware.discovery_invalid_bus",
+                )));
             };
             let Some(capability) = hardware_capability_from_uri(uri) else {
-                return Ok(api_to_out(ApiResponse::err_400(
-                    "missing or invalid capability",
+                return Ok(api_to_out(ApiResponse::err_400_key(
+                    "hardware.discovery_invalid_capability",
                 )));
             };
             match handlers::hardware_discovery::get_body(ctx, bus, capability) {
@@ -736,24 +754,15 @@ pub fn dispatch(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(handlers::hardware_discovery::HardwareDiscoveryError::Unavailable) => {
-                    let body = serde_json::json!({ "error": "hardware discovery not available" })
-                        .to_string();
-                    Ok(OutgoingResponse::json(
-                        503,
-                        "Service Unavailable",
-                        CORS_HEADERS,
-                        body.into_bytes(),
-                    ))
-                }
-                Err(handlers::hardware_discovery::HardwareDiscoveryError::Other(e)) => {
-                    let body = serde_json::json!({ "error": e.to_string() }).to_string();
-                    Ok(OutgoingResponse::json(
-                        500,
-                        "Internal Server Error",
-                        CORS_HEADERS,
-                        body.into_bytes(),
-                    ))
+                Err(handlers::hardware_discovery::HardwareDiscoveryError::Unavailable) => Ok(
+                    api_to_out(ApiResponse::err_503_key("hardware.discovery_unavailable")),
+                ),
+                Err(handlers::hardware_discovery::HardwareDiscoveryError::Other(error)) => {
+                    Ok(api_to_out(ApiResponse::err_500_key_with_upstream(
+                        api_contract::COMMON_OPERATION_FAILED,
+                        Some(&error.to_string()),
+                        error.http_status_code(),
+                    )))
                 }
             }
         }
@@ -768,11 +777,9 @@ pub fn dispatch(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(_) => {
-                    let loc = locale_from_store(store);
-                    let msg = tr(Message::OperationFailed, loc);
-                    Ok(api_to_out(ApiResponse::err_500(&msg)))
-                }
+                Err(_) => Ok(api_to_out(ApiResponse::err_500_key(
+                    "common.operation_failed",
+                ))),
             }
         }
         ("GET", "/api/operator/status") => {
@@ -902,15 +909,16 @@ pub fn dispatch(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(msg) => {
-                    let body = format!(r#"{{"error":"{}"}}"#, msg.replace('"', "\\\""));
-                    Ok(OutgoingResponse::json(
-                        500,
-                        "Internal Server Error",
-                        CORS_HEADERS,
-                        body.into_bytes(),
-                    ))
-                }
+                Err(msg) => Ok(api_to_out(ApiResponse::err_key_with_meta(
+                    500,
+                    "Internal Server Error",
+                    "channel.snapshot_failed",
+                    Some("channel_connectivity"),
+                    Some(msg.as_str()),
+                    None,
+                    None,
+                    serde_json::Map::new(),
+                ))),
             }
         }
         ("GET", "/api/sessions") => {
@@ -932,15 +940,16 @@ pub fn dispatch(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(msg) => {
-                    let body = format!(r#"{{"error":"{}"}}"#, msg.replace('"', "\\\""));
-                    Ok(OutgoingResponse::json(
-                        500,
-                        "Internal Server Error",
-                        CORS_HEADERS,
-                        body.into_bytes(),
-                    ))
-                }
+                Err(_) => Ok(api_to_out(ApiResponse::err_key_with_meta(
+                    500,
+                    "Internal Server Error",
+                    api_contract::COMMON_OPERATION_FAILED,
+                    Some("sessions"),
+                    None,
+                    None,
+                    None,
+                    serde_json::Map::new(),
+                ))),
             }
         }
         ("DELETE", "/api/sessions") => {
@@ -1041,9 +1050,9 @@ pub fn dispatch(
             let name = match common::name_from_uri(uri) {
                 Some(n) => n,
                 None => {
-                    let loc = locale_from_store(store);
-                    let msg = tr(Message::MissingNameQuery, loc);
-                    return Ok(api_to_out(ApiResponse::err_400(&msg)));
+                    return Ok(api_to_out(ApiResponse::err_400_key(
+                        "skill.name_query_required",
+                    )));
                 }
             };
             let r = handlers::skills::delete(ctx, &name);
@@ -1069,11 +1078,9 @@ pub fn dispatch(
                     CORS_AND_TEXT_PLAIN,
                     content.into_bytes(),
                 )),
-                Err(_) => {
-                    let loc = locale_from_store(store);
-                    let msg = tr(Message::OperationFailed, loc);
-                    Ok(api_to_out(ApiResponse::err_500(&msg)))
-                }
+                Err(_) => Ok(api_to_out(ApiResponse::err_500_key(
+                    "common.operation_failed",
+                ))),
             }
         }
         ("GET", "/api/user") => {
@@ -1087,11 +1094,9 @@ pub fn dispatch(
                     CORS_AND_TEXT_PLAIN,
                     content.into_bytes(),
                 )),
-                Err(_) => {
-                    let loc = locale_from_store(store);
-                    let msg = tr(Message::OperationFailed, loc);
-                    Ok(api_to_out(ApiResponse::err_500(&msg)))
-                }
+                Err(_) => Ok(api_to_out(ApiResponse::err_500_key(
+                    "common.operation_failed",
+                ))),
             }
         }
         ("POST", "/api/soul") => {
@@ -1263,7 +1268,7 @@ pub fn dispatch(
                 404,
                 "Not Found",
                 CORS_HEADERS,
-                br#"{"error":"not found"}"#.to_vec(),
+                br#"{"error_key":"common.not_found"}"#.to_vec(),
             ))
         }
     }
@@ -1371,10 +1376,11 @@ mod tests {
     }
 
     fn build_authed_ctx() -> HandlerContext {
+        static CSRF_INIT: OnceLock<()> = OnceLock::new();
         let ctx = build_default_test_handler_context();
         crate::platform::pairing::set_code(ctx.config_store.as_ref(), "123456")
             .expect("set pairing code");
-        crate::platform::csrf::init().expect("init csrf");
+        CSRF_INIT.get_or_init(|| crate::platform::csrf::init().expect("init csrf"));
         ctx
     }
 
@@ -1642,6 +1648,22 @@ mod tests {
         assert_eq!(request.action, OperatorMaintenanceAction::RunRepairPlan);
     }
 
+    #[test]
+    fn operator_window_required_response_uses_error_key_contract() {
+        let response = super::operator_window_required_response("/api/tools");
+        assert_eq!(response.status, 403);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], "system.operator_window_required");
+        assert_eq!(parsed["open_endpoint"], "POST /api/operator/window");
+        assert_eq!(parsed["path"], "/api/tools");
+        assert!(
+            parsed.get("error").is_none(),
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+    }
+
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -1790,6 +1812,7 @@ mod tests {
             .find(|item| item["provider_kind"] == "imap_smtp")
             .expect("imap_smtp provider");
         assert!(imap.get("display_name").is_none());
+        assert_eq!(imap["display_name_key"], "accounts.providers.imap_smtp");
         assert!(
             !imap["account_fields"]
                 .as_array()
@@ -1799,6 +1822,22 @@ mod tests {
             "body={}",
             String::from_utf8_lossy(&response.body)
         );
+        let access_token = imap["config_fields"]
+            .as_array()
+            .expect("config_fields array")
+            .iter()
+            .find(|field| field["key"] == "access_token")
+            .expect("access_token field");
+        assert_eq!(
+            access_token["label_key"],
+            "accounts.providerFieldLabels.access_token"
+        );
+        assert_eq!(
+            access_token["description_key"],
+            "accounts.providerFieldDescriptions.access_token"
+        );
+        assert!(access_token.get("label").is_none());
+        assert!(access_token.get("description").is_none());
         assert!(
             imap["config_fields"]
                 .as_array()
@@ -1836,6 +1875,10 @@ mod tests {
 
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
         assert_eq!(parsed["account"]["account_key"], "test-http-mail-detail");
+        assert_eq!(
+            parsed["account"]["display_name_key"],
+            "accounts.providers.imap_smtp"
+        );
         let fields = parsed["fields"].as_array().expect("fields array");
         let access_token = fields
             .iter()
@@ -1843,6 +1886,16 @@ mod tests {
             .expect("access_token field");
         assert_eq!(access_token["configured"], true);
         assert!(access_token["current_value"].is_null());
+        assert_eq!(
+            access_token["label_key"],
+            "accounts.providerFieldLabels.access_token"
+        );
+        assert_eq!(
+            access_token["description_key"],
+            "accounts.providerFieldDescriptions.access_token"
+        );
+        assert!(access_token.get("label").is_none());
+        assert!(access_token.get("description").is_none());
         let imap_host = fields
             .iter()
             .find(|field| field["key"] == "mail_imap_host")
@@ -2078,13 +2131,8 @@ mod tests {
             String::from_utf8_lossy(&response.body)
         );
         let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
-        assert!(
-            parsed["error"].as_str().is_some_and(
-                |value| value.contains("legacy public account wrappers are not supported")
-            ),
-            "body={}",
-            String::from_utf8_lossy(&response.body)
-        );
+        assert_eq!(parsed["error_key"], "config.rejected");
+        assert!(parsed.get("error").is_none());
     }
 
     #[cfg(all(
@@ -2144,10 +2192,12 @@ mod tests {
         assert_eq!(parsed["disposition"], "probe_failed");
         assert_eq!(parsed["reason"], "probe_error");
         assert_eq!(parsed["error_stage"], "office_probe_test");
+        assert_eq!(parsed["error_key"], "office.provider_error");
         assert_eq!(
-            parsed["error_message"],
+            parsed["upstream_error"],
             "config: imap login failed (stage: office_probe_test)"
         );
+        assert!(parsed.get("error_message").is_none());
 
         let accounts_after = config::get_office_accounts_segment(ctx.config_file_store.as_ref())
             .and_then(|body| {
@@ -2303,5 +2353,61 @@ mod tests {
             "test-http-mail-capability-detail"
         );
         assert_eq!(parsed["accounts"].as_array().expect("accounts").len(), 1);
+        assert_eq!(
+            parsed["accounts"].as_array().expect("accounts")[0]["display_name_key"],
+            "accounts.providers.imap_smtp"
+        );
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_capabilities_detail_invalid_capability_uses_error_key_contract() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(&ctx, &env, authed_get("/api/config/capabilities/invalid"))
+            .expect("dispatch invalid capability detail");
+        assert_eq!(
+            response.status,
+            400,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], "office.capability_invalid");
+        assert!(parsed.get("error").is_none());
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    #[test]
+    fn config_providers_invalid_capability_uses_error_key_contract() {
+        let _guard = office_test_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_get("/api/config/providers?capability=invalid"),
+        )
+        .expect("dispatch invalid provider catalog");
+        assert_eq!(
+            response.status,
+            400,
+            "body={}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], "office.capability_invalid");
+        assert!(parsed.get("error").is_none());
     }
 }

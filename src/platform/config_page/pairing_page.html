@@ -36,8 +36,8 @@
     var btn=this; btn.disabled=true; msgEl.style.display='none';
     fetch(B+'/api/pairing_code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
       .then(function(r){ return r.json(); })
-      .then(function(j){ if(j.ok)location.href=B+'/wifi'; else PC.showMsg(msgEl,j.error||PC.t('pairing_fail'),true); })
-      .catch(function(){ PC.showMsg(msgEl,PC.t('pairing_network'),true); })
+      .then(function(j){ if(j.ok)location.href=B+'/wifi'; else PC.showMsg(msgEl,PC.apiErrorText(j,'pairing_fail'),true); })
+      .catch(function(){ PC.showMsg(msgEl,PC.t('network.request_failed'),true); })
       .then(function(){ btn.disabled=false; });
   };
 })();

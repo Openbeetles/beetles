@@ -1,3 +1,5 @@
+import { normalizeThrownErrorMessage } from '../i18n/apiErrors'
+
 export class TimeoutError extends Error {
   constructor(message: string) {
     super(message)
@@ -25,6 +27,8 @@ export async function withTimeout<T>(
 }
 
 export function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message.trim()) return error.message
+  if (error instanceof Error && error.message.trim()) {
+    return normalizeThrownErrorMessage(error.message) ?? fallback
+  }
   return fallback
 }

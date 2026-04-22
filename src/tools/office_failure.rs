@@ -311,7 +311,9 @@ mod tests {
             missing_field_details: vec![OfficeProviderFieldSchema {
                 key: "access_token".to_string(),
                 label: "App password".to_string(),
+                label_key: "accounts.providerFieldLabels.access_token".to_string(),
                 description: "Mailbox app password.".to_string(),
+                description_key: "accounts.providerFieldDescriptions.access_token".to_string(),
                 location: OfficeProviderFieldLocation::AccessToken,
                 value_kind: OfficeProviderFieldValueKind::Secret,
                 required: true,

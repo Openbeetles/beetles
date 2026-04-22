@@ -39,7 +39,7 @@
       if(j.locale)PC.setLocale(j.locale);
       if(!j.code_set){ location.href=B+'/pairing'; return; }
       PC.requestWithCode('GET','/api/config',null,function(x){
-        if(!x.ok){ PC.showMsg(formMsg,(x.j&&x.j.error)||PC.t('pairing_fail'),true); return; }
+        if(!x.ok){ PC.showMsg(formMsg,PC.apiErrorText(x.j,'pairing_fail'),true); return; }
         if(x.j&&x.j.wifi_ssid)ssid.value=x.j.wifi_ssid;
       });
     })
@@ -47,13 +47,13 @@
   document.getElementById('btnSave').onclick=function(){
     PC.requestWithCode('POST','/api/config/wifi',JSON.stringify({wifi_ssid:(ssid.value||'').trim(),wifi_pass:pass.value}),function(x){
       if(x.ok&&x.j.ok)PC.showMsg(formMsg,PC.t('wifi_saved_msg'),false);
-      else PC.showMsg(formMsg,(x.j&&x.j.error)||PC.t('wifi_save_fail'),true);
+      else PC.showMsg(formMsg,PC.apiErrorText(x.j,'wifi_save_fail'),true);
     });
   };
   document.getElementById('btnRestart').onclick=function(){
     PC.requestWithCode('POST','/api/restart',null,function(x){
       if(x.j&&x.j.ok)PC.showMsg(formMsg,PC.t('wifi_restarting'),false);
-      else PC.showMsg(formMsg,(x.j&&x.j.error)||PC.t('wifi_restart_fail'),true);
+      else PC.showMsg(formMsg,PC.apiErrorText(x.j,'wifi_restart_fail'),true);
     });
   };
 })();

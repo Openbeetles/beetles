@@ -15,6 +15,7 @@ use std::sync::Arc;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::time::Duration;
 
+pub(crate) mod api_contract;
 pub(crate) mod common;
 pub(crate) mod handlers;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -185,12 +186,18 @@ pub fn run_with_bound_listener(
         move |incoming| {
             router::dispatch(dispatch_ctx.as_ref(), &dispatch_router_env, incoming).unwrap_or_else(
                 |error| {
+                    let error_key = api_contract::error_key(&error);
+                    let (status, status_text) = if error_key == api_contract::COMMON_INVALID_UTF8 {
+                        (400, "Bad Request")
+                    } else {
+                        (500, "Internal Server Error")
+                    };
                     log::warn!("[http_config] dispatch failed: {}", error);
                     router::OutgoingResponse::json(
-                        500,
-                        "Internal Server Error",
+                        status,
+                        status_text,
                         common::CORS_HEADERS,
-                        br#"{"error":"internal error"}"#.to_vec(),
+                        format!(r#"{{"error_key":"{}"}}"#, error_key).into_bytes(),
                     )
                 },
             )

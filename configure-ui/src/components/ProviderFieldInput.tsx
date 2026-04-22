@@ -11,11 +11,18 @@ import type {
   ProviderFieldSchema,
   ProviderFieldValueKind,
 } from "../types/accountConfig";
+import {
+  localizeProviderFieldDescription,
+  localizeProviderFieldLabel,
+  localizeProviderFieldOption,
+} from "../i18n/providerFields";
 
 type BaseFieldSchema = {
   key: string;
-  label: string;
-  description: string;
+  label_key: string;
+  description_key: string;
+  label?: string;
+  description?: string;
   value_kind: ProviderFieldValueKind;
   required: boolean;
   secret: boolean;
@@ -41,13 +48,15 @@ export function ProviderFieldInput({
   onChange,
 }: ProviderFieldInputProps) {
   const { t } = useTranslation();
+  const label = localizeProviderFieldLabel(t, field);
+  const description = localizeProviderFieldDescription(t, field);
   const secret = field.secret || field.value_kind === "secret";
   const configuredSecret = secret && fieldIsConfigured(field);
   const helperText =
     configuredSecret
       ? t("accounts.keepExistingSecret")
-      : field.description.trim()
-        ? field.description
+      : description.trim()
+        ? description
         : undefined;
   const multiline =
     "multiple" in field ? Boolean(field.multiple) : false;
@@ -60,22 +69,13 @@ export function ProviderFieldInput({
             { value: "true", label: t("accounts.providerFieldOption.true") },
             { value: "false", label: t("accounts.providerFieldOption.false") },
           ]
-        : options.map((option) =>
-            field.key === "identity_class"
-              ? {
-                  ...option,
-                  label: t(`accounts.identity.${option.value}`, {
-                    defaultValue: option.label,
-                  }),
-                }
-              : option,
-          );
+        : options.map((option) => localizeProviderFieldOption(t, option));
     return (
       <FormControl fullWidth required={field.required}>
-        <InputLabel id={`${field.key}-label`}>{field.label}</InputLabel>
+        <InputLabel id={`${field.key}-label`}>{label}</InputLabel>
         <Select
           labelId={`${field.key}-label`}
-          label={field.label}
+          label={label}
           value={value}
           onChange={(event) => onChange(String(event.target.value))}
         >
@@ -94,7 +94,7 @@ export function ProviderFieldInput({
       required={field.required}
       fullWidth
       type={secret ? "password" : field.value_kind === "integer" ? "number" : "text"}
-      label={field.label}
+      label={label}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       helperText={helperText}

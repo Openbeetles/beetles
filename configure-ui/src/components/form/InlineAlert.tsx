@@ -5,46 +5,10 @@ import Typography from '@mui/material/Typography'
 import ErrorOutline from '@mui/icons-material/ErrorOutline'
 import { useTranslation } from 'react-i18next'
 import { LAYOUT_TOKENS } from '../../config/themeTokens'
-
-/** 与顶栏横幅重复的配对/设备类错误，此处不重复展示 */
-const DEVICE_PAIRING_HINTS = new Set([
-  '请先设置配对码', '请先填写设备地址', '配对码错误',
-  'Please set pairing code first', 'Please enter device URL', 'Wrong pairing code',
-])
-
-/** 已知 API/ 前端错误文案 -> i18n key（仅用于加载/数据错误） */
-const ERROR_TO_I18N: Record<string, string> = {
-  '加载配置失败': 'config.errorLoadFailed',
-  'Load failed': 'config.errorLoadFailed',
-  'Network error': 'config.errorNetwork',
-  'Failed to fetch': 'config.errorNetwork',
-}
-
-/** 是否为 i18n key（ConfigProvider 等传入） */
-function isI18nKey(msg: string): boolean {
-  return /^[a-z]+\.[a-zA-Z0-9.]+$/.test(msg.trim())
-}
-
-function inferErrorKey(msg: string): string | null {
-  const trimmed = msg.trim()
-  if (ERROR_TO_I18N[trimmed]) return ERROR_TO_I18N[trimmed]
-
-  const normalized = trimmed.toLowerCase()
-  if (
-    normalized === 'failed to fetch' ||
-    normalized.endsWith('failed to fetch') ||
-    normalized.includes('fetch failed') ||
-    normalized.includes('network request failed') ||
-    normalized.includes('networkerror')
-  ) {
-    return 'config.errorNetwork'
-  }
-  if (normalized.includes('operator window required')) {
-    return 'config.errorLoadFailed'
-  }
-
-  return null
-}
+import {
+  isDeviceOrPairingErrorKey,
+  translateApiError,
+} from '../../i18n/apiErrors'
 
 interface InlineAlertProps {
   /** 原始错误文案（仅用于页面加载/数据错误，勿传按钮操作错误） */
@@ -60,11 +24,9 @@ export function InlineAlert({ message, onRetry }: InlineAlertProps) {
   const { t } = useTranslation()
 
   if (!message?.trim()) return null
-  if (DEVICE_PAIRING_HINTS.has(message.trim())) return null
+  if (isDeviceOrPairingErrorKey(message)) return null
 
-  const trimmed = message.trim()
-  const resolvedKey = isI18nKey(trimmed) ? trimmed : inferErrorKey(trimmed)
-  const display = resolvedKey ? t(resolvedKey) : message
+  const display = translateApiError(t, message, 'config.errorLoadFailed')
 
   return (
     <Box

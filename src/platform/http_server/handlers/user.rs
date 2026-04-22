@@ -1,7 +1,7 @@
 //! GET/POST /api/user：配对后读/写 USER 配置（config/USER.md）。
 
-use crate::i18n::{locale_from_store, tr, tr_error, Message};
 use crate::memory::MAX_SOUL_USER_LEN;
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::ApiResponse;
 use crate::state;
 
@@ -16,7 +16,6 @@ pub fn get_body(ctx: &HandlerContext) -> Result<String, String> {
 
 /// POST：body 为原始请求体；is_json 为 true 时从 {"content":"..."} 取 content。
 pub fn post(ctx: &HandlerContext, body: String, is_json: bool) -> ApiResponse {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let content = if is_json {
         serde_json::from_str::<serde_json::Value>(&body)
             .ok()
@@ -27,10 +26,10 @@ pub fn post(ctx: &HandlerContext, body: String, is_json: bool) -> ApiResponse {
     };
     let content = content.trim();
     if content.len() > MAX_SOUL_USER_LEN {
-        return ApiResponse::err_400(&tr(Message::ContentTooLong, loc));
+        return ApiResponse::err_400_key(api_contract::COMMON_CONTENT_TOO_LONG);
     }
     match ctx.memory_store.set_user(content) {
         Ok(()) => ApiResponse::ok_200_json("{\"ok\":true}"),
-        Err(e) => ApiResponse::err_500(&tr_error(&e, loc)),
+        Err(e) => ApiResponse::err_500_key(api_contract::error_key(&e)),
     }
 }

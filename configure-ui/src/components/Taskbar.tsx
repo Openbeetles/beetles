@@ -26,6 +26,7 @@ import { TASKBAR_HEIGHT } from "../config/layout";
 import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi, type DeviceHintReason } from "../hooks/useDeviceApi";
+import { translateApiError } from "../i18n/apiErrors";
 import { useToast } from "../hooks/useToast";
 import { setRestartPending } from "../store/deviceStatusStore";
 import { SHELL_TASKBAR_CHROME_SX } from "../theme/shellChromeSurface";
@@ -165,7 +166,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
       setRestartPending();
       showToast(t("device.restartSent"), { variant: "success" });
     } else {
-      showToast(res.error ?? t("device.restartFail"), { variant: "error" });
+      showToast(translateApiError(t, res.error, "device.restartFail"), { variant: "error" });
     }
   };
 

@@ -20,10 +20,9 @@ const TELEGRAM_MAX_CAPTION_LEN: usize = 1024;
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
-    loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     let configured = !config.tg_token.trim().is_empty();
-    connectivity::probe_item("telegram", configured, loc, || {
+    connectivity::probe_item("telegram", configured, || {
         match get_bot_username(http, config.tg_token.trim()) {
             Ok(Some(_)) => connectivity::ProbeStatus::Ok,
             Ok(None) => connectivity::ProbeStatus::InvalidToken,

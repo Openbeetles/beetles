@@ -1,5 +1,6 @@
 //! Shared Linux `tiny_http` serving skeleton for config and control planes.
 
+use super::api_contract;
 use super::common::{self, CORS_HEADERS};
 use super::router::{IncomingRequest, OutgoingResponse, RestartAction};
 use crate::error::{Error, Result};
@@ -110,7 +111,11 @@ fn handle_linux_request<H, A>(
                     500,
                     "Internal Server Error",
                     CORS_HEADERS,
-                    br#"{"error":"internal error"}"#.to_vec(),
+                    format!(
+                        r#"{{"error_key":"{}"}}"#,
+                        api_contract::COMMON_BODY_READ_FAILED
+                    )
+                    .into_bytes(),
                 ),
             );
             return;

@@ -6,7 +6,7 @@ use crate::capability_package::{
     rollback_capability_package, set_capability_package_enabled, uninstall_capability_package,
     CapabilityPackageInstallPayload, CapabilityPackageOperationKind,
 };
-use crate::i18n::{locale_from_store, tr, tr_error, Message};
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::ApiResponse;
 use serde::Deserialize;
 
@@ -33,17 +33,16 @@ pub fn get(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 }
 
 pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let request = match serde_json::from_str::<CapabilityPackagePostRequest>(body) {
         Ok(value) => value,
-        Err(_) => return ApiResponse::err_400(&tr(Message::InvalidJson, loc)),
+        Err(_) => return ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON),
     };
     let state_fs = ctx.platform.state_fs();
     let now_secs = crate::util::current_unix_secs();
     let outcome = match request.op {
         CapabilityPackageOperationKind::Install => {
             let Some(payload) = request.payload.as_ref() else {
-                return ApiResponse::err_400("missing payload for install");
+                return ApiResponse::err_400_key(api_contract::PACKAGE_INSTALL_PAYLOAD_REQUIRED);
             };
             install_capability_package(
                 state_fs.as_ref(),
@@ -82,8 +81,8 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
             "outcome": outcome,
         })) {
             Ok(body) => ApiResponse::ok_200_json(&body),
-            Err(error) => ApiResponse::err_500(&error.to_string()),
+            Err(_) => ApiResponse::err_500_key(api_contract::COMMON_OPERATION_FAILED),
         },
-        Err(error) => ApiResponse::err_400(&tr_error(&error, loc)),
+        Err(error) => ApiResponse::err_400_key(api_contract::error_key(&error)),
     }
 }

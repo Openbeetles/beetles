@@ -34,6 +34,7 @@ import { OS_ICON_DEVICE_CONFIG } from '../config/osIcons'
 import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from '../theme/panelStyles'
 import { useConfig } from '../hooks/useConfig'
 import { useDeviceApi } from '../hooks/useDeviceApi'
+import { translateApiError } from '../i18n/apiErrors'
 import { useRevealedPasswordFields } from '../hooks/useRevealedPassword'
 import { useConfigEditorController } from '../hooks/useConfigEditorController'
 import { useDeviceRuntimeKind } from '../store/deviceStatusStore'
@@ -215,7 +216,7 @@ export function AudioConfigPanel() {
       setUsbAudioError(null)
     } else {
       setUsbAudioDevices([])
-      setUsbAudioError(res.error ?? t('audioConfig.speakerUsbScanFailed'))
+      setUsbAudioError(translateApiError(t, res.error, 'audioConfig.speakerUsbScanFailed'))
     }
     setUsbAudioLoading(false)
   }

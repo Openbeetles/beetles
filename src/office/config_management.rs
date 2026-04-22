@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+const OFFICE_PROVIDER_ERROR_KEY: &str = "office.provider_error";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigSnapshot {
     pub accounts: OfficeAccountsSegment,
@@ -60,6 +62,7 @@ pub struct OfficeAccountOnboardingRequest {
 pub struct OfficeConfigAccountSummary {
     pub account_key: String,
     pub provider_kind: String,
+    pub display_name_key: String,
     pub account_label: String,
     pub identity_class: OfficeAccountIdentityClass,
     #[serde(default)]
@@ -124,6 +127,9 @@ pub struct OfficeAccountOnboardingResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_stage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_error: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -131,13 +137,16 @@ pub struct OfficeAccountOnboardingResult {
 pub struct OfficeConfigFieldOption {
     pub value: String,
     pub label: String,
+    pub label_key: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigCreateFieldSchema {
     pub key: String,
     pub label: String,
+    pub label_key: String,
     pub description: String,
+    pub description_key: String,
     pub value_kind: OfficeProviderFieldValueKind,
     #[serde(default)]
     pub required: bool,
@@ -156,6 +165,7 @@ pub struct OfficeConfigCreateFieldSchema {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficeConfigProviderCatalogItem {
     pub provider_kind: String,
+    pub display_name_key: String,
     #[serde(default)]
     pub capabilities: Vec<OfficeCapability>,
     #[serde(default)]
@@ -557,11 +567,13 @@ impl OfficeConfigManagementService {
                 account: None,
                 probe: None,
                 error_stage: None,
+                error_key: None,
+                upstream_error: None,
                 error_message: None,
             });
         };
 
-        let provider_schema = match office_provider_schema(&provider_kind) {
+        let _provider_schema = match office_provider_schema(&provider_kind) {
             Some(schema) => schema,
             None => {
                 return Ok(OfficeAccountOnboardingResult {
@@ -574,6 +586,8 @@ impl OfficeConfigManagementService {
                     account: None,
                     probe: None,
                     error_stage: None,
+                    error_key: None,
+                    upstream_error: None,
                     error_message: None,
                 })
             }
@@ -597,7 +611,7 @@ impl OfficeConfigManagementService {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .or_else(|| request.external_account_id.clone())
-            .unwrap_or_else(|| provider_schema.display_name.clone());
+            .unwrap_or_default();
         let mut provisional_account = OfficeAccount {
             account_key: request
                 .external_account_id
@@ -668,6 +682,8 @@ impl OfficeConfigManagementService {
                 account: None,
                 probe: None,
                 error_stage: None,
+                error_key: None,
+                upstream_error: None,
                 error_message: None,
             });
         }
@@ -723,6 +739,8 @@ impl OfficeConfigManagementService {
                 account: None,
                 probe: None,
                 error_stage: None,
+                error_key: None,
+                upstream_error: None,
                 error_message: None,
             });
         };
@@ -745,6 +763,8 @@ impl OfficeConfigManagementService {
                         account: None,
                         probe: None,
                         error_stage: Some(error.stage().to_string()),
+                        error_key: Some(OFFICE_PROVIDER_ERROR_KEY.to_string()),
+                        upstream_error: Some(error.to_string()),
                         error_message: Some(error.to_string()),
                     })
                 }
@@ -766,6 +786,8 @@ impl OfficeConfigManagementService {
                         reason: "probe_adapter_unavailable".to_string(),
                     }),
                     error_stage: None,
+                    error_key: None,
+                    upstream_error: None,
                     error_message: None,
                 })
             }
@@ -785,6 +807,8 @@ impl OfficeConfigManagementService {
                     account: Some(detail),
                     probe: Some(probe),
                     error_stage: None,
+                    error_key: None,
+                    upstream_error: None,
                     error_message: None,
                 })
             }
@@ -810,6 +834,8 @@ impl OfficeConfigManagementService {
                     account: None,
                     probe: Some(probe),
                     error_stage: None,
+                    error_key: None,
+                    upstream_error: None,
                     error_message: None,
                 })
             }
@@ -823,6 +849,8 @@ impl OfficeConfigManagementService {
                 account: None,
                 probe: Some(probe),
                 error_stage: None,
+                error_key: None,
+                upstream_error: None,
                 error_message: None,
             }),
         }
@@ -1330,6 +1358,7 @@ fn build_provider_catalog_item(schema: OfficeProviderSchema) -> OfficeConfigProv
         .collect::<Vec<_>>();
     OfficeConfigProviderCatalogItem {
         provider_kind: schema.provider_kind,
+        display_name_key: schema.display_name_key,
         capabilities: schema.capabilities,
         account_fields,
         config_fields,
@@ -1337,26 +1366,30 @@ fn build_provider_catalog_item(schema: OfficeProviderSchema) -> OfficeConfigProv
 }
 
 fn shared_account_create_fields(
-    schema: &OfficeProviderSchema,
+    _schema: &OfficeProviderSchema,
 ) -> Vec<OfficeConfigCreateFieldSchema> {
     vec![
         OfficeConfigCreateFieldSchema {
             key: "account_label".to_string(),
             label: "Account label".to_string(),
+            label_key: create_field_label_key("account_label"),
             description: "Human-readable account label.".to_string(),
+            description_key: create_field_description_key("account_label"),
             value_kind: crate::office::OfficeProviderFieldValueKind::Text,
             required: false,
             secret: false,
             multiple: false,
-            default_value: Some(schema.display_name.clone()),
+            default_value: None,
             default_values: Vec::new(),
             options: Vec::new(),
         },
         OfficeConfigCreateFieldSchema {
             key: "identity_class".to_string(),
             label: "Identity class".to_string(),
+            label_key: create_field_label_key("identity_class"),
             description: "Account identity class used for office routing and account selection."
                 .to_string(),
+            description_key: create_field_description_key("identity_class"),
             value_kind: crate::office::OfficeProviderFieldValueKind::Text,
             required: true,
             secret: false,
@@ -1367,22 +1400,27 @@ fn shared_account_create_fields(
                 OfficeConfigFieldOption {
                     value: "work".to_string(),
                     label: "Work".to_string(),
+                    label_key: "accounts.identity.work".to_string(),
                 },
                 OfficeConfigFieldOption {
                     value: "personal".to_string(),
                     label: "Personal".to_string(),
+                    label_key: "accounts.identity.personal".to_string(),
                 },
                 OfficeConfigFieldOption {
                     value: "family".to_string(),
                     label: "Family".to_string(),
+                    label_key: "accounts.identity.family".to_string(),
                 },
                 OfficeConfigFieldOption {
                     value: "shared".to_string(),
                     label: "Shared".to_string(),
+                    label_key: "accounts.identity.shared".to_string(),
                 },
                 OfficeConfigFieldOption {
                     value: "other".to_string(),
                     label: "Other".to_string(),
+                    label_key: "accounts.identity.other".to_string(),
                 },
             ],
         },
@@ -1552,7 +1590,9 @@ fn provider_selector_field_schema() -> OfficeConfigCreateFieldSchema {
     OfficeConfigCreateFieldSchema {
         key: "provider".to_string(),
         label: "Provider".to_string(),
+        label_key: create_field_label_key("provider"),
         description: "Provider family for this office account.".to_string(),
+        description_key: create_field_description_key("provider"),
         value_kind: OfficeProviderFieldValueKind::Identifier,
         required: true,
         secret: false,
@@ -1567,7 +1607,9 @@ fn capability_field_schema() -> OfficeConfigCreateFieldSchema {
     OfficeConfigCreateFieldSchema {
         key: "capability".to_string(),
         label: "Capability".to_string(),
+        label_key: create_field_label_key("capability"),
         description: "Office capability family for this account.".to_string(),
+        description_key: create_field_description_key("capability"),
         value_kind: OfficeProviderFieldValueKind::Identifier,
         required: true,
         secret: false,
@@ -1579,6 +1621,7 @@ fn capability_field_schema() -> OfficeConfigCreateFieldSchema {
             .map(|capability| OfficeConfigFieldOption {
                 value: office_capability_key(capability).to_string(),
                 label: office_capability_key(capability).to_string(),
+                label_key: format!("accounts.capability.{}", office_capability_key(capability)),
             })
             .collect(),
     }
@@ -1588,6 +1631,7 @@ fn identity_class_field_schema() -> OfficeConfigCreateFieldSchema {
     shared_account_create_fields(&OfficeProviderSchema {
         provider_kind: String::new(),
         display_name: String::new(),
+        display_name_key: String::new(),
         capabilities: Vec::new(),
         fields: Vec::new(),
     })
@@ -1638,7 +1682,9 @@ fn build_create_field_from_provider_field(
     OfficeConfigCreateFieldSchema {
         key: field.key.clone(),
         label: field.label.clone(),
+        label_key: field.label_key.clone(),
         description: field.description.clone(),
+        description_key: field.description_key.clone(),
         value_kind: field.value_kind,
         required: field.required,
         secret: field.secret,
@@ -1649,6 +1695,25 @@ fn build_create_field_from_provider_field(
     }
 }
 
+fn create_field_label_key(field_key: &str) -> String {
+    match field_key {
+        "account_label" => "accounts.accountLabelOptional".to_string(),
+        "identity_class" => "accounts.identityLabel".to_string(),
+        "provider" => "accounts.selectProvider".to_string(),
+        "capability" => "accounts.enabledCapabilities".to_string(),
+        other => format!("accounts.providerFieldLabels.{other}"),
+    }
+}
+
+fn create_field_description_key(field_key: &str) -> String {
+    match field_key {
+        "account_label" => "accounts.accountLabelDescription".to_string(),
+        "provider" => "accounts.selectProviderDescription".to_string(),
+        "capability" => "accounts.enabledCapabilitiesHint".to_string(),
+        _other => format!("accounts.providerFieldDescriptions.{field_key}"),
+    }
+}
+
 fn build_account_summary(
     account: &OfficeAccountAuthorityStatus,
     assessment: &OfficeAccountAssessment,
@@ -1656,6 +1721,7 @@ fn build_account_summary(
     OfficeConfigAccountSummary {
         account_key: account.account_key.clone(),
         provider_kind: account.provider_kind.clone(),
+        display_name_key: account.display_name_key.clone(),
         account_label: account.account_label.clone(),
         identity_class: account.identity_class,
         enabled_capabilities: account.enabled_capabilities.clone(),

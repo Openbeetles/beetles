@@ -9,7 +9,10 @@ This page is for people building their own frontend, script, or integration. Eac
 - Base address: during first setup, the common entry is `http://192.168.4.1`; once the device is on your network, use its current address.
 - CORS: `/api/*` supports cross-origin access, and `OPTIONS` can be called directly.
 - Response format: everything is JSON except `GET /api/soul`, `GET /api/user`, `GET /api/skills?name=...`, and `GET /api/metrics?format=prometheus`.
-- Error format: common errors return `{"error":"..."}`.
+- Error format:
+  - Product and official configuration-surface APIs now return `{"error_key":"..."}` as the stable Beetle-generated error contract.
+  - If the failure comes from an upstream third-party provider, the body may also include `upstream_error`, `upstream_status`, `error_stage`, and `provider_kind`.
+  - Debug / operator / protocol-compatibility routes are exempt and may still return raw English text or protocol-native bodies.
 - Pairing code: send it through `?code=` or `X-Pairing-Code`.
 - CSRF: send it through `X-CSRF-Token`; fetch it from `GET /api/csrf_token`.
 - Config-save routes expect the full object, not a partial patch:
@@ -33,6 +36,34 @@ This page is for people building their own frontend, script, or integration. Eac
 - `404`: resource not found.
 - `500`: server-side failure.
 - `503`: temporarily unavailable, such as scanner not ready or queue unavailable.
+
+### Product API error contract
+
+Non-debug/operator Beetle product and official configuration-surface `/api/*` routes now follow:
+
+```json
+{
+  "error_key": "common.not_found"
+}
+```
+
+If the failure comes from an upstream provider, the response may also include:
+
+```json
+{
+  "error_key": "office.provider_error",
+  "provider_kind": "microsoft365_mail",
+  "error_stage": "office_probe",
+  "upstream_status": 401,
+  "upstream_error": "AADSTS7000215: Invalid client secret is provided."
+}
+```
+
+Notes:
+
+- `error_key` is the stable semantic contract that frontends and built-in pages translate.
+- `upstream_error` is raw troubleshooting text and is not translated.
+- Only debug/operator routes and protocol-compatibility routes are outside this contract.
 
 ## Activation and security
 
@@ -510,9 +541,16 @@ Response structure:
 Each item in `items` contains:
 
 - `provider_kind`
+- `display_name_key`
 - `capabilities`
 - `account_fields`
 - `config_fields`
+
+Notes:
+
+- `display_name_key` is the provider-name translation key.
+- Display semantics inside `account_fields` and `config_fields` use `label_key`, `description_key`, and option `label_key`.
+- Product APIs no longer return Beetle-generated `display_name`, `label`, or `description` prose.
 
 **GET /api/config/capabilities**
 
@@ -580,6 +618,7 @@ Each item in `items` contains:
 
 - `account_key`
 - `provider_kind`
+- `display_name_key`
 - `account_label`
 - `identity_class`
 - `enabled_capabilities`
@@ -599,28 +638,66 @@ Auth: `Pairing code + CSRF`
 
 Request body: `application/json`
 
-Top-level fields:
+The request uses the public flat upsert contract and no longer accepts legacy nested `account` / `credential` / `config` wrappers:
 
-- `account`
-- `set_defaults`
-- `clear_defaults`
-- `policy_patch`
-- `config`
-
-`account` fields:
-
-- `account_key`
 - `provider_kind`
-- `external_account_id`
-- `account_label`
+- `provider`
+- `capability`
 - `identity_class`
-- `enabled_capabilities`
+- `account_label`
+- `display_name`
+- `external_account_id`
+- `email`
+- `account_id`
+- `username`
+- `password`
+- `access_token`
+- `refresh_token`
+- `token_endpoint`
+- `mail_username`
+- `mail_from_address`
+- `imap_host`
+- `imap_port`
+- `imap_tls`
+- `smtp_host`
+- `smtp_port`
+- `smtp_tls`
+- `metadata`
 
-The `config` field uses the same body shape as `POST /api/config/accounts/:account_key/config`.
+Notes:
+
+- `provider` is a public alias for `provider_kind`.
+- `display_name` / `label` are accepted only as input aliases during normalization; they are not product-response contract fields.
+- Provider-specific factual fields can be sent directly at the top level or inside `metadata`; the server normalizes them into provider config fields.
 
 Success response: `200 application/json`
 
 The response is the account detail object.
+
+Account summary/detail display semantics follow the same contract:
+
+- `display_name_key` is the translation key for the provider/account display name.
+- Product responses do not return Beetle-generated `display_name`, `label`, or `description` prose.
+
+If the request is missing user facts that must be supplied explicitly, the route returns `400` with a structured onboarding result, for example:
+
+```json
+{
+  "disposition": "needs_user_facts",
+  "reason": "missing_user_facts",
+  "missing_fields": ["identity_class"],
+  "missing_field_details": [
+    {
+      "key": "identity_class",
+      "label_key": "accounts.identityLabel",
+      "description_key": "accounts.identityDescription",
+      "options": [
+        { "value": "work", "label_key": "accounts.identity.work" }
+      ]
+    }
+  ]
+}
+```
 
 **GET /api/config/accounts/:account_key**
 
@@ -635,6 +712,12 @@ Response structure:
 - `account`
 - `assessment`
 - `fields`
+
+Notes:
+
+- `account.display_name_key` is the translation key for the provider/account display name.
+- Display semantics in `fields` and `assessment.missing_field_details` use `label_key`, `description_key`, and option `label_key`.
+- Product APIs do not return Beetle-generated `display_name` / `label` / `description` prose.
 
 **POST /api/config/accounts/:account_key/config**
 
@@ -677,6 +760,14 @@ Response fields:
 - `configured`
 - `disposition`
 - `reason`
+
+If the failure comes from an upstream provider, the route returns `400` with:
+
+- `error_key`
+- optional `provider_kind`
+- optional `error_stage`
+- optional `upstream_status`
+- optional `upstream_error`
 
 **POST /api/config/accounts/:account_key/revoke**
 

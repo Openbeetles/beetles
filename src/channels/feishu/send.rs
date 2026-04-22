@@ -801,12 +801,11 @@ fn parse_feishu_inbound_message(
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
-    loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
     let configured =
         !config.feishu_app_id.trim().is_empty() && !config.feishu_app_secret.trim().is_empty();
-    connectivity::probe_item("feishu", configured, loc, || {
+    connectivity::probe_item("feishu", configured, || {
         let body = FeishuTokenRequest {
             app_id: config.feishu_app_id.trim().to_string(),
             app_secret: config.feishu_app_secret.trim().to_string(),

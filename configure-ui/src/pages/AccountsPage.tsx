@@ -27,6 +27,7 @@ import {
 import { OS_ICON_NAV } from "../config/osIcons";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useDeviceApi } from "../hooks/useDeviceApi";
+import { translateApiError } from "../i18n/apiErrors";
 import { localizeAccountProviderName } from "../i18n/providerDisplay";
 import type { AccountCapability, AccountSummary } from "../types/accountConfig";
 import {
@@ -194,7 +195,7 @@ export function AccountsPage() {
     } else {
       let nextError = res.error ?? t("accounts.loadFailed");
       let nextUnsupported = false;
-      if (nextError === "Not Found" || nextError === "not found") {
+      if (res.errorKey === "common.not_found" || res.status === 404) {
         const probe = await api.device.probe();
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/config/accounts")) {
@@ -203,7 +204,7 @@ export function AccountsPage() {
         }
       }
       setUnsupportedEndpoint(nextUnsupported);
-      setError(nextError);
+      setError(nextUnsupported ? "" : translateApiError(t, nextError, "accounts.loadFailed"));
       setItems([]);
     }
     setLoading(false);
@@ -340,7 +341,10 @@ export function AccountsPage() {
               {items.map((row) => {
                 const model = buildAccountCardModel(row, {
                   t,
-                  providerLabel: localizeAccountProviderName(t, row.provider_kind),
+                  providerLabel: localizeAccountProviderName(t, {
+                    providerKind: row.provider_kind,
+                    displayNameKey: row.display_name_key,
+                  }),
                 });
 
                 return (

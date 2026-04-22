@@ -15,5 +15,5 @@ export async function getPairingCode(
   if (res.ok && res.data != null && typeof (res.data as PairingCodeResponse).code_set === 'boolean') {
     return res as ApiResult<PairingCodeResponse>
   }
-  return { ok: false, error: res.error ?? 'Invalid response', data: undefined }
+  return { ok: false, error: res.error ?? 'common.invalid_response', data: undefined }
 }

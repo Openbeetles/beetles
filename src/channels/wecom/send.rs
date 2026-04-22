@@ -41,14 +41,13 @@ const CONNECTIVITY_MESSAGE: &str = "BOT, Hello";
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
-    loc: crate::i18n::Locale,
 ) -> super::super::connectivity::ChannelConnectivityItem {
     use super::super::connectivity;
     let agent_id_u32 = config.wecom_agent_id.trim().parse::<u32>().ok();
     let configured = !config.wecom_corp_id.trim().is_empty()
         && !config.wecom_corp_secret.trim().is_empty()
         && agent_id_u32.is_some();
-    connectivity::probe_item("wecom", configured, loc, || {
+    connectivity::probe_item("wecom", configured, || {
         let url = format!(
             "{}?corpid={}&corpsecret={}",
             WECOM_GETTOKEN_BASE,

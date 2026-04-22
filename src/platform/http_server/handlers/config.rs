@@ -1,7 +1,11 @@
 //! 配置 API：GET /api/config、GET/POST /api/config/llm、POST /api/config/wifi、/channels、/system、/hardware。
 
 use crate::config;
-use crate::i18n::{locale_from_store, tr, tr_error, Message};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::error::Error;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -12,12 +16,18 @@ use crate::office::{
     OfficeConfigAccountSummary, OfficeConfigCapabilityStatus, OfficeConfigManagementService,
     OfficeConfigProviderCatalogItem, OfficeHttpClient, OfficeStreamingResponse,
 };
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::platform::{PlatformHttpClient, ResponseBody};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use serde::Serialize;
 use serde_json::Value;
 #[cfg(all(
     feature = "capability_office",
@@ -46,10 +56,9 @@ pub fn get_llm_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
 /// POST /api/config/wifi：body 为 JSON，写 WiFi SSID/密码到 NVS。成功时返回 restart_required 提示需重启生效。
 pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let payload: WifiConfigPayload = match serde_json::from_str(body) {
         Ok(p) => p,
-        Err(_) => return Ok(ApiResponse::err_400(&tr(Message::InvalidJson, loc))),
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
     };
     match config::save_wifi_to_nvs(
         ctx.config_store.as_ref(),
@@ -62,43 +71,40 @@ pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::i
                 r#"{"ok":true,"restart_required":true}"#,
             ))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
 /// POST /api/config/llm：仅写 LLM 段，body 为 LlmSegment JSON。
 pub fn post_llm(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_llm_segment(ctx.config_file_store.as_ref(), body) {
         Ok(()) => {
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
 /// POST /api/config/channels：仅写通道段，body 为 ChannelsSegment JSON。
 pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_channels_segment(ctx.config_file_store.as_ref(), body) {
         Ok(()) => {
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
 /// POST /api/config/system：仅写系统段（wifi/proxy/session/tg_group/locale），body 为 SystemSegment JSON。
 pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_system_segment_to_nvs(ctx.config_store.as_ref(), body) {
         Ok(()) => {
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
@@ -167,6 +173,59 @@ fn office_config_service(ctx: &HandlerContext) -> OfficeConfigManagementService 
         }
     }
     service.with_default_probe_adapters()
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn strip_office_http_prose(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("display_name");
+            map.remove("label");
+            map.remove("description");
+            map.remove("error_message");
+            for child in map.values_mut() {
+                strip_office_http_prose(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_office_http_prose(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn serialize_office_http_payload<T: Serialize>(payload: &T) -> Result<String, std::io::Error> {
+    let mut value = serde_json::to_value(payload).map_err(|error| to_io(error.to_string()))?;
+    strip_office_http_prose(&mut value);
+    serde_json::to_string(&value).map_err(|error| to_io(error.to_string()))
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn serialize_office_http_payload_api<T: Serialize>(
+    payload: &T,
+    stage: &'static str,
+) -> crate::error::Result<String> {
+    let mut value = serde_json::to_value(payload).map_err(|error| Error::Other {
+        source: Box::new(error),
+        stage,
+    })?;
+    strip_office_http_prose(&mut value);
+    serde_json::to_string(&value).map_err(|error| Error::Other {
+        source: Box::new(error),
+        stage,
+    })
 }
 
 #[cfg(all(
@@ -261,7 +320,7 @@ impl OfficeHttpClient for HandlerOfficeHttpClient<'_> {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-fn parse_capability(capability: Option<&str>) -> Result<Option<OfficeCapability>, std::io::Error> {
+fn parse_capability(capability: Option<&str>) -> crate::error::Result<Option<OfficeCapability>> {
     let Some(capability) = capability else {
         return Ok(None);
     };
@@ -271,7 +330,10 @@ fn parse_capability(capability: Option<&str>) -> Result<Option<OfficeCapability>
         "documents" => OfficeCapability::Documents,
         "contacts_directory" => OfficeCapability::ContactsDirectory,
         other => {
-            return Err(to_io(format!("unknown office capability '{}'", other)));
+            return Err(Error::config(
+                "office_capability",
+                format!("unsupported office capability '{other}'"),
+            ));
         }
     };
     Ok(Some(value))
@@ -288,7 +350,10 @@ pub fn get_accounts_body(
     capability: Option<&str>,
 ) -> Result<String, std::io::Error> {
     let items = office_config_service(ctx)
-        .account_summaries(provider_kind, parse_capability(capability)?)
+        .account_summaries(
+            provider_kind,
+            parse_capability(capability).map_err(|error| to_io(error.to_string()))?,
+        )
         .map_err(|e| to_io(e.to_string()))?;
     serde_json::to_string(&AccountSummaryListResponse {
         count: items.len(),
@@ -305,15 +370,17 @@ pub fn get_accounts_body(
 pub fn get_providers_body(
     ctx: &HandlerContext,
     capability: Option<&str>,
-) -> Result<String, std::io::Error> {
+) -> crate::error::Result<String> {
     let items = office_config_service(ctx)
         .provider_catalog(parse_capability(capability)?)
-        .map_err(|e| to_io(e.to_string()))?;
-    serde_json::to_string(&ProviderCatalogListResponse {
-        count: items.len(),
-        items,
-    })
-    .map_err(|e| to_io(e.to_string()))
+        .map_err(|error| error.with_stage("http_config_provider_catalog"))?;
+    serialize_office_http_payload_api(
+        &ProviderCatalogListResponse {
+            count: items.len(),
+            items,
+        },
+        "http_config_provider_catalog",
+    )
 }
 
 #[cfg(all(
@@ -340,16 +407,23 @@ pub fn get_capabilities_body(ctx: &HandlerContext) -> Result<String, std::io::Er
 pub fn get_capability_detail_body(
     ctx: &HandlerContext,
     capability: &str,
-) -> Result<String, std::io::Error> {
-    let capability =
-        parse_capability(Some(capability))?.ok_or_else(|| to_io("missing office capability"))?;
+) -> crate::error::Result<String> {
+    let capability = parse_capability(Some(capability))?.ok_or_else(|| Error::Other {
+        source: Box::new(std::io::Error::other("missing office capability")),
+        stage: "http_config_capability_detail",
+    })?;
     let status = office_config_service(ctx)
         .capability_statuses(Some(capability))
-        .map_err(|e| to_io(e.to_string()))?
+        .map_err(|error| error.with_stage("http_config_capability_detail"))?
         .into_iter()
         .next()
-        .ok_or_else(|| to_io(format!("missing capability status for '{capability:?}'")))?;
-    serde_json::to_string(&status).map_err(|e| to_io(e.to_string()))
+        .ok_or_else(|| Error::Other {
+            source: Box::new(std::io::Error::other(format!(
+                "missing capability status for '{capability:?}'"
+            ))),
+            stage: "http_config_capability_detail",
+        })?;
+    serialize_office_http_payload_api(&status, "http_config_capability_detail")
 }
 
 #[cfg(all(
@@ -362,15 +436,13 @@ pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
         Ok(Value::Object(obj)) => {
             match parse_public_account_upsert_request_value(&obj, "http_config_accounts_post") {
                 Ok(request) => request,
-                Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+                Err(error) => {
+                    return Ok(ApiResponse::err_400_key(api_contract::error_key(&error)));
+                }
             }
         }
-        Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
-        Ok(_) => {
-            return Ok(ApiResponse::err_400(
-                "account create body must be a JSON object",
-            ))
-        }
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+        Ok(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
     };
     let cfg = ctx.config();
     let mut http = crate::network::create_http_client_with_config(
@@ -394,18 +466,18 @@ pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
                 .account
                 .expect("applied onboarding result must include detail");
             ctx.reload_config();
-            let body = serde_json::to_string(&detail).map_err(|error| to_io(error.to_string()))?;
+            let body = serialize_office_http_payload(&detail)?;
             Ok(ApiResponse::ok_200_json(&body))
         }
         Ok(result) => {
-            let body = serde_json::to_string(&result).map_err(|error| to_io(error.to_string()))?;
+            let body = serialize_office_http_payload(&result)?;
             Ok(ApiResponse {
                 status: 400,
                 status_text: "Bad Request",
                 body: body.into_bytes(),
             })
         }
-        Err(error) => Ok(ApiResponse::err_400(&error.to_string())),
+        Err(error) => Ok(ApiResponse::err_400_key(api_contract::error_key(&error))),
     }
 }
 
@@ -421,7 +493,7 @@ pub fn get_account_detail_body(
     let detail: OfficeConfigAccountDetail = office_config_service(ctx)
         .account_detail(account_key)
         .map_err(|e| to_io(e.to_string()))?;
-    serde_json::to_string(&detail).map_err(|e| to_io(e.to_string()))
+    serialize_office_http_payload(&detail)
 }
 
 #[cfg(all(
@@ -434,18 +506,17 @@ pub fn post_account_config(
     account_key: &str,
     body: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let request: OfficeAccountConfigSaveRequest = match serde_json::from_str(body) {
         Ok(value) => value,
-        Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
     };
     match office_config_service(ctx).save_account_config(account_key, &request) {
         Ok(detail) => {
             ctx.reload_config();
-            let body = serde_json::to_string(&detail).map_err(|error| to_io(error.to_string()))?;
+            let body = serialize_office_http_payload(&detail)?;
             Ok(ApiResponse::ok_200_json(&body))
         }
-        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+        Err(error) => Ok(ApiResponse::err_400_key(api_contract::error_key(&error))),
     }
 }
 
@@ -458,13 +529,25 @@ pub fn post_account_probe(
     ctx: &HandlerContext,
     account_key: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match office_config_service(ctx).probe(account_key) {
         Ok(result) => {
             let body = serde_json::to_string(&result).map_err(|error| to_io(error.to_string()))?;
             Ok(ApiResponse::ok_200_json(&body))
         }
-        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+        Err(error) => {
+            let expose_upstream = !error.stage().starts_with("office_config_");
+            let upstream_error = expose_upstream.then(|| error.to_string());
+            Ok(ApiResponse::err_key_with_meta(
+                400,
+                "Bad Request",
+                api_contract::error_key(&error),
+                Some(error.stage()),
+                upstream_error.as_deref(),
+                error.http_status_code(),
+                None,
+                serde_json::Map::new(),
+            ))
+        }
     }
 }
 
@@ -478,7 +561,6 @@ pub fn post_account_revoke(
     account_key: &str,
     body: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let request: RevokeRequest = if body.trim().is_empty() {
         RevokeRequest {
             clear_runtime_status: true,
@@ -486,7 +568,7 @@ pub fn post_account_revoke(
     } else {
         match serde_json::from_str(body) {
             Ok(value) => value,
-            Err(error) => return Ok(ApiResponse::err_400(&error.to_string())),
+            Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
         }
     };
     match office_config_service(ctx).revoke(account_key, request.clear_runtime_status) {
@@ -498,7 +580,7 @@ pub fn post_account_revoke(
             })
             .to_string(),
         )),
-        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+        Err(error) => Ok(ApiResponse::err_400_key(api_contract::error_key(&error))),
     }
 }
 
@@ -511,7 +593,6 @@ pub fn delete_account(
     ctx: &HandlerContext,
     account_key: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match office_config_service(ctx).delete_account(account_key) {
         Ok(()) => {
             ctx.reload_config();
@@ -524,7 +605,7 @@ pub fn delete_account(
                 .to_string(),
             ))
         }
-        Err(error) => Ok(ApiResponse::err_400(&tr_error(&error, loc))),
+        Err(error) => Ok(ApiResponse::err_400_key(api_contract::error_key(&error))),
     }
 }
 
@@ -545,13 +626,12 @@ pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error>
 
 /// POST /api/config/hardware：校验并写入 HardwareSegment 到 SPIFFS config/hardware.json。
 pub fn post_hardware(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_hardware_segment(ctx.config_file_store.as_ref(), body) {
         Ok(()) => {
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
@@ -562,7 +642,6 @@ pub fn get_audio_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
 /// POST /api/config/audio：校验并写入 AudioSegment 到 SPIFFS config/audio.json。
 pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     match config::save_audio_segment(ctx.config_file_store.as_ref(), body) {
         Ok(()) => {
             ctx.reload_config();
@@ -570,7 +649,7 @@ pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::
                 r#"{"ok":true,"restart_required":true}"#,
             ))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
@@ -581,7 +660,6 @@ pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> 
 
 /// POST /api/config/display：校验并写入 DisplayConfig 到 SPIFFS config/display.json。
 pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let loc = locale_from_store(ctx.config_store.as_ref());
     let hw_devices = ctx.config().hardware_devices.clone();
     match config::save_display_segment(ctx.config_file_store.as_ref(), &hw_devices, body) {
         Ok(()) => {
@@ -590,7 +668,7 @@ pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std
                 r#"{"ok":true,"restart_required":true}"#,
             ))
         }
-        Err(e) => Ok(ApiResponse::err_400(&tr_error(&e, loc))),
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 

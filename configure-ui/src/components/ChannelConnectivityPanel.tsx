@@ -9,6 +9,7 @@ import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import type { TFunction } from "i18next";
 import type { ChannelConnectivityItem } from "../api/endpoints/system";
+import { translateApiError } from "../i18n/apiErrors";
 import { PanelStateBlock } from "./PanelStateBlock";
 import { SectionLoadProgress } from "./SectionLoadProgress";
 import { DASHBOARD_INSET_WELL_BG } from "../theme/panelStyles";
@@ -31,20 +32,9 @@ const MICRO_CELL_SX = {
 
 const ROW_DIVIDER = "none";
 
-const CHANNEL_UNAVAIL = "channel connectivity unavailable";
-
-function isI18nKey(msg: string): boolean {
-  return /^[a-z]+\.[a-zA-Z0-9.]+$/.test(msg.trim());
-}
-
 /** 将 API / 前端错误码转为展示文案 */
 function resolveChannelConnectivityError(error: string, t: TFunction): string {
-  const trimmed = error.trim();
-  if (!trimmed) return t("device.channelConnectivityLoadFailedHint");
-  if (trimmed === CHANNEL_UNAVAIL)
-    return t("device.channelConnectivityUnavailable");
-  if (isI18nKey(trimmed)) return t(trimmed);
-  return trimmed;
+  return translateApiError(t, error, "device.channelConnectivityLoadFailedHint");
 }
 
 function StatPill({
@@ -156,14 +146,14 @@ function ChannelRow({
   label,
   configured,
   ok,
-  message,
+  messageKey,
   t,
   isLast,
 }: {
   label: string;
   configured: boolean;
   ok: boolean;
-  message?: string | null;
+  messageKey?: string | null;
   t: TFunction;
   isLast: boolean;
 }) {
@@ -212,7 +202,7 @@ function ChannelRow({
           statusLabel={statusText}
         />
       </Box>
-      {configured && message?.trim() ? (
+      {configured && messageKey?.trim() ? (
         <Box
           sx={{
             mt: 0.875,
@@ -273,7 +263,7 @@ function ChannelRow({
               wordBreak: "break-word",
             }}
           >
-            {isI18nKey(message) ? t(message) : message}
+            {translateApiError(t, messageKey, "")}
           </Typography>
         </Box>
       ) : null}
@@ -446,7 +436,7 @@ export function ChannelConnectivityPanel({
                 label={channelLabel(ch.id)}
                 configured={ch.configured}
                 ok={ch.ok}
-                message={ch.message}
+                messageKey={ch.message_key}
                 t={t}
                 isLast={i === channels.length - 1}
               />
