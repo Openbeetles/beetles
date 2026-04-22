@@ -71,3 +71,44 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::body;
+    use serde_json::Value;
+
+    #[test]
+    fn body_serializes_documented_resource_contract_fields() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+
+        let payload = body(&ctx).expect("resource body");
+        let parsed: Value = serde_json::from_str(&payload).expect("valid resource json");
+
+        for key in [
+            "pressure",
+            "tls_fragmentation_risk",
+            "storage_contention_risk",
+            "heap_free_internal",
+            "heap_free_spiram",
+            "heap_largest_block_internal",
+            "active_http_count",
+            "active_wss_count",
+            "active_agent_tasks",
+            "inbound_depth",
+            "outbound_depth",
+            "budget",
+            "session_count",
+            "storage_used_kb",
+            "storage_total_kb",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing resource field: {key}");
+        }
+
+        assert!(parsed["budget"]["level"].is_string());
+        assert!(parsed["budget"]["system_prompt_max"].is_number());
+        assert!(parsed["budget"]["messages_max"].is_number());
+        assert!(parsed["budget"]["response_body_max"].is_number());
+        assert!(parsed["budget"]["reconnect_backoff_secs"].is_number());
+    }
+}

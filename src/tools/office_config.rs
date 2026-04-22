@@ -42,9 +42,40 @@ struct ProviderSchemaResponse {
     providers: Vec<OfficeProviderSchema>,
 }
 
+#[derive(Serialize)]
+struct OfficeInspectCredentialsResponse {
+    items: Vec<crate::office::OfficeCredentialStatus>,
+}
+
+#[derive(Serialize)]
+struct OfficeInspectSnapshotResponse {
+    accounts: crate::config::OfficeAccountsSegment,
+    credentials: OfficeInspectCredentialsResponse,
+    summary: crate::office::OfficeAuthoritySummary,
+}
+
 impl OfficeConfigTool {
     pub fn new(service: OfficeConfigManagementService) -> Self {
         Self { service }
+    }
+}
+
+fn public_inspect_snapshot(
+    snapshot: crate::office::OfficeConfigSnapshot,
+) -> OfficeInspectSnapshotResponse {
+    let mut credential_statuses = snapshot
+        .credentials
+        .items
+        .into_iter()
+        .map(|credential| credential.status())
+        .collect::<Vec<_>>();
+    credential_statuses.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+    OfficeInspectSnapshotResponse {
+        accounts: snapshot.accounts,
+        credentials: OfficeInspectCredentialsResponse {
+            items: credential_statuses,
+        },
+        summary: snapshot.summary,
     }
 }
 
@@ -161,7 +192,7 @@ impl Tool for OfficeConfigTool {
                 &OfficeConfigResponse {
                     op: "inspect",
                     ok: true,
-                    payload: self.service.inspect()?,
+                    payload: public_inspect_snapshot(self.service.inspect()?),
                 },
             )?)),
             "assess" => {
@@ -324,6 +355,10 @@ impl Tool for OfficeConfigTool {
             .with_rollback_kind(ToolRollbackKind::ConfigRestore)
     }
 
+    fn requires_network(&self) -> bool {
+        true
+    }
+
     fn execution_shape(&self, args: &str) -> Result<ToolExecutionShape> {
         let obj = parse_tool_args(args, "tool_office_config_governance")?;
         let op = obj.get("op").and_then(Value::as_str).unwrap_or("inspect");
@@ -351,6 +386,17 @@ impl Tool for OfficeConfigTool {
             r#"{"op":"apply_account"}"#,
             r#"{"op":"resolve_account","capability":"mail"}"#,
         ]
+    }
+
+    fn requires_network_for(&self, args: &str) -> Result<bool> {
+        let obj = parse_tool_args(args, "tool_office_config_network")?;
+        let op = obj
+            .get("op")
+            .and_then(Value::as_str)
+            .unwrap_or("inspect")
+            .trim()
+            .to_ascii_lowercase();
+        Ok(matches!(op.as_str(), "apply_account" | "probe"))
     }
 }
 
@@ -742,6 +788,41 @@ mod tests {
     }
 
     #[test]
+    fn inspect_redacts_raw_credentials_and_returns_status_only() {
+        let fixture = build_fixture();
+        fixture
+            .credential_store
+            .set(&OfficeCredential {
+                account_key: "mail-work".to_string(),
+                access_token: "secret-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                token_endpoint: "https://example.com/token".to_string(),
+                expires_at_unix_secs: 42,
+                updated_at: 7,
+                metadata: BTreeMap::from([("tenant".to_string(), "alpha".to_string())]),
+            })
+            .expect("seed credential");
+        let mut ctx = DummyCtx;
+
+        let payload = fixture
+            .tool
+            .execute(r#"{"op":"inspect"}"#, &mut ctx)
+            .expect("inspect");
+        let payload: Value = serde_json::from_str(&payload).expect("valid inspect json");
+        let credential = &payload["payload"]["credentials"]["items"][0];
+
+        assert_eq!(credential["account_key"], "mail-work");
+        assert_eq!(credential["configured"], true);
+        assert_eq!(credential["has_refresh_token"], true);
+        assert_eq!(credential["expires_at_unix_secs"], 42);
+        assert_eq!(credential["updated_at"], 7);
+        assert!(credential.get("access_token").is_none());
+        assert!(credential.get("refresh_token").is_none());
+        assert!(credential.get("token_endpoint").is_none());
+        assert!(credential.get("metadata").is_none());
+    }
+
+    #[test]
     fn provider_schema_accepts_top_level_provider_alias() {
         let fixture = build_fixture();
         let mut ctx = DummyCtx;
@@ -991,6 +1072,25 @@ mod tests {
         assert_eq!(shape.approval_mode, ToolApprovalMode::Automatic);
         assert!(shape.approval_granted);
         assert_eq!(shape.rollback_kind, ToolRollbackKind::ConfigRestore);
+    }
+
+    #[test]
+    fn office_config_declares_dynamic_network_usage_by_operation() {
+        let fixture = build_fixture();
+
+        assert!(fixture.tool.requires_network());
+        assert!(!fixture
+            .tool
+            .requires_network_for(r#"{"op":"inspect"}"#)
+            .expect("inspect network classification"));
+        assert!(fixture
+            .tool
+            .requires_network_for(r#"{"op":"apply_account"}"#)
+            .expect("apply_account network classification"));
+        assert!(fixture
+            .tool
+            .requires_network_for(r#"{"op":"probe","account_key":"mail-work"}"#)
+            .expect("probe network classification"));
     }
 
     #[test]

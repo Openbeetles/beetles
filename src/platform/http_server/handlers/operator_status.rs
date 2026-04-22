@@ -29,8 +29,13 @@ mod tests {
         let parsed: Value = serde_json::from_str(&payload).unwrap();
 
         assert!(parsed.get("platform_contract").is_some());
+        assert!(parsed.get("build_package").is_some());
+        assert!(parsed.get("operator_surface").is_some());
+        assert!(parsed.get("reply_pipeline").is_some());
+        assert!(parsed.get("memory_operator_surface").is_some());
         assert!(parsed.get("workflow").is_some());
         assert!(parsed.get("programmable_reasoning").is_some());
+        assert!(parsed.get("capability_planes").is_some());
         assert!(parsed.get("initiative").is_some());
         assert!(parsed.get("presence").is_some());
         assert!(parsed.get("runtime_mode").is_some());

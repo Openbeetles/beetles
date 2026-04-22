@@ -64,7 +64,7 @@ impl Tool for LuaMemoryQueryTool {
     }
 
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"script":{"type":"string","description":"Lua script chunk. It receives a read-only memory snapshot as global `input` and must return an object with summary, optional groups, and optional candidates."},"long_term_query":{"type":"object","description":"Optional structured long-term memory query filter."},"long_term_limit":{"type":"integer","description":"Optional long-term memory limit; defaults to 8 and is clamped to the memory query budget."},"continuity_scope":{"type":"object","description":"Optional continuity scope selector with scope_kind and scope_id."},"continuity_limit":{"type":"integer","description":"Optional continuity capsule limit; defaults to 6 and is clamped to the memory query budget."},"include_long_term":{"type":"boolean","description":"Whether to include canonical long-term memory records. Default true."},"include_continuity":{"type":"boolean","description":"Whether to include continuity capsules. Default true."},"timeout_ms":{"type":"integer","description":"Optional timeout in milliseconds; clamped into the programmable reasoning budget window."}},"required":["script"]}"#
+        r#"{"type":"object","properties":{"script":{"type":"string","description":"Lua script chunk. It receives a read-only memory snapshot as global `input` and must return an object with summary, optional groups, and optional candidates."},"long_term_query":{"type":"object","description":"Optional structured long-term memory query filter."},"long_term_limit":{"type":"integer","description":"Optional long-term memory limit; defaults to 8 and is clamped to the memory query budget."},"continuity_scope":{"type":"object","description":"Optional continuity scope selector with scope_kind and scope_id."},"continuity_limit":{"type":"integer","description":"Optional continuity capsule limit; defaults to 6 and is clamped to the memory query budget."},"include_long_term":{"type":"boolean","description":"Whether to include canonical long-term memory records. Default true. At least one memory plane must remain enabled."},"include_continuity":{"type":"boolean","description":"Whether to include continuity capsules. Default true. At least one memory plane must remain enabled."},"timeout_ms":{"type":"integer","description":"Optional timeout in milliseconds; clamped into the programmable reasoning budget window."}},"required":["script"]}"#
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {
@@ -131,6 +131,20 @@ fn build_selection(
                     scope_id: chat_id.to_string(),
                 })
         });
+    let include_long_term = obj
+        .get("include_long_term")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let include_continuity = obj
+        .get("include_continuity")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !include_long_term && !include_continuity {
+        return Err(Error::config(
+            "lua_memory_query_tool",
+            "at least one memory plane must be included",
+        ));
+    }
 
     Ok(MemoryQuerySelection {
         long_term_query,
@@ -145,14 +159,8 @@ fn build_selection(
             .and_then(Value::as_u64)
             .unwrap_or(MEMORY_QUERY_DEFAULT_CONTINUITY_LIMIT as u64)
             as usize,
-        include_long_term: obj
-            .get("include_long_term")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
-        include_continuity: obj
-            .get("include_continuity")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        include_long_term,
+        include_continuity,
     })
 }
 

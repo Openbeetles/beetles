@@ -1383,6 +1383,9 @@ Success response: `200 application/json`
 
 Purpose: clear the current config and return the device to the unactivated state.
 
+The route returns `200` only after the pairing code is cleared and reset-owned config/runtime files are removed successfully.
+After the reset succeeds, subsequent control-plane reads reflect the default config immediately.
+
 Auth: `Pairing code + CSRF`
 
 Success response: `200 application/json`

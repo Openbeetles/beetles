@@ -468,8 +468,25 @@ fn communication_plane_startup(
         start_dispatch: http_client_ready,
         start_senders: http_client_ready,
         start_agent: http_client_ready,
-        start_voice_session: voice_runtime_ready,
+        start_voice_session: http_client_ready && voice_runtime_ready,
     }
+}
+
+fn refresh_communication_plane_startup(assembly: &mut PreparedRuntimeAssembly) {
+    let http_client_ready = assembly
+        .network_governor
+        .open_http_client(HttpClientClass::Background)
+        .is_ok();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
+    assembly.communication_plane =
+        communication_plane_startup(http_client_ready, assembly.voice_event_channel.is_some());
+    let state_fs_ready = assembly.runtime.platform.spiffs_usage().is_some();
+    beetle::orchestrator::observe_runtime_capabilities_from_platform(
+        assembly.runtime.platform.as_ref(),
+        http_client_ready,
+        Some(state_fs_ready),
+    );
 }
 
 #[cfg(test)]
@@ -621,15 +638,18 @@ mod tests {
         assert!(!disabled.start_dispatch);
         assert!(!disabled.start_senders);
         assert!(!disabled.start_agent);
-        assert!(disabled.start_voice_session);
+        assert!(!disabled.start_voice_session);
 
-        let enabled = communication_plane_startup(true, false);
+        let enabled = communication_plane_startup(true, true);
         assert!(enabled.start_http_backed_ingress);
         assert!(enabled.start_poll_ingress);
         assert!(enabled.start_dispatch);
         assert!(enabled.start_senders);
         assert!(enabled.start_agent);
-        assert!(!enabled.start_voice_session);
+        assert!(enabled.start_voice_session);
+
+        let no_voice = communication_plane_startup(true, false);
+        assert!(!no_voice.start_voice_session);
     }
 
     #[test]
@@ -2336,13 +2356,7 @@ fn prepare_runtime_assembly(
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let state_fs_ready = platform.spiffs_usage().is_some();
     let wall_clock_valid = beetle::platform::time::wall_clock_is_trustworthy();
-    let http_client_ready = network_governor
-        .open_http_client(HttpClientClass::Background)
-        .is_ok();
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
-    let communication_plane =
-        communication_plane_startup(http_client_ready, voice_event_channel.is_some());
+    let communication_plane = communication_plane_startup(false, voice_event_channel.is_some());
     let spiffs_info = platform
         .spiffs_usage()
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
@@ -2357,7 +2371,7 @@ fn prepare_runtime_assembly(
     );
     beetle::orchestrator::observe_runtime_capabilities_from_platform(
         platform.as_ref(),
-        http_client_ready,
+        false,
         Some(state_fs_ready),
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -2392,7 +2406,7 @@ fn prepare_runtime_assembly(
 }
 
 fn start_support_planes(
-    assembly: &PreparedRuntimeAssembly,
+    assembly: &mut PreparedRuntimeAssembly,
     wifi_init_ok: bool,
 ) -> beetle::Result<()> {
     #[cfg(feature = "config_api")]
@@ -2465,6 +2479,9 @@ fn start_support_planes(
     if wifi_init_ok {
         beetle::platform::wait_for_network_ready();
     }
+    // Probe HTTP readiness only after the platform reports network-ready so a
+    // transient boot race does not permanently disable the main runtime plane.
+    refresh_communication_plane_startup(assembly);
     beetle::orchestrator::init();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("orchestrator_initialized");
@@ -2935,7 +2952,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         None => return,
     };
 
-    if let Err(error) = start_support_planes(&assembly, wifi_init_ok) {
+    if let Err(error) = start_support_planes(&mut assembly, wifi_init_ok) {
         log::error!("[{}] support plane startup failed: {}", TAG, error);
         app_runtime_support::record_startup_failure_and_request_restart(
             &assembly.runtime.platform,
