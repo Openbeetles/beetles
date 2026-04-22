@@ -977,36 +977,39 @@ pub fn is_private_url(url: &str) -> bool {
 //
 // Single tuning knob: `LINUX_RUSTLS_THREAD_STACK` (non-ESP targets).
 // Raise this constant if a board still overflows; all dependent constants
-// follow automatically.  Verified floor: >16 KB required; 64 KB comfortable
-// on boards with ≥256 MB RAM.  Do NOT write 8192 / 16384 inline in main.rs
+// follow automatically.  Verified floor: >16 KB required; 64 KB was still
+// insufficient on Luckfox-class Linux embedded boards once the current
+// agent/user-turn stack matured, so the host baseline is now 96 KB.  Do NOT
+// write 8192 / 16384 inline in main.rs
 // for any thread that calls `create_http_client` or `connect_wss` on Linux.
 //
 // Thread → constant mapping (Linux column):
 //
 // | Thread(s)                             | Constant               | ESP   | Linux |
 // |---------------------------------------|------------------------|-------|-------|
-// | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 64 KB |
-// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 64 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 64 KB |
-// | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
-// | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 64 KB |
+// | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
+// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 96 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 96 KB |
+// | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
+// | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 64 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
+// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
-// | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 64 KB | ← STT + TTS HTTPS
-// | voice_realtime_connect                | STACK_CHANNEL_WS       | 12 KB | 64 KB | ← shared WSS/TLS connect budget
-// | voice_realtime                        | STACK_VOICE_REALTIME   | 16 KB | 64 KB | ← steady-state realtime session owner after connect handoff
+// | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS
+// | voice_realtime_connect                | STACK_CHANNEL_WS       | 12 KB | 96 KB | ← shared WSS/TLS connect budget
+// | voice_realtime                        | STACK_VOICE_REALTIME   | 16 KB | 96 KB | ← steady-state realtime session owner after connect handoff
 // ---------------------------------------------------------------------------
 
 /// Linux（含嵌入式）：TLS 栈远大于 ESP 的 16KB，但不必拉到桌面级上百 KB；
-/// 单一调节点，所有下游常量跟随。若仍溢出先试 96KB。
+/// 单一调节点，所有下游常量跟随。Luckfox Linux 实机在 64KB 预算下仍会把
+/// `agent_loop` 首条真实 user turn 打爆，因此当前基线提升到 96KB；若仍溢出再试 128KB。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-const LINUX_RUSTLS_THREAD_STACK: usize = 64 * 1024;
+const LINUX_RUSTLS_THREAD_STACK: usize = 96 * 1024;
 
 /// `spawn_guarded` 默认栈：ESP 维持 8KB；Linux 与 TLS 线程同档。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1033,7 +1036,7 @@ pub const STACK_AGENT_LOOP: usize = 32 * 1024;
 pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `tg_sender` / `qq_sender` / `fs_sender` / `dt_sender` / `wc_sender` / `tg_poll`：
-/// 各通道出站 HTTPS 与入站轮询。ESP 8KB；Linux 64KB。
+/// 各通道出站 HTTPS 与入站轮询。ESP 8KB；Linux 96KB。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_CHANNEL_SENDER: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1342,8 +1345,14 @@ mod thread_stack_budget_tests {
 
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     #[test]
-    fn bg_timer_uses_host_stack_budget() {
+    fn linux_tls_threads_share_host_stack_budget() {
         assert_eq!(STACK_BG_TIMER, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_AGENT_LOOP, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_CHANNEL_WS, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_CHANNEL_SENDER, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_VOICE_SESSION, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_VOICE_REALTIME, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(LINUX_RUSTLS_THREAD_STACK, 96 * 1024);
     }
 }
 

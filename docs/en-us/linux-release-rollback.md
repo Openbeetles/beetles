@@ -69,7 +69,7 @@ If it fails quickly and repeatedly during the validation window, Beetle prefers 
 - show release status: `beetle release status`
 - request rollback: `beetle release rollback`
 - restart the managed service: `beetle restart`
-- stop the managed service: `beetle stop`
+- stop the active Beetle runtime: `beetle stop` (prefer the managed service; when unmanaged, request the live `beetle run` process to exit gracefully)
 
 ## Direct takeaways
 

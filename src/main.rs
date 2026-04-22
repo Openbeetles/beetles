@@ -871,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_ws_stack_budget_is_trimmed_on_esp() {
+    fn channel_ws_stack_budget_matches_platform_contract() {
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         {
             assert!(
@@ -882,7 +882,16 @@ mod tests {
 
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         {
-            assert_eq!(beetle::util::STACK_CHANNEL_WS, 64 * 1024);
+            assert_eq!(
+                beetle::util::STACK_CHANNEL_WS,
+                beetle::util::STACK_AGENT_LOOP,
+                "Linux WSS threads should stay on the shared host TLS stack budget",
+            );
+            assert_eq!(
+                beetle::util::STACK_CHANNEL_WS,
+                beetle::util::STACK_CHANNEL_SENDER,
+                "Linux WSS and sender threads should follow the same host TLS stack budget",
+            );
         }
     }
 
@@ -1880,24 +1889,21 @@ fn handle_restart_command() {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn handle_stop_command() {
-    match beetle::runtime::linux_service::run_beetle_service_action("stop") {
-        Ok(Some(status)) if status.success() => {
-            println!("beetle service stop requested.");
-            return;
+    match beetle::runtime::linux_stop::request_linux_stop() {
+        Ok(beetle::runtime::linux_stop::LinuxStopOutcome::ManagedService) => {
+            println!("beetle stop requested via managed service.");
         }
-        Ok(Some(status)) => {
-            eprintln!("beetle service stop failed with exit status: {}", status);
-            std::process::exit(status.code().unwrap_or(1));
+        Ok(beetle::runtime::linux_stop::LinuxStopOutcome::DirectProcess { targets }) => {
+            println!(
+                "beetle stop requested for active runtime: {}",
+                targets.join(", ")
+            );
         }
-        Ok(None) => {}
         Err(error) => {
-            eprintln!("failed to run beetle service stop: {}", error);
+            eprintln!("failed to stop beetle: {}", error);
             std::process::exit(1);
         }
     }
-
-    eprintln!("stop requires a managed beetle service (systemd or /etc/init.d/beetle).");
-    std::process::exit(1);
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -2032,6 +2038,12 @@ fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
     log_launch_role("agent");
     if let Err(error) = ensure_linux_single_run() {
         log::error!("[{}] duplicate runtime start blocked: {}", TAG, error);
+        std::process::exit(1);
+    }
+    if let Err(error) =
+        beetle::runtime::linux_signal::install_linux_signal_bridge(Arc::clone(&platform))
+    {
+        log::error!("[{}] linux signal bridge install failed: {}", TAG, error);
         std::process::exit(1);
     }
     register_platform_memory_snapshot_provider(&platform);
@@ -2647,8 +2659,13 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         .take()
         .ok_or_else(|| beetle::Error::config("dispatch_spawn", "outbound_rx already taken"))?;
     let sinks_clone = Arc::clone(&sinks);
+    let channel_capability_registry = Arc::clone(&assembly.channel_capability_registry);
     spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
-        run_dispatch(outbound_rx_for_dispatch, sinks_clone)
+        run_dispatch(
+            outbound_rx_for_dispatch,
+            sinks_clone,
+            channel_capability_registry,
+        )
     })
     .map_err(|error| beetle::Error::io("dispatch_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

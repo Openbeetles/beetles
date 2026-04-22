@@ -8,6 +8,7 @@ pub(crate) mod dingtalk;
 mod dispatch;
 pub(crate) mod feishu;
 mod http_client;
+mod outbound_text;
 mod qq;
 mod send;
 pub(crate) mod telegram;

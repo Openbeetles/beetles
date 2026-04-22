@@ -69,7 +69,7 @@ Linux 服务入口现在是：
 - 看发布状态： `beetle release status`
 - 请求回滚： `beetle release rollback`
 - 重启托管服务： `beetle restart`
-- 停止托管服务： `beetle stop`
+- 停止当前 Beetle 运行实例： `beetle stop`（优先走托管服务；若宿主未受管则直接请求活跃 `beetle run` 进程优雅退出）
 
 ## 几个直接结论
 

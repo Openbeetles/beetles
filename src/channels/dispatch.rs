@@ -2,6 +2,7 @@
 //! Outbound dispatch: recv from outbound_rx, send via MessageSink; per-channel circuit breaker.
 
 use crate::bus::{CanonicalMessageBody, OutboundKind, OutboundRx, PcMsg, MAX_CONTENT_LEN};
+use crate::channel_capability::ChannelCapabilityRegistry;
 use crate::config::AppConfig;
 use crate::constants::VOICE_CHANNEL_NAME;
 use crate::error::Result;
@@ -228,18 +229,22 @@ fn replay_ready_messages_for_tick<FH, FS>(
 fn dispatch_via_sink(
     tag: &str,
     sinks: &ChannelSinks,
+    capability_registry: &ChannelCapabilityRegistry,
     msg: &crate::bus::PcMsg,
-    content: &str,
 ) -> bool {
     let Some(sink) = sinks.get(&msg.channel) else {
         log::warn!("[{}] no sink for channel={}", tag, msg.channel);
         return false;
     };
+    let prepared = super::outbound_text::prepare_outbound_message_for_channel(
+        msg,
+        capability_registry.get(msg.channel.as_ref()),
+    );
 
     crate::platform::task_wdt::feed_current_task();
 
     if msg.outbound_kind.is_supplemental() {
-        match sink.send_message(msg, content) {
+        match sink.send_message(&prepared.msg, &prepared.content) {
             Ok(()) => {
                 metrics::record_dispatch_send(true);
                 log::debug!(
@@ -282,7 +287,7 @@ fn dispatch_via_sink(
             std::thread::sleep(Duration::from_millis(SEND_RETRY_DELAY_MS));
             crate::platform::task_wdt::feed_current_task();
         }
-        match sink.send_message(msg, content) {
+        match sink.send_message(&prepared.msg, &prepared.content) {
             Ok(()) => {
                 log::debug!(
                     "[latency][dispatch] req_id={} channel={} attempt={} status=ok",
@@ -323,7 +328,11 @@ const DISPATCH_POLL_MAX_WAIT_MS: u64 = 200;
 
 /// 循环接收出站消息，按 msg.channel 查找 sink 并调用 send；失败打日志并重试；
 /// 单通道熔断冷却期内暂存消息，冷却结束后重放。
-pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
+pub fn run_dispatch(
+    outbound_rx: OutboundRx,
+    sinks: Arc<ChannelSinks>,
+    capability_registry: Arc<ChannelCapabilityRegistry>,
+) {
     const TAG: &str = "channel_dispatch";
     let mut cooldown_buffer: VecDeque<crate::bus::PcMsg> = VecDeque::new();
 
@@ -333,8 +342,7 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
             if outbound_blocked(buffered) {
                 return false;
             }
-            let buffered_content = truncate_content_to_max(&buffered.content, MAX_CONTENT_LEN);
-            dispatch_via_sink(TAG, sinks.as_ref(), buffered, &buffered_content)
+            dispatch_via_sink(TAG, sinks.as_ref(), capability_registry.as_ref(), buffered)
         });
         let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
             Ok(m) => m,
@@ -383,7 +391,7 @@ pub fn run_dispatch(outbound_rx: OutboundRx, sinks: Arc<ChannelSinks>) {
             }
             continue;
         }
-        let _ = dispatch_via_sink(TAG, sinks.as_ref(), &msg, &content);
+        let _ = dispatch_via_sink(TAG, sinks.as_ref(), capability_registry.as_ref(), &msg);
     }
 }
 
@@ -810,6 +818,7 @@ mod tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let mut msg = build_msg("ready", "chat-1", "supplemental");
         msg.outbound_kind = OutboundKind::Supplemental;
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
         let mut sinks = super::ChannelSinks::new();
         sinks.register(
             "ready",
@@ -821,8 +830,8 @@ mod tests {
         assert!(!super::dispatch_via_sink(
             "channel_dispatch",
             &sinks,
+            &capability_registry,
             &msg,
-            "supplemental"
         ));
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }

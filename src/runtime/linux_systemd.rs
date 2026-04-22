@@ -1,6 +1,7 @@
 //! Linux systemd helpers for beetle service detection and control.
 
 use crate::error::{Error, Result};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 
@@ -35,7 +36,7 @@ fn beetle_systemd_unit_managed() -> Result<bool> {
 }
 
 fn query_systemctl_show_value(property: &str) -> Result<Option<String>> {
-    let output = Command::new("systemctl")
+    let output = match Command::new("systemctl")
         .args([
             "show",
             "--property",
@@ -44,11 +45,19 @@ fn query_systemctl_show_value(property: &str) -> Result<Option<String>> {
             BEETLE_SYSTEMD_UNIT,
         ])
         .output()
-        .map_err(|error| Error::io("linux_systemd_show", error))?;
+    {
+        Ok(output) => output,
+        Err(error) if systemctl_command_missing(&error) => return Ok(None),
+        Err(error) => return Err(Error::io("linux_systemd_show", error)),
+    };
     if !output.status.success() {
         return Ok(None);
     }
     Ok(normalized_show_value(&String::from_utf8_lossy(&output.stdout)).map(str::to_string))
+}
+
+fn systemctl_command_missing(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::NotFound
 }
 
 fn normalized_show_value(raw: &str) -> Option<&str> {
@@ -89,6 +98,18 @@ mod tests {
             Some("/lib/systemd/system/beetle.service")
         );
         assert_eq!(normalized_show_value(" \n "), None);
+    }
+
+    #[test]
+    fn missing_systemctl_is_treated_as_unmanaged_environment() {
+        assert!(systemctl_command_missing(&std::io::Error::new(
+            ErrorKind::NotFound,
+            "systemctl missing"
+        )));
+        assert!(!systemctl_command_missing(&std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "permission denied"
+        )));
     }
 
     #[test]

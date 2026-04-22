@@ -294,7 +294,10 @@ fn build_qq_markdown_body(
     msg_id: Option<&str>,
     msg_seq: Option<u64>,
 ) -> crate::error::Result<Vec<u8>> {
+    let content_projection =
+        crate::channels::outbound_text::render_markdownish_to_plain_text(content);
     let mut map = serde_json::Map::new();
+    map.insert("content".to_string(), serde_json::json!(content_projection));
     map.insert("msg_type".to_string(), serde_json::json!(2));
     map.insert(
         "markdown".to_string(),
@@ -1203,6 +1206,10 @@ mod tests {
                 .and_then(|markdown| markdown.get("content"))
                 .and_then(|content| content.as_str()),
             Some("## Hello")
+        );
+        assert_eq!(
+            payload.get("content").and_then(|content| content.as_str()),
+            Some("Hello")
         );
     }
 
