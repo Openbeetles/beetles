@@ -10,7 +10,7 @@ export const OS_ICON_NAV: Record<string, string> = {
   "/device": "/icons/home_3d.png",
   "/ai-config": "/icons/bot_3d.png",
   "/channels-config": "/icons/chat_3d.png",
-  /** 账户管理（密码箱隐喻：Fluent Locked with key） */
+  /** 账户管理（密码箱 / 凭据保管） */
   "/accounts": "/icons/safe_3d.png",
   "/soul-user": "/icons/theme_3d.png",
   "/skills": "/icons/puzzle_3d.png",
@@ -34,15 +34,15 @@ export const OS_ICON_DEVICE_CONFIG = {
   hardware: "/icons/tool_device_ctrl_3d.png",
 } as const;
 
-/** 设备首页仪表盘卡片（Fluent 3D 补充项） */
+/** 设备首页仪表盘卡片（Industrial OS3D 仪表盘语义） */
 export const OS_ICON_DASHBOARD = {
   /** 连接 / 配对（与导航「链接」图标区分：无线；正常态用） */
   connection: "/icons/dash_connection_3d.png",
   /** 故障与恢复（仪表盘磁贴） */
   faults: "/icons/faults_3d.png",
   /**
-   * 设备不可达 / 离线缓存全屏蒙层专用（Fluent **Cross mark** 3D，红叉；与正常无线 `dash_connection` 成对）。
-   * Dedicated overlay when device is unreachable — Cross mark, paired with healthy wireless tile.
+   * 设备不可达 / 离线缓存全屏蒙层专用；与正常无线 `dash_connection` 成对。
+   * Dedicated overlay when device is unreachable, paired with healthy connection tile.
    */
   deviceUnreachable: "/icons/device_unreachable_3d.png",
   /** 设备信息摘要 */
@@ -51,7 +51,7 @@ export const OS_ICON_DASHBOARD = {
   channels: "/icons/dash_channels_3d.png",
   /** 存储占用 */
   storage: "/icons/storage_3d.png",
-  /** 内存 / 堆（隐喻：脑 — 可换其它 Fluent 资源） */
+  /** 内存 / 堆 */
   memory: "/icons/memory_3d.png",
   /** 运行策略 */
   strategy: "/icons/strategy_3d.png",
@@ -61,7 +61,7 @@ export const OS_ICON_DASHBOARD = {
 
 export type OsDashboardIconKey = keyof typeof OS_ICON_DASHBOARD;
 
-/** 壳层：开始菜单标题栏「重启」（Fluent 3D · Electric plug） */
+/** 壳层：开始菜单标题栏「重启」 */
 export const OS_ICON_SHELL = {
   power: "/icons/power_3d.png",
   /**
@@ -77,8 +77,8 @@ export const OS_ICON_SHELL = {
  */
 export const OS_ICON_DIALOG = {
   /**
-   * 未保存修改 / 放弃编辑（Fluent **Clipboard** — 剪贴区待落盘草稿，非错误叉号、非设备离线）。
-   * Unsaved changes: clipboard as pending edits not yet persisted.
+   * 未保存修改 / 放弃编辑：待落盘草稿，非错误叉号、非设备离线。
+   * Unsaved changes: pending edits not yet persisted.
    */
   unsavedChanges: "/icons/unsaved_changes_3d.png",
 } as const;

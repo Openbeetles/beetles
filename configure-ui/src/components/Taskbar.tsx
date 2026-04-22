@@ -23,6 +23,7 @@ import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { NAV_ITEMS } from "../config/navItems";
 import { OS_ICON_SHELL } from "../config/osIcons";
 import { TASKBAR_HEIGHT } from "../config/layout";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { PANEL_SECTION_PADDING } from "../theme/panelStyles";
 import { useDevice } from "../hooks/useDevice";
 import { useDeviceApi, type DeviceHintReason } from "../hooks/useDeviceApi";
@@ -884,8 +885,8 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                 aria-current={active ? "page" : undefined}
                 sx={{
                   flexShrink: 0,
-                  width: 46,
-                  height: 46,
+                  width: LAYOUT_TOKENS.taskbarDockButtonPx,
+                  height: LAYOUT_TOKENS.taskbarDockButtonPx,
                   borderRadius: "calc(var(--radius-card) - 2px)",
                   color: active ? "var(--primary)" : "var(--foreground)",
                   position: "relative",
@@ -919,8 +920,8 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                     transform: allowNav ? "translateY(0) scale(0.98)" : "none",
                   },
                   "& svg, & img": {
-                    width: "34px",
-                    height: "34px",
+                    width: `${LAYOUT_TOKENS.taskbarDockIconPx}px`,
+                    height: `${LAYOUT_TOKENS.taskbarDockIconPx}px`,
                   },
                   "@media (prefers-reduced-motion: reduce)": {
                     transform: "none",

@@ -154,8 +154,10 @@ export function ToolsPage() {
               >
                 <ListItemIcon
                   sx={{
-                    minWidth: 40,
+                    minWidth: LAYOUT_TOKENS.toolsListIconSlotPx,
                     alignSelf: "center",
+                    display: "flex",
+                    alignItems: "center",
                   }}
                 >
                   <ToolGlyph name={tool.name} />

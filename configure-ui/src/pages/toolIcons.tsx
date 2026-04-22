@@ -3,6 +3,7 @@
  */
 import { Os3dIcon } from "../components/Os3dIcon";
 import { osIconSrcForToolName } from "../config/osIcons";
+import { LAYOUT_TOKENS } from "../config/themeTokens";
 
 export function ToolGlyph({ name }: { name: string }) {
   return (
@@ -10,8 +11,8 @@ export function ToolGlyph({ name }: { name: string }) {
       src={osIconSrcForToolName(name)}
       variant="inline"
       sx={{
-        width: "var(--icon-size-md)",
-        height: "var(--icon-size-md)",
+        width: `${LAYOUT_TOKENS.toolsListIconPx}px`,
+        height: `${LAYOUT_TOKENS.toolsListIconPx}px`,
       }}
     />
   );

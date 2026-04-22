@@ -1,42 +1,78 @@
 # 3D 图标资源说明
 
-## 许可与来源
+## 当前 shipped 资源
 
-### 主库（当前全部使用）
+当前 `configure-ui/public/icons/*.png` 的 shipped 集合为 **Beetle 自研 Industrial OS3D** 位图资产，不再直接出自第三方图标库。
 
-- **Microsoft Fluent Emoji（3D PNG）**  
-  仓库：<https://github.com/microsoft/fluentui-emoji>，**MIT License**。  
-  单库内含 **上千枚** 3D 资源（`assets/<EmojiName>/3D/<name>_3d.png`），可为不同工具分配**不同**隐喻，避免「一张图贴全场」。
+- **输出格式**：`512x512` RGBA PNG，透明底
+- **生成质量**：内部以 `1024x1024` supersample 场景渲染后下采样导出，优先保证小尺寸边缘干净、放大时不易发糊或出现明显锯齿
+- **当前规模**：`72` 个 `*_3d.png`
+- **目标风格**：统一底盘、克制高光、稳定伪 3D 深度，适配任务栏、开始菜单、仪表盘与工具列表
 
-### 其它开源库（未混入 UI，仅作备选）
+## 生成单源
 
-- **Google Noto Emoji**：<https://github.com/googlefonts/noto-emoji>（字体与资源多为 **Apache 2.0** / **SIL OFL 1.1**）。色块风格与 Fluent 拟物不一致，**默认不混用**；若将来需要第二套风格，再单独立项评审。
-- **OpenMoji**（CC BY-SA 4.0）等偏 **扁平矢量**，与本项目 3D 壳层不搭，不建议直接贴进顶栏/工具列表。
-
-### 批量拉取
-
-在 `configure-ui` 目录执行：
+当前资源的单一生成入口是：
 
 ```bash
-./scripts/fetch_fluent_3d_icons.sh
+python3 configure-ui/scripts/generate_industrial_os3d_icons.py
 ```
 
-需已安装 `curl`、可访问 GitHub raw。脚本内按行注释了 **本地文件名 → Fluent 目录名**；当前约 **72** 个 PNG（主导航、仪表盘、蒙层与工具专用扩展）。
+图标分组定义位于：
 
-## 映射单源
+- `configure-ui/scripts/industrial_os3d/icon_groups/nav_shell.py`
+- `configure-ui/scripts/industrial_os3d/icon_groups/dashboard_diag.py`
+- `configure-ui/scripts/industrial_os3d/icon_groups/device_runtime.py`
+- `configure-ui/scripts/industrial_os3d/icon_groups/tools_general.py`
+- `configure-ui/scripts/industrial_os3d/icon_groups/tools_special.py`
 
-路径与语义只在 **`src/config/osIcons.ts`** 维护：`OS_ICON_NAV`、`OS_ICON_DASHBOARD`、`OS_ICON_TOOL`、`OS_ICON_SHELL`。  
-展示统一用 **`src/components/Os3dIcon.tsx`**（与任务栏 `OsIcon` 滤镜一致）。
+共享底盘、调色与基础绘制原语位于：
 
-## 风格约定
+- `configure-ui/scripts/industrial_os3d/icon_groups/common.py`
 
-- **同一界面内**保持 Fluent 3D 一套光影，避免与扁平/其它 3D 渲染器混排。  
-- 建议上游 **256px 量级、透明底**；若发糊，优先调父级尺寸，而非强行拉伸位图。
+常用命令：
 
-## 仪表盘与主导航的区分
+```bash
+# 校验 72 个图标定义是否闭合、输出是否为 512x512
+python3 configure-ui/scripts/generate_industrial_os3d_icons.py --check
 
-设备首页「连接 / 通道」磁贴与任务栏图标刻意使用不同 Fluent 资源（如 **Wireless**、**Antenna bars** 与 **Speech balloon**），减少同屏重复感；映射见 `OS_ICON_DASHBOARD`。
+# 重渲染全部 shipped 图标
+python3 configure-ui/scripts/generate_industrial_os3d_icons.py
+
+# 仅查看分组归属
+python3 configure-ui/scripts/generate_industrial_os3d_icons.py --list
+```
+
+## 路径与消费口径
+
+路径与语义仍只在 `src/config/osIcons.ts` 维护：
+
+- `OS_ICON_NAV`
+- `OS_ICON_DEVICE_CONFIG`
+- `OS_ICON_DASHBOARD`
+- `OS_ICON_SHELL`
+- `OS_ICON_DIALOG`
+- `OS_ICON_PREFERENCES`
+- `OS_ICON_TOOL`
+
+展示统一使用 `src/components/Os3dIcon.tsx`，由现有滤镜语言和尺寸容器消费，不单独在业务页面硬编码图标样式。
+
+## 历史参考
+
+仓库仍保留 `configure-ui/scripts/fetch_fluent_3d_icons.sh`，但它现在是 **历史参考 / 迁移前素材脚本**，不再代表当前 shipped 资源来源。
+
+保留它的原因：
+
+- 作为旧版 Fluent 资产映射的历史记录
+- 在需要对照旧隐喻时，可回看原先文件名到第三方资源的对应关系
+
+如果未来再次改版图标，不应重新把 Fluent 资源直接回贴到 `public/icons/`，而应沿用或扩展当前 Industrial OS3D 生成管线。
+
+## 风格约束
+
+- 同一界面内保持一套 Industrial OS3D 光影，不与扁平图标或其它 3D 渲染风格混排
+- 优先保持字面隐喻可读，再追求个性化造型
+- 新增图标时优先复用现有 chassis / palette / primitive，而不是另起一套表现体系
 
 ## Ubuntu / GNOME 说明
 
-Yaru / Adwaita 以扁平为主，与拟物 3D 不一致；系统级隐喻请继续用 **Fluent MIT** 或自研同管线资源。
+Yaru / Adwaita 以扁平 SVG 为主，与当前 Beetle Industrial OS3D 壳层不一致；系统级隐喻若需扩展，应继续沿用本仓库自研同管线资源。

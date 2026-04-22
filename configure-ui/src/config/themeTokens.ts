@@ -67,6 +67,14 @@ export const LAYOUT_TOKENS = {
   iconContainerLg: 40,
   /** 图标容器尺寸：大（Agent 头像） */
   iconContainerXl: 46,
+  /** 工具管理页列表图标显示尺寸（px） */
+  toolsListIconPx: 32,
+  /** 工具管理页列表图标槽位宽度（px） */
+  toolsListIconSlotPx: 52,
+  /** 任务栏 Dock 按钮尺寸（px） */
+  taskbarDockButtonPx: 52,
+  /** 任务栏 Dock 图标显示尺寸（px） */
+  taskbarDockIconPx: 42,
   /**
    * SettingsSection 内「空/加载说明/只读提示」插画外框与内图（px）。
    * Panel empty-state / status hero; matches full-screen disconnect card weight.

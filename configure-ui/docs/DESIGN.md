@@ -43,7 +43,7 @@
 ## Shell 布局（桌面隐喻）
 
 - **顶栏 `TopBar`**：**窗口标题栏**隐喻——`SHELL_TITLEBAR_CHROME_SX` 为 **半透明哑光底 + `blur(var(--shell-chrome-blur))` + 轻微品牌侧光**；允许极浅材质渐变，但不允许脏色叠加。与主内容以 `border-subtle` 底边分隔。左侧 **Beetle OS 窗口图标**（点击回首页）、中间为 **轻量品牌标签 + 当前页标题胶囊**、右侧为 **标题栏按钮区**；页标题本身保持高可读性，不用展示字体抢层级。**macOS Tauri overlay 窗口例外**：顶栏仅保留透明拖拽安全区，APP 内不再重复渲染白色标题面板或首页图标，界面里只留系统红绿灯。
-- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **磨砂哑光台面**，允许浅品牌辉光与底部承托影；目标是“有体积，但不脏”。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：**品牌条**内左侧为 **Beetle OS** 徽标 + 应用名，**右侧**为 **重启**（仅已连接时显示：**仅 3D 图标**、无正文，`OS_ICON_SHELL.power` / Fluent *Electric plug*，`Tooltip` 与 `aria-label` 承载文案，确认对话框在 `Taskbar`）；其下 **宽幅连接磁贴**；再下 **响应式磁贴网格**，各路由为 **竖向 3D 磁贴**（图标上、标题下，材质高光与台座统一）；**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
+- **底部任务栏 `Taskbar`**：高度 `TASKBAR_HEIGHT`（60px），`SHELL_TASKBAR_CHROME_SX` 同为 **磨砂哑光台面**，允许浅品牌辉光与底部承托影；目标是“有体积，但不脏”。左侧 **开始** 打开菜单；**开始菜单为磁贴布局**：**品牌条**内左侧为 **Beetle OS** 徽标 + 应用名，**右侧**为 **重启**（仅已连接时显示：**仅 3D 图标**、无正文，`OS_ICON_SHELL.power`，`Tooltip` 与 `aria-label` 承载文案，确认对话框在 `Taskbar`）；其下 **宽幅连接磁贴**；再下 **响应式磁贴网格**，各路由为 **竖向 3D 磁贴**（图标上、标题下，材质高光与台座统一）；**`sm`+** 中部任务栏快捷方式；**`xs`** 仅开始 + 托盘。
 - **导航数据单源**：`src/config/navItems.tsx` 的 `NAV_ITEMS`，任务栏快捷方式与开始菜单共用，避免分叉。
 
 ## 组件与布局
@@ -70,7 +70,8 @@
 ### 拟物 3D 图标（导航与仪表盘）
 
 - **路径单源**：`src/config/osIcons.ts`（`OS_ICON_NAV`、`OS_ICON_DASHBOARD`、`OS_ICON_SHELL`）；展示统一用 **`Os3dIcon`**（与任务栏 `OsIcon` 同滤镜，父级给足尺寸）。
-- **新增或替换资源**：优先使用 **MIT** 的 [Microsoft Fluent Emoji](https://github.com/microsoft/fluentui-emoji) 3D PNG（`assets/<名称>/3D/`），或其它与现有光影一致的资源；**版权与对应关系**写入 **`public/icons/README.md`**。Ubuntu Yaru / GNOME Adwaita 多为扁平 SVG，与当前 3D 风格不一致，不宜直接混用。
+- **页内尺寸口径**：工具管理页列表图标尺寸与图标槽位使用 `LAYOUT_TOKENS.toolsListIconPx` / `LAYOUT_TOKENS.toolsListIconSlotPx`，不要在页面里重复写死 `24px`、`40px` 一类 magic number。
+- **新增或替换资源**：优先扩展当前 **Industrial OS3D** 生成管线（`scripts/generate_industrial_os3d_icons.py` + `scripts/industrial_os3d/icon_groups/*`），保持统一 chassis、palette 与 primitive；若参考第三方资源，也只能作为语义参考，不应直接回贴到 shipped `public/icons/`。Ubuntu Yaru / GNOME Adwaita 多为扁平 SVG，与当前 3D 风格不一致，不宜直接混用。
 
 ## 反馈分层与语义色
 

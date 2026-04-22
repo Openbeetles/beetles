@@ -46,12 +46,12 @@ export function os3dRootCssVars(mode: ThemeMode): Record<string, string> {
 
   const iconDock = dark
     ? [
-        "drop-shadow(0 4px 10px rgba(0,0,0,0.15))",
-        "drop-shadow(0 1px 2px rgba(0,0,0,0.08))",
+        "drop-shadow(0 3px 7px rgba(0,0,0,0.12))",
+        "drop-shadow(0 1px 1px rgba(0,0,0,0.06))",
       ].join(" ")
     : [
-        "drop-shadow(0 9px 18px color-mix(in srgb, var(--foreground) 4.4%, transparent))",
-        "drop-shadow(0 3px 6px color-mix(in srgb, var(--foreground) 2.4%, transparent))",
+        "drop-shadow(0 6px 12px color-mix(in srgb, var(--foreground) 3.4%, transparent))",
+        "drop-shadow(0 2px 4px color-mix(in srgb, var(--foreground) 1.8%, transparent))",
       ].join(" ");
 
   const iconTile = dark

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 从 microsoft/fluentui-emoji（MIT）拉取 3D PNG 到 public/icons。
-# Fluent 单库即有数千枚 3D 资产，可按语义为各工具分配不同图标，避免「一张图到处用」。
-# 可选第二来源（需单独评估风格）：googlefonts/noto-emoji（Apache 2.0 / OFL），与本项目拟物 3D 可能不一致，默认不混用。
+# 历史参考脚本：从 microsoft/fluentui-emoji（MIT）拉取旧版 3D PNG 到 public/icons。
+# 当前 shipped 图标已切换到 Industrial OS3D 生成管线；本脚本仅保留作迁移前映射对照，不再代表默认资源来源。
+# 可选第二来源（需单独评估风格）：googlefonts/noto-emoji（Apache 2.0 / OFL），与当前 Beetle OS3D 语言不一致，默认不混用。
 set -euo pipefail
 BASE="https://raw.githubusercontent.com/microsoft/fluentui-emoji/main"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
