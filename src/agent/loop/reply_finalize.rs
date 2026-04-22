@@ -3,13 +3,14 @@ use crate::agent::final_reply::{
     build_canonical_reply, classify_reply_artifacts, finalize_user_visible_reply,
     reply_has_concrete_anchor, reply_looks_like_future_action_narration,
     reply_looks_like_transition_colon_draft, strip_legacy_internal_reply_blocks, CanonicalReply,
-    ReplyArtifactState,
+    ReplyArtifactBundle, ReplyArtifactState,
 };
 use crate::memory::EmotionSignalStore;
 
 pub(super) struct FinalizedTurn {
     pub(super) delivery: DeliveryReport,
     pub(super) reply: CanonicalReply,
+    pub(super) artifact_bundle: Option<ReplyArtifactBundle>,
     pub(super) is_interrupt: bool,
     pub(super) reply_already_delivered: bool,
     pub(super) skip_delivery: bool,
@@ -201,6 +202,7 @@ pub(super) fn finalize_turn(
         streamed,
         latency: mut worker_latency,
         delivery,
+        artifact_bundle,
         any_tool_round_executed,
         any_tool_used,
         tool_round_completion,
@@ -339,6 +341,7 @@ pub(super) fn finalize_turn(
 
     Ok(FinalizedTurn {
         delivery,
+        artifact_bundle,
         skip_delivery: reply.as_str().trim() == "SILENT"
             || (msg.channel.as_ref() == CHANNEL_CRON && reply.as_str().is_empty()),
         reply,
@@ -392,6 +395,7 @@ pub(super) fn complete_turn(
     } = ctx;
     let FinalizedTurn {
         reply,
+        artifact_bundle: _artifact_bundle,
         is_interrupt,
         reply_already_delivered,
         skip_delivery,

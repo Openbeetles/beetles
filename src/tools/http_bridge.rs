@@ -34,7 +34,8 @@ pub(crate) struct HttpClientToolContext<'a> {
     pub(crate) tool_registry: Option<&'a crate::tools::ToolRegistry>,
     /// 当前运行时的通道能力合同表。
     pub(crate) channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
-    /// 当前运行时是否允许工具向当前聊天提交用户可见消息意图。
+    /// 当前运行时是否允许工具向 canonical finalizer 提交当前聊天主答复 artifact。
+    /// 这不是立即发送权限；真正的交付仍由 agent turn finalization 统一完成。
     pub(crate) supports_current_chat_outbound_message: bool,
     /// 当前运行时是否允许工具向显式指定的其他聊天发消息。
     pub(crate) supports_explicit_outbound_message: bool,

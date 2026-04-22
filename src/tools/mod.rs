@@ -699,7 +699,8 @@ pub trait ToolContext {
     ) -> Option<crate::channel_capability::ChannelCapabilityEntry> {
         None
     }
-    /// 当前运行时是否允许工具声明“当前聊天主答复已由工具交付”。
+    /// 当前运行时是否允许工具声明“当前聊天主答复 artifact 由 canonical finalizer 捕获”。
+    /// 这不是立即发送权限；真正的交付仍由 turn finalization/handoff 统一完成。
     /// 目前仅在不会与编辑型交付通道冲突的运行时开启。
     fn supports_current_chat_outbound_message(&self) -> bool {
         false

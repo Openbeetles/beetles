@@ -929,6 +929,7 @@ fn build_task_execution_telemetry(
             tool_calls: latency.tool_calls,
         },
         delivery: *delivery,
+        artifact_bundle: None,
         any_tool_round_executed: any_tool_used,
         any_tool_used,
         tool_round_completion: ToolRoundCompletionTelemetry {

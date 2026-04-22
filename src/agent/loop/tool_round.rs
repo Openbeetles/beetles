@@ -18,6 +18,21 @@ fn tool_failure_kind_from_outcome(
     }
 }
 
+fn current_chat_primary_artifact_from_intent(
+    intent: &crate::tools::ToolOutboundIntent,
+) -> Option<crate::agent::final_reply::ReplyArtifactBundle> {
+    if intent.target != crate::tools::ToolOutboundTarget::CurrentChat
+        || intent.delivery_kind != crate::tools::ToolOutboundDeliveryKind::Primary
+    {
+        return None;
+    }
+    let body = intent
+        .body
+        .clone()
+        .unwrap_or_else(|| crate::bus::CanonicalMessageBody::text(intent.content.clone()));
+    Some(crate::agent::final_reply::ReplyArtifactBundle::current_chat_primary(body))
+}
+
 #[cold]
 #[inline(never)]
 fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult {
@@ -36,6 +51,7 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
+        current_chat_primary_artifact: None,
     }
 }
 
@@ -177,6 +193,7 @@ fn capability_blocked_tool_execution_result(
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
+        current_chat_primary_artifact: None,
     }
 }
 
@@ -204,6 +221,7 @@ fn denied_tool_execution_result(tool_name: &str, reason: &str) -> ToolCallExecut
         call_succeeded: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
+        current_chat_primary_artifact: None,
     }
 }
 
@@ -236,6 +254,7 @@ fn outbound_error_tool_execution_result(
         call_succeeded: false,
         had_mutating_effects,
         had_visible_outbound_side_effects: false,
+        current_chat_primary_artifact: None,
     }
 }
 
@@ -270,6 +289,7 @@ fn execute_error_tool_execution_result(
         call_succeeded: false,
         had_mutating_effects,
         had_visible_outbound_side_effects: false,
+        current_chat_primary_artifact: None,
     }
 }
 
@@ -324,7 +344,35 @@ fn execute_tool_call(
                         .tool_exec_ms
                         .saturating_add(tool_exec_start.elapsed().as_millis());
                     let mut had_visible_outbound_side_effects = false;
+                    let mut artifact_bundle = None;
                     for intent in &outcome.outbound_intents {
+                        if let Some(next_artifact_bundle) =
+                            current_chat_primary_artifact_from_intent(intent)
+                        {
+                            if !crate::tools::ToolContext::supports_current_chat_outbound_message(
+                                tool_ctx,
+                            ) {
+                                return outbound_error_tool_execution_result(
+                                    &tc.name,
+                                    had_mutating_effects,
+                                    &crate::error::Error::config(
+                                        "tool_current_chat_primary_reply",
+                                        "runtime does not support current-chat primary reply artifacts",
+                                    ),
+                                );
+                            }
+                            if let Err(error) = super::merge_reply_artifact_bundle(
+                                &mut artifact_bundle,
+                                next_artifact_bundle,
+                            ) {
+                                return outbound_error_tool_execution_result(
+                                    &tc.name,
+                                    had_mutating_effects,
+                                    &error,
+                                );
+                            }
+                            continue;
+                        }
                         match delivery.deliver_tool_outbound_intent(intent) {
                             Ok(ToolIntentDelivery::VisibleUpdate) => {
                                 had_visible_outbound_side_effects = true;
@@ -362,6 +410,7 @@ fn execute_tool_call(
                             call_succeeded: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
+                            current_chat_primary_artifact: artifact_bundle,
                         }
                     } else if let Some(failure_kind) = outcome.failure_kind {
                         metrics::record_tool_call(false);
@@ -372,6 +421,7 @@ fn execute_tool_call(
                             call_succeeded: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
+                            current_chat_primary_artifact: artifact_bundle,
                         }
                     } else {
                         metrics::record_tool_call(true);
@@ -382,6 +432,7 @@ fn execute_tool_call(
                             call_succeeded: true,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
+                            current_chat_primary_artifact: artifact_bundle,
                         }
                     }
                 }
@@ -430,6 +481,7 @@ pub(super) fn execute_tool_use_round(
     let mut used_external_content = false;
     let mut had_mutating_effects = false;
     let mut had_visible_outbound_side_effects = false;
+    let mut artifact_bundle = None;
     let mut successful_tool_names = Vec::with_capacity(tool_calls.len());
     let mut blocker = None;
 
@@ -445,6 +497,25 @@ pub(super) fn execute_tool_use_round(
         let execution = execute_tool_call(tc, registry, request_plan, delivery, tool_ctx, latency);
         had_mutating_effects |= execution.had_mutating_effects;
         had_visible_outbound_side_effects |= execution.had_visible_outbound_side_effects;
+        if let Some(next_artifact_bundle) = execution.current_chat_primary_artifact {
+            if let Err(error) =
+                super::merge_reply_artifact_bundle(&mut artifact_bundle, next_artifact_bundle)
+            {
+                return ToolUseRoundExecutionOutput {
+                    truncated,
+                    round_tool_success,
+                    used_external_content,
+                    had_mutating_effects,
+                    had_visible_outbound_side_effects,
+                    artifact_bundle,
+                    omitted_evidence_count,
+                    successful_tool_names,
+                    blocker: Some(crate::agent::WorkflowBlocker::runtime_blocked(
+                        error.to_string(),
+                    )),
+                };
+            }
+        }
         if blocker.is_none() {
             blocker = execution.blocker.clone();
         }
@@ -507,6 +578,7 @@ pub(super) fn execute_tool_use_round(
         used_external_content,
         had_mutating_effects,
         had_visible_outbound_side_effects,
+        artifact_bundle,
         omitted_evidence_count,
         successful_tool_names,
         blocker,

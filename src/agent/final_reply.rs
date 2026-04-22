@@ -1,4 +1,5 @@
 use super::strategy::AgentRunStrategy;
+use crate::bus::CanonicalMessageBody;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CanonicalReply {
@@ -12,6 +13,19 @@ impl CanonicalReply {
 
     pub(crate) fn as_str(&self) -> &str {
         self.visible_text.as_str()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplyArtifactBundle {
+    pub(crate) current_chat_primary_body: CanonicalMessageBody,
+}
+
+impl ReplyArtifactBundle {
+    pub(crate) fn current_chat_primary(body: CanonicalMessageBody) -> Self {
+        Self {
+            current_chat_primary_body: body,
+        }
     }
 }
 

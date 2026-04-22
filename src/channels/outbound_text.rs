@@ -114,7 +114,7 @@ fn normalize_body_for_channel(
     content: &str,
 ) -> NormalizedOutboundBody {
     if !supports_body_kind(capability, body.kind()) {
-        let plain = fallback_plain_text_for_body(body);
+        let plain = fallback_plain_text_for_body_with_content(body, content);
         return NormalizedOutboundBody {
             body: CanonicalMessageBody::Text(TextBody::plain(plain.clone())),
             content: plain,
@@ -314,6 +314,28 @@ fn fallback_plain_text_for_body(body: &CanonicalMessageBody) -> String {
     } else {
         projection.trim().to_string()
     }
+}
+
+fn fallback_plain_text_for_body_with_content(body: &CanonicalMessageBody, content: &str) -> String {
+    let body_fallback = fallback_plain_text_for_body(body);
+    if !body_fallback.is_empty() && !is_generic_body_fallback(&body_fallback) {
+        return body_fallback;
+    }
+    let content = content.trim();
+    if !content.is_empty() {
+        if looks_like_markdownish(content) {
+            return render_markdownish_to_plain_text(content);
+        }
+        return content.to_string();
+    }
+    body_fallback
+}
+
+fn is_generic_body_fallback(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[card]" | "[platform_native]" | "[image]" | "[audio]" | "[video]" | "[file]"
+    )
 }
 
 fn supports_body_kind(capability: ChannelCapabilityEntry, kind: MessageBodyKind) -> bool {
@@ -966,6 +988,29 @@ mod tests {
             other => panic!("expected plain text downgrade, got {other:?}"),
         }
         assert_eq!(prepared.content, "chart");
+    }
+
+    #[test]
+    fn unsupported_card_body_prefers_canonical_content_projection() {
+        let mut msg = outbound_text_msg("构建已通过");
+        msg.body = CanonicalMessageBody::Card(CardBody {
+            format: CardFormat::Interactive,
+            payload_json: json!({"header":{"title":"Build passed"}}),
+            fallback_text: String::new(),
+        });
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry("websocket", TEXT_ONLY_KIND, PLAIN_ONLY)),
+        );
+
+        match prepared.msg.body {
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Plain,
+                text,
+            }) => assert_eq!(text, "构建已通过"),
+            other => panic!("expected plain text downgrade, got {other:?}"),
+        }
+        assert_eq!(prepared.content, "构建已通过");
     }
 
     #[test]

@@ -21,7 +21,15 @@ pub(super) fn deliver_turn(
         crate::platform::task_wdt::feed_current_task();
         true
     } else if !finalized.streamed {
-        let out = match PcMsg::new_outbound_reply_to(msg, finalized.reply.visible_text.clone()) {
+        let out_result = match finalized.artifact_bundle.as_ref() {
+            Some(bundle) => PcMsg::new_outbound_reply_to_with_body_projection(
+                msg,
+                bundle.current_chat_primary_body.clone(),
+                finalized.reply.visible_text.clone(),
+            ),
+            None => PcMsg::new_outbound_reply_to(msg, finalized.reply.visible_text.clone()),
+        };
+        let out = match out_result {
             Ok(out) => out,
             Err(error) => {
                 metrics::record_error_by_stage(error.metrics_stage());

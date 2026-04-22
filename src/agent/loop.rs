@@ -497,6 +497,7 @@ struct WorkerRunTelemetry {
     streamed: bool,
     latency: WorkerLatency,
     delivery: DeliveryReport,
+    artifact_bundle: Option<crate::agent::final_reply::ReplyArtifactBundle>,
     any_tool_round_executed: bool,
     any_tool_used: bool,
     tool_round_completion: ToolRoundCompletionTelemetry,
@@ -611,6 +612,7 @@ struct ToolCallExecutionResult {
     call_succeeded: bool,
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
+    current_chat_primary_artifact: Option<crate::agent::final_reply::ReplyArtifactBundle>,
 }
 
 struct ToolUseRoundExecutionOutput {
@@ -619,9 +621,27 @@ struct ToolUseRoundExecutionOutput {
     used_external_content: bool,
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
+    artifact_bundle: Option<crate::agent::final_reply::ReplyArtifactBundle>,
     omitted_evidence_count: usize,
     successful_tool_names: Vec<String>,
     blocker: Option<crate::agent::WorkflowBlocker>,
+}
+
+fn merge_reply_artifact_bundle(
+    slot: &mut Option<crate::agent::final_reply::ReplyArtifactBundle>,
+    next: crate::agent::final_reply::ReplyArtifactBundle,
+) -> Result<()> {
+    match slot {
+        None => {
+            *slot = Some(next);
+            Ok(())
+        }
+        Some(existing) if *existing == next => Ok(()),
+        Some(_) => Err(crate::error::Error::config(
+            "reply_artifact_bundle_conflict",
+            "multiple distinct current-chat primary artifacts were declared in one turn",
+        )),
+    }
 }
 
 fn mark_ttft_if_visible(latency: &mut WorkerLatency, worker_start: Instant, content: &str) {
@@ -4547,6 +4567,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: true,
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -4645,6 +4666,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: false,
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -4743,6 +4765,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: false,
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -4812,6 +4835,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: true,
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -4864,6 +4888,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: false,
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -4951,6 +4976,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: false,
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -5003,6 +5029,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: true,
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry {
@@ -5066,6 +5093,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: false,
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -5120,6 +5148,7 @@ mod tests {
             streamed: false,
             latency: WorkerLatency::default(),
             delivery: DeliveryReport::default(),
+            artifact_bundle: None,
             any_tool_round_executed: false,
             any_tool_used: false,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),
@@ -5155,6 +5184,89 @@ mod tests {
         .expect("finalize turn");
 
         assert_eq!(finalized.reply.visible_text, "当前还缺授权码，无法继续。");
+    }
+
+    #[test]
+    fn merge_reply_artifact_bundle_rejects_distinct_current_chat_primary_bodies() {
+        let mut slot = Some(
+            crate::agent::final_reply::ReplyArtifactBundle::current_chat_primary(
+                crate::bus::CanonicalMessageBody::text("first"),
+            ),
+        );
+        let err = merge_reply_artifact_bundle(
+            &mut slot,
+            crate::agent::final_reply::ReplyArtifactBundle::current_chat_primary(
+                crate::bus::CanonicalMessageBody::Card(crate::bus::CardBody {
+                    format: crate::bus::CardFormat::Interactive,
+                    payload_json: serde_json::json!({"header":{"title":"second"}}),
+                    fallback_text: String::new(),
+                }),
+            ),
+        )
+        .expect_err("distinct primary artifacts should fail");
+
+        assert_eq!(err.stage(), "reply_artifact_bundle_conflict");
+    }
+
+    #[test]
+    fn deliver_turn_uses_artifact_bundle_body_with_canonical_content_projection() {
+        let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(4);
+        let msg = PcMsg::new_inbound("feishu", "chat-artifact", "继续", false).expect("message");
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply: crate::agent::final_reply::CanonicalReply::new("构建已通过".to_string()),
+            artifact_bundle: Some(
+                crate::agent::final_reply::ReplyArtifactBundle::current_chat_primary(
+                    crate::bus::CanonicalMessageBody::Card(crate::bus::CardBody {
+                        format: crate::bus::CardFormat::Interactive,
+                        payload_json: serde_json::json!({"header":{"title":"Build passed"}}),
+                        fallback_text: String::new(),
+                    }),
+                ),
+            ),
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: None,
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "构建已通过".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "构建已通过".to_string(),
+            worker_latency: WorkerLatency::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            programmable_reasoning_intent: None,
+            counterfactual_analysis: None,
+            adversarial_arena_adjudication: None,
+            subject_state: None,
+            soul_feedback_projection: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let handoff = delivery_handoff::deliver_turn(&outbound_tx, &msg, &finalized);
+        assert!(handoff.delivered);
+
+        let outbound = outbound_rx.try_recv().expect("outbound reply");
+        assert_eq!(outbound.content, "构建已通过");
+        assert!(matches!(
+            outbound.body,
+            crate::bus::CanonicalMessageBody::Card(crate::bus::CardBody {
+                format: crate::bus::CardFormat::Interactive,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -5257,6 +5369,7 @@ mod tests {
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
             reply: crate::agent::final_reply::CanonicalReply::new("好的，继续。".to_string()),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -5432,6 +5545,7 @@ mod tests {
             reply: crate::agent::final_reply::CanonicalReply::new(
                 "这轮先把治理快照带进任务回复。".to_string(),
             ),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6559,6 +6673,7 @@ mod tests {
             reply: crate::agent::final_reply::CanonicalReply::new(
                 "我先检查当前邮件状态，然后继续配置。".to_string(),
             ),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6673,6 +6788,7 @@ mod tests {
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
             reply: crate::agent::final_reply::CanonicalReply::new(blocker.clone()),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6783,6 +6899,7 @@ mod tests {
         let finalized = reply_finalize::FinalizedTurn {
             delivery: DeliveryReport::default(),
             reply: crate::agent::final_reply::CanonicalReply::new(blocker_summary.clone()),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -6906,6 +7023,7 @@ mod tests {
             reply: crate::agent::final_reply::CanonicalReply::new(
                 "好，当前配置动作先取消。".to_string(),
             ),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -7214,6 +7332,7 @@ mod tests {
             reply: crate::agent::final_reply::CanonicalReply::new(
                 "好，当前配置动作先取消。".to_string(),
             ),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -7348,6 +7467,7 @@ mod tests {
             reply: crate::agent::final_reply::CanonicalReply::new(
                 "好，我先停下当前这条正式任务。".to_string(),
             ),
+            artifact_bundle: None,
             is_interrupt: false,
             reply_already_delivered: false,
             skip_delivery: false,
@@ -7569,6 +7689,7 @@ mod tests {
                 current_primary_delivered: true,
                 ..DeliveryReport::default()
             },
+            artifact_bundle: None,
             any_tool_round_executed: true,
             any_tool_used: true,
             tool_round_completion: ToolRoundCompletionTelemetry::default(),

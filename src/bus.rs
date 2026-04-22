@@ -688,6 +688,25 @@ impl PcMsg {
         Ok(reply)
     }
 
+    /// 基于当前入站消息构造回给同一会话的出站消息，允许显式指定 authoritative body
+    /// 与兼容 text projection（通常使用 canonical final reply）。
+    pub fn new_outbound_reply_to_with_body_projection(
+        source: &PcMsg,
+        body: CanonicalMessageBody,
+        content_projection: impl Into<String>,
+    ) -> Result<Self> {
+        let mut reply = Self::new_outbound_for_chat_with_body(
+            &source.channel,
+            &source.chat_id,
+            body,
+            content_projection.into(),
+            source.req_id.clone(),
+            source.is_group,
+        )?;
+        reply.copy_inbound_provenance_from(source);
+        Ok(reply)
+    }
+
     pub fn with_inbound_provenance(
         mut self,
         source_transport: MessageTransport,
@@ -902,6 +921,25 @@ mod tests {
         assert_eq!(outbound.platform_message_id, "msg-1");
         assert_eq!(outbound.platform_event_id, "evt-1");
         assert_eq!(outbound.inbound_dedup_key, "qq_message:msg-1");
+    }
+
+    #[test]
+    fn outbound_reply_to_with_body_projection_keeps_canonical_content() {
+        let inbound =
+            PcMsg::new_inbound("feishu", "chat-1", "hello", false).expect("inbound message");
+        let outbound = PcMsg::new_outbound_reply_to_with_body_projection(
+            &inbound,
+            CanonicalMessageBody::Card(CardBody {
+                format: CardFormat::Interactive,
+                payload_json: serde_json::json!({"header":{"title":"Build passed"}}),
+                fallback_text: String::new(),
+            }),
+            "构建已通过",
+        )
+        .expect("outbound reply");
+
+        assert_eq!(outbound.content, "构建已通过");
+        assert!(matches!(outbound.body, CanonicalMessageBody::Card(_)));
     }
 
     #[test]

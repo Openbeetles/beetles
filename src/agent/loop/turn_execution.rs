@@ -352,7 +352,9 @@ pub(super) fn execute_turn(
     } else {
         None
     };
-    tool_ctx.supports_current_chat_outbound_message = false;
+    tool_ctx.supports_current_chat_outbound_message = msg.ingress == IngressKind::User
+        && msg.channel.as_ref() != crate::CHANNEL_VOICE
+        && editor.is_none();
     tool_ctx.supports_explicit_outbound_message =
         msg.ingress == IngressKind::User && msg.channel.as_ref() != crate::CHANNEL_VOICE;
     let mut delivery = DeliverySession::new(
@@ -509,6 +511,7 @@ pub(super) fn execute_turn(
     let mut any_tool_round_executed = false;
     let mut any_tool_used = false;
     let mut tool_round_completion = ToolRoundCompletionTelemetry::default();
+    let mut artifact_bundle = None;
     let mut external_content_used = false;
     let mut effective_reply_surface = reply_surface;
     for round in 0..MAX_REACT_ROUNDS {
@@ -671,6 +674,9 @@ pub(super) fn execute_turn(
             if tool_round_completion.blocker.is_none() {
                 tool_round_completion.blocker = tool_round_output.blocker.clone();
             }
+            if let Some(next_artifact_bundle) = tool_round_output.artifact_bundle {
+                super::merge_reply_artifact_bundle(&mut artifact_bundle, next_artifact_bundle)?;
+            }
             successful_tool_names.extend(tool_round_output.successful_tool_names);
             external_content_used |= tool_round_output.used_external_content;
             if let Some(blocker) = tool_round_output.blocker {
@@ -782,6 +788,7 @@ pub(super) fn execute_turn(
             streamed,
             latency,
             delivery: delivery.report(),
+            artifact_bundle,
             any_tool_round_executed,
             any_tool_used,
             tool_round_completion,
