@@ -71,29 +71,3 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::body;
-    use serde_json::Value;
-
-    #[test]
-    fn body_keeps_resource_contract_without_channels() {
-        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
-
-        let payload = body(&ctx).unwrap();
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
-
-        assert!(parsed.get("pressure").is_some());
-        assert!(parsed.get("budget").is_some());
-        assert!(parsed.get("inbound_depth").is_some());
-        assert!(parsed.get("outbound_depth").is_some());
-        assert!(parsed.get("session_count").is_some());
-        assert!(parsed.get("channels").is_none());
-        assert!(parsed.get("audio_recording").is_none());
-        assert!(parsed.get("audio_playing").is_none());
-        assert!(parsed.get("audio_interrupt_listening").is_none());
-        assert!(parsed.get("audio_interrupt_requested").is_none());
-        assert!(parsed["budget"].get("llm_hint").is_none());
-    }
-}

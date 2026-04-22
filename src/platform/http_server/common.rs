@@ -342,6 +342,7 @@ impl ApiResponse {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn err_key_with_meta(
         status: u16,
         status_text: &'static str,
@@ -384,6 +385,7 @@ impl ApiResponse {
     pub fn err_400_key(error_key: &str) -> Self {
         Self::err_key(400, "Bad Request", error_key)
     }
+    #[cfg(test)]
     pub fn err_400_key_with_upstream(
         error_key: &str,
         upstream_error: Option<&str>,

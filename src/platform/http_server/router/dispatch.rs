@@ -1328,7 +1328,7 @@ mod tests {
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     #[cfg(all(
         feature = "capability_office",
@@ -1347,7 +1347,7 @@ mod tests {
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
-    use std::sync::{MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
     fn build_router_env() -> RouterEnv {
         let (inbound_tx, _inbound_rx, _inbound_depth) =

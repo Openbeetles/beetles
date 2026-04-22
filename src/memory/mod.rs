@@ -4,7 +4,7 @@ use crate::bus::PcMsg;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 mod archive_benchmark;
 mod archive_plane;
 mod archive_search;
@@ -26,10 +26,10 @@ mod maintenance;
 mod memory_governance;
 mod mental_privacy;
 mod outer_voice;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 mod persona_governance_benchmark;
 mod persona_priority;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 mod persona_regression;
 mod personality_closure;
 mod private_docs;
@@ -38,7 +38,7 @@ mod private_garden_governance;
 mod profile;
 mod prompt_context;
 mod prompt_context_stages;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 mod recall_benchmark;
 mod recall_contract;
 mod recall_inspection;
@@ -63,7 +63,7 @@ mod work_continuity;
 mod world_sense;
 mod write_coordination;
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 pub use archive_benchmark::{
     run_archive_benchmark_case, run_archive_benchmark_suite, ArchiveBenchmarkCase,
     ArchiveBenchmarkResult,
@@ -215,7 +215,7 @@ pub use outer_voice::{
     render_outer_voice_block, OuterVoice, OuterVoiceRefreshContext, OuterVoiceRefreshInput,
     OuterVoiceRefreshOutcome, OUTER_VOICE_SYSTEM_PROMPT, OUTER_VOICE_TOTAL_CHAR_LIMIT,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 pub use persona_governance_benchmark::{
     run_persona_governance_replay_case, run_persona_governance_replay_suite,
     PersonaGovernanceReplayCase, PersonaGovernanceReplayResult,
@@ -227,7 +227,7 @@ pub use persona_priority::{
     PersonaPriorityAdjudicationInput, PersonaPriorityGrounding, PersonaPriorityRuntimeState,
     PERSONA_PRIORITY_SYSTEM_PROMPT,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 pub use persona_regression::{
     run_persona_continuity_case, run_persona_continuity_suite, PersonaContinuityCase,
     PersonaContinuityResult,
@@ -278,7 +278,7 @@ pub use profile::{
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams, PromptRuntimeCarry,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 pub use recall_benchmark::{
     compute_recall_benchmark_metrics, run_recall_benchmark_case, run_recall_benchmark_suite,
     RecallBenchmarkCase, RecallBenchmarkMetrics, RecallBenchmarkResult,

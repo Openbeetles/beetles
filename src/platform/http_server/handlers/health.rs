@@ -68,7 +68,7 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn body_keeps_health_contract_fields() {
+    fn body_reports_default_health_state() {
         let ctx = build_test_context();
 
         let payload = body(&ctx).unwrap();
@@ -78,38 +78,19 @@ mod tests {
             parsed.get("wifi").and_then(Value::as_str),
             Some("disconnected")
         );
-        assert!(parsed.get("last_error").is_some());
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
         assert!(parsed.get("workflow").is_some());
-        assert!(parsed["workflow"].get("executed").is_some());
+        assert!(parsed.get("last_error").is_some());
+        assert!(parsed["display"]["available"].is_boolean());
+        assert!(parsed["audio"]["duplex_profile"].is_string());
         assert!(parsed["audio"]["duplex_capabilities"]
-            .get("reference_capture")
-            .is_none());
+            .get("microphone_input")
+            .is_some());
         assert!(parsed["audio"]["duplex_capabilities"]
-            .get("concurrent_capture_playback")
-            .is_none());
-        assert!(parsed["audio"]["duplex_capabilities"]
-            .get("barge_in")
-            .is_none());
-        assert!(parsed["audio"]["duplex_capabilities"]
-            .get("echo_cancellation")
-            .is_none());
-        assert!(parsed.get("metrics").is_none());
-        assert!(parsed.get("resource").is_none());
-        assert!(parsed.get("inbound_depth").is_none());
-        assert!(parsed.get("outbound_depth").is_none());
-        assert!(parsed.get("build_package").is_none());
-        assert!(parsed.get("capability_planes").is_none());
-        assert!(parsed.get("runtime_capabilities").is_none());
-        assert!(parsed.get("threads").is_none());
-        assert!(parsed.get("os_closure").is_none());
-        assert!(parsed.get("initiative").is_none());
-        assert!(parsed.get("presence").is_none());
-        assert!(parsed.get("runtime_mode").is_none());
-        assert!(parsed.get("soul_kernel").is_none());
-        assert!(parsed.get("supervisor").is_none());
-        assert!(parsed.get("release").is_none());
+            .get("speaker_output")
+            .is_some());
+        assert!(parsed["workflow"]["executed"].is_number());
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

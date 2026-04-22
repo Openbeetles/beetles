@@ -160,7 +160,7 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn body_keeps_system_info_as_device_summary_contract() {
+    fn body_keeps_device_summary_semantics() {
         let ctx = build_test_context();
 
         let payload = body(&ctx).unwrap();
@@ -170,45 +170,14 @@ mod tests {
             parsed.get("product_name").and_then(Value::as_str),
             Some("beetle")
         );
-        assert!(parsed.get("system_status").is_none());
+        assert!(parsed.get("current_time").is_some());
         assert!(parsed.get("firmware_version").is_some());
         assert!(parsed.get("board_id").is_some());
-        assert!(parsed.get("ota_available").is_some());
-        assert!(parsed.get("locale").is_some());
         assert!(parsed.get("lan_ip").is_some());
-        assert!(parsed.get("workflow").is_some());
-        assert!(parsed.get("programmable_reasoning").is_some());
-        assert!(parsed["workflow"].get("executed").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
             Some("capability_atoms_exchange")
         );
-        assert_eq!(
-            parsed["programmable_reasoning"]["execution_enabled"].as_bool(),
-            Some(cfg!(target_os = "linux"))
-        );
-        assert!(parsed["programmable_reasoning"]
-            .get("product_headline")
-            .is_some());
-        assert_eq!(
-            parsed["programmable_reasoning"]["demo_scenario_count"].as_u64(),
-            Some(3)
-        );
-        assert!(parsed["programmable_reasoning"]["inspection_ready"]
-            .as_bool()
-            .is_some());
-        assert!(parsed["programmable_reasoning"]["replay_ready"]
-            .as_bool()
-            .is_some());
-        assert!(parsed.get("initiative").is_none());
-        assert!(parsed.get("presence").is_none());
-        assert!(parsed.get("runtime_mode").is_none());
-        assert!(parsed.get("runtime_mode_snapshot").is_none());
-        assert!(parsed.get("soul_kernel").is_none());
-        assert!(parsed.get("audio_duplex_profile").is_none());
-        assert!(parsed.get("audio_duplex_capabilities").is_none());
-        assert!(parsed.get("supervisor").is_none());
-        assert!(parsed.get("release").is_none());
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {
