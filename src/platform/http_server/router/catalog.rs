@@ -263,7 +263,9 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
 pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::direct(ROUTE_HEALTH, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_HEALTH, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::direct(ROUTE_OPERATOR_STATUS, RouteMethod::Get, RouteBodyMode::None),
+    // Keep the HTTPD callback thread on lightweight summaries only.
+    // Routes that inspect runtime/storage/memory state run on http_route_exec.
+    HttpRouteSpec::worker(ROUTE_OPERATOR_STATUS, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(
         ROUTE_OPERATOR_STATUS,
         RouteMethod::Options,
@@ -281,11 +283,11 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
     ),
     HttpRouteSpec::direct(ROUTE_METRICS, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_METRICS, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::direct(ROUTE_RESOURCE, RouteMethod::Get, RouteBodyMode::None),
+    HttpRouteSpec::worker(ROUTE_RESOURCE, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_RESOURCE, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::direct(ROUTE_DIAGNOSE, RouteMethod::Get, RouteBodyMode::None),
+    HttpRouteSpec::worker(ROUTE_DIAGNOSE, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_DIAGNOSE, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::direct(ROUTE_SYSTEM_INFO, RouteMethod::Get, RouteBodyMode::None),
+    HttpRouteSpec::worker(ROUTE_SYSTEM_INFO, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_SYSTEM_INFO, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::worker(
         ROUTE_CHANNEL_CONNECTIVITY,

@@ -29,19 +29,12 @@ pub use listen_preflight::bind_tcp_listener;
 const CONFIG_PLANE_POLL_MS: u64 = 500;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn esp_config_plane_desired() -> bool {
-    // User-facing recovery/config access must remain reachable after STA joins.
-    // On ESP this server is therefore a budgeted steady-state capability, not a
-    // bootstrap-only plane that disappears after initial provisioning.
-    true
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
     channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -53,55 +46,46 @@ pub fn run(
 ) -> Result<()> {
     use crate::platform::http_server::common::MAX_OPEN_SOCKETS;
     use esp_idf_svc::http::server::{Configuration, EspHttpServer};
+    let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
+    let server_config = Configuration {
+        max_open_sockets: MAX_OPEN_SOCKETS,
+        max_uri_handlers: 96,
+        // Direct-dispatch config/status routes still execute on the IDF callback task.
+        // Keep the HTTPD stack at the pre-regression budget until the control-plane split
+        // is revalidated on hardware.
+        stack_size: 16 * 1024,
+        ..Default::default()
+    };
+
+    let mut server = EspHttpServer::new(&server_config).map_err(|e| Error::Other {
+        source: Box::new(e),
+        stage: "http_server_new",
+    })?;
+
+    let ctx = Arc::new(handlers::build_runtime_handler_context(
+        Arc::clone(&platform),
+        Arc::clone(&tool_registry),
+        Arc::clone(&channel_capability_registry),
+        capability_package_runtime_capabilities,
+        Arc::clone(&inbound_depth),
+        Arc::clone(&outbound_depth),
+        Arc::clone(&memory_store),
+        Arc::clone(&session_store),
+        Some(system_inbound_tx.clone()),
+        Arc::clone(&skill_prompt_cache),
+        Arc::clone(&shared_config),
+        handlers::ControlPlaneRouteContract::FULL,
+    ));
+
+    let router_env = router::RouterEnv::new(inbound_tx.clone());
+    let config_store = Arc::clone(&ctx.config_store);
+    esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
+    log::info!("[http_server] ESP config API serving (WiFi LAN + recovery plane)");
+
     loop {
-        while !esp_config_plane_desired() {
-            crate::state::set_config_plane_active(false);
-            crate::platform::task_wdt::feed_current_task();
-            std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
-            crate::platform::task_wdt::feed_current_task();
-        }
-
-        let _active_guard = crate::runtime::ConfigPlaneGuard::enter();
-        let server_config = Configuration {
-            max_open_sockets: MAX_OPEN_SOCKETS,
-            max_uri_handlers: 96,
-            // Direct-dispatch config/status routes still execute on the IDF callback task.
-            // Keep the HTTPD stack at the pre-regression budget until the control-plane split
-            // is revalidated on hardware.
-            stack_size: 16 * 1024,
-            ..Default::default()
-        };
-
-        let mut server = EspHttpServer::new(&server_config).map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: "http_server_new",
-        })?;
-
-        let ctx = Arc::new(handlers::build_runtime_handler_context(
-            Arc::clone(&platform),
-            Arc::clone(&tool_registry),
-            Arc::clone(&channel_capability_registry),
-            Arc::clone(&inbound_depth),
-            Arc::clone(&outbound_depth),
-            Arc::clone(&memory_store),
-            Arc::clone(&session_store),
-            Some(system_inbound_tx.clone()),
-            Arc::clone(&skill_prompt_cache),
-            Arc::clone(&shared_config),
-            handlers::ControlPlaneRouteContract::FULL,
-        ));
-
-        let router_env = router::RouterEnv::new(inbound_tx.clone());
-        let config_store = Arc::clone(&ctx.config_store);
-        esp_transport::register_all_esp_routes(&mut server, &ctx, &router_env, &config_store)?;
-        log::info!("[http_server] ESP config API serving (WiFi LAN + recovery plane)");
-
-        while esp_config_plane_desired() {
-            crate::platform::task_wdt::feed_current_task();
-            std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
-            crate::platform::task_wdt::feed_current_task();
-        }
-        log::info!("[http_server] ESP config API suspended (STA steady-state)");
+        crate::platform::task_wdt::feed_current_task();
+        std::thread::sleep(Duration::from_millis(CONFIG_PLANE_POLL_MS));
+        crate::platform::task_wdt::feed_current_task();
     }
 }
 
@@ -128,6 +112,7 @@ pub fn run_with_bound_listener(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
     channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -148,6 +133,7 @@ pub fn run_with_bound_listener(
         Arc::clone(&platform),
         tool_registry,
         channel_capability_registry,
+        capability_package_runtime_capabilities,
         Arc::clone(&inbound_depth),
         Arc::clone(&outbound_depth),
         memory_store,
@@ -239,6 +225,7 @@ pub fn run(
     platform: std::sync::Arc<dyn crate::platform::Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
     channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    capability_package_runtime_capabilities: Arc<crate::CapabilityPackageRuntimeCapabilities>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -262,6 +249,7 @@ pub fn run(
         platform,
         tool_registry,
         channel_capability_registry,
+        capability_package_runtime_capabilities,
         inbound_depth,
         outbound_depth,
         memory_store,

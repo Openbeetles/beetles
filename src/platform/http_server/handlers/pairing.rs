@@ -23,9 +23,6 @@ pub struct SetCodePayload {
 
 /// POST 处理：仅当未设置时写入 6 位码。返回 ApiResponse。
 pub fn post_body(ctx: &HandlerContext, body_json: &str) -> ApiResponse {
-    if pairing::code_set(ctx.config_store.as_ref()) {
-        return ApiResponse::err_400_key(api_contract::PAIRING_ALREADY_SET);
-    }
     let payload: SetCodePayload = match serde_json::from_str(body_json) {
         Ok(p) => p,
         Err(_) => return ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON),
@@ -34,19 +31,17 @@ pub fn post_body(ctx: &HandlerContext, body_json: &str) -> ApiResponse {
     if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
         return ApiResponse::err_400_key(api_contract::PAIRING_CODE_INVALID);
     }
-    match pairing::set_code(ctx.config_store.as_ref(), code) {
-        Ok(true) => {
+    match pairing::set_code_checked(ctx.config_store.as_ref(), code) {
+        Ok(pairing::SetCodeOutcome::Stored) => {
             crate::runtime::sync_pairing_state_from_store(ctx.config_store.as_ref());
-            // 首次激活时顺带创建空 SOUL/USER 文件，避免后续 get_soul/get_user 报 No such file
-            let _ = ctx
-                .platform
-                .write_config_file(crate::memory::REL_PATH_SOUL, b"");
-            let _ = ctx
-                .platform
-                .write_config_file(crate::memory::REL_PATH_USER, b"");
             ApiResponse::ok_200_json(r#"{"ok":true}"#)
         }
-        Ok(false) => ApiResponse::err_400_key(api_contract::PAIRING_ALREADY_SET),
+        Ok(pairing::SetCodeOutcome::AlreadySet) => {
+            ApiResponse::err_400_key(api_contract::PAIRING_ALREADY_SET)
+        }
+        Ok(pairing::SetCodeOutcome::Invalid) => {
+            ApiResponse::err_400_key(api_contract::PAIRING_CODE_INVALID)
+        }
         Err(_) => ApiResponse::err_500_key(api_contract::PAIRING_SAVE_FAILED),
     }
 }

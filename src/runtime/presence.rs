@@ -66,30 +66,35 @@ pub struct PresenceSnapshot {
 
 impl PresenceSnapshot {
     pub fn display_projection(&self, network_hint: Option<&str>) -> PresenceDisplayProjection {
-        let subtitle_override = match self.state {
-            PresenceState::Booting | PresenceState::Recovery | PresenceState::Fault => {
-                Some(self.subtitle.clone())
-            }
-            PresenceState::Pairing => Some(
-                network_hint
-                    .map(|hint| format!("pair at {}", hint))
-                    .unwrap_or_else(|| self.subtitle.clone()),
-            ),
-            PresenceState::NoWifi => Some(
-                network_hint
-                    .map(|hint| format!("config at {}", hint))
-                    .unwrap_or_else(|| self.subtitle.clone()),
-            ),
-            PresenceState::Idle
-            | PresenceState::Busy
-            | PresenceState::Listening
-            | PresenceState::Speaking => None,
-        };
-        PresenceDisplayProjection {
-            state: self.display_state,
-            subtitle_override,
-        }
+        build_presence_display_projection(
+            self.state,
+            self.display_state,
+            self.subtitle.as_str(),
+            network_hint,
+        )
     }
+}
+
+pub fn inspect_platform_display_projection(
+    platform: &dyn Platform,
+    now_secs: u64,
+    network_hint: Option<&str>,
+) -> PresenceDisplayProjection {
+    let resource = orchestrator::snapshot();
+    let soul_kernel = runtime::inspect_platform_soul_kernel(platform, now_secs);
+    let runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
+    let runtime_mode = crate::runtime::mode::snapshot_from_source(runtime_mode_source);
+    let busy = resource.active_agent_tasks > 0
+        || resource.active_http_count > 0
+        || resource.inbound_depth > 0
+        || resource.outbound_depth > 0
+        || runtime_mode.current_mode == RuntimeMode::Maintenance;
+    let state = derive_presence_state(runtime_mode, &soul_kernel, &resource, busy);
+    let display_state = map_presence_to_display_state(state);
+    let (_, subtitle, _) =
+        build_presence_copy(state, runtime_mode.current_mode, &soul_kernel, &resource);
+
+    build_presence_display_projection(state, display_state, subtitle, network_hint)
 }
 
 pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> PresenceSnapshot {
@@ -128,6 +133,37 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
         soul_kernel,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         release,
+    }
+}
+
+fn build_presence_display_projection(
+    state: PresenceState,
+    display_state: DisplaySystemState,
+    subtitle: &str,
+    network_hint: Option<&str>,
+) -> PresenceDisplayProjection {
+    let subtitle_override = match state {
+        PresenceState::Booting | PresenceState::Recovery | PresenceState::Fault => {
+            Some(subtitle.to_string())
+        }
+        PresenceState::Pairing => Some(
+            network_hint
+                .map(|hint| format!("pair at {}", hint))
+                .unwrap_or_else(|| subtitle.to_string()),
+        ),
+        PresenceState::NoWifi => Some(
+            network_hint
+                .map(|hint| format!("config at {}", hint))
+                .unwrap_or_else(|| subtitle.to_string()),
+        ),
+        PresenceState::Idle
+        | PresenceState::Busy
+        | PresenceState::Listening
+        | PresenceState::Speaking => None,
+    };
+    PresenceDisplayProjection {
+        state: display_state,
+        subtitle_override,
     }
 }
 

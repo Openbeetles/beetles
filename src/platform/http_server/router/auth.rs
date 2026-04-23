@@ -21,15 +21,16 @@ pub fn require_pairing_code(
     uri: &str,
     headers: &[(String, String)],
 ) -> Option<ApiResponse> {
-    if !pairing::code_set(store) {
-        return Some(ApiResponse::err_401_key("auth.pairing_required"));
-    }
+    let stored_code = match pairing::get_valid_code(store) {
+        Some(code) => code,
+        None => return Some(ApiResponse::err_401_key("auth.pairing_required")),
+    };
     let code = common::code_from_uri(uri)
         .map(String::from)
         .or_else(|| header_ci(headers, "X-Pairing-Code").map(String::from));
     match code.as_deref() {
-        Some(c) if !c.is_empty() => {
-            if !pairing::verify_code(store, c) {
+        Some(candidate) if !candidate.is_empty() => {
+            if !pairing::verify_code_value(&stored_code, candidate) {
                 return Some(ApiResponse::err_401_key("auth.pairing_invalid"));
             }
         }
@@ -54,5 +55,44 @@ pub fn require_csrf(_store: &dyn ConfigStore, headers: &[(String, String)]) -> O
         Some(t) if csrf::verify_token(t) => None,
         Some(_) => Some(ApiResponse::err_403_key("auth.csrf_invalid")),
         None => Some(ApiResponse::err_403_key("auth.csrf_required")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_pairing_code;
+    use crate::error::Result;
+    use crate::platform::ConfigStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingStore {
+        reads: AtomicUsize,
+    }
+
+    impl ConfigStore for CountingStore {
+        fn read_string(&self, key: &str) -> Result<Option<String>> {
+            assert_eq!(key, "pairing_code");
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("123456".to_string()))
+        }
+
+        fn write_string(&self, _key: &str, _value: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn erase_keys(&self, _keys: &[&str]) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn require_pairing_code_reads_pairing_code_once_on_valid_request() {
+        let store = CountingStore {
+            reads: AtomicUsize::new(0),
+        };
+        let headers = [("X-Pairing-Code".to_string(), "123456".to_string())];
+
+        assert!(require_pairing_code(&store, "/api/config/system", &headers).is_none());
+        assert_eq!(store.reads.load(Ordering::SeqCst), 1);
     }
 }

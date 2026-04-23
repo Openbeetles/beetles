@@ -154,6 +154,7 @@
 - `session_max_messages`
 - `tg_group_activation`
 - `locale`
+  仅接受 `zh` 或 `en`；非法值会直接返回 `400 application/json`，不会被静默忽略。
 
 **GET /api/config/llm**
 
@@ -299,6 +300,11 @@
 - `dingtalk_app_secret`：钉钉自定义机器人加签 secret；仅主动发送到 `dingtalk_webhook_url` 时使用。
 - `wecom_token`：企业微信回调 Token；`GET/POST /api/wecom/webhook` 都要求非空并做签名校验。
 - `wecom_encoding_aes_key`：企业微信安全模式回调的 EncodingAESKey；配置后 GET 验证会解密 `echostr`，POST 会解密 XML 中的 `Encrypt`。
+
+保存语义补充：
+
+- 服务端会先校验并写入 `config/channels.json`，再把 `tg_group_activation` 镜像到 NVS overlay。
+- 如果 overlay 写入失败，服务端会把 `config/channels.json` 回滚到保存前内容，避免 SPIFFS / NVS 出现一边成功、一边失败的裂脑状态。
 
 `enabled_channel` 允许值：
 

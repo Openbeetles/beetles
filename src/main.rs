@@ -171,6 +171,7 @@ struct HttpServerSpawnContext {
     platform: Arc<dyn Platform>,
     tool_registry: Arc<beetle::tools::ToolRegistry>,
     channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
+    capability_package_runtime_capabilities: Arc<beetle::CapabilityPackageRuntimeCapabilities>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     memory_store: Arc<dyn beetle::memory::MemoryStore + Send + Sync>,
@@ -324,6 +325,7 @@ fn spawn_http_config_server(
             ctx.platform,
             ctx.tool_registry,
             ctx.channel_capability_registry,
+            ctx.capability_package_runtime_capabilities,
             ctx.inbound_depth,
             ctx.outbound_depth,
             ctx.memory_store,
@@ -340,6 +342,7 @@ fn spawn_http_config_server(
             ctx.platform,
             ctx.tool_registry,
             ctx.channel_capability_registry,
+            ctx.capability_package_runtime_capabilities,
             ctx.inbound_depth,
             ctx.outbound_depth,
             ctx.memory_store,
@@ -479,7 +482,6 @@ struct VoiceRuntimeCapabilities {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CommunicationPlaneStartup {
-    http_client_ready: bool,
     start_voice_session: bool,
 }
 
@@ -506,13 +508,9 @@ fn compute_voice_runtime_capabilities(
     }
 }
 
-fn communication_plane_startup(
-    http_client_ready: bool,
-    voice_runtime_ready: bool,
-) -> CommunicationPlaneStartup {
+fn communication_plane_startup(voice_runtime_ready: bool) -> CommunicationPlaneStartup {
     CommunicationPlaneStartup {
-        http_client_ready,
-        start_voice_session: http_client_ready && voice_runtime_ready,
+        start_voice_session: voice_runtime_ready,
     }
 }
 
@@ -528,20 +526,17 @@ fn probed_communication_plane_startup(
 }
 
 fn refresh_communication_plane_startup(assembly: &mut PreparedRuntimeAssembly) {
-    let http_client_ready = assembly
-        .network_governor
-        .open_http_client(HttpClientClass::Background)
-        .is_ok();
+    // The runtime plane owns its own HTTP clients; startup only needs to refresh the
+    // observable runtime-capability snapshot after Wi-Fi readiness has settled.
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
+    beetle::orchestrator::log_startup_memory_checkpoint("communication_plane_ready");
     assembly.communication_plane = Some(communication_plane_startup(
-        http_client_ready,
         assembly.voice_event_channel.is_some(),
     ));
     let state_fs_ready = assembly.runtime.platform.spiffs_usage().is_some();
     beetle::orchestrator::observe_runtime_capabilities_from_platform(
         assembly.runtime.platform.as_ref(),
-        http_client_ready,
+        true,
         Some(state_fs_ready),
     );
 }
@@ -551,10 +546,14 @@ mod tests {
     use super::{
         communication_plane_startup, compute_voice_runtime_capabilities,
         finalize_required_thread_start, register_process_memory_snapshot_provider,
-        startup_banner_lines, voice_sink_sender, StartedVoiceSession, VERSION,
+        startup_banner_lines, voice_sink_sender, DisplayLoopState, StartedVoiceSession, VERSION,
     };
-    use beetle::{config::default_disabled_audio_segment, DISPLAY_CHANNEL_CAPACITY};
+    use beetle::{
+        config::default_disabled_audio_segment, DisplaySystemState, LinuxPlatform, Platform,
+        DISPLAY_CHANNEL_CAPACITY,
+    };
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     struct TestMemoryStore {
         has_memory: bool,
@@ -682,17 +681,12 @@ mod tests {
     }
 
     #[test]
-    fn communication_plane_startup_requires_http_client_for_all_http_backed_threads() {
-        let disabled = communication_plane_startup(false, true);
-        assert!(!disabled.http_client_ready);
+    fn communication_plane_startup_tracks_only_voice_runtime_readiness() {
+        let disabled = communication_plane_startup(false);
         assert!(!disabled.start_voice_session);
 
-        let enabled = communication_plane_startup(true, true);
-        assert!(enabled.http_client_ready);
+        let enabled = communication_plane_startup(true);
         assert!(enabled.start_voice_session);
-
-        let no_voice = communication_plane_startup(true, false);
-        assert!(!no_voice.start_voice_session);
     }
 
     #[test]
@@ -784,7 +778,6 @@ mod tests {
         assert!(*pending.cleared.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     #[test]
     fn update_display_loop_cache_syncs_owned_dashboard_fields() {
         use super::{update_display_loop_cache, DisplayLoopCacheUpdate, DisplayLoopState};
@@ -839,8 +832,8 @@ mod tests {
         update_display_loop_cache(
             &mut state,
             DisplayLoopCacheUpdate {
-                presence_subtitle: &subtitle,
-                ip: &ip,
+                presence_subtitle: Some(&subtitle),
+                ip: Some(ip.as_str()),
                 channels: &channels,
                 pressure: Some(DisplayPressureLevel::Cautious),
                 heap_percent: Some(42),
@@ -859,6 +852,50 @@ mod tests {
         assert_eq!(state.last_msg_in, 7);
         assert_eq!(state.last_msg_out, 9);
         assert_eq!(state.last_llm_ms, 88);
+    }
+
+    #[test]
+    fn update_display_loop_cache_can_leave_header_fields_untouched() {
+        use super::{update_display_loop_cache, DisplayLoopCacheUpdate, DisplayLoopState};
+        use beetle::{DisplayChannelStatus, DisplayPressureLevel};
+
+        let mut state = DisplayLoopState {
+            last_presence_subtitle: Some("old-subtitle".to_string()),
+            last_ip: "192.168.4.1".to_string(),
+            ..DisplayLoopState::default()
+        };
+        let channels = [
+            DisplayChannelStatus::hidden(),
+            DisplayChannelStatus::hidden(),
+            DisplayChannelStatus::hidden(),
+            DisplayChannelStatus::hidden(),
+            DisplayChannelStatus::hidden(),
+        ];
+
+        update_display_loop_cache(
+            &mut state,
+            DisplayLoopCacheUpdate {
+                presence_subtitle: None,
+                ip: None,
+                channels: &channels,
+                pressure: Some(DisplayPressureLevel::Normal),
+                heap_percent: Some(11),
+                msg_in: Some(2),
+                msg_out: Some(3),
+                llm_ms: Some(4),
+            },
+        );
+
+        assert_eq!(
+            state.last_presence_subtitle.as_deref(),
+            Some("old-subtitle")
+        );
+        assert_eq!(state.last_ip, "192.168.4.1");
+        assert_eq!(state.last_pressure, Some(DisplayPressureLevel::Normal));
+        assert_eq!(state.last_heap, 11);
+        assert_eq!(state.last_msg_in, 2);
+        assert_eq!(state.last_msg_out, 3);
+        assert_eq!(state.last_llm_ms, 4);
     }
 
     #[test]
@@ -893,6 +930,35 @@ mod tests {
         assert_eq!(state.last_msg_in, u32::MAX);
         assert_eq!(state.last_msg_out, u32::MAX);
         assert_eq!(state.last_llm_ms, 0);
+    }
+
+    #[test]
+    fn display_backlight_wake_keeps_current_refresh_cycle_renderable() {
+        let platform: Arc<dyn Platform> = Arc::new(LinuxPlatform::new());
+        let mut state = DisplayLoopState {
+            backlight_off: true,
+            last_state: Some(DisplaySystemState::Busy),
+            last_presence_subtitle: Some("old".to_string()),
+            last_ip: "192.168.4.1".to_string(),
+            ..DisplayLoopState::default()
+        };
+
+        let should_skip_render = super::update_display_backlight(
+            &platform,
+            &mut state,
+            true,
+            Duration::from_secs(30),
+            true,
+        );
+
+        assert!(
+            !should_skip_render,
+            "wake-triggering changes must repaint in the same refresh cycle"
+        );
+        assert!(!state.backlight_off);
+        assert_eq!(state.last_state, None);
+        assert_eq!(state.last_presence_subtitle, None);
+        assert!(state.last_ip.is_empty());
     }
 
     #[test]
@@ -1228,8 +1294,8 @@ fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopSta
 ))]
 #[cfg_attr(test, allow(dead_code))]
 struct DisplayLoopCacheUpdate<'a> {
-    presence_subtitle: &'a Option<String>,
-    ip: &'a String,
+    presence_subtitle: Option<&'a Option<String>>,
+    ip: Option<&'a str>,
     channels: &'a [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
     pressure: Option<DisplayPressureLevel>,
     heap_percent: Option<u8>,
@@ -1259,10 +1325,15 @@ fn update_display_loop_cache(
         msg_out,
         llm_ms,
     } = update;
-    loop_state
-        .last_presence_subtitle
-        .clone_from(presence_subtitle);
-    loop_state.last_ip.clone_from(ip);
+    if let Some(presence_subtitle) = presence_subtitle {
+        loop_state
+            .last_presence_subtitle
+            .clone_from(presence_subtitle);
+    }
+    if let Some(ip) = ip {
+        loop_state.last_ip.clear();
+        loop_state.last_ip.push_str(ip);
+    }
     for (i, ch) in channels.iter().enumerate() {
         loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
     }
@@ -1352,7 +1423,12 @@ fn update_display_error_flash(
     }
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 fn update_display_backlight(
     platform: &Arc<dyn Platform>,
     loop_state: &mut DisplayLoopState,
@@ -1368,7 +1444,7 @@ fn update_display_backlight(
         loop_state.backlight_off = false;
         invalidate_display_cache_after_backlight_wake(loop_state);
         log::info!("[{}] display backlight woke up", TAG);
-        return true;
+        return false;
     }
     if !loop_state.backlight_off
         && !any_change
@@ -1400,21 +1476,20 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         beetle::platform::task_wdt::feed_current_task();
         beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_display_loop_before_presence");
         let snapshot = beetle::orchestrator::snapshot();
-        let presence = beetle::runtime::inspect_platform_presence(
-            platform.as_ref(),
-            beetle::util::current_unix_secs(),
-        );
+        let now_secs = beetle::util::current_unix_secs();
         beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_display_loop_after_presence");
         let pressure = match snapshot.pressure {
             beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
             beetle::orchestrator::PressureLevel::Cautious => DisplayPressureLevel::Cautious,
             beetle::orchestrator::PressureLevel::Critical => DisplayPressureLevel::Critical,
         };
-        let sta_connected = beetle::platform::is_wifi_sta_connected();
-        let ip = platform
-            .wifi_sta_ip()
-            .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
-        let display_projection = presence.display_projection(Some(ip.as_str()));
+        let ip = platform.wifi_sta_ip();
+        let ip_hint = ip.as_deref().unwrap_or(SOFTAP_DEFAULT_IPV4);
+        let display_projection = beetle::runtime::inspect_platform_display_projection(
+            platform.as_ref(),
+            now_secs,
+            Some(ip_hint),
+        );
         let state = display_projection.state;
         let channels = build_display_channels(enabled, &snapshot);
         let heap_percent = heap_used_percent(&snapshot);
@@ -1436,7 +1511,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         let state_changed = loop_state.last_state != Some(state);
         let subtitle_changed =
             loop_state.last_presence_subtitle != display_projection.subtitle_override;
-        let ip_changed = loop_state.last_ip.as_str() != ip.as_str();
+        let ip_changed = loop_state.last_ip.as_str() != ip_hint;
         let channels_changed = channels.iter().enumerate().any(|(i, ch)| {
             loop_state.last_channels[i] != (ch.enabled, ch.healthy, ch.consecutive_failures)
         });
@@ -1488,12 +1563,11 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
 
         if let Some(header_mode) = refresh_plan.header {
             let presence_subtitle = display_projection.subtitle_override.clone();
-            let ip_owned = ip.clone();
+            let ip_owned = ip_hint.to_string();
             let cmd = match header_mode {
                 StateChangeDisplayRefreshMode::FullDashboard => DisplayCommand::RefreshDashboard {
                     state,
                     presence_subtitle,
-                    wifi_connected: sta_connected,
                     ip_address: Some(ip_owned.clone()),
                     channels,
                     pressure,
@@ -1531,8 +1605,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         update_display_loop_cache(
                             &mut loop_state,
                             DisplayLoopCacheUpdate {
-                                presence_subtitle: &display_projection.subtitle_override,
-                                ip: &ip_owned,
+                                presence_subtitle: Some(&display_projection.subtitle_override),
+                                ip: Some(ip_owned.as_str()),
                                 channels: &channels,
                                 pressure: Some(pressure),
                                 heap_percent: Some(heap_percent),
@@ -1557,7 +1631,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
 
         if refresh_plan.ip {
             let presence_subtitle = display_projection.subtitle_override.clone();
-            let ip_owned = ip.clone();
+            let ip_owned = ip_hint.to_string();
             match platform.display_command(DisplayCommand::UpdateIp {
                 ip: ip_owned.clone(),
                 presence_subtitle,
@@ -1567,8 +1641,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                     update_display_loop_cache(
                         &mut loop_state,
                         DisplayLoopCacheUpdate {
-                            presence_subtitle: &display_projection.subtitle_override,
-                            ip: &ip_owned,
+                            presence_subtitle: Some(&display_projection.subtitle_override),
+                            ip: Some(ip_owned.as_str()),
                             channels: &channels,
                             pressure: None,
                             heap_percent: None,
@@ -1582,15 +1656,13 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             }
         }
         if refresh_plan.channels {
-            let last_presence_subtitle = loop_state.last_presence_subtitle.clone();
-            let last_ip = loop_state.last_ip.clone();
             match platform.display_command(DisplayCommand::UpdateChannels { channels }) {
                 Ok(()) => {
                     update_display_loop_cache(
                         &mut loop_state,
                         DisplayLoopCacheUpdate {
-                            presence_subtitle: &last_presence_subtitle,
-                            ip: &last_ip,
+                            presence_subtitle: None,
+                            ip: None,
                             channels: &channels,
                             pressure: None,
                             heap_percent: None,
@@ -1604,8 +1676,6 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             }
         }
         if refresh_plan.footer {
-            let last_presence_subtitle = loop_state.last_presence_subtitle.clone();
-            let last_ip = loop_state.last_ip.clone();
             match platform.display_command(DisplayCommand::UpdatePressure {
                 level: pressure,
                 heap_percent,
@@ -1619,8 +1689,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                     update_display_loop_cache(
                         &mut loop_state,
                         DisplayLoopCacheUpdate {
-                            presence_subtitle: &last_presence_subtitle,
-                            ip: &last_ip,
+                            presence_subtitle: None,
+                            ip: None,
                             channels: &channels,
                             pressure: Some(pressure),
                             heap_percent: Some(heap_percent),
@@ -2460,6 +2530,9 @@ fn start_support_planes(
             platform: Arc::clone(&assembly.runtime.platform),
             tool_registry: Arc::clone(&assembly.registry),
             channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
+            capability_package_runtime_capabilities: Arc::clone(
+                &assembly.capability_package_runtime_capabilities,
+            ),
             inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
             outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
             memory_store: Arc::clone(&assembly.runtime.memory_store),
@@ -2544,8 +2617,8 @@ fn start_support_planes(
     if wifi_init_ok {
         beetle::platform::wait_for_network_ready();
     }
-    // Probe HTTP readiness only after the platform reports network-ready so a
-    // transient boot race does not permanently disable the main runtime plane.
+    // Refresh observable runtime-capability state after Wi-Fi readiness settles.
+    // Support/agent planes no longer depend on a synthetic HTTP readiness probe.
     refresh_communication_plane_startup(assembly);
     beetle::orchestrator::init();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -2625,104 +2698,83 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     }
     let sinks = Arc::new(sinks);
 
-    if communication_plane.http_client_ready {
-        #[cfg(feature = "feishu")]
-        {
-            if let Some(ref c) = channel_rx_set.feishu {
-                let tx = assembly.bus.user_inbound_tx.clone();
-                let id = c.app_id.clone();
-                let sec = c.app_secret.clone();
-                let allowed = parse_allowed_chat_ids(&assembly.config.feishu_allowed_chat_ids);
-                let pending = Arc::clone(&assembly.runtime.pending_retry_store);
-                let http_factory = assembly
-                    .network_governor
-                    .http_factory(HttpClientClass::Background);
-                spawn_required_planned_thread(
-                    TAG,
-                    "feishu_ws",
-                    STACK_CHANNEL_WS,
-                    "Feishu WS loop started",
-                    "feishu_ws_spawn",
-                    move || {
-                        run_feishu_ws_loop(
-                            id,
-                            sec,
-                            allowed,
-                            tx,
-                            pending.as_ref(),
-                            move || http_factory(),
-                            beetle::network::connect_external_wss,
-                        )
-                    },
-                )?;
-            } else if enabled_channel == "feishu" {
-                log::warn!(
-                    "[{}] Feishu WS not started: app_id or app_secret empty (check channels config)",
-                    TAG
-                );
-            }
-        }
-
-        #[cfg(feature = "qq_channel")]
-        if enabled_channel == "qq_channel" {
-            if let Some(ref c) = channel_rx_set.qq_channel {
-                if !c.app_id.trim().is_empty() && !c.app_secret.trim().is_empty() {
-                    let qq_tx = assembly.bus.user_inbound_tx.clone();
-                    let qq_id = c.app_id.clone();
-                    let qq_sec = c.app_secret.clone();
-                    let qq_cache_ws = Arc::clone(&assembly.qq_msg_id_cache);
-                    let qq_inbound_dedup_ws = Arc::clone(&assembly.qq_inbound_dedup_store);
-                    let qq_token_cache_ws = assembly.qq_token_cache.clone();
-                    let qq_ws_status = assembly.qq_ws_status.clone();
-                    let qq_pending = Arc::clone(&assembly.runtime.pending_retry_store);
-                    let http_factory = assembly
-                        .network_governor
-                        .http_factory(HttpClientClass::Background);
-                    spawn_required_planned_thread(
-                        TAG,
-                        "qq_ws",
-                        STACK_CHANNEL_WS,
-                        "QQ WS loop started",
-                        "qq_ws_spawn",
-                        move || {
-                            beetle::run_qq_ws_loop(
-                                beetle::QqWsLoopConfig {
-                                    app_id: qq_id,
-                                    client_secret: qq_sec,
-                                    msg_id_cache: qq_cache_ws,
-                                    inbound_dedup_store: qq_inbound_dedup_ws,
-                                    shared_token_cache: qq_token_cache_ws,
-                                    shared_ws_status: qq_ws_status,
-                                },
-                                qq_tx,
-                                qq_pending.as_ref(),
-                                move || http_factory(),
-                                beetle::network::connect_external_wss,
-                            )
-                        },
-                    )?;
-                }
-            }
-        }
-    } else {
-        #[cfg(all(feature = "feishu", feature = "qq_channel"))]
-        if enabled_channel == "feishu" || enabled_channel == "qq_channel" {
+    #[cfg(feature = "feishu")]
+    {
+        if let Some(ref c) = channel_rx_set.feishu {
+            let tx = assembly.bus.user_inbound_tx.clone();
+            let id = c.app_id.clone();
+            let sec = c.app_secret.clone();
+            let allowed = parse_allowed_chat_ids(&assembly.config.feishu_allowed_chat_ids);
+            let pending = Arc::clone(&assembly.runtime.pending_retry_store);
+            let http_factory = assembly
+                .network_governor
+                .http_factory(HttpClientClass::Background);
+            spawn_required_planned_thread(
+                TAG,
+                "feishu_ws",
+                STACK_CHANNEL_WS,
+                "Feishu WS loop started",
+                "feishu_ws_spawn",
+                move || {
+                    run_feishu_ws_loop(
+                        id,
+                        sec,
+                        allowed,
+                        tx,
+                        pending.as_ref(),
+                        move || http_factory(),
+                        beetle::network::connect_external_wss,
+                    )
+                },
+            )?;
+        } else if enabled_channel == "feishu" {
             log::warn!(
-                "[{}] HTTP-backed ingress not started: create_http_client failed, so external WSS ingress stays offline with dispatch/sender/agent",
-                TAG
-            );
-        }
-        #[cfg(all(not(feature = "feishu"), feature = "qq_channel"))]
-        if enabled_channel == "qq_channel" {
-            log::warn!(
-                "[{}] HTTP-backed ingress not started: create_http_client failed, so external WSS ingress stays offline with dispatch/sender/agent",
+                "[{}] Feishu WS not started: app_id or app_secret empty (check channels config)",
                 TAG
             );
         }
     }
 
-    if !communication_plane.http_client_ready {
-        return Ok(());
+    #[cfg(feature = "qq_channel")]
+    if enabled_channel == "qq_channel" {
+        if let Some(ref c) = channel_rx_set.qq_channel {
+            if !c.app_id.trim().is_empty() && !c.app_secret.trim().is_empty() {
+                let qq_tx = assembly.bus.user_inbound_tx.clone();
+                let qq_id = c.app_id.clone();
+                let qq_sec = c.app_secret.clone();
+                let qq_cache_ws = Arc::clone(&assembly.qq_msg_id_cache);
+                let qq_inbound_dedup_ws = Arc::clone(&assembly.qq_inbound_dedup_store);
+                let qq_token_cache_ws = assembly.qq_token_cache.clone();
+                let qq_ws_status = assembly.qq_ws_status.clone();
+                let qq_pending = Arc::clone(&assembly.runtime.pending_retry_store);
+                let http_factory = assembly
+                    .network_governor
+                    .http_factory(HttpClientClass::Background);
+                spawn_required_planned_thread(
+                    TAG,
+                    "qq_ws",
+                    STACK_CHANNEL_WS,
+                    "QQ WS loop started",
+                    "qq_ws_spawn",
+                    move || {
+                        beetle::run_qq_ws_loop(
+                            beetle::QqWsLoopConfig {
+                                app_id: qq_id,
+                                client_secret: qq_sec,
+                                msg_id_cache: qq_cache_ws,
+                                inbound_dedup_store: qq_inbound_dedup_ws,
+                                shared_token_cache: qq_token_cache_ws,
+                                shared_ws_status: qq_ws_status,
+                            },
+                            qq_tx,
+                            qq_pending.as_ref(),
+                            move || http_factory(),
+                            beetle::network::connect_external_wss,
+                        )
+                    },
+                )?;
+            }
+        }
     }
 
     let outbound_rx_for_dispatch = assembly
@@ -2744,10 +2796,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
 
     #[cfg(feature = "telegram")]
-    if communication_plane.http_client_ready
-        && enabled_channel == "telegram"
-        && !assembly.config.tg_token.trim().is_empty()
-    {
+    if enabled_channel == "telegram" && !assembly.config.tg_token.trim().is_empty() {
         let tg_token = assembly.config.tg_token.clone();
         let tg_allowed = parse_allowed_chat_ids(&assembly.config.tg_allowed_chat_ids);
         let tg_group_activation = assembly.config.tg_group_activation.clone();
@@ -2814,10 +2863,6 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
 fn start_agent_plane(
     assembly: &mut PreparedRuntimeAssembly,
 ) -> beetle::Result<Option<beetle::util::TaskHandle>> {
-    if !probed_communication_plane_startup(assembly)?.http_client_ready {
-        return Ok(None);
-    }
-
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if assembly.runtime.platform.display_available() {
         let _ = assembly
@@ -3078,16 +3123,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             return;
         }
     };
-    if assembly
-        .communication_plane
-        .is_some_and(|communication_plane| !communication_plane.http_client_ready)
-    {
-        log::warn!(
-            "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
-            TAG
-        );
-    }
-
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::platform::task_wdt::register_current_task_to_task_wdt();
     beetle::state::set_boot_phase_active(false);

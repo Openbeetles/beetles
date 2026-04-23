@@ -19,8 +19,8 @@ const KEEPALIVE_MIN_SPEECH_BIN_COVERAGE: f32 = 0.25;
 const MAX_SPEECH_BIN_DOMINANCE: f32 = 0.78;
 const KEEPALIVE_MAX_SPEECH_BIN_DOMINANCE: f32 = 0.90;
 const BAND_ACTIVITY_FLOOR_RATIO: f32 = 0.18;
-const SPEECH_BAND_HZ: &[f32] = &[500.0, 1000.0, 1800.0, 2600.0];
-const NOISE_BAND_HZ: &[f32] = &[150.0, 250.0, 4000.0, 5500.0];
+const SPEECH_BAND_HZ: [f32; 4] = [500.0, 1000.0, 1800.0, 2600.0];
+const NOISE_BAND_HZ: [f32; 4] = [150.0, 250.0, 4000.0, 5500.0];
 
 /// Acoustic wake backend configuration derived from `AudioSegment::wake_word`.
 #[derive(Clone, Debug)]
@@ -283,38 +283,51 @@ fn zero_crossing_rate(pcm: &[i16]) -> f32 {
 }
 
 fn speech_band_summary(pcm: &[i16], sample_rate_hz: u32) -> SpeechBandSummary {
-    let speech_bins = band_energies(pcm, sample_rate_hz, SPEECH_BAND_HZ);
-    let speech_total: f32 = speech_bins.iter().copied().sum();
-    let noise_total: f32 = band_energies(pcm, sample_rate_hz, NOISE_BAND_HZ)
-        .iter()
-        .copied()
-        .sum();
+    let (speech_bins, speech_bin_count) = band_energies(pcm, sample_rate_hz, &SPEECH_BAND_HZ);
+    let speech_total: f32 = speech_bins[..speech_bin_count].iter().copied().sum();
+    let noise_total = band_energy_sum(pcm, sample_rate_hz, &NOISE_BAND_HZ);
     let total = speech_total + noise_total;
-    if total <= f32::EPSILON || speech_total <= f32::EPSILON {
+    if speech_bin_count == 0 || total <= f32::EPSILON || speech_total <= f32::EPSILON {
         return SpeechBandSummary::default();
     }
 
-    let dominant = speech_bins.iter().copied().fold(0.0f32, f32::max);
+    let dominant = speech_bins[..speech_bin_count]
+        .iter()
+        .copied()
+        .fold(0.0f32, f32::max);
     let activity_floor = (dominant * BAND_ACTIVITY_FLOOR_RATIO).max(f32::EPSILON);
-    let active_bins = speech_bins
+    let active_bins = speech_bins[..speech_bin_count]
         .iter()
         .filter(|energy| **energy >= activity_floor)
         .count();
 
     SpeechBandSummary {
         speech_ratio: (speech_total / total).clamp(0.0, 1.0),
-        speech_bin_coverage: (active_bins as f32) / (speech_bins.len().max(1) as f32),
+        speech_bin_coverage: (active_bins as f32) / (speech_bin_count as f32),
         dominant_speech_share: (dominant / speech_total).clamp(0.0, 1.0),
     }
 }
 
-fn band_energies(pcm: &[i16], sample_rate_hz: u32, bins: &[f32]) -> Vec<f32> {
+fn band_energy_sum<const N: usize>(pcm: &[i16], sample_rate_hz: u32, bins: &[f32; N]) -> f32 {
+    let (energies, len) = band_energies(pcm, sample_rate_hz, bins);
+    energies[..len].iter().copied().sum()
+}
+
+fn band_energies<const N: usize>(
+    pcm: &[i16],
+    sample_rate_hz: u32,
+    bins: &[f32; N],
+) -> ([f32; N], usize) {
     let nyquist = (sample_rate_hz as f32) * 0.5;
-    bins.iter()
-        .copied()
-        .filter(|hz| *hz > 0.0 && *hz < nyquist)
-        .map(|hz| goertzel_energy(pcm, sample_rate_hz, hz))
-        .collect()
+    let mut energies = [0.0; N];
+    let mut count = 0;
+    for &hz in bins {
+        if hz > 0.0 && hz < nyquist {
+            energies[count] = goertzel_energy(pcm, sample_rate_hz, hz);
+            count += 1;
+        }
+    }
+    (energies, count)
 }
 
 fn goertzel_energy(pcm: &[i16], sample_rate_hz: u32, target_hz: f32) -> f32 {

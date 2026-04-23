@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn control_plane_core_routes_dispatch_directly() {
+    fn lightweight_control_plane_routes_dispatch_directly() {
         assert_eq!(
             dispatch_mode_for("/api/pairing_code", Method::Get),
             Some(RouteDispatchMode::Direct)
@@ -485,16 +485,32 @@ mod tests {
             Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
-            dispatch_mode_for("/api/resource", Method::Get),
-            Some(RouteDispatchMode::Direct)
-        );
-        assert_eq!(
             dispatch_mode_for("/api/metrics", Method::Get),
             Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
-            dispatch_mode_for("/api/system_info", Method::Get),
+            dispatch_mode_for("/api/operator/window", Method::Post),
             Some(RouteDispatchMode::Direct)
+        );
+    }
+
+    #[test]
+    fn heavy_esp_observability_routes_dispatch_on_worker_lane() {
+        assert_eq!(
+            dispatch_mode_for("/api/operator/status", Method::Get),
+            Some(RouteDispatchMode::Worker)
+        );
+        assert_eq!(
+            dispatch_mode_for("/api/resource", Method::Get),
+            Some(RouteDispatchMode::Worker)
+        );
+        assert_eq!(
+            dispatch_mode_for("/api/diagnose", Method::Get),
+            Some(RouteDispatchMode::Worker)
+        );
+        assert_eq!(
+            dispatch_mode_for("/api/system_info", Method::Get),
+            Some(RouteDispatchMode::Worker)
         );
     }
 

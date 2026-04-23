@@ -43,7 +43,12 @@ pub fn feed_pcm_i16(mic: &[i16], reference: &[i16], audio_playing: bool) {
     let (event, voice_tx) = {
         let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let event = guard.backend.feed_pcm_i16(mic, reference, audio_playing);
-        (event, guard.voice_tx.clone())
+        let voice_tx = if matches!(event, Some(WakeEvent::TriggerStart)) {
+            guard.voice_tx.clone()
+        } else {
+            None
+        };
+        (event, voice_tx)
     };
 
     match event {

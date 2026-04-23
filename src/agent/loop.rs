@@ -2040,6 +2040,7 @@ mod tests {
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use crate::tools::{
         build_default_tool_protocol_authority, ToolCatalogAuthority, ToolLlmVisibility,
+        ToolProtocolContract,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -2053,9 +2054,20 @@ mod tests {
     }
 
     fn test_registry(entries: &[(&str, ToolLlmVisibility)]) -> crate::tools::ToolRegistry {
+        test_registry_with_protocols(entries, &[])
+    }
+
+    fn test_registry_with_protocols(
+        entries: &[(&str, ToolLlmVisibility)],
+        protocols: &[(&str, ToolProtocolContract)],
+    ) -> crate::tools::ToolRegistry {
+        let mut protocol_authority = build_default_tool_protocol_authority();
+        for (name, contract) in protocols {
+            protocol_authority.insert(name, *contract);
+        }
         crate::tools::ToolRegistry::new()
             .with_llm_catalog_authority(synthetic_catalog(entries))
-            .with_tool_protocol_authority(Arc::new(build_default_tool_protocol_authority()))
+            .with_tool_protocol_authority(Arc::new(protocol_authority))
     }
 
     #[test]
@@ -5966,7 +5978,13 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = test_registry(&[("office_config", ToolLlmVisibility::user_only())]);
+        let mut registry = test_registry_with_protocols(
+            &[("office_config", ToolLlmVisibility::user_only())],
+            &[(
+                "office_config",
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+            )],
+        );
         registry.register(Box::new(StubBlockingOfficeConfigTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6013,7 +6031,13 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = test_registry(&[("mail", ToolLlmVisibility::user_only())]);
+        let mut registry = test_registry_with_protocols(
+            &[("mail", ToolLlmVisibility::user_only())],
+            &[(
+                "mail",
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+            )],
+        );
         registry.register(Box::new(StubChoiceBlockingTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -6060,7 +6084,13 @@ mod tests {
         };
         let mut http = DummyPlatformHttp;
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = test_registry(&[("office_config", ToolLlmVisibility::user_only())]);
+        let mut registry = test_registry_with_protocols(
+            &[("office_config", ToolLlmVisibility::user_only())],
+            &[(
+                "office_config",
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+            )],
+        );
         registry.register(Box::new(StubMultiFieldBlockingTool));
         let mut config = test_agent_loop_config();
         config.strategy = AgentRunStrategy::LinuxEnhanced;
@@ -7093,7 +7123,13 @@ mod tests {
             as Arc<dyn crate::task_execution::TaskRunStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let mut registry = test_registry(&[("mail", ToolLlmVisibility::user_only())]);
+        let mut registry = test_registry_with_protocols(
+            &[("mail", ToolLlmVisibility::user_only())],
+            &[(
+                "mail",
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+            )],
+        );
         registry.register(Box::new(StubResolvableOfficeMailTool {
             seen_args: Arc::clone(&seen_args),
         }));

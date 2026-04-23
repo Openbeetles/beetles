@@ -241,22 +241,51 @@ fn psram_vec_with_capacity(cap: usize) -> PsramVec<u8> {
     PsramVec::with_max_capacity(cap)
 }
 
+fn open_file_for_read(path: &Path) -> Result<(std::fs::File, usize)> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("spiffs_read", "invalid path"))?;
+    let file = std::fs::File::open(path_str).map_err(|e| Error::io("spiffs_read", e))?;
+    let capacity = file
+        .metadata()
+        .ok()
+        .and_then(|m| m.len().try_into().ok())
+        .map(|len: usize| len.min(MAX_WRITE_SIZE))
+        .unwrap_or(0);
+    Ok((file, capacity))
+}
+
+fn read_open_file(
+    mut file: std::fs::File,
+    mut on_chunk: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let mut chunk = [0u8; 1024];
+    let mut total = 0usize;
+    loop {
+        let n = file
+            .read(&mut chunk)
+            .map_err(|e| Error::io("spiffs_read", e))?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n);
+        if total > MAX_WRITE_SIZE {
+            return Err(Error::config(
+                "spiffs_read",
+                format!("file size {} exceeds {}", total, MAX_WRITE_SIZE),
+            ));
+        }
+        on_chunk(&chunk[..n])?;
+    }
+    Ok(())
+}
+
 /// 读整个文件到 Vec。路径相对于 SPIFFS_BASE，或绝对如 /spiffs/config/SOUL.md。
 /// 有 metadata 时预分配 capacity，减少 read_to_end 的多次 realloc。
 /// 大文件（>= 8KB）优先使用 PSRAM 分配。
 pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
     with_fs_lock(|| {
-        let p = path.as_ref();
-        let path_str = p
-            .to_str()
-            .ok_or_else(|| Error::config("spiffs_read", "invalid path"))?;
-        let mut f = std::fs::File::open(path_str).map_err(|e| Error::io("spiffs_read", e))?;
-        let capacity = f
-            .metadata()
-            .ok()
-            .and_then(|m| m.len().try_into().ok())
-            .map(|len: usize| len.min(MAX_WRITE_SIZE))
-            .unwrap_or(0);
+        let (file, capacity) = open_file_for_read(path.as_ref())?;
         let mut buf = if capacity >= PSRAM_FILE_THRESHOLD {
             psram_vec_with_capacity(capacity)
         } else if capacity > 0 {
@@ -264,23 +293,10 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
         } else {
             PsramVec::from(Vec::new())
         };
-        let mut chunk = [0u8; 1024];
-        loop {
-            let n = f
-                .read(&mut chunk)
-                .map_err(|e| Error::io("spiffs_read", e))?;
-            if n == 0 {
-                break;
-            }
-            buf.write_all(&chunk[..n])
-                .map_err(|e| Error::io("spiffs_read", e))?;
-        }
-        if buf.len() > MAX_WRITE_SIZE {
-            return Err(Error::config(
-                "spiffs_read",
-                format!("file size {} exceeds {}", buf.len(), MAX_WRITE_SIZE),
-            ));
-        }
+        read_open_file(file, |chunk| {
+            buf.write_all(chunk)
+                .map_err(|e| Error::io("spiffs_read", e))
+        })?;
         Ok(buf)
     })
 }
@@ -289,38 +305,16 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
 /// 避免先落 PSRAM 再 `into_vec()` 复制一遍。
 pub fn read_file_to_vec(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     with_fs_lock(|| {
-        let p = path.as_ref();
-        let path_str = p
-            .to_str()
-            .ok_or_else(|| Error::config("spiffs_read", "invalid path"))?;
-        let mut f = std::fs::File::open(path_str).map_err(|e| Error::io("spiffs_read", e))?;
-        let capacity = f
-            .metadata()
-            .ok()
-            .and_then(|m| m.len().try_into().ok())
-            .map(|len: usize| len.min(MAX_WRITE_SIZE))
-            .unwrap_or(0);
+        let (file, capacity) = open_file_for_read(path.as_ref())?;
         let mut buf = if capacity > 0 {
             Vec::with_capacity(capacity)
         } else {
             Vec::new()
         };
-        let mut chunk = [0u8; 1024];
-        loop {
-            let n = f
-                .read(&mut chunk)
-                .map_err(|e| Error::io("spiffs_read", e))?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-        }
-        if buf.len() > MAX_WRITE_SIZE {
-            return Err(Error::config(
-                "spiffs_read",
-                format!("file size {} exceeds {}", buf.len(), MAX_WRITE_SIZE),
-            ));
-        }
+        read_open_file(file, |chunk| {
+            buf.extend_from_slice(chunk);
+            Ok(())
+        })?;
         Ok(buf)
     })
 }

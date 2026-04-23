@@ -11,7 +11,6 @@ use crate::display::{
 };
 use crate::error::{Error, Result};
 use std::convert::Infallible;
-use std::time::Instant;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  FlushRgb565 — 抽象刷屏接口，SPI 与 framebuffer 均实现
@@ -565,12 +564,10 @@ where
             Error = Infallible,
         > + FlushRgb565,
 {
-    use embedded_graphics_core::pixelcolor::Rgb565;
     match cmd {
         DisplayCommand::RefreshDashboard {
             state,
             presence_subtitle,
-            wifi_connected: _,
             ip_address,
             channels,
             pressure,
@@ -662,11 +659,9 @@ where
             llm_last_ms,
             error_flash,
         } => {
-            let bg = DISPLAY_BG;
             render_pressure_partial(
                 backend,
                 level,
-                bg,
                 layout,
                 &FooterPartialParams {
                     heap_percent: *heap_percent,
@@ -688,8 +683,7 @@ where
             )?;
         }
         DisplayCommand::UpdateChannels { channels } => {
-            let bg = DISPLAY_BG;
-            render_channels_partial(backend, channels, bg, config.width, layout);
+            render_channels_partial(backend, channels, config.width, layout);
             let ch_h = layout_middle_panel_height(layout) as u16;
             backend.flush_rows(config.offset_x, config.offset_y, layout.middle_top, ch_h)?;
         }
@@ -703,14 +697,6 @@ where
                 layout.footer_top,
                 footer_h,
             )?;
-        }
-        DisplayCommand::Clear => {
-            use embedded_graphics::prelude::*;
-            match backend.clear(Rgb565::BLACK) {
-                Ok(()) => {}
-                Err(never) => match never {},
-            }
-            backend.flush(config.offset_x, config.offset_y)?;
         }
     }
     Ok(())
@@ -753,7 +739,6 @@ pub struct DisplayState {
     /// 由 `config.width`/`height` 计算的仪表盘布局（与 SPI 是否启用无关）。
     pub layout: DisplayLayout,
     pub available: bool,
-    pub last_command_at: Option<Instant>,
     /// BL GPIO pin number (if configured). Used for backlight on/off control.
     bl_pin: Option<i32>,
     /// F1: LEDC PWM 背光是否已初始化。
@@ -790,7 +775,6 @@ impl DisplayState {
                 config: config.clone(),
                 layout,
                 available: false,
-                last_command_at: None,
                 bl_pin: None,
                 bl_ledc_initialized: false,
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -817,7 +801,6 @@ impl DisplayState {
                 config: config.clone(),
                 layout,
                 available: true,
-                last_command_at: None,
                 bl_pin,
                 bl_ledc_initialized: false,
                 backend: Some(backend),
@@ -840,7 +823,6 @@ impl DisplayState {
                                 config: config.clone(),
                                 layout,
                                 available: true,
-                                last_command_at: None,
                                 bl_pin,
                                 bl_ledc_initialized: false,
                                 backend_fb: Some(fb),
@@ -862,7 +844,6 @@ impl DisplayState {
                             config: config.clone(),
                             layout,
                             available: true,
-                            last_command_at: None,
                             bl_pin,
                             bl_ledc_initialized: false,
                             backend_fb: None,
@@ -887,7 +868,6 @@ impl DisplayState {
                 config: config.clone(),
                 layout,
                 available: false,
-                last_command_at: None,
                 bl_pin,
                 bl_ledc_initialized: false,
             })
@@ -958,7 +938,6 @@ impl DisplayState {
                 None => return Ok(()),
             };
             dispatch_display_command(backend, &self.config, &self.layout, &cmd)?;
-            self.last_command_at = Some(Instant::now());
         }
 
         #[cfg(all(
@@ -973,13 +952,11 @@ impl DisplayState {
             } else {
                 return Ok(());
             }
-            self.last_command_at = Some(Instant::now());
         }
 
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux")))]
         {
             let _ = cmd;
-            self.last_command_at = Some(Instant::now());
         }
 
         Ok(())
@@ -2464,17 +2441,12 @@ fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
 fn render_channels_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     channels: &[DisplayChannelStatus; crate::DISPLAY_CHANNEL_CAPACITY],
-    bg: Rgb565,
     width: u16,
     layout: &DisplayLayout,
 ) {
     let middle_y = layout.middle_top as i32;
     let ch_h = layout_middle_panel_height(layout) as u32;
 
-    // Clear middle region
-    let _ = Rectangle::new(Point::new(0, middle_y), Size::new(width as u32, ch_h))
-        .into_styled(PrimitiveStyle::with_fill(bg))
-        .draw(target);
     draw_panel_fill(
         target,
         0,
@@ -2507,21 +2479,9 @@ struct FooterPartialParams {
 fn render_pressure_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     level: &DisplayPressureLevel,
-    bg: Rgb565,
     layout: &DisplayLayout,
     fp: &FooterPartialParams,
 ) {
-    let footer_y = layout.footer_top as i32;
-
-    // Clear entire footer region
-    let footer_h = (fp.height as i32 - footer_y).max(1) as u32;
-    let _ = Rectangle::new(
-        Point::new(0, footer_y),
-        Size::new(fp.width as u32, footer_h),
-    )
-    .into_styled(PrimitiveStyle::with_fill(bg))
-    .draw(target);
-
     render_footer(
         target,
         layout,

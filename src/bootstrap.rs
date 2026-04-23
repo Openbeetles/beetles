@@ -172,11 +172,19 @@ fn post_wifi_display_bootstrap(
                         consecutive_failures: 0,
                     };
                 }
+                let ip_address = if wifi_init_ok {
+                    Some(
+                        platform
+                            .wifi_sta_ip()
+                            .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string()),
+                    )
+                } else {
+                    None
+                };
                 let _ = platform.display_command(DisplayCommand::RefreshDashboard {
                     state: DisplaySystemState::Booting,
                     presence_subtitle: Some("restoring runtime shell".to_string()),
-                    wifi_connected: false,
-                    ip_address: None,
+                    ip_address,
                     channels,
                     pressure: DisplayPressureLevel::Normal,
                     heap_percent: 0,
@@ -194,45 +202,37 @@ fn post_wifi_display_bootstrap(
             }
         }
     }
-    if wifi_init_ok && platform.display_available() {
-        let ip = platform
-            .wifi_sta_ip()
-            .unwrap_or_else(|| SOFTAP_DEFAULT_IPV4.to_string());
-        let uptime_secs = crate::platform::time::app_uptime_secs();
-        let _ = platform.display_command(DisplayCommand::UpdateIp {
-            ip,
-            presence_subtitle: None,
-            uptime_secs,
-        });
-    }
 }
 
 /// 启动后音频初始化（从 bootstrap 移出，由 run_app 在 MessageBus 创建后调用）。
 /// Audio init after boot (moved out of bootstrap; called by run_app after MessageBus).
 pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfig>) {
-    let registry = crate::build_device_capability_registry(config.as_ref(), platform.as_ref());
-    if !registry.is_mounted(crate::DEVICE_CAPABILITY_VOICE) {
+    if !crate::compiled_voice_capability() {
         return;
     }
-    if let Some(audio_cfg) = config.audio.as_ref() {
-        if let Err(e) = platform.init_audio(audio_cfg) {
-            log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
-        } else {
-            let caps = platform.audio_duplex_capabilities();
-            log::info!(
-                "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={:?} aec={:?})",
-                TAG,
-                caps.profile().as_str(),
-                caps.microphone_input,
-                caps.speaker_output,
-                caps.concurrent_capture_playback,
-                caps.barge_in,
-                caps.reference_capture,
-                caps.echo_cancellation
-            );
-            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-            crate::orchestrator::log_startup_memory_checkpoint("audio_initialized");
-        }
+    let Some(audio_cfg) = config.audio.as_ref() else {
+        return;
+    };
+    if !audio_cfg.enabled {
+        return;
+    }
+    if let Err(e) = platform.init_audio(audio_cfg) {
+        log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
+    } else {
+        let caps = platform.audio_duplex_capabilities();
+        log::info!(
+            "[{}] audio initialized (profile={} mic={} speaker={} duplex={} barge_in={} reference={:?} aec={:?})",
+            TAG,
+            caps.profile().as_str(),
+            caps.microphone_input,
+            caps.speaker_output,
+            caps.concurrent_capture_playback,
+            caps.barge_in,
+            caps.reference_capture,
+            caps.echo_cancellation
+        );
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        crate::orchestrator::log_startup_memory_checkpoint("audio_initialized");
     }
 }
 

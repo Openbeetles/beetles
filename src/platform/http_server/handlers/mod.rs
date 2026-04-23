@@ -19,7 +19,8 @@ impl ControlPlaneRouteContract {
 }
 
 /// 各 handler 共享的上下文，由 run() 构建后以 Arc 传入闭包。
-/// `cached_config` 缓存最新配置：读路径零 `AppConfig::load()`，写路径保存后 `reload_config()` 刷新。
+/// `cached_config` 缓存最新配置：读路径零 `AppConfig::load()`；SPIFFS 写路径仍可 `reload_config()`，
+/// NVS-only 小改动则原地投影到缓存，避免整包重载。
 #[allow(dead_code)]
 pub struct HandlerContext {
     pub config_store: Arc<dyn ConfigStore + Send + Sync>,
@@ -67,6 +68,15 @@ impl HandlerContext {
             .unwrap_or_else(|e| e.into_inner()) = new;
     }
 
+    pub fn update_cached_config(&self, apply: impl FnOnce(&mut AppConfig)) {
+        apply(
+            &mut self
+                .cached_config
+                .write()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+    }
+
     pub fn fetch_url(&self, url: &str, max_len: usize) -> crate::error::Result<Vec<u8>> {
         let cfg = self.config();
         let mut client = crate::network::create_http_client_with_config(
@@ -84,6 +94,7 @@ pub fn build_runtime_handler_context(
     platform: Arc<dyn Platform>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
     channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
+    capability_package_runtime_capabilities: Arc<CapabilityPackageRuntimeCapabilities>,
     inbound_depth: Arc<AtomicUsize>,
     outbound_depth: Arc<AtomicUsize>,
     memory_store: Arc<dyn crate::memory::MemoryStore + Send + Sync>,
@@ -99,9 +110,6 @@ pub fn build_runtime_handler_context(
     )));
     let skill_storage = platform.skill_storage();
     let skill_meta_store = platform.skill_meta_store();
-    let capability_package_runtime_capabilities = Arc::new(
-        crate::build_capability_package_runtime_capabilities(channel_capability_registry.as_ref()),
-    );
 
     HandlerContext {
         config_store,
@@ -167,6 +175,9 @@ pub(crate) fn build_test_handler_context(
     let (tool_registry, _) = crate::build_default_registry(&config, &runtime_services);
     let channel_capability_registry =
         Arc::new(crate::build_channel_capability_registry(&config, false));
+    let capability_package_runtime_capabilities = Arc::new(
+        crate::build_capability_package_runtime_capabilities(channel_capability_registry.as_ref()),
+    );
 
     HandlerContext {
         config_store,
@@ -181,11 +192,7 @@ pub(crate) fn build_test_handler_context(
         skill_prompt_cache,
         tool_registry: Arc::new(tool_registry),
         channel_capability_registry: Arc::clone(&channel_capability_registry),
-        capability_package_runtime_capabilities: Arc::new(
-            crate::build_capability_package_runtime_capabilities(
-                channel_capability_registry.as_ref(),
-            ),
-        ),
+        capability_package_runtime_capabilities,
         inbound_depth: Arc::new(AtomicUsize::new(0)),
         outbound_depth: Arc::new(AtomicUsize::new(0)),
         system_inbound_tx: None,

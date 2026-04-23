@@ -873,23 +873,6 @@ impl AudioPipelineState {
         }
         validate_speaker_for_pipeline(seg)?;
 
-        let mic_cap = (seg.microphone.sample_rate.max(8_000) as usize).saturating_mul(2);
-        let speaker_cap = (seg.speaker.sample_rate.max(8_000) as usize).saturating_mul(2);
-        let staging_cap = (seg.speaker.sample_rate.max(8_000) as usize)
-            .saturating_mul(AUDIO_STAGING_CAPACITY_SECS);
-        let shared = Arc::new(SharedAudioBuffers {
-            mic: Mutex::new(AudioRingBuffer::with_capacity(mic_cap)),
-            mic_cv: Condvar::new(),
-            speaker: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
-            speaker_cv: Condvar::new(),
-            staging: Mutex::new(AudioRingBuffer::with_capacity(staging_cap)),
-            staging_cv: Condvar::new(),
-            reference: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
-            reference_cv: Condvar::new(),
-            speaker_generation: AtomicU32::new(1),
-            stop: AtomicBool::new(false),
-        });
-
         const MIC_DEVICE_PDM: &str = "pdm";
         if seg.microphone.enabled && seg.microphone.device_type == MIC_DEVICE_PDM {
             return Err(Error::config(
@@ -909,6 +892,40 @@ impl AudioPipelineState {
                 ),
             ));
         }
+
+        let mic_cap = if seg.microphone.enabled {
+            (seg.microphone.sample_rate.max(8_000) as usize).saturating_mul(2)
+        } else {
+            0
+        };
+        let speaker_cap = if seg.speaker.enabled {
+            (seg.speaker.sample_rate.max(8_000) as usize).saturating_mul(2)
+        } else {
+            0
+        };
+        let staging_cap = if seg.speaker.enabled {
+            (seg.speaker.sample_rate.max(8_000) as usize)
+                .saturating_mul(AUDIO_STAGING_CAPACITY_SECS)
+        } else {
+            0
+        };
+        let reference_cap = if seg.microphone.enabled && seg.speaker.enabled {
+            speaker_cap
+        } else {
+            0
+        };
+        let shared = Arc::new(SharedAudioBuffers {
+            mic: Mutex::new(AudioRingBuffer::with_capacity(mic_cap)),
+            mic_cv: Condvar::new(),
+            speaker: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
+            speaker_cv: Condvar::new(),
+            staging: Mutex::new(AudioRingBuffer::with_capacity(staging_cap)),
+            staging_cv: Condvar::new(),
+            reference: Mutex::new(AudioRingBuffer::with_capacity(reference_cap)),
+            reference_cv: Condvar::new(),
+            speaker_generation: AtomicU32::new(1),
+            stop: AtomicBool::new(false),
+        });
 
         let mic = if seg.microphone.enabled {
             Some(init_mic_channel(seg)?)
@@ -1137,10 +1154,9 @@ impl AudioPipelineState {
     #[inline]
     pub fn duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
         match (self.mic_enabled, self.speaker_enabled) {
-            (true, true) if self.reference_ready() => {
+            (true, true) => {
                 crate::platform::AudioDuplexCapabilities::duplex_with_playback_reference()
             }
-            (true, true) => crate::platform::AudioDuplexCapabilities::duplex_without_aec(),
             (true, false) => crate::platform::AudioDuplexCapabilities::microphone_only(),
             (false, true) => crate::platform::AudioDuplexCapabilities::speaker_only(),
             (false, false) => crate::platform::AudioDuplexCapabilities::unavailable(),

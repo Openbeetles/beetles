@@ -60,7 +60,8 @@ pub use operator_maintenance::{
     CHANNEL_OPERATOR_MAINTENANCE,
 };
 pub use presence::{
-    inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
+    inspect_platform_display_projection, inspect_platform_presence, PresenceDisplayProjection,
+    PresenceSnapshot, PresenceState,
 };
 pub use soul_kernel::{
     ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelPromptProjection,

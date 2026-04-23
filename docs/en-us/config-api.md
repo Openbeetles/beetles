@@ -154,6 +154,7 @@ Fields:
 - `session_max_messages`
 - `tg_group_activation`
 - `locale`
+  Only `zh` and `en` are accepted. Invalid values now return `400 application/json` instead of being silently ignored.
 
 **GET /api/config/llm**
 

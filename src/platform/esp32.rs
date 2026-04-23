@@ -293,18 +293,14 @@ impl Platform for Esp32Platform {
     }
 
     fn connect_wifi(&self, config: &AppConfig) -> crate::error::Result<()> {
-        match crate::platform::connect_wifi(config) {
-            Ok(Some(handle)) => {
-                let arc_dyn: Arc<dyn crate::platform::WifiScan + Send + Sync> = Arc::new(handle);
-                *self
-                    .wifi_scan_handle
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(arc_dyn);
-                Ok(())
-            }
-            Ok(None) => Ok(()),
-            Err(e) => Err(e),
+        if let Some(handle) = crate::platform::connect_wifi(config)? {
+            let arc_dyn: Arc<dyn crate::platform::WifiScan + Send + Sync> = Arc::new(handle);
+            *self
+                .wifi_scan_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(arc_dyn);
         }
+        Ok(())
     }
 
     fn wifi_scan(&self) -> Option<Arc<dyn crate::platform::WifiScan + Send + Sync>> {

@@ -621,13 +621,19 @@ pub fn reset_to_defaults(store: &dyn ConfigStore) -> Result<()> {
 }
 
 /// 仅将 tg_group_activation 写入 store（供 Telegram /activation 命令使用）；value 仅允许 "mention" 或 "always"。
-pub fn write_tg_group_activation(store: &dyn ConfigStore, value: &str) -> Result<()> {
+pub fn validate_tg_group_activation(value: &str) -> Result<()> {
     if value != "mention" && value != "always" {
         return Err(Error::config(
             "write_tg_group_activation",
             "value must be 'mention' or 'always'",
         ));
     }
+    Ok(())
+}
+
+/// 仅将 tg_group_activation 写入 store（供 Telegram /activation 命令使用）；value 仅允许 "mention" 或 "always"。
+pub fn write_tg_group_activation(store: &dyn ConfigStore, value: &str) -> Result<()> {
+    validate_tg_group_activation(value)?;
     store.write_string(NVS_KEY_TG_GROUP_ACTIVATION, value)
 }
 
@@ -920,19 +926,30 @@ pub fn save_wifi_to_nvs(store: &dyn ConfigStore, wifi_ssid: &str, wifi_pass: &st
 /// 从 store 读取当前 locale；无或非法则返回 "zh"。
 pub fn get_locale(store: &dyn ConfigStore) -> String {
     match store.read_string(NVS_KEY_LOCALE) {
-        Ok(Some(s)) if s == "zh" || s == "en" => s,
+        Ok(Some(locale)) => normalize_locale_value(&locale)
+            .map(str::to_string)
+            .unwrap_or_else(|_| "zh".to_string()),
         _ => "zh".to_string(),
     }
 }
 
 /// 写入 locale（仅接受 "zh" 或 "en"）。
 pub fn set_locale(store: &dyn ConfigStore, locale: &str) -> Result<()> {
+    let locale = normalize_locale_value(locale)?;
+    store.write_string(NVS_KEY_LOCALE, locale)?;
+    Ok(())
+}
+
+fn normalize_locale_value(locale: &str) -> Result<&str> {
     let locale = locale.trim();
     if locale != "zh" && locale != "en" {
         return Err(Error::config("locale", "must be zh or en"));
     }
-    store.write_string(NVS_KEY_LOCALE, locale)?;
-    Ok(())
+    Ok(locale)
+}
+
+fn normalize_optional_locale(locale: Option<&str>) -> Result<Option<&str>> {
+    locale.map(normalize_locale_value).transpose()
 }
 
 /// GET/POST /api/config/llm 读写模型。
@@ -1752,6 +1769,7 @@ fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
             "proxy_url must be empty or like http://host:port",
         ));
     }
+    normalize_optional_locale(seg.locale.as_deref())?;
     Ok(())
 }
 
@@ -2725,18 +2743,75 @@ pub fn save_llm_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> 
 pub fn save_channels_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: ChannelsSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
-    validate_channels_segment_fields(&seg)?;
-    let json =
-        serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
+    save_channels_segment_value(writer, &seg)
+}
+
+/// 校验 ChannelsSegment 并写入 SPIFFS config/channels.json；直接消费已解析的配置对象。
+pub fn save_channels_segment_value(
+    writer: &dyn ConfigFileStore,
+    seg: &ChannelsSegment,
+) -> Result<()> {
+    validate_channels_segment_fields(seg)?;
+    let json = serde_json::to_string(seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/channels.json", json.as_bytes())?;
     Ok(())
+}
+
+/// 保存 channels.json，并在写 tg_group_activation overlay 失败时回滚文件，避免控制面裂脑。
+pub fn save_channels_segment_with_overlay(
+    writer: &dyn ConfigFileStore,
+    store: &dyn ConfigStore,
+    seg: &ChannelsSegment,
+    tg_group_activation: Option<&str>,
+) -> Result<()> {
+    if let Some(value) = tg_group_activation {
+        validate_tg_group_activation(value)?;
+    }
+    let previous = writer.read_config_file("config/channels.json")?;
+    save_channels_segment_value(writer, seg)?;
+    if let Some(value) = tg_group_activation {
+        if let Err(error) = write_tg_group_activation(store, value) {
+            if let Err(rollback) =
+                restore_config_file(writer, "config/channels.json", previous.as_deref())
+            {
+                return Err(Error::config(
+                    "save_channels_segment",
+                    format!(
+                        "tg_group_activation save failed: {}; rollback failed: {}",
+                        error, rollback
+                    ),
+                ));
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn restore_config_file(
+    writer: &dyn ConfigFileStore,
+    rel_path: &str,
+    previous: Option<&[u8]>,
+) -> Result<()> {
+    match previous {
+        Some(data) => writer.write_config_file(rel_path, data),
+        None => writer.remove_config_file(rel_path),
+    }
 }
 
 /// 校验 SystemSegment 并写入对应 NVS 键；body 即全量，不做合并。
 pub fn save_system_segment_to_nvs(store: &dyn ConfigStore, body: &str) -> Result<()> {
     let seg: SystemSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
-    validate_system_segment_fields(&seg)?;
+    save_system_segment_value_to_nvs(store, &seg)
+}
+
+/// 校验 SystemSegment 并写入对应 NVS 键；直接消费已解析的系统配置对象。
+pub(crate) fn save_system_segment_value_to_nvs(
+    store: &dyn ConfigStore,
+    seg: &SystemSegment,
+) -> Result<()> {
+    validate_system_segment_fields(seg)?;
     let session_str = seg.session_max_messages.to_string();
     let mut pairs: Vec<(&str, &str)> = vec![
         (NVS_KEY_WIFI_SSID, &seg.wifi_ssid),
@@ -2745,14 +2820,28 @@ pub fn save_system_segment_to_nvs(store: &dyn ConfigStore, body: &str) -> Result
         (NVS_KEY_SESSION_MAX_MESSAGES, &session_str),
         (NVS_KEY_TG_GROUP_ACTIVATION, &seg.tg_group_activation),
     ];
-    if let Some(loc) = seg.locale.as_deref() {
-        let loc = loc.trim();
-        if loc == "zh" || loc == "en" {
-            pairs.push((NVS_KEY_LOCALE, loc));
-        }
+    if let Some(locale) = normalize_optional_locale(seg.locale.as_deref())? {
+        pairs.push((NVS_KEY_LOCALE, locale));
     }
     store.write_strings(&pairs)?;
     Ok(())
+}
+
+/// 将 WiFi 配置投影回运行时缓存；仅修改当前 handler 已持久化的字段。
+pub(crate) fn apply_wifi_to_config(config: &mut AppConfig, wifi_ssid: &str, wifi_pass: &str) {
+    config.wifi_ssid = wifi_ssid.to_string();
+    config.wifi_pass = wifi_pass.to_string();
+}
+
+/// 将已通过保存校验的 SystemSegment 投影回运行时缓存。
+pub(crate) fn apply_system_segment_to_config(config: &mut AppConfig, seg: &SystemSegment) {
+    apply_wifi_to_config(config, &seg.wifi_ssid, &seg.wifi_pass);
+    config.proxy_url = seg.proxy_url.clone();
+    config.session_max_messages = seg.session_max_messages;
+    config.tg_group_activation = seg.tg_group_activation.clone();
+    if let Some(locale) = seg.locale.as_deref().map(str::trim) {
+        config.locale = Some(locale.to_string());
+    }
 }
 
 /// 校验 HardwareSegment 并写入 SPIFFS config/hardware.json；body 即全量，不做合并。
@@ -3190,6 +3279,115 @@ mod tests {
             .expect("written");
         let saved: AudioSegment = serde_json::from_slice(&written).expect("parse saved audio");
         assert_eq!(saved.speaker.device_ref, None);
+    }
+
+    #[test]
+    fn save_channels_segment_with_overlay_restores_previous_file_on_overlay_failure() {
+        struct MemoryFileStore(std::sync::Mutex<Option<Vec<u8>>>);
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            }
+
+            fn write_config_file(&self, _rel_path: &str, data: &[u8]) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(data.to_vec());
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                Ok(())
+            }
+        }
+
+        struct FailingOverlayStore;
+
+        impl crate::platform::ConfigStore for FailingOverlayStore {
+            fn read_string(&self, _key: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+
+            fn write_string(&self, key: &str, value: &str) -> Result<()> {
+                assert_eq!(key, NVS_KEY_TG_GROUP_ACTIVATION);
+                assert_eq!(value, "always");
+                Err(Error::config(
+                    "tg_group_activation",
+                    "synthetic overlay failure",
+                ))
+            }
+
+            fn erase_keys(&self, _keys: &[&str]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let previous = br#"{"previous":"channels"}"#.to_vec();
+        let store = MemoryFileStore(std::sync::Mutex::new(Some(previous.clone())));
+        let config = AppConfig::load_from_env();
+        let mut seg = ChannelsSegment::from_app_config(&config);
+        seg.enabled_channel = "telegram".to_string();
+
+        let error =
+            save_channels_segment_with_overlay(&store, &FailingOverlayStore, &seg, Some("always"))
+                .expect_err("overlay failure should bubble up");
+
+        assert_eq!(
+            error.stage(),
+            "tg_group_activation",
+            "original overlay failure should be preserved when rollback succeeds"
+        );
+        assert_eq!(
+            store
+                .read_config_file("config/channels.json")
+                .expect("read restored file")
+                .expect("previous file should still exist"),
+            previous
+        );
+    }
+
+    #[test]
+    fn save_system_segment_to_nvs_rejects_invalid_locale() {
+        #[derive(Default)]
+        struct MemoryConfigStore(std::sync::Mutex<Vec<(String, String)>>);
+
+        impl crate::platform::ConfigStore for MemoryConfigStore {
+            fn read_string(&self, _key: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+
+            fn write_string(&self, key: &str, value: &str) -> Result<()> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((key.to_string(), value.to_string()));
+                Ok(())
+            }
+
+            fn erase_keys(&self, _keys: &[&str]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let store = MemoryConfigStore::default();
+        let error = save_system_segment_to_nvs(
+            &store,
+            r#"{
+                "wifi_ssid":"BeetleNet",
+                "wifi_pass":"secret-pass",
+                "proxy_url":"",
+                "session_max_messages":32,
+                "tg_group_activation":"mention",
+                "locale":"ja"
+            }"#,
+        )
+        .expect_err("invalid locale should be rejected");
+
+        assert_eq!(error.stage(), "locale");
+        assert!(
+            store.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            "invalid locale must fail before any NVS write"
+        );
     }
 
     #[cfg(feature = "capability_office")]

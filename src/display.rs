@@ -168,7 +168,6 @@ pub enum DisplayCommand {
         state: DisplaySystemState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         presence_subtitle: Option<String>,
-        wifi_connected: bool,
         ip_address: Option<String>,
         channels: [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
         pressure: DisplayPressureLevel,
@@ -217,10 +216,7 @@ pub enum DisplayCommand {
         channels: [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
     },
     /// F8: 启动进度条。stage: 0=WiFi前, 1=WiFi后, 2=SNTP后, 3=Channels后, 4=Agent前。
-    UpdateBootProgress {
-        stage: u8,
-    },
-    Clear,
+    UpdateBootProgress { stage: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

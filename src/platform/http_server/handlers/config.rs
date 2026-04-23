@@ -100,7 +100,9 @@ pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::i
         &payload.wifi_pass,
     ) {
         Ok(()) => {
-            ctx.reload_config();
+            ctx.update_cached_config(|config| {
+                config::apply_wifi_to_config(config, &payload.wifi_ssid, &payload.wifi_pass);
+            });
             Ok(ApiResponse::ok_200_json(
                 r#"{"ok":true,"restart_required":true}"#,
             ))
@@ -126,14 +128,12 @@ pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
         Ok(payload) => payload,
         Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
     };
-    if let Some(value) = payload.tg_group_activation.as_deref() {
-        if let Err(error) = config::write_tg_group_activation(ctx.config_store.as_ref(), value) {
-            return Ok(ApiResponse::err_400_key(api_contract::error_key(&error)));
-        }
-    }
-    let segment_body = serde_json::to_string(&payload.segment)
-        .map_err(|e| to_io(crate::Error::config("serialize", e.to_string()).to_string()))?;
-    match config::save_channels_segment(ctx.config_file_store.as_ref(), &segment_body) {
+    match config::save_channels_segment_with_overlay(
+        ctx.config_file_store.as_ref(),
+        ctx.config_store.as_ref(),
+        &payload.segment,
+        payload.tg_group_activation.as_deref(),
+    ) {
         Ok(()) => {
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
@@ -144,9 +144,15 @@ pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
 
 /// POST /api/config/system：仅写系统段（wifi/proxy/session/tg_group/locale），body 为 SystemSegment JSON。
 pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    match config::save_system_segment_to_nvs(ctx.config_store.as_ref(), body) {
+    let segment: config::SystemSegment = match serde_json::from_str(body) {
+        Ok(segment) => segment,
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+    };
+    match config::save_system_segment_value_to_nvs(ctx.config_store.as_ref(), &segment) {
         Ok(()) => {
-            ctx.reload_config();
+            ctx.update_cached_config(|config| {
+                config::apply_system_segment_to_config(config, &segment);
+            });
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
         Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
@@ -624,23 +630,33 @@ pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> 
 
 /// POST /api/config/display：校验并写入 DisplayConfig 到 SPIFFS config/display.json。
 pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let hw_devices = ctx.config().hardware_devices.clone();
-    match config::save_display_segment(ctx.config_file_store.as_ref(), &hw_devices, body) {
+    let config = ctx.config();
+    match config::save_display_segment(
+        ctx.config_file_store.as_ref(),
+        &config.hardware_devices,
+        body,
+    ) {
         Ok(()) => {
+            drop(config);
             ctx.reload_config();
             Ok(ApiResponse::ok_200_json(
                 r#"{"ok":true,"restart_required":true}"#,
             ))
         }
-        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
+        Err(e) => {
+            drop(config);
+            Ok(ApiResponse::err_400_key(api_contract::error_key(&e)))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::get_system_body;
-    use crate::config;
+    use super::{get_system_body, post_system, post_wifi};
+    use crate::config::{self, ConfigFileStore};
+    use crate::error::Result;
     use serde_json::Value;
+    use std::sync::Arc;
 
     #[test]
     fn get_system_body_returns_only_system_segment() {
@@ -675,6 +691,103 @@ mod tests {
             !body.contains('\n'),
             "system segment response should stay compact on ESP default path"
         );
+    }
+
+    #[test]
+    fn post_wifi_updates_cached_config_without_reloading_config_files() {
+        struct PanicConfigFileStore;
+
+        impl ConfigFileStore for PanicConfigFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                panic!("post_wifi should not reload config files");
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                panic!("post_wifi should not write config files");
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                panic!("post_wifi should not remove config files");
+            }
+        }
+
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(PanicConfigFileStore);
+
+        let response = post_wifi(
+            &ctx,
+            r#"{"wifi_ssid":"BeetleNet","wifi_pass":"secret-pass"}"#,
+        )
+        .expect("post_wifi response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert_eq!(config.wifi_ssid, "BeetleNet");
+        assert_eq!(config.wifi_pass, "secret-pass");
+    }
+
+    #[test]
+    fn post_system_rejects_invalid_locale() {
+        let ctx = build_test_context();
+
+        let response = post_system(
+            &ctx,
+            r#"{
+                "wifi_ssid":"BeetleNet",
+                "wifi_pass":"secret-pass",
+                "proxy_url":"",
+                "session_max_messages":32,
+                "tg_group_activation":"mention",
+                "locale":"ja"
+            }"#,
+        )
+        .expect("post_system response");
+
+        assert_eq!(response.status, 400);
+    }
+
+    #[test]
+    fn post_system_updates_cached_config_without_reloading_config_files() {
+        struct PanicConfigFileStore;
+
+        impl ConfigFileStore for PanicConfigFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                panic!("post_system should not reload config files");
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                panic!("post_system should not write config files");
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                panic!("post_system should not remove config files");
+            }
+        }
+
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(PanicConfigFileStore);
+
+        let response = post_system(
+            &ctx,
+            r#"{
+                "wifi_ssid":"BeetleNet",
+                "wifi_pass":"secret-pass",
+                "proxy_url":"http://proxy.local:8080",
+                "session_max_messages":48,
+                "tg_group_activation":"always",
+                "locale":"en"
+            }"#,
+        )
+        .expect("post_system response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert_eq!(config.wifi_ssid, "BeetleNet");
+        assert_eq!(config.wifi_pass, "secret-pass");
+        assert_eq!(config.proxy_url, "http://proxy.local:8080");
+        assert_eq!(config.session_max_messages, 48);
+        assert_eq!(config.tg_group_activation, "always");
+        assert_eq!(config.locale.as_deref(), Some("en"));
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

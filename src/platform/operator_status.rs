@@ -142,19 +142,21 @@ pub fn build_operator_status(
         build_programmable_reasoning_timeline(&programmable_reasoning_activity_records);
     let capability_planes = build_device_capability_snapshots(input.config, input.platform);
     let runtime_capabilities = orchestrator::runtime_capability_snapshot();
-    let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&crate::metrics::snapshot());
+    let metrics = crate::metrics::snapshot();
+    let now_secs = current_unix_secs();
+    let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&metrics);
     let delivery_diagnosis = build_delivery_diagnosis(DeliveryDiagnosisInput {
         enabled_channel: Some(input.config.enabled_channel.as_str()),
-        metrics: crate::metrics::snapshot(),
+        metrics: metrics.clone(),
         runtime_capabilities: runtime_capabilities.clone(),
     });
-    let presence = runtime::inspect_platform_presence(input.platform, current_unix_secs());
-    let initiative = runtime::inspect_platform_initiative(input.platform, current_unix_secs());
+    let presence = runtime::inspect_platform_presence(input.platform, now_secs);
+    let initiative = runtime::inspect_platform_initiative(input.platform, now_secs);
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
     let system_diagnosis = build_system_diagnosis(SystemDiagnosisInput {
         enabled_channel: Some(input.config.enabled_channel.as_str()),
         resource: orchestrator::snapshot(),
-        metrics: crate::metrics::snapshot(),
+        metrics: metrics.clone(),
         runtime_capabilities: runtime_capabilities.clone(),
         presence_state: presence.state.as_str(),
         runtime_mode: presence.runtime_mode.current_mode.as_str(),
