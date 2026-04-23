@@ -113,16 +113,6 @@ pub fn set_soul_load_ok(ok: bool) {
     SOUL_LOAD_OK.store(ok, Ordering::Relaxed);
 }
 
-/// 最近一次 memory 加载是否成功。
-pub fn get_memory_load_ok() -> bool {
-    MEMORY_LOAD_OK.load(Ordering::Relaxed)
-}
-
-/// 最近一次 soul 加载是否成功。
-pub fn get_soul_load_ok() -> bool {
-    SOUL_LOAD_OK.load(Ordering::Relaxed)
-}
-
 /// 更新当前 WiFi STA 状态；业务域只读此状态，不直接依赖 platform helper。
 pub fn set_wifi_sta_state(connected: bool, ip: Option<String>) {
     let was_connected = WIFI_STA_CONNECTED.swap(connected, Ordering::Relaxed);

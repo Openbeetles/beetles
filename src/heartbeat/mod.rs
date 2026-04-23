@@ -9,11 +9,6 @@ use crate::i18n::{tr, Locale, Message as UiMessage};
 const TAG: &str = "heartbeat";
 const TASK_THROTTLE_SECS: u64 = 30;
 
-/// HEARTBEAT.md 中是否存在未勾选任务行（`- [ ]`）。空行、`#` 标题、`- [x]` 忽略。
-pub fn has_pending_tasks(content: &str) -> bool {
-    first_pending_task(content).is_some()
-}
-
 /// 返回第一个未完成任务行去掉 `- [ ]` 后的 trim 文本；无则 None。
 pub fn first_pending_task(content: &str) -> Option<String> {
     for line in content.lines() {
@@ -31,37 +26,6 @@ pub fn first_pending_task(content: &str) -> Option<String> {
 
 /// 待办注入限频：同一内容 30s 内不重复注入。(content, last_inject_time)
 static LAST_TASK_INJECT: OnceLock<Mutex<(String, Option<Instant>)>> = OnceLock::new();
-
-/// 周期（秒）打一条日志：版本、运行时长、可选 heap；可被外部脚本/串口抓取判断存活。
-pub fn run_heartbeat_loop(version: &'static str, interval_secs: u64) {
-    let v = version;
-    crate::util::spawn_guarded_with_profile(
-        "heartbeat",
-        8192,
-        Some(crate::util::SpawnCore::Core1),
-        crate::util::HttpThreadRole::Background,
-        move || {
-            let interval = std::time::Duration::from_secs(interval_secs);
-            loop {
-                std::thread::sleep(interval);
-                crate::orchestrator::update_heap_state();
-                let uptime_secs = crate::platform::time::app_uptime_secs();
-                log::info!(
-                    "[{}] HEARTBEAT version={} uptime_secs={} {}",
-                    TAG,
-                    v,
-                    uptime_secs,
-                    crate::orchestrator::format_resource_baseline_line()
-                );
-            }
-        },
-    );
-    log::info!(
-        "[{}] heartbeat loop started (interval {}s)",
-        TAG,
-        interval_secs
-    );
-}
 
 /// Heartbeat tick 的可变状态，供 bg_timer 跨轮次复用。
 #[derive(Default)]

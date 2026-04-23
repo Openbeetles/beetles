@@ -7,12 +7,218 @@ use crate::error::Error;
 use crate::memory::{MemoryStore, SessionStore, REL_PATH_SESSIONS_DIR};
 use crate::platform::ConfigStore;
 use crate::state;
+use std::fmt::Write as _;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
 const TAG: &str = "cli";
+
+type CommandHandler = fn(&CliContext, Vec<&str>) -> String;
+
+#[derive(Clone, Copy)]
+struct CommandSpec {
+    name: &'static str,
+    aliases: &'static [&'static str],
+    usage: &'static str,
+    summary: &'static str,
+    visible_in_help: bool,
+    handler: CommandHandler,
+}
+
+const COMMAND_SPECS: &[CommandSpec] = &[
+        CommandSpec {
+            name: "wifi_status",
+            aliases: &[],
+            usage: "wifi_status",
+            summary: "WiFi connection status",
+            visible_in_help: true,
+            handler: cmd_wifi_status,
+        },
+        CommandSpec {
+            name: "memory_read",
+            aliases: &[],
+            usage: "memory_read",
+            summary: "Read MEMORY.md",
+            visible_in_help: true,
+            handler: cmd_memory_read,
+        },
+        CommandSpec {
+            name: "memory_write",
+            aliases: &[],
+            usage: "memory_write <content>",
+            summary: "Write MEMORY.md (audit)",
+            visible_in_help: true,
+            handler: cmd_memory_write,
+        },
+        CommandSpec {
+            name: "session_list",
+            aliases: &[],
+            usage: "session_list",
+            summary: "List all sessions",
+            visible_in_help: true,
+            handler: cmd_session_list,
+        },
+        CommandSpec {
+            name: "session_clear",
+            aliases: &[],
+            usage: "session_clear <chat_id>",
+            summary: "Clear session (audit)",
+            visible_in_help: true,
+            handler: cmd_session_clear,
+        },
+        CommandSpec {
+            name: "heap_info",
+            aliases: &[],
+            usage: "heap_info",
+            summary: "Heap usage",
+            visible_in_help: true,
+            handler: cmd_heap_info,
+        },
+        CommandSpec {
+            name: "restart",
+            aliases: &[],
+            usage: "restart",
+            summary: "Restart device",
+            visible_in_help: true,
+            handler: cmd_restart,
+        },
+        CommandSpec {
+            name: "health",
+            aliases: &[],
+            usage: "health",
+            summary: "WiFi, queue depth, last error",
+            visible_in_help: true,
+            handler: cmd_health,
+        },
+        CommandSpec {
+            name: "ops_status",
+            aliases: &[],
+            usage: "ops_status",
+            summary: "Unified operator/platform/tool status",
+            visible_in_help: true,
+            handler: cmd_ops_status,
+        },
+        CommandSpec {
+            name: "package_status",
+            aliases: &[],
+            usage: "package_status",
+            summary: "Capability package snapshot",
+            visible_in_help: true,
+            handler: cmd_package_status,
+        },
+        CommandSpec {
+            name: "package_install",
+            aliases: &[],
+            usage: "package_install <json_file>",
+            summary: "Install capability package from JSON file",
+            visible_in_help: true,
+            handler: cmd_package_install,
+        },
+        CommandSpec {
+            name: "package_enable",
+            aliases: &[],
+            usage: "package_enable <package_id>",
+            summary: "Enable capability package",
+            visible_in_help: true,
+            handler: cmd_package_enable,
+        },
+        CommandSpec {
+            name: "package_disable",
+            aliases: &[],
+            usage: "package_disable <package_id>",
+            summary: "Disable capability package",
+            visible_in_help: true,
+            handler: cmd_package_disable,
+        },
+        CommandSpec {
+            name: "package_uninstall",
+            aliases: &[],
+            usage: "package_uninstall <package_id>",
+            summary: "Uninstall capability package",
+            visible_in_help: true,
+            handler: cmd_package_uninstall,
+        },
+        CommandSpec {
+            name: "package_rollback",
+            aliases: &[],
+            usage: "package_rollback <package_id>",
+            summary: "Roll back capability package",
+            visible_in_help: true,
+            handler: cmd_package_rollback,
+        },
+        CommandSpec {
+            name: "baseline",
+            aliases: &[],
+            usage: "baseline",
+            summary: "Resource, metrics, thread baseline",
+            visible_in_help: true,
+            handler: cmd_baseline,
+        },
+        CommandSpec {
+            name: "spiffs_stress",
+            aliases: &[],
+            usage: "spiffs_stress [workers] [rounds] [payload_bytes]",
+            summary: "Stress SPIFFS lock and report deltas",
+            visible_in_help: true,
+            handler: cmd_spiffs_stress,
+        },
+        CommandSpec {
+            name: "config_show",
+            aliases: &[],
+            usage: "config_show",
+            summary: "Show full config",
+            visible_in_help: true,
+            handler: cmd_config_show,
+        },
+        CommandSpec {
+            name: "config_reset",
+            aliases: &[],
+            usage: "config_reset yes",
+            summary: "Reset config to env defaults (audit)",
+            visible_in_help: true,
+            handler: cmd_config_reset,
+        },
+        CommandSpec {
+            name: "help",
+            aliases: &["?"],
+            usage: "help|?",
+            summary: "This help",
+            visible_in_help: true,
+            handler: cmd_help,
+        },
+        CommandSpec {
+            name: "ota",
+            aliases: &[],
+            usage: "ota <url>",
+            summary: if cfg!(feature = "ota") {
+                "OTA update from URL, then restart"
+            } else {
+                "OTA not enabled (build with --features ota)."
+            },
+            visible_in_help: cfg!(feature = "ota"),
+            handler: cmd_ota,
+        },
+    ];
+
+fn command_specs() -> &'static [CommandSpec] {
+    COMMAND_SPECS
+}
+
+fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
+    command_specs()
+        .iter()
+        .find(|spec| spec.name == cmd || spec.aliases.contains(&cmd))
+}
+
+fn render_command_help() -> String {
+    let mut out = String::from("Commands:\n");
+    for spec in command_specs().iter().filter(|spec| spec.visible_in_help) {
+        let _ = writeln!(&mut out, "  {:<22} - {}", spec.usage, spec.summary);
+    }
+    out
+}
 
 /// 设置最近错误摘要（仅用于 health；禁止写入密钥）。与 state 共用存储。
 pub fn set_last_error(e: &Error) {
@@ -82,37 +288,13 @@ pub fn run_command(ctx: &CliContext, line: &str) -> String {
         Some(c) => c,
         None => return String::new(),
     };
-    let out = match cmd {
-        "wifi_status" => cmd_wifi_status(ctx),
-        "memory_read" => cmd_memory_read(ctx),
-        "memory_write" => cmd_memory_write(ctx, args),
-        "session_list" => cmd_session_list(ctx),
-        "session_clear" => cmd_session_clear(ctx, args),
-        "heap_info" => cmd_heap_info(ctx),
-        "restart" => cmd_restart(ctx),
-        "health" => cmd_health(ctx),
-        "ops_status" => cmd_ops_status(ctx),
-        "package_status" => cmd_package_status(ctx),
-        "package_install" => cmd_package_install(ctx, args),
-        "package_enable" => cmd_package_enable(ctx, args),
-        "package_disable" => cmd_package_disable(ctx, args),
-        "package_uninstall" => cmd_package_uninstall(ctx, args),
-        "package_rollback" => cmd_package_rollback(ctx, args),
-        "baseline" => cmd_baseline(ctx),
-        "spiffs_stress" => cmd_spiffs_stress(ctx, args),
-        "config_show" => cmd_config_show(ctx),
-        "config_reset" => cmd_config_reset(ctx, args),
-        "help" | "?" => cmd_help(),
-        #[cfg(feature = "ota")]
-        "ota" => cmd_ota(ctx, args),
-        #[cfg(not(feature = "ota"))]
-        "ota" => "OTA not enabled (build with --features ota).\n".into(),
-        _ => format!("Unknown command: {}. Use 'help' for list.\n", cmd),
-    };
-    out
+    match command_spec_for(cmd) {
+        Some(spec) => (spec.handler)(ctx, args),
+        None => format!("Unknown command: {}. Use 'help' for list.\n", cmd),
+    }
 }
 
-fn cmd_wifi_status(_ctx: &CliContext) -> String {
+fn cmd_wifi_status(_ctx: &CliContext, _args: Vec<&str>) -> String {
     let status = if crate::state::wifi_sta_connected() {
         "yes"
     } else {
@@ -121,7 +303,7 @@ fn cmd_wifi_status(_ctx: &CliContext) -> String {
     format!("WiFi STA connected: {}\n", status)
 }
 
-fn cmd_memory_read(ctx: &CliContext) -> String {
+fn cmd_memory_read(ctx: &CliContext, _args: Vec<&str>) -> String {
     match ctx.memory.get_memory() {
         Ok(s) => {
             if s.is_empty() {
@@ -153,7 +335,7 @@ fn cmd_memory_write(ctx: &CliContext, args: Vec<&str>) -> String {
     }
 }
 
-fn cmd_session_list(ctx: &CliContext) -> String {
+fn cmd_session_list(ctx: &CliContext, _args: Vec<&str>) -> String {
     let mut out = "Sessions:\n".to_string();
     match ctx.platform.state_fs().list_dir(REL_PATH_SESSIONS_DIR) {
         Ok(names) => {
@@ -190,7 +372,7 @@ fn cmd_session_clear(ctx: &CliContext, args: Vec<&str>) -> String {
     }
 }
 
-fn cmd_heap_info(ctx: &CliContext) -> String {
+fn cmd_heap_info(ctx: &CliContext, _args: Vec<&str>) -> String {
     let s = ctx.platform.memory_snapshot();
     let total = s.heap_free_internal.saturating_add(s.heap_free_spiram);
     format!(
@@ -199,7 +381,7 @@ fn cmd_heap_info(ctx: &CliContext) -> String {
     )
 }
 
-fn cmd_restart(ctx: &CliContext) -> String {
+fn cmd_restart(ctx: &CliContext, _args: Vec<&str>) -> String {
     log::info!("[{}] Restarting...", TAG);
     crate::runtime::request_restart_with_continuity_flush(
         Arc::clone(&ctx.platform),
@@ -209,7 +391,7 @@ fn cmd_restart(ctx: &CliContext) -> String {
     "restart: requested\n".into()
 }
 
-fn cmd_config_show(ctx: &CliContext) -> String {
+fn cmd_config_show(ctx: &CliContext, _args: Vec<&str>) -> String {
     ctx.config
         .to_full_json()
         .map(|s| s + "\n")
@@ -230,7 +412,7 @@ fn cmd_config_reset(ctx: &CliContext, args: Vec<&str>) -> String {
     }
 }
 
-fn cmd_health(ctx: &CliContext) -> String {
+fn cmd_health(ctx: &CliContext, _args: Vec<&str>) -> String {
     let wifi = if crate::state::wifi_sta_connected() {
         "connected"
     } else {
@@ -261,7 +443,7 @@ fn cmd_health(ctx: &CliContext) -> String {
     )
 }
 
-fn cmd_baseline(_ctx: &CliContext) -> String {
+fn cmd_baseline(_ctx: &CliContext, _args: Vec<&str>) -> String {
     let resource = crate::orchestrator::snapshot();
     let metrics = crate::metrics::snapshot();
     let thread_line = crate::runtime::thread_registry::format_baseline_log_line();
@@ -278,7 +460,7 @@ fn cmd_baseline(_ctx: &CliContext) -> String {
     )
 }
 
-fn cmd_ops_status(ctx: &CliContext) -> String {
+fn cmd_ops_status(ctx: &CliContext, _args: Vec<&str>) -> String {
     match crate::platform::operator_status::build_operator_status(
         crate::platform::operator_status::OperatorStatusInput {
             config: &ctx.config,
@@ -294,7 +476,7 @@ fn cmd_ops_status(ctx: &CliContext) -> String {
     }
 }
 
-fn cmd_package_status(ctx: &CliContext) -> String {
+fn cmd_package_status(ctx: &CliContext, _args: Vec<&str>) -> String {
     match crate::build_capability_package_operator_snapshot(
         ctx.platform.state_fs().as_ref(),
         ctx.capability_package_runtime_capabilities.as_ref(),
@@ -527,16 +709,8 @@ fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
     )
 }
 
-fn cmd_help() -> String {
-    let ota_line = if cfg!(feature = "ota") {
-        "  ota <url>        - OTA update from URL, then restart\n"
-    } else {
-        ""
-    };
-    format!(
-        "Commands:\n  wifi_status      - WiFi connection status\n  memory_read      - Read MEMORY.md\n  memory_write <content> - Write MEMORY.md (audit)\n  session_list     - List all sessions\n  session_clear <chat_id> - Clear session (audit)\n  heap_info        - Heap usage\n  restart          - Restart device\n  health           - WiFi, queue depth, last error\n  ops_status       - Unified operator/platform/tool status\n  package_status   - Capability package snapshot\n  package_install <json_file> - Install capability package from JSON file\n  package_enable <package_id> - Enable capability package\n  package_disable <package_id> - Disable capability package\n  package_uninstall <package_id> - Uninstall capability package\n  package_rollback <package_id> - Roll back capability package\n  baseline         - Resource, metrics, thread baseline\n  spiffs_stress [workers] [rounds] [payload_bytes] - Stress SPIFFS lock and report deltas\n  config_show      - Show full config\n  config_reset yes - Reset config to env defaults (audit)\n{}  help|?         - This help\n",
-        ota_line
-    )
+fn cmd_help(_ctx: &CliContext, _args: Vec<&str>) -> String {
+    render_command_help()
 }
 
 #[cfg(feature = "ota")]
@@ -557,6 +731,11 @@ fn cmd_ota(ctx: &CliContext, args: Vec<&str>) -> String {
         }
         Err(e) => format!("OTA failed: {}\n", state::sanitize_error_for_log(&e)),
     }
+}
+
+#[cfg(not(feature = "ota"))]
+fn cmd_ota(_ctx: &CliContext, _args: Vec<&str>) -> String {
+    "OTA not enabled (build with --features ota).\n".into()
 }
 
 /// 审计日志：仅命令名、时间、chat_id/无敏感信息；不打印密钥。
@@ -584,5 +763,21 @@ pub fn run_repl<R: BufRead + Send>(ctx: CliContext, mut reader: R) {
         }
         let out = run_command(&ctx, line.trim_end());
         let _ = io::stdout().write_all(out.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_spec_for, render_command_help};
+
+    #[test]
+    fn help_alias_dispatches_to_same_spec() {
+        let help = command_spec_for("help").expect("help command should exist");
+        let alias = command_spec_for("?").expect("? alias should exist");
+
+        assert_eq!(help.name, "help");
+        assert_eq!(alias.name, "help");
+        assert_eq!(help.usage, "help|?");
+        assert!(render_command_help().contains("help|?"));
     }
 }

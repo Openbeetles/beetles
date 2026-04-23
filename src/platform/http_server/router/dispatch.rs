@@ -225,6 +225,52 @@ fn err_other(stage: &'static str, msg: impl std::fmt::Display) -> Error {
     }
 }
 
+fn json_ok(body: String) -> OutgoingResponse {
+    OutgoingResponse::json(200, "OK", CORS_HEADERS, body.into_bytes())
+}
+
+fn apply_restart_action(
+    mut response: OutgoingResponse,
+    uri: &str,
+    enabled: bool,
+) -> OutgoingResponse {
+    if enabled && response.status == 200 && common::restart_requested_from_uri(uri) {
+        response.restart = RestartAction::After300Ms;
+    }
+    response
+}
+
+fn dispatch_guarded_route<F>(
+    guard: Option<OutgoingResponse>,
+    build_response: F,
+) -> Result<OutgoingResponse>
+where
+    F: FnOnce() -> Result<OutgoingResponse>,
+{
+    if let Some(response) = guard {
+        return Ok(response);
+    }
+    build_response()
+}
+
+fn dispatch_api_body_route<F>(
+    guard: Option<OutgoingResponse>,
+    body: &[u8],
+    uri: &str,
+    restart_on_success: bool,
+    execute: F,
+) -> Result<OutgoingResponse>
+where
+    F: FnOnce(&str) -> Result<ApiResponse>,
+{
+    if let Some(response) = guard {
+        return Ok(response);
+    }
+    let body_str = utf8_body(body)?;
+    let response = api_to_out(execute(body_str)?);
+    Ok(apply_restart_action(response, uri, restart_on_success))
+}
+
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -242,85 +288,85 @@ fn dispatch_account_config(
     };
     let decoded_key = |value: &str| crate::util::percent_decode_query(value);
     let response = match (method, route) {
-        ("GET", AccountConfigRoute::Collection) => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(Some(api_to_out(r)));
-            }
-            match handlers::config::get_accounts_body(
-                ctx,
-                query_param_from_uri(uri, "provider_kind"),
-                query_param_from_uri(uri, "capability"),
-            ) {
-                Ok(body) => Some(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(_) => Some(api_to_out(ApiResponse::err_400_key(
-                    api_contract::COMMON_OPERATION_FAILED,
-                ))),
-            }
-        }
-        ("POST", AccountConfigRoute::Collection) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(Some(o));
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_accounts(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Some(api_to_out(r))
-        }
-        ("GET", AccountConfigRoute::Detail(account_key)) => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(Some(api_to_out(r)));
-            }
-            match handlers::config::get_account_detail_body(ctx, &decoded_key(account_key)) {
-                Ok(body) => Some(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(_) => Some(api_to_out(ApiResponse::err_400_key(
-                    api_contract::COMMON_OPERATION_FAILED,
-                ))),
-            }
-        }
+        ("GET", AccountConfigRoute::Collection) => Some(dispatch_guarded_route(
+            guard_pairing(store, uri, &incoming.headers),
+            || {
+                Ok(
+                    match handlers::config::get_accounts_body(
+                        ctx,
+                        query_param_from_uri(uri, "provider_kind"),
+                        query_param_from_uri(uri, "capability"),
+                    ) {
+                        Ok(body) => json_ok(body),
+                        Err(_) => api_to_out(ApiResponse::err_400_key(
+                            api_contract::COMMON_OPERATION_FAILED,
+                        )),
+                    },
+                )
+            },
+        )?),
+        ("POST", AccountConfigRoute::Collection) => Some(dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_accounts(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        )?),
+        ("GET", AccountConfigRoute::Detail(account_key)) => Some(dispatch_guarded_route(
+            guard_pairing(store, uri, &incoming.headers),
+            || {
+                Ok(
+                    match handlers::config::get_account_detail_body(ctx, &decoded_key(account_key))
+                    {
+                        Ok(body) => json_ok(body),
+                        Err(_) => api_to_out(ApiResponse::err_400_key(
+                            api_contract::COMMON_OPERATION_FAILED,
+                        )),
+                    },
+                )
+            },
+        )?),
         ("DELETE", AccountConfigRoute::Detail(account_key)) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(Some(o));
-            }
-            let r = handlers::config::delete_account(ctx, &decoded_key(account_key))
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Some(api_to_out(r))
+            let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) else {
+                let r = handlers::config::delete_account(ctx, &decoded_key(account_key))
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                let out = api_to_out(r);
+                return Ok(Some(out));
+            };
+            return Ok(Some(o));
         }
-        ("POST", AccountConfigRoute::Config(account_key)) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(Some(o));
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_account_config(ctx, &decoded_key(account_key), body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Some(api_to_out(r))
-        }
+        ("POST", AccountConfigRoute::Config(account_key)) => Some(dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_account_config(ctx, &decoded_key(account_key), body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        )?),
         ("POST", AccountConfigRoute::Probe(account_key)) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(Some(o));
-            }
-            let r = handlers::config::post_account_probe(ctx, &decoded_key(account_key))
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Some(api_to_out(r))
+            let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) else {
+                let r = handlers::config::post_account_probe(ctx, &decoded_key(account_key))
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                let out = api_to_out(r);
+                return Ok(Some(out));
+            };
+            return Ok(Some(o));
         }
-        ("POST", AccountConfigRoute::Revoke(account_key)) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(Some(o));
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_account_revoke(ctx, &decoded_key(account_key), body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Some(api_to_out(r))
-        }
+        ("POST", AccountConfigRoute::Revoke(account_key)) => Some(dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_account_revoke(ctx, &decoded_key(account_key), body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        )?),
         _ => None,
     };
     Ok(response)
@@ -342,36 +388,28 @@ fn dispatch_capability_config(
         return Ok(None);
     };
     let response = match (method, route) {
-        ("GET", CapabilityConfigRoute::Collection) => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(Some(api_to_out(r)));
-            }
-            match handlers::config::get_capabilities_body(ctx) {
-                Ok(body) => Some(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(_) => Some(api_to_out(ApiResponse::err_400_key(
-                    api_contract::COMMON_OPERATION_FAILED,
-                ))),
-            }
-        }
-        ("GET", CapabilityConfigRoute::Detail(capability)) => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(Some(api_to_out(r)));
-            }
-            match handlers::config::get_capability_detail_body(ctx, capability) {
-                Ok(body) => Some(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(error) => Some(api_to_out(office_config_error_response(&error))),
-            }
-        }
+        ("GET", CapabilityConfigRoute::Collection) => Some(dispatch_guarded_route(
+            guard_pairing(store, uri, &incoming.headers),
+            || {
+                Ok(match handlers::config::get_capabilities_body(ctx) {
+                    Ok(body) => json_ok(body),
+                    Err(_) => api_to_out(ApiResponse::err_400_key(
+                        api_contract::COMMON_OPERATION_FAILED,
+                    )),
+                })
+            },
+        )?),
+        ("GET", CapabilityConfigRoute::Detail(capability)) => Some(dispatch_guarded_route(
+            guard_pairing(store, uri, &incoming.headers),
+            || {
+                Ok(
+                    match handlers::config::get_capability_detail_body(ctx, capability) {
+                        Ok(body) => json_ok(body),
+                        Err(error) => api_to_out(office_config_error_response(&error)),
+                    },
+                )
+            },
+        )?),
         _ => None,
     };
     Ok(response)
@@ -393,21 +431,20 @@ fn dispatch_provider_config(
         return Ok(None);
     };
     let response = match (method, route) {
-        ("GET", ProviderConfigRoute::Collection) => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(Some(api_to_out(r)));
-            }
-            match handlers::config::get_providers_body(ctx, query_param_from_uri(uri, "capability"))
-            {
-                Ok(body) => Some(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(error) => Some(api_to_out(office_config_error_response(&error))),
-            }
-        }
+        ("GET", ProviderConfigRoute::Collection) => Some(dispatch_guarded_route(
+            guard_pairing(store, uri, &incoming.headers),
+            || {
+                Ok(
+                    match handlers::config::get_providers_body(
+                        ctx,
+                        query_param_from_uri(uri, "capability"),
+                    ) {
+                        Ok(body) => json_ok(body),
+                        Err(error) => api_to_out(office_config_error_response(&error)),
+                    },
+                )
+            },
+        )?),
         _ => None,
     };
     Ok(response)
@@ -526,165 +563,118 @@ pub fn dispatch(
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("POST", "/api/config/wifi") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_wifi(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            let mut restart = RestartAction::None;
-            if r.status == 200 && common::restart_requested_from_uri(uri) {
-                restart = RestartAction::After300Ms;
-            }
-            let mut out = api_to_out(r);
-            out.restart = restart;
-            Ok(out)
-        }
-        ("POST", "/api/config/llm") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_llm(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
+        ("POST", "/api/config/wifi") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            true,
+            |body_str| {
+                handlers::config::post_wifi(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
+        ("POST", "/api/config/llm") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_llm(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
         ("GET", "/api/config/llm") => {
-            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body = handlers::config::get_llm_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
+                let body = handlers::config::get_llm_body(ctx)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                Ok(json_ok(body))
+            })
         }
         ("GET", "/api/config/channels") => {
-            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body = handlers::config::get_channels_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
+                let body = handlers::config::get_channels_body(ctx)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                Ok(json_ok(body))
+            })
         }
-        ("POST", "/api/config/channels") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_channels(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
+        ("POST", "/api/config/channels") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_channels(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
         ("GET", "/api/config/system") => {
-            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body = handlers::config::get_system_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
+                let body = handlers::config::get_system_body(ctx)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                Ok(json_ok(body))
+            })
         }
-        ("POST", "/api/config/system") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_system(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
+        ("POST", "/api/config/system") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_system(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
         ("GET", "/api/config/hardware") => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(r));
-            }
-            let body = handlers::config::get_hardware_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
+                let body = handlers::config::get_hardware_body(ctx)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                Ok(json_ok(body))
+            })
         }
-        ("POST", "/api/config/hardware") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_hardware(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
+        ("POST", "/api/config/hardware") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            false,
+            |body_str| {
+                handlers::config::post_hardware(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
         ("GET", "/api/config/audio") => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(r));
-            }
-            let body = handlers::config::get_audio_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
+                let body = handlers::config::get_audio_body(ctx)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                Ok(json_ok(body))
+            })
         }
-        ("POST", "/api/config/audio") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_audio(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            let mut restart = RestartAction::None;
-            if r.status == 200 && common::restart_requested_from_uri(uri) {
-                restart = RestartAction::After300Ms;
-            }
-            let mut out = api_to_out(r);
-            out.restart = restart;
-            Ok(out)
-        }
+        ("POST", "/api/config/audio") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            true,
+            |body_str| {
+                handlers::config::post_audio(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
         ("GET", "/api/config/display") => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(r));
-            }
-            let body = handlers::config::get_display_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
+                let body = handlers::config::get_display_body(ctx)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                Ok(json_ok(body))
+            })
         }
-        ("POST", "/api/config/display") => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::config::post_display(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            let mut restart = RestartAction::None;
-            if r.status == 200 && common::restart_requested_from_uri(uri) {
-                restart = RestartAction::After300Ms;
-            }
-            let mut out = api_to_out(r);
-            out.restart = restart;
-            Ok(out)
-        }
+        ("POST", "/api/config/display") => dispatch_api_body_route(
+            guard_pairing_csrf(store, uri, &incoming.headers),
+            &incoming.body,
+            uri,
+            true,
+            |body_str| {
+                handlers::config::post_display(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))
+            },
+        ),
         ("GET", "/api/wifi/scan") => match handlers::wifi_scan::get_body(ctx) {
             Ok(body) => Ok(OutgoingResponse::json(
                 200,
@@ -1312,8 +1302,16 @@ mod tests {
     use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
+    #[cfg(any(feature = "feishu", feature = "dingtalk", feature = "qq_channel"))]
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
+    #[cfg(any(
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "qq_channel",
+        feature = "capability_office"
+    ))]
+    use std::sync::{Arc, Mutex};
+    use std::sync::OnceLock;
 
     #[cfg(all(
         feature = "capability_office",

@@ -55,6 +55,21 @@ pub fn flush_reboot_continuity_bundle(
     reason: &str,
     now_secs: u64,
 ) -> Result<usize> {
+    let normalized_reason = normalize_restart_reason(reason);
+    flush_reboot_continuity_bundle_with_reason(
+        platform,
+        preferred_chat_id,
+        &normalized_reason,
+        now_secs,
+    )
+}
+
+fn flush_reboot_continuity_bundle_with_reason(
+    platform: &dyn Platform,
+    preferred_chat_id: Option<&str>,
+    normalized_reason: &str,
+    now_secs: u64,
+) -> Result<usize> {
     let session_store = platform.session_store();
     let self_continuity_store = platform.self_continuity_store();
     let relationship_portfolio_store = platform.relationship_portfolio_store();
@@ -125,7 +140,7 @@ pub fn flush_reboot_continuity_bundle(
     }
     let bundle = ContinuitySnapshotBundle {
         version: CONTINUITY_FLUSH_BUNDLE_VERSION,
-        reason: normalize_reason(reason),
+        reason: normalized_reason.to_string(),
         flushed_at: now_secs,
         primary_chat_id: preferred_chat_id
             .map(str::trim)
@@ -153,8 +168,13 @@ pub fn request_restart_with_continuity_flush(
     reason: &str,
 ) {
     let now_secs = crate::util::current_unix_secs();
-    let normalized_reason = normalize_reason(reason);
-    match flush_reboot_continuity_bundle(platform.as_ref(), preferred_chat_id, reason, now_secs) {
+    let normalized_reason = normalize_restart_reason(reason);
+    match flush_reboot_continuity_bundle_with_reason(
+        platform.as_ref(),
+        preferred_chat_id,
+        normalized_reason.as_str(),
+        now_secs,
+    ) {
         Ok(count) => {
             if count > 0 {
                 log::info!(
@@ -204,7 +224,7 @@ pub fn request_restart_with_continuity_flush(
     platform.request_restart();
 }
 
-fn normalize_reason(reason: &str) -> String {
+fn normalize_restart_reason(reason: &str) -> String {
     let trimmed = reason.trim();
     if trimmed.is_empty() {
         "restart_requested".to_string()

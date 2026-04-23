@@ -1,6 +1,13 @@
 //! LLM-facing tool catalog authority.
 //! LLM 工具目录真源：集中声明各入口可见面，而不是让 ToolMetadata 兼职承担。
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use crate::office::{office_tool_doctrines, OfficeToolProtocolProfile};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::office::OfficeToolLlmSurface;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -282,18 +289,13 @@ fn populate_core_tool_catalog(authority: &mut ToolCatalogAuthority) {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 fn populate_office_tool_catalog(authority: &mut ToolCatalogAuthority) {
-    insert_many(
-        authority,
-        ToolLlmVisibility::user_only(),
-        &[
-            "calendar",
-            "mail",
-            "contacts_directory",
-            "documents",
-            "office_config",
-        ],
-    );
-    authority.insert("office_status", ToolLlmVisibility::user_and_system());
+    for doctrine in office_tool_doctrines() {
+        let visibility = match doctrine.llm_surface {
+            OfficeToolLlmSurface::UserOnly => ToolLlmVisibility::user_only(),
+            OfficeToolLlmSurface::UserAndSystem => ToolLlmVisibility::user_and_system(),
+        };
+        authority.insert(doctrine.tool_name, visibility);
+    }
 }
 
 fn populate_extended_runtime_tool_catalog(authority: &mut ToolCatalogAuthority) {
@@ -369,12 +371,7 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     insert_many_protocol(
         authority,
         ToolProtocolContract::structured_object_json_with_rich_blockers(),
-        &[
-            "memory_search",
-            "memory_get",
-            "document_extract",
-            "office_status",
-        ],
+        &["memory_search", "memory_get", "document_extract"],
     );
     insert_many_protocol(
         authority,
@@ -461,23 +458,25 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn populate_office_tool_protocol_authority(authority: &mut ToolProtocolAuthority) {
-    insert_many_protocol(
-        authority,
-        ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
-        &[
-            "office_config",
-            "mail",
-            "calendar",
-            "documents",
-            "contacts_directory",
-        ],
-    );
+    for doctrine in office_tool_doctrines() {
+        let contract = match doctrine.protocol_profile {
+            OfficeToolProtocolProfile::StructuredObjectRich => {
+                ToolProtocolContract::structured_object_json_with_rich_blockers()
+            }
+            OfficeToolProtocolProfile::OperationEnvelopeRich => {
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers()
+            }
+        };
+        authority.insert(doctrine.tool_name, contract);
+    }
 }
 
 pub fn build_default_tool_protocol_authority() -> ToolProtocolAuthority {
     let mut authority = ToolProtocolAuthority::default();
     populate_core_tool_protocol_authority(&mut authority);
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     populate_office_tool_protocol_authority(&mut authority);
     authority
 }

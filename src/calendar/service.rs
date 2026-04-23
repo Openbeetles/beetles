@@ -35,7 +35,7 @@ impl CalendarService {
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
         providers: CalendarProviderRegistry,
     ) -> Self {
-        Self::with_office_authority(local_store, credential_store, providers, None)
+        Self::build(local_store, credential_store, providers, None)
     }
 
     pub fn with_office_service(
@@ -44,7 +44,7 @@ impl CalendarService {
         providers: CalendarProviderRegistry,
         office_service: Option<OfficeService>,
     ) -> Self {
-        Self::with_office_authority(
+        Self::build(
             local_store,
             credential_store,
             providers,
@@ -53,6 +53,15 @@ impl CalendarService {
     }
 
     pub fn with_office_authority(
+        local_store: Arc<dyn CalendarStore + Send + Sync>,
+        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
+        providers: CalendarProviderRegistry,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    ) -> Self {
+        Self::build(local_store, credential_store, providers, office_authority)
+    }
+
+    fn build(
         local_store: Arc<dyn CalendarStore + Send + Sync>,
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
         providers: CalendarProviderRegistry,

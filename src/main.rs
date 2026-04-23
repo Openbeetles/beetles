@@ -479,11 +479,7 @@ struct VoiceRuntimeCapabilities {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CommunicationPlaneStartup {
-    start_http_backed_ingress: bool,
-    start_poll_ingress: bool,
-    start_dispatch: bool,
-    start_senders: bool,
-    start_agent: bool,
+    http_client_ready: bool,
     start_voice_session: bool,
 }
 
@@ -515,11 +511,7 @@ fn communication_plane_startup(
     voice_runtime_ready: bool,
 ) -> CommunicationPlaneStartup {
     CommunicationPlaneStartup {
-        start_http_backed_ingress: http_client_ready,
-        start_poll_ingress: http_client_ready,
-        start_dispatch: http_client_ready,
-        start_senders: http_client_ready,
-        start_agent: http_client_ready,
+        http_client_ready,
         start_voice_session: http_client_ready && voice_runtime_ready,
     }
 }
@@ -679,19 +671,11 @@ mod tests {
     #[test]
     fn communication_plane_startup_requires_http_client_for_all_http_backed_threads() {
         let disabled = communication_plane_startup(false, true);
-        assert!(!disabled.start_http_backed_ingress);
-        assert!(!disabled.start_poll_ingress);
-        assert!(!disabled.start_dispatch);
-        assert!(!disabled.start_senders);
-        assert!(!disabled.start_agent);
+        assert!(!disabled.http_client_ready);
         assert!(!disabled.start_voice_session);
 
         let enabled = communication_plane_startup(true, true);
-        assert!(enabled.start_http_backed_ingress);
-        assert!(enabled.start_poll_ingress);
-        assert!(enabled.start_dispatch);
-        assert!(enabled.start_senders);
-        assert!(enabled.start_agent);
+        assert!(enabled.http_client_ready);
         assert!(enabled.start_voice_session);
 
         let no_voice = communication_plane_startup(true, false);
@@ -2154,12 +2138,6 @@ fn main() {
         Commands::Status { json, chat_id } => {
             handle_status_command(&platform, json, chat_id.as_deref());
         }
-        Commands::Restart => {
-            unreachable!("restart must be handled before platform initialization");
-        }
-        Commands::Stop => {
-            unreachable!("stop must be handled before platform initialization");
-        }
         Commands::Doctor => {
             handle_doctor_command(&platform);
         }
@@ -2167,12 +2145,7 @@ fn main() {
             ReleaseAction::Status { json } => handle_release_status_command(&platform, json),
             ReleaseAction::Rollback => handle_release_rollback_command(&platform),
         },
-        Commands::Version => {
-            unreachable!("version must be handled before platform initialization");
-        }
-        Commands::ReasoningRunner => {
-            unreachable!("reasoning runner must be handled before platform initialization");
-        }
+        _ => unreachable!("handled before platform initialization"),
     }
 }
 
@@ -2639,7 +2612,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     }
     let sinks = Arc::new(sinks);
 
-    if assembly.communication_plane.start_http_backed_ingress {
+    if assembly.communication_plane.http_client_ready {
         #[cfg(feature = "feishu")]
         {
             if let Some(ref c) = channel_rx_set.feishu {
@@ -2735,7 +2708,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         }
     }
 
-    if !assembly.communication_plane.start_dispatch || !assembly.communication_plane.start_senders {
+    if !assembly.communication_plane.http_client_ready {
         return Ok(());
     }
 
@@ -2758,7 +2731,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
 
     #[cfg(feature = "telegram")]
-    if assembly.communication_plane.start_poll_ingress
+    if assembly.communication_plane.http_client_ready
         && enabled_channel == "telegram"
         && !assembly.config.tg_token.trim().is_empty()
     {
@@ -2828,7 +2801,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
 fn start_agent_plane(
     assembly: &mut PreparedRuntimeAssembly,
 ) -> beetle::Result<Option<beetle::util::TaskHandle>> {
-    if !assembly.communication_plane.start_agent {
+    if !assembly.communication_plane.http_client_ready {
         return Ok(None);
     }
 
@@ -3092,7 +3065,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             return;
         }
     };
-    if !assembly.communication_plane.start_agent {
+    if !assembly.communication_plane.http_client_ready {
         log::warn!(
             "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
             TAG

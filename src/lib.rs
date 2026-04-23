@@ -99,7 +99,7 @@ pub mod bootstrap;
 pub mod cron;
 pub mod heartbeat;
 pub mod i18n;
-#[cfg(feature = "capability_office")]
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod office;
 pub mod orchestrator;
 pub mod runtime;

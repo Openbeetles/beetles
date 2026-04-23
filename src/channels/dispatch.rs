@@ -875,6 +875,13 @@ pub fn spawn_sender_threads(
 mod tests {
     use super::replay_cooldown_buffer_with;
     use super::replay_ready_messages_for_tick;
+    #[cfg(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    ))]
     use super::spawn_sender_thread;
     use crate::bus::{OutboundKind, PcMsg};
     use crate::error::{Error, Result};
@@ -961,6 +968,13 @@ mod tests {
         assert!(buffer.is_empty());
     }
 
+    #[cfg(any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "wecom",
+        feature = "qq_channel"
+    ))]
     #[test]
     fn sender_thread_spawn_failure_is_propagated_with_stage() {
         let error = spawn_sender_thread("beetle", "unused", "telegram_sender_spawn", || {

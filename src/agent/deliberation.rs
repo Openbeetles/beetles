@@ -7,7 +7,7 @@ use crate::orchestrator::PressureLevel;
 use crate::runtime::{RuntimeMode, RuntimeModeSnapshot};
 use crate::util::truncate_content_to_max;
 
-use super::strategy::AgentRunStrategy;
+use super::{request_semantics::request_shape_metrics, strategy::AgentRunStrategy};
 
 const TURN_DELIBERATION_TEXT_MAX_CHARS: usize = 360;
 const FAST_USER_MAX_CHARS: usize = 48;
@@ -170,31 +170,17 @@ pub(crate) fn render_turn_deliberation_gate_block(
 }
 
 fn request_looks_complex(content: &str) -> bool {
-    let char_count = content.chars().count();
-    let line_count = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    let separator_count = content
-        .chars()
-        .filter(|ch| matches!(ch, '\n' | ',' | '，' | '.' | '。' | ';' | '；' | ':' | '：'))
-        .count();
-    char_count >= HARD_USER_MIN_CHARS
-        || line_count >= HARD_LINE_MIN
-        || separator_count >= HARD_SEPARATOR_MIN
+    let metrics = request_shape_metrics(content);
+    metrics.char_count >= HARD_USER_MIN_CHARS
+        || metrics.line_count >= HARD_LINE_MIN
+        || metrics.separator_count >= HARD_SEPARATOR_MIN
 }
 
 fn request_looks_fast(content: &str) -> bool {
-    let char_count = content.chars().count();
-    let line_count = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    let separator_count = content
-        .chars()
-        .filter(|ch| matches!(ch, '\n' | ',' | '，' | '.' | '。' | ';' | '；' | ':' | '：'))
-        .count();
-    char_count <= FAST_USER_MAX_CHARS && line_count <= 1 && separator_count <= 1
+    let metrics = request_shape_metrics(content);
+    metrics.char_count <= FAST_USER_MAX_CHARS
+        && metrics.line_count <= 1
+        && metrics.separator_count <= 1
 }
 
 fn execution_state_working_set_sections(execution_state_text: Option<&str>) -> usize {

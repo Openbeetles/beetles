@@ -94,9 +94,7 @@ struct ContactsDirectoryDeleteResponse {
 
 impl ContactsDirectoryTool {
     pub fn new(store: Arc<dyn ContactsDirectoryStore + Send + Sync>) -> Self {
-        Self {
-            service: ContactsDirectoryService::new(store),
-        }
+        Self::build(ContactsDirectoryService::new(store))
     }
 
     #[cfg(all(
@@ -111,14 +109,12 @@ impl ContactsDirectoryTool {
         providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
         office_service: crate::office::OfficeService,
     ) -> Self {
-        Self {
-            service: ContactsDirectoryService::with_office_service(
-                store,
-                credential_store,
-                providers,
-                office_service,
-            ),
-        }
+        Self::build(ContactsDirectoryService::with_office_service(
+            store,
+            credential_store,
+            providers,
+            office_service,
+        ))
     }
 
     #[cfg(all(
@@ -133,14 +129,16 @@ impl ContactsDirectoryTool {
         providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
     ) -> Self {
-        Self {
-            service: ContactsDirectoryService::with_office_authority(
-                store,
-                credential_store,
-                providers,
-                office_authority,
-            ),
-        }
+        Self::build(ContactsDirectoryService::with_office_authority(
+            store,
+            credential_store,
+            providers,
+            office_authority,
+        ))
+    }
+
+    fn build(service: ContactsDirectoryService) -> Self {
+        Self { service }
     }
 
     #[cfg(all(

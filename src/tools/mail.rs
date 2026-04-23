@@ -113,14 +113,17 @@ struct MailResolvedContact {
 
 impl MailTool {
     pub fn new(credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>) -> Self {
-        Self::with_runtime(credential_store, MailProviderRegistry::new(), None, None)
+        Self::build(
+            MailService::new(credential_store, MailProviderRegistry::new()),
+            None,
+        )
     }
 
     pub fn with_providers(
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, None, None)
+        Self::build(MailService::new(credential_store, providers), None)
     }
 
     pub fn with_office_service(
@@ -128,10 +131,13 @@ impl MailTool {
         providers: MailProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_office_authority(
-            credential_store,
-            providers,
-            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+        Self::build(
+            MailService::with_office_authority(
+                credential_store,
+                providers,
+                Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
+            ),
+            None,
         )
     }
 
@@ -140,7 +146,10 @@ impl MailTool {
         providers: MailProviderRegistry,
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, Some(office_authority), None)
+        Self::build(
+            MailService::with_office_authority(credential_store, providers, Some(office_authority)),
+            None,
+        )
     }
 
     pub fn with_office_service_and_contacts(
@@ -149,11 +158,13 @@ impl MailTool {
         office_service: OfficeService,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
-        Self::with_office_authority_and_contacts(
-            credential_store,
-            providers,
-            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
-            contacts_store,
+        Self::build(
+            MailService::with_office_authority(
+                credential_store,
+                providers,
+                Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
+            ),
+            Some(ContactsDirectoryService::new(contacts_store)),
         )
     }
 
@@ -163,10 +174,8 @@ impl MailTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            MailService::with_office_authority(credential_store, providers, Some(office_authority)),
             Some(ContactsDirectoryService::new(contacts_store)),
         )
     }
@@ -177,26 +186,15 @@ impl MailTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_directory: ContactsDirectoryService,
     ) -> Self {
-        Self::with_runtime(
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            MailService::with_office_authority(credential_store, providers, Some(office_authority)),
             Some(contacts_directory),
         )
     }
 
-    fn with_runtime(
-        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
-        providers: MailProviderRegistry,
-        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
-        contacts_directory: Option<ContactsDirectoryService>,
-    ) -> Self {
+    fn build(service: MailService, contacts_directory: Option<ContactsDirectoryService>) -> Self {
         Self {
-            service: MailService::with_office_authority(
-                credential_store,
-                providers,
-                office_authority,
-            ),
+            service,
             contacts_directory,
         }
     }

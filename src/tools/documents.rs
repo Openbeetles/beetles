@@ -108,10 +108,8 @@ struct DocumentsResolvedContext {
 
 impl DocumentsTool {
     pub fn new(credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>) -> Self {
-        Self::with_runtime(
-            credential_store,
-            DocumentsProviderRegistry::new(),
-            None,
+        Self::build(
+            DocumentsService::new(credential_store, DocumentsProviderRegistry::new()),
             None,
         )
     }
@@ -120,7 +118,7 @@ impl DocumentsTool {
         credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
         providers: DocumentsProviderRegistry,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, None, None)
+        Self::build(DocumentsService::new(credential_store, providers), None)
     }
 
     pub fn with_office_service(
@@ -128,10 +126,13 @@ impl DocumentsTool {
         providers: DocumentsProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_office_authority(
-            credential_store,
-            providers,
-            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+        Self::build(
+            DocumentsService::with_office_authority(
+                credential_store,
+                providers,
+                Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
+            ),
+            None,
         )
     }
 
@@ -140,7 +141,14 @@ impl DocumentsTool {
         providers: DocumentsProviderRegistry,
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(credential_store, providers, Some(office_authority), None)
+        Self::build(
+            DocumentsService::with_office_authority(
+                credential_store,
+                providers,
+                Some(office_authority),
+            ),
+            None,
+        )
     }
 
     pub fn with_office_authority_and_contacts(
@@ -149,10 +157,12 @@ impl DocumentsTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            DocumentsService::with_office_authority(
+                credential_store,
+                providers,
+                Some(office_authority),
+            ),
             Some(ContactsDirectoryService::new(contacts_store)),
         )
     }
@@ -163,26 +173,22 @@ impl DocumentsTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_directory: ContactsDirectoryService,
     ) -> Self {
-        Self::with_runtime(
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            DocumentsService::with_office_authority(
+                credential_store,
+                providers,
+                Some(office_authority),
+            ),
             Some(contacts_directory),
         )
     }
 
-    fn with_runtime(
-        credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
-        providers: DocumentsProviderRegistry,
-        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    fn build(
+        service: DocumentsService,
         contacts_directory: Option<ContactsDirectoryService>,
     ) -> Self {
         Self {
-            service: DocumentsService::with_office_authority(
-                credential_store,
-                providers,
-                office_authority,
-            ),
+            service,
             contacts_directory,
         }
     }

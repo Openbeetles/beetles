@@ -26,7 +26,7 @@ impl DocumentsService {
         credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
         providers: DocumentsProviderRegistry,
     ) -> Self {
-        Self::with_office_authority(credential_store, providers, None)
+        Self::build(credential_store, providers, None)
     }
 
     pub fn with_office_service(
@@ -34,7 +34,7 @@ impl DocumentsService {
         providers: DocumentsProviderRegistry,
         office_service: Option<OfficeService>,
     ) -> Self {
-        Self::with_office_authority(
+        Self::build(
             credential_store,
             providers,
             office_authority_from_service(office_service),
@@ -42,6 +42,14 @@ impl DocumentsService {
     }
 
     pub fn with_office_authority(
+        credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
+        providers: DocumentsProviderRegistry,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    ) -> Self {
+        Self::build(credential_store, providers, office_authority)
+    }
+
+    fn build(
         credential_store: Arc<dyn DocumentsProviderCredentialStore + Send + Sync>,
         providers: DocumentsProviderRegistry,
         office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,

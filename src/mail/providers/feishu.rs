@@ -30,10 +30,7 @@ impl MailProvider for FeishuMailProvider {
         credential: &MailProviderCredential,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
-        let backend = ImapSmtpProvider;
-        backend
-            .list_messages(http, credential, query)
-            .map_err(remap_transport_error)
+        delegate_imap_smtp(|backend| backend.list_messages(http, credential, query))
     }
 
     fn search_messages(
@@ -42,10 +39,7 @@ impl MailProvider for FeishuMailProvider {
         credential: &MailProviderCredential,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
-        let backend = ImapSmtpProvider;
-        backend
-            .search_messages(http, credential, query)
-            .map_err(remap_transport_error)
+        delegate_imap_smtp(|backend| backend.search_messages(http, credential, query))
     }
 
     fn get_message(
@@ -54,10 +48,7 @@ impl MailProvider for FeishuMailProvider {
         credential: &MailProviderCredential,
         id: &str,
     ) -> Result<Option<MailMessage>> {
-        let backend = ImapSmtpProvider;
-        backend
-            .get_message(http, credential, id)
-            .map_err(remap_transport_error)
+        delegate_imap_smtp(|backend| backend.get_message(http, credential, id))
     }
 
     fn send_message(
@@ -66,10 +57,7 @@ impl MailProvider for FeishuMailProvider {
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        let backend = ImapSmtpProvider;
-        backend
-            .send_message(http, credential, request)
-            .map_err(remap_transport_error)
+        delegate_imap_smtp(|backend| backend.send_message(http, credential, request))
     }
 
     fn draft_message(
@@ -78,10 +66,7 @@ impl MailProvider for FeishuMailProvider {
         credential: &MailProviderCredential,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        let backend = ImapSmtpProvider;
-        backend
-            .draft_message(http, credential, request)
-            .map_err(remap_transport_error)
+        delegate_imap_smtp(|backend| backend.draft_message(http, credential, request))
     }
 }
 
@@ -98,17 +83,28 @@ impl OfficeProbeAdapter for FeishuMailOfficeProbeAdapter {
         account: &crate::office::OfficeAccount,
         credential: &crate::office::OfficeCredential,
     ) -> Result<OfficeProbeResult> {
-        let backend = ImapSmtpOfficeProbeAdapter;
-        backend
-            .probe(http, account, credential)
-            .map(|mut result| {
-                if result.reason == "imap_login_ok" {
-                    result.reason = "feishu_mail_login_ok".to_string();
-                }
-                result
-            })
-            .map_err(remap_transport_error)
+        delegate_probe(http, account, credential)
     }
+}
+
+fn delegate_imap_smtp<T>(action: impl FnOnce(&ImapSmtpProvider) -> Result<T>) -> Result<T> {
+    action(&ImapSmtpProvider).map_err(remap_transport_error)
+}
+
+fn delegate_probe(
+    http: &mut dyn OfficeHttpClient,
+    account: &crate::office::OfficeAccount,
+    credential: &crate::office::OfficeCredential,
+) -> Result<OfficeProbeResult> {
+    ImapSmtpOfficeProbeAdapter
+        .probe(http, account, credential)
+        .map(|mut result| {
+            if result.reason == "imap_login_ok" {
+                result.reason = "feishu_mail_login_ok".to_string();
+            }
+            result
+        })
+        .map_err(remap_transport_error)
 }
 
 fn remap_transport_error(error: Error) -> Error {

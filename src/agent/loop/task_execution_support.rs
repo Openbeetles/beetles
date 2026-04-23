@@ -46,22 +46,14 @@ fn has_durable_run_shape(msg: &crate::bus::PcMsg, has_tools: bool) -> bool {
     if content.is_empty() {
         return false;
     }
-    let char_count = content.chars().count();
-    let line_count = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    let separator_count = content
-        .chars()
-        .filter(|ch| matches!(ch, '\n' | ',' | '，' | '.' | '。' | ';' | '；'))
-        .count();
+    let metrics = crate::agent::request_semantics::request_shape_metrics_without_colons(content);
     if has_tools {
-        char_count >= TASK_EXECUTION_MIN_CHARS
-            || line_count >= TASK_EXECUTION_MIN_LINES
-            || separator_count >= TASK_EXECUTION_MIN_SEPARATORS
+        metrics.char_count >= TASK_EXECUTION_MIN_CHARS
+            || metrics.line_count >= TASK_EXECUTION_MIN_LINES
+            || metrics.separator_count >= TASK_EXECUTION_MIN_SEPARATORS
     } else {
-        char_count >= TASK_EXECUTION_MIN_CHARS.saturating_mul(2)
-            || line_count >= TASK_EXECUTION_MIN_LINES
+        metrics.char_count >= TASK_EXECUTION_MIN_CHARS.saturating_mul(2)
+            || metrics.line_count >= TASK_EXECUTION_MIN_LINES
     }
 }
 

@@ -1,15 +1,32 @@
 //! Shared office tool doctrine truth for LLM-facing routing and operation priority.
 
+use super::account::OfficeCapability;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OfficeToolRole {
     StatusEntry,
     ManagementEntry,
+    CapabilityEntry(OfficeCapability),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfficeToolLlmSurface {
+    UserOnly,
+    UserAndSystem,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfficeToolProtocolProfile {
+    StructuredObjectRich,
+    OperationEnvelopeRich,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OfficeToolDoctrine {
     pub tool_name: &'static str,
     pub role: OfficeToolRole,
+    pub llm_surface: OfficeToolLlmSurface,
+    pub protocol_profile: OfficeToolProtocolProfile,
     pub description: &'static str,
 }
 
@@ -32,14 +49,50 @@ const OFFICE_TOOL_DOCTRINES: &[OfficeToolDoctrine] = &[
     OfficeToolDoctrine {
         tool_name: "office_status",
         role: OfficeToolRole::StatusEntry,
+        llm_surface: OfficeToolLlmSurface::UserAndSystem,
+        protocol_profile: OfficeToolProtocolProfile::StructuredObjectRich,
         description:
             "Inspect office account status, readiness, diagnostics, and routing. Use this first when you need to understand whether configured office accounts are ready or need repair.",
     },
     OfficeToolDoctrine {
         tool_name: "office_config",
         role: OfficeToolRole::ManagementEntry,
+        llm_surface: OfficeToolLlmSurface::UserOnly,
+        protocol_profile: OfficeToolProtocolProfile::OperationEnvelopeRich,
         description:
             "Configure, reconfigure, and repair shared office accounts for mail, calendar, documents, and contacts. Mainline: use provider_schema first, then apply_account, and use resolve_account when account routing is ambiguous. Advanced and repair paths include probe, revoke, inspect, and assess.",
+    },
+    OfficeToolDoctrine {
+        tool_name: "mail",
+        role: OfficeToolRole::CapabilityEntry(OfficeCapability::Mail),
+        llm_surface: OfficeToolLlmSurface::UserOnly,
+        protocol_profile: OfficeToolProtocolProfile::OperationEnvelopeRich,
+        description:
+            "Use configured office mail accounts for list, search, read, send, and draft operations once routing is known.",
+    },
+    OfficeToolDoctrine {
+        tool_name: "calendar",
+        role: OfficeToolRole::CapabilityEntry(OfficeCapability::Calendar),
+        llm_surface: OfficeToolLlmSurface::UserOnly,
+        protocol_profile: OfficeToolProtocolProfile::OperationEnvelopeRich,
+        description:
+            "Use local or configured office calendar accounts for list, read, create, update, and delete operations once routing is known.",
+    },
+    OfficeToolDoctrine {
+        tool_name: "documents",
+        role: OfficeToolRole::CapabilityEntry(OfficeCapability::Documents),
+        llm_surface: OfficeToolLlmSurface::UserOnly,
+        protocol_profile: OfficeToolProtocolProfile::OperationEnvelopeRich,
+        description:
+            "Use configured office document libraries for list, read, summarize, and search operations once routing is known.",
+    },
+    OfficeToolDoctrine {
+        tool_name: "contacts_directory",
+        role: OfficeToolRole::CapabilityEntry(OfficeCapability::ContactsDirectory),
+        llm_surface: OfficeToolLlmSurface::UserOnly,
+        protocol_profile: OfficeToolProtocolProfile::OperationEnvelopeRich,
+        description:
+            "Use local or configured office contacts sources for lookup and directory operations that support people-aware routing.",
     },
 ];
 

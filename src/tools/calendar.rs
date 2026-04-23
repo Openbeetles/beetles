@@ -118,11 +118,12 @@ impl CalendarTool {
         local_store: Arc<dyn CalendarStore + Send + Sync>,
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(
-            local_store,
-            credential_store,
-            CalendarProviderRegistry::new(),
-            None,
+        Self::build(
+            CalendarService::new(
+                local_store,
+                credential_store,
+                CalendarProviderRegistry::new(),
+            ),
             None,
         )
     }
@@ -132,7 +133,10 @@ impl CalendarTool {
         credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
         providers: CalendarProviderRegistry,
     ) -> Self {
-        Self::with_runtime(local_store, credential_store, providers, None, None)
+        Self::build(
+            CalendarService::new(local_store, credential_store, providers),
+            None,
+        )
     }
 
     pub fn with_office_service(
@@ -141,11 +145,14 @@ impl CalendarTool {
         providers: CalendarProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_office_authority(
-            local_store,
-            credential_store,
-            providers,
-            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+        Self::build(
+            CalendarService::with_office_authority(
+                local_store,
+                credential_store,
+                providers,
+                Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
+            ),
+            None,
         )
     }
 
@@ -155,11 +162,13 @@ impl CalendarTool {
         providers: CalendarProviderRegistry,
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(
-            local_store,
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            CalendarService::with_office_authority(
+                local_store,
+                credential_store,
+                providers,
+                Some(office_authority),
+            ),
             None,
         )
     }
@@ -171,11 +180,13 @@ impl CalendarTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
-        Self::with_runtime(
-            local_store,
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            CalendarService::with_office_authority(
+                local_store,
+                credential_store,
+                providers,
+                Some(office_authority),
+            ),
             Some(ContactsDirectoryService::new(contacts_store)),
         )
     }
@@ -187,29 +198,23 @@ impl CalendarTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_directory: ContactsDirectoryService,
     ) -> Self {
-        Self::with_runtime(
-            local_store,
-            credential_store,
-            providers,
-            Some(office_authority),
+        Self::build(
+            CalendarService::with_office_authority(
+                local_store,
+                credential_store,
+                providers,
+                Some(office_authority),
+            ),
             Some(contacts_directory),
         )
     }
 
-    fn with_runtime(
-        local_store: Arc<dyn CalendarStore + Send + Sync>,
-        credential_store: Arc<dyn CalendarProviderCredentialStore + Send + Sync>,
-        providers: CalendarProviderRegistry,
-        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    fn build(
+        service: CalendarService,
         contacts_directory: Option<ContactsDirectoryService>,
     ) -> Self {
         Self {
-            service: CalendarService::with_office_authority(
-                local_store,
-                credential_store,
-                providers,
-                office_authority,
-            ),
+            service,
             contacts_directory,
         }
     }

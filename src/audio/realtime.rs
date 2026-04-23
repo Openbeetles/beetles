@@ -199,10 +199,6 @@ impl RealtimeLoopState {
         should_submit
     }
 
-    fn force_finish_local_speech_window(&mut self, now: Instant) -> bool {
-        self.finish_local_speech_window(now)
-    }
-
     fn reset_local_speech_window(&mut self) {
         self.current_local_speech_ms = 0;
         self.current_local_turn_committed = false;
@@ -406,15 +402,6 @@ impl RealtimeUploadEncoder {
 
         self.qwen_pcm16.as_slice()
     }
-}
-
-pub fn run_realtime_session(
-    platform: &dyn Platform,
-    audio_cfg: &AudioSegment,
-    log_tag: &'static str,
-) -> Result<RealtimeSessionResult> {
-    let connected = connect_realtime_session(platform, audio_cfg, log_tag)?;
-    run_connected_realtime_session(platform, audio_cfg, connected)
 }
 
 pub(crate) fn connect_realtime_session(
@@ -637,7 +624,7 @@ pub(crate) fn run_connected_realtime_session(
                 REALTIME_TAG,
                 state.current_local_speech_ms
             );
-            let should_submit = state.force_finish_local_speech_window(now);
+            let should_submit = state.finish_local_speech_window(now);
             if should_submit {
                 submit_local_turn(conn.as_mut(), provider, audio_cfg)?;
             }

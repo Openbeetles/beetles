@@ -46,14 +46,7 @@ struct RemoteContactsDirectoryRuntime(ContactsRemoteRuntime);
 
 impl ContactsDirectoryService {
     pub fn new(store: Arc<dyn ContactsDirectoryStore + Send + Sync>) -> Self {
-        Self {
-            local_store: store,
-            #[cfg(all(
-                feature = "capability_office",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            remote: None,
-        }
+        Self::build_local(store)
     }
 
     #[cfg(all(
@@ -68,11 +61,22 @@ impl ContactsDirectoryService {
         providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::with_office_authority(
+        Self::build_remote(
             local_store,
-            credential_store,
-            providers,
-            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            Some(RemoteContactsDirectoryRuntime(
+                OfficeCapabilityRemoteRuntime::new(
+                    providers,
+                    credential_store,
+                    OfficeCapabilityRuntime::new(
+                        OfficeCapability::ContactsDirectory,
+                        "contacts_directory_lookup",
+                        "contacts",
+                        "contacts_runtime",
+                        Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
+                    ),
+                    "contacts_directory_lookup",
+                ),
+            )),
         )
     }
 
@@ -88,9 +92,9 @@ impl ContactsDirectoryService {
         providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
     ) -> Self {
-        Self {
+        Self::build_remote(
             local_store,
-            remote: Some(RemoteContactsDirectoryRuntime(
+            Some(RemoteContactsDirectoryRuntime(
                 OfficeCapabilityRemoteRuntime::new(
                     providers,
                     credential_store,
@@ -104,6 +108,31 @@ impl ContactsDirectoryService {
                     "contacts_directory_lookup",
                 ),
             )),
+        )
+    }
+
+    fn build_local(local_store: Arc<dyn ContactsDirectoryStore + Send + Sync>) -> Self {
+        Self {
+            local_store,
+            #[cfg(all(
+                feature = "capability_office",
+                not(any(target_arch = "xtensa", target_arch = "riscv32"))
+            ))]
+            remote: None,
+        }
+    }
+
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    fn build_remote(
+        local_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
+        remote: Option<RemoteContactsDirectoryRuntime>,
+    ) -> Self {
+        Self {
+            local_store,
+            remote,
         }
     }
 

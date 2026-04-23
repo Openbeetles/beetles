@@ -584,7 +584,6 @@ fn branch_priority(kind: CounterfactualBranchKind) -> u8 {
 fn request_kind_label(kind: RequestKind) -> &'static str {
     match kind {
         RequestKind::General => "general",
-        RequestKind::OpsObservability => "ops_observability",
         RequestKind::HostDiagnostics => "host_diagnostics",
         RequestKind::MemoryRecall => "memory_recall",
         RequestKind::PrivateMaterialRequest => "private_material_request",

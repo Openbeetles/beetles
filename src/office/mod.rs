@@ -59,10 +59,7 @@ mod resolver;
 ))]
 mod service;
 mod status;
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 mod tool_doctrine;
 #[cfg(all(
     feature = "capability_office",
@@ -184,14 +181,11 @@ pub use status::{
     OfficeAccountRuntimeStatus, OfficeAccountStatusSummary, OfficeRuntimeStatusStore,
     REL_PATH_OFFICE_RUNTIME_STATUS,
 };
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use tool_doctrine::{
     office_config_op_doctrine, office_config_op_doctrines, office_tool_doctrine,
     office_tool_doctrines, OfficeConfigOpDoctrine, OfficeConfigOpTier, OfficeToolDoctrine,
-    OfficeToolRole,
+    OfficeToolLlmSurface, OfficeToolProtocolProfile, OfficeToolRole,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -211,14 +205,11 @@ pub use wecom::{
     WECOM_DEFAULT_BASE_URL,
 };
 
-#[cfg(all(
-    test,
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 mod tool_doctrine_tests {
     use super::{
-        office_config_op_doctrine, office_tool_doctrine, OfficeConfigOpTier, OfficeToolRole,
+        office_config_op_doctrine, office_tool_doctrine, office_tool_doctrines, OfficeCapability,
+        OfficeConfigOpTier, OfficeToolLlmSurface, OfficeToolProtocolProfile, OfficeToolRole,
     };
 
     #[test]
@@ -230,6 +221,65 @@ mod tool_doctrine_tests {
 
         assert_eq!(office_status.role, OfficeToolRole::StatusEntry);
         assert_eq!(office_config.role, OfficeToolRole::ManagementEntry);
+        assert_eq!(
+            office_status.llm_surface,
+            OfficeToolLlmSurface::UserAndSystem
+        );
+        assert_eq!(
+            office_status.protocol_profile,
+            OfficeToolProtocolProfile::StructuredObjectRich
+        );
+        assert_eq!(office_config.llm_surface, OfficeToolLlmSurface::UserOnly);
+        assert_eq!(
+            office_config.protocol_profile,
+            OfficeToolProtocolProfile::OperationEnvelopeRich
+        );
+    }
+
+    #[test]
+    fn office_capability_tools_share_one_surface_authority() {
+        let capability_tools = office_tool_doctrines()
+            .iter()
+            .filter_map(|doctrine| match doctrine.role {
+                OfficeToolRole::CapabilityEntry(capability) => Some((
+                    doctrine.tool_name,
+                    capability,
+                    doctrine.llm_surface,
+                    doctrine.protocol_profile,
+                )),
+                OfficeToolRole::StatusEntry | OfficeToolRole::ManagementEntry => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            capability_tools,
+            vec![
+                (
+                    "mail",
+                    OfficeCapability::Mail,
+                    OfficeToolLlmSurface::UserOnly,
+                    OfficeToolProtocolProfile::OperationEnvelopeRich,
+                ),
+                (
+                    "calendar",
+                    OfficeCapability::Calendar,
+                    OfficeToolLlmSurface::UserOnly,
+                    OfficeToolProtocolProfile::OperationEnvelopeRich,
+                ),
+                (
+                    "documents",
+                    OfficeCapability::Documents,
+                    OfficeToolLlmSurface::UserOnly,
+                    OfficeToolProtocolProfile::OperationEnvelopeRich,
+                ),
+                (
+                    "contacts_directory",
+                    OfficeCapability::ContactsDirectory,
+                    OfficeToolLlmSurface::UserOnly,
+                    OfficeToolProtocolProfile::OperationEnvelopeRich,
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -8,7 +8,6 @@ use crate::bus::{IngressKind, PcMsg};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestKind {
     General,
-    OpsObservability,
     HostDiagnostics,
     MemoryRecall,
     PrivateMaterialRequest,
@@ -47,6 +46,13 @@ pub(crate) enum ActionFamily {
     TaskExecution,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RequestShapeMetrics {
+    pub(crate) char_count: usize,
+    pub(crate) line_count: usize,
+    pub(crate) separator_count: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReasoningContract {
     pub(crate) request_kind: RequestKind,
@@ -83,6 +89,7 @@ pub(crate) struct ReasoningContractCompileInput<'a> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RequestSemanticsCompileInput<'a> {
     pub(crate) msg: &'a PcMsg,
+    #[allow(dead_code)]
     pub(crate) active_work: Option<&'a ActiveWorkRecord>,
 }
 
@@ -104,9 +111,6 @@ impl RequestSemantics {
         } else {
             100
         };
-        if input.active_work.is_some() {
-            semantics.request_kind = RequestKind::General;
-        }
         semantics
     }
 
@@ -128,6 +132,31 @@ impl RequestSemantics {
             action_family: ActionFamily::Conversation,
             confidence: 0,
         }
+    }
+}
+
+pub(crate) fn request_shape_metrics(content: &str) -> RequestShapeMetrics {
+    request_shape_metrics_with_colons(content, true)
+}
+
+pub(crate) fn request_shape_metrics_without_colons(content: &str) -> RequestShapeMetrics {
+    request_shape_metrics_with_colons(content, false)
+}
+
+fn request_shape_metrics_with_colons(content: &str, include_colons: bool) -> RequestShapeMetrics {
+    RequestShapeMetrics {
+        char_count: content.chars().count(),
+        line_count: content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+        separator_count: content
+            .chars()
+            .filter(|ch| {
+                matches!(ch, '\n' | ',' | '，' | '.' | '。' | ';' | '；')
+                    || (include_colons && matches!(ch, ':' | '：'))
+            })
+            .count(),
     }
 }
 

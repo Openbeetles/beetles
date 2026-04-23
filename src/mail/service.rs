@@ -34,7 +34,7 @@ impl MailService {
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
     ) -> Self {
-        Self::with_office_authority(credential_store, providers, None)
+        Self::build(credential_store, providers, None)
     }
 
     pub fn with_office_service(
@@ -42,7 +42,7 @@ impl MailService {
         providers: MailProviderRegistry,
         office_service: Option<OfficeService>,
     ) -> Self {
-        Self::with_office_authority(
+        Self::build(
             credential_store,
             providers,
             office_authority_from_service(office_service),
@@ -50,6 +50,14 @@ impl MailService {
     }
 
     pub fn with_office_authority(
+        credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
+        providers: MailProviderRegistry,
+        office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
+    ) -> Self {
+        Self::build(credential_store, providers, office_authority)
+    }
+
+    fn build(
         credential_store: Arc<dyn MailProviderCredentialStore + Send + Sync>,
         providers: MailProviderRegistry,
         office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,

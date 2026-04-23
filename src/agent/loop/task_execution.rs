@@ -75,78 +75,93 @@ fn workflow_clarification_request_from_task_fields(
     (!fields.is_empty()).then_some(crate::agent::workflow_outcome::ClarificationRequest { fields })
 }
 
+fn task_blocker_summary(primary: &str, fallback: &str, default: &str) -> String {
+    let primary = primary.trim();
+    if !primary.is_empty() {
+        return primary.to_string();
+    }
+    let fallback = fallback.trim();
+    if !fallback.is_empty() {
+        return fallback.to_string();
+    }
+    default.to_string()
+}
+
+enum TaskBlockerRouteKind {
+    Facts,
+    Choice,
+    Confirmation,
+}
+
+fn workflow_blocker_from_task_route(
+    route: TaskBlockerRouteKind,
+    summary: String,
+    missing_fields: Vec<String>,
+    clarification: Option<crate::agent::workflow_outcome::ClarificationRequest>,
+) -> crate::agent::WorkflowBlocker {
+    match route {
+        TaskBlockerRouteKind::Facts => {
+            crate::agent::WorkflowBlocker::needs_user_facts(summary, missing_fields, clarification)
+        }
+        TaskBlockerRouteKind::Choice => {
+            crate::agent::WorkflowBlocker::needs_user_choice(summary, missing_fields, clarification)
+        }
+        TaskBlockerRouteKind::Confirmation => {
+            crate::agent::WorkflowBlocker::needs_confirmation(summary, clarification)
+        }
+    }
+}
+
 fn workflow_blocker_for_task_planner_decision(
     decision: &TaskPlannerDecision,
 ) -> Option<crate::agent::WorkflowBlocker> {
-    let clarification =
-        workflow_clarification_request_from_task_fields(&decision.clarification_fields);
-    let summary = if !decision.blocker_summary.trim().is_empty() {
-        decision.blocker_summary.trim().to_string()
-    } else if !decision.reason.trim().is_empty() {
-        decision.reason.trim().to_string()
-    } else {
-        "task planning needs more user input before execution can start".to_string()
-    };
-    match decision.route {
-        TaskExecutionRoute::NeedsUserFacts => {
-            Some(crate::agent::WorkflowBlocker::needs_user_facts(
-                summary,
-                decision.missing_fields.clone(),
-                clarification,
-            ))
-        }
-        TaskExecutionRoute::NeedsUserChoice => {
-            Some(crate::agent::WorkflowBlocker::needs_user_choice(
-                summary,
-                decision.missing_fields.clone(),
-                clarification,
-            ))
-        }
-        TaskExecutionRoute::NeedsConfirmation => Some(
-            crate::agent::WorkflowBlocker::needs_confirmation(summary, clarification),
-        ),
+    let route = match decision.route {
+        TaskExecutionRoute::NeedsUserFacts => TaskBlockerRouteKind::Facts,
+        TaskExecutionRoute::NeedsUserChoice => TaskBlockerRouteKind::Choice,
+        TaskExecutionRoute::NeedsConfirmation => TaskBlockerRouteKind::Confirmation,
         TaskExecutionRoute::DirectReply
         | TaskExecutionRoute::StartRun
-        | TaskExecutionRoute::ResumeRun => None,
-    }
+        | TaskExecutionRoute::ResumeRun => return None,
+    };
+    let clarification =
+        workflow_clarification_request_from_task_fields(&decision.clarification_fields);
+    Some(workflow_blocker_from_task_route(
+        route,
+        task_blocker_summary(
+            &decision.blocker_summary,
+            &decision.reason,
+            "task planning needs more user input before execution can start",
+        ),
+        decision.missing_fields.clone(),
+        clarification,
+    ))
 }
 
 fn workflow_blocker_for_task_review_outcome(
     outcome: &TaskReviewOutcome,
 ) -> Option<crate::agent::WorkflowBlocker> {
-    let clarification =
-        workflow_clarification_request_from_task_fields(&outcome.clarification_fields);
-    let summary = if !outcome.blocker_summary.trim().is_empty() {
-        outcome.blocker_summary.trim().to_string()
-    } else if !outcome.summary.trim().is_empty() {
-        outcome.summary.trim().to_string()
-    } else {
-        "task review needs more user input before execution can continue".to_string()
-    };
-    match outcome.decision {
-        TaskReviewDecision::NeedsUserFacts => {
-            Some(crate::agent::WorkflowBlocker::needs_user_facts(
-                summary,
-                outcome.missing_fields.clone(),
-                clarification,
-            ))
-        }
-        TaskReviewDecision::NeedsUserChoice => {
-            Some(crate::agent::WorkflowBlocker::needs_user_choice(
-                summary,
-                outcome.missing_fields.clone(),
-                clarification,
-            ))
-        }
-        TaskReviewDecision::NeedsConfirmation => Some(
-            crate::agent::WorkflowBlocker::needs_confirmation(summary, clarification),
-        ),
+    let route = match outcome.decision {
+        TaskReviewDecision::NeedsUserFacts => TaskBlockerRouteKind::Facts,
+        TaskReviewDecision::NeedsUserChoice => TaskBlockerRouteKind::Choice,
+        TaskReviewDecision::NeedsConfirmation => TaskBlockerRouteKind::Confirmation,
         TaskReviewDecision::Pass
         | TaskReviewDecision::RetryStep
         | TaskReviewDecision::RevisePlan
         | TaskReviewDecision::AbortRun
-        | TaskReviewDecision::PartialComplete => None,
-    }
+        | TaskReviewDecision::PartialComplete => return None,
+    };
+    let clarification =
+        workflow_clarification_request_from_task_fields(&outcome.clarification_fields);
+    Some(workflow_blocker_from_task_route(
+        route,
+        task_blocker_summary(
+            &outcome.blocker_summary,
+            &outcome.summary,
+            "task review needs more user input before execution can continue",
+        ),
+        outcome.missing_fields.clone(),
+        clarification,
+    ))
 }
 
 fn normalize_task_execution_route(
