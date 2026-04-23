@@ -14,6 +14,11 @@ const LEVEL_ATTACK_ALPHA: f32 = 0.50;
 const LEVEL_RELEASE_ALPHA: f32 = 0.18;
 const ACTIVATION_LIMIT: f32 = 1.5;
 const KEEPALIVE_GAIN: f32 = 0.5;
+const MIN_SPEECH_BIN_COVERAGE: f32 = 0.50;
+const KEEPALIVE_MIN_SPEECH_BIN_COVERAGE: f32 = 0.25;
+const MAX_SPEECH_BIN_DOMINANCE: f32 = 0.78;
+const KEEPALIVE_MAX_SPEECH_BIN_DOMINANCE: f32 = 0.90;
+const BAND_ACTIVITY_FLOOR_RATIO: f32 = 0.18;
 const SPEECH_BAND_HZ: &[f32] = &[500.0, 1000.0, 1800.0, 2600.0];
 const NOISE_BAND_HZ: &[f32] = &[150.0, 250.0, 4000.0, 5500.0];
 
@@ -78,6 +83,13 @@ pub struct AcousticWakeBackend {
     smoothed_ref_rms: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct SpeechBandSummary {
+    speech_ratio: f32,
+    speech_bin_coverage: f32,
+    dominant_speech_share: f32,
+}
+
 impl AcousticWakeBackend {
     /// Create a new acoustic backend with the provided thresholds and timers.
     pub fn new(config: AcousticWakeConfig) -> Self {
@@ -133,7 +145,7 @@ impl AcousticWakeBackend {
         let mic_level = smooth_level(&mut self.smoothed_mic_rms, mic_rms);
         let ref_level = smooth_level(&mut self.smoothed_ref_rms, ref_rms);
         let zcr = zero_crossing_rate(mic);
-        let speech_ratio = speech_band_ratio(mic, self.config.sample_rate_hz);
+        let speech_summary = speech_band_summary(mic, self.config.sample_rate_hz);
         let dynamic_threshold = self
             .config
             .enter_threshold
@@ -149,7 +161,9 @@ impl AcousticWakeBackend {
         let speech_like = mic_level >= dynamic_threshold
             && zcr >= self.config.zcr_min
             && zcr <= self.config.zcr_max
-            && speech_ratio >= self.config.min_speech_band_ratio
+            && speech_summary.speech_ratio >= self.config.min_speech_band_ratio
+            && speech_summary.speech_bin_coverage >= MIN_SPEECH_BIN_COVERAGE
+            && speech_summary.dominant_speech_share <= MAX_SPEECH_BIN_DOMINANCE
             && reference_ok;
         let weak_keepalive = mic_level
             >= self
@@ -158,7 +172,9 @@ impl AcousticWakeBackend {
                 .max(self.noise_floor * (DEFAULT_NOISE_MULTIPLIER * 0.75))
             && zcr >= self.config.zcr_min
             && zcr <= self.config.zcr_max
-            && speech_ratio >= self.config.min_speech_band_ratio * 0.8
+            && speech_summary.speech_ratio >= self.config.min_speech_band_ratio * 0.8
+            && speech_summary.speech_bin_coverage >= KEEPALIVE_MIN_SPEECH_BIN_COVERAGE
+            && speech_summary.dominant_speech_share <= KEEPALIVE_MAX_SPEECH_BIN_DOMINANCE
             && reference_ok;
         let activation_gain = (frame_ms as f32) / (self.config.min_active_ms.max(frame_ms) as f32);
 
@@ -266,24 +282,39 @@ fn zero_crossing_rate(pcm: &[i16]) -> f32 {
     (zero_crossings as f32) / ((pcm.len() - 1) as f32)
 }
 
-fn speech_band_ratio(pcm: &[i16], sample_rate_hz: u32) -> f32 {
-    let speech = band_energy_sum(pcm, sample_rate_hz, SPEECH_BAND_HZ);
-    let noise = band_energy_sum(pcm, sample_rate_hz, NOISE_BAND_HZ);
-    let total = speech + noise;
-    if total <= f32::EPSILON {
-        0.0
-    } else {
-        (speech / total).clamp(0.0, 1.0)
+fn speech_band_summary(pcm: &[i16], sample_rate_hz: u32) -> SpeechBandSummary {
+    let speech_bins = band_energies(pcm, sample_rate_hz, SPEECH_BAND_HZ);
+    let speech_total: f32 = speech_bins.iter().copied().sum();
+    let noise_total: f32 = band_energies(pcm, sample_rate_hz, NOISE_BAND_HZ)
+        .iter()
+        .copied()
+        .sum();
+    let total = speech_total + noise_total;
+    if total <= f32::EPSILON || speech_total <= f32::EPSILON {
+        return SpeechBandSummary::default();
+    }
+
+    let dominant = speech_bins.iter().copied().fold(0.0f32, f32::max);
+    let activity_floor = (dominant * BAND_ACTIVITY_FLOOR_RATIO).max(f32::EPSILON);
+    let active_bins = speech_bins
+        .iter()
+        .filter(|energy| **energy >= activity_floor)
+        .count();
+
+    SpeechBandSummary {
+        speech_ratio: (speech_total / total).clamp(0.0, 1.0),
+        speech_bin_coverage: (active_bins as f32) / (speech_bins.len().max(1) as f32),
+        dominant_speech_share: (dominant / speech_total).clamp(0.0, 1.0),
     }
 }
 
-fn band_energy_sum(pcm: &[i16], sample_rate_hz: u32, bins: &[f32]) -> f32 {
+fn band_energies(pcm: &[i16], sample_rate_hz: u32, bins: &[f32]) -> Vec<f32> {
     let nyquist = (sample_rate_hz as f32) * 0.5;
     bins.iter()
         .copied()
         .filter(|hz| *hz > 0.0 && *hz < nyquist)
         .map(|hz| goertzel_energy(pcm, sample_rate_hz, hz))
-        .sum()
+        .collect()
 }
 
 fn goertzel_energy(pcm: &[i16], sample_rate_hz: u32, target_hz: f32) -> f32 {
@@ -315,6 +346,52 @@ fn synth_sine(sample_rate_hz: u32, hz: f32, frames: usize, amplitude: f32) -> Ve
 }
 
 #[cfg(test)]
+fn synth_mix(sample_rate_hz: u32, bins: &[(f32, f32)], frames: usize, amplitude: f32) -> Vec<i16> {
+    (0..frames)
+        .map(|idx| {
+            let sample = bins.iter().fold(0.0f32, |acc, (hz, weight)| {
+                let phase = 2.0 * PI * *hz * (idx as f32) / (sample_rate_hz as f32);
+                acc + phase.sin() * *weight
+            });
+            let clamped = (sample * amplitude).clamp(-1.0, 1.0);
+            (clamped * (i16::MAX as f32)) as i16
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn synth_voice_like(sample_rate_hz: u32, frames: usize, amplitude: f32) -> Vec<i16> {
+    synth_mix(
+        sample_rate_hz,
+        &[
+            (500.0, 0.38),
+            (1000.0, 0.30),
+            (1800.0, 0.20),
+            (2600.0, 0.12),
+        ],
+        frames,
+        amplitude,
+    )
+}
+
+#[cfg(test)]
+fn synth_voice_like_alt(sample_rate_hz: u32, frames: usize, amplitude: f32) -> Vec<i16> {
+    synth_mix(
+        sample_rate_hz,
+        &[(540.0, 0.36), (960.0, 0.28), (1680.0, 0.21), (2480.0, 0.15)],
+        frames,
+        amplitude,
+    )
+}
+
+#[cfg(test)]
+fn scale_pcm(pcm: &[i16], gain: f32) -> Vec<i16> {
+    pcm.iter()
+        .map(|sample| ((*sample as f32) * gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -325,7 +402,7 @@ mod tests {
         config.cooldown_ms = 200;
         let sample_rate_hz = config.sample_rate_hz;
         let mut backend = AcousticWakeBackend::new(config);
-        let speech = synth_sine(sample_rate_hz, 1000.0, 320, 0.55);
+        let speech = synth_voice_like(sample_rate_hz, 320, 0.55);
 
         assert_eq!(backend.feed_pcm_i16(&speech, &[], false), None);
         assert_eq!(
@@ -340,7 +417,7 @@ mod tests {
         config.min_active_ms = 40;
         let sample_rate_hz = config.sample_rate_hz;
         let mut backend = AcousticWakeBackend::new(config);
-        let echo = synth_sine(sample_rate_hz, 1000.0, 320, 0.35);
+        let echo = synth_voice_like(sample_rate_hz, 320, 0.35);
 
         assert_eq!(backend.feed_pcm_i16(&echo, &echo, true), None);
         assert_eq!(backend.feed_pcm_i16(&echo, &echo, true), None);
@@ -353,7 +430,7 @@ mod tests {
         config.cooldown_ms = 120;
         let sample_rate_hz = config.sample_rate_hz;
         let mut backend = AcousticWakeBackend::new(config);
-        let speech = synth_sine(sample_rate_hz, 1000.0, 320, 0.55);
+        let speech = synth_voice_like(sample_rate_hz, 320, 0.55);
 
         assert_eq!(backend.feed_pcm_i16(&speech, &[], false), None);
         assert_eq!(
@@ -369,8 +446,8 @@ mod tests {
         config.min_active_ms = 40;
         let sample_rate_hz = config.sample_rate_hz;
         let mut backend = AcousticWakeBackend::new(config);
-        let mic = synth_sine(sample_rate_hz, 1000.0, 320, 0.55);
-        let reference = synth_sine(sample_rate_hz, 1000.0, 320, 0.25);
+        let mic = synth_voice_like(sample_rate_hz, 320, 0.55);
+        let reference = synth_voice_like_alt(sample_rate_hz, 320, 0.25);
 
         assert_eq!(backend.feed_pcm_i16(&mic, &reference, true), None);
         assert_eq!(
@@ -382,13 +459,13 @@ mod tests {
     #[test]
     fn acoustic_backend_hangover_keeps_partial_progress_between_frames() {
         let mut config = AcousticWakeConfig::for_tests();
-        config.enter_threshold = 0.35;
+        config.enter_threshold = 0.20;
         config.min_active_ms = 40;
         config.hangover_ms = 80;
         let sample_rate_hz = config.sample_rate_hz;
         let mut backend = AcousticWakeBackend::new(config);
-        let speech = synth_sine(sample_rate_hz, 1000.0, 320, 0.55);
-        let quiet = synth_sine(sample_rate_hz, 1000.0, 320, 0.02);
+        let speech = synth_voice_like(sample_rate_hz, 320, 0.55);
+        let quiet = synth_voice_like(sample_rate_hz, 320, 0.10);
 
         assert_eq!(backend.feed_pcm_i16(&speech, &[], false), None);
         assert_eq!(backend.feed_pcm_i16(&quiet, &[], false), None);
@@ -404,18 +481,43 @@ mod tests {
     #[test]
     fn acoustic_backend_keepalive_respects_reference_suppression() {
         let mut config = AcousticWakeConfig::for_tests();
-        config.enter_threshold = 0.35;
+        config.enter_threshold = 0.20;
         config.min_active_ms = 40;
         config.hangover_ms = 80;
         let sample_rate_hz = config.sample_rate_hz;
         let mut backend = AcousticWakeBackend::new(config);
-        let speech = synth_sine(sample_rate_hz, 1000.0, 320, 0.55);
-        let quiet_mic = synth_sine(sample_rate_hz, 1000.0, 320, 0.02);
-        let loud_ref = synth_sine(sample_rate_hz, 1000.0, 320, 0.35);
+        let speech = synth_voice_like(sample_rate_hz, 320, 0.55);
+        let quiet_mic = synth_voice_like(sample_rate_hz, 320, 0.10);
+        let loud_ref = synth_voice_like(sample_rate_hz, 320, 0.35);
 
         assert_eq!(backend.feed_pcm_i16(&speech, &[], false), None);
         let activation_before = backend.activation_score;
         assert_eq!(backend.feed_pcm_i16(&quiet_mic, &loud_ref, true), None);
         assert!(backend.activation_score < activation_before);
+    }
+
+    #[test]
+    fn acoustic_backend_rejects_pure_tonal_noise() {
+        let mut config = AcousticWakeConfig::for_tests();
+        config.min_active_ms = 40;
+        let sample_rate_hz = config.sample_rate_hz;
+        let mut backend = AcousticWakeBackend::new(config);
+        let tone = synth_sine(sample_rate_hz, 1000.0, 320, 0.55);
+
+        assert_eq!(backend.feed_pcm_i16(&tone, &[], false), None);
+        assert_eq!(backend.feed_pcm_i16(&tone, &[], false), None);
+    }
+
+    #[test]
+    fn acoustic_backend_rejects_amplified_reference_bleed() {
+        let mut config = AcousticWakeConfig::for_tests();
+        config.min_active_ms = 40;
+        let sample_rate_hz = config.sample_rate_hz;
+        let mut backend = AcousticWakeBackend::new(config);
+        let reference = synth_voice_like(sample_rate_hz, 320, 0.10);
+        let mic = scale_pcm(&reference, 1.45);
+
+        assert_eq!(backend.feed_pcm_i16(&mic, &reference, true), None);
+        assert_eq!(backend.feed_pcm_i16(&mic, &reference, true), None);
     }
 }
