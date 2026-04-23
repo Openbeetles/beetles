@@ -9,8 +9,9 @@ use crate::tools::{
     Tool, ToolApprovalMode, ToolCapabilityContract, ToolCatalogAuthority, ToolEffectClass,
     ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
     ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
-    ToolInputProtocolKind, ToolMetadata, ToolOutputProtocolKind, ToolPolicyContext,
-    ToolProtocolAuthority, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
+    ToolExecutionShape, ToolInputProtocolKind, ToolMetadata, ToolOutputProtocolKind,
+    ToolPolicyContext, ToolProtocolAuthority, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN,
+    MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -34,6 +35,17 @@ struct RegisteredTool {
     metadata: ToolMetadata,
     requires_network: bool,
     capability_contract: ToolCapabilityContract,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolExecutionInputCheckOrder {
+    ValidateThenBlocker,
+    BlockerThenValidate,
+}
+
+struct ToolExecutionPreparation<'a> {
+    entry: &'a RegisteredTool,
+    protocol: crate::tools::ToolProtocolContract,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -258,38 +270,15 @@ impl ToolRegistry {
         args: &str,
         ctx: &mut dyn crate::tools::ToolContext,
     ) -> Result<ToolExecutionOutcome> {
-        if args.len() > MAX_TOOL_ARGS_LEN {
-            return Err(Error::config(
-                "tool_execute",
-                format!("args length exceeds {}", MAX_TOOL_ARGS_LEN),
-            ));
-        }
-        let tool = self.get(name).ok_or_else(|| Error::Other {
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("tool not found: {}", name),
-            )),
-            stage: "tool_execute",
-        })?;
-        let protocol = self.tool_protocol_contract(name);
-        validate_tool_input_protocol(name, args, protocol)?;
-        if let Some(blocker) = self.runtime_capability_blocker(name) {
-            return Err(runtime_capability_error(name, &blocker));
-        }
-        let shape = tool.execution_shape(args)?;
-        enforce_direct_execution_governance(
-            self.tools
-                .get(name)
-                .map(|entry| entry.metadata)
-                .unwrap_or_else(|| tool.metadata()),
-            &shape,
+        let preparation = self.prepare_tool_execution(
+            name,
+            args,
+            ToolExecutionInputCheckOrder::ValidateThenBlocker,
         )?;
-        let mut outcome = tool.execute_outcome(args, ctx)?;
-        normalize_and_validate_tool_outcome(name, protocol, &mut outcome)?;
-        if outcome.is_success() {
-            self.observe_runtime_capability_success(name);
-        }
-        Ok(outcome)
+        let entry = preparation.entry;
+        let shape = entry.tool.execution_shape(args)?;
+        enforce_direct_execution_governance(entry.metadata, &shape)?;
+        self.execute_tool_outcome(name, entry, args, ctx, preparation.protocol, None)
     }
 
     pub fn assess_llm_execution(
@@ -349,33 +338,20 @@ impl ToolRegistry {
         args: &str,
         ctx: &mut dyn crate::tools::ToolContext,
     ) -> Result<ToolExecutionOutcome> {
-        if let Some(blocker) = self.runtime_capability_blocker(permit.tool_name()) {
-            return Err(runtime_capability_error(permit.tool_name(), &blocker));
-        }
-        let tool = self.get(permit.tool_name()).ok_or_else(|| Error::Other {
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("tool not found: {}", permit.tool_name()),
-            )),
-            stage: "tool_execute",
-        })?;
-        let protocol = self.tool_protocol_contract(permit.tool_name());
-        validate_tool_input_protocol(permit.tool_name(), args, protocol)?;
-        let mut outcome = tool.execute_outcome(args, ctx)?;
-        normalize_and_validate_tool_outcome(permit.tool_name(), protocol, &mut outcome)?;
-        if outcome.is_success() {
-            self.observe_runtime_capability_success(permit.tool_name());
-            if let Some(governance) = self.execution_governance.as_ref() {
-                if let Err(error) = governance.record_success(permit, &outcome) {
-                    log::warn!(
-                        "[tool_registry] failed to persist success audit for {}: {}",
-                        permit.tool_name(),
-                        error
-                    );
-                }
-            }
-        }
-        Ok(outcome)
+        let preparation = self.prepare_tool_execution(
+            permit.tool_name(),
+            args,
+            ToolExecutionInputCheckOrder::BlockerThenValidate,
+        )?;
+        let entry = preparation.entry;
+        self.execute_tool_outcome(
+            permit.tool_name(),
+            entry,
+            args,
+            ctx,
+            preparation.protocol,
+            Some(permit),
+        )
     }
 
     pub fn record_execution_failure(
@@ -511,115 +487,48 @@ impl ToolRegistry {
         policy: &ToolPolicyContext<'_>,
     ) -> ToolBridgeProposalAssessment {
         let Some(entry) = self.tools.get(name) else {
-            return ToolBridgeProposalAssessment {
-                tool_name: name.to_string(),
-                decision: ToolBridgeProposalDecision::UnknownTool,
-                summary: format!("tool '{name}' is not registered"),
-                effect_class: ToolEffectClass::ReadOnly,
-                risk_level: ToolRiskLevel::Low,
-                approval_mode: ToolApprovalMode::OperatorOnly,
-                rollback_kind: ToolRollbackKind::None,
-                requires_network: false,
-                required_runtime_capabilities: Vec::new(),
-                allow_when_degraded: false,
-            };
+            return Self::unknown_tool_bridge_proposal_assessment(name);
         };
         let default_shape = entry.tool.catalog_execution_shape();
         if !self.is_llm_tool_visible(name, policy) {
-            return ToolBridgeProposalAssessment {
-                tool_name: name.to_string(),
-                decision: ToolBridgeProposalDecision::Denied,
-                summary: format!("tool '{name}' is not visible in the current policy"),
-                effect_class: default_shape.effect_class,
-                risk_level: default_shape.risk_level,
-                approval_mode: default_shape.approval_mode,
-                rollback_kind: default_shape.rollback_kind,
-                requires_network: entry.requires_network,
-                required_runtime_capabilities: entry
-                    .capability_contract
-                    .required
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                allow_when_degraded: entry.capability_contract.allow_when_degraded,
-            };
-        }
-        let args_json = match serde_json::to_string(args) {
-            Ok(value) => value,
-            Err(error) => {
-                return ToolBridgeProposalAssessment {
-                    tool_name: name.to_string(),
-                    decision: ToolBridgeProposalDecision::Denied,
-                    summary: format!("tool args serialization failed: {error}"),
-                    effect_class: default_shape.effect_class,
-                    risk_level: default_shape.risk_level,
-                    approval_mode: default_shape.approval_mode,
-                    rollback_kind: default_shape.rollback_kind,
-                    requires_network: entry.requires_network,
-                    required_runtime_capabilities: entry
-                        .capability_contract
-                        .required
-                        .iter()
-                        .map(|value| (*value).to_string())
-                        .collect(),
-                    allow_when_degraded: entry.capability_contract.allow_when_degraded,
-                };
+            return Self::tool_bridge_proposal_assessment(
+                name,
+                ToolBridgeProposalDecision::Denied,
+                format!("tool '{name}' is not visible in the current policy"),
+                &default_shape,
+                entry.requires_network,
+                &entry.capability_contract,
+            );
+        };
+        let args_json = args.to_string();
+        match self.assess_llm_execution(name, &args_json, policy) {
+            Ok(ToolExecutionGateDecision::Allow(permit)) => Self::tool_bridge_proposal_assessment(
+                name,
+                ToolBridgeProposalDecision::Allowed,
+                "proposal matches current tool governance contract",
+                permit.shape(),
+                permit.requires_network(),
+                &entry.capability_contract,
+            ),
+            Ok(ToolExecutionGateDecision::Deny { reason }) => {
+                Self::tool_bridge_proposal_assessment(
+                    name,
+                    ToolBridgeProposalDecision::Denied,
+                    reason,
+                    &default_shape,
+                    entry.requires_network,
+                    &entry.capability_contract,
+                )
             }
-        };
-        let decision = match self.assess_llm_execution(name, &args_json, policy) {
-            Ok(ToolExecutionGateDecision::Allow(permit)) => ToolBridgeProposalAssessment {
-                tool_name: name.to_string(),
-                decision: ToolBridgeProposalDecision::Allowed,
-                summary: "proposal matches current tool governance contract".to_string(),
-                effect_class: permit.shape().effect_class,
-                risk_level: permit.shape().risk_level,
-                approval_mode: permit.shape().approval_mode,
-                rollback_kind: permit.shape().rollback_kind,
-                requires_network: permit.requires_network(),
-                required_runtime_capabilities: entry
-                    .capability_contract
-                    .required
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                allow_when_degraded: entry.capability_contract.allow_when_degraded,
-            },
-            Ok(ToolExecutionGateDecision::Deny { reason }) => ToolBridgeProposalAssessment {
-                tool_name: name.to_string(),
-                decision: ToolBridgeProposalDecision::Denied,
-                summary: reason,
-                effect_class: default_shape.effect_class,
-                risk_level: default_shape.risk_level,
-                approval_mode: default_shape.approval_mode,
-                rollback_kind: default_shape.rollback_kind,
-                requires_network: entry.requires_network,
-                required_runtime_capabilities: entry
-                    .capability_contract
-                    .required
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                allow_when_degraded: entry.capability_contract.allow_when_degraded,
-            },
-            Err(error) => ToolBridgeProposalAssessment {
-                tool_name: name.to_string(),
-                decision: ToolBridgeProposalDecision::Denied,
-                summary: error.to_string(),
-                effect_class: default_shape.effect_class,
-                risk_level: default_shape.risk_level,
-                approval_mode: default_shape.approval_mode,
-                rollback_kind: default_shape.rollback_kind,
-                requires_network: entry.requires_network,
-                required_runtime_capabilities: entry
-                    .capability_contract
-                    .required
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                allow_when_degraded: entry.capability_contract.allow_when_degraded,
-            },
-        };
-        decision
+            Err(error) => Self::tool_bridge_proposal_assessment(
+                name,
+                ToolBridgeProposalDecision::Denied,
+                error.to_string(),
+                &default_shape,
+                entry.requires_network,
+                &entry.capability_contract,
+            ),
+        }
     }
 
     fn llm_visibility_overlay_set(
@@ -629,6 +538,149 @@ impl ToolRegistry {
         self.llm_visibility_overlay_provider
             .as_ref()
             .map(|provider| provider(policy.ingress, policy.channel))
+    }
+
+    fn tool_entry(&self, tool_name: &str) -> Result<&RegisteredTool> {
+        self.tools.get(tool_name).ok_or_else(|| Error::Other {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("tool not found: {tool_name}"),
+            )),
+            stage: "tool_execute",
+        })
+    }
+
+    fn required_runtime_capabilities(capability_contract: &ToolCapabilityContract) -> Vec<String> {
+        capability_contract
+            .required
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect()
+    }
+
+    fn tool_bridge_proposal_assessment(
+        tool_name: &str,
+        decision: ToolBridgeProposalDecision,
+        summary: impl Into<String>,
+        shape: &ToolExecutionShape,
+        requires_network: bool,
+        capability_contract: &ToolCapabilityContract,
+    ) -> ToolBridgeProposalAssessment {
+        ToolBridgeProposalAssessment {
+            tool_name: tool_name.to_string(),
+            decision,
+            summary: summary.into(),
+            effect_class: shape.effect_class,
+            risk_level: shape.risk_level,
+            approval_mode: shape.approval_mode,
+            rollback_kind: shape.rollback_kind,
+            requires_network,
+            required_runtime_capabilities: Self::required_runtime_capabilities(capability_contract),
+            allow_when_degraded: capability_contract.allow_when_degraded,
+        }
+    }
+
+    fn unknown_tool_bridge_proposal_assessment(tool_name: &str) -> ToolBridgeProposalAssessment {
+        ToolBridgeProposalAssessment {
+            tool_name: tool_name.to_string(),
+            decision: ToolBridgeProposalDecision::UnknownTool,
+            summary: format!("tool '{tool_name}' is not registered"),
+            effect_class: ToolEffectClass::ReadOnly,
+            risk_level: ToolRiskLevel::Low,
+            approval_mode: ToolApprovalMode::OperatorOnly,
+            rollback_kind: ToolRollbackKind::None,
+            requires_network: false,
+            required_runtime_capabilities: Vec::new(),
+            allow_when_degraded: false,
+        }
+    }
+
+    fn runtime_capability_blocker_for_entry(
+        entry: &RegisteredTool,
+    ) -> Option<crate::orchestrator::RuntimeCapabilityBlocker> {
+        if entry.capability_contract.is_empty() {
+            return None;
+        }
+        let blocker =
+            crate::orchestrator::runtime_capability_blocker(entry.capability_contract.required)?;
+        match blocker.capability_status {
+            crate::orchestrator::RuntimeCapabilityStatus::Degraded
+                if entry.capability_contract.allow_when_degraded =>
+            {
+                None
+            }
+            _ => Some(blocker),
+        }
+    }
+
+    fn observe_runtime_capability_success_for_entry(entry: &RegisteredTool) {
+        if entry.capability_contract.is_empty() {
+            return;
+        }
+        crate::orchestrator::observe_runtime_capability_success(entry.capability_contract.required);
+    }
+
+    fn record_success_audit(&self, permit: &ToolExecutionPermit, outcome: &ToolExecutionOutcome) {
+        if let Some(governance) = self.execution_governance.as_ref() {
+            if let Err(error) = governance.record_success(permit, outcome) {
+                log::warn!(
+                    "[tool_registry] failed to persist success audit for {}: {}",
+                    permit.tool_name(),
+                    error
+                );
+            }
+        }
+    }
+
+    fn execute_tool_outcome(
+        &self,
+        tool_name: &str,
+        entry: &RegisteredTool,
+        args: &str,
+        ctx: &mut dyn crate::tools::ToolContext,
+        protocol: crate::tools::ToolProtocolContract,
+        permit: Option<&ToolExecutionPermit>,
+    ) -> Result<ToolExecutionOutcome> {
+        let mut outcome = entry.tool.execute_outcome(args, ctx)?;
+        normalize_and_validate_tool_outcome(tool_name, protocol, &mut outcome)?;
+        if outcome.is_success() {
+            Self::observe_runtime_capability_success_for_entry(entry);
+            if let Some(permit) = permit {
+                self.record_success_audit(permit, &outcome);
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn prepare_tool_execution<'a>(
+        &'a self,
+        tool_name: &str,
+        args: &str,
+        check_order: ToolExecutionInputCheckOrder,
+    ) -> Result<ToolExecutionPreparation<'a>> {
+        if args.len() > MAX_TOOL_ARGS_LEN {
+            return Err(Error::config(
+                "tool_execute",
+                format!("args length exceeds {}", MAX_TOOL_ARGS_LEN),
+            ));
+        }
+        let entry = self.tool_entry(tool_name)?;
+        let protocol = self.tool_protocol_contract(tool_name);
+        match check_order {
+            ToolExecutionInputCheckOrder::ValidateThenBlocker => {
+                validate_tool_input_protocol(tool_name, args, protocol)?;
+                if let Some(blocker) = Self::runtime_capability_blocker_for_entry(entry) {
+                    return Err(runtime_capability_error(tool_name, &blocker));
+                }
+            }
+            ToolExecutionInputCheckOrder::BlockerThenValidate => {
+                if let Some(blocker) = Self::runtime_capability_blocker_for_entry(entry) {
+                    return Err(runtime_capability_error(tool_name, &blocker));
+                }
+                validate_tool_input_protocol(tool_name, args, protocol)?;
+            }
+        }
+        Ok(ToolExecutionPreparation { entry, protocol })
     }
 
     fn is_entry_llm_visible(
@@ -659,29 +711,7 @@ impl ToolRegistry {
         tool_name: &str,
     ) -> Option<crate::orchestrator::RuntimeCapabilityBlocker> {
         let entry = self.tools.get(tool_name)?;
-        if entry.capability_contract.is_empty() {
-            return None;
-        }
-        let blocker =
-            crate::orchestrator::runtime_capability_blocker(entry.capability_contract.required)?;
-        match blocker.capability_status {
-            crate::orchestrator::RuntimeCapabilityStatus::Degraded
-                if entry.capability_contract.allow_when_degraded =>
-            {
-                None
-            }
-            _ => Some(blocker),
-        }
-    }
-
-    fn observe_runtime_capability_success(&self, tool_name: &str) {
-        let Some(entry) = self.tools.get(tool_name) else {
-            return;
-        };
-        if entry.capability_contract.is_empty() {
-            return;
-        }
-        crate::orchestrator::observe_runtime_capability_success(entry.capability_contract.required);
+        Self::runtime_capability_blocker_for_entry(entry)
     }
 
     fn observe_runtime_capability_failure(&self, tool_name: &str, error: &Error) {
@@ -1350,8 +1380,9 @@ mod tests {
     use super::*;
     use crate::memory::{PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore};
     use crate::tools::{
-        ToolCatalogAuthority, ToolExecutionShape, ToolInputProtocolKind, ToolLlmVisibility,
-        ToolMetadata, ToolOutputProtocolKind, ToolProtocolAuthority, ToolProtocolContract,
+        ToolCatalogAuthority, ToolExecutionRecordStatus, ToolExecutionShape, ToolInputProtocolKind,
+        ToolLlmVisibility, ToolMetadata, ToolOutputProtocolKind, ToolProtocolAuthority,
+        ToolProtocolContract,
     };
     use std::sync::Mutex;
 
@@ -1371,6 +1402,9 @@ mod tests {
     struct OutboundRichBlockerTool;
     struct CapabilityBoundTool;
     struct ConditionalNetworkTool;
+    struct CountingOutcomeTool {
+        executions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
     struct StubToolContext;
     #[derive(Default)]
     struct StubPrivateGardenStore;
@@ -1720,6 +1754,28 @@ mod tests {
                 obj.get("op").and_then(|value| value.as_str()),
                 Some("remote")
             ))
+        }
+    }
+
+    impl Tool for CountingOutcomeTool {
+        fn name(&self) -> &'static str {
+            "counting_outcome"
+        }
+
+        fn description(&self) -> &str {
+            "counts successful executions"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            let count = self
+                .executions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            Ok(format!(r#"{{"ok":true,"count":{count}}}"#))
         }
     }
 
@@ -2362,6 +2418,54 @@ mod tests {
             outcome.failure_kind,
             Some(crate::tools::ToolExecutionFailureKind::Capability)
         );
+    }
+
+    #[test]
+    fn registry_execute_and_execute_permitted_share_the_execution_core_and_success_audit() {
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new()
+            .with_execution_governance(Arc::new(ToolExecutionGovernance::new(Arc::new(
+                MemoryStateFs::default(),
+            ))))
+            .with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "counting_outcome",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(CountingOutcomeTool {
+            executions: Arc::clone(&executions),
+        }));
+        let mut ctx = StubToolContext;
+
+        let direct = registry
+            .execute("counting_outcome", "{}", &mut ctx)
+            .expect("direct execute");
+        assert_eq!(direct.content, r#"{"ok":true,"count":1}"#);
+
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let permit = match registry
+            .assess_llm_execution("counting_outcome", "{}", &policy)
+            .expect("assess")
+        {
+            ToolExecutionGateDecision::Allow(permit) => permit,
+            other => panic!("expected allow, got {other:?}"),
+        };
+
+        let permitted = registry
+            .execute_permitted(&permit, "{}", &mut ctx)
+            .expect("permitted execute");
+        assert_eq!(permitted.content, r#"{"ok":true,"count":2}"#);
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let governance = registry
+            .inspect_execution_governance()
+            .expect("governance snapshot")
+            .expect("governance enabled");
+        let last_record = governance
+            .recent_records
+            .last()
+            .expect("last governance record");
+        assert_eq!(last_record.tool_name, "counting_outcome");
+        assert_eq!(last_record.status, ToolExecutionRecordStatus::Succeeded);
     }
 
     #[test]
@@ -3115,6 +3219,36 @@ mod tests {
     }
 
     #[test]
+    fn execute_permitted_rejects_oversized_args_before_tool_body_runs() {
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "counting_outcome",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(CountingOutcomeTool {
+            executions: Arc::clone(&executions),
+        }));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let permit = match registry
+            .assess_llm_execution("counting_outcome", "{}", &policy)
+            .expect("assess")
+        {
+            ToolExecutionGateDecision::Allow(permit) => permit,
+            other => panic!("expected allow, got {other:?}"),
+        };
+        let mut ctx = StubToolContext;
+        let oversized = "x".repeat(MAX_TOOL_ARGS_LEN + 1);
+
+        let error = registry
+            .execute_permitted(&permit, &oversized, &mut ctx)
+            .expect_err("oversized args must fail");
+
+        assert_eq!(error.stage(), "tool_execute");
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn execute_permitted_rechecks_runtime_capability_before_tool_body_runs() {
         let _guard = RUNTIME_CAPABILITY_TEST_GUARD
             .lock()
@@ -3163,5 +3297,35 @@ mod tests {
             }
             other => panic!("expected config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_bridge_assessment_uses_shared_field_builder_for_allowed_tools() {
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "visible",
+            ToolLlmVisibility::user_only(),
+        )]));
+        registry.register(Box::new(VisibleTool));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+
+        let assessment = registry.assess_tool_request_proposal(
+            "visible",
+            &serde_json::json!({"x":"value"}),
+            &policy,
+        );
+
+        assert_eq!(assessment.tool_name, "visible");
+        assert_eq!(assessment.decision, ToolBridgeProposalDecision::Allowed);
+        assert_eq!(
+            assessment.summary,
+            "proposal matches current tool governance contract"
+        );
+        assert_eq!(assessment.effect_class, ToolEffectClass::ReadOnly);
+        assert_eq!(assessment.risk_level, ToolRiskLevel::Low);
+        assert_eq!(assessment.approval_mode, ToolApprovalMode::Automatic);
+        assert_eq!(assessment.rollback_kind, ToolRollbackKind::None);
+        assert!(!assessment.requires_network);
+        assert!(assessment.required_runtime_capabilities.is_empty());
+        assert!(!assessment.allow_when_degraded);
     }
 }

@@ -2,12 +2,11 @@
 
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
-    build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, documents_bounded_read_bytes, documents_search_match_kind,
-    documents_search_match_score, merge_document_warning, DocumentsEntry, DocumentsOperation,
+    decode_readable_document, decode_searchable_document_text, documents_bounded_read_bytes,
+    merge_document_warning, search_read_budget, search_tree, DocumentsEntry, DocumentsOperation,
     DocumentsProvider, DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult,
-    DocumentsSearchHit, DocumentsSearchQuery, DOCUMENTS_SEARCH_MATCH_PATH,
-    PARTIAL_DOCUMENT_READ_WARNING,
+    DocumentsSearchHit, DocumentsSearchQuery, SearchLimits, SearchReadOutcome, SearchTreePlan,
+    MAX_SEARCH_SCAN_ENTRIES, PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{
@@ -17,11 +16,6 @@ use crate::office::{
 use base64::Engine;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::collections::VecDeque;
-
-const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
-const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
-
 pub struct WebDavProvider;
 
 impl DocumentsProvider for WebDavProvider {
@@ -106,91 +100,25 @@ impl DocumentsProvider for WebDavProvider {
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
         validate_webdav_credential(credential)?;
-        let mut queue = VecDeque::from([normalize_relative_path(&query.path)]);
-        let mut hits = Vec::new();
-        let mut scanned_entries = 0usize;
-        let max_read_bytes = if query.max_read_bytes == 0 {
-            MAX_SEARCH_READ_BYTES
-        } else {
-            query.max_read_bytes.min(MAX_SEARCH_READ_BYTES)
-        };
-
-        while let Some(dir) = queue.pop_front() {
-            if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                break;
-            }
-            let entries = propfind_entries(http, credential, &dir, 1)?;
-            for entry in entries {
-                scanned_entries += 1;
-                let path_hit = contains_query_text(&entry.path, &query.query, query.case_sensitive)
-                    || contains_query_text(&entry.name, &query.query, query.case_sensitive);
-                if entry.is_dir {
-                    if path_hit {
-                        hits.push(DocumentsSearchHit {
-                            entry: entry.clone(),
-                            match_kind: DOCUMENTS_SEARCH_MATCH_PATH.to_string(),
-                            snippet: None,
-                            warning: None,
-                        });
-                    }
-                    queue.push_back(entry.path.clone());
-                    if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                        break;
-                    }
-                    continue;
-                }
-
-                let mut content_match = None;
-                let mut warning = None;
-                if entry
-                    .size_bytes
-                    .map(|size| size as usize <= max_read_bytes)
-                    .unwrap_or(true)
-                {
-                    let raw = http_get_bytes(http, credential, &entry.path, max_read_bytes)?;
-                    if let Some(text) = decode_searchable_document_text(&entry.path, &raw.bytes) {
-                        if contains_query_text(&text, &query.query, query.case_sensitive) {
-                            content_match = Some(build_search_snippet(
-                                &text,
-                                &query.query,
-                                query.case_sensitive,
-                            ));
-                        }
-                    }
-                    if raw.truncated {
-                        warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
-                    }
-                } else {
-                    warning =
-                        Some("content not searched because the file is too large".to_string());
-                }
-
-                if let Some(match_kind) =
-                    documents_search_match_kind(path_hit, content_match.is_some())
-                {
-                    hits.push(DocumentsSearchHit {
-                        entry: entry.clone(),
-                        match_kind: match_kind.to_string(),
-                        snippet: content_match,
-                        warning,
-                    });
-                }
-
-                if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                    break;
-                }
-            }
-        }
-
-        hits.sort_by(|left, right| {
-            documents_search_match_score(&right.match_kind)
-                .cmp(&documents_search_match_score(&left.match_kind))
-                .then_with(|| left.entry.path.cmp(&right.entry.path))
-        });
-        if hits.len() > query.limit {
-            hits.truncate(query.limit);
-        }
-        Ok(hits)
+        let max_read_bytes = search_read_budget(query.max_read_bytes);
+        search_tree(
+            http,
+            &query,
+            SearchTreePlan::new(
+                vec![normalize_relative_path(&query.path)],
+                SearchLimits::new(MAX_SEARCH_SCAN_ENTRIES, max_read_bytes),
+            ),
+            |http, dir| propfind_entries(http, credential, dir, 1),
+            |_, entry| entry.clone(),
+            |_, entry, _| entry.path.clone(),
+            |http, entry, _resolved_entry, read_limit| {
+                let raw = http_get_bytes(http, credential, &entry.path, read_limit)?;
+                Ok(SearchReadOutcome::new(
+                    decode_searchable_document_text(&entry.path, &raw.bytes),
+                    raw.truncated,
+                ))
+            },
+        )
     }
 }
 

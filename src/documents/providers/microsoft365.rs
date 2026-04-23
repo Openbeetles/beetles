@@ -2,11 +2,11 @@
 
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
-    build_search_snippet, contains_query_text, decode_readable_document,
-    decode_searchable_document_text, documents_bounded_read_bytes, documents_search_match_kind,
-    merge_document_warning, DocumentsEntry, DocumentsOperation, DocumentsProvider,
-    DocumentsProviderCredential, DocumentsQuery, DocumentsReadResult, DocumentsSearchHit,
-    DocumentsSearchQuery, PARTIAL_DOCUMENT_READ_WARNING,
+    decode_readable_document, decode_searchable_document_text, documents_bounded_read_bytes,
+    merge_document_warning, search_read_budget, search_scoped_candidates, DocumentsEntry,
+    DocumentsOperation, DocumentsProvider, DocumentsProviderCredential, DocumentsQuery,
+    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery, SearchLimits, SearchReadOutcome,
+    MAX_SEARCH_SCAN_ENTRIES, PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{
@@ -14,11 +14,6 @@ use crate::office::{
     OfficeAccount, OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use serde::Deserialize;
-use std::collections::VecDeque;
-
-const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
-const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
-
 pub struct Microsoft365DocumentsProvider;
 
 impl DocumentsProvider for Microsoft365DocumentsProvider {
@@ -91,66 +86,22 @@ impl DocumentsProvider for Microsoft365DocumentsProvider {
     ) -> Result<Vec<DocumentsSearchHit>> {
         let client = Microsoft365DocumentsClient::new(credential)?;
         let search_hits = client.search_entries(http, &query.query, query.limit.max(20))?;
-        let mut queue = search_hits
-            .into_iter()
-            .filter(|item| {
-                path_is_within_scope(&item.relative_path, &normalize_relative_path(&query.path))
-            })
-            .collect::<VecDeque<_>>();
-        let mut hits = Vec::new();
-        let mut scanned = 0usize;
-        let max_read_bytes = if query.max_read_bytes == 0 {
-            MAX_SEARCH_READ_BYTES
-        } else {
-            query.max_read_bytes.min(MAX_SEARCH_READ_BYTES)
-        };
-        while let Some(item) = queue.pop_front() {
-            if scanned >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                break;
-            }
-            scanned += 1;
-            let entry = item.to_documents_entry();
-            let path_hit = contains_query_text(&entry.path, &query.query, query.case_sensitive)
-                || contains_query_text(&entry.name, &query.query, query.case_sensitive);
-            let mut snippet = None;
-            let mut warning = None;
-            let mut content_hit = false;
-            if !item.is_dir()
-                && item
-                    .size_bytes
-                    .map(|size| size as usize <= max_read_bytes)
-                    .unwrap_or(true)
-            {
-                let raw = client.read_item_bytes(http, &item, max_read_bytes)?;
-                if let Some(text) = decode_searchable_document_text(&entry.path, &raw.bytes) {
-                    if contains_query_text(&text, &query.query, query.case_sensitive) {
-                        content_hit = true;
-                        snippet = Some(build_search_snippet(
-                            &text,
-                            &query.query,
-                            query.case_sensitive,
-                        ));
-                    }
-                }
-                if raw.truncated {
-                    warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
-                }
-            } else if !item.is_dir() {
-                warning = Some("content not searched because the file is too large".to_string());
-            }
-            if let Some(match_kind) = documents_search_match_kind(path_hit, content_hit) {
-                hits.push(DocumentsSearchHit {
-                    entry,
-                    match_kind: match_kind.to_string(),
-                    snippet,
-                    warning,
-                });
-            }
-        }
-        if hits.len() > query.limit {
-            hits.truncate(query.limit);
-        }
-        Ok(hits)
+        let max_read_bytes = search_read_budget(query.max_read_bytes);
+        search_scoped_candidates(
+            http,
+            &query,
+            &query.path,
+            search_hits,
+            SearchLimits::new(MAX_SEARCH_SCAN_ENTRIES, max_read_bytes),
+            |item| item.to_documents_entry(),
+            |http, item, entry, read_limit| {
+                let raw = client.read_item_bytes(http, item, read_limit)?;
+                Ok(SearchReadOutcome::new(
+                    decode_searchable_document_text(&entry.path, &raw.bytes),
+                    raw.truncated,
+                ))
+            },
+        )
     }
 }
 
@@ -505,10 +456,6 @@ fn parent_relative_path(path: &str) -> String {
         .rsplit_once('/')
         .map(|(parent, _)| parent.to_string())
         .unwrap_or_default()
-}
-
-fn path_is_within_scope(path: &str, scope: &str) -> bool {
-    scope.trim().is_empty() || normalize_relative_path(path).starts_with(scope)
 }
 
 fn encode_path_segments(path: &str) -> String {

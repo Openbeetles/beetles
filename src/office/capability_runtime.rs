@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
-    OfficeService,
+    OfficeAuthoritySource, OfficeCapability, OfficeHttpClient, OfficeResolveRequest,
+    OfficeResolveResult, OfficeService,
 };
 use crate::util::current_unix_secs;
 use std::collections::BTreeSet;
@@ -51,11 +51,39 @@ pub(crate) trait OfficeCapabilityProviderLookup<P: ?Sized>: Clone + Send + Sync 
     fn get(&self, provider: &str) -> Option<Arc<P>>;
 }
 
+pub(crate) trait OfficeCapabilityProviderRegistryNames: Clone + Send + Sync {
+    fn provider_names(&self) -> Vec<&'static str>;
+}
+
+pub(crate) trait OfficeCredentialStatusKey: Clone + Send + Sync {
+    fn account_key(&self) -> &str;
+    fn provider_name(&self) -> &str;
+}
+
+pub(crate) trait OfficeCapabilityStoreAdapter: Send + Sync {
+    type Credential: OfficeRoutedCredential;
+    type Status: OfficeCredentialStatusKey;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>>;
+    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>>;
+    fn list_statuses(&self) -> Result<Vec<Self::Status>>;
+}
+
 pub(crate) struct OfficeCapabilityRemoteRuntime<R, C: ?Sized> {
     providers: R,
     credential_store: Arc<C>,
     office_runtime: OfficeCapabilityRuntime,
     provider_stage: &'static str,
+}
+
+#[derive(Clone)]
+pub(crate) struct OfficeCapabilityServiceCore<R, C: ?Sized> {
+    remote: OfficeCapabilityRemoteRuntime<R, C>,
+}
+
+#[derive(Clone)]
+pub(crate) struct OfficeAuthorityBackedCredentialStoreCore {
+    authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
 }
 
 enum OfficeSelectionAmbiguity<'a> {
@@ -84,10 +112,6 @@ impl<R, C: ?Sized> OfficeCapabilityRemoteRuntime<R, C> {
 
     pub(crate) fn provider_registry(&self) -> &R {
         &self.providers
-    }
-
-    pub(crate) fn office_runtime(&self) -> &OfficeCapabilityRuntime {
-        &self.office_runtime
     }
 
     pub(crate) fn resolve_provider_name(
@@ -302,6 +326,296 @@ impl<R, C: ?Sized> OfficeCapabilityRemoteRuntime<R, C> {
         self.office_runtime
             .record_runtime_activity(account_key, activity_kind, error);
     }
+}
+
+impl<R, C: ?Sized> OfficeCapabilityServiceCore<R, C> {
+    pub(crate) fn new(
+        providers: R,
+        credential_store: Arc<C>,
+        office_runtime: OfficeCapabilityRuntime,
+        provider_stage: &'static str,
+    ) -> Self {
+        Self {
+            remote: OfficeCapabilityRemoteRuntime::new(
+                providers,
+                credential_store,
+                office_runtime,
+                provider_stage,
+            ),
+        }
+    }
+
+    pub(crate) fn resolve_provider_name(
+        &self,
+        provider: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<String>
+    where
+        C: OfficeCapabilityCredentialDirectory,
+    {
+        self.remote
+            .resolve_provider_name(provider, preferred_identity_class)
+    }
+
+    pub(crate) fn resolve_hint(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeResolveResult>> {
+        self.remote
+            .resolve_hint(provider, account_key, preferred_identity_class)
+    }
+
+    pub(crate) fn runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
+        self.remote.runtime_statuses()
+    }
+
+    pub(crate) fn runtime_status(
+        &self,
+        account_key: &str,
+    ) -> Result<Option<OfficeAccountRuntimeStatus>> {
+        self.remote.runtime_status(account_key)
+    }
+
+    pub(crate) fn identity_class_for_account(
+        &self,
+        account_key: Option<&str>,
+    ) -> Result<Option<OfficeAccountIdentityClass>> {
+        self.remote.identity_class_for_account(account_key)
+    }
+
+    pub(crate) fn account_assessments<P>(&self) -> Result<Vec<OfficeAccountAssessment>>
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        P: ?Sized,
+    {
+        self.remote.account_assessments()
+    }
+
+    pub(crate) fn provider_supports<P, Op>(&self, provider: &str, op: Op) -> bool
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy,
+    {
+        self.remote.provider_supports(provider, op)
+    }
+
+    pub(crate) fn provider_is_routable_for_ops<P, Op>(
+        &self,
+        provider: &str,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ops: &[Op],
+    ) -> bool
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        C: OfficeCapabilityCredentialAccess,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy + Debug,
+    {
+        self.remote
+            .provider_is_routable_for_ops(provider, preferred_identity_class, ops)
+    }
+
+    pub(crate) fn resolve_registered_remote<P, Op>(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ops: &[Op],
+    ) -> Result<(Arc<P>, C::Credential)>
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        C: OfficeCapabilityCredentialAccess,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy + Debug,
+    {
+        self.remote
+            .resolve_registered_remote(provider, account_key, preferred_identity_class, ops)
+    }
+
+    pub(crate) fn run_remote_operation<P, Op, T>(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ops: &[Op],
+        activity_kind: &'static str,
+        run: impl FnOnce(&Arc<P>, &C::Credential) -> Result<T>,
+    ) -> Result<T>
+    where
+        R: OfficeCapabilityProviderLookup<P>,
+        C: OfficeCapabilityCredentialAccess,
+        P: OfficeCapabilityProvider<Op> + ?Sized,
+        Op: Copy + Debug,
+    {
+        let (provider_impl, credential) =
+            self.resolve_registered_remote(provider, account_key, preferred_identity_class, ops)?;
+        let result = run(&provider_impl, &credential);
+        self.record_runtime_activity(
+            credential.account_key(),
+            activity_kind,
+            result.as_ref().err(),
+        );
+        result
+    }
+
+    pub(crate) fn selected_route(
+        &self,
+        preferred_provider_kind: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ) -> Result<Option<OfficeSelectedRoute>>
+    where
+        C: OfficeCapabilityCredentialDirectory,
+    {
+        self.remote
+            .selected_route(preferred_provider_kind, preferred_identity_class)
+    }
+
+    pub(crate) fn resolve_explicit_route(
+        &self,
+        provider: Option<&str>,
+        account_key: Option<&str>,
+        preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        missing_route_error: &'static str,
+    ) -> Result<OfficeSelectedRoute>
+    where
+        C: OfficeCapabilityCredentialAccess,
+    {
+        self.remote.resolve_explicit_route(
+            provider,
+            account_key,
+            preferred_identity_class,
+            missing_route_error,
+        )
+    }
+
+    pub(crate) fn record_runtime_activity(
+        &self,
+        account_key: &str,
+        activity_kind: &'static str,
+        error: Option<&Error>,
+    ) {
+        self.remote
+            .record_runtime_activity(account_key, activity_kind, error);
+    }
+}
+
+impl<R, C: ?Sized> OfficeCapabilityServiceCore<R, C>
+where
+    R: OfficeCapabilityProviderRegistryNames,
+{
+    pub(crate) fn provider_names(&self) -> Vec<&'static str> {
+        self.remote.provider_registry().provider_names()
+    }
+}
+
+impl<R, C: ?Sized> OfficeCapabilityServiceCore<R, C>
+where
+    C: OfficeCapabilityStoreAdapter,
+{
+    pub(crate) fn list_provider_statuses(&self) -> Result<Vec<C::Status>> {
+        OfficeCapabilityStoreAdapter::list_statuses(self.remote.credential_store().as_ref())
+    }
+}
+
+impl OfficeAuthorityBackedCredentialStoreCore {
+    pub(crate) fn new(office: OfficeService) -> Self {
+        Self::with_authority(Arc::new(crate::office::SnapshotOfficeAuthoritySource::new(
+            office,
+        )))
+    }
+
+    pub(crate) fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
+        Self { authority }
+    }
+
+    pub(crate) fn load_office(&self) -> Result<OfficeService> {
+        self.authority.load()
+    }
+
+    pub(crate) fn get_for_capability<T>(
+        &self,
+        capability: OfficeCapability,
+        account_key: &str,
+        map: impl FnOnce(crate::office::OfficeAccount, crate::office::OfficeCredential) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let office = self.load_office()?;
+        let Some(account) = office.account(account_key) else {
+            return Ok(None);
+        };
+        if !account.enabled_capabilities.contains(&capability) {
+            return Ok(None);
+        }
+        let Some(credential) = office.credential(account_key)? else {
+            return Ok(None);
+        };
+        Ok(Some(map(account, credential)?))
+    }
+
+    pub(crate) fn find_account_keys_by_provider(
+        &self,
+        capability: OfficeCapability,
+        provider: &str,
+    ) -> Result<Vec<String>> {
+        let office = self.load_office()?;
+        let mut keys = Vec::new();
+        for account in office.accounts_for_capability(capability) {
+            if account.provider_kind != provider {
+                continue;
+            }
+            if office.credential(&account.account_key)?.is_some() {
+                keys.push(account.account_key);
+            }
+        }
+        keys.sort();
+        Ok(keys)
+    }
+
+    pub(crate) fn list_statuses_for_capability<T>(
+        &self,
+        capability: OfficeCapability,
+        mut map: impl FnMut(crate::office::OfficeAccount, crate::office::OfficeCredential) -> Result<T>,
+    ) -> Result<Vec<T>>
+    where
+        T: OfficeCredentialStatusKey,
+    {
+        let office = self.load_office()?;
+        let mut statuses = Vec::new();
+        for account in office.accounts_for_capability(capability) {
+            let Some(credential) = office.credential(&account.account_key)? else {
+                continue;
+            };
+            statuses.push(map(account, credential)?);
+        }
+        statuses.sort_by(|left, right| {
+            left.provider_name()
+                .cmp(right.provider_name())
+                .then_with(|| left.account_key().cmp(right.account_key()))
+        });
+        Ok(statuses)
+    }
+}
+
+pub(crate) fn office_authority_from_service(
+    office_service: Option<OfficeService>,
+) -> Option<Arc<dyn OfficeAuthoritySource + Send + Sync>> {
+    office_service.map(|office| {
+        Arc::new(crate::office::SnapshotOfficeAuthoritySource::new(office))
+            as Arc<dyn OfficeAuthoritySource + Send + Sync>
+    })
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub(crate) fn run_with_unavailable_office_http<T>(
+    run: impl FnOnce(&mut dyn OfficeHttpClient) -> Result<T>,
+) -> Result<T> {
+    let mut unavailable_http = crate::office::UnavailableOfficeHttpClient;
+    run(&mut unavailable_http)
 }
 
 impl<R: Clone, C: ?Sized> Clone for OfficeCapabilityRemoteRuntime<R, C> {
@@ -658,107 +972,28 @@ impl OfficeCapabilityRuntime {
     }
 }
 
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-impl OfficeCapabilityCredentialDirectory
-    for dyn crate::mail::MailProviderCredentialStore + Send + Sync
+impl<T> OfficeCapabilityCredentialDirectory for T
+where
+    T: OfficeCapabilityStoreAdapter + ?Sized,
 {
     fn provider_for_account(&self, account_key: &str) -> Result<Option<String>> {
-        Ok(self.get(account_key)?.map(|credential| credential.provider))
+        Ok(
+            OfficeCapabilityStoreAdapter::get_credential(self, account_key)?
+                .map(|credential| credential.provider().to_string()),
+        )
     }
 
     fn configured_provider_names(&self) -> Result<Vec<String>> {
-        Ok(self
-            .list_statuses()?
+        Ok(OfficeCapabilityStoreAdapter::list_statuses(self)?
             .into_iter()
-            .map(|status| status.provider)
+            .map(|status| status.provider_name().to_string())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect())
     }
 
     fn account_keys_for_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.find_account_keys_by_provider(provider)
-    }
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-impl OfficeCapabilityCredentialDirectory
-    for dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync
-{
-    fn provider_for_account(&self, account_key: &str) -> Result<Option<String>> {
-        Ok(self.get(account_key)?.map(|credential| credential.provider))
-    }
-
-    fn configured_provider_names(&self) -> Result<Vec<String>> {
-        Ok(self
-            .list_statuses()?
-            .into_iter()
-            .map(|status| status.provider)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect())
-    }
-
-    fn account_keys_for_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.find_account_keys_by_provider(provider)
-    }
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-impl OfficeCapabilityCredentialDirectory
-    for dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync
-{
-    fn provider_for_account(&self, account_key: &str) -> Result<Option<String>> {
-        Ok(self.get(account_key)?.map(|credential| credential.provider))
-    }
-
-    fn configured_provider_names(&self) -> Result<Vec<String>> {
-        Ok(self
-            .list_statuses()?
-            .into_iter()
-            .map(|status| status.provider)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect())
-    }
-
-    fn account_keys_for_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.find_account_keys_by_provider(provider)
-    }
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-impl OfficeCapabilityCredentialDirectory
-    for dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync
-{
-    fn provider_for_account(&self, account_key: &str) -> Result<Option<String>> {
-        Ok(self.get(account_key)?.map(|credential| credential.provider))
-    }
-
-    fn configured_provider_names(&self) -> Result<Vec<String>> {
-        Ok(self
-            .list_statuses()?
-            .into_iter()
-            .map(|status| status.provider)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect())
-    }
-
-    fn account_keys_for_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.find_account_keys_by_provider(provider)
+        OfficeCapabilityStoreAdapter::find_account_keys_by_provider(self, provider)
     }
 }
 
@@ -780,13 +1015,45 @@ impl OfficeRoutedCredential for crate::mail::MailProviderCredential {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-impl OfficeCapabilityCredentialAccess
-    for dyn crate::mail::MailProviderCredentialStore + Send + Sync
-{
+impl OfficeCredentialStatusKey for crate::mail::MailProviderCredentialStatus {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider_name(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityStoreAdapter for dyn crate::mail::MailProviderCredentialStore + Send + Sync {
     type Credential = crate::mail::MailProviderCredential;
+    type Status = crate::mail::MailProviderCredentialStatus;
 
     fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
         self.get(account_key)
+    }
+
+    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
+        crate::mail::MailProviderCredentialStore::find_account_keys_by_provider(self, provider)
+    }
+
+    fn list_statuses(&self) -> Result<Vec<Self::Status>> {
+        crate::mail::MailProviderCredentialStore::list_statuses(self)
+    }
+}
+
+impl<T> OfficeCapabilityCredentialAccess for T
+where
+    T: OfficeCapabilityStoreAdapter + ?Sized,
+{
+    type Credential = T::Credential;
+
+    fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
+        OfficeCapabilityStoreAdapter::get_credential(self, account_key)
     }
 }
 
@@ -797,6 +1064,16 @@ impl OfficeCapabilityCredentialAccess
 impl OfficeCapabilityProvider<crate::mail::MailOperation> for dyn crate::mail::MailProvider {
     fn supports(&self, op: crate::mail::MailOperation) -> bool {
         self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderRegistryNames for crate::mail::MailProviderRegistry {
+    fn provider_names(&self) -> Vec<&'static str> {
+        self.names()
     }
 }
 
@@ -830,13 +1107,38 @@ impl OfficeRoutedCredential for crate::documents::DocumentsProviderCredential {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-impl OfficeCapabilityCredentialAccess
+impl OfficeCredentialStatusKey for crate::documents::DocumentsProviderCredentialStatus {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider_name(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityStoreAdapter
     for dyn crate::documents::DocumentsProviderCredentialStore + Send + Sync
 {
     type Credential = crate::documents::DocumentsProviderCredential;
+    type Status = crate::documents::DocumentsProviderCredentialStatus;
 
     fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
         self.get(account_key)
+    }
+
+    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
+        crate::documents::DocumentsProviderCredentialStore::find_account_keys_by_provider(
+            self, provider,
+        )
+    }
+
+    fn list_statuses(&self) -> Result<Vec<Self::Status>> {
+        crate::documents::DocumentsProviderCredentialStore::list_statuses(self)
     }
 }
 
@@ -849,6 +1151,16 @@ impl OfficeCapabilityProvider<crate::documents::DocumentsOperation>
 {
     fn supports(&self, op: crate::documents::DocumentsOperation) -> bool {
         self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderRegistryNames for crate::documents::DocumentsProviderRegistry {
+    fn provider_names(&self) -> Vec<&'static str> {
+        self.names()
     }
 }
 
@@ -882,13 +1194,38 @@ impl OfficeRoutedCredential for crate::calendar::CalendarProviderCredential {
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-impl OfficeCapabilityCredentialAccess
+impl OfficeCredentialStatusKey for crate::calendar::CalendarProviderCredentialStatus {
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider_name(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityStoreAdapter
     for dyn crate::calendar::CalendarProviderCredentialStore + Send + Sync
 {
     type Credential = crate::calendar::CalendarProviderCredential;
+    type Status = crate::calendar::CalendarProviderCredentialStatus;
 
     fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
         self.get(account_key)
+    }
+
+    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
+        crate::calendar::CalendarProviderCredentialStore::find_account_keys_by_provider(
+            self, provider,
+        )
+    }
+
+    fn list_statuses(&self) -> Result<Vec<Self::Status>> {
+        crate::calendar::CalendarProviderCredentialStore::list_statuses(self)
     }
 }
 
@@ -901,6 +1238,16 @@ impl OfficeCapabilityProvider<crate::calendar::CalendarOperation>
 {
     fn supports(&self, op: crate::calendar::CalendarOperation) -> bool {
         self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderRegistryNames for crate::calendar::CalendarProviderRegistry {
+    fn provider_names(&self) -> Vec<&'static str> {
+        self.names()
     }
 }
 
@@ -934,13 +1281,40 @@ impl OfficeRoutedCredential for crate::contacts_directory::ContactsDirectoryProv
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-impl OfficeCapabilityCredentialAccess
+impl OfficeCredentialStatusKey
+    for crate::contacts_directory::ContactsDirectoryProviderCredentialStatus
+{
+    fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
+    fn provider_name(&self) -> &str {
+        &self.provider
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityStoreAdapter
     for dyn crate::contacts_directory::ContactsDirectoryProviderCredentialStore + Send + Sync
 {
     type Credential = crate::contacts_directory::ContactsDirectoryProviderCredential;
+    type Status = crate::contacts_directory::ContactsDirectoryProviderCredentialStatus;
 
     fn get_credential(&self, account_key: &str) -> Result<Option<Self::Credential>> {
         self.get(account_key)
+    }
+
+    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
+        crate::contacts_directory::ContactsDirectoryProviderCredentialStore::find_account_keys_by_provider(
+            self, provider,
+        )
+    }
+
+    fn list_statuses(&self) -> Result<Vec<Self::Status>> {
+        crate::contacts_directory::ContactsDirectoryProviderCredentialStore::list_statuses(self)
     }
 }
 
@@ -953,6 +1327,18 @@ impl OfficeCapabilityProvider<crate::contacts_directory::ContactsDirectoryOperat
 {
     fn supports(&self, op: crate::contacts_directory::ContactsDirectoryOperation) -> bool {
         self.supports(op)
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+impl OfficeCapabilityProviderRegistryNames
+    for crate::contacts_directory::ContactsDirectoryProviderRegistry
+{
+    fn provider_names(&self) -> Vec<&'static str> {
+        self.names()
     }
 }
 

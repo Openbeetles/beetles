@@ -71,7 +71,7 @@ pub const CONFIG_PROVIDER_KIND_MAX_LEN: usize = 64;
 pub const CONFIG_EXTERNAL_ACCOUNT_ID_MAX_LEN: usize = 128;
 pub const CONFIG_OFFICE_ACCOUNT_LIMIT: usize = 16;
 
-#[cfg(feature = "capability_office")]
+#[cfg(any(test, feature = "cli", feature = "capability_office"))]
 fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
     if s.len() > max {
         Err(Error::config(

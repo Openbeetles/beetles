@@ -1,24 +1,24 @@
 use crate::documents::{
-    DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
-    DocumentsProviderCredentialStatus, DocumentsProviderCredentialStore, DocumentsProviderRegistry,
-    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
+    DocumentsEntry, DocumentsOperation, DocumentsProviderCredentialStatus,
+    DocumentsProviderCredentialStore, DocumentsProviderRegistry, DocumentsQuery,
+    DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
 };
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRemoteRuntime,
-    OfficeCapabilityRuntime, OfficeHttpClient, OfficeResolveResult, OfficeService,
-    SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
+    office_authority_from_service, run_with_unavailable_office_http, OfficeAccountAssessment,
+    OfficeAccountIdentityClass, OfficeAccountRuntimeStatus, OfficeAuthoritySource,
+    OfficeCapabilityRuntime, OfficeCapabilityServiceCore, OfficeHttpClient, OfficeResolveResult,
+    OfficeService,
 };
 use std::sync::Arc;
 
-type DocumentsRemoteRuntime = OfficeCapabilityRemoteRuntime<
+type DocumentsRemoteCore = OfficeCapabilityServiceCore<
     DocumentsProviderRegistry,
     dyn DocumentsProviderCredentialStore + Send + Sync,
 >;
 
 pub struct DocumentsService {
-    remote: DocumentsRemoteRuntime,
+    core: DocumentsRemoteCore,
 }
 
 impl DocumentsService {
@@ -37,10 +37,7 @@ impl DocumentsService {
         Self::with_office_authority(
             credential_store,
             providers,
-            office_service.map(|office| {
-                Arc::new(SnapshotOfficeAuthoritySource::new(office))
-                    as Arc<dyn OfficeAuthoritySource + Send + Sync>
-            }),
+            office_authority_from_service(office_service),
         )
     }
 
@@ -50,11 +47,11 @@ impl DocumentsService {
         office_authority: Option<Arc<dyn OfficeAuthoritySource + Send + Sync>>,
     ) -> Self {
         Self {
-            remote: OfficeCapabilityRemoteRuntime::new(
+            core: OfficeCapabilityServiceCore::new(
                 providers,
                 credential_store,
                 OfficeCapabilityRuntime::new(
-                    OfficeCapability::Documents,
+                    crate::office::OfficeCapability::Documents,
                     "documents_provider",
                     "documents",
                     "documents_runtime",
@@ -66,7 +63,7 @@ impl DocumentsService {
     }
 
     pub fn provider_names(&self) -> Vec<&'static str> {
-        self.remote.provider_registry().names()
+        self.core.provider_names()
     }
 
     pub fn resolve_provider_name(&self, provider: Option<&str>) -> Result<String> {
@@ -78,12 +75,12 @@ impl DocumentsService {
         provider: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<String> {
-        self.remote
+        self.core
             .resolve_provider_name(provider, preferred_identity_class)
     }
 
     pub fn list_provider_statuses(&self) -> Result<Vec<DocumentsProviderCredentialStatus>> {
-        self.remote.credential_store().list_statuses()
+        self.core.list_provider_statuses()
     }
 
     pub fn office_resolve_hint(
@@ -100,27 +97,27 @@ impl DocumentsService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Option<OfficeResolveResult>> {
-        self.remote
+        self.core
             .resolve_hint(provider, account_key, preferred_identity_class)
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        self.remote.runtime_statuses()
+        self.core.runtime_statuses()
     }
 
     pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
-        self.remote.account_assessments()
+        self.core.account_assessments()
     }
 
     pub fn office_identity_class_for_account(
         &self,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeAccountIdentityClass>> {
-        self.remote.identity_class_for_account(account_key)
+        self.core.identity_class_for_account(account_key)
     }
 
     pub fn provider_supports(&self, provider: &str, op: DocumentsOperation) -> bool {
-        self.remote.provider_supports(provider, op)
+        self.core.provider_supports(provider, op)
     }
 
     pub fn provider_is_routable_for_op(
@@ -129,7 +126,7 @@ impl DocumentsService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         op: DocumentsOperation,
     ) -> bool {
-        self.remote
+        self.core
             .provider_is_routable_for_ops(provider, preferred_identity_class, &[op])
     }
 
@@ -139,8 +136,9 @@ impl DocumentsService {
         account_key: Option<&str>,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.list_with_http(&mut unavailable_http, provider, account_key, query)
+        run_with_unavailable_office_http(|http| {
+            self.list_with_http(http, provider, account_key, query)
+        })
     }
 
     pub fn list_with_http(
@@ -160,14 +158,15 @@ impl DocumentsService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.list_with_http_and_identity(
-            &mut unavailable_http,
-            provider,
-            account_key,
-            preferred_identity_class,
-            query,
-        )
+        run_with_unavailable_office_http(|http| {
+            self.list_with_http_and_identity(
+                http,
+                provider,
+                account_key,
+                preferred_identity_class,
+                query,
+            )
+        })
     }
 
     pub fn list_with_http_and_identity(
@@ -178,19 +177,14 @@ impl DocumentsService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        let (provider_impl, credential) = self.resolve_remote_with_identity(
+        self.core.run_remote_operation(
             provider,
             account_key,
             preferred_identity_class,
-            DocumentsOperation::List,
-        )?;
-        let result = provider_impl.list_entries(http, &credential, query);
-        self.record_runtime_activity(
-            &credential.account_key,
+            &[DocumentsOperation::List],
             "documents_list",
-            result.as_ref().err(),
-        );
-        result
+            |provider_impl, credential| provider_impl.list_entries(http, credential, query),
+        )
     }
 
     pub fn read(
@@ -200,14 +194,9 @@ impl DocumentsService {
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.read_with_http(
-            &mut unavailable_http,
-            provider,
-            account_key,
-            path,
-            max_chars,
-        )
+        run_with_unavailable_office_http(|http| {
+            self.read_with_http(http, provider, account_key, path, max_chars)
+        })
     }
 
     pub fn read_with_http(
@@ -229,15 +218,16 @@ impl DocumentsService {
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.read_with_http_and_identity(
-            &mut unavailable_http,
-            provider,
-            account_key,
-            preferred_identity_class,
-            path,
-            max_chars,
-        )
+        run_with_unavailable_office_http(|http| {
+            self.read_with_http_and_identity(
+                http,
+                provider,
+                account_key,
+                preferred_identity_class,
+                path,
+                max_chars,
+            )
+        })
     }
 
     pub fn read_with_http_and_identity(
@@ -249,19 +239,16 @@ impl DocumentsService {
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        let (provider_impl, credential) = self.resolve_remote_with_identity(
+        self.core.run_remote_operation(
             provider,
             account_key,
             preferred_identity_class,
-            DocumentsOperation::Read,
-        )?;
-        let result = provider_impl.read_document(http, &credential, path, max_chars);
-        self.record_runtime_activity(
-            &credential.account_key,
+            &[DocumentsOperation::Read],
             "documents_read",
-            result.as_ref().err(),
-        );
-        result
+            |provider_impl, credential| {
+                provider_impl.read_document(http, credential, path, max_chars)
+            },
+        )
     }
 
     pub fn search(
@@ -270,8 +257,9 @@ impl DocumentsService {
         account_key: Option<&str>,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.search_with_http(&mut unavailable_http, provider, account_key, query)
+        run_with_unavailable_office_http(|http| {
+            self.search_with_http(http, provider, account_key, query)
+        })
     }
 
     pub fn search_with_http(
@@ -291,14 +279,15 @@ impl DocumentsService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.search_with_http_and_identity(
-            &mut unavailable_http,
-            provider,
-            account_key,
-            preferred_identity_class,
-            query,
-        )
+        run_with_unavailable_office_http(|http| {
+            self.search_with_http_and_identity(
+                http,
+                provider,
+                account_key,
+                preferred_identity_class,
+                query,
+            )
+        })
     }
 
     pub fn search_with_http_and_identity(
@@ -309,43 +298,14 @@ impl DocumentsService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        let (provider_impl, credential) = self.resolve_remote_with_identity(
+        self.core.run_remote_operation(
             provider,
             account_key,
             preferred_identity_class,
-            DocumentsOperation::Search,
-        )?;
-        let result = provider_impl.search_documents(http, &credential, query);
-        self.record_runtime_activity(
-            &credential.account_key,
+            &[DocumentsOperation::Search],
             "documents_search",
-            result.as_ref().err(),
-        );
-        result
-    }
-
-    fn resolve_remote_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        op: DocumentsOperation,
-    ) -> Result<(Arc<dyn DocumentsProvider>, DocumentsProviderCredential)> {
-        self.remote.resolve_registered_remote(
-            provider,
-            account_key,
-            preferred_identity_class,
-            &[op],
+            |provider_impl, credential| provider_impl.search_documents(http, credential, query),
         )
-    }
-    fn record_runtime_activity(
-        &self,
-        account_key: &str,
-        activity_kind: &'static str,
-        error: Option<&Error>,
-    ) {
-        self.remote
-            .record_runtime_activity(account_key, activity_kind, error);
     }
 }
 
@@ -353,9 +313,11 @@ impl DocumentsService {
 mod tests {
     use super::*;
     use crate::documents::{
+        DocumentsProvider, DocumentsProviderCredential,
         OfficeBackedDocumentsProviderCredentialStore, OFFICE_METADATA_DOCUMENTS_BASE_URL,
         OFFICE_METADATA_DOCUMENTS_USERNAME,
     };
+    use crate::error::Error;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,

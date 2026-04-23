@@ -1,23 +1,32 @@
 use crate::calendar::{
-    CalendarEvent, CalendarHttpClient, CalendarOperation, CalendarProviderCredentialStore,
-    CalendarProviderRegistry, CalendarQuery, CalendarStore, CALENDAR_PROVIDER_LOCAL,
+    CalendarEvent, CalendarHttpClient, CalendarOperation, CalendarProvider,
+    CalendarProviderCredential, CalendarProviderCredentialStore, CalendarProviderRegistry,
+    CalendarQuery, CalendarStore, CALENDAR_PROVIDER_LOCAL,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRemoteRuntime,
-    OfficeCapabilityRuntime, OfficeResolveResult, OfficeService, SnapshotOfficeAuthoritySource,
+    office_authority_from_service, OfficeAccountAssessment, OfficeAccountIdentityClass,
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime,
+    OfficeCapabilityServiceCore, OfficeResolveResult, OfficeService,
 };
 use std::sync::Arc;
 
-type CalendarRemoteRuntime = OfficeCapabilityRemoteRuntime<
+type CalendarRemoteCore = OfficeCapabilityServiceCore<
     CalendarProviderRegistry,
     dyn CalendarProviderCredentialStore + Send + Sync,
 >;
 
 pub struct CalendarService {
     local_store: Arc<dyn CalendarStore + Send + Sync>,
-    remote: CalendarRemoteRuntime,
+    core: CalendarRemoteCore,
+}
+
+struct CalendarRemoteRoute<'a> {
+    provider: &'a str,
+    account_key: Option<&'a str>,
+    preferred_identity_class: Option<OfficeAccountIdentityClass>,
+    ops: &'a [CalendarOperation],
+    activity_kind: &'static str,
 }
 
 impl CalendarService {
@@ -39,10 +48,7 @@ impl CalendarService {
             local_store,
             credential_store,
             providers,
-            office_service.map(|office| {
-                Arc::new(SnapshotOfficeAuthoritySource::new(office))
-                    as Arc<dyn OfficeAuthoritySource + Send + Sync>
-            }),
+            office_authority_from_service(office_service),
         )
     }
 
@@ -54,7 +60,7 @@ impl CalendarService {
     ) -> Self {
         Self {
             local_store,
-            remote: OfficeCapabilityRemoteRuntime::new(
+            core: OfficeCapabilityServiceCore::new(
                 providers,
                 credential_store,
                 OfficeCapabilityRuntime::new(
@@ -70,7 +76,7 @@ impl CalendarService {
     }
 
     pub fn provider_names(&self) -> Vec<&'static str> {
-        self.remote.provider_registry().names()
+        self.core.provider_names()
     }
 
     pub fn resolve_provider_name(&self, provider: Option<&str>) -> Result<String> {
@@ -85,11 +91,8 @@ impl CalendarService {
         if let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) {
             return Ok(provider.to_string());
         }
-        if let Some(provider) = self.remote.office_runtime().selected_provider_name(
-            preferred_identity_class,
-            self.remote.credential_store().as_ref(),
-        )? {
-            return Ok(provider);
+        if let Some(route) = self.core.selected_route(None, preferred_identity_class)? {
+            return Ok(route.provider);
         }
         Ok(CALENDAR_PROVIDER_LOCAL.to_string())
     }
@@ -97,7 +100,7 @@ impl CalendarService {
     pub fn list_provider_statuses(
         &self,
     ) -> Result<Vec<crate::calendar::CalendarProviderCredentialStatus>> {
-        self.remote.credential_store().list_statuses()
+        self.core.list_provider_statuses()
     }
 
     pub fn office_resolve_hint(
@@ -114,7 +117,7 @@ impl CalendarService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<Option<OfficeResolveResult>> {
-        self.remote
+        self.core
             .resolve_hint(provider, account_key, preferred_identity_class)
     }
 
@@ -153,34 +156,35 @@ impl CalendarService {
         else {
             return Ok(None);
         };
-        Ok(self
-            .remote
-            .credential_store()
-            .get(&account_key)?
-            .map(|credential| credential.calendar_id)
-            .filter(|calendar_id: &String| !calendar_id.trim().is_empty()))
+        let (_, credential) = self.resolve_remote_with_identity(
+            provider,
+            Some(account_key.as_str()),
+            preferred_identity_class,
+            &[],
+        )?;
+        Ok((!credential.calendar_id.trim().is_empty()).then_some(credential.calendar_id))
     }
 
     pub fn office_runtime_statuses(&self) -> Result<Vec<OfficeAccountRuntimeStatus>> {
-        self.remote.runtime_statuses()
+        self.core.runtime_statuses()
     }
 
     pub fn office_account_assessments(&self) -> Result<Vec<OfficeAccountAssessment>> {
-        self.remote.account_assessments()
+        self.core.account_assessments()
     }
 
     pub fn office_identity_class_for_account(
         &self,
         account_key: Option<&str>,
     ) -> Result<Option<OfficeAccountIdentityClass>> {
-        self.remote.identity_class_for_account(account_key)
+        self.core.identity_class_for_account(account_key)
     }
 
     pub fn provider_supports(&self, provider: &str, op: CalendarOperation) -> bool {
         if is_local_provider(provider) {
             return true;
         }
-        self.remote.provider_supports(provider, op)
+        self.core.provider_supports(provider, op)
     }
 
     pub fn provider_is_routable_for_op(
@@ -192,7 +196,7 @@ impl CalendarService {
         if is_local_provider(provider) {
             return true;
         }
-        self.remote
+        self.core
             .provider_is_routable_for_ops(provider, preferred_identity_class, &[op])
     }
 
@@ -217,20 +221,17 @@ impl CalendarService {
         if is_local_provider(provider) {
             return self.local_store.list(query);
         }
-        let (provider_impl, credential) = self.resolve_remote_with_identity(
-            provider,
-            account_key,
-            preferred_identity_class,
-            CalendarOperation::List,
-        )?;
-        let http = require_http(provider, http)?;
-        let result = provider_impl.list_events(http, &credential, query);
-        self.record_runtime_activity(
-            &credential.account_key,
-            "calendar_list",
-            result.as_ref().err(),
-        );
-        result
+        self.run_remote_operation(
+            http,
+            CalendarRemoteRoute {
+                provider,
+                account_key,
+                preferred_identity_class,
+                ops: &[CalendarOperation::List],
+                activity_kind: "calendar_list",
+            },
+            |http, provider_impl, credential| provider_impl.list_events(http, credential, query),
+        )
     }
 
     pub fn get(
@@ -254,20 +255,17 @@ impl CalendarService {
         if is_local_provider(provider) {
             return self.local_store.get(id);
         }
-        let (provider_impl, credential) = self.resolve_remote_with_identity(
-            provider,
-            account_key,
-            preferred_identity_class,
-            CalendarOperation::Get,
-        )?;
-        let http = require_http(provider, http)?;
-        let result = provider_impl.get_event(http, &credential, id);
-        self.record_runtime_activity(
-            &credential.account_key,
-            "calendar_get",
-            result.as_ref().err(),
-        );
-        result
+        self.run_remote_operation(
+            http,
+            CalendarRemoteRoute {
+                provider,
+                account_key,
+                preferred_identity_class,
+                ops: &[CalendarOperation::Get],
+                activity_kind: "calendar_get",
+            },
+            |http, provider_impl, credential| provider_impl.get_event(http, credential, id),
+        )
     }
 
     pub fn upsert(
@@ -302,24 +300,27 @@ impl CalendarService {
         } else {
             CalendarOperation::Update
         };
-        let (provider_impl, credential) =
-            self.resolve_remote_with_identity(provider, account_key, preferred_identity_class, op)?;
-        let http = require_http(provider, http)?;
-        let result = if is_create {
-            provider_impl.create_event(http, &credential, event)
-        } else {
-            provider_impl.update_event(http, &credential, event)
-        };
-        self.record_runtime_activity(
-            &credential.account_key,
-            if is_create {
-                "calendar_create"
-            } else {
-                "calendar_update"
+        self.run_remote_operation(
+            http,
+            CalendarRemoteRoute {
+                provider,
+                account_key,
+                preferred_identity_class,
+                ops: &[op],
+                activity_kind: if is_create {
+                    "calendar_create"
+                } else {
+                    "calendar_update"
+                },
             },
-            result.as_ref().err(),
-        );
-        result
+            |http, provider_impl, credential| {
+                if is_create {
+                    provider_impl.create_event(http, credential, event)
+                } else {
+                    provider_impl.update_event(http, credential, event)
+                }
+            },
+        )
     }
 
     pub fn delete(
@@ -343,20 +344,17 @@ impl CalendarService {
         if is_local_provider(provider) {
             return self.local_store.delete(id);
         }
-        let (provider_impl, credential) = self.resolve_remote_with_identity(
-            provider,
-            account_key,
-            preferred_identity_class,
-            CalendarOperation::Delete,
-        )?;
-        let http = require_http(provider, http)?;
-        let result = provider_impl.delete_event(http, &credential, id);
-        self.record_runtime_activity(
-            &credential.account_key,
-            "calendar_delete",
-            result.as_ref().err(),
-        );
-        result
+        self.run_remote_operation(
+            http,
+            CalendarRemoteRoute {
+                provider,
+                account_key,
+                preferred_identity_class,
+                ops: &[CalendarOperation::Delete],
+                activity_kind: "calendar_delete",
+            },
+            |http, provider_impl, credential| provider_impl.delete_event(http, credential, id),
+        )
     }
 
     fn resolve_remote_with_identity(
@@ -364,16 +362,13 @@ impl CalendarService {
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        op: CalendarOperation,
-    ) -> Result<(
-        std::sync::Arc<dyn crate::calendar::CalendarProvider>,
-        crate::calendar::CalendarProviderCredential,
-    )> {
-        let (provider_impl, credential) = self.remote.resolve_registered_remote(
+        ops: &[CalendarOperation],
+    ) -> Result<(Arc<dyn CalendarProvider>, CalendarProviderCredential)> {
+        let (provider_impl, credential) = self.core.resolve_registered_remote(
             provider,
             account_key,
             preferred_identity_class,
-            &[op],
+            ops,
         )?;
         if credential.access_token.trim().is_empty() {
             return Err(Error::config(
@@ -390,22 +385,44 @@ impl CalendarService {
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
     ) -> Result<String> {
-        self.remote.office_runtime().resolve_account_key(
-            provider,
-            account_key,
-            preferred_identity_class,
-            self.remote.credential_store().as_ref(),
-        )
+        Ok(self
+            .core
+            .resolve_explicit_route(
+                Some(provider),
+                account_key,
+                preferred_identity_class,
+                "provider is required",
+            )?
+            .account_key)
     }
 
-    fn record_runtime_activity(
+    fn run_remote_operation<T, F>(
         &self,
-        account_key: &str,
-        activity_kind: &'static str,
-        error: Option<&Error>,
-    ) {
-        self.remote
-            .record_runtime_activity(account_key, activity_kind, error);
+        http: Option<&mut dyn CalendarHttpClient>,
+        route: CalendarRemoteRoute<'_>,
+        execute: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(
+            &mut dyn CalendarHttpClient,
+            &Arc<dyn CalendarProvider>,
+            &CalendarProviderCredential,
+        ) -> Result<T>,
+    {
+        let (provider_impl, credential) = self.resolve_remote_with_identity(
+            route.provider,
+            route.account_key,
+            route.preferred_identity_class,
+            route.ops,
+        )?;
+        let http = require_http(route.provider, http)?;
+        let result = execute(http, &provider_impl, &credential);
+        self.core.record_runtime_activity(
+            &credential.account_key,
+            route.activity_kind,
+            result.as_ref().err(),
+        );
+        result
     }
 }
 

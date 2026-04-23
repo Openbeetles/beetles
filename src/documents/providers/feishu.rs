@@ -2,11 +2,11 @@
 
 use crate::documents::credentials::documents_credential_from_office;
 use crate::documents::{
-    build_search_snippet, contains_query_text, documents_bounded_read_bytes,
-    documents_search_match_kind, documents_search_match_score, merge_document_warning,
+    documents_bounded_read_bytes, merge_document_warning, search_read_budget, search_tree,
     DocumentsEntry, DocumentsOperation, DocumentsProvider, DocumentsProviderCredential,
-    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery,
-    DOCUMENTS_SEARCH_MATCH_PATH, EMPTY_DOCUMENT_WARNING, PARTIAL_DOCUMENT_READ_WARNING,
+    DocumentsQuery, DocumentsReadResult, DocumentsSearchHit, DocumentsSearchQuery, SearchLimits,
+    SearchReadOutcome, SearchTreePlan, EMPTY_DOCUMENT_WARNING, MAX_SEARCH_SCAN_ENTRIES,
+    PARTIAL_DOCUMENT_READ_WARNING,
 };
 use crate::error::{Error, Result};
 use crate::office::{
@@ -15,10 +15,6 @@ use crate::office::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-
-const MAX_SEARCH_SCAN_ENTRIES: usize = 64;
-const MAX_SEARCH_READ_BYTES: usize = 256 * 1024;
 const FEISHU_LIST_PAGE_SIZE: usize = 200;
 
 pub struct FeishuDocumentsProvider;
@@ -103,87 +99,31 @@ impl DocumentsProvider for FeishuDocumentsProvider {
         let client = FeishuDocumentsClient::new(http, credential)?;
         let normalized_path = normalize_relative_path(&query.path);
         let start_folder = client.resolve_folder(http, &normalized_path)?;
-        let mut queue = VecDeque::from([start_folder]);
-        let mut hits = Vec::new();
-        let mut scanned_entries = 0usize;
-        let max_read_bytes = if query.max_read_bytes == 0 {
-            MAX_SEARCH_READ_BYTES
-        } else {
-            query.max_read_bytes.min(MAX_SEARCH_READ_BYTES)
-        };
-
-        while let Some(folder) = queue.pop_front() {
-            if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                break;
-            }
-            let entries = client.list_folder_items(http, &folder.token)?;
-            for item in entries {
-                let entry = item.to_documents_entry(&folder.path);
-                scanned_entries += 1;
-                let path_hit = contains_query_text(&entry.path, &query.query, query.case_sensitive)
-                    || contains_query_text(&entry.name, &query.query, query.case_sensitive);
-                if item.is_dir() {
-                    if path_hit {
-                        hits.push(DocumentsSearchHit {
-                            entry: entry.clone(),
-                            match_kind: DOCUMENTS_SEARCH_MATCH_PATH.to_string(),
-                            snippet: None,
-                            warning: None,
-                        });
-                    }
-                    queue.push_back(ResolvedFolder {
-                        token: item.token.clone(),
-                        path: entry.path.clone(),
-                    });
-                    if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                        break;
-                    }
-                    continue;
+        let max_read_bytes = search_read_budget(query.max_read_bytes);
+        search_tree(
+            http,
+            &query,
+            SearchTreePlan::new(
+                vec![start_folder],
+                SearchLimits::new(MAX_SEARCH_SCAN_ENTRIES, max_read_bytes),
+            ),
+            |http, folder| client.list_folder_items(http, &folder.token),
+            |folder, item| item.to_documents_entry(&folder.path),
+            |_, item, entry| ResolvedFolder {
+                token: item.token.clone(),
+                path: entry.path.clone(),
+            },
+            |http, item, _entry, read_limit| {
+                if !item.supports_raw_read() {
+                    return Ok(SearchReadOutcome::default());
                 }
-
-                let mut content_match = None;
-                let mut warning = None;
-                if item.supports_raw_read() {
-                    let read = client.read_supported_document(http, &item, max_read_bytes)?;
-                    let normalized = normalize_document_text(&read.content);
-                    if contains_query_text(&normalized, &query.query, query.case_sensitive) {
-                        content_match = Some(build_search_snippet(
-                            &normalized,
-                            &query.query,
-                            query.case_sensitive,
-                        ));
-                    }
-                    if read.truncated {
-                        warning = Some(PARTIAL_DOCUMENT_READ_WARNING.to_string());
-                    }
-                }
-
-                if let Some(match_kind) =
-                    documents_search_match_kind(path_hit, content_match.is_some())
-                {
-                    hits.push(DocumentsSearchHit {
-                        entry: entry.clone(),
-                        match_kind: match_kind.to_string(),
-                        snippet: content_match,
-                        warning,
-                    });
-                }
-
-                if scanned_entries >= MAX_SEARCH_SCAN_ENTRIES || hits.len() >= query.limit {
-                    break;
-                }
-            }
-        }
-
-        hits.sort_by(|left, right| {
-            documents_search_match_score(&right.match_kind)
-                .cmp(&documents_search_match_score(&left.match_kind))
-                .then_with(|| left.entry.path.cmp(&right.entry.path))
-        });
-        if hits.len() > query.limit {
-            hits.truncate(query.limit);
-        }
-        Ok(hits)
+                let read = client.read_supported_document(http, item, read_limit)?;
+                Ok(SearchReadOutcome::new(
+                    Some(normalize_document_text(&read.content)),
+                    read.truncated,
+                ))
+            },
+        )
     }
 }
 

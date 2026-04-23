@@ -98,7 +98,9 @@ pub use authority_source::{
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub(crate) use capability_runtime::{
-    OfficeCapabilityCredentialAccess, OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime,
+    office_authority_from_service, run_with_unavailable_office_http,
+    OfficeAuthorityBackedCredentialStoreCore, OfficeCapabilityCredentialAccess,
+    OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime, OfficeCapabilityServiceCore,
     OfficeSelectedRoute,
 };
 #[cfg(all(

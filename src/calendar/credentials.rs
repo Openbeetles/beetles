@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    normalize_google_api_base_url, normalize_microsoft_graph_base_url, OfficeAuthoritySource,
-    OfficeCapability, OfficeCredential, OfficeService, SnapshotOfficeAuthoritySource,
-    GOOGLE_CALENDAR_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
-    OFFICE_METADATA_CALENDAR_ID,
+    normalize_google_api_base_url, normalize_microsoft_graph_base_url,
+    OfficeAuthorityBackedCredentialStoreCore, OfficeAuthoritySource, OfficeCapability,
+    OfficeCredential, OfficeService, GOOGLE_CALENDAR_DEFAULT_BASE_URL,
+    MICROSOFT_GRAPH_DEFAULT_BASE_URL, OFFICE_METADATA_CALENDAR_ID,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -125,58 +125,39 @@ impl CalendarProviderCredential {
 
 #[derive(Clone)]
 pub struct OfficeBackedCalendarProviderCredentialStore {
-    authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    core: OfficeAuthorityBackedCredentialStoreCore,
 }
 
 impl OfficeBackedCalendarProviderCredentialStore {
     pub fn new(office: OfficeService) -> Self {
-        Self::with_authority(Arc::new(SnapshotOfficeAuthoritySource::new(office)))
+        Self {
+            core: OfficeAuthorityBackedCredentialStoreCore::new(office),
+        }
     }
 
     pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
-        Self { authority }
-    }
-
-    fn load_office(&self) -> Result<OfficeService> {
-        self.authority.load()
+        Self {
+            core: OfficeAuthorityBackedCredentialStoreCore::with_authority(authority),
+        }
     }
 }
 
 impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialStore {
     fn get(&self, account_key: &str) -> Result<Option<CalendarProviderCredential>> {
-        let office = self.load_office()?;
-        let Some(account) = office.account(account_key) else {
-            return Ok(None);
-        };
-        if !account
-            .enabled_capabilities
-            .contains(&OfficeCapability::Calendar)
-        {
-            return Ok(None);
-        }
-        let Some(credential) = office.credential(account_key)? else {
-            return Ok(None);
-        };
-        Ok(Some(calendar_credential_from_office(account, credential)))
+        self.core.get_for_capability(
+            OfficeCapability::Calendar,
+            account_key,
+            |account, credential| Ok(calendar_credential_from_office(account, credential)),
+        )
     }
 
     fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
-        let office = self.load_office()?;
-        let mut keys = Vec::new();
-        for account in office.accounts_for_capability(OfficeCapability::Calendar) {
-            if account.provider_kind != provider {
-                continue;
-            }
-            if office.credential(&account.account_key)?.is_some() {
-                keys.push(account.account_key);
-            }
-        }
-        keys.sort();
-        Ok(keys)
+        self.core
+            .find_account_keys_by_provider(OfficeCapability::Calendar, provider)
     }
 
     fn set(&self, credential: &CalendarProviderCredential) -> Result<()> {
-        let office = self.load_office()?;
+        let office = self.core.load_office()?;
         let account = office.account(&credential.account_key).ok_or_else(|| {
             Error::config(
                 "calendar_provider",
@@ -250,24 +231,14 @@ impl CalendarProviderCredentialStore for OfficeBackedCalendarProviderCredentialS
     }
 
     fn clear(&self, account_key: &str) -> Result<()> {
-        self.load_office()?.clear_credential(account_key)
+        self.core.load_office()?.clear_credential(account_key)
     }
 
     fn list_statuses(&self) -> Result<Vec<CalendarProviderCredentialStatus>> {
-        let office = self.load_office()?;
-        let mut statuses = Vec::new();
-        for account in office.accounts_for_capability(OfficeCapability::Calendar) {
-            let Some(credential) = office.credential(&account.account_key)? else {
-                continue;
-            };
-            statuses.push(calendar_credential_from_office(account, credential).status());
-        }
-        statuses.sort_by(|left, right| {
-            left.provider
-                .cmp(&right.provider)
-                .then_with(|| left.account_key.cmp(&right.account_key))
-        });
-        Ok(statuses)
+        self.core
+            .list_statuses_for_capability(OfficeCapability::Calendar, |account, credential| {
+                Ok(calendar_credential_from_office(account, credential).status())
+            })
     }
 }
 

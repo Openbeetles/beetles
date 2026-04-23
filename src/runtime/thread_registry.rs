@@ -127,9 +127,6 @@ pub(crate) struct RuntimePlaneFlags {
     pub channel_plane_alive: bool,
     pub voice_plane_alive: bool,
     pub agent_plane_alive: bool,
-    pub user_agent_lane_alive: bool,
-    pub system_agent_lane_alive: bool,
-    pub dual_agent_lanes_alive: bool,
 }
 
 static THREADS: OnceLock<Mutex<Vec<ThreadEntry>>> = OnceLock::new();
@@ -210,9 +207,6 @@ pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
         channel_plane_alive: plane.channel_plane_alive,
         voice_plane_alive: plane.voice_plane_alive,
         agent_plane_alive: plane.agent_plane_alive,
-        user_agent_lane_alive: plane.user_agent_lane_alive,
-        system_agent_lane_alive: plane.system_agent_lane_alive,
-        dual_agent_lanes_alive: plane.dual_agent_lanes_alive,
         external_wss_managed_present: ext_wss.managed_present,
         external_wss_suspend_requested: ext_wss.suspend_requested,
         external_wss_suspended: ext_wss.suspended,
@@ -233,18 +227,10 @@ fn runtime_plane_flags() -> RuntimePlaneFlags {
     let agent_plane_alive = guard
         .iter()
         .any(|entry| entry.alive && entry.name == "agent_loop");
-    let user_agent_lane_alive = guard
-        .iter()
-        .any(|entry| entry.alive && entry.name == "agent_loop");
-    let system_agent_lane_alive =
-        agent_plane_alive && crate::state::background_maintenance_active();
     RuntimePlaneFlags {
         channel_plane_alive,
         voice_plane_alive,
         agent_plane_alive,
-        user_agent_lane_alive,
-        system_agent_lane_alive,
-        dual_agent_lanes_alive: false,
     }
 }
 
@@ -306,7 +292,7 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} channel_plane={} voice_plane={} agent_plane={} user_agent={} system_agent={} dual_agent={} timers={} periodic_maintenance={} non_voice_outbound={} ext_wss_connect={} ext_wss_suspend={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} channel_plane={} voice_plane={} agent_plane={} timers={} periodic_maintenance={} non_voice_outbound={} ext_wss_connect={} ext_wss_suspend={}",
         mode.current_mode.as_str(),
         mode.wifi_sta_connected,
         mode.boot_phase_active,
@@ -319,9 +305,6 @@ pub fn format_runtime_mode_log_line() -> String {
         mode.channel_plane_alive,
         mode.voice_plane_alive,
         mode.agent_plane_alive,
-        mode.user_agent_lane_alive,
-        mode.system_agent_lane_alive,
-        mode.dual_agent_lanes_alive,
         mode.action_budget.allow_due_user_timers,
         mode.action_budget.allow_periodic_maintenance,
         mode.action_budget.allow_non_voice_outbound,

@@ -247,21 +247,11 @@ fn build_signal(world: &WorldSnapshot) -> InitiativeSignalSnapshot {
 }
 
 fn pre_signal_gate_decision(
-    target: Option<&InitiativeTarget>,
     presence_state: PresenceState,
     runtime_mode: RuntimeModeSnapshot,
     resource: &ResourceSnapshot,
     idle_enabled: bool,
 ) -> Option<InitiativeDecision> {
-    let Some(_target) = target else {
-        return Some(InitiativeDecision {
-            action: InitiativeAction::Hold,
-            rationale: "no_active_relation_target",
-            suppression_reason: Some(InitiativeSuppressionReason::NoTargetRelation),
-            last_triggered_at: None,
-            next_allowed_at: None,
-        });
-    };
     if !runtime_mode.action_budget.allow_idle_self_runtime
         || !runtime_mode.action_budget.allow_non_voice_outbound
     {
@@ -313,6 +303,7 @@ fn pre_signal_gate_decision(
     None
 }
 
+#[cfg(test)]
 fn decide_initiative(
     target: Option<&InitiativeTarget>,
     presence_state: PresenceState,
@@ -322,11 +313,28 @@ fn decide_initiative(
     idle_enabled: bool,
     now_secs: u64,
 ) -> InitiativeDecision {
+    if target.is_none() {
+        return InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "no_active_relation_target",
+            suppression_reason: Some(InitiativeSuppressionReason::NoTargetRelation),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        };
+    }
     if let Some(decision) =
-        pre_signal_gate_decision(target, presence_state, runtime_mode, resource, idle_enabled)
+        pre_signal_gate_decision(presence_state, runtime_mode, resource, idle_enabled)
     {
         return decision;
     }
+    decide_initiative_from_signal(target, signal, now_secs)
+}
+
+fn decide_initiative_from_signal(
+    target: Option<&InitiativeTarget>,
+    signal: Option<&InitiativeSignalSnapshot>,
+    now_secs: u64,
+) -> InitiativeDecision {
     let Some(target) = target else {
         return InitiativeDecision {
             action: InitiativeAction::Hold,
@@ -532,13 +540,22 @@ pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> In
     let idle_enabled = strategy
         .as_ref()
         .is_none_or(|strategy| strategy.idle_enabled);
-    let pre_signal_decision = pre_signal_gate_decision(
-        target.as_ref(),
-        presence.state,
-        presence.runtime_mode,
-        &resource,
-        idle_enabled,
-    );
+    let pre_signal_decision = if target.is_none() {
+        Some(InitiativeDecision {
+            action: InitiativeAction::Hold,
+            rationale: "no_active_relation_target",
+            suppression_reason: Some(InitiativeSuppressionReason::NoTargetRelation),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        })
+    } else {
+        pre_signal_gate_decision(
+            presence.state,
+            presence.runtime_mode,
+            &resource,
+            idle_enabled,
+        )
+    };
     let signal_result = if pre_signal_decision.is_none() {
         target
             .as_ref()
@@ -571,15 +588,7 @@ pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> In
         }
     } else {
         pre_signal_decision.unwrap_or_else(|| {
-            decide_initiative(
-                target.as_ref(),
-                presence.state,
-                presence.runtime_mode,
-                &resource,
-                signal.as_ref(),
-                idle_enabled,
-                now_secs,
-            )
+            decide_initiative_from_signal(target.as_ref(), signal.as_ref(), now_secs)
         })
     };
     let locale = locale_from_store(platform.config_store().as_ref());
@@ -737,9 +746,6 @@ mod tests {
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,
-            user_agent_lane_alive: false,
-            system_agent_lane_alive: false,
-            dual_agent_lanes_alive: false,
             external_wss_managed_present: false,
             external_wss_suspend_requested: false,
             external_wss_suspended: false,
@@ -901,14 +907,9 @@ mod tests {
     #[test]
     fn pre_signal_gate_blocks_world_snapshot_when_presence_is_not_idle() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let decision = pre_signal_gate_decision(
-            Some(&target()),
-            PresenceState::Busy,
-            runtime_mode(),
-            &resource(),
-            true,
-        )
-        .expect("busy presence should be blocked before signal build");
+        let decision =
+            pre_signal_gate_decision(PresenceState::Busy, runtime_mode(), &resource(), true)
+                .expect("busy presence should be blocked before signal build");
 
         assert_eq!(decision.action, InitiativeAction::Hold);
         assert_eq!(
@@ -920,13 +921,8 @@ mod tests {
     #[test]
     fn pre_signal_gate_allows_signal_build_when_runtime_is_idle_and_budgeted() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let decision = pre_signal_gate_decision(
-            Some(&target()),
-            PresenceState::Idle,
-            runtime_mode(),
-            &resource(),
-            true,
-        );
+        let decision =
+            pre_signal_gate_decision(PresenceState::Idle, runtime_mode(), &resource(), true);
 
         assert!(decision.is_none());
     }
@@ -942,14 +938,8 @@ mod tests {
         mode.action_budget.allow_external_wss_connect = false;
         mode.action_budget.require_external_wss_suspended = true;
 
-        let decision = pre_signal_gate_decision(
-            Some(&target()),
-            PresenceState::Idle,
-            mode,
-            &resource(),
-            true,
-        )
-        .expect("voice-exclusive mode should block before signal build");
+        let decision = pre_signal_gate_decision(PresenceState::Idle, mode, &resource(), true)
+            .expect("voice-exclusive mode should block before signal build");
 
         assert_eq!(decision.action, InitiativeAction::Hold);
         assert_eq!(

@@ -20,6 +20,11 @@ pub mod providers;
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+mod search;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod service;
 
 use serde::{Deserialize, Serialize};
@@ -47,6 +52,15 @@ pub use credentials::{
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use provider::{DocumentsOperation, DocumentsProvider, DocumentsProviderRegistry};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use search::{
+    search_read_budget, search_scoped_candidates, search_tree, SearchLimits, SearchReadOutcome,
+    SearchTreePlan, MAX_SEARCH_READ_BYTES, MAX_SEARCH_SCAN_ENTRIES,
+    SEARCH_CONTENT_TOO_LARGE_WARNING,
+};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

@@ -1,8 +1,9 @@
 use crate::error::{Error, Result};
 use crate::office::{
-    normalize_google_api_base_url, normalize_microsoft_graph_base_url, OfficeAuthoritySource,
-    OfficeCapability, OfficeCredential, OfficeService, SnapshotOfficeAuthoritySource,
-    GOOGLE_PEOPLE_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    normalize_google_api_base_url, normalize_microsoft_graph_base_url,
+    OfficeAuthorityBackedCredentialStoreCore, OfficeAuthoritySource, OfficeCapability,
+    OfficeCredential, OfficeService, GOOGLE_PEOPLE_DEFAULT_BASE_URL,
+    MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -81,20 +82,20 @@ impl ContactsDirectoryProviderCredential {
 
 #[derive(Clone)]
 pub struct OfficeBackedContactsDirectoryProviderCredentialStore {
-    authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
+    core: OfficeAuthorityBackedCredentialStoreCore,
 }
 
 impl OfficeBackedContactsDirectoryProviderCredentialStore {
     pub fn new(office: OfficeService) -> Self {
-        Self::with_authority(Arc::new(SnapshotOfficeAuthoritySource::new(office)))
+        Self {
+            core: OfficeAuthorityBackedCredentialStoreCore::new(office),
+        }
     }
 
     pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
-        Self { authority }
-    }
-
-    fn load_office(&self) -> Result<OfficeService> {
-        self.authority.load()
+        Self {
+            core: OfficeAuthorityBackedCredentialStoreCore::with_authority(authority),
+        }
     }
 }
 
@@ -102,52 +103,23 @@ impl ContactsDirectoryProviderCredentialStore
     for OfficeBackedContactsDirectoryProviderCredentialStore
 {
     fn get(&self, account_key: &str) -> Result<Option<ContactsDirectoryProviderCredential>> {
-        let office = self.load_office()?;
-        let Some(account) = office.account(account_key) else {
-            return Ok(None);
-        };
-        if !account
-            .enabled_capabilities
-            .contains(&OfficeCapability::ContactsDirectory)
-        {
-            return Ok(None);
-        }
-        let Some(credential) = office.credential(account_key)? else {
-            return Ok(None);
-        };
-        Ok(Some(contacts_credential_from_office(account, credential)?))
+        self.core.get_for_capability(
+            OfficeCapability::ContactsDirectory,
+            account_key,
+            contacts_credential_from_office,
+        )
     }
 
     fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
-        let office = self.load_office()?;
-        let mut keys = Vec::new();
-        for account in office.accounts_for_capability(OfficeCapability::ContactsDirectory) {
-            if account.provider_kind != provider {
-                continue;
-            }
-            if office.credential(&account.account_key)?.is_some() {
-                keys.push(account.account_key);
-            }
-        }
-        keys.sort();
-        Ok(keys)
+        self.core
+            .find_account_keys_by_provider(OfficeCapability::ContactsDirectory, provider)
     }
 
     fn list_statuses(&self) -> Result<Vec<ContactsDirectoryProviderCredentialStatus>> {
-        let office = self.load_office()?;
-        let mut statuses = Vec::new();
-        for account in office.accounts_for_capability(OfficeCapability::ContactsDirectory) {
-            let Some(credential) = office.credential(&account.account_key)? else {
-                continue;
-            };
-            statuses.push(contacts_credential_from_office(account, credential)?.status());
-        }
-        statuses.sort_by(|left, right| {
-            left.provider
-                .cmp(&right.provider)
-                .then_with(|| left.account_key.cmp(&right.account_key))
-        });
-        Ok(statuses)
+        self.core.list_statuses_for_capability(
+            OfficeCapability::ContactsDirectory,
+            |account, credential| Ok(contacts_credential_from_office(account, credential)?.status()),
+        )
     }
 }
 
