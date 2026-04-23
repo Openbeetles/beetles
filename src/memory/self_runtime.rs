@@ -2404,22 +2404,6 @@ mod tests {
             Ok(())
         }
 
-        fn get_soul(&self) -> BeetleResult<String> {
-            Ok(String::new())
-        }
-
-        fn set_soul(&self, _content: &str) -> BeetleResult<()> {
-            Ok(())
-        }
-
-        fn get_user(&self) -> BeetleResult<String> {
-            Ok(String::new())
-        }
-
-        fn set_user(&self, _content: &str) -> BeetleResult<()> {
-            Ok(())
-        }
-
         fn list_daily_note_names(&self, _recent_n: usize) -> BeetleResult<Vec<String>> {
             Ok(Vec::new())
         }

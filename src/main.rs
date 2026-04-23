@@ -518,8 +518,6 @@ mod tests {
 
     struct TestMemoryStore {
         has_memory: bool,
-        soul: Option<String>,
-        user: Option<String>,
     }
 
     impl beetle::memory::MemoryStore for TestMemoryStore {
@@ -530,26 +528,6 @@ mod tests {
         }
 
         fn set_memory(&self, _content: &str) -> beetle::Result<()> {
-            Ok(())
-        }
-
-        fn get_soul(&self) -> beetle::Result<String> {
-            self.soul
-                .clone()
-                .ok_or_else(|| beetle::Error::config("soul", "missing"))
-        }
-
-        fn set_soul(&self, _content: &str) -> beetle::Result<()> {
-            Ok(())
-        }
-
-        fn get_user(&self) -> beetle::Result<String> {
-            self.user
-                .clone()
-                .ok_or_else(|| beetle::Error::config("user", "missing"))
-        }
-
-        fn set_user(&self, _content: &str) -> beetle::Result<()> {
             Ok(())
         }
 
@@ -697,13 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn startup_self_check_accepts_soul_even_when_memory_missing() {
-        let store = TestMemoryStore {
-            has_memory: false,
-            soul: Some("soul".to_string()),
-            user: None,
-        };
-        assert!(super::app_runtime_support::startup_self_check(&store));
+    fn startup_self_check_requires_shared_memory() {
+        let store = TestMemoryStore { has_memory: false };
+        assert!(!super::app_runtime_support::startup_self_check(&store));
     }
 
     #[test]
@@ -1903,7 +1877,7 @@ fn handle_doctor_command(platform: &Arc<dyn Platform>) {
     }
 
     let memory_store = platform.memory_store();
-    if memory_store.get_memory().is_ok() || memory_store.get_soul().is_ok() {
+    if memory_store.get_memory().is_ok() {
         println!("✓ Memory store accessible");
     } else {
         println!("⚠ Memory store not accessible");
@@ -2405,7 +2379,7 @@ fn prepare_runtime_assembly(
 
     if !app_runtime_support::startup_self_check(runtime.memory_store.as_ref()) {
         log::error!(
-            "[{}] startup self-check failed: storage not readable (get_memory and get_soul both failed)",
+            "[{}] startup self-check failed: shared memory storage not readable (get_memory failed)",
             TAG
         );
         return None;

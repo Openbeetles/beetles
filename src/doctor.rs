@@ -27,7 +27,6 @@ pub fn diagnose(
     spiffs_ok: Option<(u64, u64)>,
     nvs_ok: bool,
     memory_loaded: bool,
-    soul_loaded: bool,
     skills_count: usize,
     last_errors_count: usize,
 ) -> Vec<DiagResult> {
@@ -130,11 +129,6 @@ pub fn diagnose(
         severity: if memory_loaded { "ok" } else { "warn" }.into(),
         category: "context".into(),
         message: format!("memory_loaded={}", memory_loaded),
-    });
-    out.push(DiagResult {
-        severity: if soul_loaded { "ok" } else { "warn" }.into(),
-        category: "context".into(),
-        message: format!("soul_loaded={}", soul_loaded),
     });
     out.push(DiagResult {
         severity: "ok".into(),

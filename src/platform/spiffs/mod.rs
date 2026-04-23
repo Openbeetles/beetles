@@ -280,7 +280,7 @@ fn read_open_file(
     Ok(())
 }
 
-/// 读整个文件到 Vec。路径相对于 SPIFFS_BASE，或绝对如 /spiffs/config/SOUL.md。
+/// 读整个文件到 Vec。路径相对于 SPIFFS_BASE，或绝对如 /spiffs/memory/MEMORY.md。
 /// 有 metadata 时预分配 capacity，减少 read_to_end 的多次 realloc。
 /// 大文件（>= 8KB）优先使用 PSRAM 分配。
 pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {

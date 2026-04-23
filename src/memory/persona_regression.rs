@@ -24,22 +24,6 @@ impl MemoryStore for RegressionMemoryStore {
         Ok(())
     }
 
-    fn get_soul(&self) -> Result<String> {
-        Ok("SOUL".to_string())
-    }
-
-    fn set_soul(&self, _content: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_user(&self) -> Result<String> {
-        Ok("USER".to_string())
-    }
-
-    fn set_user(&self, _content: &str) -> Result<()> {
-        Ok(())
-    }
-
     fn list_daily_note_names(&self, _recent_n: usize) -> Result<Vec<String>> {
         Ok(Vec::new())
     }

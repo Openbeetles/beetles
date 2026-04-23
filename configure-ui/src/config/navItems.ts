@@ -29,11 +29,6 @@ export const NAV_ITEMS: NavItem[] = [
     iconSrc: OS_ICON_NAV["/accounts"],
   },
   {
-    path: "/soul-user",
-    labelKey: "nav.soulUser",
-    iconSrc: OS_ICON_NAV["/soul-user"],
-  },
-  {
     path: "/skills",
     labelKey: "nav.skills",
     iconSrc: OS_ICON_NAV["/skills"],

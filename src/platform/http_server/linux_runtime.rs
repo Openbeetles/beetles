@@ -22,7 +22,6 @@ pub(crate) fn default_linux_max_body_bytes(path: &str, method: &str) -> usize {
         return 0;
     }
     match path {
-        "/api/soul" | "/api/user" => crate::memory::MAX_SOUL_USER_LEN,
         "/api/capability_packages" => {
             crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN
         }

@@ -1,5 +1,5 @@
-//! memory_manage 工具：管理长期记忆、灵魂设定、用户配置与每日笔记。
-//! memory_manage tool: manage long-term memory, soul, user config, and daily notes.
+//! memory_manage 工具：管理长期记忆、共享记忆与每日笔记。
+//! memory_manage tool: manage long-term memory, shared memory, and daily notes.
 
 use crate::error::{Error, Result};
 use crate::memory::{
@@ -7,7 +7,7 @@ use crate::memory::{
     LongTermMemoryDraft, LongTermMemoryFreshness, LongTermMemoryKind, LongTermMemorySlot,
     LongTermMemorySourceScope, LongTermMemorySourceType, LongTermMemoryStaleHint,
     LongTermMemoryStore, MemoryPlane, MemoryStore, SharedMemoryWriteAction,
-    SharedMemoryWriteSource, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN,
+    SharedMemoryWriteSource, MAX_MEMORY_CONTENT_LEN,
 };
 use crate::platform::SkillStorage;
 use crate::skills::{write_governed_runtime_skills, RuntimeSkillWriteSource};
@@ -40,10 +40,10 @@ impl Tool for MemoryManageTool {
         "memory_manage"
     }
     fn description(&self) -> &'static str {
-        "Manage persistent memory, structured long-term memory, soul/user config, and daily notes. Op: get_memory, set_memory, get_soul, set_soul, get_user, set_user, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, get_long_term_slot, query_long_term, upsert_long_term, delete_long_term, delete_long_term_slot."
+        "Manage persistent memory, structured long-term memory, and daily notes. Op: get_memory, set_memory, list_daily_notes, get_daily_note, write_daily_note, list_long_term, get_long_term, get_long_term_slot, query_long_term, upsert_long_term, delete_long_term, delete_long_term_slot."
     }
     fn schema(&self) -> &str {
-        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get_memory|set_memory|get_soul|set_soul|get_user|set_user|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|get_long_term_slot|query_long_term|upsert_long_term|delete_long_term|delete_long_term_slot"},"content":{"type":"string","description":"Content for set_memory/set_soul/set_user/write_daily_note"},"name":{"type":"string","description":"Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note"},"recent_n":{"type":"integer","description":"Max number of daily notes to list (default 10, max 30)"},"append":{"type":"boolean","description":"If true, append to existing note instead of overwrite (default false, for write_daily_note)"},"id":{"type":"string","description":"Structured long-term memory id for get_long_term/delete_long_term"},"topic":{"type":"string","description":"Structured long-term memory stable topic key, e.g. response_style or current_project"},"kind":{"type":"string","description":"Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact"},"keywords":{"type":"array","items":{"type":"string"},"description":"Structured long-term memory keywords"},"source_type":{"type":"string","description":"Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation"},"source_scope":{"type":"string","description":"Structured long-term memory source scope: chat|user|world"},"source_chat_id":{"type":"string","description":"Optional long-term memory source chat filter"},"confidence":{"type":"string","description":"Structured long-term memory confidence: low|medium|high"},"freshness":{"type":"string","description":"Structured long-term memory freshness: stable|dynamic|volatile"},"stale_hint":{"type":"string","description":"Structured long-term memory stale hint: none|review_before_use|verify_against_current_state"},"include_stale":{"type":"boolean","description":"Whether query_long_term includes stale records (default false)"},"plane":{"type":"string","description":"Optional desired plane hint: factual|skill|auto. Procedural content is still redirected away from canonical factual memory."}},"required":["op"]}"#
+        r#"{"type":"object","properties":{"op":{"type":"string","description":"Operation: get_memory|set_memory|list_daily_notes|get_daily_note|write_daily_note|list_long_term|get_long_term|get_long_term_slot|query_long_term|upsert_long_term|delete_long_term|delete_long_term_slot"},"content":{"type":"string","description":"Content for set_memory/write_daily_note"},"name":{"type":"string","description":"Daily note name (e.g. 2025-03-10.md) for get_daily_note/write_daily_note"},"recent_n":{"type":"integer","description":"Max number of daily notes to list (default 10, max 30)"},"append":{"type":"boolean","description":"If true, append to existing note instead of overwrite (default false, for write_daily_note)"},"id":{"type":"string","description":"Structured long-term memory id for get_long_term/delete_long_term"},"topic":{"type":"string","description":"Structured long-term memory stable topic key, e.g. response_style or current_project"},"kind":{"type":"string","description":"Structured long-term memory kind: preference|profile|relationship|project|task|constraint|fact"},"keywords":{"type":"array","items":{"type":"string"},"description":"Structured long-term memory keywords"},"source_type":{"type":"string","description":"Structured long-term memory source type: conversation|manual_tool|system_runtime|external_observation"},"source_scope":{"type":"string","description":"Structured long-term memory source scope: chat|user|world"},"source_chat_id":{"type":"string","description":"Optional long-term memory source chat filter"},"confidence":{"type":"string","description":"Structured long-term memory confidence: low|medium|high"},"freshness":{"type":"string","description":"Structured long-term memory freshness: stable|dynamic|volatile"},"stale_hint":{"type":"string","description":"Structured long-term memory stale hint: none|review_before_use|verify_against_current_state"},"include_stale":{"type":"boolean","description":"Whether query_long_term includes stale records (default false)"},"plane":{"type":"string","description":"Optional desired plane hint: factual|skill|auto. Procedural content is still redirected away from canonical factual memory."}},"required":["op"]}"#
     }
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
         let obj = parse_tool_args(args, "tool_memory_manage")?;
@@ -70,42 +70,6 @@ impl Tool for MemoryManageTool {
                 }
                 self.store.set_memory(content)?;
                 Ok(json!({"op": "set_memory", "ok": true}).to_string())
-            }
-            "get_soul" => {
-                let content = self.store.get_soul()?;
-                Ok(json!({"op": "get_soul", "content": content}).to_string())
-            }
-            "set_soul" => {
-                let content = obj
-                    .get("content")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| Error::config("tool_memory_manage", "missing content"))?;
-                if content.len() > MAX_SOUL_USER_LEN {
-                    return Err(Error::config(
-                        "tool_memory_manage",
-                        format!("content exceeds {} bytes", MAX_SOUL_USER_LEN),
-                    ));
-                }
-                self.store.set_soul(content)?;
-                Ok(json!({"op": "set_soul", "ok": true}).to_string())
-            }
-            "get_user" => {
-                let content = self.store.get_user()?;
-                Ok(json!({"op": "get_user", "content": content}).to_string())
-            }
-            "set_user" => {
-                let content = obj
-                    .get("content")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| Error::config("tool_memory_manage", "missing content"))?;
-                if content.len() > MAX_SOUL_USER_LEN {
-                    return Err(Error::config(
-                        "tool_memory_manage",
-                        format!("content exceeds {} bytes", MAX_SOUL_USER_LEN),
-                    ));
-                }
-                self.store.set_user(content)?;
-                Ok(json!({"op": "set_user", "ok": true}).to_string())
             }
             "list_daily_notes" => {
                 let recent_n = obj.get("recent_n").and_then(|x| x.as_u64()).unwrap_or(10) as usize;

@@ -22,7 +22,7 @@ export type ConfigSubNavItem = {
 };
 
 type ConfigSubNavLayoutProps = {
-  /** 路由前缀，如 `/device-config`、`/soul-user`（无尾部斜杠） */
+  /** 路由前缀，如 `/device-config`（无尾部斜杠） */
   basePath: string;
   items: ConfigSubNavItem[];
 };

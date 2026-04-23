@@ -6,8 +6,7 @@ use crate::state;
 
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let memory_loaded = ctx.memory_store.get_memory().is_ok();
-    let soul_loaded = ctx.memory_store.get_soul().is_ok();
-    let storage_ok = memory_loaded || soul_loaded;
+    let storage_ok = memory_loaded;
     let spiffs_ok = ctx.platform.spiffs_usage();
     let nvs_ok = ctx.platform.config_store().read_string("wifi_ssid").is_ok();
     let last_error = state::get_last_error();
@@ -26,7 +25,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         spiffs_ok,
         nvs_ok,
         memory_loaded,
-        soul_loaded,
         skills_count,
         last_errors_count,
     );

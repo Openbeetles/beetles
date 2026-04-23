@@ -5,39 +5,25 @@ use beetle::Platform;
 use beetle::RuntimeServices;
 use std::sync::Arc;
 
-/// 启动自检：存储可读（memory 或 soul 至少其一成功）。失败返回 false，调用方应 log 并 return。
+/// 启动自检：共享 memory 可读。失败返回 false，调用方应 log 并 return。
 pub(crate) fn startup_self_check(memory_store: &dyn MemoryStore) -> bool {
-    memory_store.get_memory().is_ok() || memory_store.get_soul().is_ok()
+    memory_store.get_memory().is_ok()
 }
 
-/// 首次启动或空存储：当 get_memory 与 get_soul 均失败时写入占位数据，使后续自检可过、业务可进（如引导配置）。
+/// 首次启动或空存储：当 get_memory 失败时写入占位数据，使后续自检可过、业务可进（如引导配置）。
 pub(crate) fn ensure_storage_ready(memory_store: &dyn MemoryStore) {
     let need_memory = memory_store.get_memory().is_err();
-    let need_soul = memory_store.get_soul().is_err();
-    let need_user = memory_store.get_user().is_err();
-    if !need_memory && !need_soul && !need_user {
+    if !need_memory {
         return;
     }
     log::info!(
-        "[{}] preparing default storage files memory_missing={} soul_missing={} user_missing={}",
+        "[{}] preparing default storage files memory_missing={}",
         TAG,
         need_memory,
-        need_soul,
-        need_user
     );
     if need_memory {
         if let Err(error) = memory_store.set_memory("") {
             log::warn!("[{}] set_memory default failed: {}", TAG, error);
-        }
-    }
-    if need_soul {
-        if let Err(error) = memory_store.set_soul("") {
-            log::warn!("[{}] set_soul default failed: {}", TAG, error);
-        }
-    }
-    if need_user {
-        if let Err(error) = memory_store.set_user("") {
-            log::warn!("[{}] set_user default failed: {}", TAG, error);
         }
     }
 }
@@ -47,16 +33,6 @@ pub(crate) fn log_runtime_store_lengths(runtime: &RuntimeServices) {
         log::info!("[{}] memory len={}", TAG, memory.len());
     } else {
         log::warn!("[{}] memory read failed or empty", TAG);
-    }
-    if let Ok(soul) = runtime.memory_store.get_soul() {
-        log::info!("[{}] soul len={}", TAG, soul.len());
-    } else {
-        log::warn!("[{}] soul read failed", TAG);
-    }
-    if let Ok(user) = runtime.memory_store.get_user() {
-        log::info!("[{}] user len={}", TAG, user.len());
-    } else {
-        log::warn!("[{}] user read failed", TAG);
     }
 }
 

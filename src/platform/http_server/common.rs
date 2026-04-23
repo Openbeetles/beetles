@@ -14,7 +14,7 @@ pub const CORS_HEADERS: &[(&str, &str)] = &[
     ("Access-Control-Allow-Origin", "*"),
     ("Access-Control-Allow-Private-Network", "true"),
 ];
-/// CORS + Content-Type: text/plain，用于 GET /api/soul、GET /api/user 的 200 响应。
+/// CORS + Content-Type: text/plain，用于返回纯文本正文的 200 响应。
 pub const CORS_AND_TEXT_PLAIN: &[(&str, &str)] = &[
     ("Access-Control-Allow-Origin", "*"),
     ("Access-Control-Allow-Private-Network", "true"),

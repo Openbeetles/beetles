@@ -629,10 +629,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
                   path === "/device-config"
                     ? pathname === "/device-config" ||
                       pathname.startsWith("/device-config/")
-                    : path === "/soul-user"
-                      ? pathname === "/soul-user" ||
-                        pathname.startsWith("/soul-user/")
-                      : pathname === path;
+                    : pathname === path;
                 const allowNav = canNavigate(path);
                 const handleNavClick = (e: MouseEvent<HTMLElement>) => {
                   if (!allowNav) {
@@ -833,10 +830,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
               path === "/device-config"
                 ? pathname === "/device-config" ||
                   pathname.startsWith("/device-config/")
-                : path === "/soul-user"
-                  ? pathname === "/soul-user" ||
-                    pathname.startsWith("/soul-user/")
-                  : pathname === path;
+                : pathname === path;
             const allowNav = canNavigate(path);
             const handlePinClick = (e: MouseEvent<HTMLElement>) => {
               if (!allowNav) {

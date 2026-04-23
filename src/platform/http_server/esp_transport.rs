@@ -256,22 +256,6 @@ fn read_body_esp<C: Connection>(
                 }
             }
         }
-        RouteBodyMode::Utf8SoulUser => {
-            let max = crate::memory::MAX_SOUL_USER_LEN;
-            match common::read_body_utf8_impl(req, req.content_len(), max) {
-                Ok(s) => Ok(s.into_bytes()),
-                Err(BodyReadError::ReadFailed) => {
-                    let _ = store;
-                    Err(ApiResponse::err_500_key(
-                        api_contract::COMMON_BODY_READ_FAILED,
-                    ))
-                }
-                Err(BodyReadError::InvalidUtf8) => {
-                    let _ = store;
-                    Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
-                }
-            }
-        }
     }
 }
 

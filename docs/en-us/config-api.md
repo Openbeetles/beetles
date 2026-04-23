@@ -14,7 +14,8 @@ Each endpoint is described in terms of purpose, request, and response.
 
 - Base address: during first setup, the common entry is `http://192.168.4.1`; once the device is on your network, use its current address.
 - CORS: `/api/*` supports cross-origin access, and `OPTIONS` can be called directly.
-- Response format: everything is JSON except `GET /api/soul`, `GET /api/user`, `GET /api/skills?name=...`, and `GET /api/metrics?format=prometheus`.
+- Response format: everything is JSON except `GET /api/skills?name=...` and `GET /api/metrics?format=prometheus`.
+- The legacy `/api/soul` and `/api/user` content endpoints are retired and are not part of this contract.
 - Error format:
   - Product and official configuration-surface APIs now return `{"error_key":"..."}` as the stable system-generated error contract.
   - If the failure comes from an upstream third-party provider, the body may also include `upstream_error`, `upstream_status`, `error_stage`, and `provider_kind`.
@@ -801,60 +802,7 @@ Success response: `200 application/json`
 }
 ```
 
-## Content, sessions, skills, and maintenance
-
-**GET /api/soul**
-
-Purpose: read the system text.
-
-Auth: `Activated`
-
-Success response: `200 text/plain`
-
-The response body is the raw text content.
-
-**POST /api/soul**
-
-Purpose: save the system text.
-
-Auth: `Pairing code + CSRF`
-
-Two request forms are accepted:
-
-- `text/plain`: send the raw text directly
-- `application/json`: `{"content":"..."}`
-
-Success response: `200 application/json`
-
-```json
-{
-  "ok": true
-}
-```
-
-**GET /api/user**
-
-Purpose: read the user text.
-
-Auth: `Activated`
-
-Success response: `200 text/plain`
-
-**POST /api/user**
-
-Purpose: save the user text.
-
-Auth: `Pairing code + CSRF`
-
-The request format is the same as `POST /api/soul`.
-
-Success response: `200 application/json`
-
-```json
-{
-  "ok": true
-}
-```
+## Sessions, skills, and maintenance
 
 **GET /api/sessions**
 
@@ -925,8 +873,6 @@ Top-level fields:
 
 - `memory_system_kind`
 - `memory_len`
-- `soul_len`
-- `user_len`
 - `long_term_count`
 - `continuity_capsule_count`
 - `stores`

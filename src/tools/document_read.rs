@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn empty_local_text_returns_warning_instead_of_error() {
         let payload =
-            build_local_document("config/SOUL.md", b"  \n\t", 1_000, "tool_document_read").unwrap();
+            build_local_document("docs/empty.txt", b"  \n\t", 1_000, "tool_document_read").unwrap();
         assert_eq!(payload.kind, "text");
         assert!(payload.content.is_empty());
         assert_eq!(

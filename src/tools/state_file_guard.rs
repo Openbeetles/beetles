@@ -6,10 +6,9 @@ const PROTECTED_STATE_PATHS: &[&str] = &[
     "config/llm.json",
     "config/channels.json",
     "config/wifi.json",
-    "config/SOUL.md",
-    "config/USER.md",
     "memory/MEMORY.md",
 ];
+const RETIRED_STATE_PATHS: &[&str] = &["config/SOUL.md", "config/USER.md"];
 
 const SENSITIVE_READ_PATHS: &[&str] = &[
     "config/llm.json",
@@ -25,6 +24,9 @@ pub(crate) fn ensure_state_path_mutable(rel_path: &str, stage: &'static str) -> 
     if PROTECTED_STATE_PATHS.contains(&rel_path) {
         return Err(Error::config(stage, "path is protected"));
     }
+    if RETIRED_STATE_PATHS.contains(&rel_path) {
+        return Err(Error::config(stage, "path is retired"));
+    }
     Ok(())
 }
 
@@ -33,6 +35,9 @@ pub(crate) fn sanitize_state_file_read<'a>(
     raw: &'a [u8],
     stage: &'static str,
 ) -> Result<Cow<'a, [u8]>> {
+    if RETIRED_STATE_PATHS.contains(&rel_path) {
+        return Err(Error::config(stage, "path is retired"));
+    }
     if !SENSITIVE_READ_PATHS.contains(&rel_path) {
         return Ok(Cow::Borrowed(raw));
     }
@@ -41,4 +46,21 @@ pub(crate) fn sanitize_state_file_read<'a>(
     Ok(Cow::Owned(
         crate::util::redact_sensitive_config_text(text).into_bytes(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_state_path_mutable, sanitize_state_file_read};
+
+    #[test]
+    fn retired_state_paths_are_not_mutable() {
+        let err = ensure_state_path_mutable("config/SOUL.md", "test").unwrap_err();
+        assert!(format!("{err}").contains("path is retired"));
+    }
+
+    #[test]
+    fn retired_state_paths_are_not_readable() {
+        let err = sanitize_state_file_read("config/USER.md", b"legacy", "test").unwrap_err();
+        assert!(format!("{err}").contains("path is retired"));
+    }
 }

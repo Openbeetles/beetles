@@ -41,21 +41,6 @@ const SystemLogsPage = lazy(async () => {
   return { default: mod.SystemLogsPage }
 })
 
-const SoulUserLayout = lazy(async () => {
-  const mod = await import('./pages/soul-user')
-  return { default: mod.SoulUserLayout }
-})
-
-const SoulUserSoulPanel = lazy(async () => {
-  const mod = await import('./pages/soul-user')
-  return { default: mod.SoulUserSoulPanel }
-})
-
-const SoulUserUserPanel = lazy(async () => {
-  const mod = await import('./pages/soul-user')
-  return { default: mod.SoulUserUserPanel }
-})
-
 const SkillsPage = lazy(async () => {
   const mod = await import('./pages/SkillsPage')
   return { default: mod.SkillsPage }
@@ -163,14 +148,13 @@ function App() {
                       element={<Navigate to="/device-config/display" replace />}
                     />
                     <Route path="/system-logs" element={<SystemLogsPage />} />
-                    <Route path="/soul-user" element={<SoulUserLayout />}>
-                      <Route index element={<Navigate to="soul" replace />} />
-                      <Route path="soul" element={<SoulUserSoulPanel />} />
-                      <Route path="user" element={<SoulUserUserPanel />} />
-                    </Route>
                     <Route path="/skills" element={<SkillsPage />} />
                     <Route path="/tools" element={<ToolsPage />} />
                     <Route path="/accounts" element={<AccountsPage />} />
+                    <Route
+                      path="/soul-user"
+                      element={<PlaceholderPage messageKey="common.pageRetired" />}
+                    />
                     <Route path="*" element={<PlaceholderPage />} />
                   </Route>
                 </Routes>

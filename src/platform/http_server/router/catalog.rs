@@ -26,7 +26,6 @@ impl RouteMethod {
 pub(crate) enum RouteBodyMode {
     None,
     Utf8(usize),
-    Utf8SoulUser,
 }
 
 #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
@@ -166,8 +165,6 @@ pub(crate) const ROUTE_MEMORY_MAINTENANCE: &str = "/api/memory/maintenance";
 pub(crate) const ROUTE_CAPABILITY_PACKAGES: &str = "/api/capability_packages";
 pub(crate) const ROUTE_SKILLS: &str = "/api/skills";
 pub(crate) const ROUTE_SKILLS_IMPORT: &str = "/api/skills/import";
-pub(crate) const ROUTE_SOUL: &str = "/api/soul";
-pub(crate) const ROUTE_USER: &str = "/api/user";
 pub(crate) const ROUTE_RESTART: &str = "/api/restart";
 pub(crate) const ROUTE_CONFIG_RESET: &str = "/api/config_reset";
 pub(crate) const ROUTE_WEBHOOK: &str = "/api/webhook";
@@ -429,8 +426,6 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::Windowed,
     ),
     HttpRouteSpec::worker(ROUTE_TOOLS, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::worker(ROUTE_SOUL, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::worker(ROUTE_USER, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::worker_operator(
         ROUTE_SESSIONS,
         RouteMethod::Get,
@@ -501,30 +496,6 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         ROUTE_SKILLS_IMPORT,
         RouteMethod::Options,
         RouteBodyMode::None,
-    ),
-    HttpRouteSpec::worker_operator(
-        ROUTE_SOUL,
-        RouteMethod::Get,
-        RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
-    ),
-    HttpRouteSpec::worker_operator(
-        ROUTE_USER,
-        RouteMethod::Get,
-        RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
-    ),
-    HttpRouteSpec::worker_operator(
-        ROUTE_SOUL,
-        RouteMethod::Post,
-        RouteBodyMode::Utf8SoulUser,
-        OperatorRouteAccess::Windowed,
-    ),
-    HttpRouteSpec::worker_operator(
-        ROUTE_USER,
-        RouteMethod::Post,
-        RouteBodyMode::Utf8SoulUser,
-        OperatorRouteAccess::Windowed,
     ),
 ];
 

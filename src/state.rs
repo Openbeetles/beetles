@@ -12,10 +12,6 @@ const CURRENT_ERROR_TTL_SECS: u64 = 60;
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static CURRENT_ERROR: Mutex<Option<TimedError>> = Mutex::new(None);
 static LAST_ERRORS_COUNT: AtomicUsize = AtomicUsize::new(0);
-/// 最近一次 memory 加载是否成功（由 build_context 等设置，供 diagnose/health 暴露）。
-static MEMORY_LOAD_OK: AtomicBool = AtomicBool::new(false);
-/// 最近一次 soul 加载是否成功。
-static SOUL_LOAD_OK: AtomicBool = AtomicBool::new(false);
 /// 当前 WiFi STA 是否已拿到有效 IP。
 static WIFI_STA_CONNECTED: AtomicBool = AtomicBool::new(false);
 /// 当前 WiFi STA 连通状态建立时间（unix secs）；供外联探测做短暂 settle window。
@@ -101,16 +97,6 @@ fn get_current_error_at(now_secs: u64) -> Option<String> {
 /// 读取当前仍有效的错误摘要；超过窗口后不再把历史错误冒充当前故障。
 pub fn get_current_error() -> Option<String> {
     get_current_error_at(now_unix_secs())
-}
-
-/// 设置最近一次 memory 加载结果（build_context 等调用，供可观测性）。
-pub fn set_memory_load_ok(ok: bool) {
-    MEMORY_LOAD_OK.store(ok, Ordering::Relaxed);
-}
-
-/// 设置最近一次 soul 加载结果。
-pub fn set_soul_load_ok(ok: bool) {
-    SOUL_LOAD_OK.store(ok, Ordering::Relaxed);
 }
 
 /// 更新当前 WiFi STA 状态；业务域只读此状态，不直接依赖 platform helper。

@@ -7,7 +7,6 @@ use crate::error::Error;
 pub const COMMON_INVALID_JSON: &str = "common.invalid_json";
 pub const COMMON_INVALID_UTF8: &str = "common.invalid_utf8";
 pub const COMMON_BODY_READ_FAILED: &str = "common.body_read_failed";
-pub const COMMON_CONTENT_TOO_LONG: &str = "common.content_too_long";
 pub const COMMON_INVALID_URL: &str = "common.invalid_url";
 pub const COMMON_SAVE_FAILED: &str = "common.save_failed";
 pub const COMMON_OPERATION_FAILED: &str = "common.operation_failed";

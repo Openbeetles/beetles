@@ -14,7 +14,8 @@
 
 - 基础地址：首次配置常用 `http://192.168.4.1`；设备入网后用设备当前地址。
 - CORS：`/api/*` 支持跨域，`OPTIONS` 可直接调用。
-- 返回格式：除 `GET /api/soul`、`GET /api/user`、`GET /api/skills?name=...`、`GET /api/metrics?format=prometheus` 外，默认返回 JSON。
+- 返回格式：除 `GET /api/skills?name=...`、`GET /api/metrics?format=prometheus` 外，默认返回 JSON。
+- 历史 `/api/soul`、`/api/user` 文本接口已退役，不属于当前合同。
 - 错误格式：
   - 产品面与正式配置面 API 统一返回 `{"error_key":"..."}`，作为系统生成错误的稳定合同。
   - 若失败来自第三方上游，还会附带 `upstream_error`，并可能带 `upstream_status`、`error_stage`、`provider_kind`。
@@ -808,59 +809,6 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 ## 内容、会话、技能与维护接口
 
-**GET /api/soul**
-
-用途：读取系统文本。
-
-鉴权：`已激活`
-
-成功响应：`200 text/plain`
-
-返回体就是原始文本内容。
-
-**POST /api/soul**
-
-用途：保存系统文本。
-
-鉴权：`配对码 + CSRF`
-
-请求体支持两种形式：
-
-- `text/plain`：直接传原始文本
-- `application/json`：`{"content":"..."}`
-
-成功响应：`200 application/json`
-
-```json
-{
-  "ok": true
-}
-```
-
-**GET /api/user**
-
-用途：读取用户文本。
-
-鉴权：`已激活`
-
-成功响应：`200 text/plain`
-
-**POST /api/user**
-
-用途：保存用户文本。
-
-鉴权：`配对码 + CSRF`
-
-请求体和 `POST /api/soul` 相同。
-
-成功响应：`200 application/json`
-
-```json
-{
-  "ok": true
-}
-```
-
 **GET /api/sessions**
 
 用途：列出会话，或读取单个会话最近消息。
@@ -930,8 +878,6 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 - `memory_system_kind`
 - `memory_len`
-- `soul_len`
-- `user_len`
 - `long_term_count`
 - `continuity_capsule_count`
 - `stores`

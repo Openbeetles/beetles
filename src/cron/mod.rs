@@ -200,22 +200,6 @@ mod tests {
             Ok(())
         }
 
-        fn get_soul(&self) -> crate::error::Result<String> {
-            Ok(String::new())
-        }
-
-        fn set_soul(&self, _content: &str) -> crate::error::Result<()> {
-            Ok(())
-        }
-
-        fn get_user(&self) -> crate::error::Result<String> {
-            Ok(String::new())
-        }
-
-        fn set_user(&self, _content: &str) -> crate::error::Result<()> {
-            Ok(())
-        }
-
         fn list_daily_note_names(&self, _recent_n: usize) -> crate::error::Result<Vec<String>> {
             Ok(Vec::new())
         }

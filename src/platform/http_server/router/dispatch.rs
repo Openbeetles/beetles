@@ -29,7 +29,7 @@ use super::catalog::{
     ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH, ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS,
     ROUTE_METRICS, ROUTE_OPERATOR_STATUS, ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE,
     ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT, ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT,
-    ROUTE_SOUL, ROUTE_SYSTEM_INFO, ROUTE_TOOLS, ROUTE_USER, ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
+    ROUTE_SYSTEM_INFO, ROUTE_TOOLS, ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -1019,62 +1019,6 @@ pub fn dispatch(
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::skills::import(ctx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
-        ("GET", ROUTE_SOUL) => {
-            if let Some(r) = auth::require_activated(store) {
-                return Ok(api_to_out(r));
-            }
-            match handlers::soul::get_body(ctx) {
-                Ok(content) => Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_AND_TEXT_PLAIN,
-                    content.into_bytes(),
-                )),
-                Err(_) => Ok(api_to_out(ApiResponse::err_500_key(
-                    "common.operation_failed",
-                ))),
-            }
-        }
-        ("GET", ROUTE_USER) => {
-            if let Some(r) = auth::require_activated(store) {
-                return Ok(api_to_out(r));
-            }
-            match handlers::user::get_body(ctx) {
-                Ok(content) => Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_AND_TEXT_PLAIN,
-                    content.into_bytes(),
-                )),
-                Err(_) => Ok(api_to_out(ApiResponse::err_500_key(
-                    "common.operation_failed",
-                ))),
-            }
-        }
-        ("POST", ROUTE_SOUL) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let is_json = incoming
-                .header_ci("Content-Type")
-                .map(|ct| ct.starts_with("application/json"))
-                .unwrap_or(false);
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::soul::post(ctx, body_str.to_string(), is_json);
-            Ok(api_to_out(r))
-        }
-        ("POST", ROUTE_USER) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            let is_json = incoming
-                .header_ci("Content-Type")
-                .map(|ct| ct.starts_with("application/json"))
-                .unwrap_or(false);
-            let body_str = utf8_body(&incoming.body)?;
-            let r = handlers::user::post(ctx, body_str.to_string(), is_json);
             Ok(api_to_out(r))
         }
         ("POST", ROUTE_RESTART) => {

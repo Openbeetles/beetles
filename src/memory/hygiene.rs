@@ -502,18 +502,6 @@ mod tests {
         fn set_memory(&self, _content: &str) -> Result<()> {
             Ok(())
         }
-        fn get_soul(&self) -> Result<String> {
-            Ok(String::new())
-        }
-        fn set_soul(&self, _content: &str) -> Result<()> {
-            Ok(())
-        }
-        fn get_user(&self) -> Result<String> {
-            Ok(String::new())
-        }
-        fn set_user(&self, _content: &str) -> Result<()> {
-            Ok(())
-        }
         fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>> {
             let mut names = self
                 .notes

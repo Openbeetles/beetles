@@ -46,10 +46,6 @@ const PATH_TO_META: Record<string, { titleKey: string; iconSrc: string }> = {
     titleKey: "systemLogs.pageTitle",
     iconSrc: NAV_ICON_BY_PATH["/system-logs"],
   },
-  "/soul-user": {
-    titleKey: "soulUser.pageTitle",
-    iconSrc: NAV_ICON_BY_PATH["/soul-user"],
-  },
   "/skills": {
     titleKey: "skills.pageTitle",
     iconSrc: NAV_ICON_BY_PATH["/skills"],
@@ -67,9 +63,6 @@ const PATH_TO_META: Record<string, { titleKey: string; iconSrc: string }> = {
 function metaForPathname(pathname: string) {
   if (pathname.startsWith("/device-config")) {
     return PATH_TO_META["/device-config"];
-  }
-  if (pathname.startsWith("/soul-user")) {
-    return PATH_TO_META["/soul-user"];
   }
   return PATH_TO_META[pathname];
 }

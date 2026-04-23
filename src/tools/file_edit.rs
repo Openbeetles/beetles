@@ -514,12 +514,13 @@ mod tests {
     #[test]
     fn protected_paths_are_rejected() {
         let fs = Arc::new(MockStateFs::default());
-        fs.write("config/USER.md", b"name: test").unwrap();
+        fs.write("config/channels.json", br#"{"enabled_channel":"telegram"}"#)
+            .unwrap();
         let tool = FileEditTool::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
 
         let err = tool
             .execute(
-                r#"{"path":"config/USER.md","mode":"prepend","content":"x"}"#,
+                r#"{"path":"config/channels.json","mode":"prepend","content":"x"}"#,
                 &mut MockToolContext,
             )
             .unwrap_err();

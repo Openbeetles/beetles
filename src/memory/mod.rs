@@ -418,8 +418,6 @@ pub(crate) use write_coordination::whole_record_lease_advanced;
 
 /// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
 pub const MAX_MEMORY_CONTENT_LEN: usize = 256 * 1024;
-/// SOUL/USER 单次写入上限（实现应拒绝超长）。
-pub const MAX_SOUL_USER_LEN: usize = 32 * 1024;
 
 /// 单条会话消息最大长度（role + content 序列化后）。实现应拒绝超长单条。
 pub const MAX_SESSION_MESSAGE_LEN: usize = 4 * 1024;
@@ -428,10 +426,6 @@ pub const MAX_SESSION_ENTRIES: usize = 128;
 
 /// 相对路径（实现需拼接 SPIFFS_BASE）：MEMORY 文件。
 pub const REL_PATH_MEMORY: &str = "memory/MEMORY.md";
-/// 相对路径：SOUL 配置。
-pub const REL_PATH_SOUL: &str = "config/SOUL.md";
-/// 相对路径：USER 配置。
-pub const REL_PATH_USER: &str = "config/USER.md";
 /// 相对路径：每日笔记目录。
 pub const REL_PATH_DAILY_DIR: &str = "memory/daily";
 /// 相对路径：会话文件所在目录（文件名为 {chat_id}.jsonl）。短路径以满足 ESP-IDF VFS 路径长度上限（约 64 字符）。
@@ -655,12 +649,6 @@ pub trait PendingRetryStore: Send + Sync {
 pub trait MemoryStore: Send + Sync {
     fn get_memory(&self) -> Result<String>;
     fn set_memory(&self, content: &str) -> Result<()>;
-    fn get_soul(&self) -> Result<String>;
-    /// 写入 SOUL 配置（config/SOUL.md）。实现应拒绝 content.len() > MAX_SOUL_USER_LEN。
-    fn set_soul(&self, content: &str) -> Result<()>;
-    fn get_user(&self) -> Result<String>;
-    /// 写入 USER 配置（config/USER.md）。实现应拒绝 content.len() > MAX_SOUL_USER_LEN。
-    fn set_user(&self, content: &str) -> Result<()>;
     /// 最近 N 条每日笔记的文件名（如 YYYY-MM-DD.md），按名称降序（最新在前）。
     fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>>;
     fn get_daily_note(&self, name: &str) -> Result<String>;
@@ -788,7 +776,7 @@ pub trait SessionStore: Send + Sync {
     }
 }
 
-/// 系统提示聚合：SOUL + USER + MEMORY + 近期每日笔记，总长度不超过 max_len。
+/// 系统提示聚合：MEMORY + 近期每日笔记，总长度不超过 max_len。
 /// 截断策略：按字符边界逐段追加；预算不足时在当前段截断并停止后续拼装。
 /// 纯函数，供 agent::context 使用；可 host 单测。
 fn push_bounded_char_boundary(out: &mut String, input: &str, max_len: usize) -> bool {
@@ -810,34 +798,12 @@ fn push_bounded_char_boundary(out: &mut String, input: &str, max_len: usize) -> 
     false
 }
 
-pub(crate) fn append_system_prompt_base(
-    out: &mut String,
-    soul: &str,
-    user: &str,
-    memory: &str,
-    max_len: usize,
-) {
-    const SEP: &str = "\n\n";
+pub(crate) fn append_system_prompt_base(out: &mut String, memory: &str, max_len: usize) {
     out.clear();
-    let base_hint = soul
-        .len()
-        .saturating_add(user.len())
-        .saturating_add(memory.len())
-        .saturating_add(SEP.len() * 2);
-    if out.capacity() < base_hint.min(max_len) {
-        out.reserve(base_hint.min(max_len) - out.capacity());
-    }
-    if !push_bounded_char_boundary(out, soul.trim(), max_len) {
-        return;
-    }
-    if !push_bounded_char_boundary(out, SEP, max_len) {
-        return;
-    }
-    if !push_bounded_char_boundary(out, user.trim(), max_len) {
-        return;
-    }
-    if !push_bounded_char_boundary(out, SEP, max_len) {
-        return;
+    let base_hint = memory.len();
+    let reserve_hint = base_hint.min(max_len);
+    if out.capacity() < reserve_hint {
+        out.reserve(reserve_hint - out.capacity());
     }
     let _ = push_bounded_char_boundary(out, memory.trim(), max_len);
 }
@@ -857,15 +823,9 @@ pub(crate) fn append_system_prompt_daily_note(
     push_bounded_char_boundary(out, note.trim(), max_len)
 }
 
-pub fn build_system_prompt(
-    soul: &str,
-    user: &str,
-    memory: &str,
-    daily_notes: &[String],
-    max_len: usize,
-) -> String {
-    let mut out = String::with_capacity(max_len.min(soul.len() + user.len() + memory.len() + 512));
-    append_system_prompt_base(&mut out, soul, user, memory, max_len);
+pub fn build_system_prompt(memory: &str, daily_notes: &[String], max_len: usize) -> String {
+    let mut out = String::with_capacity(max_len.min(memory.len() + 512));
+    append_system_prompt_base(&mut out, memory, max_len);
     for note in daily_notes {
         if !append_system_prompt_daily_note(&mut out, note, max_len) {
             break;
@@ -920,20 +880,17 @@ mod tests {
 
     #[test]
     fn build_system_prompt_respects_max_len() {
-        let soul = "Soul";
-        let user = "User";
         let memory = "Memory";
         let notes = vec!["Note1".to_string(), "Note2".to_string()];
-        let out = build_system_prompt(soul, user, memory, &notes, 20);
+        let out = build_system_prompt(memory, &notes, 20);
         assert!(out.len() <= 20);
     }
 
     #[test]
     fn build_system_prompt_order() {
-        let out = build_system_prompt("A", "B", "C", &[], 100);
-        assert!(out.starts_with("A"));
-        assert!(out.contains("B"));
-        assert!(out.contains("C"));
+        let out = build_system_prompt("Memory", &["Note".to_string()], 100);
+        assert!(out.starts_with("Memory"));
+        assert!(out.contains("Note"));
     }
 
     #[derive(Default)]

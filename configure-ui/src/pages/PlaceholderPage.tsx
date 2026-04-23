@@ -3,7 +3,13 @@ import Typography from "@mui/material/Typography";
 import Box from "@mui/material/Box";
 import { PAGE_SCROLL_CANVAS_SX } from "../theme/panelStyles";
 
-export function PlaceholderPage() {
+type PlaceholderPageProps = {
+  messageKey?: string;
+};
+
+export function PlaceholderPage({
+  messageKey = "common.pageComingSoon",
+}: PlaceholderPageProps) {
   const { t } = useTranslation();
   return (
     <Box
@@ -23,7 +29,7 @@ export function PlaceholderPage() {
           lineHeight: "var(--line-height-relaxed)",
         }}
       >
-        {t("common.pageComingSoon")}
+        {t(messageKey)}
       </Typography>
     </Box>
   );

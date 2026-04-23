@@ -32,8 +32,6 @@ const MEMORY_STATUS_RECENT_MESSAGES: usize = 24;
 struct MemoryStoreStatus {
     runtime_skill_count: usize,
     memory_len: usize,
-    soul_len: usize,
-    user_len: usize,
     long_term_count: usize,
     continuity_capsule_count: usize,
 }
@@ -122,8 +120,6 @@ struct MemoryLearningStatus {
 struct MemoryStatusBody {
     memory_system_kind: String,
     memory_len: usize,
-    soul_len: usize,
-    user_len: usize,
     long_term_count: usize,
     continuity_capsule_count: usize,
     stores: MemoryStoreStatus,
@@ -166,16 +162,6 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
     let memory_len = ctx
         .memory_store
         .get_memory()
-        .map(|s| s.len())
-        .unwrap_or_default();
-    let soul_len = ctx
-        .memory_store
-        .get_soul()
-        .map(|s| s.len())
-        .unwrap_or_default();
-    let user_len = ctx
-        .memory_store
-        .get_user()
         .map(|s| s.len())
         .unwrap_or_default();
     let long_term_count = ctx
@@ -295,15 +281,11 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
     let payload = MemoryStatusBody {
         memory_system_kind: ctx.platform.memory_system_kind().as_str().to_string(),
         memory_len,
-        soul_len,
-        user_len,
         long_term_count,
         continuity_capsule_count,
         stores: MemoryStoreStatus {
             runtime_skill_count,
             memory_len,
-            soul_len,
-            user_len,
             long_term_count,
             continuity_capsule_count,
         },

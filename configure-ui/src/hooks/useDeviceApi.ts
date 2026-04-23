@@ -12,7 +12,6 @@ import * as displayApi from '../api/endpoints/display'
 import * as hardwareApi from '../api/endpoints/hardware'
 import * as audioApi from '../api/endpoints/audio'
 import * as pairingCodeApi from '../api/endpoints/pairingCode'
-import * as soulUserApi from '../api/endpoints/soulUser'
 import * as skillsApi from '../api/endpoints/skills'
 import * as toolsApi from '../api/endpoints/tools'
 import * as systemApi from '../api/endpoints/system'
@@ -103,14 +102,6 @@ export function useDeviceApi() {
           bus: HardwareDiscoveryBus,
           capability: HardwareDiscoveryCapability,
         ) => hardwareApi.discoverHardware(baseUrl ?? '', pairingCode ?? undefined, bus, capability),
-      },
-      soul: {
-        get: () => soulUserApi.getSoul(baseUrl ?? ''),
-        save: (content: string) => soulUserApi.saveSoul(baseUrl ?? '', (pairingCode ?? '').trim(), content),
-      },
-      user: {
-        get: () => soulUserApi.getUser(baseUrl ?? ''),
-        save: (content: string) => soulUserApi.saveUser(baseUrl ?? '', (pairingCode ?? '').trim(), content),
       },
       tools: {
         list: () => toolsApi.listTools(baseUrl ?? ''),

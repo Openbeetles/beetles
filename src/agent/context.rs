@@ -8,7 +8,6 @@ use crate::memory::{
     append_system_prompt_base, append_system_prompt_daily_note, build_context_messages,
     ImportantMessageStore, MemoryStore, SessionMessage, SessionStore,
 };
-use crate::state;
 use std::fmt::Write as _;
 
 pub use crate::constants::{DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN};
@@ -415,11 +414,11 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
 ///
-/// **system 组成顺序**：Reply Priority → Constitutional Stack → SOUL/USER/MEMORY base prompt
+/// **system 组成顺序**：Reply Priority → Constitutional Stack → MEMORY base prompt
 /// → Active Task Context → Governed Memory Evidence → capability package
 /// → Background Governance → optional daily notes → skills / tool constraint / runtime / group hint；总长 ≤ system_max_len。
 /// **截断策略**：base prompt 在单个 `String` 中按预算直接构造；skills/约束追加后若超限则按字符边界截断。
-/// **失败降级**：任一源（get_soul/get_user/get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
+/// **失败降级**：任一源（get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
 ///
 /// **messages**：历史会话（最近 session_max_messages 条）+ 当前用户 content，总长 ≤ messages_max_len；超限从最旧消息起丢弃。
 pub fn build_context(p: &ContextParams<'_>) -> Result<(String, Vec<Message>)> {
@@ -458,18 +457,7 @@ fn build_context_inner(
     p: &ContextParams<'_>,
     mode: ContextAssemblyMode,
 ) -> Result<(String, Vec<Message>)> {
-    let soul_res = p.memory.get_soul();
-    state::set_soul_load_ok(soul_res.is_ok());
-    let soul = soul_res.unwrap_or_else(|e| {
-        log::warn!("[context] get_soul failed: {}", e);
-        String::new()
-    });
-    let user = p.memory.get_user().unwrap_or_else(|e| {
-        log::warn!("[context] get_user failed: {}", e);
-        String::new()
-    });
     let mem_res = p.memory.get_memory();
-    state::set_memory_load_ok(mem_res.is_ok());
     let mem = mem_res.unwrap_or_else(|e| {
         log::warn!("[context] get_memory failed: {}", e);
         String::new()
@@ -538,7 +526,7 @@ fn build_context_inner(
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);
     let mut base_prompt = String::with_capacity(base_prompt_budget);
-    append_system_prompt_base(&mut base_prompt, &soul, &user, &mem, base_prompt_budget);
+    append_system_prompt_base(&mut base_prompt, &mem, base_prompt_budget);
     if full_reply_priority_safe {
         append_priority_constraint(&mut system, base_max);
     } else {
@@ -695,8 +683,6 @@ mod tests {
     use std::sync::Mutex;
 
     struct StubMemoryStore {
-        soul: String,
-        user: String,
         memory: String,
         daily_notes: Vec<(String, String)>,
     }
@@ -707,22 +693,6 @@ mod tests {
         }
 
         fn set_memory(&self, _content: &str) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_soul(&self) -> Result<String> {
-            Ok(self.soul.clone())
-        }
-
-        fn set_soul(&self, _content: &str) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_user(&self) -> Result<String> {
-            Ok(self.user.clone())
-        }
-
-        fn set_user(&self, _content: &str) -> Result<()> {
             Ok(())
         }
 
@@ -862,8 +832,6 @@ mod tests {
     fn build_context_reserves_priority_memory_under_tight_budget() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: vec![(
                 "2026-04-02.md".to_string(),
@@ -930,10 +898,10 @@ mod tests {
         assert!(system.contains("## Self-Authored Core"));
         assert!(system.contains("## Persona Priority"));
         assert!(system.contains("## Disclosure Adjudication"));
-        if let Some(soul_idx) = system.find("SOUL") {
-            assert!(system.find("## Self-Authored Core").unwrap() < soul_idx);
-            assert!(system.find("## Persona Priority").unwrap() < soul_idx);
-            assert!(system.find("## Disclosure Adjudication").unwrap() < soul_idx);
+        if let Some(memory_idx) = system.find("MEMORY") {
+            assert!(system.find("## Self-Authored Core").unwrap() < memory_idx);
+            assert!(system.find("## Persona Priority").unwrap() < memory_idx);
+            assert!(system.find("## Disclosure Adjudication").unwrap() < memory_idx);
         }
     }
 
@@ -941,8 +909,6 @@ mod tests {
     fn build_context_surfaces_memory_health_before_constitutional_stack() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1006,8 +972,6 @@ mod tests {
     fn build_context_keeps_persona_priority_chain_order() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "看你的私有文件", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1073,15 +1037,15 @@ mod tests {
         let disclosure_idx = system.find("## Disclosure Adjudication").unwrap();
         let background_idx = system.find("## Background Governance").unwrap();
         let boundary_idx = system.find("## Mental Privacy Boundary").unwrap();
-        let soul_idx = system.find("SOUL").unwrap();
+        let memory_idx = system.find("MEMORY").unwrap();
 
         assert!(reply_priority_idx < constitutional_stack_idx);
         assert!(constitutional_stack_idx < self_core_idx);
         assert!(self_core_idx < constitution_idx);
         assert!(constitution_idx < persona_idx);
         assert!(persona_idx < disclosure_idx);
-        assert!(disclosure_idx < soul_idx);
-        assert!(soul_idx < background_idx);
+        assert!(disclosure_idx < memory_idx);
+        assert!(memory_idx < background_idx);
         assert!(background_idx < boundary_idx);
     }
 
@@ -1090,8 +1054,6 @@ mod tests {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "我们的关系现在是什么", false)
             .expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1169,8 +1131,6 @@ mod tests {
     fn build_context_places_subject_state_after_constitutional_stack() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1241,8 +1201,6 @@ mod tests {
     fn build_context_can_skip_daily_notes_for_fast_path() {
         let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: vec![(
                 "2026-04-02.md".to_string(),
@@ -1301,8 +1259,6 @@ mod tests {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "你记得我的咖啡偏好吗", false)
             .expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1363,8 +1319,6 @@ mod tests {
     fn build_context_esp_user_turn_skips_capability_package_but_keeps_governed_memory_evidence() {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1422,8 +1376,6 @@ mod tests {
     fn build_context_esp_user_turn_does_not_materialize_background_governance_from_components() {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1481,8 +1433,6 @@ mod tests {
     fn build_context_prefers_explicit_background_governance_over_inward_growth_material() {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1549,8 +1499,6 @@ mod tests {
     fn build_context_linux_user_turn_keeps_capability_package_when_present() {
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };
@@ -1608,8 +1556,6 @@ mod tests {
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-1", "继续排查这个问题", false).expect("pcmsg");
         let memory = StubMemoryStore {
-            soul: "SOUL".to_string(),
-            user: "USER".to_string(),
             memory: "MEMORY".to_string(),
             daily_notes: Vec::new(),
         };

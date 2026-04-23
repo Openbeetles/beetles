@@ -2,10 +2,7 @@
 //! MemoryStore implementation over SPIFFS.
 
 use crate::error::{Error, Result};
-use crate::memory::{
-    MemoryStore, MAX_MEMORY_CONTENT_LEN, MAX_SOUL_USER_LEN, REL_PATH_DAILY_DIR, REL_PATH_MEMORY,
-    REL_PATH_SOUL, REL_PATH_USER,
-};
+use crate::memory::{MemoryStore, MAX_MEMORY_CONTENT_LEN, REL_PATH_DAILY_DIR, REL_PATH_MEMORY};
 use std::path::PathBuf;
 
 use super::{list_dir, read_file, state_path_join, write_file};
@@ -47,44 +44,6 @@ impl MemoryStore for SpiffsMemoryStore {
             ));
         }
         write_file(full_path(REL_PATH_MEMORY), content.as_bytes())
-    }
-
-    fn get_soul(&self) -> Result<String> {
-        let buf = read_file(full_path(REL_PATH_SOUL))?;
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    }
-
-    fn set_soul(&self, content: &str) -> Result<()> {
-        if content.len() > MAX_SOUL_USER_LEN {
-            return Err(Error::config(
-                "set_soul",
-                format!(
-                    "content length {} exceeds {}",
-                    content.len(),
-                    MAX_SOUL_USER_LEN
-                ),
-            ));
-        }
-        write_file(full_path(REL_PATH_SOUL), content.as_bytes())
-    }
-
-    fn get_user(&self) -> Result<String> {
-        let buf = read_file(full_path(REL_PATH_USER))?;
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    }
-
-    fn set_user(&self, content: &str) -> Result<()> {
-        if content.len() > MAX_SOUL_USER_LEN {
-            return Err(Error::config(
-                "set_user",
-                format!(
-                    "content length {} exceeds {}",
-                    content.len(),
-                    MAX_SOUL_USER_LEN
-                ),
-            ));
-        }
-        write_file(full_path(REL_PATH_USER), content.as_bytes())
     }
 
     fn list_daily_note_names(&self, recent_n: usize) -> Result<Vec<String>> {
