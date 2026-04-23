@@ -1,12 +1,10 @@
 use crate::error::{Error, Result};
 use crate::office::{
     normalize_google_api_base_url, normalize_microsoft_graph_base_url,
-    OfficeAuthorityBackedCredentialStoreCore, OfficeAuthoritySource, OfficeCapability,
-    OfficeCredential, OfficeService, GOOGLE_DRIVE_DEFAULT_BASE_URL,
-    MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    office_refactor_helpers::define_office_backed_credential_store, OfficeCapability,
+    OfficeCredential, GOOGLE_DRIVE_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub const OFFICE_METADATA_DOCUMENTS_USERNAME: &str = "documents_username";
 pub const OFFICE_METADATA_DOCUMENTS_BASE_URL: &str = "documents_base_url";
@@ -105,47 +103,14 @@ impl DocumentsProviderCredential {
     }
 }
 
-#[derive(Clone)]
-pub struct OfficeBackedDocumentsProviderCredentialStore {
-    core: OfficeAuthorityBackedCredentialStoreCore,
-}
-
-impl OfficeBackedDocumentsProviderCredentialStore {
-    pub fn new(office: OfficeService) -> Self {
-        Self {
-            core: OfficeAuthorityBackedCredentialStoreCore::new(office),
-        }
-    }
-
-    pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
-        Self {
-            core: OfficeAuthorityBackedCredentialStoreCore::with_authority(authority),
-        }
-    }
-}
-
-impl DocumentsProviderCredentialStore for OfficeBackedDocumentsProviderCredentialStore {
-    fn get(&self, account_key: &str) -> Result<Option<DocumentsProviderCredential>> {
-        self.core.get_for_capability(
-            OfficeCapability::Documents,
-            account_key,
-            documents_credential_from_office,
-        )
-    }
-
-    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.core
-            .find_account_keys_by_provider(OfficeCapability::Documents, provider)
-    }
-
-    fn list_statuses(&self) -> Result<Vec<DocumentsProviderCredentialStatus>> {
-        self.core.list_statuses_for_capability(
-            OfficeCapability::Documents,
-            |account, credential| {
-                Ok(documents_credential_from_office(account, credential)?.status())
-            },
-        )
-    }
+define_office_backed_credential_store! {
+    store = OfficeBackedDocumentsProviderCredentialStore,
+    trait = DocumentsProviderCredentialStore,
+    credential = DocumentsProviderCredential,
+    status = DocumentsProviderCredentialStatus,
+    capability = OfficeCapability::Documents,
+    from_office = documents_credential_from_office,
+    status_from_office = |account, credential| Ok(documents_credential_from_office(account, credential)?.status())
 }
 
 pub(crate) fn documents_credential_from_office(
@@ -352,7 +317,7 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
     };
     use std::collections::BTreeMap;
     use std::sync::Mutex;

@@ -138,74 +138,69 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
         == 0
 }
 
-/// 从 URI 中解析 query 参数 token 的值；无 token 或格式不对返回 None。
-pub fn token_from_uri(uri: &str) -> Option<&str> {
+/// 从 URI 中按不区分大小写的 key 提取 query 参数值；空值视为缺失。
+pub fn query_param_from_uri<'a>(uri: &'a str, key: &str) -> Option<&'a str> {
     let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
     for pair in query.split('&') {
         let mut it = pair.splitn(2, '=');
-        if it.next()?.eq_ignore_ascii_case("token") {
-            return it.next().filter(|s| !s.is_empty());
+        if it
+            .next()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(key))
+        {
+            return it.next().filter(|value| !value.trim().is_empty());
         }
     }
     None
+}
+
+/// 从 URI 中提取布尔型 query flag；无值时视为 true。
+pub fn query_flag_from_uri(uri: &str, key: &str) -> bool {
+    let query = uri.find('?').map(|index| &uri[index + 1..]).unwrap_or("");
+    query.split('&').any(|pair| {
+        let mut it = pair.splitn(2, '=');
+        let Some(candidate) = it.next() else {
+            return false;
+        };
+        if !candidate.eq_ignore_ascii_case(key) {
+            return false;
+        }
+        match it.next().map(str::trim) {
+            None => true,
+            Some("") => true,
+            Some("1" | "true" | "yes" | "on") => true,
+            Some(_) => false,
+        }
+    })
+}
+
+/// 从 URI 中解析 query 参数 token 的值；无 token 或格式不对返回 None。
+pub fn token_from_uri(uri: &str) -> Option<&str> {
+    query_param_from_uri(uri, "token")
 }
 
 /// 从 URI 中解析 query 参数 code 的值（配对码）；无或空返回 None。
 pub fn code_from_uri(uri: &str) -> Option<&str> {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next()?.eq_ignore_ascii_case("code") {
-            return it.next().filter(|s| !s.is_empty());
-        }
-    }
-    None
+    query_param_from_uri(uri, "code")
 }
 
 /// 从 URI 中解析 query 参数 restart 是否为 1；用于 POST /api/config/wifi 保存成功后可选触发重启。
 pub fn restart_requested_from_uri(uri: &str) -> bool {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next().is_some_and(|k| k.eq_ignore_ascii_case("restart")) {
-            return it.next().is_some_and(|v| v.trim() == "1");
-        }
-    }
-    false
+    query_param_from_uri(uri, "restart").is_some_and(|value| value.trim() == "1")
 }
 
 /// 从 URI 中解析 query 参数 name 的值；无或空返回 None。
 pub fn name_from_uri(uri: &str) -> Option<String> {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next()?.eq_ignore_ascii_case("name") {
-            return it
-                .next()
-                .filter(|s| !s.is_empty())
-                .map(crate::util::percent_decode_query);
-        }
-    }
-    None
+    query_param_from_uri(uri, "name").map(crate::util::percent_decode_query)
 }
 
 /// 从 URI 中解析 query 参数 channel 的值；无或空返回 "stable"。仅 OTA 检查更新时使用。
 #[cfg(feature = "ota")]
 pub fn channel_from_uri(uri: &str) -> String {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        let key = match it.next() {
-            Some(k) => k,
-            None => continue,
-        };
-        if !key.eq_ignore_ascii_case("channel") {
-            continue;
-        }
-        let v = it.next().unwrap_or("stable").trim();
-        return if v.is_empty() { "stable" } else { v }.to_string();
-    }
-    "stable".to_string()
+    query_param_from_uri(uri, "channel")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("stable")
+        .to_string()
 }
 
 /// POST /api/config/wifi 请求体。

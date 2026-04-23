@@ -79,10 +79,7 @@ pub use operator::{
     ProgrammableReasoningTimeline, ProgrammableReasoningTimelineEvent,
     ProgrammableReasoningToolUsageSummary, ProgrammableReasoningUsageAnalytics,
 };
-pub use proposal::{
-    programmable_reasoning_proposal_kinds, ProgrammableReasoningProposal,
-    ProgrammableReasoningProposalKind, ProgrammableReasoningProposalScope,
-};
+pub use proposal::{programmable_reasoning_proposal_kinds, ProgrammableReasoningProposalKind};
 pub use protocol_frame::{
     validate_protocol_frame_result, ProtocolFieldEncoding, ProtocolFrameByteRange,
     ProtocolFrameDirection, ProtocolFrameEntry, ProtocolFrameField, ProtocolFrameResult,

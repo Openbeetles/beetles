@@ -5,8 +5,9 @@ mod learning;
 
 use crate::error::{Error, Result};
 use crate::util::truncate_content_to_max;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Reverse;
+use std::fmt;
 
 pub(crate) use learning::retrieve_task_learning_hits_with_backend;
 pub use learning::{
@@ -74,11 +75,57 @@ impl TaskRunStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskRunKind {
-    #[default]
-    TaskExecution,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TaskRunKind;
+
+impl TaskRunKind {
+    #[allow(non_upper_case_globals)]
+    pub const TaskExecution: Self = Self;
+}
+
+impl Serialize for TaskRunKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str("task_execution")
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskRunKind {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TaskRunKindVisitor;
+
+        impl<'de> de::Visitor<'de> for TaskRunKindVisitor {
+            type Value = TaskRunKind;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("\"task_execution\"")
+            }
+
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(TaskRunKind::TaskExecution)
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "task_execution" => Ok(TaskRunKind::TaskExecution),
+                    other => Err(E::unknown_variant(other, &["task_execution"])),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(TaskRunKindVisitor)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

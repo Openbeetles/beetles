@@ -37,6 +37,11 @@ mod integration_topology;
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 mod microsoft_graph;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub(crate) mod office_refactor_helpers;
 mod policy;
 #[cfg(all(
     feature = "capability_office",

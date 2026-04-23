@@ -2,6 +2,7 @@
 //! Transport-agnostic routing for the config HTTP API; shared by ESP and Linux.
 
 pub(crate) mod auth;
+pub(crate) mod catalog;
 mod dispatch;
 mod types;
 

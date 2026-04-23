@@ -18,6 +18,19 @@ pub struct SystemDiagnosisInput<'a> {
     pub wifi_connected: bool,
 }
 
+pub(crate) fn visit_runtime_capability_degradations(
+    runtime_capabilities: &[RuntimeCapabilityState],
+    mut on_degradation: impl FnMut(&RuntimeCapabilityState, RuntimeCapabilityStatus),
+) {
+    for capability in runtime_capabilities {
+        match capability.status {
+            RuntimeCapabilityStatus::Offline
+            | RuntimeCapabilityStatus::Degraded
+            | RuntimeCapabilityStatus::Online => on_degradation(capability, capability.status),
+        }
+    }
+}
+
 pub fn build_system_diagnosis(input: SystemDiagnosisInput<'_>) -> DiagnosisResult {
     let mut findings = Vec::new();
     let mut suspected_root_causes = Vec::new();
@@ -120,27 +133,31 @@ pub fn build_system_diagnosis(input: SystemDiagnosisInput<'_>) -> DiagnosisResul
         ));
     }
 
-    for capability in input.runtime_capabilities {
-        if capability.status == RuntimeCapabilityStatus::Offline {
-            degraded_by.push(DiagnosisDegradation::new(
-                capability.id,
-                format!("runtime capability {} is offline", capability.id),
-            ));
-            evidence.push(DiagnosisEvidence::new(
-                format!("runtime_capability.{}.status", capability.id),
-                "offline",
-            ));
-        } else if capability.status == RuntimeCapabilityStatus::Degraded {
-            degraded_by.push(DiagnosisDegradation::new(
-                capability.id,
-                format!("runtime capability {} is degraded", capability.id),
-            ));
-            evidence.push(DiagnosisEvidence::new(
-                format!("runtime_capability.{}.status", capability.id),
-                "degraded",
-            ));
+    visit_runtime_capability_degradations(&input.runtime_capabilities, |capability, status| {
+        match status {
+            RuntimeCapabilityStatus::Offline => {
+                degraded_by.push(DiagnosisDegradation::new(
+                    capability.id,
+                    format!("runtime capability {} is offline", capability.id),
+                ));
+                evidence.push(DiagnosisEvidence::new(
+                    format!("runtime_capability.{}.status", capability.id),
+                    "offline",
+                ));
+            }
+            RuntimeCapabilityStatus::Degraded => {
+                degraded_by.push(DiagnosisDegradation::new(
+                    capability.id,
+                    format!("runtime capability {} is degraded", capability.id),
+                ));
+                evidence.push(DiagnosisEvidence::new(
+                    format!("runtime_capability.{}.status", capability.id),
+                    "degraded",
+                ));
+            }
+            RuntimeCapabilityStatus::Online => {}
         }
-    }
+    });
 
     if !degraded_by.is_empty() {
         findings.push(DiagnosisFinding::correlated(

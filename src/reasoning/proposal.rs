@@ -13,24 +13,6 @@ pub enum ProgrammableReasoningProposalKind {
     CapabilityAtom,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProgrammableReasoningProposalScope {
-    Turn,
-    Relation,
-    Board,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ProgrammableReasoningProposal {
-    pub proposal_id: String,
-    pub kind: ProgrammableReasoningProposalKind,
-    pub scope: ProgrammableReasoningProposalScope,
-    pub summary: String,
-    pub trace_ref: String,
-    pub requires_adjudication: bool,
-}
-
 pub fn programmable_reasoning_proposal_kinds() -> Vec<ProgrammableReasoningProposalKind> {
     vec![
         ProgrammableReasoningProposalKind::MemoryPatch,

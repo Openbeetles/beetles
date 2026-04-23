@@ -5,7 +5,6 @@ use super::baidu_token::BaiduTokenCache;
 use crate::config::AudioSpeechConfig;
 use crate::error::{Error, Result};
 use crate::platform::{PlatformHttpClient, ResponseBody};
-use base64::Engine;
 use std::io::Write;
 
 const BAIDU_STT_DEFAULT_URL: &str = "https://vop.baidu.com/server_api";
@@ -18,39 +17,6 @@ struct BaiduAsrResponse {
     err_msg: Option<String>,
     #[serde(default)]
     result: Option<Vec<String>>,
-}
-
-pub fn transcribe_pcm16(
-    http: &mut dyn PlatformHttpClient,
-    token_cache: &BaiduTokenCache,
-    speech: &AudioSpeechConfig,
-    pcm16le: &[u8],
-    sample_rate: u32,
-) -> Result<String> {
-    let token = token_cache.get_or_fetch(http, &speech.api_key, &speech.api_secret)?;
-    let speech_b64 = base64::engine::general_purpose::STANDARD.encode(pcm16le);
-    let dev_pid = speech.model.trim().parse::<u32>().unwrap_or(1537);
-    let body = serde_json::json!({
-        "format": "pcm",
-        "rate": sample_rate,
-        "channel": 1,
-        "cuid": "beetle",
-        "token": token,
-        "speech": speech_b64,
-        "len": pcm16le.len(),
-        "dev_pid": dev_pid,
-    })
-    .to_string();
-    let api_url = if speech.api_url.trim().is_empty() {
-        BAIDU_STT_DEFAULT_URL
-    } else {
-        speech.api_url.trim()
-    };
-    let headers = [("Content-Type", "application/json")];
-    let (status, body_buf) = http
-        .post(api_url, &headers, body.as_bytes())
-        .map_err(|e| Error::config("stt_baidu_request", e.to_string()))?;
-    parse_asr_response(status, body_buf)
 }
 
 pub fn transcribe_pcm16_samples(

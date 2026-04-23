@@ -131,13 +131,10 @@ impl MailTool {
         providers: MailProviderRegistry,
         office_service: OfficeService,
     ) -> Self {
-        Self::build(
-            MailService::with_office_authority(
-                credential_store,
-                providers,
-                Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
-            ),
-            None,
+        Self::with_office_authority(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
         )
     }
 
@@ -158,13 +155,11 @@ impl MailTool {
         office_service: OfficeService,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
-        Self::build(
-            MailService::with_office_authority(
-                credential_store,
-                providers,
-                Some(Arc::new(SnapshotOfficeAuthoritySource::new(office_service))),
-            ),
-            Some(ContactsDirectoryService::new(contacts_store)),
+        Self::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            Arc::new(SnapshotOfficeAuthoritySource::new(office_service)),
+            ContactsDirectoryService::new(contacts_store),
         )
     }
 
@@ -174,9 +169,11 @@ impl MailTool {
         office_authority: Arc<dyn OfficeAuthoritySource + Send + Sync>,
         contacts_store: Arc<dyn ContactsDirectoryStore + Send + Sync>,
     ) -> Self {
-        Self::build(
-            MailService::with_office_authority(credential_store, providers, Some(office_authority)),
-            Some(ContactsDirectoryService::new(contacts_store)),
+        Self::with_office_authority_and_contacts_service(
+            credential_store,
+            providers,
+            office_authority,
+            ContactsDirectoryService::new(contacts_store),
         )
     }
 

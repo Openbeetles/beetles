@@ -39,6 +39,30 @@ fn deserialize_spiffs_json_loose_tail<T: DeserializeOwned>(
     }
 }
 
+fn load_spiffs_json_merge<F>(
+    reader: Option<&dyn ConfigFileStore>,
+    rel_path: &'static str,
+    read_error_code: &'static str,
+    load_errors: &mut Vec<String>,
+    merge: F,
+) where
+    F: FnOnce(&str, &mut Vec<String>),
+{
+    let Some(reader) = reader else {
+        return;
+    };
+    match reader.read_config_file(rel_path) {
+        Ok(Some(b)) => {
+            let s = String::from_utf8_lossy(&b);
+            merge(&s, load_errors);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            load_errors.push(read_error_code.into());
+        }
+    }
+}
+
 /// SPIFFS 配置文件读写，用于 config/llm.json、config/channels.json。由 Platform 实现。
 pub trait ConfigFileStore: Send + Sync {
     fn read_config_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>>;
@@ -386,82 +410,50 @@ impl AppConfig {
                 c.locale = Some(s.clone());
             }
         }
-        if let Some(r) = reader {
-            match r.read_config_file("config/llm.json") {
-                Ok(Some(b)) => {
-                    let s = String::from_utf8_lossy(&b);
-                    c.merge_llm_from_json(&s, &mut load_errors);
-                }
-                Ok(None) => {
-                    // 文件不存在属首次启动正常情况，不记为错误。
-                }
-                Err(_) => {
-                    load_errors.push("spiffs_llm_read_error".into());
-                }
-            }
-            match r.read_config_file("config/channels.json") {
-                Ok(Some(b)) => {
-                    let s = String::from_utf8_lossy(&b);
-                    c.merge_channels_from_json(&s, &mut load_errors);
-                }
-                Ok(None) => {
-                    // 文件不存在属首次启动正常情况，不记为错误。
-                }
-                Err(_) => {
-                    load_errors.push("spiffs_channels_read_error".into());
-                }
-            }
-            match r.read_config_file("config/hardware.json") {
-                Ok(Some(b)) => {
-                    let s = String::from_utf8_lossy(&b);
-                    c.merge_hardware_from_json(&s, &mut load_errors);
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    load_errors.push("spiffs_hardware_read_error".into());
-                }
-            }
-            match r.read_config_file("config/display.json") {
-                Ok(Some(b)) => {
-                    let s = String::from_utf8_lossy(&b);
-                    c.merge_display_from_json(&s, &mut load_errors);
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    load_errors.push("spiffs_display_read_error".into());
-                }
-            }
-            match r.read_config_file("config/audio.json") {
-                Ok(Some(b)) => {
-                    let s = String::from_utf8_lossy(&b);
-                    c.merge_audio_from_json(&s, &mut load_errors);
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    load_errors.push("spiffs_audio_read_error".into());
-                }
-            }
-            #[cfg(feature = "capability_office")]
-            match r.read_config_file("config/accounts.json") {
-                Ok(Some(b)) => {
-                    let s = String::from_utf8_lossy(&b);
-                    c.merge_office_accounts_from_json(&s, &mut load_errors);
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    load_errors.push("spiffs_accounts_read_error".into());
-                }
-            }
-        }
-        if c.llm_sources.is_empty() {
-            c.llm_sources = vec![LlmSource {
-                provider: c.model_provider.clone(),
-                api_key: c.api_key.clone(),
-                model: c.model.clone(),
-                api_url: c.api_url.clone(),
-                max_tokens: None,
-            }];
-        }
+        load_spiffs_json_merge(
+            reader,
+            "config/llm.json",
+            "spiffs_llm_read_error",
+            &mut load_errors,
+            |json, errors| c.merge_llm_from_json(json, errors),
+        );
+        load_spiffs_json_merge(
+            reader,
+            "config/channels.json",
+            "spiffs_channels_read_error",
+            &mut load_errors,
+            |json, errors| c.merge_channels_from_json(json, errors),
+        );
+        load_spiffs_json_merge(
+            reader,
+            "config/hardware.json",
+            "spiffs_hardware_read_error",
+            &mut load_errors,
+            |json, errors| c.merge_hardware_from_json(json, errors),
+        );
+        load_spiffs_json_merge(
+            reader,
+            "config/display.json",
+            "spiffs_display_read_error",
+            &mut load_errors,
+            |json, errors| c.merge_display_from_json(json, errors),
+        );
+        load_spiffs_json_merge(
+            reader,
+            "config/audio.json",
+            "spiffs_audio_read_error",
+            &mut load_errors,
+            |json, errors| c.merge_audio_from_json(json, errors),
+        );
+        #[cfg(feature = "capability_office")]
+        load_spiffs_json_merge(
+            reader,
+            "config/accounts.json",
+            "spiffs_accounts_read_error",
+            &mut load_errors,
+            |json, errors| c.merge_office_accounts_from_json(json, errors),
+        );
+        crate::llm::ensure_legacy_llm_sources(&mut c);
         c.load_errors = if load_errors.is_empty() {
             None
         } else {
@@ -855,15 +847,7 @@ impl AppConfig {
             CONFIG_WECOM_TOUSER_MAX,
             "wecom_default_touser",
         )?;
-        if c.llm_sources.is_empty() {
-            c.llm_sources = vec![LlmSource {
-                provider: c.model_provider.clone(),
-                api_key: c.api_key.clone(),
-                model: c.model.clone(),
-                api_url: c.api_url.clone(),
-                max_tokens: None,
-            }];
-        }
+        crate::llm::ensure_legacy_llm_sources(&mut c);
         validate_llm_sources(&c.llm_sources)?;
         validate_llm_source_indices(
             c.llm_sources.len(),
@@ -964,19 +948,8 @@ pub struct LlmSegment {
 impl LlmSegment {
     /// 从运行态 AppConfig 投影出当前 LLM 配置段；保留 legacy 单源字段回退语义。
     pub fn from_app_config(config: &AppConfig) -> Self {
-        let llm_sources = if !config.llm_sources.is_empty() {
-            config.llm_sources.clone()
-        } else {
-            vec![LlmSource {
-                provider: config.model_provider.clone(),
-                api_key: config.api_key.clone(),
-                model: config.model.clone(),
-                api_url: config.api_url.clone(),
-                max_tokens: None,
-            }]
-        };
         Self {
-            llm_sources,
+            llm_sources: crate::llm::llm_sources_or_legacy(config),
             llm_router_source_index: config.llm_router_source_index,
             llm_worker_source_index: config.llm_worker_source_index,
         }

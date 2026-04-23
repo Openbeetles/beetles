@@ -1,4 +1,5 @@
 use crate::channels::ChannelConnectivitySnapshot;
+use crate::diagnosis::system::visit_runtime_capability_degradations;
 use crate::diagnosis::{
     DiagnosisAction, DiagnosisConfidence, DiagnosisDegradation, DiagnosisEvidence,
     DiagnosisFinding, DiagnosisKind, DiagnosisResult, DiagnosisRootCause,
@@ -243,21 +244,21 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
         }
     }
 
-    for capability in input.runtime_capabilities {
+    visit_runtime_capability_degradations(&input.runtime_capabilities, |capability, status| {
         if capability.id != crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP {
-            continue;
+            return;
         }
-        match capability.status {
+        match status {
             RuntimeCapabilityStatus::Offline => {
                 degraded_by.push(DiagnosisDegradation::new(
                     capability.id,
                     "runtime capability network.outbound_http is offline",
                 ));
                 suspected_root_causes.push(DiagnosisRootCause::new(
-                    "network_outbound_capability_offline",
-                    "the runtime has marked outbound http as offline, so upstream network work is currently blocked",
-                    DiagnosisConfidence::High,
-                ));
+                        "network_outbound_capability_offline",
+                        "the runtime has marked outbound http as offline, so upstream network work is currently blocked",
+                        DiagnosisConfidence::High,
+                    ));
                 recommended_next_steps.push(DiagnosisAction::new(
                     "inspect_runtime_capabilities",
                     "inspect runtime capability degradation and recent network recovery hints",
@@ -276,10 +277,10 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
                     "runtime capability network.outbound_http is degraded",
                 ));
                 suspected_root_causes.push(DiagnosisRootCause::new(
-                    "network_outbound_capability_degraded",
-                    "the runtime has marked outbound http as degraded, so upstream network work may be unstable",
-                    DiagnosisConfidence::Medium,
-                ));
+                        "network_outbound_capability_degraded",
+                        "the runtime has marked outbound http as degraded, so upstream network work may be unstable",
+                        DiagnosisConfidence::Medium,
+                    ));
                 recommended_next_steps.push(DiagnosisAction::new(
                     "inspect_runtime_capabilities",
                     "inspect runtime capability degradation and recent network recovery hints",
@@ -301,7 +302,7 @@ pub fn build_network_path_diagnosis(input: NetworkPathDiagnosisInput<'_>) -> Dia
                 ));
             }
         }
-    }
+    });
 
     DiagnosisResult {
         kind: DiagnosisKind::NetworkPath,
@@ -396,6 +397,7 @@ fn capture_connectivity_snapshot(
 mod tests {
     use super::*;
     use crate::channels::{ChannelConnectivityItem, ChannelConnectivitySnapshot};
+    use crate::orchestrator::RuntimeCapabilityStatus;
     use crate::orchestrator::{RuntimeCapabilityReason, RuntimeCapabilityState};
 
     #[test]

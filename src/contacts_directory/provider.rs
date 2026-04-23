@@ -1,8 +1,7 @@
 use crate::contacts_directory::{ContactEntry, ContactsDirectoryProviderCredential};
 use crate::error::Result;
+use crate::office::office_refactor_helpers::define_provider_registry;
 use crate::office::OfficeHttpClient;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContactsDirectoryOperation {
@@ -25,29 +24,7 @@ pub trait ContactsDirectoryProvider: Send + Sync {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct ContactsDirectoryProviderRegistry {
-    providers: HashMap<&'static str, Arc<dyn ContactsDirectoryProvider>>,
-}
-
-impl ContactsDirectoryProviderRegistry {
-    pub fn new() -> Self {
-        Self {
-            providers: HashMap::new(),
-        }
-    }
-
-    pub fn register(&mut self, provider: Arc<dyn ContactsDirectoryProvider>) {
-        self.providers.insert(provider.provider_name(), provider);
-    }
-
-    pub fn get(&self, provider: &str) -> Option<Arc<dyn ContactsDirectoryProvider>> {
-        self.providers.get(provider).cloned()
-    }
-
-    pub fn names(&self) -> Vec<&'static str> {
-        let mut names = self.providers.keys().copied().collect::<Vec<_>>();
-        names.sort_unstable();
-        names
-    }
-}
+define_provider_registry!(
+    ContactsDirectoryProviderRegistry,
+    crate::contacts_directory::ContactsDirectoryProvider
+);

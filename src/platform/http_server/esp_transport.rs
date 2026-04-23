@@ -4,12 +4,20 @@
 use crate::error::Result;
 use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{
-    self, ApiResponse, BodyReadError, HandlerResult, CORS_HEADERS, POST_BODY_MAX_LEN,
+    self, ApiResponse, BodyReadError, HandlerResult, CORS_HEADERS,
 };
 use crate::platform::http_server::handlers::HandlerContext;
 use crate::platform::http_server::lazy_executor::LazyExecutor;
+#[cfg(feature = "ota")]
+use crate::platform::http_server::router::catalog::OTA_ROUTE_SPECS;
 use crate::platform::http_server::router::{
-    self, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
+    self,
+    catalog::{
+        HttpRouteSpec, RouteBodyMode, RouteDispatchMode, RouteMethod, ACTION_ROUTE_SPECS,
+        MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS,
+        ROOT_ROUTE_SPECS,
+    },
+    IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
 use crate::platform::ConfigStore;
 use embedded_io::Write as _;
@@ -20,47 +28,6 @@ use esp_idf_svc::http::server::EspHttpServer;
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SendError, SyncSender};
 use std::sync::Arc;
 use std::time::Duration;
-
-#[derive(Clone, Copy)]
-pub(super) enum EspBodyMode {
-    None,
-    Utf8(usize),
-    Utf8SoulUser,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EspRouteDispatchMode {
-    Direct,
-    Worker,
-}
-
-#[derive(Clone, Copy)]
-struct EspRouteSpec {
-    path: &'static str,
-    method: Method,
-    body_mode: EspBodyMode,
-    dispatch_mode: EspRouteDispatchMode,
-}
-
-impl EspRouteSpec {
-    const fn direct(path: &'static str, method: Method, body_mode: EspBodyMode) -> Self {
-        Self {
-            path,
-            method,
-            body_mode,
-            dispatch_mode: EspRouteDispatchMode::Direct,
-        }
-    }
-
-    const fn worker(path: &'static str, method: Method, body_mode: EspBodyMode) -> Self {
-        Self {
-            path,
-            method,
-            body_mode,
-            dispatch_mode: EspRouteDispatchMode::Worker,
-        }
-    }
-}
 
 const ESP_ROUTE_EXEC_QUEUE_CAPACITY: usize = 4;
 const ESP_ROUTE_EXEC_TIMEOUT: Duration = Duration::from_secs(20);
@@ -231,16 +198,12 @@ fn run_esp_route_executor(
     }
 }
 
-fn method_as_str(m: Method) -> &'static str {
-    match m {
-        Method::Get => "GET",
-        Method::Post => "POST",
-        Method::Put => "PUT",
-        Method::Delete => "DELETE",
-        Method::Options => "OPTIONS",
-        Method::Head => "HEAD",
-        Method::Patch => "PATCH",
-        _ => "GET",
+fn esp_method(method: RouteMethod) -> Method {
+    match method {
+        RouteMethod::Get => Method::Get,
+        RouteMethod::Post => Method::Post,
+        RouteMethod::Delete => Method::Delete,
+        RouteMethod::Options => Method::Options,
     }
 }
 
@@ -267,24 +230,26 @@ fn collect_headers(req: &impl Headers) -> Vec<(String, String)> {
 fn read_body_esp<C: Connection>(
     req: &mut Request<C>,
     store: &dyn ConfigStore,
-    mode: EspBodyMode,
+    mode: RouteBodyMode,
 ) -> std::result::Result<Vec<u8>, ApiResponse> {
     match mode {
-        EspBodyMode::None => Ok(Vec::new()),
-        EspBodyMode::Utf8(max) => match common::read_body_utf8_impl(req, req.content_len(), max) {
-            Ok(s) => Ok(s.into_bytes()),
-            Err(BodyReadError::ReadFailed) => {
-                let _ = store;
-                Err(ApiResponse::err_500_key(
-                    api_contract::COMMON_BODY_READ_FAILED,
-                ))
+        RouteBodyMode::None => Ok(Vec::new()),
+        RouteBodyMode::Utf8(max) => {
+            match common::read_body_utf8_impl(req, req.content_len(), max) {
+                Ok(s) => Ok(s.into_bytes()),
+                Err(BodyReadError::ReadFailed) => {
+                    let _ = store;
+                    Err(ApiResponse::err_500_key(
+                        api_contract::COMMON_BODY_READ_FAILED,
+                    ))
+                }
+                Err(BodyReadError::InvalidUtf8) => {
+                    let _ = store;
+                    Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
+                }
             }
-            Err(BodyReadError::InvalidUtf8) => {
-                let _ = store;
-                Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
-            }
-        },
-        EspBodyMode::Utf8SoulUser => {
+        }
+        RouteBodyMode::Utf8SoulUser => {
             let max = crate::memory::MAX_SOUL_USER_LEN;
             match common::read_body_utf8_impl(req, req.content_len(), max) {
                 Ok(s) => Ok(s.into_bytes()),
@@ -351,7 +316,7 @@ fn esp_dispatch_route<C: Connection>(
     store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,
     mut req: Request<C>,
-    spec: EspRouteSpec,
+    spec: HttpRouteSpec,
 ) -> HandlerResult {
     let uri = req.uri().to_string();
     let restart_reason = uri.clone();
@@ -361,14 +326,14 @@ fn esp_dispatch_route<C: Connection>(
         Err(r) => return write_api_resp(req, r),
     };
     let incoming = IncomingRequest {
-        method: method_as_str(spec.method).to_string(),
+        method: spec.method.as_str().to_string(),
         uri,
         headers,
         body,
     };
     let out = match spec.dispatch_mode {
-        EspRouteDispatchMode::Direct => dispatch_incoming(ctx, env, store.as_ref(), incoming),
-        EspRouteDispatchMode::Worker => executor.execute(store.as_ref(), incoming),
+        RouteDispatchMode::Direct => dispatch_incoming(ctx, env, store.as_ref(), incoming),
+        RouteDispatchMode::Worker => executor.execute(store.as_ref(), incoming),
     };
     write_outgoing(ctx, req, out, restart_reason.as_str())
 }
@@ -381,16 +346,20 @@ fn register_esp_route(
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,
-    spec: EspRouteSpec,
+    spec: HttpRouteSpec,
 ) -> Result<()> {
     let ctx = Arc::clone(ctx);
     let env = env.clone();
     let store = Arc::clone(config_store);
     let executor = executor.clone();
     server
-        .fn_handler(spec.path, spec.method, move |req| -> HandlerResult {
-            esp_dispatch_route(&ctx, &env, &store, &executor, req, spec)
-        })
+        .fn_handler(
+            spec.path,
+            esp_method(spec.method),
+            move |req| -> HandlerResult {
+                esp_dispatch_route(&ctx, &env, &store, &executor, req, spec)
+            },
+        )
         .map_err(|e| crate::error::Error::Other {
             source: Box::new(e),
             stage: "http_server_handler",
@@ -406,7 +375,7 @@ fn register_esp_route_specs(
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,
-    specs: &[EspRouteSpec],
+    specs: &[HttpRouteSpec],
 ) -> Result<()> {
     for spec in specs {
         register_esp_route(server, ctx, env, config_store, executor, *spec)?;
@@ -414,275 +383,13 @@ fn register_esp_route_specs(
     Ok(())
 }
 
-const ROOT_ROUTES: &[EspRouteSpec] = &[
-    EspRouteSpec::direct("/", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/", Method::Options, EspBodyMode::None),
-];
-
-const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
-    EspRouteSpec::direct("/api/pairing_code", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/pairing_code",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/pairing_code", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/wifi",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/config/wifi", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/llm", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/llm", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/llm",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/config/channels", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/channels", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/channels",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/config/system", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/system", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/system",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/config/hardware", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/hardware", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/hardware",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/config/audio", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/audio", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/audio",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::direct("/api/config/display", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config/display", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct(
-        "/api/config/display",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::worker("/api/wifi/scan", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/wifi/scan", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/hardware/discovery", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/hardware/discovery",
-        Method::Options,
-        EspBodyMode::None,
-    ),
-    EspRouteSpec::direct("/api/csrf_token", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/csrf_token", Method::Options, EspBodyMode::None),
-];
-
-const OBSERVABILITY_ROUTES: &[EspRouteSpec] = &[
-    EspRouteSpec::direct("/api/health", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/health", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/operator/status", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/operator/status", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/operator/window", Method::Post, EspBodyMode::None),
-    EspRouteSpec::direct("/api/operator/window", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/metrics", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/metrics", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/resource", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/resource", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/diagnose", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/diagnose", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/system_info", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/system_info", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/channel_connectivity", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/channel_connectivity",
-        Method::Options,
-        EspBodyMode::None,
-    ),
-];
-
-const MEMORY_AND_SKILL_ROUTES: &[EspRouteSpec] = &[
-    EspRouteSpec::worker("/api/tools", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/tools", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/soul", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/user", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/sessions", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/sessions", Method::Delete, EspBodyMode::None),
-    EspRouteSpec::worker("/api/sessions", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/memory/status", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/memory/status", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/capability_packages", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/capability_packages",
-        Method::Post,
-        EspBodyMode::Utf8(crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN),
-    ),
-    EspRouteSpec::worker(
-        "/api/capability_packages",
-        Method::Options,
-        EspBodyMode::None,
-    ),
-    EspRouteSpec::worker("/api/skills", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/skills",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::worker("/api/skills", Method::Delete, EspBodyMode::None),
-    EspRouteSpec::worker("/api/skills", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/skills/import",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::worker("/api/skills/import", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker("/api/soul", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/user", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/soul", Method::Post, EspBodyMode::Utf8SoulUser),
-    EspRouteSpec::worker("/api/user", Method::Post, EspBodyMode::Utf8SoulUser),
-];
-
-const ACTION_ROUTES: &[EspRouteSpec] = &[
-    EspRouteSpec::direct("/api/restart", Method::Post, EspBodyMode::None),
-    EspRouteSpec::direct("/api/restart", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config_reset", Method::Post, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config_reset", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/webhook",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::worker("/api/webhook", Method::Options, EspBodyMode::None),
-];
-
-#[cold]
-#[inline(never)]
-fn register_root_routes(
-    server: &mut EspHttpServer<'static>,
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
-) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, executor, ROOT_ROUTES)
-}
-
-#[cold]
-#[inline(never)]
-fn register_pairing_and_config_routes(
-    server: &mut EspHttpServer<'static>,
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
-) -> Result<()> {
-    register_esp_route_specs(
-        server,
-        ctx,
-        env,
-        config_store,
-        executor,
-        PAIRING_AND_CONFIG_ROUTES,
-    )
-}
-
-#[cold]
-#[inline(never)]
-fn register_observability_routes(
-    server: &mut EspHttpServer<'static>,
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
-) -> Result<()> {
-    register_esp_route_specs(
-        server,
-        ctx,
-        env,
-        config_store,
-        executor,
-        OBSERVABILITY_ROUTES,
-    )
-}
-
-#[cold]
-#[inline(never)]
-fn register_memory_and_skill_routes(
-    server: &mut EspHttpServer<'static>,
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
-) -> Result<()> {
-    register_esp_route_specs(
-        server,
-        ctx,
-        env,
-        config_store,
-        executor,
-        MEMORY_AND_SKILL_ROUTES,
-    )
-}
-
-#[cold]
-#[inline(never)]
-fn register_action_routes(
-    server: &mut EspHttpServer<'static>,
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
-) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, executor, ACTION_ROUTES)
-}
-
+const ROOT_ROUTES: &[HttpRouteSpec] = ROOT_ROUTE_SPECS;
+const PAIRING_AND_CONFIG_ROUTES: &[HttpRouteSpec] = PAIRING_AND_CONFIG_ROUTE_SPECS;
+const OBSERVABILITY_ROUTES: &[HttpRouteSpec] = OBSERVABILITY_ROUTE_SPECS;
+const MEMORY_AND_SKILL_ROUTES: &[HttpRouteSpec] = MEMORY_AND_SKILL_ROUTE_SPECS;
+const ACTION_ROUTES: &[HttpRouteSpec] = ACTION_ROUTE_SPECS;
 #[cfg(feature = "ota")]
-const OTA_ROUTES: &[EspRouteSpec] = &[
-    EspRouteSpec::worker("/api/ota/check", Method::Get, EspBodyMode::None),
-    EspRouteSpec::worker("/api/ota/check", Method::Options, EspBodyMode::None),
-    EspRouteSpec::worker(
-        "/api/ota",
-        Method::Post,
-        EspBodyMode::Utf8(POST_BODY_MAX_LEN),
-    ),
-    EspRouteSpec::worker("/api/ota", Method::Options, EspBodyMode::None),
-];
-
-#[cfg(feature = "ota")]
-#[cold]
-#[inline(never)]
-fn register_optional_feature_routes(
-    server: &mut EspHttpServer<'static>,
-    ctx: &Arc<HandlerContext>,
-    env: &RouterEnv,
-    config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
-) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, executor, OTA_ROUTES)?;
-    Ok(())
-}
-
-#[cfg(not(feature = "ota"))]
-#[cold]
-#[inline(never)]
-fn register_optional_feature_routes(
-    _server: &mut EspHttpServer<'static>,
-    _ctx: &Arc<HandlerContext>,
-    _env: &RouterEnv,
-    _config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    _executor: &EspRouteExecutor,
-) -> Result<()> {
-    Ok(())
-}
+const OTA_ROUTES: &[HttpRouteSpec] = OTA_ROUTE_SPECS;
 
 /// 注册与历史 `register!` 等价的全量 URI handler。
 pub(super) fn register_all_esp_routes(
@@ -692,12 +399,34 @@ pub(super) fn register_all_esp_routes(
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
 ) -> Result<()> {
     let executor = EspRouteExecutor::new(ctx, env, config_store);
-    register_root_routes(server, ctx, env, config_store, &executor)?;
-    register_pairing_and_config_routes(server, ctx, env, config_store, &executor)?;
-    register_observability_routes(server, ctx, env, config_store, &executor)?;
-    register_memory_and_skill_routes(server, ctx, env, config_store, &executor)?;
-    register_action_routes(server, ctx, env, config_store, &executor)?;
-    register_optional_feature_routes(server, ctx, env, config_store, &executor)?;
+    register_esp_route_specs(server, ctx, env, config_store, &executor, ROOT_ROUTES)?;
+    register_esp_route_specs(
+        server,
+        ctx,
+        env,
+        config_store,
+        &executor,
+        PAIRING_AND_CONFIG_ROUTES,
+    )?;
+    register_esp_route_specs(
+        server,
+        ctx,
+        env,
+        config_store,
+        &executor,
+        OBSERVABILITY_ROUTES,
+    )?;
+    register_esp_route_specs(
+        server,
+        ctx,
+        env,
+        config_store,
+        &executor,
+        MEMORY_AND_SKILL_ROUTES,
+    )?;
+    register_esp_route_specs(server, ctx, env, config_store, &executor, ACTION_ROUTES)?;
+    #[cfg(feature = "ota")]
+    register_esp_route_specs(server, ctx, env, config_store, &executor, OTA_ROUTES)?;
     Ok(())
 }
 
@@ -706,14 +435,15 @@ mod tests {
     #[cfg(feature = "ota")]
     use super::OTA_ROUTES;
     use super::{
-        EspRouteDispatchMode, EspRouteSpec, ACTION_ROUTES, MEMORY_AND_SKILL_ROUTES,
-        OBSERVABILITY_ROUTES, PAIRING_AND_CONFIG_ROUTES, STATIC_PAGE_ROUTES,
+        ACTION_ROUTES, MEMORY_AND_SKILL_ROUTES, OBSERVABILITY_ROUTES, PAIRING_AND_CONFIG_ROUTES,
+        ROOT_ROUTES,
     };
+    use crate::platform::http_server::router::catalog::RouteDispatchMode;
     use embedded_svc::http::Method;
 
-    fn dispatch_mode_for(path: &str, method: Method) -> Option<EspRouteDispatchMode> {
+    fn dispatch_mode_for(path: &str, method: Method) -> Option<RouteDispatchMode> {
         for routes in [
-            STATIC_PAGE_ROUTES,
+            ROOT_ROUTES,
             PAIRING_AND_CONFIG_ROUTES,
             OBSERVABILITY_ROUTES,
             MEMORY_AND_SKILL_ROUTES,
@@ -721,7 +451,7 @@ mod tests {
         ] {
             if let Some(spec) = routes
                 .iter()
-                .find(|spec| spec.path == path && spec.method == method)
+                .find(|spec| spec.path == path && esp_method(spec.method) == method)
             {
                 return Some(spec.dispatch_mode);
             }
@@ -729,7 +459,7 @@ mod tests {
         #[cfg(feature = "ota")]
         if let Some(spec) = OTA_ROUTES
             .iter()
-            .find(|spec| spec.path == path && spec.method == method)
+            .find(|spec| spec.path == path && esp_method(spec.method) == method)
         {
             return Some(spec.dispatch_mode);
         }
@@ -740,31 +470,31 @@ mod tests {
     fn control_plane_core_routes_dispatch_directly() {
         assert_eq!(
             dispatch_mode_for("/api/pairing_code", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
             dispatch_mode_for("/api/csrf_token", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
             dispatch_mode_for("/api/config/system", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
             dispatch_mode_for("/api/health", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
             dispatch_mode_for("/api/resource", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
             dispatch_mode_for("/api/metrics", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
         assert_eq!(
             dispatch_mode_for("/api/system_info", Method::Get),
-            Some(EspRouteDispatchMode::Direct)
+            Some(RouteDispatchMode::Direct)
         );
     }
 
@@ -772,24 +502,24 @@ mod tests {
     fn slow_or_external_routes_stay_on_worker_lane() {
         assert_eq!(
             dispatch_mode_for("/api/wifi/scan", Method::Get),
-            Some(EspRouteDispatchMode::Worker)
+            Some(RouteDispatchMode::Worker)
         );
         assert_eq!(
             dispatch_mode_for("/api/hardware/discovery", Method::Get),
-            Some(EspRouteDispatchMode::Worker)
+            Some(RouteDispatchMode::Worker)
         );
         assert_eq!(
             dispatch_mode_for("/api/channel_connectivity", Method::Get),
-            Some(EspRouteDispatchMode::Worker)
+            Some(RouteDispatchMode::Worker)
         );
         assert_eq!(
             dispatch_mode_for("/api/skills/import", Method::Post),
-            Some(EspRouteDispatchMode::Worker)
+            Some(RouteDispatchMode::Worker)
         );
         #[cfg(feature = "ota")]
         assert_eq!(
             dispatch_mode_for("/api/ota/check", Method::Get),
-            Some(EspRouteDispatchMode::Worker)
+            Some(RouteDispatchMode::Worker)
         );
     }
 }

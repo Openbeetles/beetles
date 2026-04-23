@@ -11,6 +11,7 @@ use crate::memory::{
     MemoryHygieneInspection, MemorySystemKind, WorkingRecallInspection,
     WorkingRecallInspectionInput,
 };
+use crate::platform::http_server::common;
 use crate::platform::memory_operator_surface::{
     build_memory_operator_surface, MemoryOperatorInspectionTarget, MemoryOperatorRecallTrace,
     MemoryOperatorSurfaceSummary, MemoryOperatorTraceInput,
@@ -521,9 +522,15 @@ fn build_deep_inspection(
 }
 
 fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
-    let chat_id = query_param_from_uri(uri, "chat_id");
-    let deep = query_flag_from_uri(uri, "deep");
-    let channel = query_param_from_uri(uri, "channel").or_else(|| {
+    let query_param = |key| {
+        common::query_param_from_uri(uri, key)
+            .map(percent_decode_query)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let chat_id = query_param("chat_id");
+    let deep = common::query_flag_from_uri(uri, "deep");
+    let channel = query_param("channel").or_else(|| {
         deep.then(|| {
             chat_id.as_ref().and_then(|_| {
                 let config = ctx.config();
@@ -537,58 +544,18 @@ fn parse_request(ctx: &HandlerContext, uri: &str) -> MemoryStatusRequest {
         chat_id,
         channel,
         deep,
-        query: query_param_from_uri(uri, "query").unwrap_or_default(),
-        run_id: query_param_from_uri(uri, "run_id"),
-        memory_system_kind: match query_param_from_uri(uri, "memory_system_kind").as_deref() {
+        query: query_param("query").unwrap_or_default(),
+        run_id: query_param("run_id"),
+        memory_system_kind: match query_param("memory_system_kind").as_deref() {
             Some("esp_compact") => MemorySystemKind::EspCompact,
             Some("linux_full") => MemorySystemKind::LinuxFull,
             _ => ctx.platform.memory_system_kind(),
         },
-        snapshot_mode: match query_param_from_uri(uri, "snapshot_mode").as_deref() {
+        snapshot_mode: match query_param("snapshot_mode").as_deref() {
             Some("full_restore") => ContinuitySnapshotMode::FullRestore,
             _ => ContinuitySnapshotMode::Bootstrap,
         },
     }
-}
-
-fn query_flag_from_uri(uri: &str, key: &str) -> bool {
-    let query = uri.find('?').map(|index| &uri[index + 1..]).unwrap_or("");
-    query.split('&').any(|pair| {
-        let mut it = pair.splitn(2, '=');
-        let Some(candidate) = it.next() else {
-            return false;
-        };
-        if !candidate.eq_ignore_ascii_case(key) {
-            return false;
-        }
-        match it.next().map(str::trim) {
-            None => true,
-            Some("") => true,
-            Some("1" | "true" | "yes" | "on") => true,
-            Some(_) => false,
-        }
-    })
-}
-
-fn query_param_from_uri(uri: &str, key: &str) -> Option<String> {
-    let query = uri.find('?').map(|index| &uri[index + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        let Some(candidate) = it.next() else {
-            continue;
-        };
-        if !candidate.eq_ignore_ascii_case(key) {
-            continue;
-        }
-        let Some(value) = it.next() else {
-            continue;
-        };
-        if value.trim().is_empty() {
-            continue;
-        }
-        return Some(percent_decode_query(value).trim().to_string());
-    }
-    None
 }
 
 #[cfg(test)]

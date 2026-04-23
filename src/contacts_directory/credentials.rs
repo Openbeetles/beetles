@@ -1,12 +1,10 @@
 use crate::error::{Error, Result};
 use crate::office::{
     normalize_google_api_base_url, normalize_microsoft_graph_base_url,
-    OfficeAuthorityBackedCredentialStoreCore, OfficeAuthoritySource, OfficeCapability,
-    OfficeCredential, OfficeService, GOOGLE_PEOPLE_DEFAULT_BASE_URL,
-    MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    office_refactor_helpers::define_office_backed_credential_store, OfficeCapability,
+    OfficeCredential, GOOGLE_PEOPLE_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub const OFFICE_METADATA_CONTACTS_APP_ID: &str = "contacts_app_id";
 pub const OFFICE_METADATA_CONTACTS_BASE_URL: &str = "contacts_base_url";
@@ -80,47 +78,14 @@ impl ContactsDirectoryProviderCredential {
     }
 }
 
-#[derive(Clone)]
-pub struct OfficeBackedContactsDirectoryProviderCredentialStore {
-    core: OfficeAuthorityBackedCredentialStoreCore,
-}
-
-impl OfficeBackedContactsDirectoryProviderCredentialStore {
-    pub fn new(office: OfficeService) -> Self {
-        Self {
-            core: OfficeAuthorityBackedCredentialStoreCore::new(office),
-        }
-    }
-
-    pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
-        Self {
-            core: OfficeAuthorityBackedCredentialStoreCore::with_authority(authority),
-        }
-    }
-}
-
-impl ContactsDirectoryProviderCredentialStore
-    for OfficeBackedContactsDirectoryProviderCredentialStore
-{
-    fn get(&self, account_key: &str) -> Result<Option<ContactsDirectoryProviderCredential>> {
-        self.core.get_for_capability(
-            OfficeCapability::ContactsDirectory,
-            account_key,
-            contacts_credential_from_office,
-        )
-    }
-
-    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.core
-            .find_account_keys_by_provider(OfficeCapability::ContactsDirectory, provider)
-    }
-
-    fn list_statuses(&self) -> Result<Vec<ContactsDirectoryProviderCredentialStatus>> {
-        self.core.list_statuses_for_capability(
-            OfficeCapability::ContactsDirectory,
-            |account, credential| Ok(contacts_credential_from_office(account, credential)?.status()),
-        )
-    }
+define_office_backed_credential_store! {
+    store = OfficeBackedContactsDirectoryProviderCredentialStore,
+    trait = ContactsDirectoryProviderCredentialStore,
+    credential = ContactsDirectoryProviderCredential,
+    status = ContactsDirectoryProviderCredentialStatus,
+    capability = OfficeCapability::ContactsDirectory,
+    from_office = contacts_credential_from_office,
+    status_from_office = |account, credential| Ok(contacts_credential_from_office(account, credential)?.status())
 }
 
 pub(crate) fn contacts_credential_from_office(

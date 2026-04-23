@@ -154,7 +154,7 @@ struct PreparedRuntimeAssembly {
     channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
     capability_package_runtime_capabilities: Arc<beetle::CapabilityPackageRuntimeCapabilities>,
     network_governor: Arc<NetworkGovernor>,
-    communication_plane: CommunicationPlaneStartup,
+    communication_plane: Option<CommunicationPlaneStartup>,
 }
 
 #[cfg(feature = "telegram")]
@@ -516,6 +516,17 @@ fn communication_plane_startup(
     }
 }
 
+fn probed_communication_plane_startup(
+    assembly: &PreparedRuntimeAssembly,
+) -> beetle::Result<CommunicationPlaneStartup> {
+    assembly.communication_plane.ok_or_else(|| {
+        beetle::Error::config(
+            "communication_plane_probe",
+            "communication plane startup state not initialized",
+        )
+    })
+}
+
 fn refresh_communication_plane_startup(assembly: &mut PreparedRuntimeAssembly) {
     let http_client_ready = assembly
         .network_governor
@@ -523,8 +534,10 @@ fn refresh_communication_plane_startup(assembly: &mut PreparedRuntimeAssembly) {
         .is_ok();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("http_client_probe_done");
-    assembly.communication_plane =
-        communication_plane_startup(http_client_ready, assembly.voice_event_channel.is_some());
+    assembly.communication_plane = Some(communication_plane_startup(
+        http_client_ready,
+        assembly.voice_event_channel.is_some(),
+    ));
     let state_fs_ready = assembly.runtime.platform.spiffs_usage().is_some();
     beetle::orchestrator::observe_runtime_capabilities_from_platform(
         assembly.runtime.platform.as_ref(),
@@ -2057,6 +2070,10 @@ fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
         log::error!("[{}] linux signal bridge install failed: {}", TAG, error);
         std::process::exit(1);
     }
+    bootstrap_platform_runtime(platform);
+}
+
+fn bootstrap_platform_runtime(platform: Arc<dyn Platform>) {
     register_platform_memory_snapshot_provider(&platform);
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
@@ -2161,11 +2178,7 @@ fn main() {
     log::info!("========================================");
     log::info!("  甲壳虫 beetle v{}", VERSION);
     log::info!("========================================");
-    register_platform_memory_snapshot_provider(&platform);
-
-    startup_soul_kernel_recovery(Arc::clone(&platform));
-    let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
-    run_app(platform, config, wifi_init_ok);
+    bootstrap_platform_runtime(platform);
 }
 
 fn log_soul_kernel_recovery_report(report: &beetle::runtime::SoulKernelRecoveryReport) {
@@ -2378,7 +2391,6 @@ fn prepare_runtime_assembly(
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let state_fs_ready = platform.spiffs_usage().is_some();
     let wall_clock_valid = beetle::platform::time::wall_clock_is_trustworthy();
-    let communication_plane = communication_plane_startup(false, voice_event_channel.is_some());
     let spiffs_info = platform
         .spiffs_usage()
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
@@ -2433,7 +2445,7 @@ fn prepare_runtime_assembly(
         channel_capability_registry,
         capability_package_runtime_capabilities,
         network_governor,
-        communication_plane,
+        communication_plane: None,
     })
 }
 
@@ -2559,6 +2571,7 @@ fn start_support_planes(
 }
 
 fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Result<()> {
+    let communication_plane = probed_communication_plane_startup(assembly)?;
     #[allow(unused_mut)]
     let (mut sinks, mut channel_rx_set) = beetle::channels::build_channel_sinks(
         assembly.config.as_ref(),
@@ -2592,7 +2605,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         }
     );
 
-    let started_voice_session = if assembly.communication_plane.start_voice_session {
+    let started_voice_session = if communication_plane.start_voice_session {
         spawn_voice_session_if_ready(
             &assembly.runtime.platform,
             &assembly.network_governor,
@@ -2612,7 +2625,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     }
     let sinks = Arc::new(sinks);
 
-    if assembly.communication_plane.http_client_ready {
+    if communication_plane.http_client_ready {
         #[cfg(feature = "feishu")]
         {
             if let Some(ref c) = channel_rx_set.feishu {
@@ -2708,7 +2721,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         }
     }
 
-    if !assembly.communication_plane.http_client_ready {
+    if !communication_plane.http_client_ready {
         return Ok(());
     }
 
@@ -2731,7 +2744,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
 
     #[cfg(feature = "telegram")]
-    if assembly.communication_plane.http_client_ready
+    if communication_plane.http_client_ready
         && enabled_channel == "telegram"
         && !assembly.config.tg_token.trim().is_empty()
     {
@@ -2801,7 +2814,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
 fn start_agent_plane(
     assembly: &mut PreparedRuntimeAssembly,
 ) -> beetle::Result<Option<beetle::util::TaskHandle>> {
-    if !assembly.communication_plane.http_client_ready {
+    if !probed_communication_plane_startup(assembly)?.http_client_ready {
         return Ok(None);
     }
 
@@ -3065,7 +3078,10 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             return;
         }
     };
-    if !assembly.communication_plane.http_client_ready {
+    if assembly
+        .communication_plane
+        .is_some_and(|communication_plane| !communication_plane.http_client_ready)
+    {
         log::warn!(
             "[{}] HTTP client not available (create_http_client failed): Feishu/QQ WSS ingress, dispatch, agent, Telegram poll, and outbound sender threads were not started. On Linux, ensure ureq/rustls stack and network; see dev-docs/beetle-os-plan.md and dev-docs/architecture-and-code.md.",
             TAG

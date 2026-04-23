@@ -49,6 +49,42 @@ impl FallbackLlmClient {
             *g = Some(err.to_string());
         }
     }
+
+    fn run_with_fallback<F>(
+        &self,
+        http: &mut dyn LlmHttpClient,
+        mut attempt: F,
+    ) -> Result<LlmResponse>
+    where
+        F: FnMut(usize, &dyn LlmClient, &mut dyn LlmHttpClient) -> Result<LlmResponse>,
+    {
+        if self.clients.is_empty() {
+            let err = crate::error::Error::config("fallback_llm", "no LLM sources configured");
+            self.set_last_error(&err.to_string());
+            return Err(err);
+        }
+        let mut last_err = None;
+        for (i, client) in self.clients.iter().enumerate() {
+            match attempt(i, client.as_ref(), http) {
+                Ok(r) => {
+                    crate::platform::task_wdt::feed_current_task();
+                    return Ok(r);
+                }
+                Err(e) => {
+                    crate::platform::task_wdt::feed_current_task();
+                    if i + 1 < self.clients.len() {
+                        log::warn!("[fallback_llm] source {} failed, trying next: {}", i, e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        let err = last_err.unwrap_or_else(|| {
+            crate::error::Error::config("fallback_llm", "llm fallback returned no result")
+        });
+        self.set_last_error(&err.to_string());
+        Err(err)
+    }
 }
 
 impl LlmClient for FallbackLlmClient {
@@ -67,44 +103,20 @@ impl LlmClient for FallbackLlmClient {
         tools: Option<&[ToolSpec]>,
         tool_choice: ToolChoicePolicy,
     ) -> Result<LlmResponse> {
-        if self.clients.is_empty() {
-            let err = crate::error::Error::config("fallback_llm", "no LLM sources configured");
-            self.set_last_error(&err.to_string());
-            return Err(err);
-        }
-        let mut last_err = None;
-        for (i, client) in self.clients.iter().enumerate() {
+        self.run_with_fallback(http, |_, client, http| {
+            let compat = client.model_compat();
             let (effective_system, effective_tools) =
-                prepare_request_for_client(client.model_compat(), system, tools);
-            match client.chat(
-                http,
-                effective_system.as_ref(),
-                messages,
-                effective_tools,
-                tool_choice,
-            ) {
-                Ok(r) => {
-                    crate::platform::task_wdt::feed_current_task();
-                    return Ok(finalize_response_for_client(
-                        client.model_compat(),
-                        tools,
-                        r,
-                    ));
-                }
-                Err(e) => {
-                    crate::platform::task_wdt::feed_current_task();
-                    if i + 1 < self.clients.len() {
-                        log::warn!("[fallback_llm] source {} failed, trying next: {}", i, e);
-                    }
-                    last_err = Some(e);
-                }
-            }
-        }
-        let err = last_err.unwrap_or_else(|| {
-            crate::error::Error::config("fallback_llm", "llm fallback returned no result")
-        });
-        self.set_last_error(&err.to_string());
-        Err(err)
+                prepare_request_for_client(compat, system, tools);
+            client
+                .chat(
+                    http,
+                    effective_system.as_ref(),
+                    messages,
+                    effective_tools,
+                    tool_choice,
+                )
+                .map(|r| finalize_response_for_client(compat, tools, r))
+        })
     }
 
     fn chat_with_progress(
@@ -116,68 +128,30 @@ impl LlmClient for FallbackLlmClient {
         tool_choice: ToolChoicePolicy,
         on_progress: crate::llm::StreamProgressFn,
     ) -> Result<LlmResponse> {
-        if self.clients.is_empty() {
-            let err = crate::error::Error::config("fallback_llm", "no LLM sources configured");
-            self.set_last_error(&err.to_string());
-            return Err(err);
-        }
-        // 第一个源使用 progress 回调。
-        let first_compat = self.clients[0].model_compat();
-        let (first_system, first_tools) = prepare_request_for_client(first_compat, system, tools);
-        let first_result = self.clients[0].chat_with_progress(
-            http,
-            first_system.as_ref(),
-            messages,
-            first_tools,
-            tool_choice,
-            on_progress,
-        );
-        match first_result {
-            Ok(r) => {
-                crate::platform::task_wdt::feed_current_task();
-                return Ok(finalize_response_for_client(first_compat, tools, r));
-            }
-            Err(e) => {
-                crate::platform::task_wdt::feed_current_task();
-                if self.clients.len() > 1 {
-                    log::warn!("[fallback_llm] source 0 failed, trying next: {}", e);
-                } else {
-                    self.set_last_error(&e.to_string());
-                    return Err(e);
-                }
-            }
-        }
-        // 后续源降级为普通 chat。
-        let mut last_err = None;
-        for (i, client) in self.clients.iter().enumerate().skip(1) {
+        self.run_with_fallback(http, |i, client, http| {
             let compat = client.model_compat();
             let (effective_system, effective_tools) =
                 prepare_request_for_client(compat, system, tools);
-            match client.chat(
-                http,
-                effective_system.as_ref(),
-                messages,
-                effective_tools,
-                tool_choice,
-            ) {
-                Ok(r) => {
-                    crate::platform::task_wdt::feed_current_task();
-                    return Ok(finalize_response_for_client(compat, tools, r));
-                }
-                Err(e) => {
-                    crate::platform::task_wdt::feed_current_task();
-                    if i + 1 < self.clients.len() {
-                        log::warn!("[fallback_llm] source {} failed, trying next: {}", i, e);
-                    }
-                    last_err = Some(e);
-                }
-            }
-        }
-        let err = last_err.unwrap_or_else(|| {
-            crate::error::Error::config("fallback_llm", "llm fallback returned no result")
-        });
-        self.set_last_error(&err.to_string());
-        Err(err)
+            let result = if i == 0 {
+                client.chat_with_progress(
+                    http,
+                    effective_system.as_ref(),
+                    messages,
+                    effective_tools,
+                    tool_choice,
+                    on_progress,
+                )
+            } else {
+                client.chat(
+                    http,
+                    effective_system.as_ref(),
+                    messages,
+                    effective_tools,
+                    tool_choice,
+                )
+            };
+            result.map(|r| finalize_response_for_client(compat, tools, r))
+        })
     }
 }
 

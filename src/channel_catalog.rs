@@ -21,7 +21,6 @@ pub const DISPLAY_CHANNEL_CAPACITY: usize = 5;
 pub struct CompiledChannelEntry {
     pub id: &'static str,
     pub display_label: &'static str,
-    pub selectable: bool,
     pub show_in_connectivity: bool,
     pub show_on_display: bool,
 }
@@ -30,7 +29,6 @@ pub struct CompiledChannelEntry {
 const TELEGRAM_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_TELEGRAM,
     display_label: "TG",
-    selectable: true,
     show_in_connectivity: true,
     show_on_display: true,
 };
@@ -39,7 +37,6 @@ const TELEGRAM_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
 const FEISHU_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_FEISHU,
     display_label: "FS",
-    selectable: true,
     show_in_connectivity: true,
     show_on_display: true,
 };
@@ -48,7 +45,6 @@ const FEISHU_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
 const DINGTALK_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_DINGTALK,
     display_label: "DT",
-    selectable: true,
     show_in_connectivity: true,
     show_on_display: true,
 };
@@ -57,7 +53,6 @@ const DINGTALK_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
 const WECOM_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_WECOM,
     display_label: "WC",
-    selectable: true,
     show_in_connectivity: true,
     show_on_display: true,
 };
@@ -66,7 +61,6 @@ const WECOM_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
 const QQ_CHANNEL_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_QQ_CHANNEL,
     display_label: "QQ",
-    selectable: true,
     show_in_connectivity: true,
     show_on_display: true,
 };
@@ -75,7 +69,6 @@ const QQ_CHANNEL_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
 const WEBSOCKET_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_WEBSOCKET,
     display_label: "WS",
-    selectable: false,
     show_in_connectivity: false,
     show_on_display: false,
 };
@@ -83,10 +76,16 @@ const WEBSOCKET_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
 const VOICE_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_VOICE,
     display_label: "VO",
-    selectable: false,
     show_in_connectivity: false,
     show_on_display: false,
 };
+
+fn compiled_channel_entry(channel: &str) -> Option<CompiledChannelEntry> {
+    compiled_channel_entries()
+        .iter()
+        .copied()
+        .find(|entry| entry.id == channel)
+}
 
 pub fn compiled_channel_entries() -> &'static [CompiledChannelEntry] {
     &[
@@ -123,10 +122,10 @@ pub fn compiled_enabled_channel_ids() -> &'static [&'static str] {
 }
 
 pub fn selectable_channel_entries() -> impl Iterator<Item = CompiledChannelEntry> {
-    compiled_channel_entries()
+    compiled_enabled_channel_ids()
         .iter()
         .copied()
-        .filter(|entry| entry.selectable)
+        .filter_map(compiled_channel_entry)
 }
 
 pub fn connectivity_channel_entries() -> impl Iterator<Item = CompiledChannelEntry> {
@@ -144,9 +143,7 @@ pub fn display_channel_entries() -> impl Iterator<Item = CompiledChannelEntry> {
 }
 
 pub fn channel_is_compiled(channel: &str) -> bool {
-    compiled_channel_entries()
-        .iter()
-        .any(|entry| entry.id == channel)
+    compiled_channel_entry(channel).is_some()
 }
 
 pub fn normalize_compiled_enabled_channel(channel: &str) -> &str {
@@ -158,10 +155,7 @@ pub fn normalize_compiled_enabled_channel(channel: &str) -> &str {
 }
 
 pub fn channel_display_label(channel: &str) -> Option<&'static str> {
-    compiled_channel_entries()
-        .iter()
-        .find(|entry| entry.id == channel)
-        .map(|entry| entry.display_label)
+    compiled_channel_entry(channel).map(|entry| entry.display_label)
 }
 
 #[cfg(test)]

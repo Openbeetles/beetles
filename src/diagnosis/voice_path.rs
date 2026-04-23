@@ -1,3 +1,4 @@
+use crate::diagnosis::system::visit_runtime_capability_degradations;
 use crate::diagnosis::{
     DiagnosisAction, DiagnosisConfidence, DiagnosisDegradation, DiagnosisEvidence,
     DiagnosisFinding, DiagnosisKind, DiagnosisResult, DiagnosisRootCause,
@@ -226,9 +227,9 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
         ));
     }
 
-    for capability in input.runtime_capabilities {
+    visit_runtime_capability_degradations(&input.runtime_capabilities, |capability, status| {
         match capability.id {
-            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT => match capability.status {
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT => match status {
                 RuntimeCapabilityStatus::Offline => {
                     degraded_by.push(DiagnosisDegradation::new(
                         capability.id,
@@ -266,7 +267,7 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
                     ));
                 }
             },
-            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT => match capability.status {
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT => match status {
                 RuntimeCapabilityStatus::Offline => {
                     degraded_by.push(DiagnosisDegradation::new(
                         capability.id,
@@ -306,7 +307,7 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             },
             _ => {}
         }
-    }
+    });
 
     DiagnosisResult {
         kind: DiagnosisKind::VoicePath,
@@ -356,6 +357,7 @@ pub fn build_voice_path_diagnosis_from_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::RuntimeCapabilityStatus;
     use crate::orchestrator::{RuntimeCapabilityReason, RuntimeCapabilityState};
 
     #[test]

@@ -2,6 +2,45 @@
 //! Single route dispatch; behavior matches ESP `register!` in `mod.rs`.
 
 use super::auth;
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use super::catalog::ROUTE_DINGTALK_WEBHOOK;
+#[cfg(all(
+    feature = "feishu",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use super::catalog::ROUTE_FEISHU_EVENT;
+#[cfg(all(
+    feature = "qq_channel",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use super::catalog::ROUTE_WEBHOOK_QQ;
+#[cfg(all(
+    feature = "wecom",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use super::catalog::ROUTE_WECOM_WEBHOOK;
+use super::catalog::{
+    ROUTE_CAPABILITY_PACKAGES, ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CONFIG_AUDIO,
+    ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY, ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM,
+    ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM, ROUTE_CONFIG_WIFI, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE,
+    ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH, ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS,
+    ROUTE_METRICS, ROUTE_OPERATOR_STATUS, ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE,
+    ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT, ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT,
+    ROUTE_SOUL, ROUTE_SYSTEM_INFO, ROUTE_TOOLS, ROUTE_USER, ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
+};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use super::catalog::{
+    ROUTE_CONFIG_ACCOUNTS, ROUTE_CONFIG_ACCOUNTS_PREFIX, ROUTE_CONFIG_CAPABILITIES,
+    ROUTE_CONFIG_CAPABILITIES_PREFIX, ROUTE_CONFIG_PROVIDERS,
+};
+#[cfg(feature = "ota")]
+use super::catalog::{ROUTE_OTA, ROUTE_OTA_CHECK};
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
 use crate::platform::http_server::api_contract;
@@ -20,76 +59,41 @@ const OPTIONS_BODY: &[u8] = b" ";
 
 #[inline(never)]
 fn path_only(uri: &str) -> &str {
-    uri.split('?').next().unwrap_or("/")
+    uri.split('?').next().unwrap_or(ROUTE_ROOT)
 }
 
 /// Extract `chat_id` query parameter from URI (case-insensitive key match).
 #[inline(never)]
 fn chat_id_from_uri(uri: &str) -> Option<String> {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next().is_some_and(|k| k.eq_ignore_ascii_case("chat_id")) {
-            return it.next().filter(|s| !s.is_empty()).map(String::from);
-        }
-    }
-    None
+    common::query_param_from_uri(uri, "chat_id").map(str::to_string)
 }
 
 /// Extract pagination parameters from URI: page (default 1) and limit (default 20).
 #[inline(never)]
 fn pagination_from_uri(uri: &str) -> (usize, usize) {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    let mut page = 1;
-    let mut limit = 20;
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if let Some(key) = it.next() {
-            if let Some(val) = it.next() {
-                if key.eq_ignore_ascii_case("page") {
-                    page = val.parse().unwrap_or(1);
-                } else if key.eq_ignore_ascii_case("limit") {
-                    limit = val.parse().unwrap_or(20);
-                }
-            }
-        }
-    }
+    let page = common::query_param_from_uri(uri, "page")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let limit = common::query_param_from_uri(uri, "limit")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20);
     (page, limit)
 }
 
 /// Extract format parameter from URI (e.g., ?format=prometheus).
 #[inline(never)]
 fn format_from_uri(uri: &str) -> Option<&str> {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next().is_some_and(|k| k.eq_ignore_ascii_case("format")) {
-            return it.next();
-        }
-    }
-    None
-}
-
-#[inline(never)]
-fn query_param_from_uri<'a>(uri: &'a str, key: &str) -> Option<&'a str> {
-    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
-    for pair in query.split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next().is_some_and(|k| k.eq_ignore_ascii_case(key)) {
-            return it.next().filter(|value| !value.is_empty());
-        }
-    }
-    None
+    common::query_param_from_uri(uri, "format")
 }
 
 #[inline(never)]
 fn hardware_bus_from_uri(uri: &str) -> Option<HardwareDiscoveryBus> {
-    query_param_from_uri(uri, "bus").and_then(HardwareDiscoveryBus::parse)
+    common::query_param_from_uri(uri, "bus").and_then(HardwareDiscoveryBus::parse)
 }
 
 #[inline(never)]
 fn hardware_capability_from_uri(uri: &str) -> Option<HardwareCapability> {
-    query_param_from_uri(uri, "capability").and_then(HardwareCapability::parse)
+    common::query_param_from_uri(uri, "capability").and_then(HardwareCapability::parse)
 }
 
 #[cfg(all(
@@ -129,10 +133,10 @@ enum ProviderConfigRoute {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 fn parse_account_config_route(path: &str) -> Option<AccountConfigRoute<'_>> {
-    if path == "/api/config/accounts" {
+    if path == ROUTE_CONFIG_ACCOUNTS {
         return Some(AccountConfigRoute::Collection);
     }
-    let rest = path.strip_prefix("/api/config/accounts/")?;
+    let rest = path.strip_prefix(ROUTE_CONFIG_ACCOUNTS_PREFIX)?;
     let mut parts = rest.split('/');
     let account_key = parts.next()?.trim();
     if account_key.is_empty() {
@@ -152,10 +156,10 @@ fn parse_account_config_route(path: &str) -> Option<AccountConfigRoute<'_>> {
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 fn parse_capability_config_route(path: &str) -> Option<CapabilityConfigRoute<'_>> {
-    if path == "/api/config/capabilities" {
+    if path == ROUTE_CONFIG_CAPABILITIES {
         return Some(CapabilityConfigRoute::Collection);
     }
-    let capability = path.strip_prefix("/api/config/capabilities/")?.trim();
+    let capability = path.strip_prefix(ROUTE_CONFIG_CAPABILITIES_PREFIX)?.trim();
     if capability.is_empty() {
         return None;
     }
@@ -167,7 +171,7 @@ fn parse_capability_config_route(path: &str) -> Option<CapabilityConfigRoute<'_>
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 fn parse_provider_config_route(path: &str) -> Option<ProviderConfigRoute> {
-    if path == "/api/config/providers" {
+    if path == ROUTE_CONFIG_PROVIDERS {
         return Some(ProviderConfigRoute::Collection);
     }
     None
@@ -294,8 +298,8 @@ fn dispatch_account_config(
                 Ok(
                     match handlers::config::get_accounts_body(
                         ctx,
-                        query_param_from_uri(uri, "provider_kind"),
-                        query_param_from_uri(uri, "capability"),
+                        common::query_param_from_uri(uri, "provider_kind"),
+                        common::query_param_from_uri(uri, "capability"),
                     ) {
                         Ok(body) => json_ok(body),
                         Err(_) => api_to_out(ApiResponse::err_400_key(
@@ -437,7 +441,7 @@ fn dispatch_provider_config(
                 Ok(
                     match handlers::config::get_providers_body(
                         ctx,
-                        query_param_from_uri(uri, "capability"),
+                        common::query_param_from_uri(uri, "capability"),
                     ) {
                         Ok(body) => json_ok(body),
                         Err(error) => api_to_out(office_config_error_response(&error)),
@@ -539,7 +543,7 @@ pub fn dispatch(
     }
 
     match (method, path) {
-        ("GET", "/") => {
+        ("GET", ROUTE_ROOT) => {
             let body =
                 handlers::root::body(ctx).map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(OutgoingResponse::json(
@@ -549,7 +553,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/pairing_code") => {
+        ("GET", ROUTE_PAIRING_CODE) => {
             let body = handlers::pairing::body(ctx);
             Ok(OutgoingResponse::json(
                 200,
@@ -558,12 +562,12 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("POST", "/api/pairing_code") => {
+        ("POST", ROUTE_PAIRING_CODE) => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("POST", "/api/config/wifi") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_WIFI) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -573,7 +577,7 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("POST", "/api/config/llm") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_LLM) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -583,21 +587,21 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", "/api/config/llm") => {
+        ("GET", ROUTE_CONFIG_LLM) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_llm_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("GET", "/api/config/channels") => {
+        ("GET", ROUTE_CONFIG_CHANNELS) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_channels_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", "/api/config/channels") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_CHANNELS) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -607,14 +611,14 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", "/api/config/system") => {
+        ("GET", ROUTE_CONFIG_SYSTEM) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_system_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", "/api/config/system") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_SYSTEM) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -624,14 +628,14 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", "/api/config/hardware") => {
+        ("GET", ROUTE_CONFIG_HARDWARE) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_hardware_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", "/api/config/hardware") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_HARDWARE) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -641,14 +645,14 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", "/api/config/audio") => {
+        ("GET", ROUTE_CONFIG_AUDIO) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_audio_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", "/api/config/audio") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_AUDIO) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -658,14 +662,14 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", "/api/config/display") => {
+        ("GET", ROUTE_CONFIG_DISPLAY) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_display_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", "/api/config/display") => dispatch_api_body_route(
+        ("POST", ROUTE_CONFIG_DISPLAY) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -675,7 +679,7 @@ pub fn dispatch(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", "/api/wifi/scan") => match handlers::wifi_scan::get_body(ctx) {
+        ("GET", ROUTE_WIFI_SCAN) => match handlers::wifi_scan::get_body(ctx) {
             Ok(body) => Ok(OutgoingResponse::json(
                 200,
                 "OK",
@@ -693,7 +697,7 @@ pub fn dispatch(
                 )))
             }
         },
-        ("GET", "/api/hardware/discovery") => {
+        ("GET", ROUTE_HARDWARE_DISCOVERY) => {
             if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
             }
@@ -726,7 +730,7 @@ pub fn dispatch(
                 }
             }
         }
-        ("GET", "/api/health") => {
+        ("GET", ROUTE_HEALTH) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -742,7 +746,7 @@ pub fn dispatch(
                 ))),
             }
         }
-        ("GET", "/api/operator/status") => {
+        ("GET", ROUTE_OPERATOR_STATUS) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -755,7 +759,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/metrics") => {
+        ("GET", ROUTE_METRICS) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -780,7 +784,7 @@ pub fn dispatch(
                 ))
             }
         }
-        ("GET", "/api/resource") => {
+        ("GET", ROUTE_RESOURCE) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -793,7 +797,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/tools") => {
+        ("GET", ROUTE_TOOLS) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -806,7 +810,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/csrf_token") => {
+        ("GET", ROUTE_CSRF_TOKEN) => {
             let body = handlers::csrf_token::body(ctx)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(OutgoingResponse::json(
@@ -816,7 +820,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/diagnose") => {
+        ("GET", ROUTE_DIAGNOSE) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -829,7 +833,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/system_info") => {
+        ("GET", ROUTE_SYSTEM_INFO) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -842,7 +846,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("POST", "/api/operator/window") => {
+        ("POST", ROUTE_OPERATOR_WINDOW) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -858,7 +862,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("GET", "/api/channel_connectivity") => {
+        ("GET", ROUTE_CHANNEL_CONNECTIVITY) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -881,7 +885,7 @@ pub fn dispatch(
                 ))),
             }
         }
-        ("GET", "/api/sessions") => {
+        ("GET", ROUTE_SESSIONS) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -912,7 +916,7 @@ pub fn dispatch(
                 ))),
             }
         }
-        ("DELETE", "/api/sessions") => {
+        ("DELETE", ROUTE_SESSIONS) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -932,7 +936,7 @@ pub fn dispatch(
                 ))),
             }
         }
-        ("GET", "/api/memory/status") => {
+        ("GET", ROUTE_MEMORY_STATUS) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -945,7 +949,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("POST", "/api/memory/maintenance") => {
+        ("POST", ROUTE_MEMORY_MAINTENANCE) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -953,7 +957,7 @@ pub fn dispatch(
             let r = handlers::memory_maintenance::post(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("GET", "/api/capability_packages") => {
+        ("GET", ROUTE_CAPABILITY_PACKAGES) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -966,7 +970,7 @@ pub fn dispatch(
                 body.into_bytes(),
             ))
         }
-        ("POST", "/api/capability_packages") => {
+        ("POST", ROUTE_CAPABILITY_PACKAGES) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -974,7 +978,7 @@ pub fn dispatch(
             let r = handlers::capability_packages::post(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("GET", "/api/skills") => {
+        ("GET", ROUTE_SKILLS) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -995,7 +999,7 @@ pub fn dispatch(
                 Err(r) => Ok(api_to_out(r)),
             }
         }
-        ("POST", "/api/skills") => {
+        ("POST", ROUTE_SKILLS) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1003,7 +1007,7 @@ pub fn dispatch(
             let r = handlers::skills::post(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("DELETE", "/api/skills") => {
+        ("DELETE", ROUTE_SKILLS) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1018,7 +1022,7 @@ pub fn dispatch(
             let r = handlers::skills::delete(ctx, &name);
             Ok(api_to_out(r))
         }
-        ("POST", "/api/skills/import") => {
+        ("POST", ROUTE_SKILLS_IMPORT) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1027,7 +1031,7 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        ("GET", "/api/soul") => {
+        ("GET", ROUTE_SOUL) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -1043,7 +1047,7 @@ pub fn dispatch(
                 ))),
             }
         }
-        ("GET", "/api/user") => {
+        ("GET", ROUTE_USER) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -1059,7 +1063,7 @@ pub fn dispatch(
                 ))),
             }
         }
-        ("POST", "/api/soul") => {
+        ("POST", ROUTE_SOUL) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1071,7 +1075,7 @@ pub fn dispatch(
             let r = handlers::soul::post(ctx, body_str.to_string(), is_json);
             Ok(api_to_out(r))
         }
-        ("POST", "/api/user") => {
+        ("POST", ROUTE_USER) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1083,7 +1087,7 @@ pub fn dispatch(
             let r = handlers::user::post(ctx, body_str.to_string(), is_json);
             Ok(api_to_out(r))
         }
-        ("POST", "/api/restart") => {
+        ("POST", ROUTE_RESTART) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1095,7 +1099,7 @@ pub fn dispatch(
             }
             Ok(out)
         }
-        ("POST", "/api/config_reset") => {
+        ("POST", ROUTE_CONFIG_RESET) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1103,7 +1107,7 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        ("POST", "/api/webhook") => {
+        ("POST", ROUTE_WEBHOOK) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1120,7 +1124,7 @@ pub fn dispatch(
             feature = "feishu",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        ("POST", "/api/feishu/event") => {
+        ("POST", ROUTE_FEISHU_EVENT) => {
             let body_str = utf8_body(&incoming.body)?;
             let signature = incoming.header_ci("X-Lark-Signature").unwrap_or("");
             let timestamp = incoming.header_ci("X-Lark-Request-Timestamp").unwrap_or("");
@@ -1141,7 +1145,7 @@ pub fn dispatch(
             feature = "dingtalk",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        ("POST", "/api/dingtalk/webhook") => {
+        ("POST", ROUTE_DINGTALK_WEBHOOK) => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::dingtalk_webhook::post(
                 &env.inbound_tx,
@@ -1155,7 +1159,7 @@ pub fn dispatch(
             feature = "wecom",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        ("GET", "/api/wecom/webhook") => {
+        ("GET", ROUTE_WECOM_WEBHOOK) => {
             let config = ctx.config();
             let r = handlers::wecom_webhook::get_verify(
                 uri,
@@ -1179,7 +1183,7 @@ pub fn dispatch(
             feature = "wecom",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        ("POST", "/api/wecom/webhook") => {
+        ("POST", ROUTE_WECOM_WEBHOOK) => {
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::wecom_webhook::post(ctx, uri, &env.inbound_tx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
@@ -1189,7 +1193,7 @@ pub fn dispatch(
             feature = "qq_channel",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
-        ("POST", "/api/webhook/qq") => {
+        ("POST", ROUTE_WEBHOOK_QQ) => {
             if !env.qq_webhook_enabled {
                 return Ok(OutgoingResponse::json(
                     404,
@@ -1260,7 +1264,7 @@ fn dispatch_ota(
 ) -> Result<Option<OutgoingResponse>> {
     use crate::platform::http_server::common::channel_from_uri;
     match (method, path) {
-        ("GET", "/api/ota/check") => {
+        ("GET", ROUTE_OTA_CHECK) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(Some(api_to_out(r)));
             }
@@ -1274,7 +1278,7 @@ fn dispatch_ota(
                 body.into_bytes(),
             )))
         }
-        ("POST", "/api/ota") => {
+        ("POST", ROUTE_OTA) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(Some(o));
             }
@@ -1304,6 +1308,7 @@ mod tests {
     use serde_json::Value;
     #[cfg(any(feature = "feishu", feature = "dingtalk", feature = "qq_channel"))]
     use std::collections::HashMap;
+    use std::sync::OnceLock;
     #[cfg(any(
         feature = "feishu",
         feature = "dingtalk",
@@ -1311,7 +1316,6 @@ mod tests {
         feature = "capability_office"
     ))]
     use std::sync::{Arc, Mutex};
-    use std::sync::OnceLock;
 
     #[cfg(all(
         feature = "capability_office",

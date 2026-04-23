@@ -1,8 +1,7 @@
 use crate::calendar::{CalendarEvent, CalendarProviderCredential, CalendarQuery};
 use crate::error::Result;
+use crate::office::office_refactor_helpers::define_provider_registry;
 use crate::platform::ResponseBody;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CalendarOperation {
@@ -99,29 +98,4 @@ pub trait CalendarProvider: Send + Sync {
     ) -> Result<bool>;
 }
 
-#[derive(Clone, Default)]
-pub struct CalendarProviderRegistry {
-    providers: HashMap<&'static str, Arc<dyn CalendarProvider>>,
-}
-
-impl CalendarProviderRegistry {
-    pub fn new() -> Self {
-        Self {
-            providers: HashMap::new(),
-        }
-    }
-
-    pub fn register(&mut self, provider: Arc<dyn CalendarProvider>) {
-        self.providers.insert(provider.provider_name(), provider);
-    }
-
-    pub fn get(&self, provider: &str) -> Option<Arc<dyn CalendarProvider>> {
-        self.providers.get(provider).cloned()
-    }
-
-    pub fn names(&self) -> Vec<&'static str> {
-        let mut names = self.providers.keys().copied().collect::<Vec<_>>();
-        names.sort_unstable();
-        names
-    }
-}
+define_provider_registry!(CalendarProviderRegistry, crate::calendar::CalendarProvider);

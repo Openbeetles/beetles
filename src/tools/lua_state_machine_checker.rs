@@ -1,39 +1,27 @@
 //! Linux-only programmable checker for structured state-machine analysis.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::reasoning::{
-    validate_state_machine_result, CurrentExecutableLuaSandboxExecutor, LuaQueryBudget,
-    LuaQueryRequest, LuaQueryResponse, ReasoningExecutor,
+    validate_state_machine_result, CurrentExecutableLuaSandboxExecutor, ReasoningExecutor,
 };
 use crate::tools::{
-    parse_tool_args, serialize_tool_output, Tool, ToolContext, ToolMetadata, ToolRiskLevel,
+    lua_protocol_frame_helper::{
+        build_lua_sandboxed_helper_response, prepare_lua_sandboxed_helper_invocation,
+    },
+    serialize_tool_output, Tool, ToolContext, ToolMetadata, ToolRiskLevel,
 };
-use serde::Serialize;
-use serde_json::Value;
 use std::sync::Arc;
 
 pub struct LuaStateMachineCheckerTool {
     executor: Arc<dyn ReasoningExecutor>,
 }
 
-#[derive(Serialize)]
-struct LuaStateMachineCheckerToolResponse {
-    ok: bool,
-    plane: &'static str,
-    readonly: bool,
-    source_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    focus: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<crate::reasoning::StateMachineResult>,
-    #[serde(default)]
-    trace: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error_message: Option<String>,
-    budget: LuaQueryBudget,
-}
+const LUA_STATE_MACHINE_HELPER_CAPABILITIES: [&str; 4] = [
+    "read_input",
+    "emit_result",
+    "emit_trace",
+    "propose_state_machines",
+];
 
 impl LuaStateMachineCheckerTool {
     pub fn new(executor: Arc<dyn ReasoningExecutor>) -> Self {
@@ -61,49 +49,20 @@ impl Tool for LuaStateMachineCheckerTool {
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
-        let obj = parse_tool_args(args, "lua_state_machine_checker_tool")?;
-        let script = obj
-            .get("script")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::config("lua_state_machine_checker_tool", "missing script"))?;
-        let source_text = obj
-            .get("source_text")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                Error::config("lua_state_machine_checker_tool", "missing source_text")
-            })?;
-        let timeout_ms = obj.get("timeout_ms").and_then(Value::as_u64);
-        let source_name = obj
-            .get("source_name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("reference")
-            .to_string();
-        let focus = obj
-            .get("focus")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let request = LuaQueryRequest {
-            script: script.to_string(),
-            input: serde_json::json!({
-                "source_name": source_name,
-                "source_text": source_text,
-                "focus": focus,
-            }),
-            budget: timeout_ms
-                .map(|value| LuaQueryBudget::default().with_timeout_ms(value))
-                .unwrap_or_default(),
-            capabilities: default_lua_state_machine_checker_capabilities(),
-        };
-        let response = self.executor.execute_query(&request)?;
-        let output = build_tool_response(response, source_name, focus)?;
+        let invocation = prepare_lua_sandboxed_helper_invocation(
+            args,
+            "lua_state_machine_checker_tool",
+            &LUA_STATE_MACHINE_HELPER_CAPABILITIES,
+        )?;
+        let response = self.executor.execute_query(&invocation.request)?;
+        let output = build_lua_sandboxed_helper_response(
+            response,
+            "lua_state_machine_checker_tool",
+            "engineering_state_machine_plane",
+            invocation.source_name,
+            invocation.focus,
+            validate_state_machine_result,
+        )?;
         serialize_tool_output("lua_state_machine_checker_tool", &output)
     }
 
@@ -112,46 +71,11 @@ impl Tool for LuaStateMachineCheckerTool {
     }
 }
 
-fn default_lua_state_machine_checker_capabilities() -> Vec<String> {
-    vec![
-        "read_input".to_string(),
-        "emit_result".to_string(),
-        "emit_trace".to_string(),
-        "propose_state_machines".to_string(),
-    ]
-}
-
-fn build_tool_response(
-    response: LuaQueryResponse,
-    source_name: String,
-    focus: Option<String>,
-) -> Result<LuaStateMachineCheckerToolResponse> {
-    let validated_result = if response.ok {
-        let result = response
-            .result
-            .ok_or_else(|| Error::config("lua_state_machine_checker_tool", "missing result"))?;
-        Some(validate_state_machine_result(result)?)
-    } else {
-        None
-    };
-
-    Ok(LuaStateMachineCheckerToolResponse {
-        ok: response.ok,
-        plane: "engineering_state_machine_plane",
-        readonly: true,
-        source_name,
-        focus,
-        result: validated_result,
-        trace: response.trace,
-        error_kind: response.error_kind,
-        error_message: response.error_message,
-        budget: response.budget,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
+    use crate::reasoning::{LuaQueryRequest, LuaQueryResponse};
     use serde_json::{json, Value};
 
     struct StubExecutor;

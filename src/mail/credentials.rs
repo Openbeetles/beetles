@@ -2,12 +2,10 @@ use crate::error::{Error, Result};
 use crate::mail::{DEFAULT_DRAFT_MAILBOX, DEFAULT_MAILBOX};
 use crate::office::{
     normalize_google_api_base_url, normalize_microsoft_graph_base_url,
-    OfficeAuthorityBackedCredentialStoreCore, OfficeAuthoritySource, OfficeCapability,
-    OfficeCredential, OfficeService, GOOGLE_GMAIL_DEFAULT_BASE_URL,
-    MICROSOFT_GRAPH_DEFAULT_BASE_URL,
+    office_refactor_helpers::define_office_backed_credential_store, OfficeCapability,
+    OfficeCredential, GOOGLE_GMAIL_DEFAULT_BASE_URL, MICROSOFT_GRAPH_DEFAULT_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub const OFFICE_METADATA_MAIL_USERNAME: &str = "mail_username";
 pub const OFFICE_METADATA_MAIL_IMAP_HOST: &str = "mail_imap_host";
@@ -114,45 +112,14 @@ impl MailProviderCredential {
     }
 }
 
-#[derive(Clone)]
-pub struct OfficeBackedMailProviderCredentialStore {
-    core: OfficeAuthorityBackedCredentialStoreCore,
-}
-
-impl OfficeBackedMailProviderCredentialStore {
-    pub fn new(office: OfficeService) -> Self {
-        Self {
-            core: OfficeAuthorityBackedCredentialStoreCore::new(office),
-        }
-    }
-
-    pub fn with_authority(authority: Arc<dyn OfficeAuthoritySource + Send + Sync>) -> Self {
-        Self {
-            core: OfficeAuthorityBackedCredentialStoreCore::with_authority(authority),
-        }
-    }
-}
-
-impl MailProviderCredentialStore for OfficeBackedMailProviderCredentialStore {
-    fn get(&self, account_key: &str) -> Result<Option<MailProviderCredential>> {
-        self.core.get_for_capability(
-            OfficeCapability::Mail,
-            account_key,
-            mail_credential_from_office,
-        )
-    }
-
-    fn find_account_keys_by_provider(&self, provider: &str) -> Result<Vec<String>> {
-        self.core
-            .find_account_keys_by_provider(OfficeCapability::Mail, provider)
-    }
-
-    fn list_statuses(&self) -> Result<Vec<MailProviderCredentialStatus>> {
-        self.core
-            .list_statuses_for_capability(OfficeCapability::Mail, |account, credential| {
-                Ok(mail_credential_from_office(account, credential)?.status())
-            })
-    }
+define_office_backed_credential_store! {
+    store = OfficeBackedMailProviderCredentialStore,
+    trait = MailProviderCredentialStore,
+    credential = MailProviderCredential,
+    status = MailProviderCredentialStatus,
+    capability = OfficeCapability::Mail,
+    from_office = mail_credential_from_office,
+    status_from_office = |account, credential| Ok(mail_credential_from_office(account, credential)?.status())
 }
 
 pub(crate) fn mail_credential_from_office(
@@ -393,7 +360,7 @@ mod tests {
     use crate::error::Result;
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy, OfficeService,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;

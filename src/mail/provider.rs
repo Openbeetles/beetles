@@ -3,9 +3,8 @@ use crate::mail::{
     MailMessage, MailMessageSummary, MailProviderCredential, MailQuery, MailSearchQuery,
     MailSendRequest,
 };
+use crate::office::office_refactor_helpers::define_provider_registry;
 use crate::office::OfficeHttpClient;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MailOperation {
@@ -52,29 +51,4 @@ pub trait MailProvider: Send + Sync {
     ) -> Result<MailMessageSummary>;
 }
 
-#[derive(Clone, Default)]
-pub struct MailProviderRegistry {
-    providers: HashMap<&'static str, Arc<dyn MailProvider>>,
-}
-
-impl MailProviderRegistry {
-    pub fn new() -> Self {
-        Self {
-            providers: HashMap::new(),
-        }
-    }
-
-    pub fn register(&mut self, provider: Arc<dyn MailProvider>) {
-        self.providers.insert(provider.provider_name(), provider);
-    }
-
-    pub fn get(&self, provider: &str) -> Option<Arc<dyn MailProvider>> {
-        self.providers.get(provider).cloned()
-    }
-
-    pub fn names(&self) -> Vec<&'static str> {
-        let mut names = self.providers.keys().copied().collect::<Vec<_>>();
-        names.sort_unstable();
-        names
-    }
-}
+define_provider_registry!(MailProviderRegistry, crate::mail::MailProvider);

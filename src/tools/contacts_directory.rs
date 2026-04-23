@@ -109,12 +109,14 @@ impl ContactsDirectoryTool {
         providers: crate::contacts_directory::ContactsDirectoryProviderRegistry,
         office_service: crate::office::OfficeService,
     ) -> Self {
-        Self::build(ContactsDirectoryService::with_office_service(
+        Self::with_office_authority(
             store,
             credential_store,
             providers,
-            office_service,
-        ))
+            Arc::new(crate::office::SnapshotOfficeAuthoritySource::new(
+                office_service,
+            )),
+        )
     }
 
     #[cfg(all(

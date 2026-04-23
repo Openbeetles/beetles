@@ -5,6 +5,7 @@ mod compat;
 mod retry;
 pub mod sse;
 pub(crate) mod tool_fallback;
+mod topology;
 mod types;
 
 pub mod anthropic;
@@ -18,6 +19,10 @@ pub use noop::NoopLlmClient;
 pub use openai_compatible::OpenAiCompatibleClient;
 
 pub use compat::{LlmModelCompat, ToolCallSupport};
+pub(crate) use topology::{
+    ensure_legacy_llm_sources, llm_fallback_source_indices, llm_sources_or_legacy,
+    provider_uses_openai_compatible_client,
+};
 pub use types::{
     LlmResponse, Message, StopReason, StreamProgressFn, ToolCall, ToolChoicePolicy, ToolSpec,
     MAX_MESSAGE_CONTENT_LEN, MAX_REQUEST_BODY_LEN,
@@ -26,66 +31,13 @@ pub use types::{
 use crate::config::{AppConfig, LlmSource};
 use crate::error::{Error, Result};
 use crate::i18n::Locale;
-use std::collections::HashSet;
 use std::sync::Arc;
 
-fn llm_source_is_usable(s: &LlmSource) -> bool {
-    let has_key = !s.api_key.trim().is_empty();
-    let has_model = !s.model.trim().is_empty();
-    let has_provider = !s.provider.trim().is_empty();
-    let has_url = !s.api_url.trim().is_empty()
-        || s.provider == "openai"
-        || s.provider == "openai_compatible"
-        || s.provider == "gemini"
-        || s.provider == "glm"
-        || s.provider == "qwen"
-        || s.provider == "deepseek"
-        || s.provider == "moonshot"
-        || s.provider == "ollama";
-    has_key && has_model && has_provider && has_url
-}
-
-/// 回退链下标顺序：未指定主用时按列表顺序；指定主用时先主用、再备用（若设且有效）、再其余有效源。
-fn llm_fallback_source_indices(config: &AppConfig) -> Vec<usize> {
-    let n = config.llm_sources.len();
-    let valid: Vec<bool> = config
-        .llm_sources
-        .iter()
-        .map(llm_source_is_usable)
-        .collect();
-    let valid_list: Vec<usize> = (0..n).filter(|&i| valid[i]).collect();
-    let router = config.llm_router_source_index.map(|u| u as usize);
-    let worker = config.llm_worker_source_index.map(|u| u as usize);
-    match router {
-        None => valid_list,
-        Some(r) if r < n && valid.get(r).copied().unwrap_or(false) => {
-            let mut out = vec![r];
-            let mut seen = HashSet::from([r]);
-            if let Some(w) = worker {
-                if w < n && w != r && valid.get(w).copied().unwrap_or(false) {
-                    out.push(w);
-                    seen.insert(w);
-                }
-            }
-            for i in valid_list {
-                if !seen.contains(&i) {
-                    out.push(i);
-                }
-            }
-            out
-        }
-        Some(_) => {
-            // 主用下标无效或源未就绪时回退为列表顺序，避免整链为空。
-            valid_list
-        }
-    }
-}
-
 fn box_client_for_source(s: &LlmSource, global_stream: bool) -> Box<dyn LlmClient + Send + Sync> {
-    match s.provider.as_str() {
-        "openai" | "openai_compatible" | "gemini" | "glm" | "qwen" | "deepseek" | "moonshot"
-        | "ollama" => Box::new(OpenAiCompatibleClient::from_source(s, global_stream)),
-        _ => Box::new(AnthropicClient::from_source(s, global_stream)),
+    if provider_uses_openai_compatible_client(s.provider.as_str()) {
+        Box::new(OpenAiCompatibleClient::from_source(s, global_stream))
+    } else {
+        Box::new(AnthropicClient::from_source(s, global_stream))
     }
 }
 

@@ -12,27 +12,128 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub struct LuaProtocolFrameHelperTool {
-    executor: Arc<dyn ReasoningExecutor>,
+pub(crate) struct LuaSandboxedHelperInvocation {
+    pub source_name: String,
+    pub focus: Option<String>,
+    pub request: LuaQueryRequest,
 }
 
 #[derive(Serialize)]
-struct LuaProtocolFrameHelperToolResponse {
-    ok: bool,
-    plane: &'static str,
-    readonly: bool,
-    source_name: String,
+pub(crate) struct LuaSandboxedHelperResponse<T> {
+    pub ok: bool,
+    pub plane: &'static str,
+    pub readonly: bool,
+    pub source_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    focus: Option<String>,
+    pub focus: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<crate::reasoning::ProtocolFrameResult>,
+    pub result: Option<T>,
     #[serde(default)]
-    trace: Vec<String>,
+    pub trace: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error_kind: Option<String>,
+    pub error_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error_message: Option<String>,
-    budget: LuaQueryBudget,
+    pub error_message: Option<String>,
+    pub budget: LuaQueryBudget,
+}
+
+pub(crate) fn prepare_lua_sandboxed_helper_invocation(
+    args: &str,
+    tool_name: &'static str,
+    capabilities: &[&str],
+) -> Result<LuaSandboxedHelperInvocation> {
+    let obj = parse_tool_args(args, tool_name)?;
+    let script = obj
+        .get("script")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::config(tool_name, "missing script"))?;
+    let source_text = obj
+        .get("source_text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::config(tool_name, "missing source_text"))?;
+    let timeout_ms = obj.get("timeout_ms").and_then(Value::as_u64);
+    let source_name = obj
+        .get("source_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("reference")
+        .to_string();
+    let focus = obj
+        .get("focus")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let request = LuaQueryRequest {
+        script: script.to_string(),
+        input: serde_json::json!({
+            "source_name": source_name.clone(),
+            "source_text": source_text,
+            "focus": focus.clone(),
+        }),
+        budget: timeout_ms
+            .map(|value| LuaQueryBudget::default().with_timeout_ms(value))
+            .unwrap_or_default(),
+        capabilities: capabilities
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+    };
+    Ok(LuaSandboxedHelperInvocation {
+        source_name,
+        focus,
+        request,
+    })
+}
+
+pub(crate) fn build_lua_sandboxed_helper_response<T>(
+    response: LuaQueryResponse,
+    tool_name: &'static str,
+    plane: &'static str,
+    source_name: String,
+    focus: Option<String>,
+    validate_result: impl FnOnce(Value) -> Result<T>,
+) -> Result<LuaSandboxedHelperResponse<T>>
+where
+    T: Serialize,
+{
+    let validated_result = if response.ok {
+        let result = response
+            .result
+            .ok_or_else(|| Error::config(tool_name, "missing result"))?;
+        Some(validate_result(result)?)
+    } else {
+        None
+    };
+
+    Ok(LuaSandboxedHelperResponse {
+        ok: response.ok,
+        plane,
+        readonly: true,
+        source_name,
+        focus,
+        result: validated_result,
+        trace: response.trace,
+        error_kind: response.error_kind,
+        error_message: response.error_message,
+        budget: response.budget,
+    })
+}
+
+const LUA_PROTOCOL_FRAME_HELPER_CAPABILITIES: [&str; 4] = [
+    "read_input",
+    "emit_result",
+    "emit_trace",
+    "propose_protocol_frames",
+];
+
+pub struct LuaProtocolFrameHelperTool {
+    executor: Arc<dyn ReasoningExecutor>,
 }
 
 impl LuaProtocolFrameHelperTool {
@@ -61,92 +162,26 @@ impl Tool for LuaProtocolFrameHelperTool {
     }
 
     fn execute(&self, args: &str, _ctx: &mut dyn ToolContext) -> Result<String> {
-        let obj = parse_tool_args(args, "lua_protocol_frame_helper_tool")?;
-        let script = obj
-            .get("script")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::config("lua_protocol_frame_helper_tool", "missing script"))?;
-        let source_text = obj
-            .get("source_text")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                Error::config("lua_protocol_frame_helper_tool", "missing source_text")
-            })?;
-        let timeout_ms = obj.get("timeout_ms").and_then(Value::as_u64);
-        let source_name = obj
-            .get("source_name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("reference")
-            .to_string();
-        let focus = obj
-            .get("focus")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let request = LuaQueryRequest {
-            script: script.to_string(),
-            input: serde_json::json!({
-                "source_name": source_name,
-                "source_text": source_text,
-                "focus": focus,
-            }),
-            budget: timeout_ms
-                .map(|value| LuaQueryBudget::default().with_timeout_ms(value))
-                .unwrap_or_default(),
-            capabilities: default_lua_protocol_frame_helper_capabilities(),
-        };
-        let response = self.executor.execute_query(&request)?;
-        let output = build_tool_response(response, source_name, focus)?;
+        let invocation = prepare_lua_sandboxed_helper_invocation(
+            args,
+            "lua_protocol_frame_helper_tool",
+            &LUA_PROTOCOL_FRAME_HELPER_CAPABILITIES,
+        )?;
+        let response = self.executor.execute_query(&invocation.request)?;
+        let output = build_lua_sandboxed_helper_response(
+            response,
+            "lua_protocol_frame_helper_tool",
+            "engineering_protocol_frame_plane",
+            invocation.source_name,
+            invocation.focus,
+            validate_protocol_frame_result,
+        )?;
         serialize_tool_output("lua_protocol_frame_helper_tool", &output)
     }
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task().with_risk_level(ToolRiskLevel::Medium)
     }
-}
-
-fn default_lua_protocol_frame_helper_capabilities() -> Vec<String> {
-    vec![
-        "read_input".to_string(),
-        "emit_result".to_string(),
-        "emit_trace".to_string(),
-        "propose_protocol_frames".to_string(),
-    ]
-}
-
-fn build_tool_response(
-    response: LuaQueryResponse,
-    source_name: String,
-    focus: Option<String>,
-) -> Result<LuaProtocolFrameHelperToolResponse> {
-    let validated_result = if response.ok {
-        let result = response
-            .result
-            .ok_or_else(|| Error::config("lua_protocol_frame_helper_tool", "missing result"))?;
-        Some(validate_protocol_frame_result(result)?)
-    } else {
-        None
-    };
-
-    Ok(LuaProtocolFrameHelperToolResponse {
-        ok: response.ok,
-        plane: "engineering_protocol_frame_plane",
-        readonly: true,
-        source_name,
-        focus,
-        result: validated_result,
-        trace: response.trace,
-        error_kind: response.error_kind,
-        error_message: response.error_message,
-        budget: response.budget,
-    })
 }
 
 #[cfg(test)]
