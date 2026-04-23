@@ -67,7 +67,7 @@ If the failure comes from an upstream provider, the response may also include:
 
 Notes:
 
-- `error_key` is the stable semantic contract that frontends and built-in pages translate.
+- `error_key` is the stable semantic contract that frontends and other clients translate.
 - `upstream_error` is raw troubleshooting text and is not translated.
 - Only debug/operator routes and protocol-compatibility routes are outside this contract.
 
@@ -138,15 +138,22 @@ Success response: `200 application/json`
 
 ## Configuration routes
 
-**GET /api/config**
+**GET /api/config/system**
 
-Purpose: read the current full config.
+Purpose: read the current system segment.
 
 Auth: `Pairing code`
 
 Success response: `200 application/json`
 
-The response is the full config object, plus `locale` and `build_package`. It includes sensitive fields and should not be exposed to unauthenticated pages.
+Fields:
+
+- `wifi_ssid`
+- `wifi_pass`
+- `proxy_url`
+- `session_max_messages`
+- `tg_group_activation`
+- `locale`
 
 **GET /api/config/llm**
 

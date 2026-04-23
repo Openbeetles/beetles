@@ -89,7 +89,11 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const { dirty, setDirty } = useContext(UnsavedContext);
-  const { config, clearCachedConfig, refreshCachedConfig } = useConfig();
+  const {
+    systemConfig,
+    clearCachedSystemConfig,
+    refreshCachedSystemConfig,
+  } = useConfig();
   const { appMode } = useDeviceApi();
   const { showToast } = useToast();
   const deviceConnected = useDeviceConnected();
@@ -106,7 +110,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const showRestartBanner = restartPhase !== "idle";
   const showDisconnectedCacheBanner =
     !deviceConnected &&
-    config != null &&
+    systemConfig != null &&
     appMode === "ready" &&
     !showRestartBanner &&
     !suppressDisconnectedCacheOverlay;
@@ -171,13 +175,13 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const handleRefreshCachedConfig = useCallback(async () => {
     if (refreshingCache) return;
     setRefreshingCache(true);
-    const result = await refreshCachedConfig();
+    const result = await refreshCachedSystemConfig();
     if (!result.ok && result.error) {
       showToast(result.error, { variant: "warning" });
     }
     setRefreshingCache(false);
     setRefreshCountdown(AUTO_REFRESH_SECONDS);
-  }, [refreshingCache, refreshCachedConfig, showToast]);
+  }, [refreshingCache, refreshCachedSystemConfig, showToast]);
 
   useEffect(() => {
     if (!showDisconnectedCacheBanner) {
@@ -394,7 +398,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
                 : `${t("common.retry")} (${refreshCountdown}s)`
             }
             onEditConnection={() => {
-              clearCachedConfig();
+              clearCachedSystemConfig();
               navigate("/device");
             }}
             onRetry={() => {

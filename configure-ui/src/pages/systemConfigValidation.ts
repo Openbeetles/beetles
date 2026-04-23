@@ -1,4 +1,4 @@
-import type { AppConfig, SystemConfigSegment } from "../types/appConfig.ts";
+import type { SystemConfigSegment } from "../types/appConfig.ts";
 
 export const SYSTEM_SESSION_MIN = 1;
 export const SYSTEM_SESSION_MAX = 128;
@@ -12,7 +12,7 @@ export function isValidProxyUrl(value: string): boolean {
 }
 
 export function validateSystemConfig(
-  form: AppConfig,
+  form: SystemConfigSegment,
   t: (key: string) => string,
 ): string | null {
   if (!isValidProxyUrl(form.proxy_url ?? "")) {
@@ -29,14 +29,4 @@ export function validateSystemConfig(
     return t("config.validation.sessionMaxMessages");
   }
   return null;
-}
-
-export function buildSystemConfigSegment(form: AppConfig): SystemConfigSegment {
-  return {
-    wifi_ssid: form.wifi_ssid,
-    wifi_pass: form.wifi_pass,
-    proxy_url: form.proxy_url ?? "",
-    session_max_messages: form.session_max_messages,
-    tg_group_activation: form.tg_group_activation,
-  };
 }

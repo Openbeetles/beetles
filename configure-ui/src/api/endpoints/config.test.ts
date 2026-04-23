@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { saveWifi } from "./config.ts";
+import { getSystem, saveWifi } from "./config.ts";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -50,6 +50,49 @@ test("saveWifi POSTs WiFi credentials to the narrow firmware endpoint", async ()
         url: "http://device/api/config/wifi",
         method: "POST",
         body: JSON.stringify({ wifi_ssid: "Beetle", wifi_pass: "secret" }),
+        pairing: "123456",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getSystem GETs the dedicated system segment endpoint", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; pairing: string | null }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url: String(input),
+      method: init?.method ?? "GET",
+      pairing: headers.get("x-pairing-code"),
+    });
+    return jsonResponse({
+      wifi_ssid: "BeetleNet",
+      wifi_pass: "",
+      proxy_url: "http://proxy.local:8080",
+      session_max_messages: 32,
+      tg_group_activation: "mention",
+      locale: "zh",
+    });
+  }) as typeof fetch;
+
+  try {
+    const result = await getSystem("http://device", "123456");
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data, {
+      wifi_ssid: "BeetleNet",
+      wifi_pass: "",
+      proxy_url: "http://proxy.local:8080",
+      session_max_messages: 32,
+      tg_group_activation: "mention",
+      locale: "zh",
+    });
+    assert.deepEqual(calls, [
+      {
+        url: "http://device/api/config/system",
+        method: "GET",
         pairing: "123456",
       },
     ]);

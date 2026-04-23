@@ -51,8 +51,6 @@ export const zhCN = {
       pairingCodeRequired: '请填写配对码',
       bannerNeedDevice: '请先填写设备地址',
       bannerDeviceNotActivated: '设备尚未激活，请先设置配对码',
-      bannerGoToPairing: '打开设备配对页',
-      bannerGoToPairingTooltip: '将在新标签页打开，请确保与设备在同一 WiFi。',
       bannerNeedPairing: '请先填写配对码',
       connectFirst: '请先连接设备',
       wifiSetupTitle: 'WiFi 配置',

@@ -50,9 +50,9 @@ export function useDeviceApi() {
   const api = useMemo(
     () => ({
       config: {
-        get: () => configApi.getConfig(baseUrl ?? '', (pairingCode ?? '').trim()),
         getLlm: () => configApi.getLlm(baseUrl ?? '', (pairingCode ?? '').trim()),
         getChannels: () => configApi.getChannels(baseUrl ?? '', (pairingCode ?? '').trim()),
+        getSystem: () => configApi.getSystem(baseUrl ?? '', (pairingCode ?? '').trim()),
         saveWifi: (body: { wifi_ssid: string; wifi_pass: string }) =>
           configApi.saveWifi(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveLlm: (body: LlmConfigSegment) =>

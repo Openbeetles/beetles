@@ -1,6 +1,5 @@
 import { requestProtected, API_ERROR } from '../client.ts'
 import type {
-  AppConfig,
   ChannelsConfigView,
   LlmConfigSegment,
   ChannelsConfigSegment,
@@ -33,13 +32,6 @@ function buildConfigQuery(path: string, query: Record<string, string | undefined
   return encoded ? `${path}?${encoded}` : path
 }
 
-export async function getConfig(baseUrl: string, pairingCode?: string): Promise<ApiResult<AppConfig>> {
-  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<AppConfig>(baseUrl, '/api/config', {
-    pairingCode: pairingCode?.trim(),
-  })
-}
-
 export async function getLlm(
   baseUrl: string,
   pairingCode?: string,
@@ -56,6 +48,16 @@ export async function getChannels(
 ): Promise<ApiResult<ChannelsConfigView>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   return requestProtected<ChannelsConfigView>(baseUrl, '/api/config/channels', {
+    pairingCode: pairingCode?.trim(),
+  })
+}
+
+export async function getSystem(
+  baseUrl: string,
+  pairingCode?: string,
+): Promise<ApiResult<SystemConfigSegment>> {
+  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
+  return requestProtected<SystemConfigSegment>(baseUrl, '/api/config/system', {
     pairingCode: pairingCode?.trim(),
   })
 }

@@ -6,12 +6,10 @@ use serde::Serialize;
 const ESP_OPERATOR_WINDOW_TTL_SECS: u64 = 300;
 
 const ESP_ALWAYS_ON_ENDPOINTS: &[&str] = &[
-    "GET /pairing",
-    "GET /wifi",
     "GET /api/pairing_code",
     "POST /api/pairing_code",
     "GET /api/csrf_token",
-    "GET /api/config",
+    "GET /api/config/system",
     "POST /api/config/wifi",
     "POST /api/config/llm",
     "POST /api/config/channels",
@@ -114,11 +112,9 @@ pub fn control_plane_inventory(
 ) -> ControlPlaneInventory {
     if !is_embedded_surface(memory_system_kind) {
         let mut endpoints = vec![
-            "GET /pairing",
-            "GET /wifi",
             "GET /api/pairing_code",
             "POST /api/pairing_code",
-            "GET /api/config",
+            "GET /api/config/system",
             "POST /api/config/llm",
             "POST /api/config/channels",
             "POST /api/config/system",

@@ -21,7 +21,7 @@ import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useToast } from "../hooks/useToast";
-import { getConfig } from "../api/endpoints/config";
+import { getSystem } from "../api/endpoints/config";
 import { getPairingCode } from "../api/endpoints/pairingCode";
 import {
   type SystemInfoData,
@@ -460,8 +460,12 @@ export function DevicePage() {
   const { t } = useTranslation();
   const { setDirty } = useUnsaved();
   const { baseUrl, pairingCode, setBaseUrl, setPairingCode } = useDevice();
-  const { config, loadConfig, loading: configLoading, error: configError } =
-    useConfig();
+  const {
+    systemConfig,
+    loadSystemConfig,
+    systemLoading: configLoading,
+    systemError: configError,
+  } = useConfig();
   const runtimeKind = useDeviceRuntimeKind();
   const [urlInput, setUrlInput] = useState(baseUrl || DEFAULT_DEVICE_BASE_URL);
   const [codeInput, setCodeInput] = useState(pairingCode);
@@ -674,7 +678,7 @@ export function DevicePage() {
 
   const validateProtectedAccess = useCallback(
     async (url: string, candidatePairingCode: string) => {
-      const result = await getConfig(url, candidatePairingCode);
+      const result = await getSystem(url, candidatePairingCode);
       if (result.ok) return null;
       return translateApiError(t, result.error, "device.pairingValidateFailed");
     },
@@ -813,33 +817,33 @@ export function DevicePage() {
       !canAccessProtectedApis ||
       !baseUrl?.trim() ||
       wifiConfigRequestedRef.current ||
-      config != null ||
+      systemConfig != null ||
       configLoading
     ) {
       return;
     }
     wifiConfigRequestedRef.current = true;
-    void loadConfig();
+    void loadSystemConfig();
   }, [
     accessStage,
     baseUrl,
     canAccessProtectedApis,
-    config,
+    systemConfig,
     configLoading,
-    loadConfig,
+    loadSystemConfig,
   ]);
 
   useEffect(() => {
-    if (!config || wifiConfigSeededRef.current) return;
+    if (!systemConfig || wifiConfigSeededRef.current) return;
     wifiConfigSeededRef.current = true;
-    const nextSsid = config.wifi_ssid ?? "";
+    const nextSsid = systemConfig.wifi_ssid ?? "";
     queueMicrotask(() => {
       setWifiInitialSsid(nextSsid);
       setWifiSsidInput(nextSsid);
       setWifiPassInput("");
       setWifiConfigSeeded(true);
     });
-  }, [config, wifiConfigSeeded]);
+  }, [systemConfig, wifiConfigSeeded]);
 
   useEffect(() => {
     if (!canAccessProtectedApis || !baseUrl?.trim()) return;
@@ -1425,7 +1429,7 @@ export function DevicePage() {
               variant="text"
               onClick={() => {
                 wifiConfigRequestedRef.current = true;
-                void loadConfig();
+                void loadSystemConfig();
               }}
               sx={{ borderRadius: "var(--radius-control)" }}
             >

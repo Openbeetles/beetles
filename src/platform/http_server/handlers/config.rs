@@ -1,4 +1,4 @@
-//! 配置 API：GET /api/config、GET/POST /api/config/llm、POST /api/config/wifi、/channels、/system、/hardware。
+//! 配置 API：GET/POST /api/config/llm、/channels、/system，POST /api/config/wifi，GET/POST /api/config/hardware。
 
 use crate::config;
 #[cfg(all(
@@ -28,6 +28,10 @@ use crate::platform::{PlatformHttpClient, ResponseBody};
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use serde::Serialize;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 use serde_json::Value;
 #[cfg(all(
     feature = "capability_office",
@@ -36,16 +40,6 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use super::HandlerContext;
-
-/// GET /api/config：从缓存返回完整配置 JSON（含密钥）+ locale。路由层要求配对码。
-pub fn get_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let config = ctx.config();
-    let mut j: Value = serde_json::to_value(&*config).map_err(|e| to_io(e.to_string()))?;
-    j["locale"] = serde_json::Value::String(config::get_locale(ctx.config_store.as_ref()));
-    j["build_package"] =
-        serde_json::to_value(crate::current_build_package()).map_err(|e| to_io(e.to_string()))?;
-    serde_json::to_string(&j).map_err(|e| to_io(e.to_string()))
-}
 
 /// GET /api/config/llm：从缓存返回独立 LLM 段 JSON，避免配置页为 LLM 读取整包 AppConfig。
 pub fn get_llm_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
@@ -90,6 +84,13 @@ pub fn get_channels_body(ctx: &HandlerContext) -> Result<String, std::io::Error>
         segment,
     };
     serde_json::to_string(&payload).map_err(|e| to_io(e.to_string()))
+}
+
+/// GET /api/config/system：返回系统配置段。
+pub fn get_system_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
+    let config = ctx.config();
+    let segment = config::SystemSegment::from_app_config(&config);
+    serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
 /// POST /api/config/wifi：body 为 JSON，写 WiFi SSID/密码到 NVS。成功时返回 restart_required 提示需重启生效。
@@ -723,37 +724,42 @@ pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std
 
 #[cfg(test)]
 mod tests {
-    use super::get_body;
+    use super::get_system_body;
     use crate::config;
     use serde_json::Value;
 
     #[test]
-    fn get_body_returns_compact_json_and_forced_locale() {
+    fn get_system_body_returns_only_system_segment() {
         let ctx = build_test_context();
-        config::set_locale(ctx.config_store.as_ref(), "en").unwrap();
+        let store = ctx.config_store.as_ref();
+        config::save_system_segment_to_nvs(
+            store,
+            r#"{
+                "wifi_ssid":"BeetleNet",
+                "wifi_pass":"secret-pass",
+                "proxy_url":"http://proxy.local:8080",
+                "session_max_messages":48,
+                "tg_group_activation":"always",
+                "locale":"en"
+            }"#,
+        )
+        .unwrap();
+        ctx.reload_config();
 
-        let body = get_body(&ctx).unwrap();
+        let body = get_system_body(&ctx).unwrap();
         let parsed: Value = serde_json::from_str(&body).unwrap();
 
+        assert_eq!(parsed["wifi_ssid"], "BeetleNet");
+        assert_eq!(parsed["wifi_pass"], "secret-pass");
+        assert_eq!(parsed["proxy_url"], "http://proxy.local:8080");
+        assert_eq!(parsed["session_max_messages"], 48);
+        assert_eq!(parsed["tg_group_activation"], "always");
         assert_eq!(parsed["locale"], "en");
-        assert!(parsed.get("wifi_ssid").is_some());
-        assert!(parsed.get("build_package").is_some());
-        assert!(parsed["build_package"].get("profile").is_some());
-        assert!(parsed["build_package"]
-            .get("default_full_package")
-            .is_some());
-        assert!(parsed["build_package"]["capabilities"]
-            .get("voice")
-            .is_some());
-        assert!(parsed["build_package"]["capabilities"]
-            .get("vision")
-            .is_some());
-        assert!(parsed["build_package"]["capabilities"]
-            .get("sensor")
-            .is_some());
+        assert!(parsed.get("tg_token").is_none());
+        assert!(parsed.get("build_package").is_none());
         assert!(
             !body.contains('\n'),
-            "config response should stay compact on ESP default path"
+            "system segment response should stay compact on ESP default path"
         );
     }
 

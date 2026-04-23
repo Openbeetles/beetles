@@ -1,4 +1,4 @@
-//! GET /：API 信息 JSON，已激活后返回。
+//! GET /：始终返回 operator-facing API 信息 JSON。
 
 use super::HandlerContext;
 
@@ -52,5 +52,18 @@ mod tests {
         assert!(inventory
             .windowed_endpoints
             .contains(&"GET /api/memory/status"));
+    }
+
+    #[test]
+    fn root_inventory_no_longer_advertises_removed_bootstrap_pages() {
+        let inventory = crate::platform::operator_surface::control_plane_inventory(
+            MemorySystemKind::EspCompact,
+            false,
+            true,
+            true,
+        );
+
+        assert!(!inventory.endpoints.contains(&"GET /pairing"));
+        assert!(!inventory.endpoints.contains(&"GET /wifi"));
     }
 }

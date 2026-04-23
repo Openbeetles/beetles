@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_ERROR, type ApiResult } from "../api/client";
 import type {
-  AppConfig,
   ChannelsConfigView,
   LlmConfigSegment,
   ChannelsConfigSegment,
   SystemConfigSegment,
 } from "../types/appConfig";
-import { llmConfigSegmentFromAppConfig } from "../types/appConfig";
 import type { DisplayConfig } from "../types/displayConfig";
 import { normalizeDisplayConfig } from "../types/displayConfig";
 import type { HardwareSegment } from "../types/hardwareConfig";
@@ -39,7 +37,7 @@ function mapSaveError(error: string | undefined): string | undefined {
     : error;
 }
 
-/** display / audio / hardware / 主配置 GET 共用：ready、loading、错误映射一致。 */
+/** display / audio / hardware / system / 其他分段 GET 共用：ready、loading、错误映射一致。 */
 async function loadDeviceSegment<T extends object>(args: {
   ready: boolean;
   setLoading: (v: boolean) => void;
@@ -76,9 +74,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const { api, ready, deviceConnected } = useDeviceApi();
   const deviceSessionKey = `${baseUrl?.trim() ?? ""}\0${(pairingCode ?? "").trim()}`;
   const deviceSessionKeyRef = useRef(deviceSessionKey);
-  const [config, setConfig] = useState<AppConfig | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [systemConfig, setSystemConfig] = useState<SystemConfigSegment | null>(null);
+  const [systemLoading, setSystemLoading] = useState(false);
+  const [systemError, setSystemError] = useState<string | null>(null);
   const [llmConfig, setLlmConfig] = useState<LlmConfigSegment | null>(null);
   const [llmLoading, setLlmLoading] = useState(false);
   const [llmError, setLlmError] = useState<string | null>(null);
@@ -109,10 +107,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     });
   }, [ready, deviceConnected, baseUrl, pairingCode, api.system]);
 
-  const clearCachedConfig = useCallback(() => {
-    setConfig(null);
-    setLoading(false);
-    setError(null);
+  const clearCachedSystemConfig = useCallback(() => {
+    setSystemConfig(null);
+    setSystemLoading(false);
+    setSystemError(null);
     setLlmConfig(null);
     setLlmLoading(false);
     setLlmError(null);
@@ -134,28 +132,22 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     deviceSessionKeyRef.current = deviceSessionKey;
     let cancelled = false;
     queueMicrotask(() => {
-      if (!cancelled) clearCachedConfig();
+      if (!cancelled) clearCachedSystemConfig();
     });
     return () => {
       cancelled = true;
     };
-  }, [deviceSessionKey, clearCachedConfig]);
+  }, [deviceSessionKey, clearCachedSystemConfig]);
 
-  const loadConfig = useCallback(async () => {
+  const loadSystemConfig = useCallback(async () => {
     const sessionKey = deviceSessionKey;
     await loadDeviceSegment({
       ready,
-      setLoading,
-      setError,
-      fetch: () => api.config.get() as Promise<ApiResult<AppConfig>>,
-      applySuccess: (data) => {
-        setConfig(data);
-        setLlmConfig(llmConfigSegmentFromAppConfig(data));
-      },
-      clearData: () => {
-        setConfig(null);
-        setLlmConfig(null);
-      },
+      setLoading: setSystemLoading,
+      setError: setSystemError,
+      fetch: () => api.config.getSystem() as Promise<ApiResult<SystemConfigSegment>>,
+      applySuccess: (data) => setSystemConfig(data),
+      clearData: () => setSystemConfig(null),
       isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
   }, [api.config, deviceSessionKey, ready]);
@@ -190,49 +182,35 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   /**
    * 在“断连但有缓存”场景下尝试刷新：成功则更新缓存，失败保留现有缓存不清空。
    */
-  const refreshCachedConfig = useCallback(async (): Promise<{
+  const refreshCachedSystemConfig = useCallback(async (): Promise<{
     ok: boolean;
     error?: string;
   }> => {
     const sessionKey = deviceSessionKey;
     if (!ready) return { ok: false, error: ERROR_KEY_NO_BASE };
-    const res = await api.config.get();
+    const res = await api.config.getSystem();
     if (deviceSessionKeyRef.current !== sessionKey) {
       return { ok: false, error: undefined };
     }
     if (res.ok && res.data != null && typeof res.data === "object") {
-      const data = res.data as AppConfig;
-      setConfig(data);
-      setLlmConfig(llmConfigSegmentFromAppConfig(data));
-      setError(null);
+      setSystemConfig(res.data as SystemConfigSegment);
+      setSystemError(null);
       markDeviceReachable();
       return { ok: true };
     }
     return { ok: false, error: res.error ?? ERROR_KEY_LOAD_FAILED };
   }, [api.config, deviceSessionKey, ready]);
 
-  const saveConfigSegment = useCallback(
+  const saveSegment = useCallback(
     async <TBody extends object,>(
       save: (body: TBody) => Promise<ApiResult<unknown>>,
       body: TBody,
-      applySuccess?: (body: TBody) => void,
+      applySuccess?: () => void,
     ): Promise<{ ok: boolean; error?: string }> => {
       const sessionKey = deviceSessionKey;
       const res = await save(body);
       if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        applySuccess?.(body);
-        setConfig((prev) => (prev ? { ...prev, ...body } : null));
-        setChannelsConfig((prev) => {
-          if (!prev) return prev;
-          const next = { ...prev, ...body };
-          if (typeof (body as { enabled_channel?: unknown }).enabled_channel === "string") {
-            return {
-              ...next,
-              unavailable_enabled_channel: undefined,
-            };
-          }
-          return next;
-        });
+        applySuccess?.();
       }
       return { ok: res.ok ?? false, error: mapSaveError(res.error) };
     },
@@ -243,27 +221,38 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: LlmConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveConfigSegment(api.config.saveLlm, body, setLlmConfig);
+      return saveSegment(api.config.saveLlm, body, () => setLlmConfig(body));
     },
-    [api.config.saveLlm, saveConfigSegment],
+    [api.config.saveLlm, saveSegment],
   );
 
   const saveChannels = useCallback(
     async (
       body: ChannelsConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveConfigSegment(api.config.saveChannels, body);
+      return saveSegment(api.config.saveChannels, body, () => {
+        setChannelsConfig((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            ...body,
+            unavailable_enabled_channel: undefined,
+          };
+        });
+      });
     },
-    [api.config.saveChannels, saveConfigSegment],
+    [api.config.saveChannels, saveSegment],
   );
 
   const saveSystem = useCallback(
     async (
       body: SystemConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveConfigSegment(api.config.saveSystem, body);
+      return saveSegment(api.config.saveSystem, body, () => {
+        setSystemConfig((prev) => (prev ? { ...prev, ...body } : body));
+      });
     },
-    [api.config.saveSystem, saveConfigSegment],
+    [api.config.saveSystem, saveSegment],
   );
 
   const loadDisplayConfig = useCallback(async () => {
@@ -385,10 +374,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(
     () => ({
-      config,
-      loading,
-      error,
-      loadConfig,
+      systemConfig,
+      systemLoading,
+      systemError,
+      loadSystemConfig,
       llmConfig,
       llmLoading,
       llmError,
@@ -397,8 +386,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       channelsLoading,
       channelsError,
       loadChannelsConfig,
-      refreshCachedConfig,
-      clearCachedConfig,
+      refreshCachedSystemConfig,
+      clearCachedSystemConfig,
       saveLlm,
       saveChannels,
       saveSystem,
@@ -419,10 +408,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       saveHardwareConfig,
     }),
     [
-      config,
-      loading,
-      error,
-      loadConfig,
+      systemConfig,
+      systemLoading,
+      systemError,
+      loadSystemConfig,
       llmConfig,
       llmLoading,
       llmError,
@@ -431,8 +420,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       channelsLoading,
       channelsError,
       loadChannelsConfig,
-      refreshCachedConfig,
-      clearCachedConfig,
+      refreshCachedSystemConfig,
+      clearCachedSystemConfig,
       saveLlm,
       saveChannels,
       saveSystem,

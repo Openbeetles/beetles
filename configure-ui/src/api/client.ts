@@ -1,5 +1,5 @@
 /**
- * 请求设备 API。baseUrl 不含末尾斜杠，path 如 '/api/config'。
+ * 请求设备 API。baseUrl 不含末尾斜杠，path 如 '/api/config/system'。
  * 配对码仅通过 Header X-Pairing-Code 传递，避免 query 导致预检 URL 不匹配而 CORS 失败。
  */
 function buildUrl(baseUrl: string, path: string): string {

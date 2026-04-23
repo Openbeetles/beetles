@@ -195,7 +195,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub llm_sources: Vec<LlmSource>,
 
-    /// 界面语言 "zh" | "en"；存 NVS 键 locale，GET /api/config 与前端一致。
+    /// 界面语言 "zh" | "en"；存 NVS 键 locale，GET /api/config/system 与前端一致。
     #[serde(default)]
     pub locale: Option<String>,
 
@@ -1064,7 +1064,7 @@ impl ChannelsSegment {
     }
 }
 
-/// POST /api/config/system 请求体。
+/// GET/POST /api/config/system 读写模型。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SystemSegment {
     #[serde(default)]
@@ -1079,6 +1079,20 @@ pub struct SystemSegment {
     pub tg_group_activation: String,
     #[serde(default)]
     pub locale: Option<String>,
+}
+
+impl SystemSegment {
+    /// 从运行态 AppConfig 投影出当前系统配置段。
+    pub fn from_app_config(config: &AppConfig) -> Self {
+        Self {
+            wifi_ssid: config.wifi_ssid.clone(),
+            wifi_pass: config.wifi_pass.clone(),
+            proxy_url: config.proxy_url.clone(),
+            session_max_messages: config.session_max_messages,
+            tg_group_activation: config.tg_group_activation.clone(),
+            locale: config.locale.clone(),
+        }
+    }
 }
 
 /// POST /api/config/accounts 请求体。

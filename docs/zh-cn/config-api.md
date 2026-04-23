@@ -67,7 +67,7 @@
 
 说明：
 
-- `error_key` 是稳定语义合同，供前端或内置页面翻译。
+- `error_key` 是稳定语义合同，供前端或其他调用方翻译。
 - `upstream_error` 是原始排障文本，不做翻译，也不保证语言统一。
 - 只有第三方协议兼容接口和 debug/operator 接口不受这条合同约束。
 
@@ -138,15 +138,22 @@
 
 ## 配置接口
 
-**GET /api/config**
+**GET /api/config/system**
 
-用途：读取当前总配置。
+用途：读取当前系统配置段。
 
 鉴权：`配对码`
 
 成功响应：`200 application/json`
 
-返回体是完整配置对象，并额外带上 `locale` 和 `build_package`。这个结果包含敏感字段，不能直接暴露给无鉴权页面。
+字段：
+
+- `wifi_ssid`
+- `wifi_pass`
+- `proxy_url`
+- `session_max_messages`
+- `tg_group_activation`
+- `locale`
 
 **GET /api/config/llm**
 

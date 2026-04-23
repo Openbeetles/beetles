@@ -226,7 +226,7 @@ export const SEMANTIC_COLORS = {
   points: '#ca8a04',
 } as const
 
-/** 品牌主色（设置抽屉色块选择器用）；略淡以保持清爽；firmware 与固件内置配置页 common.css 的 --primary 一致 */
+/** 品牌主色（设置抽屉色块选择器用）；略淡以保持清爽；保持与设备侧品牌口径一致 */
 export const BRAND_COLORS: Record<ThemeBrand, string> = {
   blue: '#3b82f6',
   teal: '#14b8a6',

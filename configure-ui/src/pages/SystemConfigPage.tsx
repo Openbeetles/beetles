@@ -28,11 +28,10 @@ import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
 import { useSyncedNullableState } from "../hooks/useSyncedNullableState";
-import type { AppConfig } from "../types/appConfig";
+import type { SystemConfigSegment } from "../types/appConfig";
 import { WifiCredentialFields } from "../components/WifiCredentialFields";
 import { useWifiScanController } from "../hooks/useWifiScanController";
 import {
-  buildSystemConfigSegment,
   isValidProxyUrl,
   SYSTEM_SESSION_MAX,
   SYSTEM_SESSION_MIN,
@@ -43,15 +42,21 @@ export function SystemConfigPage() {
   const { t } = useTranslation();
   const { baseUrl } = useDevice();
   const { api, ready, deviceConnected, canAccessProtectedApis, connectionChecking } = useDeviceApi();
-  const { config, loadConfig, saveSystem, loading, error } = useConfig();
+  const {
+    systemConfig,
+    loadSystemConfig,
+    saveSystem,
+    systemLoading,
+    systemError,
+  } = useConfig();
   const editor = useConfigEditorController({
     t,
-    hasData: config !== null,
-    loading,
-    load: loadConfig,
+    hasData: systemConfig !== null,
+    loading: systemLoading,
+    load: loadSystemConfig,
     canLoad: ready && deviceConnected,
   });
-  const [form, setForm] = useSyncedNullableState<AppConfig>(config);
+  const [form, setForm] = useSyncedNullableState<SystemConfigSegment>(systemConfig);
   const {
     wifiScanList,
     wifiScanLoading,
@@ -63,7 +68,7 @@ export function SystemConfigPage() {
     t,
   });
 
-  const update = (key: keyof AppConfig, value: string | number) => {
+  const update = (key: keyof SystemConfigSegment, value: string | number) => {
     editor.markDirty();
     setForm((prev) => (prev ? { ...prev, [key]: value } : null));
   };
@@ -72,11 +77,11 @@ export function SystemConfigPage() {
     if (!form) return;
     await editor.runSave({
       validate: () => validateSystemConfig(form, t),
-      performSave: () => saveSystem(buildSystemConfigSegment(form)),
+      performSave: () => saveSystem(form),
     });
   };
 
-  if (loading && !config) {
+  if (systemLoading && !systemConfig) {
     return (
       <Box sx={PAGE_COLUMN_FILL_SX}>
         <SettingsSection
@@ -106,21 +111,21 @@ export function SystemConfigPage() {
       ? t("config.validation.sessionMaxMessages")
       : "";
   const showConnectionLoading =
-    !form && !loading && ready && connectionChecking && !deviceConnected;
+    !form && !systemLoading && ready && connectionChecking && !deviceConnected;
   const showConnectState =
-    !form && !loading && !showConnectionLoading && (!ready || !deviceConnected);
+    !form && !systemLoading && !showConnectionLoading && (!ready || !deviceConnected);
   const showPairingState =
-    !form && !loading && ready && deviceConnected && !canAccessProtectedApis;
+    !form && !systemLoading && ready && deviceConnected && !canAccessProtectedApis;
   const loadErrorState = splitPageErrorState({
     hasData: Boolean(form),
-    loading,
-    error,
+    loading: systemLoading,
+    error: systemError,
     suppress: showConnectState || showPairingState || showConnectionLoading,
   });
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={loadErrorState.inlineError} onRetry={loadConfig} />
+      <InlineAlert message={loadErrorState.inlineError} onRetry={loadSystemConfig} />
       <SettingsSection
         pinHeader
         sx={{ flex: 1, minHeight: 0 }}
@@ -173,7 +178,7 @@ export function SystemConfigPage() {
         ) : loadErrorState.blockingError ? (
           <PageLoadErrorState
             message={loadErrorState.blockingError}
-            onRetry={loadConfig}
+            onRetry={loadSystemConfig}
           />
         ) : !form ? (
           <PanelStateBlock

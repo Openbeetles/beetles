@@ -1,6 +1,5 @@
 import { createContext } from 'react'
 import type {
-  AppConfig,
   ChannelsConfigView,
   LlmConfigSegment,
   ChannelsConfigSegment,
@@ -11,10 +10,10 @@ import type { HardwareSegment } from '../types/hardwareConfig'
 import type { AudioConfig } from '../types/audioConfig'
 
 export interface ConfigContextValue {
-  config: AppConfig | null
-  loading: boolean
-  error: string | null
-  loadConfig: () => Promise<void>
+  systemConfig: SystemConfigSegment | null
+  systemLoading: boolean
+  systemError: string | null
+  loadSystemConfig: () => Promise<void>
   llmConfig: LlmConfigSegment | null
   llmLoading: boolean
   llmError: string | null
@@ -23,8 +22,8 @@ export interface ConfigContextValue {
   channelsLoading: boolean
   channelsError: string | null
   loadChannelsConfig: () => Promise<void>
-  refreshCachedConfig: () => Promise<{ ok: boolean; error?: string }>
-  clearCachedConfig: () => void
+  refreshCachedSystemConfig: () => Promise<{ ok: boolean; error?: string }>
+  clearCachedSystemConfig: () => void
   saveLlm: (body: LlmConfigSegment) => Promise<{ ok: boolean; error?: string }>
   saveChannels: (body: ChannelsConfigSegment) => Promise<{ ok: boolean; error?: string }>
   saveSystem: (body: SystemConfigSegment) => Promise<{ ok: boolean; error?: string }>

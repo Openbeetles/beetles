@@ -51,8 +51,6 @@ export const enUS = {
       pairingCodeRequired: 'Please enter pairing code',
       bannerNeedDevice: 'Please enter device URL',
       bannerDeviceNotActivated: 'Device not activated. Set a pairing code first.',
-      bannerGoToPairing: 'Open device pairing page',
-      bannerGoToPairingTooltip: 'Opens in a new tab. Ensure you are on the same WiFi as the device.',
       bannerNeedPairing: 'Please enter pairing code',
       connectFirst: 'Please connect to a device first',
       wifiSetupTitle: 'WiFi setup',

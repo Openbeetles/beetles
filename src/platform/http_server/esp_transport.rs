@@ -414,17 +414,9 @@ fn register_esp_route_specs(
     Ok(())
 }
 
-const STATIC_PAGE_ROUTES: &[EspRouteSpec] = &[
+const ROOT_ROUTES: &[EspRouteSpec] = &[
     EspRouteSpec::direct("/", Method::Get, EspBodyMode::None),
     EspRouteSpec::direct("/", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/wifi", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/wifi", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/pairing", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/pairing", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/common.css", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/common.css", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/common.js", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/common.js", Method::Options, EspBodyMode::None),
 ];
 
 const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
@@ -435,8 +427,6 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
         EspBodyMode::Utf8(POST_BODY_MAX_LEN),
     ),
     EspRouteSpec::direct("/api/pairing_code", Method::Options, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config", Method::Get, EspBodyMode::None),
-    EspRouteSpec::direct("/api/config", Method::Options, EspBodyMode::None),
     EspRouteSpec::direct(
         "/api/config/wifi",
         Method::Post,
@@ -457,6 +447,7 @@ const PAIRING_AND_CONFIG_ROUTES: &[EspRouteSpec] = &[
         Method::Post,
         EspBodyMode::Utf8(POST_BODY_MAX_LEN),
     ),
+    EspRouteSpec::direct("/api/config/system", Method::Get, EspBodyMode::None),
     EspRouteSpec::direct("/api/config/system", Method::Options, EspBodyMode::None),
     EspRouteSpec::direct(
         "/api/config/system",
@@ -575,14 +566,14 @@ const ACTION_ROUTES: &[EspRouteSpec] = &[
 
 #[cold]
 #[inline(never)]
-fn register_static_page_routes(
+fn register_root_routes(
     server: &mut EspHttpServer<'static>,
     ctx: &Arc<HandlerContext>,
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
     executor: &EspRouteExecutor,
 ) -> Result<()> {
-    register_esp_route_specs(server, ctx, env, config_store, executor, STATIC_PAGE_ROUTES)
+    register_esp_route_specs(server, ctx, env, config_store, executor, ROOT_ROUTES)
 }
 
 #[cold]
@@ -701,7 +692,7 @@ pub(super) fn register_all_esp_routes(
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
 ) -> Result<()> {
     let executor = EspRouteExecutor::new(ctx, env, config_store);
-    register_static_page_routes(server, ctx, env, config_store, &executor)?;
+    register_root_routes(server, ctx, env, config_store, &executor)?;
     register_pairing_and_config_routes(server, ctx, env, config_store, &executor)?;
     register_observability_routes(server, ctx, env, config_store, &executor)?;
     register_memory_and_skill_routes(server, ctx, env, config_store, &executor)?;
@@ -756,7 +747,7 @@ mod tests {
             Some(EspRouteDispatchMode::Direct)
         );
         assert_eq!(
-            dispatch_mode_for("/api/config", Method::Get),
+            dispatch_mode_for("/api/config/system", Method::Get),
             Some(EspRouteDispatchMode::Direct)
         );
         assert_eq!(

@@ -136,7 +136,7 @@ test('request notifies protected auth observer when a validated request succeeds
     })) as typeof fetch
 
   try {
-    const result = await request('http://device', '/api/config', {
+    const result = await request('http://device', '/api/config/system', {
       pairingCode: '123456',
       authPolicy: 'validate',
     })
@@ -168,7 +168,7 @@ test('request notifies protected auth observer when a validated request gets pai
     })) as typeof fetch
 
   try {
-    const result = await request('http://device', '/api/config', {
+    const result = await request('http://device', '/api/config/system', {
       pairingCode: '123456',
       authPolicy: 'validate',
     })

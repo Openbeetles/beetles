@@ -215,7 +215,6 @@ pub(crate) fn default_test_handler_context_guard() -> std::sync::MutexGuard<'sta
 pub mod capability_packages;
 pub mod channel_connectivity;
 pub mod config;
-pub mod config_page;
 pub mod config_reset;
 pub mod csrf_token;
 pub mod diagnose;

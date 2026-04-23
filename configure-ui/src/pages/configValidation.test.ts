@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AppConfig } from "../types/appConfig.ts";
+import type { SystemConfigSegment } from "../types/appConfig.ts";
 import {
   defaultDisplayConfig,
   type DisplayConfig,
@@ -22,42 +22,14 @@ function t(key: string) {
   return key;
 }
 
-function createSystemConfig(): AppConfig {
+function createSystemConfig(): SystemConfigSegment {
   return {
     wifi_ssid: "",
     wifi_pass: "",
-    tg_token: "",
-    tg_allowed_chat_ids: "",
-    feishu_app_id: "",
-    feishu_app_secret: "",
-    feishu_verification_token: "",
-    feishu_encrypt_key: "",
-    feishu_allowed_chat_ids: "",
-    dingtalk_webhook_url: "",
-    wecom_corp_id: "",
-    wecom_corp_secret: "",
-    wecom_agent_id: "",
-    wecom_default_touser: "",
-    wecom_token: "",
-    wecom_encoding_aes_key: "",
-    dingtalk_app_secret: "",
-    qq_channel_app_id: "",
-    qq_channel_secret: "",
-    api_key: "",
-    model: "",
-    model_provider: "",
-    api_url: "",
     proxy_url: "",
-    search_key: "",
-    tavily_key: "",
     tg_group_activation: "",
     session_max_messages: 12,
-    webhook_enabled: false,
-    webhook_token: "",
-    enabled_channel: "",
-    llm_sources: [],
-    llm_router_source_index: null,
-    llm_worker_source_index: null,
+    locale: "zh",
   };
 }
 

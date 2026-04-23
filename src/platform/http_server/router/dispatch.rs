@@ -6,8 +6,7 @@ use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
 use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{
-    self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS, CSS_HEADERS,
-    HTML_HEADERS, JS_HEADERS, REDIRECT_PAIRING_HEADERS,
+    self, ApiResponse, CORS_AND_TEXT_PLAIN, CORS_HEADERS, CORS_OPTIONS_HEADERS,
 };
 use crate::platform::http_server::handlers::{self, HandlerContext};
 use crate::platform::{HardwareCapability, HardwareDiscoveryBus};
@@ -504,15 +503,6 @@ pub fn dispatch(
 
     match (method, path) {
         ("GET", "/") => {
-            if !crate::platform::pairing::code_set(store) {
-                return Ok(OutgoingResponse {
-                    status: 302,
-                    status_text: "Found",
-                    headers: REDIRECT_PAIRING_HEADERS,
-                    body: Vec::new(),
-                    restart: RestartAction::None,
-                });
-            }
             let body =
                 handlers::root::body(ctx).map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(OutgoingResponse::json(
@@ -520,42 +510,6 @@ pub fn dispatch(
                 "OK",
                 CORS_HEADERS,
                 body.into_bytes(),
-            ))
-        }
-        ("GET", "/wifi") => {
-            let html = handlers::config_page::html();
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                HTML_HEADERS,
-                html.as_bytes().to_vec(),
-            ))
-        }
-        ("GET", "/pairing") => {
-            let html = handlers::config_page::pairing_html();
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                HTML_HEADERS,
-                html.as_bytes().to_vec(),
-            ))
-        }
-        ("GET", "/common.css") => {
-            let css = handlers::config_page::common_css();
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CSS_HEADERS,
-                css.as_bytes().to_vec(),
-            ))
-        }
-        ("GET", "/common.js") => {
-            let js = handlers::config_page::common_js();
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                JS_HEADERS,
-                js.as_bytes().to_vec(),
             ))
         }
         ("GET", "/api/pairing_code") => {
@@ -571,19 +525,6 @@ pub fn dispatch(
             let body_str = utf8_body(&incoming.body)?;
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
-        }
-        ("GET", "/api/config") => {
-            if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
-                return Ok(api_to_out(r));
-            }
-            let body = handlers::config::get_body(ctx)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
         }
         ("POST", "/api/config/wifi") => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
@@ -643,6 +584,19 @@ pub fn dispatch(
             let r = handlers::config::post_channels(ctx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
+        }
+        ("GET", "/api/config/system") => {
+            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let body = handlers::config::get_system_body(ctx)
+                .map_err(|e| err_other("http_router_dispatch", e))?;
+            Ok(OutgoingResponse::json(
+                200,
+                "OK",
+                CORS_HEADERS,
+                body.into_bytes(),
+            ))
         }
         ("POST", "/api/config/system") => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
@@ -1526,6 +1480,15 @@ mod tests {
         }
     }
 
+    fn plain_get(uri: &str) -> IncomingRequest {
+        IncomingRequest {
+            method: "GET".to_string(),
+            uri: uri.to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -1648,6 +1611,28 @@ mod tests {
         assert_eq!(parsed["llm_worker_source_index"], 0);
         assert!(parsed.get("locale").is_none());
         assert!(parsed.get("build_package").is_none());
+    }
+
+    #[test]
+    fn root_route_returns_inventory_even_before_pairing_is_initialized() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_default_test_handler_context();
+        let env = build_router_env();
+
+        let response = dispatch(&ctx, &env, plain_get("/")).expect("dispatch root route");
+
+        assert_eq!(response.status, 200);
+        assert!(
+            !response
+                .headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("location")),
+            "headers={:?}",
+            response.headers
+        );
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse root body");
+        assert_eq!(parsed["name"], "beetle");
     }
 
     #[test]

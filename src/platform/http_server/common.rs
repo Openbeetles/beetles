@@ -32,22 +32,6 @@ pub const CORS_OPTIONS_HEADERS: &[(&str, &str)] = &[
     ("Content-Type", "text/plain; charset=utf-8"),
     ("Content-Length", "1"),
 ];
-/// 配置页公共 CSS 响应头。
-pub const CSS_HEADERS: &[(&str, &str)] = &[
-    ("Access-Control-Allow-Origin", "*"),
-    ("Content-Type", "text/css; charset=utf-8"),
-];
-/// 配置页公共 JS 响应头。
-pub const JS_HEADERS: &[(&str, &str)] = &[
-    ("Access-Control-Allow-Origin", "*"),
-    ("Content-Type", "application/javascript; charset=utf-8"),
-];
-/// GET / 未激活时 302 重定向到配对页。
-pub const REDIRECT_PAIRING_HEADERS: &[(&str, &str)] = &[
-    ("Access-Control-Allow-Origin", "*"),
-    ("Location", "/pairing"),
-];
-
 /// 读 body 时的错误：读失败或非 UTF-8。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 #[derive(Debug)]
@@ -490,9 +474,3 @@ impl ApiResponse {
         }
     }
 }
-/// WiFi 配置页 HTML 响应头。
-pub const HTML_HEADERS: &[(&str, &str)] = &[
-    ("Access-Control-Allow-Origin", "*"),
-    ("Access-Control-Allow-Private-Network", "true"),
-    ("Content-Type", "text/html; charset=utf-8"),
-];
