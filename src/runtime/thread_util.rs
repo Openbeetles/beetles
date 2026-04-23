@@ -17,6 +17,10 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
+        "http_route_exec" => ThreadPlan {
+            core: Some(SpawnCore::Core1),
+            role: HttpThreadRole::Io,
+        },
         "agent_loop" => ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Interactive,

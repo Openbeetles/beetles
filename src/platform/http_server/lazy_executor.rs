@@ -2,16 +2,16 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-pub(crate) struct LazyExecutor<T> {
-    state: Arc<LazyExecutorState<T>>,
+pub(crate) struct LazyExecutor<T, E> {
+    state: Arc<LazyExecutorState<T, E>>,
 }
 
-struct LazyExecutorState<T> {
-    init: Box<dyn Fn() -> T + Send + Sync>,
+struct LazyExecutorState<T, E> {
+    init: Box<dyn Fn() -> Result<T, E> + Send + Sync>,
     value: Mutex<Option<Arc<T>>>,
 }
 
-impl<T> Clone for LazyExecutor<T> {
+impl<T, E> Clone for LazyExecutor<T, E> {
     fn clone(&self) -> Self {
         Self {
             state: Arc::clone(&self.state),
@@ -19,8 +19,8 @@ impl<T> Clone for LazyExecutor<T> {
     }
 }
 
-impl<T> LazyExecutor<T> {
-    pub(crate) fn new(init: impl Fn() -> T + Send + Sync + 'static) -> Self {
+impl<T, E> LazyExecutor<T, E> {
+    pub(crate) fn new(init: impl Fn() -> Result<T, E> + Send + Sync + 'static) -> Self {
         Self {
             state: Arc::new(LazyExecutorState {
                 init: Box::new(init),
@@ -29,22 +29,22 @@ impl<T> LazyExecutor<T> {
         }
     }
 
-    pub(crate) fn get(&self) -> Arc<T> {
+    pub(crate) fn get(&self) -> Result<Arc<T>, E> {
         {
             let slot = lock_ignore_poison(&self.state.value);
             if let Some(value) = slot.as_ref() {
-                return Arc::clone(value);
+                return Ok(Arc::clone(value));
             }
         }
 
         let mut slot = lock_ignore_poison(&self.state.value);
         if let Some(value) = slot.as_ref() {
-            return Arc::clone(value);
+            return Ok(Arc::clone(value));
         }
 
-        let value = Arc::new((self.state.init)());
+        let value = Arc::new((self.state.init)()?);
         *slot = Some(Arc::clone(&value));
-        value
+        Ok(value)
     }
 
     pub(crate) fn clear_if(&self, current: &Arc<T>) -> bool {
@@ -76,14 +76,14 @@ mod tests {
         let init_calls = Arc::new(AtomicUsize::new(0));
         let executor = LazyExecutor::new({
             let init_calls = Arc::clone(&init_calls);
-            move || {
+            move || -> Result<usize, &'static str> {
                 init_calls.fetch_add(1, Ordering::SeqCst);
-                7usize
+                Ok(7usize)
             }
         });
 
-        let first = executor.get();
-        let second = executor.get();
+        let first = executor.get().expect("lazy init should succeed");
+        let second = executor.get().expect("cached lazy init should succeed");
 
         assert_eq!(*first, 7);
         assert!(Arc::ptr_eq(&first, &second));
@@ -95,9 +95,9 @@ mod tests {
         let init_calls = Arc::new(AtomicUsize::new(0));
         let executor = Arc::new(LazyExecutor::new({
             let init_calls = Arc::clone(&init_calls);
-            move || {
+            move || -> Result<usize, &'static str> {
                 init_calls.fetch_add(1, Ordering::SeqCst);
-                9usize
+                Ok(9usize)
             }
         }));
         let barrier = Arc::new(Barrier::new(8));
@@ -108,7 +108,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             threads.push(std::thread::spawn(move || {
                 barrier.wait();
-                executor.get()
+                executor.get().expect("lazy init should succeed")
             }));
         }
 
@@ -125,14 +125,16 @@ mod tests {
         let init_calls = Arc::new(AtomicUsize::new(0));
         let executor = LazyExecutor::new({
             let init_calls = Arc::clone(&init_calls);
-            move || init_calls.fetch_add(1, Ordering::SeqCst) + 1
+            move || -> Result<usize, &'static str> {
+                Ok(init_calls.fetch_add(1, Ordering::SeqCst) + 1)
+            }
         });
 
-        let first = executor.get();
+        let first = executor.get().expect("first init should succeed");
         assert_eq!(*first, 1);
         assert!(executor.clear_if(&first));
 
-        let second = executor.get();
+        let second = executor.get().expect("re-init should succeed");
         assert_eq!(*second, 2);
         assert!(!Arc::ptr_eq(&first, &second));
         assert_eq!(init_calls.load(Ordering::SeqCst), 2);
@@ -143,15 +145,41 @@ mod tests {
         let init_calls = Arc::new(AtomicUsize::new(0));
         let executor = LazyExecutor::new({
             let init_calls = Arc::clone(&init_calls);
-            move || init_calls.fetch_add(1, Ordering::SeqCst) + 1
+            move || -> Result<usize, &'static str> {
+                Ok(init_calls.fetch_add(1, Ordering::SeqCst) + 1)
+            }
         });
 
-        let first = executor.get();
+        let first = executor.get().expect("first init should succeed");
         assert!(executor.clear_if(&first));
-        let second = executor.get();
+        let second = executor.get().expect("second init should succeed");
 
         assert!(!executor.clear_if(&first));
         assert!(executor.clear_if(&second));
+        assert_eq!(init_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn lazy_executor_does_not_cache_failed_initialization() {
+        let init_calls = Arc::new(AtomicUsize::new(0));
+        let executor = LazyExecutor::new({
+            let init_calls = Arc::clone(&init_calls);
+            move || -> Result<usize, &'static str> {
+                let call = init_calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    Err("boom")
+                } else {
+                    Ok(11usize)
+                }
+            }
+        });
+
+        assert_eq!(executor.get().expect_err("first init should fail"), "boom");
+        let recovered = executor
+            .get()
+            .expect("second init should retry instead of reusing the failure");
+
+        assert_eq!(*recovered, 11);
         assert_eq!(init_calls.load(Ordering::SeqCst), 2);
     }
 }

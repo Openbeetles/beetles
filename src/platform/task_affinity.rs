@@ -40,6 +40,7 @@ fn native_task_name_policy(name: &str) -> bool {
             | "wc_sender"
             | "qq_sender"
             | "http_server"
+            | "http_route_exec"
     )
 }
 
@@ -350,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn http_route_exec_does_not_request_native_task_surface() {
-        assert!(!native_task_name_policy("http_route_exec"));
+    fn http_route_exec_requests_native_task_surface() {
+        assert!(native_task_name_policy("http_route_exec"));
     }
 }

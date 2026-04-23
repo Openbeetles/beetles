@@ -45,7 +45,7 @@ struct EspRouteExecutorInner {
 
 #[derive(Clone)]
 struct EspRouteExecutor {
-    inner: LazyExecutor<EspRouteExecutorInner>,
+    inner: LazyExecutor<EspRouteExecutorInner, std::io::Error>,
 }
 
 impl EspRouteExecutor {
@@ -63,16 +63,14 @@ impl EspRouteExecutor {
                 let ctx = Arc::clone(&ctx);
                 let env = env.clone();
                 let store = Arc::clone(&store);
-                crate::util::spawn_guarded_with_profile(
+                let _task = crate::runtime::thread_util::spawn_planned_handle(
                     "http_route_exec",
                     crate::util::STACK_HTTP_ROUTE_WORKER,
-                    Some(crate::util::SpawnCore::Core1),
-                    crate::util::HttpThreadRole::Io,
                     move || run_esp_route_executor(ctx, env, store, rx),
-                );
+                )?;
                 log::info!("[http_server] http_route_exec lazy-started on first request");
                 crate::orchestrator::log_startup_memory_checkpoint("http_route_exec_spawn");
-                EspRouteExecutorInner { submit_tx }
+                Ok(EspRouteExecutorInner { submit_tx })
             }),
         }
     }
@@ -81,7 +79,16 @@ impl EspRouteExecutor {
         let (reply_tx, reply_rx) = sync_channel(1);
         let mut pending_job = Some(EspRouteJob { incoming, reply_tx });
         for attempt in 0..ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
-            let inner = self.inner.get();
+            let inner = match self.inner.get() {
+                Ok(inner) => inner,
+                Err(err) => {
+                    return internal_server_error_response(
+                        store,
+                        "http_route_exec_start",
+                        format!("dispatch worker start failed: {}", err),
+                    );
+                }
+            };
             let job = pending_job
                 .take()
                 .expect("route executor retry must keep pending job");

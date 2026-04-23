@@ -995,7 +995,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
-// | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 32 KB | 32 KB | ← operator/memory surface + continuity inspection now run here
+// | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 48 KB | 32 KB | ← on-demand config-plane worker; native task + extra ESP headroom to avoid callback-stack corruption under device page fan-out
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
@@ -1075,7 +1075,11 @@ pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `http_route_exec`：ESP HTTP 配置/状态路由执行线程。
 /// 该线程承接 SPIFFS/NVS/serde、operator surface 与 continuity inspection 等重活，
-/// 避免压在 IDF HTTPD 回调线程上。
+/// 避免压在 IDF HTTPD 回调线程上。2026-04-23 实机日志显示旧 32KB 预算只剩约 2KB
+/// 高水位余量，已落到回溯损坏/非法取指的危险边缘；当前回收旧风险后提升到 48KB。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_HTTP_ROUTE_WORKER: usize = 48 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_HTTP_ROUTE_WORKER: usize = 32 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
