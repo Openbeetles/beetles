@@ -1,13 +1,13 @@
 //! LLM-facing tool catalog authority.
 //! LLM 工具目录真源：集中声明各入口可见面，而不是让 ToolMetadata 兼职承担。
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-use crate::office::{office_tool_doctrines, OfficeToolProtocolProfile};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::office::OfficeToolLlmSurface;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use crate::office::{office_tool_doctrines, OfficeToolProtocolProfile};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

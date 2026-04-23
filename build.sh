@@ -143,6 +143,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Package profiles are defined as root Cargo features here and expanded dynamically
+# from Cargo.toml so build.sh does not become a second hand-maintained feature source.
 package_profile_features() {
   local profile="$1"
   local roots_csv=""

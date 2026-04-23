@@ -24,6 +24,7 @@ Product-facing docs use the name Beetls OS. Commands, service names, and filesys
 ## Operate
 
 - [build-script.md](build-script.md): build, flash, and deploy
+- [package-profiles-and-features.md](package-profiles-and-features.md): package profiles and Cargo features
 - [linux-release-rollback.md](linux-release-rollback.md): Linux deploy, restart, stop, and rollback
 
 ## Reference

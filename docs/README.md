@@ -33,6 +33,7 @@
 | 任务 | 中文 | English |
 |------|------|---------|
 | 通过终端构建、烧录或部署 | [zh-cn/build-script.md](zh-cn/build-script.md) | [en-us/build-script.md](en-us/build-script.md) |
+| 选择包型与 Cargo feature | [zh-cn/package-profiles-and-features.md](zh-cn/package-profiles-and-features.md) | [en-us/package-profiles-and-features.md](en-us/package-profiles-and-features.md) |
 | Linux 部署、重启、停止与回滚 | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) |
 
 ## Reference
@@ -83,6 +84,7 @@ Commands, service names, and filesystem paths still use `beetle`.
 | Task | English | 中文 |
 |------|---------|------|
 | Build, flash, or deploy from a terminal | [en-us/build-script.md](en-us/build-script.md) | [zh-cn/build-script.md](zh-cn/build-script.md) |
+| Choose package profiles and Cargo features | [en-us/package-profiles-and-features.md](en-us/package-profiles-and-features.md) | [zh-cn/package-profiles-and-features.md](zh-cn/package-profiles-and-features.md) |
 | Deploy, restart, stop, and roll back on Linux | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) |
 
 ### Reference

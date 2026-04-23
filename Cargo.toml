@@ -109,6 +109,17 @@ embedded-graphics-framebuf = "0.5.0"
 spidev = "0.6"
 
 [features]
+# Feature contract:
+# - `default` is the host/developer default `cargo build`, not the default ESP package profile.
+# - `build.sh --package-profile ...` resolves package roots from this table through
+#   `scripts/expand_cargo_features.py`; do not hand-maintain a second expanded feature list.
+# - Public usage guidance lives in `docs/zh-cn/package-profiles-and-features.md` and
+#   `docs/en-us/package-profiles-and-features.md`.
+
+# Runtime bundles
+# `default` is the normal host/developer build: baseline runtime + default channels +
+# baseline multimodal capability domains. Official Linux packages use
+# `linux-full = default + capability_office + dingtalk`.
 default = [
     "default_runtime",
     "telegram",
@@ -119,28 +130,41 @@ default = [
     "capability_vision",
     "capability_sensor",
 ]
+# `default_runtime` is the baseline runtime bundle shared by build.sh package profiles.
+# It intentionally does not imply any channel or office capability.
 default_runtime = [
     "config_api",
     "tools_diagnostics",
     "tools_network_extra",
     "thread_panic_catch",
 ]
+
+# Capability domains
 capability_office = []
 capability_voice = []
 capability_vision = []
 capability_sensor = []
+
+# Core runtime surfaces
+# `config_api` is the user-facing device configuration/control plane.
 config_api = []
+# Additional runtime tool bundles carried by `default_runtime`.
+tools_diagnostics = []
+tools_network_extra = []
+thread_panic_catch = []
+
+# Channel surfaces
+# `qq_channel` pulls Ed25519 verification support for QQ inbound validation.
 qq_channel = ["dep:ed25519-dalek"]
 telegram = []
 feishu = [] # 通道核心功能；默认 cargo build 开启，ESP package profile 显式决定是否带入
 dingtalk = []
 wecom = []
 websocket = []
+
+# Misc build toggles
 cli = []
 ota = []
-tools_diagnostics = []
-tools_network_extra = []
-thread_panic_catch = []
 
 [profile.release]
 opt-level = 2

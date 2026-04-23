@@ -94,6 +94,15 @@ What matters most:
 
 ## Package Profiles
 
+`build.sh` package profiles and `Cargo.toml` features are separate contract layers:
+
+- package profile: user-facing and release-facing entrypoint
+- feature closure: expanded dynamically from `Cargo.toml`
+
+For the full mapping, direct cargo forms, and default contract, see:
+
+- [package-profiles-and-features.md](package-profiles-and-features.md)
+
 Usage:
 
 ```bash
@@ -119,6 +128,8 @@ Defaults:
 
 - Linux targets default to `linux-full`
 - ESP targets default to `voice+vision+sensor`
+- `linux-full` currently expands from `default + capability_office + dingtalk`
+- ESP profiles currently all start from `default_runtime` and then add `capability_voice`, `capability_vision`, and/or `capability_sensor`
 
 ## Linux Build Methods
 
@@ -185,3 +196,4 @@ If you plan to use `--deploy-linux`, make sure the matching Linux artifact alrea
 - To get started on Linux: [getting-started-linux.md](getting-started-linux.md)
 - For Linux deploy modes and rollback: [linux-release-rollback.md](linux-release-rollback.md)
 - To check boards and hardware direction: [hardware.md](hardware.md)
+- For package profiles and Cargo features: [package-profiles-and-features.md](package-profiles-and-features.md)

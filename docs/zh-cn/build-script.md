@@ -94,6 +94,15 @@ TARGET=linux-aarch64 ./build.sh
 
 ## 打包方案
 
+`build.sh` 的 package profile 与 `Cargo.toml` feature 是两层合同：
+
+- `package profile`：用户与发布流程入口
+- feature 闭包：从 `Cargo.toml` 动态展开
+
+详细映射、直接 cargo 写法和默认合同见：
+
+- [package-profiles-and-features.md](package-profiles-and-features.md)
+
 用法：
 
 ```bash
@@ -119,6 +128,8 @@ TARGET=linux ./build.sh --package-profile linux-full
 
 - Linux 目标默认用 `linux-full`
 - ESP 目标默认用 `voice+vision+sensor`
+- `linux-full` 当前固定从 `default + capability_office + dingtalk` 展开
+- ESP 各 profile 当前都从 `default_runtime` 起步，再按需叠 `capability_voice / capability_vision / capability_sensor`
 
 ## Linux 构建方式
 
@@ -185,3 +196,4 @@ BEETLE_SKIP_DEPLOY_PROMPT=1 ./build.sh
 - Linux 首次部署：[getting-started-linux.md](getting-started-linux.md)
 - Linux 运维与回滚：[linux-release-rollback.md](linux-release-rollback.md)
 - 板型与硬件范围：[hardware.md](hardware.md)
+- 打包方案与 Cargo Feature：[package-profiles-and-features.md](package-profiles-and-features.md)
