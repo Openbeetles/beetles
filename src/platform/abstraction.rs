@@ -13,6 +13,7 @@ use crate::memory::{
     RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
     SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
 };
+#[cfg(feature = "capability_office")]
 use crate::office::{OfficeCredentialStore, OfficeRuntimeStatusStore};
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
@@ -632,7 +633,9 @@ pub trait Platform: Send + Sync {
     fn session_store(&self) -> Arc<dyn SessionStore + Send + Sync>;
     fn pending_retry_store(&self) -> Arc<dyn PendingRetryStore + Send + Sync>;
     fn calendar_store(&self) -> Arc<dyn CalendarStore + Send + Sync>;
+    #[cfg(feature = "capability_office")]
     fn office_credential_store(&self) -> Arc<dyn OfficeCredentialStore + Send + Sync>;
+    #[cfg(feature = "capability_office")]
     fn office_runtime_status_store(&self) -> Arc<dyn OfficeRuntimeStatusStore + Send + Sync>;
     fn task_store(&self) -> Arc<dyn TaskStore + Send + Sync>;
     fn task_run_store(&self) -> Arc<dyn TaskRunStore + Send + Sync>;

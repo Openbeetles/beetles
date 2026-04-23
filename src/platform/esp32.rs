@@ -1,8 +1,18 @@
 //! ESP32 平台的 Platform 实现。仅在此目标编译。
 //! ESP32 implementation of Platform trait.
 
+#[cfg(all(
+    feature = "capability_office",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+use crate::office::{OfficeCredentialStore, OfficeRuntimeStatusStore};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
+#[cfg(all(
+    feature = "capability_office",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+use crate::platform::spiffs::{SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::{
     display_driver::{install_display_state, DisplayState},
@@ -13,9 +23,8 @@ use crate::platform::{
         SpiffsCoreRevisionLedgerStore, SpiffsDetachedWorkStore, SpiffsExecutionStateStore,
         SpiffsImportantMessageStore, SpiffsInnerLifeStore,
         SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore, SpiffsMemoryStore,
-        SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore,
-        SpiffsOuterVoiceStore, SpiffsPendingRetryStore, SpiffsPrivateDocStore,
-        SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
+        SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore, SpiffsPendingRetryStore,
+        SpiffsPrivateDocStore, SpiffsPrivateGardenStore, SpiffsRelationshipConstitutionStore,
         SpiffsRelationshipPortfolioStore, SpiffsRelationshipTopologyStore, SpiffsRemindAtStore,
         SpiffsSelfAuthoredCoreStore, SpiffsSelfContinuityStore, SpiffsSelfModelStore,
         SpiffsSessionStore, SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
@@ -48,7 +57,6 @@ use crate::{
         RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
         SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
     },
-    office::{OfficeCredentialStore, OfficeRuntimeStatusStore},
     task::TaskStore,
     task_execution::{
         TaskArtifactStore, TaskExecutionLedgerStore, TaskLearningStore, TaskRunStore,
@@ -72,7 +80,9 @@ pub struct Esp32Platform {
     session_store: Arc<dyn SessionStore + Send + Sync>,
     pending_retry_store: Arc<SpiffsPendingRetryStore>,
     calendar_store: Arc<SpiffsCalendarStore>,
+    #[cfg(feature = "capability_office")]
     office_credential_store: Arc<SpiffsOfficeCredentialStore>,
+    #[cfg(feature = "capability_office")]
     office_runtime_status_store: Arc<SpiffsOfficeRuntimeStatusStore>,
     task_store: Arc<SpiffsTaskStore>,
     task_run_store: Arc<SpiffsTaskRunStore>,
@@ -182,7 +192,9 @@ impl Esp32Platform {
             session_store,
             pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
             calendar_store: Arc::new(SpiffsCalendarStore::new()),
+            #[cfg(feature = "capability_office")]
             office_credential_store: Arc::new(SpiffsOfficeCredentialStore::new()),
+            #[cfg(feature = "capability_office")]
             office_runtime_status_store: Arc::new(SpiffsOfficeRuntimeStatusStore::new()),
             task_store: Arc::new(SpiffsTaskStore::new()),
             task_run_store: Arc::new(SpiffsTaskRunStore::new()),
@@ -338,10 +350,12 @@ impl Platform for Esp32Platform {
         Arc::clone(&self.calendar_store) as Arc<dyn CalendarStore + Send + Sync>
     }
 
+    #[cfg(feature = "capability_office")]
     fn office_credential_store(&self) -> Arc<dyn OfficeCredentialStore + Send + Sync> {
         Arc::clone(&self.office_credential_store) as Arc<dyn OfficeCredentialStore + Send + Sync>
     }
 
+    #[cfg(feature = "capability_office")]
     fn office_runtime_status_store(&self) -> Arc<dyn OfficeRuntimeStatusStore + Send + Sync> {
         Arc::clone(&self.office_runtime_status_store)
             as Arc<dyn OfficeRuntimeStatusStore + Send + Sync>

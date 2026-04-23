@@ -99,6 +99,7 @@ pub mod bootstrap;
 pub mod cron;
 pub mod heartbeat;
 pub mod i18n;
+#[cfg(feature = "capability_office")]
 pub mod office;
 pub mod orchestrator;
 pub mod runtime;

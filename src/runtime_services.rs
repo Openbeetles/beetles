@@ -17,7 +17,9 @@ pub struct RuntimeServices {
     pub session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     pub pending_retry_store: Arc<dyn crate::memory::PendingRetryStore + Send + Sync>,
     pub calendar_store: Arc<dyn crate::calendar::CalendarStore + Send + Sync>,
+    #[cfg(feature = "capability_office")]
     pub office_credential_store: Arc<dyn crate::office::OfficeCredentialStore + Send + Sync>,
+    #[cfg(feature = "capability_office")]
     pub office_runtime_status_store: Arc<dyn crate::office::OfficeRuntimeStatusStore + Send + Sync>,
     pub task_store: Arc<dyn crate::task::TaskStore + Send + Sync>,
     pub task_run_store: Arc<dyn crate::task_execution::TaskRunStore + Send + Sync>,
@@ -67,7 +69,9 @@ impl RuntimeServices {
             session_store: platform.session_store(),
             pending_retry_store: platform.pending_retry_store(),
             calendar_store: platform.calendar_store(),
+            #[cfg(feature = "capability_office")]
             office_credential_store: platform.office_credential_store(),
+            #[cfg(feature = "capability_office")]
             office_runtime_status_store: platform.office_runtime_status_store(),
             task_store: platform.task_store(),
             task_run_store: platform.task_run_store(),

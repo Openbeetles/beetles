@@ -7,6 +7,7 @@ use crate::display::{
     DisplayConfig, DISPLAY_CONFIG_VERSION,
 };
 use crate::error::{Error, Result};
+#[cfg(feature = "capability_office")]
 use crate::office::{
     OfficeAccountRegistry, OfficeCredentialStore, OfficeCredentialsSegment, OfficeSelectionPolicy,
 };
@@ -70,6 +71,7 @@ pub const CONFIG_PROVIDER_KIND_MAX_LEN: usize = 64;
 pub const CONFIG_EXTERNAL_ACCOUNT_ID_MAX_LEN: usize = 128;
 pub const CONFIG_OFFICE_ACCOUNT_LIMIT: usize = 16;
 
+#[cfg(feature = "capability_office")]
 fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
     if s.len() > max {
         Err(Error::config(
@@ -227,6 +229,7 @@ pub struct AppConfig {
     #[serde(skip, default)]
     pub audio: Option<AudioSegment>,
     /// 办公账户配置（从 SPIFFS config/accounts.json 加载）。
+    #[cfg(feature = "capability_office")]
     #[serde(default)]
     pub office_accounts: OfficeAccountsSegment,
 
@@ -326,6 +329,7 @@ impl AppConfig {
             i2c_sensors: vec![],
             display: None,
             audio: None,
+            #[cfg(feature = "capability_office")]
             office_accounts: OfficeAccountsSegment::default(),
             load_errors: None,
         }
@@ -437,6 +441,7 @@ impl AppConfig {
                     load_errors.push("spiffs_audio_read_error".into());
                 }
             }
+            #[cfg(feature = "capability_office")]
             match r.read_config_file("config/accounts.json") {
                 Ok(Some(b)) => {
                     let s = String::from_utf8_lossy(&b);
@@ -586,6 +591,7 @@ impl AppConfig {
         }
     }
 
+    #[cfg(feature = "capability_office")]
     pub fn merge_office_accounts_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
         match serde_json::from_str::<OfficeAccountsSegment>(json) {
             Ok(seg) => {
@@ -1096,6 +1102,7 @@ impl SystemSegment {
 }
 
 /// POST /api/config/accounts 请求体。
+#[cfg(feature = "capability_office")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OfficeAccountsSegment {
@@ -1775,6 +1782,7 @@ fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "capability_office")]
 fn validate_office_accounts_segment(seg: &OfficeAccountsSegment) -> Result<()> {
     let all_accounts = seg.registry.all_accounts();
     if all_accounts.len() > CONFIG_OFFICE_ACCOUNT_LIMIT {
@@ -1832,6 +1840,7 @@ fn validate_office_accounts_segment(seg: &OfficeAccountsSegment) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "capability_office")]
 fn validate_office_credentials_segment(seg: &OfficeCredentialsSegment) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     for credential in &seg.items {
@@ -2836,6 +2845,7 @@ pub fn save_display_segment(
 }
 
 /// 读取 `config/accounts.json` authority 段；不存在时返回空账户注册表默认值。
+#[cfg(feature = "capability_office")]
 pub fn get_office_accounts_segment(reader: &dyn ConfigFileStore) -> Result<String> {
     match reader.read_config_file("config/accounts.json")? {
         Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
@@ -2845,6 +2855,7 @@ pub fn get_office_accounts_segment(reader: &dyn ConfigFileStore) -> Result<Strin
 }
 
 /// 校验并整体写入 `config/accounts.json` authority 段；body 为完整注册表快照，不做合并。
+#[cfg(feature = "capability_office")]
 pub fn save_office_accounts_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: OfficeAccountsSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
@@ -2855,11 +2866,13 @@ pub fn save_office_accounts_segment(writer: &dyn ConfigFileStore, body: &str) ->
     Ok(())
 }
 
+#[cfg(feature = "capability_office")]
 pub fn validate_office_accounts_candidate(seg: &OfficeAccountsSegment) -> Result<()> {
     validate_office_accounts_segment(seg)
 }
 
 /// 读取 office credential authority，序列化为 `OfficeCredentialsSegment` JSON。
+#[cfg(feature = "capability_office")]
 pub fn get_office_credentials_segment(store: &dyn OfficeCredentialStore) -> Result<String> {
     let mut items = store.list()?;
     items.sort_by(|left, right| left.account_key.cmp(&right.account_key));
@@ -2868,6 +2881,7 @@ pub fn get_office_credentials_segment(store: &dyn OfficeCredentialStore) -> Resu
 }
 
 /// 严格解析并整体替换 office credential authority。
+#[cfg(feature = "capability_office")]
 pub fn save_office_credentials_segment(
     store: &dyn OfficeCredentialStore,
     body: &str,
@@ -2894,6 +2908,7 @@ pub fn save_office_credentials_segment(
     Ok(())
 }
 
+#[cfg(feature = "capability_office")]
 pub fn validate_office_credentials_candidate(seg: &OfficeCredentialsSegment) -> Result<()> {
     validate_office_credentials_segment(seg)
 }
@@ -3204,6 +3219,7 @@ mod tests {
         assert_eq!(saved.speaker.device_ref, None);
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn save_office_accounts_segment_roundtrips_multi_account_registry() {
         struct MemoryFileStore(std::sync::Mutex<Option<Vec<u8>>>);
@@ -3265,6 +3281,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn save_office_accounts_segment_rejects_legacy_binding_key() {
         struct MemoryFileStore;
@@ -3295,6 +3312,7 @@ mod tests {
         assert!(error.to_string().contains("unknown field"));
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn save_office_accounts_segment_rejects_legacy_global_default_policy_key() {
         struct MemoryFileStore;
@@ -3335,6 +3353,7 @@ mod tests {
         assert!(error.to_string().contains("unknown field"));
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn merge_office_accounts_from_json_rejects_trailing_garbage() {
         let mut config = AppConfig::load_from_env();
@@ -3365,6 +3384,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn save_office_credentials_segment_roundtrips() {
         struct MemoryOfficeCredentialStore(std::sync::Mutex<Vec<crate::office::OfficeCredential>>);
@@ -3433,6 +3453,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "capability_office")]
     #[test]
     fn save_office_credentials_segment_rejects_trailing_garbage() {
         struct MemoryOfficeCredentialStore;

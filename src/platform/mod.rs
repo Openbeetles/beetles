@@ -72,11 +72,12 @@ pub use spiffs::{
     default_skill_storage_arc, init_spiffs, spiffs_usage, CachedSkillMetaStore,
     SpiffsActiveWorkStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
     SpiffsDetachedWorkStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-    SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOfficeCredentialStore,
-    SpiffsOfficeRuntimeStatusStore, SpiffsSessionStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-    SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
-    SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore,
+    SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsSessionStore, SpiffsSkillMetaStore,
+    SpiffsSkillStorage, SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore,
+    SpiffsTaskLearningStore, SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore,
 };
+#[cfg(feature = "capability_office")]
+pub use spiffs::{SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore};
 pub use state_root::state_mount_path;
 pub use wifi::{
     connect as connect_wifi, is_wifi_sta_connected, passive_scan_handle, refresh_runtime_state,

@@ -405,7 +405,9 @@ pub mod long_term_extraction_state;
 pub mod long_term_memory;
 pub mod memory;
 pub mod mental_privacy;
+#[cfg(feature = "capability_office")]
 pub mod office_credentials;
+#[cfg(feature = "capability_office")]
 pub mod office_runtime_status;
 pub mod outer_voice;
 pub mod pending_retry;
@@ -441,7 +443,9 @@ pub use long_term_extraction_state::SpiffsLongTermMemoryExtractionStateStore;
 pub use long_term_memory::SpiffsLongTermMemoryStore;
 pub use memory::SpiffsMemoryStore;
 pub use mental_privacy::SpiffsMentalPrivacyStore;
+#[cfg(feature = "capability_office")]
 pub use office_credentials::SpiffsOfficeCredentialStore;
+#[cfg(feature = "capability_office")]
 pub use office_runtime_status::SpiffsOfficeRuntimeStatusStore;
 pub use outer_voice::SpiffsOuterVoiceStore;
 pub use pending_retry::SpiffsPendingRetryStore;

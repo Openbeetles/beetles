@@ -3685,7 +3685,9 @@ mod tests {
                 session_store: Arc::new(StubSessionStore::default()),
                 pending_retry_store: Arc::new(StubPendingRetryStore),
                 calendar_store: platform.calendar_store(),
+                #[cfg(feature = "capability_office")]
                 office_credential_store: platform.office_credential_store(),
+                #[cfg(feature = "capability_office")]
                 office_runtime_status_store: platform.office_runtime_status_store(),
                 task_store: Arc::new(StubTaskStore),
                 task_run_store: Arc::new(StubTaskRunStore::default()),
