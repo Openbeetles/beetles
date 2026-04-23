@@ -1524,7 +1524,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -1539,7 +1539,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -1553,7 +1553,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1587,7 +1587,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1607,7 +1607,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &CalendarProviderCredential,
             id: &str,
         ) -> Result<bool> {
@@ -1658,7 +1658,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -1667,7 +1667,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -1676,7 +1676,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1688,7 +1688,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1700,7 +1700,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<bool> {

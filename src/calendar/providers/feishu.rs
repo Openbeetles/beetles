@@ -2,11 +2,13 @@
 
 use crate::calendar::credentials::calendar_credential_from_office;
 use crate::calendar::{
-    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarHttpClient,
-    CalendarOperation, CalendarProvider, CalendarProviderCredential, CalendarQuery,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarOperation,
+    CalendarProvider, CalendarProviderCredential, CalendarQuery,
 };
 use crate::error::{Error, Result};
-use crate::office::{OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
+use crate::office::{
+    OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+};
 use crate::platform::ResponseBody;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -38,7 +40,7 @@ impl CalendarProvider for FeishuCalendarProvider {
 
     fn list_events(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         query: CalendarQuery,
     ) -> Result<Vec<CalendarEvent>> {
@@ -82,7 +84,7 @@ impl CalendarProvider for FeishuCalendarProvider {
 
     fn get_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<Option<CalendarEvent>> {
@@ -119,7 +121,7 @@ impl CalendarProvider for FeishuCalendarProvider {
 
     fn create_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -154,7 +156,7 @@ impl CalendarProvider for FeishuCalendarProvider {
 
     fn update_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -200,7 +202,7 @@ impl CalendarProvider for FeishuCalendarProvider {
 
     fn delete_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<bool> {
@@ -457,7 +459,7 @@ fn validate_feishu_calendar_credential(credential: &CalendarProviderCredential) 
 }
 
 fn fetch_tenant_access_token_http(
-    http: &mut dyn CalendarHttpClient,
+    http: &mut dyn OfficeHttpClient,
     credential: &CalendarProviderCredential,
 ) -> Result<String> {
     let body = serde_json::to_string(&FeishuTenantAccessTokenRequest {
@@ -694,7 +696,7 @@ mod tests {
         }
     }
 
-    impl CalendarHttpClient for RecordingHttp {
+    impl OfficeHttpClient for RecordingHttp {
         fn get_with_headers(
             &mut self,
             url: &str,

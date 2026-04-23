@@ -40,9 +40,7 @@ pub use credentials::{
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-pub use provider::{
-    CalendarHttpClient, CalendarOperation, CalendarProvider, CalendarProviderRegistry,
-};
+pub use provider::{CalendarOperation, CalendarProvider, CalendarProviderRegistry};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

@@ -365,7 +365,7 @@ impl CalendarTool {
                 let requested_provider = parse_requested_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (mut resolved_participants, lookup_identity_hint, lookup_provider_hint) =
-                    self.resolve_participant_context(&obj, preferred_identity_class)?;
+                    self.resolve_participant_context(&obj, preferred_identity_class, ctx)?;
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -501,7 +501,7 @@ impl CalendarTool {
                 let provider = parse_provider(&obj);
                 let account_key = parse_account_key(&obj);
                 let (mut resolved_participants, lookup_identity_hint, _lookup_provider_hint) =
-                    self.resolve_participant_context(&obj, preferred_identity_class)?;
+                    self.resolve_participant_context(&obj, preferred_identity_class, ctx)?;
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 annotate_resolved_participants_identity(
                     &mut resolved_participants,
@@ -705,6 +705,7 @@ impl CalendarTool {
         &self,
         obj: &serde_json::Map<String, Value>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        ctx: &mut dyn ToolContext,
     ) -> Result<CalendarParticipantContext> {
         let queries = parse_string_list(obj, "participant_lookup", "tool_calendar")?;
         if queries.is_empty() {
@@ -719,12 +720,14 @@ impl CalendarTool {
         let mut resolved = Vec::with_capacity(queries.len());
         let mut identity_hints = Vec::with_capacity(queries.len());
         let mut provider_hints = Vec::with_capacity(queries.len());
+        let mut http = ToolContextHttpClient::new(ctx);
         for query in queries {
-            let hit = directory.resolve_lookup_hit_with_route_and_identity(
+            let hit = directory.resolve_lookup_hit_with_route_and_identity_and_http(
                 &query,
                 None,
                 None,
                 preferred_identity_class,
+                &mut http,
             )?;
             identity_hints.push(
                 self.service
@@ -744,7 +747,7 @@ impl CalendarTool {
 fn with_calendar_http<T>(
     provider: &str,
     ctx: &mut dyn ToolContext,
-    f: impl for<'a> FnOnce(Option<&'a mut dyn crate::calendar::CalendarHttpClient>) -> Result<T>,
+    f: impl for<'a> FnOnce(Option<&'a mut dyn crate::office::OfficeHttpClient>) -> Result<T>,
 ) -> Result<T> {
     if provider == CALENDAR_PROVIDER_LOCAL {
         return f(None);
@@ -1407,7 +1410,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -1429,7 +1432,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -1438,7 +1441,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1447,7 +1450,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1456,7 +1459,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn crate::calendar::CalendarHttpClient,
+            _http: &mut dyn crate::office::OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<bool> {

@@ -3,12 +3,11 @@
 use crate::calendar::credentials::calendar_credential_from_office;
 use crate::calendar::{
     filter_calendar_events, normalize_calendar_event, CalendarEvent, CalendarEventStatus,
-    CalendarHttpClient, CalendarOperation, CalendarProvider, CalendarProviderCredential,
-    CalendarQuery,
+    CalendarOperation, CalendarProvider, CalendarProviderCredential, CalendarQuery,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    fetch_wecom_access_token_ureq, request_wecom_json_ureq, OfficeProbeAdapter,
+    fetch_wecom_access_token_ureq, request_wecom_json_ureq, OfficeHttpClient, OfficeProbeAdapter,
     OfficeProbeDisposition, OfficeProbeResult, WecomApiEnvelope, WecomAuthCredential,
     WecomTokenPayload,
 };
@@ -47,7 +46,7 @@ impl CalendarProvider for WecomCalendarProvider {
 
     fn list_events(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         query: CalendarQuery,
     ) -> Result<Vec<CalendarEvent>> {
@@ -83,7 +82,7 @@ impl CalendarProvider for WecomCalendarProvider {
 
     fn get_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<Option<CalendarEvent>> {
@@ -106,7 +105,7 @@ impl CalendarProvider for WecomCalendarProvider {
 
     fn create_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -128,7 +127,7 @@ impl CalendarProvider for WecomCalendarProvider {
 
     fn update_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -160,7 +159,7 @@ impl CalendarProvider for WecomCalendarProvider {
 
     fn delete_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<bool> {
@@ -322,7 +321,7 @@ fn validate_wecom_calendar_credential(credential: &CalendarProviderCredential) -
 }
 
 fn fetch_access_token_http(
-    http: &mut dyn CalendarHttpClient,
+    http: &mut dyn OfficeHttpClient,
     credential: &CalendarProviderCredential,
 ) -> Result<String> {
     let url = format!(
@@ -507,7 +506,7 @@ mod tests {
         }
     }
 
-    impl CalendarHttpClient for RecordingHttp {
+    impl OfficeHttpClient for RecordingHttp {
         fn get_with_headers(
             &mut self,
             url: &str,

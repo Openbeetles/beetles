@@ -12,7 +12,7 @@ use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
     OfficeAuthoritySource, OfficeCapability, OfficeCapabilityCredentialAccess,
     OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime, OfficeHttpClient, OfficeResolveResult,
-    OfficeSelectedRoute, OfficeService, SnapshotOfficeAuthoritySource, UnavailableOfficeHttpClient,
+    OfficeSelectedRoute, OfficeService, SnapshotOfficeAuthoritySource,
 };
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
@@ -169,8 +169,16 @@ impl ContactsDirectoryService {
         query: &str,
         limit: Option<usize>,
     ) -> Result<Vec<ContactsDirectoryLookupHit>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.lookup_with_http(query, limit, &mut unavailable_http)
+        let query = normalize_lookup_query(query)?;
+        let limit = clamp_contacts_directory_limit(limit);
+        Ok(sorted_lookup_hits(
+            self.local_store
+                .list()?
+                .into_iter()
+                .filter_map(|contact| score_contact_match(&contact, &query, None, None))
+                .collect(),
+            limit,
+        ))
     }
 
     pub fn lookup_with_http(
@@ -183,52 +191,12 @@ impl ContactsDirectoryService {
     }
 
     pub fn resolve_primary_email(&self, query: &str) -> Result<ContactsDirectoryEmailResolution> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.resolve_primary_email_with_route_and_http(query, None, None, &mut unavailable_http)
+        let best = self.resolve_lookup_hit(query)?;
+        build_primary_email_resolution(query, best)
     }
 
     pub fn resolve_lookup_hit(&self, query: &str) -> Result<ContactsDirectoryLookupHit> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.resolve_lookup_hit_with_route_and_identity_and_http(
-            query,
-            None,
-            None,
-            None,
-            &mut unavailable_http,
-        )
-    }
-
-    pub fn resolve_lookup_hit_with_route(
-        &self,
-        query: &str,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-    ) -> Result<ContactsDirectoryLookupHit> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.resolve_lookup_hit_with_route_and_identity_and_http(
-            query,
-            provider,
-            account_key,
-            None,
-            &mut unavailable_http,
-        )
-    }
-
-    pub fn resolve_lookup_hit_with_route_and_identity(
-        &self,
-        query: &str,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-    ) -> Result<ContactsDirectoryLookupHit> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.resolve_lookup_hit_with_route_and_identity_and_http(
-            query,
-            provider,
-            account_key,
-            preferred_identity_class,
-            &mut unavailable_http,
-        )
+        pick_best_lookup_hit(query, self.lookup(query, Some(5))?)
     }
 
     pub fn resolve_lookup_hit_with_route_and_identity_and_http(
@@ -310,43 +278,6 @@ impl ContactsDirectoryService {
         self.local_store.delete(&id)
     }
 
-    pub fn lookup_with_route(
-        &self,
-        query: &str,
-        limit: Option<usize>,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-    ) -> Result<Vec<ContactsDirectoryLookupHit>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.lookup_with_route_and_identity_and_http(
-            query,
-            limit,
-            provider,
-            account_key,
-            None,
-            &mut unavailable_http,
-        )
-    }
-
-    pub fn lookup_with_route_and_identity(
-        &self,
-        query: &str,
-        limit: Option<usize>,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-    ) -> Result<Vec<ContactsDirectoryLookupHit>> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.lookup_with_route_and_identity_and_http(
-            query,
-            limit,
-            provider,
-            account_key,
-            preferred_identity_class,
-            &mut unavailable_http,
-        )
-    }
-
     pub fn lookup_with_route_and_identity_and_http(
         &self,
         query: &str,
@@ -356,14 +287,7 @@ impl ContactsDirectoryService {
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
         http: &mut dyn OfficeHttpClient,
     ) -> Result<Vec<ContactsDirectoryLookupHit>> {
-        let query = normalize_match_key(query);
-        if query.is_empty() {
-            return Err(Error::config(
-                "contacts_directory_lookup",
-                "query must not be empty",
-            ));
-        }
-
+        let query = normalize_lookup_query(query)?;
         let limit = clamp_contacts_directory_limit(limit);
         let mut hits = self
             .local_store
@@ -385,65 +309,7 @@ impl ContactsDirectoryService {
                 preferred_identity_class,
             )?);
         }
-        hits.sort_by_key(|hit| {
-            (
-                Reverse(hit.score),
-                source_priority(&hit.source_kind),
-                normalize_match_key(&hit.contact.display_name),
-                hit.contact.id.clone(),
-            )
-        });
-        hits.truncate(limit);
-        Ok(hits)
-    }
-
-    pub fn resolve_primary_email_with_route(
-        &self,
-        query: &str,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-    ) -> Result<ContactsDirectoryEmailResolution> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.resolve_primary_email_with_route_and_identity_and_http(
-            query,
-            provider,
-            account_key,
-            None,
-            &mut unavailable_http,
-        )
-    }
-
-    pub fn resolve_primary_email_with_route_and_identity(
-        &self,
-        query: &str,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-    ) -> Result<ContactsDirectoryEmailResolution> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.resolve_primary_email_with_route_and_identity_and_http(
-            query,
-            provider,
-            account_key,
-            preferred_identity_class,
-            &mut unavailable_http,
-        )
-    }
-
-    pub fn resolve_primary_email_with_route_and_http(
-        &self,
-        query: &str,
-        provider: Option<&str>,
-        account_key: Option<&str>,
-        http: &mut dyn OfficeHttpClient,
-    ) -> Result<ContactsDirectoryEmailResolution> {
-        self.resolve_primary_email_with_route_and_identity_and_http(
-            query,
-            provider,
-            account_key,
-            None,
-            http,
-        )
+        Ok(sorted_lookup_hits(hits, limit))
     }
 
     pub fn resolve_primary_email_with_route_and_identity_and_http(
@@ -461,24 +327,81 @@ impl ContactsDirectoryService {
             preferred_identity_class,
             http,
         )?;
-        if best.contact.emails.is_empty() {
-            return Err(Error::config(
-                "contacts_directory_email_resolve",
-                format!("no contact with email matches query '{query}'"),
-            ));
-        }
-        Ok(ContactsDirectoryEmailResolution {
-            query: query.to_string(),
-            contact_id: best.contact.id,
-            display_name: best.contact.display_name,
-            email: best.contact.emails.into_iter().next().unwrap_or_default(),
-            match_reason: best.match_reason,
-            score: best.score,
-            source_kind: best.source_kind,
-            provider: best.provider,
-            account_key: best.account_key,
-        })
+        build_primary_email_resolution(query, best)
     }
+}
+
+fn normalize_lookup_query(query: &str) -> Result<String> {
+    let query = normalize_match_key(query);
+    if query.is_empty() {
+        return Err(Error::config(
+            "contacts_directory_lookup",
+            "query must not be empty",
+        ));
+    }
+    Ok(query)
+}
+
+fn sorted_lookup_hits(
+    mut hits: Vec<ContactsDirectoryLookupHit>,
+    limit: usize,
+) -> Vec<ContactsDirectoryLookupHit> {
+    hits.sort_by_key(|hit| {
+        (
+            Reverse(hit.score),
+            source_priority(&hit.source_kind),
+            normalize_match_key(&hit.contact.display_name),
+            hit.contact.id.clone(),
+        )
+    });
+    hits.truncate(limit);
+    hits
+}
+
+fn pick_best_lookup_hit(
+    query: &str,
+    mut hits: Vec<ContactsDirectoryLookupHit>,
+) -> Result<ContactsDirectoryLookupHit> {
+    if hits.is_empty() {
+        return Err(Error::config(
+            "contacts_directory_lookup",
+            format!("no contact matches query '{query}'"),
+        ));
+    }
+    let best = hits.remove(0);
+    if hits
+        .first()
+        .is_some_and(|candidate| candidate.score == best.score)
+    {
+        return Err(Error::config(
+            "contacts_directory_lookup",
+            format!("contact query '{query}' is ambiguous"),
+        ));
+    }
+    Ok(best)
+}
+
+fn build_primary_email_resolution(
+    query: &str,
+    best: ContactsDirectoryLookupHit,
+) -> Result<ContactsDirectoryEmailResolution> {
+    if best.contact.emails.is_empty() {
+        return Err(Error::config(
+            "contacts_directory_email_resolve",
+            format!("no contact with email matches query '{query}'"),
+        ));
+    }
+    Ok(ContactsDirectoryEmailResolution {
+        query: query.to_string(),
+        contact_id: best.contact.id,
+        display_name: best.contact.display_name,
+        email: best.contact.emails.into_iter().next().unwrap_or_default(),
+        match_reason: best.match_reason,
+        score: best.score,
+        source_kind: best.source_kind,
+        provider: best.provider,
+        account_key: best.account_key,
+    })
 }
 
 #[cfg(all(
@@ -835,7 +758,7 @@ mod tests {
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
-        OfficeService,
+        OfficeService, UnavailableOfficeHttpClient,
     };
     use std::collections::BTreeMap;
     use std::collections::HashMap;
@@ -1093,9 +1016,10 @@ mod tests {
             providers,
             office_service,
         );
+        let mut http = UnavailableOfficeHttpClient;
 
         let hits = service
-            .lookup("Alice Zhang", Some(5))
+            .lookup_with_http("Alice Zhang", Some(5), &mut http)
             .expect("lookup remote contact");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].contact.id, "ou_alice");
@@ -1107,7 +1031,13 @@ mod tests {
         assert_eq!(hits[0].account_key.as_deref(), Some("contacts-feishu"));
 
         let resolution = service
-            .resolve_primary_email("Alice Zhang")
+            .resolve_primary_email_with_route_and_identity_and_http(
+                "Alice Zhang",
+                None,
+                None,
+                None,
+                &mut http,
+            )
             .expect("resolve remote email");
         assert_eq!(resolution.contact_id, "ou_alice");
         assert_eq!(resolution.email, "alice@beetle.cn");

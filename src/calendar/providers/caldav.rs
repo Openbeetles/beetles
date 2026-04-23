@@ -2,11 +2,12 @@
 
 use crate::calendar::{
     filter_calendar_events, normalize_calendar_event, CalendarEvent, CalendarEventStatus,
-    CalendarHttpClient, CalendarOperation, CalendarProvider, CalendarProviderCredential,
-    CalendarQuery,
+    CalendarOperation, CalendarProvider, CalendarProviderCredential, CalendarQuery,
 };
 use crate::error::{Error, Result};
-use crate::office::{OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult};
+use crate::office::{
+    OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
+};
 use base64::Engine as _;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -31,7 +32,7 @@ impl CalendarProvider for CalDavProvider {
 
     fn list_events(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         query: CalendarQuery,
     ) -> Result<Vec<CalendarEvent>> {
@@ -57,7 +58,7 @@ impl CalendarProvider for CalDavProvider {
 
     fn get_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<Option<CalendarEvent>> {
@@ -81,7 +82,7 @@ impl CalendarProvider for CalDavProvider {
 
     fn create_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -103,7 +104,7 @@ impl CalendarProvider for CalDavProvider {
 
     fn update_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -125,7 +126,7 @@ impl CalendarProvider for CalDavProvider {
 
     fn delete_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<bool> {

@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
 use crate::office::{
     OfficeAccountAssessment, OfficeAccountIdentityClass, OfficeAccountRuntimeStatus,
-    OfficeAuthoritySource, OfficeCapability, OfficeHttpClient, OfficeResolveRequest,
-    OfficeResolveResult, OfficeService,
+    OfficeAuthoritySource, OfficeCapability, OfficeResolveRequest, OfficeResolveResult,
+    OfficeService,
 };
 use crate::util::current_unix_secs;
 use std::collections::BTreeSet;
@@ -605,17 +605,6 @@ pub(crate) fn office_authority_from_service(
         Arc::new(crate::office::SnapshotOfficeAuthoritySource::new(office))
             as Arc<dyn OfficeAuthoritySource + Send + Sync>
     })
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub(crate) fn run_with_unavailable_office_http<T>(
-    run: impl FnOnce(&mut dyn OfficeHttpClient) -> Result<T>,
-) -> Result<T> {
-    let mut unavailable_http = crate::office::UnavailableOfficeHttpClient;
-    run(&mut unavailable_http)
 }
 
 impl<R: Clone, C: ?Sized> Clone for OfficeCapabilityRemoteRuntime<R, C> {

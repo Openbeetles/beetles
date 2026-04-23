@@ -14,15 +14,10 @@ use crate::office::{
     parse_public_account_upsert_request_value, OfficeAccountConfigSaveRequest,
     OfficeAccountOnboardingDisposition, OfficeCapability, OfficeConfigAccountDetail,
     OfficeConfigAccountSummary, OfficeConfigCapabilityStatus, OfficeConfigManagementService,
-    OfficeConfigProviderCatalogItem, OfficeHttpClient, OfficeStreamingResponse,
+    OfficeConfigProviderCatalogItem,
 };
 use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use crate::platform::{PlatformHttpClient, ResponseBody};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -282,94 +277,6 @@ fn serialize_office_http_payload_api<T: Serialize>(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
-struct HandlerOfficeHttpClient<'a> {
-    http: &'a mut dyn PlatformHttpClient,
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-impl OfficeHttpClient for HandlerOfficeHttpClient<'_> {
-    fn request_with_headers(
-        &mut self,
-        method: &str,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: Option<&[u8]>,
-    ) -> crate::error::Result<(u16, ResponseBody)> {
-        self.http.request(method, url, headers, body)
-    }
-
-    fn get_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> crate::error::Result<(u16, ResponseBody)> {
-        self.http.get(url, headers)
-    }
-
-    fn get_streaming_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        max_response_bytes: Option<usize>,
-        on_chunk: &mut dyn FnMut(&[u8]) -> crate::error::Result<()>,
-    ) -> crate::error::Result<OfficeStreamingResponse> {
-        let mut streamed_bytes = 0usize;
-        let limit = max_response_bytes.filter(|value| *value > 0);
-        let status = self
-            .http
-            .get_streaming(url, headers, max_response_bytes, &mut |chunk| {
-                streamed_bytes = streamed_bytes.saturating_add(chunk.len());
-                on_chunk(chunk)
-            })?;
-        Ok(OfficeStreamingResponse {
-            status,
-            truncated: limit.map(|value| streamed_bytes >= value).unwrap_or(false),
-        })
-    }
-
-    fn post_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> crate::error::Result<(u16, ResponseBody)> {
-        self.http.post(url, headers, body)
-    }
-
-    fn patch_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> crate::error::Result<(u16, ResponseBody)> {
-        self.http.patch(url, headers, body)
-    }
-
-    fn put_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> crate::error::Result<(u16, ResponseBody)> {
-        self.http.put(url, headers, body)
-    }
-
-    fn delete_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> crate::error::Result<(u16, ResponseBody)> {
-        self.http.delete(url, headers)
-    }
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 fn parse_capability(capability: Option<&str>) -> crate::error::Result<Option<OfficeCapability>> {
     let Some(capability) = capability else {
         return Ok(None);
@@ -502,10 +409,8 @@ pub fn post_accounts(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
     )
     .map_err(|error| to_io(error.to_string()))?;
     drop(cfg);
-    let mut office_http = HandlerOfficeHttpClient {
-        http: http.as_mut(),
-    };
-    match office_config_service(ctx).apply_account_with_http(&mut office_http, &request) {
+    let office_http = crate::office::as_office_http_client(&mut http);
+    match office_config_service(ctx).apply_account_with_http(office_http, &request) {
         Ok(result)
             if matches!(
                 result.disposition,
@@ -579,7 +484,16 @@ pub fn post_account_probe(
     ctx: &HandlerContext,
     account_key: &str,
 ) -> Result<ApiResponse, std::io::Error> {
-    match office_config_service(ctx).probe(account_key) {
+    let cfg = ctx.config();
+    let mut http = crate::network::create_http_client_with_config(
+        ctx.platform.as_ref(),
+        &cfg,
+        crate::network::HttpClientClass::Background,
+    )
+    .map_err(|error| to_io(error.to_string()))?;
+    drop(cfg);
+    let office_http = crate::office::as_office_http_client(&mut http);
+    match office_config_service(ctx).probe_with_http(office_http, account_key) {
         Ok(result) => {
             let body = serde_json::to_string(&result).map_err(|error| to_io(error.to_string()))?;
             Ok(ApiResponse::ok_200_json(&body))

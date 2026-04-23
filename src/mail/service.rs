@@ -5,10 +5,9 @@ use crate::mail::{
     MailSearchQuery, MailSendRequest,
 };
 use crate::office::{
-    office_authority_from_service, run_with_unavailable_office_http, OfficeAccountAssessment,
-    OfficeAccountIdentityClass, OfficeAccountRuntimeStatus, OfficeAuthoritySource,
-    OfficeCapability, OfficeCapabilityRuntime, OfficeCapabilityServiceCore, OfficeHttpClient,
-    OfficeResolveResult, OfficeService,
+    office_authority_from_service, OfficeAccountAssessment, OfficeAccountIdentityClass,
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime,
+    OfficeCapabilityServiceCore, OfficeHttpClient, OfficeResolveResult, OfficeService,
 };
 use std::sync::Arc;
 
@@ -155,44 +154,15 @@ impl MailService {
 
     pub fn list(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        query: MailQuery,
-    ) -> Result<Vec<MailMessageSummary>> {
-        run_with_unavailable_office_http(|http| {
-            self.list_with_http(http, provider, account_key, query)
-        })
-    }
-
-    pub fn list_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         query: MailQuery,
     ) -> Result<Vec<MailMessageSummary>> {
-        self.list_with_http_and_identity(http, provider, account_key, None, query)
+        self.list_with_identity(http, provider, account_key, None, query)
     }
 
     pub fn list_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        query: MailQuery,
-    ) -> Result<Vec<MailMessageSummary>> {
-        run_with_unavailable_office_http(|http| {
-            self.list_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                query,
-            )
-        })
-    }
-
-    pub fn list_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -212,44 +182,15 @@ impl MailService {
 
     pub fn search(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        query: MailSearchQuery,
-    ) -> Result<Vec<MailMessageSummary>> {
-        run_with_unavailable_office_http(|http| {
-            self.search_with_http(http, provider, account_key, query)
-        })
-    }
-
-    pub fn search_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         query: MailSearchQuery,
     ) -> Result<Vec<MailMessageSummary>> {
-        self.search_with_http_and_identity(http, provider, account_key, None, query)
+        self.search_with_identity(http, provider, account_key, None, query)
     }
 
     pub fn search_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        query: MailSearchQuery,
-    ) -> Result<Vec<MailMessageSummary>> {
-        run_with_unavailable_office_http(|http| {
-            self.search_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                query,
-            )
-        })
-    }
-
-    pub fn search_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -269,42 +210,15 @@ impl MailService {
 
     pub fn get(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        id: &str,
-    ) -> Result<Option<MailMessage>> {
-        run_with_unavailable_office_http(|http| self.get_with_http(http, provider, account_key, id))
-    }
-
-    pub fn get_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         id: &str,
     ) -> Result<Option<MailMessage>> {
-        self.get_with_http_and_identity(http, provider, account_key, None, id)
+        self.get_with_identity(http, provider, account_key, None, id)
     }
 
     pub fn get_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        id: &str,
-    ) -> Result<Option<MailMessage>> {
-        run_with_unavailable_office_http(|http| {
-            self.get_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                id,
-            )
-        })
-    }
-
-    pub fn get_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -324,44 +238,15 @@ impl MailService {
 
     pub fn send(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.send_with_http(http, provider, account_key, request)
-        })
-    }
-
-    pub fn send_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        self.send_with_http_and_identity(http, provider, account_key, None, request)
+        self.send_with_identity(http, provider, account_key, None, request)
     }
 
     pub fn send_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.send_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                request,
-            )
-        })
-    }
-
-    pub fn send_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -384,44 +269,15 @@ impl MailService {
 
     pub fn draft(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.draft_with_http(http, provider, account_key, request)
-        })
-    }
-
-    pub fn draft_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        self.draft_with_http_and_identity(http, provider, account_key, None, request)
+        self.draft_with_identity(http, provider, account_key, None, request)
     }
 
     pub fn draft_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.draft_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                request,
-            )
-        })
-    }
-
-    pub fn draft_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -446,48 +302,16 @@ impl MailService {
 
     pub fn reply(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        original_id: &str,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.reply_with_http(http, provider, account_key, original_id, request)
-        })
-    }
-
-    pub fn reply_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         original_id: &str,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        self.reply_with_http_and_identity(http, provider, account_key, None, original_id, request)
+        self.reply_with_identity(http, provider, account_key, None, original_id, request)
     }
 
     pub fn reply_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        original_id: &str,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.reply_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                original_id,
-                request,
-            )
-        })
-    }
-
-    pub fn reply_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -525,48 +349,16 @@ impl MailService {
 
     pub fn forward(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        original_id: &str,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.forward_with_http(http, provider, account_key, original_id, request)
-        })
-    }
-
-    pub fn forward_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         original_id: &str,
         request: &MailSendRequest,
     ) -> Result<MailMessageSummary> {
-        self.forward_with_http_and_identity(http, provider, account_key, None, original_id, request)
+        self.forward_with_identity(http, provider, account_key, None, original_id, request)
     }
 
     pub fn forward_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        original_id: &str,
-        request: &MailSendRequest,
-    ) -> Result<MailMessageSummary> {
-        run_with_unavailable_office_http(|http| {
-            self.forward_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                original_id,
-                request,
-            )
-        })
-    }
-
-    pub fn forward_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -717,6 +509,7 @@ mod tests {
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        UnavailableOfficeHttpClient,
     };
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -931,6 +724,10 @@ mod tests {
         }
     }
 
+    fn unavailable_http() -> UnavailableOfficeHttpClient {
+        UnavailableOfficeHttpClient
+    }
+
     fn build_service() -> (MailService, Arc<StubProvider>, Arc<StubRuntimeStatusStore>) {
         let mut registry = OfficeAccountRegistry::new();
         registry.insert(OfficeAccount {
@@ -988,8 +785,10 @@ mod tests {
     #[test]
     fn mail_service_uses_office_resolution_when_provider_has_single_candidate() {
         let (service, _provider, _runtime_store) = build_service();
+        let mut http = unavailable_http();
         let items = service
             .list(
+                &mut http,
                 "imap_smtp",
                 None,
                 MailQuery {
@@ -1007,8 +806,10 @@ mod tests {
     #[test]
     fn mail_service_search_uses_office_resolution_when_provider_has_single_candidate() {
         let (service, _provider, _runtime_store) = build_service();
+        let mut http = unavailable_http();
         let items = service
             .search(
+                &mut http,
                 "imap_smtp",
                 None,
                 MailSearchQuery {
@@ -1111,9 +912,11 @@ mod tests {
         let mut providers = MailProviderRegistry::new();
         providers.register(Arc::new(StubProvider::default()));
         let service = MailService::with_office_service(mail_credentials, providers, Some(office));
+        let mut http = unavailable_http();
 
         let error = service
             .list(
+                &mut http,
                 "imap_smtp",
                 None,
                 MailQuery {
@@ -1133,8 +936,10 @@ mod tests {
     #[test]
     fn mail_service_reply_records_runtime_activity() {
         let (service, provider, runtime_store) = build_service();
+        let mut http = unavailable_http();
         let summary = service
             .reply(
+                &mut http,
                 "imap_smtp",
                 None,
                 "42",
@@ -1171,8 +976,10 @@ mod tests {
     #[test]
     fn mail_service_draft_records_runtime_activity() {
         let (service, provider, runtime_store) = build_service();
+        let mut http = unavailable_http();
         let summary = service
             .draft(
+                &mut http,
                 "imap_smtp",
                 None,
                 &MailSendRequest {

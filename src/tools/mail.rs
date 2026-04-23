@@ -277,7 +277,7 @@ impl MailTool {
                         )
                     }
                 };
-                let items = match self.service.list_with_http_and_identity(
+                let items = match self.service.list_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -344,7 +344,7 @@ impl MailTool {
                         "Provide the text to search for in mail.",
                     );
                 }
-                let items = match self.service.search_with_http_and_identity(
+                let items = match self.service.search_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -415,7 +415,7 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.get_with_http_and_identity(
+                let message = match self.service.get_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -456,7 +456,7 @@ impl MailTool {
                     mut resolved_contacts,
                     lookup_identity_hint,
                     lookup_provider_hint,
-                ) = self.resolve_compose_recipients(&obj)?;
+                ) = self.resolve_compose_recipients(&obj, &mut http)?;
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -494,7 +494,7 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.send_with_http_and_identity(
+                let message = match self.service.send_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -547,7 +547,7 @@ impl MailTool {
                     mut resolved_contacts,
                     lookup_identity_hint,
                     lookup_provider_hint,
-                ) = self.resolve_compose_recipients(&obj)?;
+                ) = self.resolve_compose_recipients(&obj, &mut http)?;
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -582,7 +582,7 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.draft_with_http_and_identity(
+                let message = match self.service.draft_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -635,7 +635,7 @@ impl MailTool {
                     mut resolved_contacts,
                     lookup_identity_hint,
                     _lookup_provider_hint,
-                ) = self.resolve_compose_recipients(&obj)?;
+                ) = self.resolve_compose_recipients(&obj, &mut http)?;
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 annotate_resolved_contacts_identity(
                     &mut resolved_contacts,
@@ -667,7 +667,7 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.reply_with_http_and_identity(
+                let message = match self.service.reply_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -721,7 +721,7 @@ impl MailTool {
                     mut resolved_contacts,
                     lookup_identity_hint,
                     _lookup_provider_hint,
-                ) = self.resolve_compose_recipients(&obj)?;
+                ) = self.resolve_compose_recipients(&obj, &mut http)?;
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 annotate_resolved_contacts_identity(
                     &mut resolved_contacts,
@@ -756,7 +756,7 @@ impl MailTool {
                         )
                     }
                 };
-                let message = match self.service.forward_with_http_and_identity(
+                let message = match self.service.forward_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -907,13 +907,14 @@ impl MailTool {
     fn resolve_compose_recipients(
         &self,
         obj: &serde_json::Map<String, Value>,
+        http: &mut dyn crate::office::OfficeHttpClient,
     ) -> Result<ComposeRecipients> {
         let (to_lookup, to_lookup_resolved, to_identity_hint, to_provider_hint) =
-            self.resolve_recipient_queries(obj, "to_lookup", "to")?;
+            self.resolve_recipient_queries(obj, "to_lookup", "to", http)?;
         let (cc_lookup, cc_lookup_resolved, cc_identity_hint, cc_provider_hint) =
-            self.resolve_recipient_queries(obj, "cc_lookup", "cc")?;
+            self.resolve_recipient_queries(obj, "cc_lookup", "cc", http)?;
         let (bcc_lookup, bcc_lookup_resolved, bcc_identity_hint, bcc_provider_hint) =
-            self.resolve_recipient_queries(obj, "bcc_lookup", "bcc")?;
+            self.resolve_recipient_queries(obj, "bcc_lookup", "bcc", http)?;
         Ok((
             merge_recipients(parse_recipients(obj, "to")?, to_lookup),
             merge_recipients(parse_recipients(obj, "cc")?, cc_lookup),
@@ -932,6 +933,7 @@ impl MailTool {
         obj: &serde_json::Map<String, Value>,
         field: &str,
         surface: &'static str,
+        http: &mut dyn crate::office::OfficeHttpClient,
     ) -> Result<RecipientQueryResolution> {
         let queries = parse_recipients(obj, field)?;
         if queries.is_empty() {
@@ -948,7 +950,9 @@ impl MailTool {
         let mut identity_hints = Vec::with_capacity(queries.len());
         let mut provider_hints = Vec::with_capacity(queries.len());
         for query in queries {
-            let resolution = directory.resolve_primary_email(&query)?;
+            let resolution = directory.resolve_primary_email_with_route_and_identity_and_http(
+                &query, None, None, None, http,
+            )?;
             identity_hints.push(
                 self.service
                     .office_identity_class_for_account(resolution.account_key.as_deref())?,

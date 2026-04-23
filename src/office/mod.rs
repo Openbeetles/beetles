@@ -100,10 +100,9 @@ pub use authority_source::{
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub(crate) use capability_runtime::{
-    office_authority_from_service, run_with_unavailable_office_http,
-    OfficeAuthorityBackedCredentialStoreCore, OfficeCapabilityCredentialAccess,
-    OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime, OfficeCapabilityServiceCore,
-    OfficeSelectedRoute,
+    office_authority_from_service, OfficeAuthorityBackedCredentialStoreCore,
+    OfficeCapabilityCredentialAccess, OfficeCapabilityRemoteRuntime, OfficeCapabilityRuntime,
+    OfficeCapabilityServiceCore, OfficeSelectedRoute,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -192,6 +191,11 @@ pub use tool_doctrine::{
     office_tool_doctrines, OfficeConfigOpDoctrine, OfficeConfigOpTier, OfficeToolDoctrine,
     OfficeToolLlmSurface, OfficeToolProtocolProfile, OfficeToolRole,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub(crate) use transport::as_office_http_client;
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

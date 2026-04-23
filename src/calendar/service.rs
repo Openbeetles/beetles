@@ -1,13 +1,13 @@
 use crate::calendar::{
-    CalendarEvent, CalendarHttpClient, CalendarOperation, CalendarProvider,
-    CalendarProviderCredential, CalendarProviderCredentialStore, CalendarProviderRegistry,
-    CalendarQuery, CalendarStore, CALENDAR_PROVIDER_LOCAL,
+    CalendarEvent, CalendarOperation, CalendarProvider, CalendarProviderCredential,
+    CalendarProviderCredentialStore, CalendarProviderRegistry, CalendarQuery, CalendarStore,
+    CALENDAR_PROVIDER_LOCAL,
 };
 use crate::error::{Error, Result};
 use crate::office::{
     office_authority_from_service, OfficeAccountAssessment, OfficeAccountIdentityClass,
     OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapability, OfficeCapabilityRuntime,
-    OfficeCapabilityServiceCore, OfficeResolveResult, OfficeService,
+    OfficeCapabilityServiceCore, OfficeHttpClient, OfficeResolveResult, OfficeService,
 };
 use std::sync::Arc;
 
@@ -211,7 +211,7 @@ impl CalendarService {
 
     pub fn list(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         query: CalendarQuery,
@@ -221,7 +221,7 @@ impl CalendarService {
 
     pub fn list_with_identity(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -245,7 +245,7 @@ impl CalendarService {
 
     pub fn get(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         id: &str,
@@ -255,7 +255,7 @@ impl CalendarService {
 
     pub fn get_with_identity(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -279,7 +279,7 @@ impl CalendarService {
 
     pub fn upsert(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         event: &CalendarEvent,
@@ -290,7 +290,7 @@ impl CalendarService {
 
     pub fn upsert_with_identity(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -334,7 +334,7 @@ impl CalendarService {
 
     pub fn delete(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         id: &str,
@@ -344,7 +344,7 @@ impl CalendarService {
 
     pub fn delete_with_identity(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         provider: &str,
         account_key: Option<&str>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
@@ -407,13 +407,13 @@ impl CalendarService {
 
     fn run_remote_operation<T, F>(
         &self,
-        http: Option<&mut dyn CalendarHttpClient>,
+        http: Option<&mut dyn OfficeHttpClient>,
         route: CalendarRemoteRoute<'_>,
         execute: F,
     ) -> Result<T>
     where
         F: FnOnce(
-            &mut dyn CalendarHttpClient,
+            &mut dyn OfficeHttpClient,
             &Arc<dyn CalendarProvider>,
             &CalendarProviderCredential,
         ) -> Result<T>,
@@ -441,8 +441,8 @@ fn is_local_provider(provider: &str) -> bool {
 
 fn require_http<'a>(
     provider: &str,
-    http: Option<&'a mut dyn CalendarHttpClient>,
-) -> Result<&'a mut dyn CalendarHttpClient> {
+    http: Option<&'a mut dyn OfficeHttpClient>,
+) -> Result<&'a mut dyn OfficeHttpClient> {
     http.ok_or_else(|| {
         Error::config(
             "calendar_provider",
@@ -650,7 +650,7 @@ mod tests {
 
     struct StubHttp;
 
-    impl CalendarHttpClient for StubHttp {
+    impl OfficeHttpClient for StubHttp {
         fn get_with_headers(
             &mut self,
             _url: &str,
@@ -862,7 +862,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -884,7 +884,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -906,7 +906,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -915,7 +915,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -924,7 +924,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<bool> {
@@ -949,7 +949,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -961,7 +961,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -970,7 +970,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -982,7 +982,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -994,7 +994,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<bool> {

@@ -2,6 +2,11 @@ use crate::config::{
     self, validate_office_accounts_candidate, ConfigFileStore, OfficeAccountsSegment,
 };
 use crate::error::{Error, Result};
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+use crate::office::OfficeHttpClient;
 use crate::office::{
     assess_office_account, office_provider_schema, office_provider_schemas, OfficeAccount,
     OfficeAccountAssessment, OfficeAccountAuthorityStatus, OfficeAccountIdentityClass,
@@ -10,11 +15,6 @@ use crate::office::{
     OfficeProviderFieldSchema, OfficeProviderFieldValueKind, OfficeProviderSchema,
     OfficeResolveRequest, OfficeResolveResult, OfficeRuntimeStatusStore, OfficeService,
 };
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use crate::office::{OfficeHttpClient, UnavailableOfficeHttpClient};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -517,14 +517,6 @@ impl OfficeConfigManagementService {
         config::save_office_accounts_segment(self.config_file_store.as_ref(), &body)
     }
 
-    pub fn apply_account(
-        &self,
-        request: &OfficeAccountOnboardingRequest,
-    ) -> Result<OfficeAccountOnboardingResult> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.apply_account_with_http(&mut unavailable_http, request)
-    }
-
     pub fn apply_account_with_http(
         &self,
         http: &mut dyn OfficeHttpClient,
@@ -896,11 +888,6 @@ impl OfficeConfigManagementService {
             self.runtime_status_store.clear(account_key)?;
         }
         Ok(())
-    }
-
-    pub fn probe(&self, account_key: &str) -> Result<OfficeProbeResult> {
-        let mut unavailable_http = UnavailableOfficeHttpClient;
-        self.probe_with_http(&mut unavailable_http, account_key)
     }
 
     pub fn probe_with_http(
@@ -1786,6 +1773,7 @@ mod tests {
     use super::*;
     use crate::office::{
         OfficeAccountRuntimeStatus, OfficeConfigNextAction, OfficeConfigReadiness,
+        UnavailableOfficeHttpClient,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;
@@ -1911,6 +1899,10 @@ mod tests {
                 .remove(account_key);
             Ok(())
         }
+    }
+
+    fn unavailable_http() -> UnavailableOfficeHttpClient {
+        UnavailableOfficeHttpClient
     }
 
     #[test]
@@ -2164,22 +2156,26 @@ mod tests {
             Arc::new(MemoryCredentialStore::default()),
             Arc::new(MemoryRuntimeStatusStore::default()),
         );
+        let mut http = unavailable_http();
 
         let result = service
-            .apply_account(&OfficeAccountOnboardingRequest {
-                provider_kind: Some("imap_smtp".to_string()),
-                capability: None,
-                external_account_id: Some("work@example.com".to_string()),
-                account_label: Some("Work".to_string()),
-                identity_class: None,
-                config: Some(OfficeAccountConfigSaveRequest {
-                    fields: BTreeMap::from([(
-                        "access_token".to_string(),
-                        "secret-token".to_string(),
-                    )]),
-                    clear_fields: Vec::new(),
-                }),
-            })
+            .apply_account_with_http(
+                &mut http,
+                &OfficeAccountOnboardingRequest {
+                    provider_kind: Some("imap_smtp".to_string()),
+                    capability: None,
+                    external_account_id: Some("work@example.com".to_string()),
+                    account_label: Some("Work".to_string()),
+                    identity_class: None,
+                    config: Some(OfficeAccountConfigSaveRequest {
+                        fields: BTreeMap::from([(
+                            "access_token".to_string(),
+                            "secret-token".to_string(),
+                        )]),
+                        clear_fields: Vec::new(),
+                    }),
+                },
+            )
             .expect("atomic apply should return structured blocker");
 
         assert_eq!(
@@ -2240,23 +2236,27 @@ mod tests {
             runtime_status_store.clone(),
         )
         .with_probe_adapters(vec![Arc::new(FailingProbeAdapter)]);
+        let mut http = unavailable_http();
 
         let result = service
-            .apply_account(&OfficeAccountOnboardingRequest {
-                provider_kind: Some("imap_smtp".to_string()),
-                capability: None,
-                external_account_id: Some("work@example.com".to_string()),
-                account_label: Some("Work".to_string()),
-                identity_class: Some(OfficeAccountIdentityClass::Work),
-                config: Some(OfficeAccountConfigSaveRequest {
-                    fields: BTreeMap::from([
-                        ("access_token".to_string(), "secret-token".to_string()),
-                        ("mail_imap_host".to_string(), "imap.example.com".to_string()),
-                        ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
-                    ]),
-                    clear_fields: Vec::new(),
-                }),
-            })
+            .apply_account_with_http(
+                &mut http,
+                &OfficeAccountOnboardingRequest {
+                    provider_kind: Some("imap_smtp".to_string()),
+                    capability: None,
+                    external_account_id: Some("work@example.com".to_string()),
+                    account_label: Some("Work".to_string()),
+                    identity_class: Some(OfficeAccountIdentityClass::Work),
+                    config: Some(OfficeAccountConfigSaveRequest {
+                        fields: BTreeMap::from([
+                            ("access_token".to_string(), "secret-token".to_string()),
+                            ("mail_imap_host".to_string(), "imap.example.com".to_string()),
+                            ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
+                        ]),
+                        clear_fields: Vec::new(),
+                    }),
+                },
+            )
             .expect("atomic apply should return structured probe failure");
 
         assert_eq!(
@@ -2313,23 +2313,27 @@ mod tests {
             runtime_status_store.clone(),
         )
         .with_probe_adapters(vec![Arc::new(ReadyProbeAdapter)]);
+        let mut http = unavailable_http();
 
         let result = service
-            .apply_account(&OfficeAccountOnboardingRequest {
-                provider_kind: Some("imap_smtp".to_string()),
-                capability: None,
-                external_account_id: Some("work@example.com".to_string()),
-                account_label: Some("Work".to_string()),
-                identity_class: Some(OfficeAccountIdentityClass::Work),
-                config: Some(OfficeAccountConfigSaveRequest {
-                    fields: BTreeMap::from([
-                        ("access_token".to_string(), "secret-token".to_string()),
-                        ("mail_imap_host".to_string(), "imap.example.com".to_string()),
-                        ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
-                    ]),
-                    clear_fields: Vec::new(),
-                }),
-            })
+            .apply_account_with_http(
+                &mut http,
+                &OfficeAccountOnboardingRequest {
+                    provider_kind: Some("imap_smtp".to_string()),
+                    capability: None,
+                    external_account_id: Some("work@example.com".to_string()),
+                    account_label: Some("Work".to_string()),
+                    identity_class: Some(OfficeAccountIdentityClass::Work),
+                    config: Some(OfficeAccountConfigSaveRequest {
+                        fields: BTreeMap::from([
+                            ("access_token".to_string(), "secret-token".to_string()),
+                            ("mail_imap_host".to_string(), "imap.example.com".to_string()),
+                            ("mail_smtp_host".to_string(), "smtp.example.com".to_string()),
+                        ]),
+                        clear_fields: Vec::new(),
+                    }),
+                },
+            )
             .expect("atomic apply should succeed");
 
         assert_eq!(
@@ -2443,8 +2447,11 @@ mod tests {
             credential_store,
             Arc::new(MemoryRuntimeStatusStore::default()),
         );
+        let mut http = unavailable_http();
 
-        let probe = service.probe("mail-work").expect("probe");
+        let probe = service
+            .probe_with_http(&mut http, "mail-work")
+            .expect("probe");
         assert_eq!(probe.disposition, OfficeProbeDisposition::Unsupported);
         assert_eq!(probe.reason, "probe_adapter_unavailable");
     }
@@ -2514,8 +2521,11 @@ mod tests {
             runtime_store.clone(),
         )
         .with_probe_adapters(vec![Arc::new(ReadyProbeAdapter)]);
+        let mut http = unavailable_http();
 
-        let probe = service.probe("mail-work").expect("probe");
+        let probe = service
+            .probe_with_http(&mut http, "mail-work")
+            .expect("probe");
         assert_eq!(probe.disposition, OfficeProbeDisposition::Ready);
 
         let runtime = runtime_store
@@ -2555,8 +2565,11 @@ mod tests {
             Arc::new(MemoryCredentialStore::default()),
             runtime_store.clone(),
         );
+        let mut http = unavailable_http();
 
-        let probe = service.probe("mail-work").expect("probe");
+        let probe = service
+            .probe_with_http(&mut http, "mail-work")
+            .expect("probe");
         assert_eq!(probe.disposition, OfficeProbeDisposition::MissingCredential);
 
         let runtime = runtime_store

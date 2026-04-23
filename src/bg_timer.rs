@@ -316,63 +316,6 @@ fn build_reminder_calendar_service(ctx: &BgTimerContext) -> crate::calendar::Cal
     )
 }
 
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-struct PlatformCalendarHttpClient<'a> {
-    inner: &'a mut dyn crate::PlatformHttpClient,
-}
-
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-impl crate::calendar::CalendarHttpClient for PlatformCalendarHttpClient<'_> {
-    fn get_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
-        self.inner.get(url, headers)
-    }
-
-    fn post_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
-        self.inner.post(url, headers, body)
-    }
-
-    fn patch_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
-        self.inner.patch(url, headers, body)
-    }
-
-    fn put_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
-        self.inner.put(url, headers, body)
-    }
-
-    fn delete_with_headers(
-        &mut self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
-        self.inner.delete(url, headers)
-    }
-}
-
 fn clear_due_reminder_calendar_link(
     reminder: &crate::reminder::ReminderItem,
     ctx: &BgTimerContext,
@@ -416,12 +359,12 @@ fn clear_due_reminder_calendar_link(
                 crate::network::HttpClientClass::Background,
             )?);
         }
-        let http = reminder_calendar_http.as_deref_mut().ok_or_else(|| {
+        let http = reminder_calendar_http.as_mut().ok_or_else(|| {
             crate::Error::config("bg_timer_reminder_calendar_cleanup", "http unavailable")
         })?;
-        let mut http = PlatformCalendarHttpClient { inner: http };
+        let http = crate::office::as_office_http_client(http);
         let _ = service.delete(
-            Some(&mut http),
+            Some(http),
             provider,
             (!reminder.calendar_account_key.trim().is_empty())
                 .then_some(reminder.calendar_account_key.as_str()),

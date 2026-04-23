@@ -2,14 +2,13 @@
 
 use crate::calendar::credentials::calendar_credential_from_office;
 use crate::calendar::{
-    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarHttpClient,
-    CalendarOperation, CalendarProvider, CalendarProviderCredential, CalendarQuery,
-    GOOGLE_DEFAULT_CALENDAR_ID,
+    normalize_calendar_event, CalendarEvent, CalendarEventStatus, CalendarOperation,
+    CalendarProvider, CalendarProviderCredential, CalendarQuery, GOOGLE_DEFAULT_CALENDAR_ID,
 };
 use crate::error::{Error, Result};
 use crate::office::{
-    build_google_api_url, parse_google_api_json, request_google_api_json_ureq, OfficeProbeAdapter,
-    OfficeProbeDisposition, OfficeProbeResult,
+    build_google_api_url, parse_google_api_json, request_google_api_json_ureq, OfficeHttpClient,
+    OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
 };
 use crate::platform::ResponseBody;
 use crate::util::{current_unix_secs, epoch_to_ymdhms, parse_iso8601};
@@ -42,7 +41,7 @@ impl CalendarProvider for GoogleCalendarProvider {
 
     fn list_events(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         query: CalendarQuery,
     ) -> Result<Vec<CalendarEvent>> {
@@ -73,7 +72,7 @@ impl CalendarProvider for GoogleCalendarProvider {
 
     fn get_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<Option<CalendarEvent>> {
@@ -101,7 +100,7 @@ impl CalendarProvider for GoogleCalendarProvider {
 
     fn create_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -128,7 +127,7 @@ impl CalendarProvider for GoogleCalendarProvider {
 
     fn update_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         event: &CalendarEvent,
     ) -> Result<CalendarEvent> {
@@ -160,7 +159,7 @@ impl CalendarProvider for GoogleCalendarProvider {
 
     fn delete_event(
         &self,
-        http: &mut dyn CalendarHttpClient,
+        http: &mut dyn OfficeHttpClient,
         credential: &CalendarProviderCredential,
         id: &str,
     ) -> Result<bool> {

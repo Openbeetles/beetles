@@ -1142,7 +1142,7 @@ mod tests {
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     use crate::calendar::{
-        CalendarHttpClient, CalendarOperation, CalendarProvider, CalendarProviderCredential,
+        CalendarOperation, CalendarProvider, CalendarProviderCredential,
         CalendarProviderCredentialStatus, CalendarProviderCredentialStore,
         CalendarProviderRegistry, CalendarService,
     };
@@ -1155,8 +1155,8 @@ mod tests {
     ))]
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
-        OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
-        OfficeService,
+        OfficeCredential, OfficeCredentialStore, OfficeHttpClient, OfficeRuntimeStatusStore,
+        OfficeSelectionPolicy, OfficeService,
     };
     use crate::platform::ResponseBody;
     #[cfg(all(
@@ -1871,7 +1871,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -1880,7 +1880,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -1889,7 +1889,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1908,7 +1908,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             credential: &CalendarProviderCredential,
             event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1924,7 +1924,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             credential: &CalendarProviderCredential,
             id: &str,
         ) -> Result<bool> {
@@ -1964,7 +1964,7 @@ mod tests {
 
         fn list_events(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _query: CalendarQuery,
         ) -> Result<Vec<CalendarEvent>> {
@@ -1973,7 +1973,7 @@ mod tests {
 
         fn get_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<Option<CalendarEvent>> {
@@ -1982,7 +1982,7 @@ mod tests {
 
         fn create_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -1994,7 +1994,7 @@ mod tests {
 
         fn update_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _event: &CalendarEvent,
         ) -> Result<CalendarEvent> {
@@ -2006,7 +2006,7 @@ mod tests {
 
         fn delete_event(
             &self,
-            _http: &mut dyn CalendarHttpClient,
+            _http: &mut dyn OfficeHttpClient,
             _credential: &CalendarProviderCredential,
             _id: &str,
         ) -> Result<bool> {

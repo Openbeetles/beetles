@@ -289,12 +289,7 @@ impl ContactsDirectoryTool {
                     feature = "capability_office",
                     not(any(target_arch = "xtensa", target_arch = "riscv32"))
                 )))]
-                let items = self.service.lookup_with_route(
-                    query,
-                    parse_limit(&obj),
-                    provider.as_deref(),
-                    account_key.as_deref(),
-                )?;
+                let items = self.service.lookup(query, parse_limit(&obj))?;
                 Ok(ToolExecutionOutcome::text(serialize_tool_output(
                     "tool_contacts_directory",
                     &ContactsDirectoryLookupResponse {

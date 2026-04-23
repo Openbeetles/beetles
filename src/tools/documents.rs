@@ -247,11 +247,12 @@ impl DocumentsTool {
             "list" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    match self.resolve_lookup_context("list", &obj, preferred_identity_class)? {
-                        DocumentsLookupContextResolution::Ready(context) => context,
-                        DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
-                    };
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) = match self
+                    .resolve_lookup_context("list", &obj, preferred_identity_class, &mut http)?
+                {
+                    DocumentsLookupContextResolution::Ready(context) => context,
+                    DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -286,7 +287,7 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let items = match self.service.list_with_http_and_identity(
+                let items = match self.service.list_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -321,11 +322,12 @@ impl DocumentsTool {
             "read" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    match self.resolve_lookup_context("read", &obj, preferred_identity_class)? {
-                        DocumentsLookupContextResolution::Ready(context) => context,
-                        DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
-                    };
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) = match self
+                    .resolve_lookup_context("read", &obj, preferred_identity_class, &mut http)?
+                {
+                    DocumentsLookupContextResolution::Ready(context) => context,
+                    DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -371,7 +373,7 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let document = match self.service.read_with_http_and_identity(
+                let document = match self.service.read_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -404,8 +406,12 @@ impl DocumentsTool {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
                 let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) = match self
-                    .resolve_lookup_context("summarize", &obj, preferred_identity_class)?
-                {
+                    .resolve_lookup_context(
+                        "summarize",
+                        &obj,
+                        preferred_identity_class,
+                        &mut http,
+                    )? {
                     DocumentsLookupContextResolution::Ready(context) => context,
                     DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
                 };
@@ -454,7 +460,7 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let document = match self.service.read_with_http_and_identity(
+                let document = match self.service.read_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -490,11 +496,12 @@ impl DocumentsTool {
             "search" => {
                 let requested_provider = parse_provider(&obj);
                 let requested_account_key = parse_account_key(&obj);
-                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) =
-                    match self.resolve_lookup_context("search", &obj, preferred_identity_class)? {
-                        DocumentsLookupContextResolution::Ready(context) => context,
-                        DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
-                    };
+                let (mut resolved_contexts, lookup_identity_hint, lookup_provider_hint) = match self
+                    .resolve_lookup_context("search", &obj, preferred_identity_class, &mut http)?
+                {
+                    DocumentsLookupContextResolution::Ready(context) => context,
+                    DocumentsLookupContextResolution::Blocked(outcome) => return Ok(outcome),
+                };
                 let effective_identity_class = preferred_identity_class.or(lookup_identity_hint);
                 let derived_provider_hint =
                     if requested_provider.is_none() && requested_account_key.is_none() {
@@ -540,7 +547,7 @@ impl DocumentsTool {
                         )
                     }
                 };
-                let hits = match self.service.search_with_http_and_identity(
+                let hits = match self.service.search_with_identity(
                     &mut http,
                     &provider,
                     requested_account_key.as_deref(),
@@ -587,6 +594,7 @@ impl DocumentsTool {
         op: &'static str,
         obj: &serde_json::Map<String, Value>,
         preferred_identity_class: Option<OfficeAccountIdentityClass>,
+        http: &mut dyn crate::office::OfficeHttpClient,
     ) -> Result<DocumentsLookupContextResolution> {
         let queries = parse_string_list(obj, "context_lookup", "tool_documents")?;
         if queries.is_empty() {
@@ -605,11 +613,12 @@ impl DocumentsTool {
         let mut identity_hints = Vec::with_capacity(queries.len());
         let mut provider_hints = Vec::with_capacity(queries.len());
         for query in queries {
-            let hit = directory.resolve_lookup_hit_with_route_and_identity(
+            let hit = directory.resolve_lookup_hit_with_route_and_identity_and_http(
                 &query,
                 None,
                 None,
                 preferred_identity_class,
+                http,
             )?;
             identity_hints.push(
                 self.service

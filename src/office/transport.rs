@@ -4,7 +4,7 @@
 ))]
 
 use crate::error::{Error, Result};
-use crate::platform::ResponseBody;
+use crate::platform::{PlatformHttpClient, ResponseBody};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OfficeStreamingResponse {
@@ -123,7 +123,7 @@ impl OfficeHttpClient for UnavailableOfficeHttpClient {
     }
 }
 
-impl OfficeHttpClient for crate::platform::EspHttpClient {
+impl<T: PlatformHttpClient + ?Sized> OfficeHttpClient for T {
     fn request_with_headers(
         &mut self,
         method: &str,
@@ -131,7 +131,7 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<(u16, ResponseBody)> {
-        crate::platform::PlatformHttpClient::request(self, method, url, headers, body)
+        PlatformHttpClient::request(self, method, url, headers, body)
     }
 
     fn get_with_headers(
@@ -139,7 +139,7 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
         url: &str,
         headers: &[(&str, &str)],
     ) -> Result<(u16, ResponseBody)> {
-        crate::platform::PlatformHttpClient::get(self, url, headers)
+        PlatformHttpClient::get(self, url, headers)
     }
 
     fn get_streaming_with_headers(
@@ -151,7 +151,7 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
     ) -> Result<OfficeStreamingResponse> {
         let mut streamed_bytes = 0usize;
         let limit = max_response_bytes.filter(|value| *value > 0);
-        let status = crate::platform::PlatformHttpClient::get_streaming(
+        let status = PlatformHttpClient::get_streaming(
             self,
             url,
             headers,
@@ -173,7 +173,7 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> Result<(u16, ResponseBody)> {
-        crate::platform::PlatformHttpClient::post(self, url, headers, body)
+        PlatformHttpClient::post(self, url, headers, body)
     }
 
     fn patch_with_headers(
@@ -182,7 +182,7 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> Result<(u16, ResponseBody)> {
-        crate::platform::PlatformHttpClient::patch(self, url, headers, body)
+        PlatformHttpClient::patch(self, url, headers, body)
     }
 
     fn put_with_headers(
@@ -191,7 +191,7 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> Result<(u16, ResponseBody)> {
-        crate::platform::PlatformHttpClient::put(self, url, headers, body)
+        PlatformHttpClient::put(self, url, headers, body)
     }
 
     fn delete_with_headers(
@@ -199,8 +199,14 @@ impl OfficeHttpClient for crate::platform::EspHttpClient {
         url: &str,
         headers: &[(&str, &str)],
     ) -> Result<(u16, ResponseBody)> {
-        crate::platform::PlatformHttpClient::delete(self, url, headers)
+        PlatformHttpClient::delete(self, url, headers)
     }
+}
+
+pub(crate) fn as_office_http_client<T: PlatformHttpClient>(
+    http: &mut T,
+) -> &mut dyn OfficeHttpClient {
+    http
 }
 
 pub fn read_bounded_http_bytes(

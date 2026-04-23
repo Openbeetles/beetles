@@ -5,10 +5,9 @@ use crate::documents::{
 };
 use crate::error::Result;
 use crate::office::{
-    office_authority_from_service, run_with_unavailable_office_http, OfficeAccountAssessment,
-    OfficeAccountIdentityClass, OfficeAccountRuntimeStatus, OfficeAuthoritySource,
-    OfficeCapabilityRuntime, OfficeCapabilityServiceCore, OfficeHttpClient, OfficeResolveResult,
-    OfficeService,
+    office_authority_from_service, OfficeAccountAssessment, OfficeAccountIdentityClass,
+    OfficeAccountRuntimeStatus, OfficeAuthoritySource, OfficeCapabilityRuntime,
+    OfficeCapabilityServiceCore, OfficeHttpClient, OfficeResolveResult, OfficeService,
 };
 use std::sync::Arc;
 
@@ -140,44 +139,15 @@ impl DocumentsService {
 
     pub fn list(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        query: DocumentsQuery,
-    ) -> Result<Vec<DocumentsEntry>> {
-        run_with_unavailable_office_http(|http| {
-            self.list_with_http(http, provider, account_key, query)
-        })
-    }
-
-    pub fn list_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         query: DocumentsQuery,
     ) -> Result<Vec<DocumentsEntry>> {
-        self.list_with_http_and_identity(http, provider, account_key, None, query)
+        self.list_with_identity(http, provider, account_key, None, query)
     }
 
     pub fn list_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        query: DocumentsQuery,
-    ) -> Result<Vec<DocumentsEntry>> {
-        run_with_unavailable_office_http(|http| {
-            self.list_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                query,
-            )
-        })
-    }
-
-    pub fn list_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -197,48 +167,16 @@ impl DocumentsService {
 
     pub fn read(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        path: &str,
-        max_chars: usize,
-    ) -> Result<DocumentsReadResult> {
-        run_with_unavailable_office_http(|http| {
-            self.read_with_http(http, provider, account_key, path, max_chars)
-        })
-    }
-
-    pub fn read_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         path: &str,
         max_chars: usize,
     ) -> Result<DocumentsReadResult> {
-        self.read_with_http_and_identity(http, provider, account_key, None, path, max_chars)
+        self.read_with_identity(http, provider, account_key, None, path, max_chars)
     }
 
     pub fn read_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        path: &str,
-        max_chars: usize,
-    ) -> Result<DocumentsReadResult> {
-        run_with_unavailable_office_http(|http| {
-            self.read_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                path,
-                max_chars,
-            )
-        })
-    }
-
-    pub fn read_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -261,44 +199,15 @@ impl DocumentsService {
 
     pub fn search(
         &self,
-        provider: &str,
-        account_key: Option<&str>,
-        query: DocumentsSearchQuery,
-    ) -> Result<Vec<DocumentsSearchHit>> {
-        run_with_unavailable_office_http(|http| {
-            self.search_with_http(http, provider, account_key, query)
-        })
-    }
-
-    pub fn search_with_http(
-        &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
         account_key: Option<&str>,
         query: DocumentsSearchQuery,
     ) -> Result<Vec<DocumentsSearchHit>> {
-        self.search_with_http_and_identity(http, provider, account_key, None, query)
+        self.search_with_identity(http, provider, account_key, None, query)
     }
 
     pub fn search_with_identity(
-        &self,
-        provider: &str,
-        account_key: Option<&str>,
-        preferred_identity_class: Option<OfficeAccountIdentityClass>,
-        query: DocumentsSearchQuery,
-    ) -> Result<Vec<DocumentsSearchHit>> {
-        run_with_unavailable_office_http(|http| {
-            self.search_with_http_and_identity(
-                http,
-                provider,
-                account_key,
-                preferred_identity_class,
-                query,
-            )
-        })
-    }
-
-    pub fn search_with_http_and_identity(
         &self,
         http: &mut dyn OfficeHttpClient,
         provider: &str,
@@ -329,6 +238,7 @@ mod tests {
     use crate::office::{
         OfficeAccount, OfficeAccountIdentityClass, OfficeAccountRegistry, OfficeCapability,
         OfficeCredential, OfficeCredentialStore, OfficeRuntimeStatusStore, OfficeSelectionPolicy,
+        UnavailableOfficeHttpClient,
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -543,6 +453,10 @@ mod tests {
         }
     }
 
+    fn unavailable_http() -> UnavailableOfficeHttpClient {
+        UnavailableOfficeHttpClient
+    }
+
     fn build_service() -> DocumentsService {
         build_service_with_runtime_store(Arc::new(MemoryRuntimeStatusStore::default())).0
     }
@@ -660,8 +574,10 @@ mod tests {
     #[test]
     fn documents_service_uses_office_resolution_when_provider_has_single_candidate() {
         let service = build_service();
+        let mut http = unavailable_http();
         let items = service
             .list(
+                &mut http,
                 "webdav",
                 None,
                 DocumentsQuery {
@@ -678,9 +594,11 @@ mod tests {
     fn documents_service_records_runtime_activity_for_remote_operations() {
         let (service, runtime_status_store) =
             build_service_with_runtime_store(Arc::new(MemoryRuntimeStatusStore::default()));
+        let mut http = unavailable_http();
 
         let _ = service
             .list(
+                &mut http,
                 "webdav",
                 None,
                 DocumentsQuery {
@@ -698,7 +616,7 @@ mod tests {
         assert!(status.last_error.is_empty());
 
         let _ = service
-            .read("webdav", None, "report.txt", 1_000)
+            .read(&mut http, "webdav", None, "report.txt", 1_000)
             .expect("read document");
         let status = runtime_status_store
             .get("docs-work")
@@ -710,6 +628,7 @@ mod tests {
 
         let _ = service
             .search(
+                &mut http,
                 "webdav",
                 None,
                 DocumentsSearchQuery {
@@ -734,9 +653,10 @@ mod tests {
     fn documents_service_records_runtime_failure_for_remote_operations() {
         let (service, runtime_status_store) =
             build_failing_service_with_runtime_store(Arc::new(MemoryRuntimeStatusStore::default()));
+        let mut http = unavailable_http();
 
         let error = service
-            .read("webdav", None, "report.txt", 1_000)
+            .read(&mut http, "webdav", None, "report.txt", 1_000)
             .expect_err("failing provider should surface error");
         assert!(error.to_string().contains("remote read failed"));
 
