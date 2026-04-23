@@ -156,8 +156,6 @@ fn post_wifi_display_bootstrap(
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 crate::orchestrator::log_startup_memory_checkpoint("display_initialized");
                 observe_heap_checkpoint(TAG, "heap_after_display_init");
-                let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 0 });
-                observe_heap_checkpoint(TAG, "heap_after_display_boot_stage0");
                 let mut channels =
                     [DisplayChannelStatus::hidden(); crate::DISPLAY_CHANNEL_CAPACITY];
                 let normalized_enabled =

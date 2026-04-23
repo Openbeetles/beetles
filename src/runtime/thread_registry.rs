@@ -655,6 +655,7 @@ mod tests {
 
     #[test]
     fn runtime_mode_snapshot_reads_global_runtime_flags() {
+        let _state_guard = crate::state::test_state_guard();
         reset_for_tests();
         crate::state::set_boot_phase_active(false);
         crate::state::set_pairing_state_known(true);

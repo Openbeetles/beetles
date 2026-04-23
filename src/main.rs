@@ -154,7 +154,6 @@ struct PreparedRuntimeAssembly {
     channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
     capability_package_runtime_capabilities: Arc<beetle::CapabilityPackageRuntimeCapabilities>,
     network_governor: Arc<NetworkGovernor>,
-    communication_plane: Option<CommunicationPlaneStartup>,
 }
 
 #[cfg(feature = "telegram")]
@@ -480,11 +479,6 @@ struct VoiceRuntimeCapabilities {
     wake_capable: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CommunicationPlaneStartup {
-    start_voice_session: bool,
-}
-
 fn compute_voice_runtime_capabilities(
     audio_cfg: &beetle::config::AudioSegment,
     duplex_caps: beetle::AudioDuplexCapabilities,
@@ -508,45 +502,12 @@ fn compute_voice_runtime_capabilities(
     }
 }
 
-fn communication_plane_startup(voice_runtime_ready: bool) -> CommunicationPlaneStartup {
-    CommunicationPlaneStartup {
-        start_voice_session: voice_runtime_ready,
-    }
-}
-
-fn probed_communication_plane_startup(
-    assembly: &PreparedRuntimeAssembly,
-) -> beetle::Result<CommunicationPlaneStartup> {
-    assembly.communication_plane.ok_or_else(|| {
-        beetle::Error::config(
-            "communication_plane_probe",
-            "communication plane startup state not initialized",
-        )
-    })
-}
-
-fn refresh_communication_plane_startup(assembly: &mut PreparedRuntimeAssembly) {
-    // The runtime plane owns its own HTTP clients; startup only needs to refresh the
-    // observable runtime-capability snapshot after Wi-Fi readiness has settled.
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("communication_plane_ready");
-    assembly.communication_plane = Some(communication_plane_startup(
-        assembly.voice_event_channel.is_some(),
-    ));
-    let state_fs_ready = assembly.runtime.platform.spiffs_usage().is_some();
-    beetle::orchestrator::observe_runtime_capabilities_from_platform(
-        assembly.runtime.platform.as_ref(),
-        true,
-        Some(state_fs_ready),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        communication_plane_startup, compute_voice_runtime_capabilities,
-        finalize_required_thread_start, register_process_memory_snapshot_provider,
-        startup_banner_lines, voice_sink_sender, DisplayLoopState, StartedVoiceSession, VERSION,
+        compute_voice_runtime_capabilities, finalize_required_thread_start,
+        register_process_memory_snapshot_provider, startup_banner_lines, voice_sink_sender,
+        DisplayLoopState, StartedVoiceSession, VERSION,
     };
     use beetle::{
         config::default_disabled_audio_segment, DisplaySystemState, LinuxPlatform, Platform,
@@ -678,15 +639,6 @@ mod tests {
         );
         assert!(!caps.speak_capable);
         assert!(caps.wake_capable);
-    }
-
-    #[test]
-    fn communication_plane_startup_tracks_only_voice_runtime_readiness() {
-        let disabled = communication_plane_startup(false);
-        assert!(!disabled.start_voice_session);
-
-        let enabled = communication_plane_startup(true);
-        assert!(enabled.start_voice_session);
     }
 
     #[test]
@@ -1485,8 +1437,9 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         };
         let ip = platform.wifi_sta_ip();
         let ip_hint = ip.as_deref().unwrap_or(SOFTAP_DEFAULT_IPV4);
-        let display_projection = beetle::runtime::inspect_platform_display_projection(
+        let display_projection = beetle::runtime::inspect_platform_display_projection_with_resource(
             platform.as_ref(),
+            &snapshot,
             now_secs,
             Some(ip_hint),
         );
@@ -2459,10 +2412,10 @@ fn prepare_runtime_assembly(
     }
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
-    let state_fs_ready = platform.spiffs_usage().is_some();
+    let spiffs_usage = platform.spiffs_usage();
+    let state_fs_ready = spiffs_usage.is_some();
     let wall_clock_valid = beetle::platform::time::wall_clock_is_trustworthy();
-    let spiffs_info = platform
-        .spiffs_usage()
+    let spiffs_info = spiffs_usage
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
         .unwrap_or_else(|| "N/A".to_string());
     log::info!(
@@ -2515,7 +2468,6 @@ fn prepare_runtime_assembly(
         channel_capability_registry,
         capability_package_runtime_capabilities,
         network_governor,
-        communication_plane: None,
     })
 }
 
@@ -2618,8 +2570,15 @@ fn start_support_planes(
         beetle::platform::wait_for_network_ready();
     }
     // Refresh observable runtime-capability state after Wi-Fi readiness settles.
-    // Support/agent planes no longer depend on a synthetic HTTP readiness probe.
-    refresh_communication_plane_startup(assembly);
+    // Support/agent planes no longer depend on a synthetic startup shell.
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint("communication_plane_ready");
+    let state_fs_ready = assembly.runtime.platform.spiffs_usage().is_some();
+    beetle::orchestrator::observe_runtime_capabilities_from_platform(
+        assembly.runtime.platform.as_ref(),
+        true,
+        Some(state_fs_ready),
+    );
     beetle::orchestrator::init();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("orchestrator_initialized");
@@ -2644,7 +2603,6 @@ fn start_support_planes(
 }
 
 fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Result<()> {
-    let communication_plane = probed_communication_plane_startup(assembly)?;
     #[allow(unused_mut)]
     let (mut sinks, mut channel_rx_set) = beetle::channels::build_channel_sinks(
         assembly.config.as_ref(),
@@ -2678,7 +2636,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         }
     );
 
-    let started_voice_session = if communication_plane.start_voice_session {
+    let started_voice_session = if assembly.voice_event_channel.is_some() {
         spawn_voice_session_if_ready(
             &assembly.runtime.platform,
             &assembly.network_governor,

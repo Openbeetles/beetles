@@ -252,18 +252,22 @@ pub fn clear_esp_operator_window() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) fn test_state_guard() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};
 
-    fn test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn current_error_expires_without_erasing_last_error_history() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         let err = Error::config("test_stage", "boom");
         let expected = sanitize_error_for_log(&err);
         set_last_error(&err);
@@ -276,7 +280,7 @@ mod tests {
 
     #[test]
     fn wifi_sta_state_clears_ip_when_disconnected() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
         assert!(wifi_sta_connected());
         assert_eq!(wifi_sta_ip().as_deref(), Some("192.168.1.2"));
@@ -288,7 +292,7 @@ mod tests {
 
     #[test]
     fn wifi_sta_must_settle_before_outbound_ready() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
         assert!(!wifi_sta_settled_for_outbound(1));
         clear_wifi_sta_state();
@@ -296,7 +300,7 @@ mod tests {
 
     #[test]
     fn voice_exclusive_flag_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_voice_exclusive_active(true);
         assert!(voice_exclusive_active());
         set_voice_exclusive_active(false);
@@ -305,7 +309,7 @@ mod tests {
 
     #[test]
     fn background_maintenance_flag_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_background_maintenance_active(true);
         assert!(background_maintenance_active());
         set_background_maintenance_active(false);
@@ -314,7 +318,7 @@ mod tests {
 
     #[test]
     fn config_plane_flag_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_config_plane_active(true);
         assert!(config_plane_active());
         set_config_plane_active(false);
@@ -323,7 +327,7 @@ mod tests {
 
     #[test]
     fn boot_phase_flag_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_boot_phase_active(true);
         assert!(boot_phase_active());
         set_boot_phase_active(false);
@@ -332,7 +336,7 @@ mod tests {
 
     #[test]
     fn pairing_flags_round_trip() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_pairing_state_known(true);
         set_pairing_required(true);
         assert!(pairing_state_known());
@@ -343,7 +347,7 @@ mod tests {
 
     #[test]
     fn recovery_safe_mode_flag_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         set_recovery_safe_mode_active(true);
         assert!(recovery_safe_mode_active());
         set_recovery_safe_mode_active(false);
@@ -352,7 +356,7 @@ mod tests {
 
     #[test]
     fn esp_operator_window_expires_and_can_be_cleared() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = test_state_guard();
         clear_esp_operator_window();
         assert!(!esp_operator_window_active());
 

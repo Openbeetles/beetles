@@ -14,13 +14,10 @@ pub fn post(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let payload = serde_json::json!({
         "opened": true,
         "operator_window": window,
-        "windowed_endpoints": crate::platform::operator_surface::control_plane_inventory(
+        "windowed_endpoints": crate::platform::operator_surface::windowed_control_plane_endpoints(
             ctx.platform.memory_system_kind(),
-            true,
             cfg!(feature = "ota"),
-            ctx.route_contract.inbound_webhooks_enabled,
-        )
-        .windowed_endpoints,
+        ),
     });
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }

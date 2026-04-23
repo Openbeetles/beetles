@@ -1117,6 +1117,30 @@ pub type HttpThreadRole = crate::orchestrator::HttpThreadRole;
 /// 统一任务句柄：Linux/标准线程与 ESP 原生任务都走同一监管接口。
 pub type TaskHandle = crate::platform::task_affinity::TaskHandle;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn esp_should_auto_manage_task_wdt(
+    spawn_surface: crate::platform::task_affinity::TaskSpawnSurface,
+) -> bool {
+    matches!(
+        spawn_surface,
+        crate::platform::task_affinity::TaskSpawnSurface::EspNativeTask
+    )
+}
+
+fn should_auto_manage_task_wdt(
+    spawn_surface: crate::platform::task_affinity::TaskSpawnSurface,
+) -> bool {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        return esp_should_auto_manage_task_wdt(spawn_surface);
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let _ = spawn_surface;
+        false
+    }
+}
+
 /// Spawn a named thread with panic protection. If the closure panics, the panic is caught
 /// and logged. This prevents silent thread death in long-running background loops.
 /// 带 panic 保护的线程启动：闭包 panic 时捕获并记日志，避免后台线程静默消亡。
@@ -1170,9 +1194,12 @@ where
     let tag_for_spawn = tag.clone();
     let core_target = core;
     let spawn_surface = crate::platform::task_affinity::planned_spawn_surface(name);
+    let auto_manage_task_wdt = should_auto_manage_task_wdt(spawn_surface);
     let wrapped = move || {
         crate::orchestrator::set_current_http_thread_role(role);
-        crate::platform::task_wdt::register_current_task_to_task_wdt();
+        if auto_manage_task_wdt {
+            crate::platform::task_wdt::register_current_task_to_task_wdt();
+        }
         crate::runtime::thread_registry::register_thread(
             &tag,
             stack_size,
@@ -1205,7 +1232,9 @@ where
         {
             f();
         }
-        crate::platform::task_wdt::unregister_current_task_from_task_wdt();
+        if auto_manage_task_wdt {
+            crate::platform::task_wdt::unregister_current_task_from_task_wdt();
+        }
         crate::runtime::thread_registry::mark_thread_stopped(&tag);
     };
     let spawn_res = crate::platform::task_affinity::spawn_named_with_affinity(
@@ -1357,6 +1386,21 @@ mod thread_stack_budget_tests {
         assert_eq!(STACK_VOICE_SESSION, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_VOICE_REALTIME, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(LINUX_RUSTLS_THREAD_STACK, 96 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod task_wdt_spawn_policy_tests {
+    use super::*;
+
+    #[test]
+    fn esp_auto_task_wdt_management_stays_on_native_task_surface_only() {
+        assert!(esp_should_auto_manage_task_wdt(
+            crate::platform::task_affinity::TaskSpawnSurface::EspNativeTask
+        ));
+        assert!(!esp_should_auto_manage_task_wdt(
+            crate::platform::task_affinity::TaskSpawnSurface::StdThread
+        ));
     }
 }
 

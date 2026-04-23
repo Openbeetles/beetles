@@ -6,7 +6,10 @@
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 use crate::office::OfficeToolLlmSurface;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 use crate::office::{office_tool_doctrines, OfficeToolProtocolProfile};
 use std::collections::BTreeMap;
 
@@ -458,7 +461,10 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     );
 }
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 fn populate_office_tool_protocol_authority(authority: &mut ToolProtocolAuthority) {
     for doctrine in office_tool_doctrines() {
         let contract = match doctrine.protocol_profile {
@@ -476,7 +482,10 @@ fn populate_office_tool_protocol_authority(authority: &mut ToolProtocolAuthority
 pub fn build_default_tool_protocol_authority() -> ToolProtocolAuthority {
     let mut authority = ToolProtocolAuthority::default();
     populate_core_tool_protocol_authority(&mut authority);
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
     populate_office_tool_protocol_authority(&mut authority);
     authority
 }

@@ -64,6 +64,17 @@ pub struct PresenceSnapshot {
     pub release: Option<crate::runtime::LinuxReleaseStatus>,
 }
 
+struct PresenceComputation {
+    state: PresenceState,
+    display_state: DisplaySystemState,
+    headline: &'static str,
+    subtitle: &'static str,
+    rationale: &'static str,
+    busy: bool,
+    runtime_mode: RuntimeModeSnapshot,
+    soul_kernel: SoulKernelStatus,
+}
+
 impl PresenceSnapshot {
     pub fn display_projection(&self, network_hint: Option<&str>) -> PresenceDisplayProjection {
         build_presence_display_projection(
@@ -81,29 +92,61 @@ pub fn inspect_platform_display_projection(
     network_hint: Option<&str>,
 ) -> PresenceDisplayProjection {
     let resource = orchestrator::snapshot();
-    let soul_kernel = runtime::inspect_platform_soul_kernel(platform, now_secs);
-    let runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
-    let runtime_mode = crate::runtime::mode::snapshot_from_source(runtime_mode_source);
-    let busy = resource.active_agent_tasks > 0
-        || resource.active_http_count > 0
-        || resource.inbound_depth > 0
-        || resource.outbound_depth > 0
-        || runtime_mode.current_mode == RuntimeMode::Maintenance;
-    let state = derive_presence_state(runtime_mode, &soul_kernel, &resource, busy);
-    let display_state = map_presence_to_display_state(state);
-    let (_, subtitle, _) =
-        build_presence_copy(state, runtime_mode.current_mode, &soul_kernel, &resource);
+    inspect_platform_display_projection_with_resource(platform, &resource, now_secs, network_hint)
+}
 
-    build_presence_display_projection(state, display_state, subtitle, network_hint)
+pub fn inspect_platform_display_projection_with_resource(
+    platform: &dyn Platform,
+    resource: &ResourceSnapshot,
+    now_secs: u64,
+    network_hint: Option<&str>,
+) -> PresenceDisplayProjection {
+    let computation = compute_presence(platform, resource, now_secs);
+    build_presence_display_projection(
+        computation.state,
+        computation.display_state,
+        computation.subtitle,
+        network_hint,
+    )
 }
 
 pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> PresenceSnapshot {
     let resource = orchestrator::snapshot();
-    let soul_kernel = runtime::inspect_platform_soul_kernel(platform, now_secs);
+    let computation = compute_presence(platform, &resource, now_secs);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let release = Some(crate::runtime::inspect_platform_linux_release(
         platform, now_secs,
     ));
+
+    PresenceSnapshot {
+        state: computation.state,
+        display_state: computation.display_state,
+        headline: computation.headline.to_string(),
+        subtitle: computation.subtitle.to_string(),
+        rationale: computation.rationale.to_string(),
+        busy: computation.busy,
+        wifi_connected: computation.runtime_mode.wifi_sta_connected,
+        pairing_required: computation.runtime_mode.pairing_required,
+        audio_recording: resource.audio_recording,
+        audio_playing: resource.audio_playing,
+        critical_pressure: resource.pressure == PressureLevel::Critical,
+        display_sleep_candidate: matches!(
+            computation.state,
+            PresenceState::Idle | PresenceState::NoWifi
+        ),
+        runtime_mode: computation.runtime_mode,
+        soul_kernel: computation.soul_kernel,
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        release,
+    }
+}
+
+fn compute_presence(
+    platform: &dyn Platform,
+    resource: &ResourceSnapshot,
+    now_secs: u64,
+) -> PresenceComputation {
+    let soul_kernel = runtime::inspect_platform_soul_kernel(platform, now_secs);
     let runtime_mode_source = crate::runtime::thread_registry::runtime_mode_source();
     let runtime_mode = crate::runtime::mode::snapshot_from_source(runtime_mode_source);
     let busy = resource.active_agent_tasks > 0
@@ -111,28 +154,19 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
         || resource.inbound_depth > 0
         || resource.outbound_depth > 0
         || runtime_mode.current_mode == RuntimeMode::Maintenance;
-    let state = derive_presence_state(runtime_mode, &soul_kernel, &resource, busy);
+    let state = derive_presence_state(runtime_mode, &soul_kernel, resource, busy);
     let display_state = map_presence_to_display_state(state);
     let (headline, subtitle, rationale) =
-        build_presence_copy(state, runtime_mode.current_mode, &soul_kernel, &resource);
-
-    PresenceSnapshot {
+        build_presence_copy(state, runtime_mode.current_mode, &soul_kernel, resource);
+    PresenceComputation {
         state,
         display_state,
-        headline: headline.to_string(),
-        subtitle: subtitle.to_string(),
-        rationale: rationale.to_string(),
+        headline,
+        subtitle,
+        rationale,
         busy,
-        wifi_connected: runtime_mode.wifi_sta_connected,
-        pairing_required: runtime_mode.pairing_required,
-        audio_recording: resource.audio_recording,
-        audio_playing: resource.audio_playing,
-        critical_pressure: resource.pressure == PressureLevel::Critical,
-        display_sleep_candidate: matches!(state, PresenceState::Idle | PresenceState::NoWifi),
         runtime_mode,
         soul_kernel,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        release,
     }
 }
 

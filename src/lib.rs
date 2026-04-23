@@ -64,6 +64,10 @@ pub mod bus;
 pub mod calendar;
 pub mod channels;
 pub mod config;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod contacts_directory;
 pub mod diagnosis;
 pub mod display;
@@ -71,6 +75,10 @@ pub mod doctor;
 pub mod documents;
 pub mod error;
 pub mod llm;
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub mod mail;
 pub mod memory;
 pub mod platform;
@@ -235,6 +243,10 @@ pub use tools::{
     ToolBridgeProposalAssessment, ToolBridgeProposalDecision, ToolCapabilityContract, ToolContext,
     ToolExposure, ToolMetadata, ToolPolicyContext, ToolRegistry, VoiceInputTool, VoiceOutputTool,
 };
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use tools::{
     CalendarTool, ContactsDirectoryTool, DocumentsTool, MailTool, OfficeConfigTool,
     OfficeStatusTool,

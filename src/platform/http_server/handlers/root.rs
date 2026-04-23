@@ -46,12 +46,22 @@ mod tests {
             true,
         );
 
-        assert!(inventory.endpoints.contains(&"GET /api/health"));
-        assert!(inventory.endpoints.contains(&"POST /api/operator/window"));
-        assert!(!inventory.endpoints.contains(&"GET /api/memory/status"));
+        assert!(inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "GET /api/health"));
+        assert!(inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "POST /api/operator/window"));
+        assert!(!inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "GET /api/memory/status"));
         assert!(inventory
             .windowed_endpoints
-            .contains(&"GET /api/memory/status"));
+            .iter()
+            .any(|item| item == "GET /api/memory/status"));
     }
 
     #[test]
@@ -63,8 +73,11 @@ mod tests {
             true,
         );
 
-        assert!(!inventory.endpoints.contains(&"GET /pairing"));
-        assert!(!inventory.endpoints.contains(&"GET /wifi"));
+        assert!(!inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "GET /pairing"));
+        assert!(!inventory.endpoints.iter().any(|item| item == "GET /wifi"));
     }
 
     #[test]
@@ -76,6 +89,9 @@ mod tests {
             true,
         );
 
-        assert!(!inventory.endpoints.contains(&"POST /api/config/wifi"));
+        assert!(!inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "POST /api/config/wifi"));
     }
 }

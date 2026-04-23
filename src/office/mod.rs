@@ -64,7 +64,10 @@ mod resolver;
 ))]
 mod service;
 mod status;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod tool_doctrine;
 #[cfg(all(
     feature = "capability_office",
@@ -185,7 +188,10 @@ pub use status::{
     OfficeAccountRuntimeStatus, OfficeAccountStatusSummary, OfficeRuntimeStatusStore,
     REL_PATH_OFFICE_RUNTIME_STATUS,
 };
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use tool_doctrine::{
     office_config_op_doctrine, office_config_op_doctrines, office_tool_doctrine,
     office_tool_doctrines, OfficeConfigOpDoctrine, OfficeConfigOpTier, OfficeToolDoctrine,
@@ -214,7 +220,11 @@ pub use wecom::{
     WECOM_DEFAULT_BASE_URL,
 };
 
-#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+#[cfg(all(
+    test,
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 mod tool_doctrine_tests {
     use super::{
         office_config_op_doctrine, office_tool_doctrine, office_tool_doctrines, OfficeCapability,

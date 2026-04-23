@@ -139,6 +139,7 @@ mod tests {
     #[test]
     fn run_config_reset_syncs_pairing_state_and_removes_runtime_files() {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        let _state_guard = crate::state::test_state_guard();
         let _pairing_state = PairingStateRestore::capture();
         crate::state::set_pairing_state_known(false);
         crate::state::set_pairing_required(false);
@@ -169,6 +170,7 @@ mod tests {
     #[test]
     fn run_config_reset_reports_cleanup_failures_instead_of_false_success() {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        let _state_guard = crate::state::test_state_guard();
         let _pairing_state = PairingStateRestore::capture();
         crate::state::set_pairing_state_known(false);
         crate::state::set_pairing_required(false);
