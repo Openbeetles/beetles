@@ -901,28 +901,6 @@ pub fn save_to_nvs(store: &dyn ConfigStore, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-/// 仅将 WiFi SSID 与密码写入 store；用于配置页仅配 WiFi 场景，不要求 ssid 非空（空表示仅 AP）。
-/// 校验：wifi_ssid.len()、wifi_pass.len() 均 ≤ CONFIG_FIELD_MAX_LEN。
-pub fn save_wifi_to_nvs(store: &dyn ConfigStore, wifi_ssid: &str, wifi_pass: &str) -> Result<()> {
-    if wifi_ssid.len() > CONFIG_FIELD_MAX_LEN {
-        return Err(Error::config(
-            "wifi",
-            format!("wifi_ssid length must be <= {}", CONFIG_FIELD_MAX_LEN),
-        ));
-    }
-    if wifi_pass.len() > CONFIG_FIELD_MAX_LEN {
-        return Err(Error::config(
-            "wifi",
-            format!("wifi_pass length must be <= {}", CONFIG_FIELD_MAX_LEN),
-        ));
-    }
-    store.write_strings(&[
-        (NVS_KEY_WIFI_SSID, wifi_ssid),
-        (NVS_KEY_WIFI_PASS, wifi_pass),
-    ])?;
-    Ok(())
-}
-
 /// 从 store 读取当前 locale；无或非法则返回 "zh"。
 pub fn get_locale(store: &dyn ConfigStore) -> String {
     match store.read_string(NVS_KEY_LOCALE) {

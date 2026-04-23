@@ -172,33 +172,6 @@ Fields:
 
 This route does not return `locale`, `build_package`, or any other config segments.
 
-**POST /api/config/wifi**
-
-Purpose: save network settings.
-
-Auth: `Pairing code + CSRF`
-
-Request body: `application/json`
-
-```json
-{
-  "wifi_ssid": "MyWiFi",
-  "wifi_pass": "secret"
-}
-```
-
-Optional query parameter: `restart=1`
-When present, the device restarts automatically after a successful save.
-
-Success response: `200 application/json`
-
-```json
-{
-  "ok": true,
-  "restart_required": true
-}
-```
-
 **POST /api/config/system**
 
 Purpose: save the system segment.

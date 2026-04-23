@@ -66,4 +66,16 @@ mod tests {
         assert!(!inventory.endpoints.contains(&"GET /pairing"));
         assert!(!inventory.endpoints.contains(&"GET /wifi"));
     }
+
+    #[test]
+    fn root_inventory_no_longer_advertises_removed_narrow_wifi_config_route() {
+        let inventory = crate::platform::operator_surface::control_plane_inventory(
+            MemorySystemKind::EspCompact,
+            false,
+            true,
+            true,
+        );
+
+        assert!(!inventory.endpoints.contains(&"POST /api/config/wifi"));
+    }
 }

@@ -76,7 +76,6 @@ impl HttpRouteSpec {
 
 pub(crate) const ROUTE_ROOT: &str = "/";
 pub(crate) const ROUTE_PAIRING_CODE: &str = "/api/pairing_code";
-pub(crate) const ROUTE_CONFIG_WIFI: &str = "/api/config/wifi";
 pub(crate) const ROUTE_CONFIG_LLM: &str = "/api/config/llm";
 pub(crate) const ROUTE_CONFIG_CHANNELS: &str = "/api/config/channels";
 pub(crate) const ROUTE_CONFIG_SYSTEM: &str = "/api/config/system";
@@ -175,12 +174,6 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Options,
         RouteBodyMode::None,
     ),
-    HttpRouteSpec::direct(
-        ROUTE_CONFIG_WIFI,
-        RouteMethod::Post,
-        RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
-    ),
-    HttpRouteSpec::direct(ROUTE_CONFIG_WIFI, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_CONFIG_LLM, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_CONFIG_LLM, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::direct(

@@ -183,7 +183,7 @@ pub fn code_from_uri(uri: &str) -> Option<&str> {
     query_param_from_uri(uri, "code")
 }
 
-/// 从 URI 中解析 query 参数 restart 是否为 1；用于 POST /api/config/wifi 保存成功后可选触发重启。
+/// 从 URI 中解析 query 参数 restart 是否为 1；用于支持 restart=1 的配置保存路由在成功后可选触发重启。
 pub fn restart_requested_from_uri(uri: &str) -> bool {
     query_param_from_uri(uri, "restart").is_some_and(|value| value.trim() == "1")
 }
@@ -201,15 +201,6 @@ pub fn channel_from_uri(uri: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("stable")
         .to_string()
-}
-
-/// POST /api/config/wifi 请求体。
-#[derive(serde::Deserialize)]
-pub struct WifiConfigPayload {
-    #[serde(default)]
-    pub wifi_ssid: String,
-    #[serde(default)]
-    pub wifi_pass: String,
 }
 
 /// 将任意错误转为 std::io::Error，供 handler 闭包统一返回 HandlerResult。

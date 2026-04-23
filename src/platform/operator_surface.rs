@@ -10,7 +10,6 @@ const ESP_ALWAYS_ON_ENDPOINTS: &[&str] = &[
     "POST /api/pairing_code",
     "GET /api/csrf_token",
     "GET /api/config/system",
-    "POST /api/config/wifi",
     "POST /api/config/llm",
     "POST /api/config/channels",
     "POST /api/config/system",

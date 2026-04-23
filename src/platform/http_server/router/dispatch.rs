@@ -25,7 +25,7 @@ use super::catalog::ROUTE_WECOM_WEBHOOK;
 use super::catalog::{
     ROUTE_CAPABILITY_PACKAGES, ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CONFIG_AUDIO,
     ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY, ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM,
-    ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM, ROUTE_CONFIG_WIFI, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE,
+    ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE,
     ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH, ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS,
     ROUTE_METRICS, ROUTE_OPERATOR_STATUS, ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE,
     ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT, ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT,
@@ -567,16 +567,6 @@ pub fn dispatch(
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("POST", ROUTE_CONFIG_WIFI) => dispatch_api_body_route(
-            guard_pairing_csrf(store, uri, &incoming.headers),
-            &incoming.body,
-            uri,
-            true,
-            |body_str| {
-                handlers::config::post_wifi(ctx, body_str)
-                    .map_err(|e| err_other("http_router_dispatch", e))
-            },
-        ),
         ("POST", ROUTE_CONFIG_LLM) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,

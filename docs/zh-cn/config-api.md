@@ -172,33 +172,6 @@
 
 这个接口不返回 `locale`、`build_package`，也不携带其他配置段。
 
-**POST /api/config/wifi**
-
-用途：保存网络配置。
-
-鉴权：`配对码 + CSRF`
-
-请求体：`application/json`
-
-```json
-{
-  "wifi_ssid": "MyWiFi",
-  "wifi_pass": "secret"
-}
-```
-
-可选查询参数：`restart=1`
-保存成功后如果带了这个参数，设备会自动重启。
-
-成功响应：`200 application/json`
-
-```json
-{
-  "ok": true,
-  "restart_required": true
-}
-```
-
 **POST /api/config/system**
 
 用途：保存系统段配置。

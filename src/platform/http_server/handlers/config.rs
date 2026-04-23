@@ -1,4 +1,4 @@
-//! 配置 API：GET/POST /api/config/llm、/channels、/system，POST /api/config/wifi，GET/POST /api/config/hardware。
+//! 配置 API：GET/POST /api/config/llm、/channels、/system，GET/POST /api/config/hardware。
 
 use crate::config;
 #[cfg(all(
@@ -17,7 +17,7 @@ use crate::office::{
     OfficeConfigProviderCatalogItem,
 };
 use crate::platform::http_server::api_contract;
-use crate::platform::http_server::common::{to_io, ApiResponse, WifiConfigPayload};
+use crate::platform::http_server::common::{to_io, ApiResponse};
 #[cfg(all(
     feature = "capability_office",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -86,29 +86,6 @@ pub fn get_system_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let config = ctx.config();
     let segment = config::SystemSegment::from_app_config(&config);
     serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
-}
-
-/// POST /api/config/wifi：body 为 JSON，写 WiFi SSID/密码到 NVS。成功时返回 restart_required 提示需重启生效。
-pub fn post_wifi(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let payload: WifiConfigPayload = match serde_json::from_str(body) {
-        Ok(p) => p,
-        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
-    };
-    match config::save_wifi_to_nvs(
-        ctx.config_store.as_ref(),
-        &payload.wifi_ssid,
-        &payload.wifi_pass,
-    ) {
-        Ok(()) => {
-            ctx.update_cached_config(|config| {
-                config::apply_wifi_to_config(config, &payload.wifi_ssid, &payload.wifi_pass);
-            });
-            Ok(ApiResponse::ok_200_json(
-                r#"{"ok":true,"restart_required":true}"#,
-            ))
-        }
-        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
-    }
 }
 
 /// POST /api/config/llm：仅写 LLM 段，body 为 LlmSegment JSON。
@@ -652,7 +629,7 @@ pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std
 
 #[cfg(test)]
 mod tests {
-    use super::{get_system_body, post_system, post_wifi};
+    use super::{get_system_body, post_system};
     use crate::config::{self, ConfigFileStore};
     use crate::error::Result;
     use serde_json::Value;
@@ -691,39 +668,6 @@ mod tests {
             !body.contains('\n'),
             "system segment response should stay compact on ESP default path"
         );
-    }
-
-    #[test]
-    fn post_wifi_updates_cached_config_without_reloading_config_files() {
-        struct PanicConfigFileStore;
-
-        impl ConfigFileStore for PanicConfigFileStore {
-            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
-                panic!("post_wifi should not reload config files");
-            }
-
-            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
-                panic!("post_wifi should not write config files");
-            }
-
-            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
-                panic!("post_wifi should not remove config files");
-            }
-        }
-
-        let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(PanicConfigFileStore);
-
-        let response = post_wifi(
-            &ctx,
-            r#"{"wifi_ssid":"BeetleNet","wifi_pass":"secret-pass"}"#,
-        )
-        .expect("post_wifi response");
-
-        assert_eq!(response.status, 200);
-        let config = ctx.config();
-        assert_eq!(config.wifi_ssid, "BeetleNet");
-        assert_eq!(config.wifi_pass, "secret-pass");
     }
 
     #[test]

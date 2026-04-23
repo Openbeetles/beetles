@@ -53,8 +53,6 @@ export function useDeviceApi() {
         getLlm: () => configApi.getLlm(baseUrl ?? '', (pairingCode ?? '').trim()),
         getChannels: () => configApi.getChannels(baseUrl ?? '', (pairingCode ?? '').trim()),
         getSystem: () => configApi.getSystem(baseUrl ?? '', (pairingCode ?? '').trim()),
-        saveWifi: (body: { wifi_ssid: string; wifi_pass: string }) =>
-          configApi.saveWifi(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveLlm: (body: LlmConfigSegment) =>
           configApi.saveLlm(baseUrl ?? '', (pairingCode ?? '').trim(), body),
         saveChannels: (body: ChannelsConfigSegment) =>

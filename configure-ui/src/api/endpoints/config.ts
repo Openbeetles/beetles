@@ -104,24 +104,6 @@ export async function saveSystem(
   })
 }
 
-export async function saveWifi(
-  baseUrl: string,
-  pairingCode: string,
-  body: { wifi_ssid: string; wifi_pass: string },
-): Promise<ApiResult<{ ok: boolean; restart_required?: boolean }>> {
-  if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return requestProtected<{ ok: boolean; restart_required?: boolean }>(
-    baseUrl,
-    '/api/config/wifi',
-    {
-      method: 'POST',
-      body,
-      pairingCode: pairingCode.trim(),
-    },
-  )
-}
-
 export async function getProviders(
   baseUrl: string,
   pairingCode?: string,
