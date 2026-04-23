@@ -9,7 +9,7 @@ use crate::platform::AudioDuplexCapabilities;
 pub struct VoicePathDiagnosisInput {
     pub voice_compiled: bool,
     pub audio_enabled: bool,
-    pub wake_word_enabled: bool,
+    pub wake_backend_enabled: bool,
     pub realtime_enabled: bool,
     pub audio_duplex_capabilities: AudioDuplexCapabilities,
     pub runtime_capabilities: Vec<RuntimeCapabilityState>,
@@ -28,7 +28,10 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
     let mut evidence = vec![
         DiagnosisEvidence::new("voice_compiled", input.voice_compiled.to_string()),
         DiagnosisEvidence::new("audio_enabled", input.audio_enabled.to_string()),
-        DiagnosisEvidence::new("wake_word_enabled", input.wake_word_enabled.to_string()),
+        DiagnosisEvidence::new(
+            "wake_backend_enabled",
+            input.wake_backend_enabled.to_string(),
+        ),
         DiagnosisEvidence::new("realtime_enabled", input.realtime_enabled.to_string()),
         DiagnosisEvidence::new("audio_profile", profile.as_str()),
         DiagnosisEvidence::new(
@@ -82,8 +85,8 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             input.metrics.voice_post_playback_timeout_total.to_string(),
         ),
         DiagnosisEvidence::new(
-            "wake_word_trigger_total",
-            input.metrics.wake_word_trigger_total.to_string(),
+            "wake_trigger_total",
+            input.metrics.wake_trigger_total.to_string(),
         ),
     ];
     let mut confidence = DiagnosisConfidence::Medium;
@@ -115,7 +118,7 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
         ));
         recommended_next_steps.push(DiagnosisAction::new(
             "inspect_audio_config",
-            "inspect audio configuration before expecting wake-word or TTS behavior",
+            "inspect audio configuration before expecting acoustic wake or TTS behavior",
         ));
         summary =
             "Voice capability is compiled, but audio is disabled in configuration.".to_string();
@@ -147,12 +150,12 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
         ));
         suspected_root_causes.push(DiagnosisRootCause::new(
             "audio_input_unavailable",
-            "microphone input is unavailable, so capture and wake-word flows cannot run normally",
+            "microphone input is unavailable, so capture and acoustic wake flows cannot run normally",
             DiagnosisConfidence::High,
         ));
         recommended_next_steps.push(DiagnosisAction::new(
             "inspect_audio_input",
-            "inspect microphone runtime capability and hardware contract before blaming ASR or wake word",
+            "inspect microphone runtime capability and hardware contract before blaming ASR or acoustic wake",
         ));
         if confidence != DiagnosisConfidence::High {
             summary = "The current voice path is missing microphone input.".to_string();
@@ -331,7 +334,7 @@ pub fn build_voice_path_diagnosis_from_runtime(
 ) -> DiagnosisResult {
     let audio_config = config.audio.as_ref();
     let audio_enabled = audio_config.is_some_and(|audio| audio.enabled);
-    let wake_word_enabled =
+    let wake_backend_enabled =
         audio_config.is_some_and(|audio| audio.enabled && audio.wake_word.enabled);
     let realtime_enabled = audio_config.is_some_and(crate::config::audio_realtime_enabled);
     let presence =
@@ -339,7 +342,7 @@ pub fn build_voice_path_diagnosis_from_runtime(
     build_voice_path_diagnosis(VoicePathDiagnosisInput {
         voice_compiled: crate::compiled_voice_capability(),
         audio_enabled,
-        wake_word_enabled,
+        wake_backend_enabled,
         realtime_enabled,
         audio_duplex_capabilities: platform.audio_duplex_capabilities(),
         runtime_capabilities: crate::orchestrator::runtime_capability_snapshot(),
@@ -360,7 +363,7 @@ mod tests {
         let diagnosis = build_voice_path_diagnosis(VoicePathDiagnosisInput {
             voice_compiled: true,
             audio_enabled: true,
-            wake_word_enabled: true,
+            wake_backend_enabled: true,
             realtime_enabled: true,
             audio_duplex_capabilities: AudioDuplexCapabilities::speaker_only(),
             runtime_capabilities: Vec::new(),
@@ -386,7 +389,7 @@ mod tests {
         let diagnosis = build_voice_path_diagnosis(VoicePathDiagnosisInput {
             voice_compiled: true,
             audio_enabled: true,
-            wake_word_enabled: false,
+            wake_backend_enabled: false,
             realtime_enabled: false,
             audio_duplex_capabilities: AudioDuplexCapabilities::duplex_without_aec(),
             runtime_capabilities: vec![

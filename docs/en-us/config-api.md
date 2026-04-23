@@ -407,12 +407,15 @@ Top-level fields:
 - `microphone`
 - `speaker`
 - `vad`
-- `wake_word`
+- `wake_word` (currently Beetle's built-in acoustic wake backend; external wake backends are future extension points and are not configured in this round)
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
+
+`wake_word` currently keeps the top-level object name for compatibility. Its current shape is:
+`enabled`, `enter_threshold`, `leave_threshold`, `reference_suppress_ratio`, `zcr_min`, `zcr_max`, `min_speech_band_ratio`, `min_active_ms`, `hangover_ms`, `cooldown_ms`, `keyword` (legacy read-only compatibility), and `wake_prompt`. The configure-ui only exposes the acoustic parameters and `wake_prompt`.
 
 Optional query parameter: `restart=1`
 

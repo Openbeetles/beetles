@@ -185,7 +185,7 @@ export function AudioConfigPanel() {
   const realtimeSampleRate = realtimeRequiredSampleRate(form.realtime.provider)
   const micOn = audioOn && form.microphone.enabled
   const spkOn = audioOn && form.speaker.enabled
-  const showWakeWord = micOn
+  const showAcousticWake = micOn
   const showSpeechInput = micOn
   const showSpeechOutput = spkOn
   const showSpeechCredentials = showSpeechInput || showSpeechOutput
@@ -1076,7 +1076,7 @@ export function AudioConfigPanel() {
                       </FormSectionSubCollapsible>
                     ) : null}
 
-                    {showWakeWord ? (
+                    {showAcousticWake ? (
                       <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <FormControlLabel
                           control={
@@ -1093,30 +1093,10 @@ export function AudioConfigPanel() {
                           label={t('audioConfig.wakeWordEnabled')}
                         />
                         {form.wake_word.enabled ? (
-                          <>
-                            <FormControl sx={{ minWidth: { xs: '100%', md: 320 } }}>
-                              <InputLabel id="wake-kw">{t('audioConfig.wakeWordKeyword')}</InputLabel>
-                              <Select
-                                labelId="wake-kw"
-                                label={t('audioConfig.wakeWordKeyword')}
-                                value={form.wake_word.keyword}
-                                onChange={(e: SelectChangeEvent) =>
-                                  setDraftSafe({
-                                    ...form,
-                                    wake_word: { ...form.wake_word, keyword: e.target.value },
-                                  })
-                                }
-                              >
-                                {['hiesp'].map((kw) => (
-                                  <MenuItem key={kw} value={kw}>
-                                    {kw}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
+                          <Box sx={fieldGridSx}>
                             {showWakePrompt ? (
                               <TextField
-                                sx={{ maxWidth: { xs: '100%', md: 520 } }}
+                                sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
                                 label={t('audioConfig.wakePrompt')}
                                 value={form.wake_word.wake_prompt}
                                 onChange={(e) =>
@@ -1130,7 +1110,160 @@ export function AudioConfigPanel() {
                                 }
                               />
                             ) : null}
-                          </>
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeEnterThreshold')}
+                              value={String(form.wake_word.enter_threshold)}
+                              inputProps={{ step: 0.01, min: 0.01, max: 1 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    enter_threshold: v,
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeLeaveThreshold')}
+                              value={String(form.wake_word.leave_threshold)}
+                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    leave_threshold: v,
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeReferenceSuppressRatio')}
+                              value={String(form.wake_word.reference_suppress_ratio)}
+                              inputProps={{ step: 0.01, min: 0.5, max: 4 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    reference_suppress_ratio: v,
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeZcrMin')}
+                              value={String(form.wake_word.zcr_min)}
+                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    zcr_min: v,
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeZcrMax')}
+                              value={String(form.wake_word.zcr_max)}
+                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    zcr_max: v,
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeMinSpeechBandRatio')}
+                              value={String(form.wake_word.min_speech_band_ratio)}
+                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    min_speech_band_ratio: v,
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeMinActiveMs')}
+                              value={String(form.wake_word.min_active_ms)}
+                              inputProps={{ step: 1, min: 20, max: 5000 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    min_active_ms: Math.trunc(v),
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeHangoverMs')}
+                              value={String(form.wake_word.hangover_ms)}
+                              inputProps={{ step: 1, min: 0, max: 10000 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    hangover_ms: Math.trunc(v),
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.wakeCooldownMs')}
+                              value={String(form.wake_word.cooldown_ms)}
+                              inputProps={{ step: 1, min: 100, max: 10000 }}
+                              onChange={(e) => {
+                                const v = asNumber(e.target.value)
+                                if (v == null) return
+                                setDraftSafe({
+                                  ...form,
+                                  wake_word: {
+                                    ...form.wake_word,
+                                    cooldown_ms: Math.trunc(v),
+                                  },
+                                })
+                              }}
+                            />
+                          </Box>
                         ) : null}
                       </Box>
                     ) : null}

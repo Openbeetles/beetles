@@ -755,20 +755,6 @@ pub trait Platform: Send + Sync {
         Ok(())
     }
 
-    /// 配置唤醒词运行时。默认 no-op（非 ESP 或无唤醒词平台）。
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    fn configure_wake_word(
-        &self,
-        _model_name: &str,
-        _input_sample_rate_hz: u32,
-        _voice_tx: std::sync::mpsc::SyncSender<crate::audio::voice_session::VoiceEvent>,
-    ) {
-    }
-
-    /// 关闭唤醒词运行时并释放其资源。默认 no-op。
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    fn shutdown_wake_word(&self) {}
-
     /// 麦克风链路是否可用。默认从 `audio_duplex_capabilities()` 派生。
     fn audio_mic_ready(&self) -> bool {
         self.audio_duplex_capabilities().has_microphone_input()

@@ -407,12 +407,15 @@
 - `microphone`
 - `speaker`
 - `vad`
-- `wake_word`
+- `wake_word`（当前配置 Beetle 内建的 acoustic 唤醒后端；外部 wake backend 只是未来扩展点，本轮不开放配置）
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
+
+`wake_word` 仍保留顶层对象名以兼容既有配置。当前字段形状为：
+`enabled`、`enter_threshold`、`leave_threshold`、`reference_suppress_ratio`、`zcr_min`、`zcr_max`、`min_speech_band_ratio`、`min_active_ms`、`hangover_ms`、`cooldown_ms`、`keyword`（仅兼容旧配置读取/回写）和 `wake_prompt`。configure-ui 只暴露 acoustic 参数和 `wake_prompt`。
 
 可选查询参数：`restart=1`
 

@@ -1126,73 +1126,6 @@ const AUDIO_REALTIME_INSTRUCTIONS_MAX_LEN: usize = 1024;
 const AUDIO_MIC_DEVICE_I2S_INMP441: &str = "i2s_inmp441";
 /// Maximum length for `wake_word.wake_prompt`.
 const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
-
-/// Supported wake word **aliases** → WakeNet model id (passed to `beetle_wakenet_init`).
-///
-/// Configure-UI / `audio.json` `wake_word.keyword` is normally one of the
-/// left-hand aliases (default **`hiesp`**, aligned with `configure-ui`).
-/// The right-hand side must exist in the device **model** partition (see
-/// `sdkconfig` `CONFIG_SR_WN_*`). The default firmware currently ships a single
-/// `wn9_hiesp` model.
-///
-/// Advanced: [`wake_word_resolve_model`] also accepts a verbatim WakeNet id
-/// such as `wn9_hiesp` without an alias row.
-pub const WAKE_WORD_SUPPORTED_KEYWORDS: &[(&str, &str)] = &[("hiesp", "wn9_hiesp")];
-
-/// Resolve a user-facing keyword alias to its WakeNet model name.
-///
-/// Returns `None` when the keyword is not in [`WAKE_WORD_SUPPORTED_KEYWORDS`].
-pub fn wake_word_model_name(keyword: &str) -> Option<&'static str> {
-    let k = keyword.trim();
-    WAKE_WORD_SUPPORTED_KEYWORDS
-        .iter()
-        .find(|(alias, _)| *alias == k)
-        .map(|(_, model)| *model)
-}
-
-/// True when `s` looks like a WakeNet model id (`wn` + version digits + `_` + suffix).
-fn wake_word_verbatim_model_id(s: &str) -> bool {
-    let s = s.trim();
-    if s.len() < 6 || s.len() > AUDIO_KEYWORD_MAX_LEN || !s.is_ascii() {
-        return false;
-    }
-    let parts: Vec<&str> = s.split('_').collect();
-    if parts.len() < 2 {
-        return false;
-    }
-    let head = parts[0];
-    let Some(ver) = head.strip_prefix("wn") else {
-        return false;
-    };
-    if ver.is_empty() || !ver.chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    for p in &parts[1..] {
-        if p.is_empty()
-            || !p
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        {
-            return false;
-        }
-    }
-    true
-}
-
-/// Resolve `wake_word.keyword` to the WakeNet model id for `beetle_wakenet_init`.
-///
-/// Accepts: (1) aliases from [`WAKE_WORD_SUPPORTED_KEYWORDS`], or (2) a verbatim
-/// id such as `wn9_hiesp` when the partition contains that model.
-pub fn wake_word_resolve_model(keyword: &str) -> Option<String> {
-    let k = keyword.trim();
-    if let Some(m) = wake_word_model_name(k) {
-        return Some(m.to_string());
-    }
-    if wake_word_verbatim_model_id(k) {
-        return Some(k.to_string());
-    }
-    None
-}
 const AUDIO_MIC_DEVICE_PDM: &str = "pdm";
 const AUDIO_SPEAKER_DEVICE_I2S_MAX98357A: &str = "i2s_max98357a";
 const AUDIO_SPEAKER_DEVICE_USB: &str = "usb";
@@ -1272,13 +1205,67 @@ pub struct AudioRealtimeConfig {
 pub struct AudioWakeWordConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Wake keyword: alias from [`WAKE_WORD_SUPPORTED_KEYWORDS`] or verbatim WakeNet id (`wn9_…`).
+    /// Legacy hidden field kept for config compatibility.
     #[serde(default)]
     pub keyword: String,
+    #[serde(default = "default_wake_enter_threshold")]
+    pub enter_threshold: f32,
+    #[serde(default = "default_wake_leave_threshold")]
+    pub leave_threshold: f32,
+    #[serde(default = "default_wake_reference_suppress_ratio")]
+    pub reference_suppress_ratio: f32,
+    #[serde(default = "default_wake_zcr_min")]
+    pub zcr_min: f32,
+    #[serde(default = "default_wake_zcr_max")]
+    pub zcr_max: f32,
+    #[serde(default = "default_wake_min_speech_band_ratio")]
+    pub min_speech_band_ratio: f32,
+    #[serde(default = "default_wake_min_active_ms")]
+    pub min_active_ms: u32,
+    #[serde(default = "default_wake_hangover_ms")]
+    pub hangover_ms: u32,
+    #[serde(default = "default_wake_cooldown_ms")]
+    pub cooldown_ms: u32,
     /// TTS greeting played when wake word fires, before voice capture starts.
     /// 唤醒后 TTS 播报的问候语，播报完毕后开始采集用户语音。
     #[serde(default = "default_wake_prompt")]
     pub wake_prompt: String,
+}
+
+fn default_wake_enter_threshold() -> f32 {
+    0.18
+}
+
+fn default_wake_leave_threshold() -> f32 {
+    0.10
+}
+
+fn default_wake_reference_suppress_ratio() -> f32 {
+    1.35
+}
+
+fn default_wake_zcr_min() -> f32 {
+    0.02
+}
+
+fn default_wake_zcr_max() -> f32 {
+    0.25
+}
+
+fn default_wake_min_speech_band_ratio() -> f32 {
+    0.45
+}
+
+fn default_wake_min_active_ms() -> u32 {
+    240
+}
+
+fn default_wake_hangover_ms() -> u32 {
+    500
+}
+
+fn default_wake_cooldown_ms() -> u32 {
+    1000
 }
 
 fn default_wake_prompt() -> String {
@@ -1505,6 +1492,15 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         wake_word: AudioWakeWordConfig {
             enabled: false,
             keyword: "hiesp".to_string(),
+            enter_threshold: default_wake_enter_threshold(),
+            leave_threshold: default_wake_leave_threshold(),
+            reference_suppress_ratio: default_wake_reference_suppress_ratio(),
+            zcr_min: default_wake_zcr_min(),
+            zcr_max: default_wake_zcr_max(),
+            min_speech_band_ratio: default_wake_min_speech_band_ratio(),
+            min_active_ms: default_wake_min_active_ms(),
+            hangover_ms: default_wake_hangover_ms(),
+            cooldown_ms: default_wake_cooldown_ms(),
             wake_prompt: default_wake_prompt(),
         },
         speech: AudioSpeechConfig {
@@ -1960,6 +1956,57 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         ));
     }
     if wake_voice_pipeline_enabled {
+        if !(0.01..=1.0).contains(&seg.wake_word.enter_threshold) {
+            return Err(Error::config(
+                "audio",
+                "wake_word.enter_threshold must be within 0.01..=1.0",
+            ));
+        }
+        if !(0.0..seg.wake_word.enter_threshold).contains(&seg.wake_word.leave_threshold) {
+            return Err(Error::config(
+                "audio",
+                "wake_word.leave_threshold must be >= 0 and less than wake_word.enter_threshold",
+            ));
+        }
+        if !(0.5..=4.0).contains(&seg.wake_word.reference_suppress_ratio) {
+            return Err(Error::config(
+                "audio",
+                "wake_word.reference_suppress_ratio must be within 0.5..=4.0",
+            ));
+        }
+        if seg.wake_word.zcr_min < 0.0
+            || seg.wake_word.zcr_max > 1.0
+            || seg.wake_word.zcr_min >= seg.wake_word.zcr_max
+        {
+            return Err(Error::config(
+                "audio",
+                "wake_word.zcr_min and wake_word.zcr_max must satisfy 0.0 <= min < max <= 1.0",
+            ));
+        }
+        if !(0.0..=1.0).contains(&seg.wake_word.min_speech_band_ratio) {
+            return Err(Error::config(
+                "audio",
+                "wake_word.min_speech_band_ratio must be within 0.0..=1.0",
+            ));
+        }
+        if !(20..=5_000).contains(&seg.wake_word.min_active_ms) {
+            return Err(Error::config(
+                "audio",
+                "wake_word.min_active_ms must be within 20..=5000",
+            ));
+        }
+        if seg.wake_word.hangover_ms > 10_000 {
+            return Err(Error::config(
+                "audio",
+                "wake_word.hangover_ms must be within 0..=10000",
+            ));
+        }
+        if !(100..=10_000).contains(&seg.wake_word.cooldown_ms) {
+            return Err(Error::config(
+                "audio",
+                "wake_word.cooldown_ms must be within 100..=10000",
+            ));
+        }
         if !seg.microphone.enabled {
             return Err(Error::config(
                 "audio",
@@ -1976,21 +2023,6 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             return Err(Error::config(
                 "audio",
                 "wake_word.enabled requires realtime voice config or a configured speech fallback for the currently wired provider",
-            ));
-        }
-        if wake_word_resolve_model(&seg.wake_word.keyword).is_none() {
-            let mut aliases: Vec<&str> = WAKE_WORD_SUPPORTED_KEYWORDS
-                .iter()
-                .map(|(k, _)| *k)
-                .collect();
-            aliases.sort_unstable();
-            aliases.dedup();
-            return Err(Error::config(
-                "audio",
-                format!(
-                    "wake_word.keyword {:?} is not supported; use an alias from {:?} or a WakeNet id like wn9_xxx (must exist in the model partition)",
-                    seg.wake_word.keyword, aliases
-                ),
             ));
         }
     }
@@ -2975,6 +3007,37 @@ mod tests {
         assert!(error
             .to_string()
             .contains("microphone.sample_rate must equal 24000 for realtime voice"));
+    }
+
+    #[test]
+    fn audio_validation_allows_acoustic_wake_without_keyword_model() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.wake_word.enabled = true;
+        seg.wake_word.keyword = "legacy-hidden-value".to_string();
+        seg.speech.api_key = "test-key".to_string();
+        seg.speech.api_secret = "test-secret".to_string();
+
+        assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn audio_validation_rejects_acoustic_threshold_inversion() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.wake_word.enabled = true;
+        seg.wake_word.leave_threshold = seg.wake_word.enter_threshold;
+        seg.speech.api_key = "test-key".to_string();
+        seg.speech.api_secret = "test-secret".to_string();
+
+        let error = validate_audio_segment(&seg).expect_err("leave threshold must be below enter");
+        assert!(error.to_string().contains(
+            "wake_word.leave_threshold must be >= 0 and less than wake_word.enter_threshold"
+        ));
     }
 
     #[test]

@@ -70,6 +70,7 @@ impl Tool for VoiceOutputTool {
             let mut played_samples = 0usize;
             let mut tts_http_ms = 0u128;
             let mut play_ms = 0u128;
+            let mut interrupted = false;
             for segment in &segments {
                 let playback = speak_text(
                     self.platform.as_ref(),
@@ -81,6 +82,10 @@ impl Tool for VoiceOutputTool {
                 played_samples = played_samples.saturating_add(playback.played_samples);
                 tts_http_ms = tts_http_ms.saturating_add(playback.tts_http_ms);
                 play_ms = play_ms.saturating_add(playback.play_ms);
+                interrupted |= playback.interrupted;
+                if playback.interrupted {
+                    break;
+                }
             }
             crate::metrics::record_voice_output_tts_http_ms(tts_http_ms);
             crate::metrics::record_voice_output_play_ms(play_ms);
@@ -88,7 +93,8 @@ impl Tool for VoiceOutputTool {
             Ok(json!({
                 "ok": true,
                 "played_samples": played_samples,
-                "segments": segments.len()
+                "segments": segments.len(),
+                "interrupted": interrupted
             })
             .to_string())
         })();

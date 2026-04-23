@@ -4,6 +4,5 @@ otadata , data, ota     , 0x19000 , 0x2000
 phy_init, data, phy     , 0x1B000 , 0x1000
 ota_0   , app , ota_0   , 0x20000 , 0x500000
 ota_1   , app , ota_1   , 0x520000, 0x500000
-spiffs  , data, spiffs  , 0xA20000, 0x550000
-model   , data, spiffs  , 0xF70000, 0x080000
+spiffs  , data, spiffs  , 0xA20000, 0x5D0000
 coredump, data, coredump, 0xFF0000, 0x10000

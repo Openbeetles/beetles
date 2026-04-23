@@ -12,6 +12,7 @@ mod host_observability;
 pub mod metrics;
 pub mod network;
 pub mod util;
+pub mod wake;
 
 pub use build_info::ota_manifest_url;
 pub use build_package::{

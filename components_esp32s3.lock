@@ -1,58 +1,8 @@
 dependencies:
-  espressif/cjson:
-    component_hash: 9372811fb197926f522c467627cf4a8e72b681e0366e17879631da801103aef3
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.7.19
-  espressif/dl_fft:
-    component_hash: 7dadbd644c0d7ba4733cc3726ec4cff6edf27b043725e1115861dec1609a3d28
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 0.3.1
-  espressif/esp-dsp:
-    dependencies:
-    - name: idf
-      version: '>=4.2'
-    source:
-      path: third_party/espressif__esp-dsp
-      type: local
-    version: '*'
-  espressif/esp-sr:
-    component_hash: c518b25995cf03021a09442feedb7e40acba9f15d6aa903ebdfe0f657b08197b
-    dependencies:
-    - name: espressif/dl_fft
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=0.2.0'
-    - name: espressif/esp-dsp
-      registry_url: https://components.espressif.com
-      require: private
-      version: 1.7.0
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.4.0
   idf:
     source:
       type: idf
     version: 6.0.0
-direct_dependencies:
-- espressif/cjson
-- espressif/esp-dsp
-- espressif/esp-sr
-manifest_hash: a16a30f1b4608e66fa3ebc30d1b7f4c43446e5f3f8f06e1e49d9d999cbf349f5
+manifest_hash: c84a69e5807938ada9ca055f64e1c69da5db7e3a8e4849b936353d9b63d3277e
 target: esp32s3
 version: 3.0.0

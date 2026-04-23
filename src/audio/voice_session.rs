@@ -2,7 +2,7 @@
 //! Voice session scheduler: event intake stays responsive while voice tasks run one at a time.
 //!
 //! Architecture:
-//! - `wake_word::feed_pcm_i16` pushes `WakeDetected`
+//! - `wake::feed_pcm_i16` pushes `WakeTriggered`
 //! - `VoiceSink` pushes `Speak(text)`
 //! - `run_voice_session` coalesces events and dispatches one task at a time
 //! - Realtime wake interactions run on a dedicated transient `voice_realtime`
@@ -36,8 +36,8 @@ const MAX_PENDING_SPEAK_CHARS: usize = 512;
 /// Events consumed by the voice session thread.
 #[derive(Debug)]
 pub enum VoiceEvent {
-    /// Wake word detected — start capture + STT + inject to agent.
-    WakeDetected,
+    /// Wake backend triggered — start capture + STT + inject to agent.
+    WakeTriggered,
     /// Agent reply to speak aloud via TTS.
     Speak(String),
 }
@@ -235,6 +235,14 @@ fn connect_realtime_session_via_worker(
     result
 }
 
+struct WakeSessionResetGuard;
+
+impl Drop for WakeSessionResetGuard {
+    fn drop(&mut self) {
+        crate::wake::reset_after_session();
+    }
+}
+
 fn handle_wake_interaction<F>(
     cfg: &VoiceSessionConfig,
     http: &mut Option<Box<dyn PlatformHttpClient>>,
@@ -245,8 +253,8 @@ fn handle_wake_interaction<F>(
         &dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>,
     ) -> bool,
 {
-    log::info!("[{}] wake detected, starting voice interaction", TAG);
-    crate::metrics::record_wake_word_trigger();
+    let _wake_reset = WakeSessionResetGuard;
+    log::info!("[{}] wake triggered, starting voice interaction", TAG);
     let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
     if audio_realtime_enabled(&cfg.audio_cfg) {
@@ -280,8 +288,6 @@ fn handle_wake_interaction<F>(
                 crate::metrics::record_voice_tool_failure("voice_session_realtime");
             }
         }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        crate::platform::wake_word::reset_after_session();
         return;
     }
 
@@ -313,8 +319,15 @@ fn handle_wake_interaction<F>(
             client.as_mut(),
             &cfg.wake_prompt,
         );
-        if let Err(error) = tts_result {
-            log::warn!("[{}] wake prompt TTS failed: {}", TAG, error);
+        match tts_result {
+            Ok(playback) => {
+                if playback.interrupted {
+                    log::info!("[{}] wake prompt playback interrupted by local speech", TAG);
+                }
+            }
+            Err(error) => {
+                log::warn!("[{}] wake prompt TTS failed: {}", TAG, error);
+            }
         }
     }
 
@@ -412,6 +425,9 @@ fn handle_speak<F>(
         Ok(playback) => {
             crate::metrics::record_voice_output_tts_http_ms(playback.tts_http_ms);
             crate::metrics::record_voice_output_play_ms(playback.play_ms);
+            if playback.interrupted {
+                log::info!("[{}] TTS playback interrupted by local speech", TAG);
+            }
         }
         Err(error) => {
             log::warn!("[{}] TTS playback failed: {}", TAG, error);
@@ -457,7 +473,7 @@ fn restore_pending_voice_task(pending: &mut PendingVoiceEvents, task: VoiceWorke
 
 fn handle_voice_event(event: VoiceEvent, pending: &mut PendingVoiceEvents) {
     match event {
-        VoiceEvent::WakeDetected => {
+        VoiceEvent::WakeTriggered => {
             pending.wake_requested = true;
             pending.pending_speak = None;
         }
@@ -494,7 +510,7 @@ mod tests {
             wake_requested: false,
             pending_speak: Some("old reply".to_string()),
         };
-        handle_voice_event(VoiceEvent::WakeDetected, &mut pending);
+        handle_voice_event(VoiceEvent::WakeTriggered, &mut pending);
         assert!(pending.wake_requested);
         assert!(pending.pending_speak.is_none());
     }

@@ -23,6 +23,7 @@ export function validateAudioConfig(
   const realtimeReady = audioRealtimeConfigured(form);
   const wakeVoicePipelineEnabled = form.enabled && form.wake_word.enabled;
   const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins);
+  const wake = form.wake_word;
 
   if (form.version !== AUDIO_CONFIG_VERSION) {
     return t("audioConfig.validation.version");
@@ -116,6 +117,43 @@ export function validateAudioConfig(
   }
   if (form.led_indicator.enabled && !pinInRange(form.led_indicator.pin)) {
     return t("audioConfig.validation.pin");
+  }
+
+  if (wake.enabled) {
+    if (wake.enter_threshold < 0.01 || wake.enter_threshold > 1) {
+      return t("audioConfig.validation.wakeEnterThreshold");
+    }
+    if (wake.leave_threshold < 0 || wake.leave_threshold > 1) {
+      return t("audioConfig.validation.wakeLeaveThreshold");
+    }
+    if (wake.leave_threshold >= wake.enter_threshold) {
+      return t("audioConfig.validation.wakeThresholdOrder");
+    }
+    if (wake.reference_suppress_ratio < 0.5 || wake.reference_suppress_ratio > 4) {
+      return t("audioConfig.validation.wakeReferenceSuppressRatio");
+    }
+    if (
+      wake.zcr_min < 0 ||
+      wake.zcr_min > 1 ||
+      wake.zcr_max < 0 ||
+      wake.zcr_max > 1 ||
+      wake.zcr_min >= wake.zcr_max
+    ) {
+      return t("audioConfig.validation.wakeZcrRange");
+    }
+    if (wake.min_speech_band_ratio < 0 || wake.min_speech_band_ratio > 1) {
+      return t("audioConfig.validation.wakeSpeechBandRatio");
+    }
+    if (
+      wake.min_active_ms < 20 ||
+      wake.min_active_ms > 5_000 ||
+      wake.hangover_ms < 0 ||
+      wake.hangover_ms > 10_000 ||
+      wake.cooldown_ms < 100 ||
+      wake.cooldown_ms > 10_000
+    ) {
+      return t("audioConfig.validation.wakeTimingMs");
+    }
   }
 
   if (wakeVoicePipelineEnabled && !form.microphone.enabled) {

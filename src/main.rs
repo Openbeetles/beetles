@@ -77,7 +77,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
 
 struct VoiceEventChannel {
-    wake_model_name: Option<String>,
     speak_capable: bool,
     tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
     rx: std::sync::mpsc::Receiver<beetle::audio::voice_session::VoiceEvent>,
@@ -379,8 +378,8 @@ fn spawn_voice_session_if_ready(
     user_inbound_tx: &beetle::bus::InboundTx,
     voice_event_tx_rx: &mut Option<VoiceEventChannel>,
 ) -> beetle::Result<Option<StartedVoiceSession>> {
+    beetle::wake::shutdown();
     let Some(VoiceEventChannel {
-        wake_model_name,
         speak_capable,
         tx: voice_tx,
         rx: voice_rx,
@@ -392,8 +391,6 @@ fn spawn_voice_session_if_ready(
     let Some(audio_cfg) = config.audio.as_ref() else {
         return Ok(None);
     };
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let _ = &wake_model_name;
     let vs_platform = Arc::clone(platform);
     let vs_network = Arc::clone(network);
     let vs_audio = audio_cfg.clone();
@@ -416,15 +413,16 @@ fn spawn_voice_session_if_ready(
     .map_err(|error| beetle::Error::io("voice_session_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("voice_session_spawn");
+    let wake_backend = if audio_cfg.wake_word.enabled {
+        beetle::wake::WakeBackend::Acoustic(beetle::wake::AcousticWakeBackend::from_audio_config(
+            audio_cfg,
+        ))
+    } else {
+        beetle::wake::WakeBackend::Disabled
+    };
+    beetle::wake::configure(wake_backend, voice_tx.clone());
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if let Some(model_name) = wake_model_name.as_deref() {
-        platform.configure_wake_word(
-            model_name,
-            audio_cfg.microphone.sample_rate,
-            voice_tx.clone(),
-        );
-        beetle::orchestrator::log_startup_memory_checkpoint("wake_word_configured");
-    }
+    beetle::orchestrator::log_startup_memory_checkpoint("wake_backend_configured");
     Ok(Some(StartedVoiceSession {
         speak_capable,
         tx: voice_tx,
@@ -492,17 +490,13 @@ struct CommunicationPlaneStartup {
 fn compute_voice_runtime_capabilities(
     audio_cfg: &beetle::config::AudioSegment,
     duplex_caps: beetle::AudioDuplexCapabilities,
-    wake_model_present: bool,
-    wake_supported_platform: bool,
     has_baidu_token: bool,
 ) -> VoiceRuntimeCapabilities {
     let speak_capable =
         audio_cfg.speaker.enabled && duplex_caps.has_speaker_output() && has_baidu_token;
-    let wake_capable = if !wake_supported_platform
-        || !audio_cfg.wake_word.enabled
+    let wake_capable = if !audio_cfg.wake_word.enabled
         || !audio_cfg.microphone.enabled
         || !duplex_caps.has_microphone_input()
-        || !wake_model_present
     {
         false
     } else if beetle::config::audio_realtime_enabled(audio_cfg) {
@@ -640,8 +634,6 @@ mod tests {
             &audio,
             beetle::AudioDuplexCapabilities::speaker_only(),
             false,
-            false,
-            false,
         );
         assert!(!caps.speak_capable);
         assert!(!caps.wake_capable);
@@ -656,8 +648,6 @@ mod tests {
         let caps = compute_voice_runtime_capabilities(
             &audio,
             beetle::AudioDuplexCapabilities::microphone_only(),
-            true,
-            true,
             false,
         );
         assert!(!caps.speak_capable);
@@ -680,8 +670,6 @@ mod tests {
         let caps = compute_voice_runtime_capabilities(
             &audio,
             beetle::AudioDuplexCapabilities::duplex_with_playback_reference(),
-            true,
-            true,
             false,
         );
         assert!(!caps.speak_capable);
@@ -1043,26 +1031,9 @@ fn build_voice_event_channel(
         return None;
     }
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let wake_model_name = if audio_cfg.wake_word.enabled {
-        beetle::config::wake_word_resolve_model(&audio_cfg.wake_word.keyword)
-    } else {
-        None
-    };
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    let wake_model_name: Option<String> = None;
-
     let duplex_caps = platform.audio_duplex_capabilities();
-    let capabilities = compute_voice_runtime_capabilities(
-        audio_cfg,
-        duplex_caps,
-        wake_model_name.is_some(),
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        true,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        false,
-        baidu_token_cache.is_some(),
-    );
+    let capabilities =
+        compute_voice_runtime_capabilities(audio_cfg, duplex_caps, baidu_token_cache.is_some());
 
     if !capabilities.speak_capable && !capabilities.wake_capable {
         return None;
@@ -1070,7 +1041,6 @@ fn build_voice_event_channel(
 
     let (vtx, vrx) = std::sync::mpsc::sync_channel(4);
     Some(VoiceEventChannel {
-        wake_model_name,
         speak_capable: capabilities.speak_capable,
         tx: vtx,
         rx: vrx,

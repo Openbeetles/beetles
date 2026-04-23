@@ -36,6 +36,15 @@ export interface AudioVadConfig {
 
 export interface AudioWakeWordConfig {
   enabled: boolean
+  enter_threshold: number
+  leave_threshold: number
+  reference_suppress_ratio: number
+  zcr_min: number
+  zcr_max: number
+  min_speech_band_ratio: number
+  min_active_ms: number
+  hangover_ms: number
+  cooldown_ms: number
   keyword: string
   wake_prompt: string
 }
@@ -132,6 +141,16 @@ export const AUDIO_SAMPLE_RATE_PRESETS = [
 export const AUDIO_BUFFER_PRESETS = [512, 1024, 2048, 4096, 8192] as const
 export const AUDIO_VAD_THRESHOLD_PRESETS = [0.01, 0.02, 0.05, 0.08, 0.1, 0.2, 0.3, 0.5, 0.7] as const
 export const AUDIO_VAD_SILENCE_MS_PRESETS = [500, 750, 1000, 1500, 2000, 3000] as const
+
+export const DEFAULT_WAKE_ENTER_THRESHOLD = 0.18
+export const DEFAULT_WAKE_LEAVE_THRESHOLD = 0.1
+export const DEFAULT_WAKE_REFERENCE_SUPPRESS_RATIO = 1.35
+export const DEFAULT_WAKE_ZCR_MIN = 0.02
+export const DEFAULT_WAKE_ZCR_MAX = 0.25
+export const DEFAULT_WAKE_MIN_SPEECH_BAND_RATIO = 0.45
+export const DEFAULT_WAKE_MIN_ACTIVE_MS = 240
+export const DEFAULT_WAKE_HANGOVER_MS = 500
+export const DEFAULT_WAKE_COOLDOWN_MS = 1000
 
 export const AUDIO_SPEECH_PROVIDERS = ['baidu', 'whisper', 'xunfei'] as const
 export const AUDIO_SPEECH_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
@@ -441,6 +460,15 @@ export function defaultAudioConfig(): AudioConfig {
     },
     wake_word: {
       enabled: false,
+      enter_threshold: DEFAULT_WAKE_ENTER_THRESHOLD,
+      leave_threshold: DEFAULT_WAKE_LEAVE_THRESHOLD,
+      reference_suppress_ratio: DEFAULT_WAKE_REFERENCE_SUPPRESS_RATIO,
+      zcr_min: DEFAULT_WAKE_ZCR_MIN,
+      zcr_max: DEFAULT_WAKE_ZCR_MAX,
+      min_speech_band_ratio: DEFAULT_WAKE_MIN_SPEECH_BAND_RATIO,
+      min_active_ms: DEFAULT_WAKE_MIN_ACTIVE_MS,
+      hangover_ms: DEFAULT_WAKE_HANGOVER_MS,
+      cooldown_ms: DEFAULT_WAKE_COOLDOWN_MS,
       keyword: 'hiesp',
       wake_prompt: '你好，我在听，请说。',
     },

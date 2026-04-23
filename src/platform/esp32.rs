@@ -227,13 +227,6 @@ impl Default for Esp32Platform {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-impl Drop for Esp32Platform {
-    fn drop(&mut self) {
-        crate::platform::wake_word::shutdown();
-    }
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl Platform for Esp32Platform {
     fn state_fs(&self) -> Arc<dyn StateFs + Send + Sync> {
         Arc::clone(&self.state_fs)
@@ -528,7 +521,6 @@ impl Platform for Esp32Platform {
 
     fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
         if !config.enabled {
-            crate::platform::wake_word::shutdown();
             *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
             *self
                 .audio_capabilities
@@ -537,7 +529,6 @@ impl Platform for Esp32Platform {
                 crate::platform::AudioDuplexCapabilities::unavailable();
             return Ok(());
         }
-        crate::platform::wake_word::shutdown();
         match crate::platform::audio_drivers::AudioPipelineState::from_config(config) {
             Ok(state) => {
                 let capabilities = state.duplex_capabilities().normalized();
@@ -560,7 +551,6 @@ impl Platform for Esp32Platform {
                 Ok(())
             }
             Err(e) => {
-                crate::platform::wake_word::shutdown();
                 *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
                 *self
                     .audio_capabilities
@@ -570,19 +560,6 @@ impl Platform for Esp32Platform {
                 Err(e)
             }
         }
-    }
-
-    fn configure_wake_word(
-        &self,
-        model_name: &str,
-        input_sample_rate_hz: u32,
-        voice_tx: std::sync::mpsc::SyncSender<crate::audio::voice_session::VoiceEvent>,
-    ) {
-        crate::platform::wake_word::configure(model_name, input_sample_rate_hz, voice_tx);
-    }
-
-    fn shutdown_wake_word(&self) {
-        crate::platform::wake_word::shutdown();
     }
 
     fn audio_duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {

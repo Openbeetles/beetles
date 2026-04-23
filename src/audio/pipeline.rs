@@ -13,10 +13,13 @@ use crate::platform::PlatformHttpClient;
 use crate::Platform;
 use std::time::{Duration, Instant};
 
+const VOICE_LOCAL_INTERRUPT_STAGE: &str = "voice_local_interrupt";
+
 pub struct VoicePlaybackStats {
     pub played_samples: usize,
     pub tts_http_ms: u128,
     pub play_ms: u128,
+    pub interrupted: bool,
 }
 
 pub fn capture_and_transcribe(
@@ -51,10 +54,11 @@ pub fn speak_text(
     http: &mut dyn PlatformHttpClient,
     text: &str,
 ) -> Result<VoicePlaybackStats> {
-    let _recording_guard = AudioRecordingGuard::new();
     let tts_start = Instant::now();
     let mut first_pcm_at: Option<Instant> = None;
-    crate::orchestrator::set_audio_playing(true);
+    let playback_state = PlaybackStateGuard::new(platform);
+    let mut played_samples = 0usize;
+    let mut interrupted = false;
     let result = (|| match tts_baidu::stream_wav_pcm16le(
         http,
         baidu_token,
@@ -63,13 +67,18 @@ pub fn speak_text(
         text,
         AUDIO_TTS_WRITE_CHUNK_SAMPLES,
         |chunk| {
-            if first_pcm_at.is_none() {
-                first_pcm_at = Some(Instant::now());
-            }
-            platform.write_speaker_pcm_i16(chunk)
+            write_playback_chunk(
+                platform,
+                playback_state.interrupt_armed,
+                chunk,
+                &mut first_pcm_at,
+                &mut played_samples,
+                &mut interrupted,
+            )
         },
     ) {
-        Ok(samples) => Ok(samples),
+        Ok(_) => Ok(()),
+        Err(error) if error.stage() == VOICE_LOCAL_INTERRUPT_STAGE => Ok(()),
         Err(error) if error.stage() == "tts_baidu_wav" => {
             let wav = tts_baidu::synthesize_wav(
                 http,
@@ -79,23 +88,43 @@ pub fn speak_text(
                 text,
             )?;
             tts_baidu::play_wav_pcm16le_chunks(&wav, AUDIO_TTS_WRITE_CHUNK_SAMPLES, |chunk| {
-                if first_pcm_at.is_none() {
-                    first_pcm_at = Some(Instant::now());
+                write_playback_chunk(
+                    platform,
+                    playback_state.interrupt_armed,
+                    chunk,
+                    &mut first_pcm_at,
+                    &mut played_samples,
+                    &mut interrupted,
+                )
+            })
+            .map(|_| ())
+            .or_else(|error| {
+                if error.stage() == VOICE_LOCAL_INTERRUPT_STAGE {
+                    Ok(())
+                } else {
+                    Err(error)
                 }
-                platform.write_speaker_pcm_i16(chunk)
             })
         }
         Err(error) => Err(error),
     })();
-    crate::orchestrator::set_audio_playing(false);
-    let played_samples = result?;
-    wait_for_platform_playback_drain(platform, audio_cfg.speaker.sample_rate, played_samples)?;
+    result?;
+    interrupted |= accept_local_interrupt(platform, playback_state.interrupt_armed)?;
+    if !interrupted {
+        interrupted |= wait_for_platform_playback_drain(
+            platform,
+            audio_cfg.speaker.sample_rate,
+            played_samples,
+            playback_state.interrupt_armed,
+        )?;
+    }
     let total_ms = tts_start.elapsed().as_millis();
     let play_ms = first_pcm_at.map(|at| at.elapsed().as_millis()).unwrap_or(0);
     Ok(VoicePlaybackStats {
         played_samples,
         tts_http_ms: total_ms,
         play_ms,
+        interrupted,
     })
 }
 
@@ -103,9 +132,10 @@ fn wait_for_platform_playback_drain(
     platform: &dyn Platform,
     sample_rate: u32,
     played_samples: usize,
-) -> Result<()> {
+    interrupt_armed: bool,
+) -> Result<bool> {
     if played_samples == 0 {
-        return Ok(());
+        return Ok(false);
     }
     let sample_rate = u128::from(sample_rate.max(8_000));
     let playback_ms = (played_samples as u128)
@@ -124,6 +154,7 @@ fn wait_for_platform_playback_drain(
                     .saturating_add(platform.speaker_staging_samples()),
             )
         },
+        || accept_local_interrupt(platform, interrupt_armed),
         Duration::from_millis(timeout_ms),
         Duration::from_millis(AUDIO_SPEAKER_DRAIN_POLL_MS),
     )
@@ -131,12 +162,16 @@ fn wait_for_platform_playback_drain(
 
 fn wait_for_playback_drain(
     mut state: impl FnMut() -> (bool, usize),
+    mut take_interrupt: impl FnMut() -> Result<bool>,
     timeout: Duration,
     poll_interval: Duration,
-) -> Result<()> {
+) -> Result<bool> {
     let started_at = Instant::now();
     let mut saw_pending_samples = false;
     loop {
+        if take_interrupt()? {
+            return Ok(true);
+        }
         let (ready, pending_samples) = state();
         saw_pending_samples |= pending_samples > 0;
         if pending_samples == 0 {
@@ -146,7 +181,7 @@ fn wait_for_playback_drain(
                     "speaker became unavailable during playback",
                 ));
             }
-            return Ok(());
+            return Ok(false);
         }
         if !ready {
             return Err(Error::config(
@@ -170,6 +205,61 @@ fn wait_for_playback_drain(
     }
 }
 
+struct PlaybackStateGuard {
+    interrupt_armed: bool,
+}
+
+impl PlaybackStateGuard {
+    fn new(platform: &dyn Platform) -> Self {
+        let interrupt_armed = platform.audio_duplex_capabilities().supports_barge_in()
+            && crate::wake::requires_pcm_feed();
+        crate::orchestrator::clear_audio_interrupt_request();
+        crate::orchestrator::set_audio_playing(true);
+        crate::orchestrator::set_audio_interrupt_listening(interrupt_armed);
+        Self { interrupt_armed }
+    }
+}
+
+impl Drop for PlaybackStateGuard {
+    fn drop(&mut self) {
+        crate::orchestrator::set_audio_interrupt_listening(false);
+        crate::orchestrator::set_audio_playing(false);
+    }
+}
+
+fn write_playback_chunk(
+    platform: &dyn Platform,
+    interrupt_armed: bool,
+    chunk: &[i16],
+    first_pcm_at: &mut Option<Instant>,
+    played_samples: &mut usize,
+    interrupted: &mut bool,
+) -> Result<()> {
+    if accept_local_interrupt(platform, interrupt_armed)? {
+        *interrupted = true;
+        return Err(Error::config(
+            VOICE_LOCAL_INTERRUPT_STAGE,
+            "local interrupt accepted during playback",
+        ));
+    }
+    if first_pcm_at.is_none() {
+        *first_pcm_at = Some(Instant::now());
+    }
+    platform.write_speaker_pcm_i16(chunk)?;
+    *played_samples = played_samples.saturating_add(chunk.len());
+    Ok(())
+}
+
+fn accept_local_interrupt(platform: &dyn Platform, interrupt_armed: bool) -> Result<bool> {
+    if !interrupt_armed || !crate::orchestrator::take_audio_interrupt_request() {
+        return Ok(false);
+    }
+    crate::metrics::record_voice_interrupt_accepted();
+    platform.clear_speaker_buffer()?;
+    log::info!("[voice_pipeline] local interrupt accepted; playback aborted");
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -184,6 +274,7 @@ mod tests {
         let mut states = VecDeque::from([(true, 2048usize), (true, 1024usize), (false, 512usize)]);
         let error = wait_for_playback_drain(
             || states.pop_front().unwrap_or((false, 512)),
+            || Ok(false),
             Duration::from_millis(50),
             Duration::from_millis(0),
         )
@@ -197,8 +288,24 @@ mod tests {
         let mut states = VecDeque::from([(true, 1024usize), (true, 256usize), (true, 0usize)]);
         wait_for_playback_drain(
             || states.pop_front().unwrap_or((true, 0)),
+            || Ok(false),
             Duration::from_millis(50),
             Duration::from_millis(0),
         )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn playback_drain_returns_interrupted_when_local_interrupt_is_consumed() -> Result<()> {
+        let mut states = VecDeque::from([(true, 1024usize), (true, 512usize)]);
+        let mut interrupts = VecDeque::from([Ok(false), Ok(true)]);
+        let interrupted = wait_for_playback_drain(
+            || states.pop_front().unwrap_or((true, 512)),
+            || interrupts.pop_front().unwrap_or(Ok(false)),
+            Duration::from_millis(50),
+            Duration::from_millis(0),
+        )?;
+        assert!(interrupted);
+        Ok(())
     }
 }

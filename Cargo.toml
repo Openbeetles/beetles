@@ -16,22 +16,7 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
 esp_idf_version = "v6.0"
 
 [[package.metadata.esp-idf-sys.extra_components]]
-# IDF 6.0 移除内置 `json`；esp-sr 仍 REQUIRES `json`。由 `components/json` 同名转发到 cjson。
-# IDF 6.0 removed bundled `json`; esp-sr still REQUIRES `json`. Local `components/json` forwards to cjson.
-remote_component = { name = "espressif/cjson", version = "1.7.19" }
-
-[[package.metadata.esp-idf-sys.extra_components]]
-# 乐鑫语音识别框架：WakeNet（idf>=5.0）。注册表会把 esp-dsp 解到 1.7.0，该版本在 IDF6 + gnu++26 + picolibc 下 EKF 里 std::cos 等会编不过。
-# 用本地 1.7.1 源码（third_party）+ path 覆盖：path 相对 esp-idf-sys 生成的 out/main/idf_component.yml，七层 .. 回到仓库根。
-# ESP-SR WakeNet. Registry pulls esp-dsp 1.7.0 which fails C++ build; vendor 1.7.1 and override via path from out/main (7x .. to repo root).
-remote_component = { name = "espressif/esp-sr", version = "2.4.0" }
-
-[[package.metadata.esp-idf-sys.extra_components]]
-remote_component = { name = "espressif/esp-dsp", version = "1.7.1", path = "../../../../../../../third_party/espressif__esp-dsp" }
-
-[[package.metadata.esp-idf-sys.extra_components]]
-# 唤醒词薄 C 封装层：暴露稳定 ABI 供 Rust FFI，内部依赖 esp-sr WakeNet。
-# Thin C wrapper exposing stable ABI for Rust FFI; depends on esp-sr WakeNet internally.
+# Keep local C components such as `beetle_wss`; WakeNet/json wrappers were removed.
 component_dirs = ["components"]
 
 [lints.rust.unexpected_cfgs]

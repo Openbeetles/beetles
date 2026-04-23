@@ -43,8 +43,6 @@ pub mod state_root;
 pub(crate) mod task_affinity;
 pub mod task_wdt;
 pub mod time;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub mod wake_word;
 pub mod wifi;
 
 pub use abstraction::{

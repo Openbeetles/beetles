@@ -604,6 +604,24 @@ impl AudioRingBuffer {
         n
     }
 
+    fn copy_recent_into(&self, out: &mut [i16]) -> usize {
+        let n = out.len().min(self.len);
+        if n == 0 {
+            return 0;
+        }
+        let tail = self.tail();
+        let start = if tail >= n {
+            tail - n
+        } else {
+            self.cap + tail - n
+        };
+        for (idx, slot) in out.iter_mut().take(n).enumerate() {
+            let pos = (start + idx) % self.cap;
+            unsafe { *slot = *self.buf.add(pos) };
+        }
+        n
+    }
+
     fn clear(&mut self) {
         self.head = 0;
         self.len = 0;
@@ -785,13 +803,21 @@ fn update_speaker_playback_metrics(
 fn should_read_mic_frame(
     audio_recording: bool,
     audio_playing: bool,
-    wake_word_armed: bool,
+    wake_backend_requires_pcm_feed: bool,
     interrupt_listening: bool,
 ) -> bool {
     if audio_playing {
-        return interrupt_listening;
+        return interrupt_listening && wake_backend_requires_pcm_feed;
     }
-    audio_recording || wake_word_armed
+    audio_recording || wake_backend_requires_pcm_feed
+}
+
+fn should_feed_wake_backend(
+    audio_recording: bool,
+    interrupt_listening: bool,
+    wake_backend_requires_pcm_feed: bool,
+) -> bool {
+    wake_backend_requires_pcm_feed && (!audio_recording || interrupt_listening)
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -913,6 +939,7 @@ impl AudioPipelineState {
             worker_plan.role,
             move || {
                 let mut mic_frame = vec![0i16; AUDIO_MIC_FRAME_SAMPLES];
+                let mut reference_frame = vec![0i16; AUDIO_MIC_FRAME_SAMPLES];
                 let mut speaker_frame = vec![0i16; AUDIO_SPEAKER_FRAME_SAMPLES];
                 let speaker_min_samples = AUDIO_SPEAKER_WRITE_MIN_SAMPLES.min(speaker_frame.len());
                 let mut prev_audio_playing = false;
@@ -929,11 +956,11 @@ impl AudioPipelineState {
                     let audio_playing = crate::orchestrator::is_audio_playing();
                     let audio_recording = crate::orchestrator::is_audio_recording();
                     let interrupt_listening = crate::orchestrator::is_audio_interrupt_listening();
-                    let wake_word_armed = crate::platform::wake_word::is_armed();
+                    let wake_backend_requires_pcm_feed = crate::wake::requires_pcm_feed();
                     let mic_read_needed = should_read_mic_frame(
                         audio_recording,
                         audio_playing,
-                        wake_word_armed,
+                        wake_backend_requires_pcm_feed,
                         interrupt_listening,
                     );
 
@@ -1021,11 +1048,32 @@ impl AudioPipelineState {
                                     mic_read_start.elapsed().as_micros(),
                                 );
                                 crate::metrics::record_audio_mic_frame_read();
-                                // Tee raw PCM to the wake-word engine BEFORE pushing to the
-                                // shared ring buffer.  This avoids contention with voice_input
-                                // which pops from the ring buffer on demand.
-                                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-                                crate::platform::wake_word::feed_pcm_i16(&mic_frame[..n]);
+                                if should_feed_wake_backend(
+                                    audio_recording,
+                                    interrupt_listening,
+                                    wake_backend_requires_pcm_feed,
+                                ) {
+                                    let reference_copied = {
+                                        let guard = worker_shared
+                                            .reference
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        guard.copy_recent_into(&mut reference_frame[..n])
+                                    };
+                                    if reference_copied > 0 {
+                                        crate::metrics::record_audio_reference_frame_read();
+                                    } else {
+                                        crate::metrics::record_audio_reference_zero_read();
+                                    }
+                                    if reference_copied < n {
+                                        reference_frame[reference_copied..n].fill(0);
+                                    }
+                                    crate::wake::feed_pcm_i16(
+                                        &mic_frame[..n],
+                                        &reference_frame[..n],
+                                        audio_playing,
+                                    );
+                                }
 
                                 if audio_recording {
                                     let mut guard =
@@ -1299,8 +1347,8 @@ impl Drop for AudioPipelineState {
 #[cfg(test)]
 mod tests {
     use super::{
-        mic_i2s_sample_to_pcm16, should_read_mic_frame, AUDIO_MIC_FRAME_SAMPLES,
-        AUDIO_MIC_I2S_STAGING_SAMPLES, AUDIO_SPEAKER_FRAME_SAMPLES,
+        mic_i2s_sample_to_pcm16, should_feed_wake_backend, should_read_mic_frame,
+        AUDIO_MIC_FRAME_SAMPLES, AUDIO_MIC_I2S_STAGING_SAMPLES, AUDIO_SPEAKER_FRAME_SAMPLES,
         AUDIO_SPEAKER_I2S_STAGING_SAMPLES,
     };
 
@@ -1310,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn mic_polling_turns_on_for_recording_or_wake_word() {
+    fn mic_polling_turns_on_for_recording_or_wake_backend() {
         assert!(should_read_mic_frame(true, false, false, false));
         assert!(should_read_mic_frame(false, false, true, false));
     }
@@ -1319,6 +1367,15 @@ mod tests {
     fn audio_playback_only_reads_when_interrupt_listening_is_enabled() {
         assert!(!should_read_mic_frame(true, true, true, false));
         assert!(should_read_mic_frame(true, true, true, true));
+        assert!(!should_read_mic_frame(false, true, false, true));
+    }
+
+    #[test]
+    fn wake_backend_feed_is_suppressed_while_recording_unless_barge_in_is_armed() {
+        assert!(should_feed_wake_backend(false, false, true));
+        assert!(!should_feed_wake_backend(true, false, true));
+        assert!(should_feed_wake_backend(true, true, true));
+        assert!(!should_feed_wake_backend(false, false, false));
     }
 
     #[test]
