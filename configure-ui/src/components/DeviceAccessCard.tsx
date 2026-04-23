@@ -23,6 +23,7 @@ import {
   validatePairingCodeDraft,
 } from "../pages/deviceAccessFlow";
 import {
+  markPairingAuthValid,
   setDeviceProbeState,
   setDeviceSessionState,
 } from "../store/deviceStatusStore";
@@ -294,6 +295,22 @@ export function DeviceAccessCard() {
     setPairingInitConfirmOpen(true);
   }, [pairingInitCodeInput, showToast, t]);
 
+  const commitValidatedPairing = useCallback(
+    (normalizedCode: string) => {
+      // Unlock validates a transient candidate code before it is persisted;
+      // promote the current session immediately so the shell can leave the access card on the first submit.
+      markPairingAuthValid();
+      setDeviceSessionState({
+        hasTarget: true,
+        localPairing: "present",
+        preserveAuth: true,
+      });
+      setPairingCode(normalizedCode);
+      setCodeInput(normalizedCode);
+    },
+    [setPairingCode],
+  );
+
   const handleInitializePairing = useCallback(async () => {
     const requestVersion = beginAccessRequest();
     setPairingSubmitting("init_pairing");
@@ -326,7 +343,7 @@ export function DeviceAccessCard() {
       setPairingSubmitting(null);
       return;
     }
-    setPairingCode(normalizedCode);
+    commitValidatedPairing(normalizedCode);
     setPairingInitCodeInput("");
     showToast(t("device.pairingInitSuccess"), { variant: "success" });
     setPairingSubmitting(null);
@@ -334,9 +351,9 @@ export function DeviceAccessCard() {
     api.pairing,
     baseUrl,
     beginAccessRequest,
+    commitValidatedPairing,
     isCurrentAccessRequest,
     pairingInitCodeInput,
-    setPairingCode,
     showToast,
     t,
     urlInput,
@@ -360,15 +377,15 @@ export function DeviceAccessCard() {
       setPairingSubmitting(null);
       return;
     }
-    setPairingCode(normalizedCode);
+    commitValidatedPairing(normalizedCode);
     showToast(t("device.unlockSuccess"), { variant: "success" });
     setPairingSubmitting(null);
   }, [
     baseUrl,
     beginAccessRequest,
+    commitValidatedPairing,
     codeInput,
     isCurrentAccessRequest,
-    setPairingCode,
     showToast,
     t,
     urlInput,

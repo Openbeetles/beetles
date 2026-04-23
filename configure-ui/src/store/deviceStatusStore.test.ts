@@ -129,7 +129,7 @@ test("deriveAppMode returns ready only when the device is reachable and protecte
   });
 });
 
-test("validated pairing can transition into ready once the local pairing is persisted on the same target", () => {
+test("first successful unlock reaches ready once the validated pairing is persisted on the same target", () => {
   resetStoreState();
   setDeviceSessionState({ hasTarget: true, localPairing: "absent" });
   setDeviceProbeState({ transport: "reachable", devicePairing: "initialized" });

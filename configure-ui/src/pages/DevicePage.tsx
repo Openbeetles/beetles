@@ -9,7 +9,6 @@ import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { OS_ICON_DASHBOARD } from "../config/osIcons";
 import { DeviceAccessCard } from "../components/DeviceAccessCard";
-import { WifiCredentialFields } from "../components/WifiCredentialFields";
 import {
   PageLoadErrorState,
   SettingsRow,
@@ -36,10 +35,7 @@ import {
 } from "../components/deviceStatusBarHelpers";
 import { SystemStatusPanel } from "../components/SystemStatusPanel";
 import { SectionLoadProgress } from "../components/SectionLoadProgress";
-import { useConfig } from "../hooks/useConfig";
 import { useUnsaved } from "../hooks/useUnsaved";
-import { useWifiScanController } from "../hooks/useWifiScanController";
-import { translateApiError } from "../i18n/apiErrors";
 import { runDeferredLoading } from "../util/deferredLoading";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 import {
@@ -63,7 +59,7 @@ import {
   TEXT_BODY_TERTIARY_SX,
   TEXT_DASHBOARD_CARD_TITLE_SX,
 } from "../theme/panelStyles";
-import { setRestartPending, useDeviceRuntimeKind } from "../store/deviceStatusStore";
+import { useDeviceRuntimeKind } from "../store/deviceStatusStore";
 import {
   DEFAULT_DEVICE_BASE_URL,
   deriveDeviceAccessStage,
@@ -361,12 +357,6 @@ export function DevicePage() {
   const { t } = useTranslation();
   const { setDirty } = useUnsaved();
   const { baseUrl, pairingCode, setBaseUrl, setPairingCode } = useDevice();
-  const {
-    systemConfig,
-    loadSystemConfig,
-    systemLoading: configLoading,
-    systemError: configError,
-  } = useConfig();
   const runtimeKind = useDeviceRuntimeKind();
   const [urlInput, setUrlInput] = useState(baseUrl || DEFAULT_DEVICE_BASE_URL);
   const [codeInput, setCodeInput] = useState(pairingCode);
@@ -390,34 +380,11 @@ export function DevicePage() {
   );
   const [healthLoading, setHealthLoading] = useState(false);
   const [healthError, setHealthError] = useState("");
-  const [wifiConfigSeeded, setWifiConfigSeeded] = useState(false);
-  const [wifiSsidInput, setWifiSsidInput] = useState("");
-  const [wifiInitialSsid, setWifiInitialSsid] = useState("");
-  const [wifiPassInput, setWifiPassInput] = useState("");
-  const [wifiActionState, setWifiActionState] = useState<
-    "idle" | "saving" | "ok" | "fail"
-  >("idle");
-  const [wifiActionMessage, setWifiActionMessage] = useState("");
-  const [wifiRestartRequired, setWifiRestartRequired] = useState(false);
-  const [wifiRestarting, setWifiRestarting] = useState(false);
-  const {
-    wifiScanList,
-    wifiScanLoading,
-    wifiScanError,
-    handleWifiScan,
-    resetWifiScan,
-  } = useWifiScanController({
-    canScan: canAccessProtectedApis && Boolean(baseUrl?.trim()),
-    scan: api.system.wifiScan,
-    t,
-  });
 
   const deviceSessionKey = `${baseUrl ?? ""}\0${pairingCode ?? ""}`;
   const prevDeviceSessionKeyRef = useRef(deviceSessionKey);
   const healthLoadRequestIdRef = useRef(0);
   const channelLoadRequestIdRef = useRef(0);
-  const wifiConfigRequestedRef = useRef(false);
-  const wifiConfigSeededRef = useRef(false);
   useEffect(() => {
     if (deviceSessionKey === prevDeviceSessionKeyRef.current) return;
     prevDeviceSessionKeyRef.current = deviceSessionKey;
@@ -435,19 +402,8 @@ export function DevicePage() {
       setMetricsData(null);
       setHealthLoading(false);
       setHealthError("");
-      wifiConfigRequestedRef.current = false;
-      wifiConfigSeededRef.current = false;
-      setWifiConfigSeeded(false);
-      setWifiSsidInput("");
-      setWifiInitialSsid("");
-      setWifiPassInput("");
-      setWifiActionState("idle");
-      setWifiActionMessage("");
-      setWifiRestartRequired(false);
-      setWifiRestarting(false);
-      resetWifiScan();
     });
-  }, [deviceSessionKey, baseUrl, pairingCode, resetWifiScan]);
+  }, [deviceSessionKey, baseUrl, pairingCode]);
 
   const connectionDraftDirty = useMemo(() => {
     const draftUrl = normalizeDeviceUrl(urlInput);
@@ -456,13 +412,6 @@ export function DevicePage() {
     const savedCode = (pairingCode ?? "").trim();
     return draftUrl !== savedUrl || draftCode !== savedCode;
   }, [urlInput, codeInput, baseUrl, pairingCode]);
-  const wifiDraftDirty = useMemo(
-    () =>
-      accessStage === "ready" &&
-      (wifiSsidInput.trim() !== wifiInitialSsid.trim() ||
-        wifiPassInput.trim().length > 0),
-    [accessStage, wifiInitialSsid, wifiPassInput, wifiSsidInput],
-  );
 
   const runtimeStatusKey = useMemo(
     () => buildDeviceOperationalStatusKey(healthData, resourceData),
@@ -482,8 +431,8 @@ export function DevicePage() {
 
   useEffect(() => {
     if (accessStage !== "ready") return;
-    setDirty(connectionDraftDirty || wifiDraftDirty);
-  }, [accessStage, connectionDraftDirty, setDirty, wifiDraftDirty]);
+    setDirty(connectionDraftDirty);
+  }, [accessStage, connectionDraftDirty, setDirty]);
 
   useEffect(() => {
     return () => setDirty(false);
@@ -510,85 +459,6 @@ export function DevicePage() {
       });
     }
   };
-
-  const handleSaveWifi = useCallback(async () => {
-    if (wifiPassInput.trim() && !wifiSsidInput.trim()) {
-      setWifiActionState("fail");
-      setWifiActionMessage(t("config.validation.wifiSsidRequired"));
-      return;
-    }
-    setWifiActionState("saving");
-    setWifiActionMessage("");
-    const result = await api.config.saveWifi({
-      wifi_ssid: wifiSsidInput.trim(),
-      wifi_pass: wifiPassInput,
-    });
-    if (result.ok) {
-      const nextSsid = wifiSsidInput.trim();
-      setWifiInitialSsid(nextSsid);
-      setWifiSsidInput(nextSsid);
-      setWifiPassInput("");
-      setWifiRestartRequired(Boolean(result.data?.restart_required));
-      setWifiActionState("ok");
-      setWifiActionMessage(
-        result.data?.restart_required
-          ? t("device.wifiRestartRequired")
-          : t("device.wifiSaveSuccess"),
-      );
-      return;
-    }
-    setWifiActionState("fail");
-    setWifiActionMessage(translateApiError(t, result.error, "common.error"));
-  }, [api.config, t, wifiPassInput, wifiSsidInput]);
-
-  const handleRestartDevice = useCallback(async () => {
-    if (wifiRestarting) return;
-    setWifiRestarting(true);
-    const result = await api.system.restart();
-    if (result.ok) {
-      setRestartPending();
-      showToast(t("device.restartSent"), { variant: "success" });
-    } else {
-      showToast(translateApiError(t, result.error, "device.restartFail"), {
-        variant: "error",
-      });
-    }
-    setWifiRestarting(false);
-  }, [api.system, showToast, t, wifiRestarting]);
-
-  useEffect(() => {
-    if (
-      accessStage !== "ready" ||
-      !canAccessProtectedApis ||
-      !baseUrl?.trim() ||
-      wifiConfigRequestedRef.current ||
-      systemConfig != null ||
-      configLoading
-    ) {
-      return;
-    }
-    wifiConfigRequestedRef.current = true;
-    void loadSystemConfig();
-  }, [
-    accessStage,
-    baseUrl,
-    canAccessProtectedApis,
-    systemConfig,
-    configLoading,
-    loadSystemConfig,
-  ]);
-
-  useEffect(() => {
-    if (!systemConfig || wifiConfigSeededRef.current) return;
-    wifiConfigSeededRef.current = true;
-    const nextSsid = systemConfig.wifi_ssid ?? "";
-    queueMicrotask(() => {
-      setWifiInitialSsid(nextSsid);
-      setWifiSsidInput(nextSsid);
-      setWifiPassInput("");
-      setWifiConfigSeeded(true);
-    });
-  }, [systemConfig, wifiConfigSeeded]);
 
   useEffect(() => {
     if (!canAccessProtectedApis || !baseUrl?.trim()) return;
@@ -1138,119 +1008,6 @@ export function DevicePage() {
     return <DeviceAccessCard />;
   }
 
-  const renderWifiCard = () => (
-    <DashboardCard
-      title={t("device.wifiSetupTitle")}
-      icon={<Os3dIcon src={OS_ICON_DASHBOARD.connection} variant="tile" />}
-      sx={{ height: "100%" }}
-    >
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
-          height: "100%",
-        }}
-      >
-        <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
-          {t("device.wifiSetupDesc")}
-        </Typography>
-        {configLoading && !wifiConfigSeeded ? (
-          <SectionLoadProgress
-            loading
-            idleHint={t("device.wifiConfigLoading")}
-          />
-        ) : null}
-        {configError && !wifiConfigSeeded ? (
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: LAYOUT_TOKENS.spacingInlineTight,
-              flexWrap: "wrap",
-            }}
-          >
-            <Typography variant="caption" sx={{ color: "var(--semantic-warning)" }}>
-              {translateApiError(t, configError, "device.wifiConfigLoadFailed")}
-            </Typography>
-            <Button
-              size="small"
-              variant="text"
-              onClick={() => {
-                wifiConfigRequestedRef.current = true;
-                void loadSystemConfig();
-              }}
-              sx={{ borderRadius: "var(--radius-control)" }}
-            >
-              {t("common.retry")}
-            </Button>
-          </Box>
-        ) : null}
-        <WifiCredentialFields
-          ssid={wifiSsidInput}
-          password={wifiPassInput}
-          onSsidChange={setWifiSsidInput}
-          onPasswordChange={setWifiPassInput}
-          canScan={canAccessProtectedApis}
-          onScan={() => {
-            void handleWifiScan();
-          }}
-          scanLoading={wifiScanLoading}
-          scanError={wifiScanError}
-          scanList={wifiScanList}
-        />
-        {wifiActionState !== "idle" ? (
-          <Typography
-            variant="caption"
-            sx={{
-              color:
-                wifiActionState === "fail"
-                  ? "var(--semantic-danger)"
-                  : "var(--semantic-success)",
-              fontWeight: 500,
-            }}
-          >
-            {wifiActionMessage}
-          </Typography>
-        ) : null}
-        <Box
-          sx={{
-            display: "flex",
-            gap: LAYOUT_TOKENS.spacingTitleToContent,
-            flexWrap: "wrap",
-            mt: "auto",
-          }}
-        >
-          <Button
-            variant="contained"
-            onClick={() => {
-              void handleSaveWifi();
-            }}
-            disabled={wifiActionState === "saving"}
-            sx={{ borderRadius: "var(--radius-full)", fontWeight: 600 }}
-          >
-            {wifiActionState === "saving" ? t("common.saving") : t("device.wifiSave")}
-          </Button>
-          <Button
-            variant="outlined"
-            onClick={() => {
-              void handleRestartDevice();
-            }}
-            disabled={wifiRestarting}
-            sx={{ borderRadius: "var(--radius-full)", fontWeight: 600 }}
-          >
-            {wifiRestarting ? t("device.restarting") : t("device.restart")}
-          </Button>
-        </Box>
-        {wifiRestartRequired ? (
-          <Typography variant="caption" sx={{ color: "var(--semantic-warning)" }}>
-            {t("device.wifiRestartRequired")}
-          </Typography>
-        ) : null}
-      </Box>
-    </DashboardCard>
-  );
-
   return (
     <>
       <Box
@@ -1320,15 +1077,6 @@ export function DevicePage() {
               }}
             >
               {renderConnectionCard()}
-            </Box>
-
-            <Box
-              sx={{
-                gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" },
-                gridRow: { xs: "span 2", lg: "span 2" },
-              }}
-            >
-              {renderWifiCard()}
             </Box>
 
             {/* Row 2: Device Details (4) + Channels (8) */}
