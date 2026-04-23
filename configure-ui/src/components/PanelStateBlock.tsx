@@ -9,7 +9,7 @@ import {
   TEXT_BODY_TERTIARY_SX,
 } from "../theme/panelStyles";
 
-/** 与 InlineAlert / DisconnectedCacheOverlay 对齐的语义色带。 */
+/** 与 InlineAlert / 全屏状态蒙层对齐的语义色带。 */
 export type PanelStateTone = "neutral" | "warning" | "danger";
 
 const TONE_WELL: Record<PanelStateTone, string> = {
@@ -52,7 +52,7 @@ export interface PanelStateHeroRowProps {
 }
 
 /**
- * 状态区标题行：左插画井 + 标题 + 说明（与 `DisconnectedCacheOverlay` 同源结构）。
+ * 状态区标题行：左插画井 + 标题 + 说明（与全屏状态蒙层同源结构）。
  * Shared hero row for section empty states and full-screen overlays.
  */
 export function PanelStateHeroRow({

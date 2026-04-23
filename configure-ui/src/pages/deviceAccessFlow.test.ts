@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   deriveDeviceSetupCardModel,
   deriveDeviceAccessStage,
+  deriveSuccessfulProbeSessionUpdate,
   normalizeDeviceUrl,
   validatePairingCodeDraft,
 } from "./deviceAccessFlow.ts";
@@ -75,4 +76,58 @@ test("validatePairingCodeDraft requires exactly six digits", () => {
   assert.equal(validatePairingCodeDraft("12345"), "device.pairingCodeInvalid");
   assert.equal(validatePairingCodeDraft("12a456"), "device.pairingCodeInvalid");
   assert.equal(validatePairingCodeDraft("123456"), null);
+});
+
+test("deriveSuccessfulProbeSessionUpdate preserves local pairing only for the same initialized target", () => {
+  assert.deepEqual(
+    deriveSuccessfulProbeSessionUpdate({
+      probedUrl: "http://192.168.4.1",
+      currentBaseUrl: "http://192.168.4.1",
+      currentPairingCode: "123456",
+      codeSet: true,
+    }),
+    {
+      nextBaseUrl: "http://192.168.4.1",
+      detectedPairingState: "initialized",
+      nextLocalPairing: "present",
+      preserveAuth: true,
+      shouldClearStoredPairing: false,
+    },
+  );
+});
+
+test("deriveSuccessfulProbeSessionUpdate clears stale pairing when the target changes", () => {
+  assert.deepEqual(
+    deriveSuccessfulProbeSessionUpdate({
+      probedUrl: "http://192.168.4.20",
+      currentBaseUrl: "http://192.168.4.1",
+      currentPairingCode: "123456",
+      codeSet: true,
+    }),
+    {
+      nextBaseUrl: "http://192.168.4.20",
+      detectedPairingState: "initialized",
+      nextLocalPairing: "absent",
+      preserveAuth: false,
+      shouldClearStoredPairing: true,
+    },
+  );
+});
+
+test("deriveSuccessfulProbeSessionUpdate clears stale pairing when the device is no longer initialized", () => {
+  assert.deepEqual(
+    deriveSuccessfulProbeSessionUpdate({
+      probedUrl: "http://192.168.4.1",
+      currentBaseUrl: "http://192.168.4.1",
+      currentPairingCode: "123456",
+      codeSet: false,
+    }),
+    {
+      nextBaseUrl: "http://192.168.4.1",
+      detectedPairingState: "uninitialized",
+      nextLocalPairing: "absent",
+      preserveAuth: false,
+      shouldClearStoredPairing: true,
+    },
+  );
 });

@@ -7,19 +7,18 @@ import {
   type ReactNode,
 } from "react";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { DisconnectedCacheOverlay } from "./DisconnectedCacheOverlay";
+import { DeviceAccessCard } from "./DeviceAccessCard";
 import { ShellPageTransition } from "./ShellPageTransition";
 import { Taskbar } from "./Taskbar";
 import { TopBar } from "./TopBar";
+import { shouldShowProtectedRouteBlocker } from "./layoutAccessGate";
 import { NavBlockerContext } from "../contexts/NavBlockerContext";
 import { MAIN_CONTENT_INNER_SX } from "../theme/panelStyles";
 import { UnsavedContext } from "../contexts/UnsavedContext";
-import { useConfig } from "../hooks/useConfig";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
 import {
@@ -28,9 +27,8 @@ import {
   consumeReconnectedAfterRestart,
   consumeRestartTimeout,
 } from "../store/deviceStatusStore";
-import { OS_ICON_DASHBOARD, OS_ICON_DIALOG, OS_ICON_NAV } from "../config/osIcons";
+import { OS_ICON_DIALOG } from "../config/osIcons";
 import { Os3dIcon } from "./Os3dIcon";
-import { PanelStateBlock } from "./form";
 
 interface LayoutProps {
   onOpenSettings?: () => void;
@@ -84,49 +82,22 @@ function MainSurface({
 }
 
 export function Layout({ onOpenSettings }: LayoutProps) {
-  const AUTO_REFRESH_SECONDS = 5;
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { dirty, setDirty } = useContext(UnsavedContext);
-  const {
-    systemConfig,
-    clearCachedSystemConfig,
-    refreshCachedSystemConfig,
-  } = useConfig();
   const { appMode } = useDeviceApi();
   const { showToast } = useToast();
   const deviceConnected = useDeviceConnected();
   const restartPhase = useRestartPhase();
   const [pendingPath, setPendingPath] = useState<string | null>(null);
-  const [refreshingCache, setRefreshingCache] = useState(false);
-  const [refreshCountdown, setRefreshCountdown] =
-    useState(AUTO_REFRESH_SECONDS);
-  /** 离线缓存蒙层下允许进入「连接设备」修改地址；离开该页或重连后恢复提示 */
-  const [
-    suppressDisconnectedCacheOverlay,
-    setSuppressDisconnectedCacheOverlay,
-  ] = useState(false);
   const showRestartBanner = restartPhase !== "idle";
-  const showDisconnectedCacheBanner =
-    !deviceConnected &&
-    systemConfig != null &&
-    appMode === "ready" &&
-    !showRestartBanner &&
-    !suppressDisconnectedCacheOverlay;
-  const showProtectedRouteBlocker =
-    location.pathname !== "/device" &&
-    appMode !== "ready" &&
-    !showRestartBanner;
-  useEffect(() => {
-    if (!deviceConnected) return;
-    queueMicrotask(() => setSuppressDisconnectedCacheOverlay(false));
-  }, [deviceConnected]);
-
-  useEffect(() => {
-    if (location.pathname === "/device") return;
-    queueMicrotask(() => setSuppressDisconnectedCacheOverlay(false));
-  }, [location.pathname]);
+  const showProtectedRouteBlocker = shouldShowProtectedRouteBlocker({
+    pathname: location.pathname,
+    appMode,
+    deviceConnected,
+    restartPhase,
+  });
 
   const attemptNavigate = useCallback(
     (path: string) => {
@@ -164,7 +135,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   }, [restartPhase, showToast, t]);
 
   const showUnsavedDialog = dirty && pendingPath != null;
-  const useImmersiveMainSurface = location.pathname === "/device";
+  const useImmersiveMainSurface =
+    location.pathname === "/device" || showProtectedRouteBlocker;
 
   const handleUnsavedConfirm = useCallback(() => {
     setDirty(false);
@@ -172,123 +144,9 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     setPendingPath(null);
   }, [navigate, pendingPath, setDirty]);
 
-  const handleRefreshCachedConfig = useCallback(async () => {
-    if (refreshingCache) return;
-    setRefreshingCache(true);
-    const result = await refreshCachedSystemConfig();
-    if (!result.ok && result.error) {
-      showToast(result.error, { variant: "warning" });
-    }
-    setRefreshingCache(false);
-    setRefreshCountdown(AUTO_REFRESH_SECONDS);
-  }, [refreshingCache, refreshCachedSystemConfig, showToast]);
-
-  useEffect(() => {
-    if (!showDisconnectedCacheBanner) {
-      queueMicrotask(() => {
-        setRefreshingCache(false);
-        setRefreshCountdown(AUTO_REFRESH_SECONDS);
-      });
-      return;
-    }
-    if (refreshingCache) return;
-    const timer = window.setInterval(() => {
-      setRefreshCountdown((prev) => {
-        if (prev <= 1) {
-          void handleRefreshCachedConfig();
-          return AUTO_REFRESH_SECONDS;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [showDisconnectedCacheBanner, refreshingCache, handleRefreshCachedConfig]);
-
-  const handleOpenDevicePage = useCallback(() => {
-    attemptNavigate("/device");
-  }, [attemptNavigate]);
-
-  const protectedRouteBlocker = (() => {
-    if (!showProtectedRouteBlocker) return null;
-    if (appMode === "no_target") {
-      return (
-        <PanelStateBlock
-          tone="neutral"
-          presentation="empty"
-          icon={<Os3dIcon src={OS_ICON_NAV["/device"]} variant="inline" />}
-          title={t("device.bannerNeedDevice")}
-          description={t("device.sectionConnectionDesc")}
-          actions={
-            <Button
-              variant="contained"
-              onClick={handleOpenDevicePage}
-              sx={{ borderRadius: "var(--radius-control)" }}
-            >
-              {t("nav.device")}
-            </Button>
-          }
-        />
-      );
-    }
-    if (appMode === "offline") {
-      return (
-        <PanelStateBlock
-          tone="warning"
-          presentation="empty"
-          icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceUnreachable} variant="inline" />}
-          title={t("device.notConnected")}
-          description={t("config.connectDesc")}
-          actions={
-            <Button
-              variant="contained"
-              onClick={handleOpenDevicePage}
-              sx={{ borderRadius: "var(--radius-control)" }}
-            >
-              {t("nav.device")}
-            </Button>
-          }
-        />
-      );
-    }
-    if (appMode === "init_pairing") {
-      return (
-        <PanelStateBlock
-          tone="neutral"
-          presentation="empty"
-          icon={<Os3dIcon src={OS_ICON_NAV["/device"]} variant="inline" />}
-          title={t("device.bannerDeviceNotActivated")}
-          description={t("device.sectionConnectionDesc")}
-          actions={
-            <Button
-              variant="contained"
-              onClick={handleOpenDevicePage}
-              sx={{ borderRadius: "var(--radius-control)" }}
-            >
-              {t("nav.device")}
-            </Button>
-          }
-        />
-      );
-    }
-    return (
-      <PanelStateBlock
-        tone="neutral"
-        presentation="empty"
-        icon={<Os3dIcon src={OS_ICON_NAV["/device"]} variant="inline" />}
-        title={t("device.bannerNeedPairing")}
-        description={t("config.needPairingDesc")}
-        actions={
-          <Button
-            variant="contained"
-            onClick={handleOpenDevicePage}
-            sx={{ borderRadius: "var(--radius-control)" }}
-          >
-            {t("nav.device")}
-          </Button>
-        }
-      />
-    );
-  })();
+  const protectedRouteBlocker = showProtectedRouteBlocker ? (
+    <DeviceAccessCard />
+  ) : null;
 
   /** 全屏磨砂底：拦截底层交互，避免可视蒙层下仍可点击 */
   const statusOverlayBackdropSx = {
@@ -386,26 +244,6 @@ export function Layout({ onOpenSettings }: LayoutProps) {
               </Typography>
             </Box>
           </>
-        )}
-        {showDisconnectedCacheBanner && (
-          <DisconnectedCacheOverlay
-            title={t("config.deviceDisconnectedCacheTitle")}
-            subtitle={t("config.deviceDisconnectedCacheSubtitle")}
-            editConnectionLabel={t("config.editDeviceConnection")}
-            retryLabel={
-              refreshingCache
-                ? `${t("common.loading")}…`
-                : `${t("common.retry")} (${refreshCountdown}s)`
-            }
-            onEditConnection={() => {
-              clearCachedSystemConfig();
-              navigate("/device");
-            }}
-            onRetry={() => {
-              void handleRefreshCachedConfig();
-            }}
-            retryDisabled={refreshingCache}
-          />
         )}
         <Box
           sx={{

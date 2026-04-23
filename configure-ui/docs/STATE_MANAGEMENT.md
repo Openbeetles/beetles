@@ -4,7 +4,7 @@
 
 ## 1. 状态分层
 
-- 持久连接状态：`DeviceContext`（`baseUrl` / `pairingCode`），允许 `localStorage` 持久化。
+- 持久连接状态：`DeviceContext`（`baseUrl` / `pairingCode`），允许 `localStorage` 持久化；同目标重新探测时保留已缓存配对码，只有换目标或设备明确未初始化时才清空。
 - 全局设备运行状态：`deviceStatusStore`（连接可达性、激活态、重启阶段）。
 - 配置主数据：`ConfigContext`（`config` + `load/save`）。
 - 页面可编辑副本：仅配置编辑页可保留本地 `form/useState`，用于“编辑未提交”场景。
@@ -23,6 +23,8 @@
 8. 页面主体状态必须互斥：`loading`、阻塞性 `error`、`empty/unsupported/connect-first`、正式内容只能渲染一种。若已有成功数据、后续刷新失败，错误只能退化为顶部 `InlineAlert`，不得和 loading/empty/form 主体并存。
 9. 任意重新加载动作开始前必须先清空上一轮页面级错误；禁止保留旧 error 再切回 loading，否则会出现“加载中 + 错误同时可见”的竞态。
 10. 页面级 transport / runtime 错误文案必须先归一化为产品语义（i18n key 或统一映射），禁止把 `Failed to fetch`、`operator window required` 一类底层异常直接暴露给用户。
+11. 非 `ready` 状态不得再显示“跳去设备页”的弱 blocker；所有受保护页统一复用完整接入卡，让用户就地完成探测、初始化和解锁。
+12. 受保护 API 的鉴权结果必须按 `baseUrl + pairingCode` 会话键回写；旧请求不得污染新会话的 auth 状态。
 
 ## 3. 新页面接入清单
 

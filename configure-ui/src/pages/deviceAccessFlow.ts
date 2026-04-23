@@ -1,4 +1,8 @@
-import type { AppMode } from "../store/deviceStatusStore";
+import type {
+  AppMode,
+  DevicePairingState,
+  LocalPairingState,
+} from "../store/deviceStatusStore";
 
 export const DEFAULT_DEVICE_BASE_URL = "http://192.168.4.1";
 
@@ -13,6 +17,14 @@ export interface DeviceSetupCardModel {
   primaryAction: DeviceSetupPrimaryAction;
   showPairingCodeField: boolean;
   requireExplicitConfirmation: boolean;
+}
+
+export interface SuccessfulProbeSessionUpdate {
+  nextBaseUrl: string;
+  detectedPairingState: DevicePairingState;
+  nextLocalPairing: LocalPairingState;
+  preserveAuth: boolean;
+  shouldClearStoredPairing: boolean;
 }
 
 function normalizePairingCode(code: string): string {
@@ -72,4 +84,25 @@ export function validatePairingCodeDraft(code: string): string | null {
   if (!normalized) return "device.pairingCodeRequired";
   if (!/^\d{6}$/.test(normalized)) return "device.pairingCodeInvalid";
   return null;
+}
+
+export function deriveSuccessfulProbeSessionUpdate(args: {
+  probedUrl: string;
+  currentBaseUrl?: string;
+  currentPairingCode?: string;
+  codeSet: boolean;
+}): SuccessfulProbeSessionUpdate {
+  const nextBaseUrl = normalizeDeviceUrl(args.probedUrl);
+  const currentBaseUrl = normalizeDeviceUrl(args.currentBaseUrl ?? "");
+  const hasStoredPairing = normalizePairingCode(args.currentPairingCode ?? "") !== "";
+  const sameTarget = currentBaseUrl === nextBaseUrl && currentBaseUrl !== "";
+  const preserveStoredPairing = args.codeSet && sameTarget && hasStoredPairing;
+
+  return {
+    nextBaseUrl,
+    detectedPairingState: args.codeSet ? "initialized" : "uninitialized",
+    nextLocalPairing: preserveStoredPairing ? "present" : "absent",
+    preserveAuth: preserveStoredPairing,
+    shouldClearStoredPairing: hasStoredPairing && !preserveStoredPairing,
+  };
 }

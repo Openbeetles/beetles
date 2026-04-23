@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getPairingCode } from '../api/endpoints/pairingCode'
 import {
+  buildProtectedApiSessionKey,
   clearCsrfToken,
   fetchCsrfToken,
   setProtectedApiAuthObserver,
@@ -62,7 +63,14 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   }, [baseUrl, pairingCode])
 
   useEffect(() => {
+    const activeSessionKey = buildProtectedApiSessionKey(
+      baseUrl ?? '',
+      pairingCode ?? '',
+    )
     setProtectedApiAuthObserver((event) => {
+      if (event.sessionKey !== activeSessionKey) {
+        return
+      }
       if (event.state === 'valid') {
         markPairingAuthValid()
         return
@@ -76,7 +84,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     return () => {
       setProtectedApiAuthObserver(null)
     }
-  }, [])
+  }, [baseUrl, pairingCode])
 
   const applyPairingResult = useCallback((
     url: string,

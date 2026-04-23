@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  buildProtectedApiSessionKey,
   clearCsrfToken,
   fetchCsrfToken,
   request,
@@ -120,13 +121,13 @@ test('request surfaces error_key and upstream_error without falling back to raw 
   }
 })
 
-test('request notifies protected auth observer when a validated request succeeds', async () => {
+test('request notifies protected auth observer with the active session key when a validated request succeeds', async () => {
   clearCsrfToken()
 
-  const authEvents: string[] = []
+  const authEvents: Array<{ state: string; sessionKey: string }> = []
   const originalFetch = globalThis.fetch
   setProtectedApiAuthObserver((event) => {
-    authEvents.push(event.state)
+    authEvents.push({ state: event.state, sessionKey: event.sessionKey })
   })
   globalThis.fetch = (async () =>
     jsonResponse({
@@ -142,7 +143,12 @@ test('request notifies protected auth observer when a validated request succeeds
     })
 
     assert.equal(result.ok, true)
-    assert.deepEqual(authEvents, ['valid'])
+    assert.deepEqual(authEvents, [
+      {
+        state: 'valid',
+        sessionKey: buildProtectedApiSessionKey('http://device', '123456'),
+      },
+    ])
   } finally {
     setProtectedApiAuthObserver(null)
     globalThis.fetch = originalFetch
@@ -150,13 +156,13 @@ test('request notifies protected auth observer when a validated request succeeds
   }
 })
 
-test('request notifies protected auth observer when a validated request gets pairing_invalid', async () => {
+test('request notifies protected auth observer with the active session key when a validated request gets pairing_invalid', async () => {
   clearCsrfToken()
 
-  const authEvents: string[] = []
+  const authEvents: Array<{ state: string; sessionKey: string }> = []
   const originalFetch = globalThis.fetch
   setProtectedApiAuthObserver((event) => {
-    authEvents.push(event.state)
+    authEvents.push({ state: event.state, sessionKey: event.sessionKey })
   })
   globalThis.fetch = (async () =>
     jsonResponse({
@@ -174,7 +180,12 @@ test('request notifies protected auth observer when a validated request gets pai
     })
 
     assert.equal(result.ok, false)
-    assert.deepEqual(authEvents, ['invalid'])
+    assert.deepEqual(authEvents, [
+      {
+        state: 'invalid',
+        sessionKey: buildProtectedApiSessionKey('http://device', '123456'),
+      },
+    ])
   } finally {
     setProtectedApiAuthObserver(null)
     globalThis.fetch = originalFetch

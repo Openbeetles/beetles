@@ -17,6 +17,7 @@ export interface ProtectedApiAuthEvent {
   state: ProtectedApiAuthState
   method: 'GET' | 'POST' | 'DELETE'
   path: string
+  sessionKey: string
 }
 
 type ProtectedApiAuthObserver = ((event: ProtectedApiAuthEvent) => void) | null
@@ -52,6 +53,13 @@ export function setProtectedApiAuthObserver(
   observer: ProtectedApiAuthObserver,
 ): void {
   protectedApiAuthObserver = observer
+}
+
+export function buildProtectedApiSessionKey(
+  baseUrl: string,
+  pairingCode?: string,
+): string {
+  return `${baseUrl.trim().replace(/\/$/, '')}\0${(pairingCode ?? '').trim()}`
 }
 
 function notifyProtectedApiAuthObserver(event: ProtectedApiAuthEvent): void {
@@ -188,10 +196,21 @@ async function requestInternal<T = unknown>(
         }
       }
       if (authPolicy === 'validate' && pairingCode?.trim()) {
+        const sessionKey = buildProtectedApiSessionKey(baseUrl, pairingCode)
         if (errorKey === 'auth.pairing_invalid') {
-          notifyProtectedApiAuthObserver({ state: 'invalid', method, path })
+          notifyProtectedApiAuthObserver({
+            state: 'invalid',
+            method,
+            path,
+            sessionKey,
+          })
         } else if (errorKey === 'auth.pairing_required') {
-          notifyProtectedApiAuthObserver({ state: 'required', method, path })
+          notifyProtectedApiAuthObserver({
+            state: 'required',
+            method,
+            path,
+            sessionKey,
+          })
         }
       }
       const err = upstreamError ?? errorKey ?? rawError ?? 'common.http_status'
@@ -205,7 +224,12 @@ async function requestInternal<T = unknown>(
       } as ApiResult<T>
     }
     if (authPolicy === 'validate' && pairingCode?.trim()) {
-      notifyProtectedApiAuthObserver({ state: 'valid', method, path })
+      notifyProtectedApiAuthObserver({
+        state: 'valid',
+        method,
+        path,
+        sessionKey: buildProtectedApiSessionKey(baseUrl, pairingCode),
+      })
     }
     return { ok: true, status: res.status, data: data as T }
   } catch {

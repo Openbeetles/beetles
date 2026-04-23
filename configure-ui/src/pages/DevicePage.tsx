@@ -8,7 +8,7 @@ import type { SxProps, Theme } from "@mui/material/styles";
 import RefreshRounded from "@mui/icons-material/RefreshRounded";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { OS_ICON_DASHBOARD } from "../config/osIcons";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DeviceAccessCard } from "../components/DeviceAccessCard";
 import { WifiCredentialFields } from "../components/WifiCredentialFields";
 import {
   PageLoadErrorState,
@@ -21,8 +21,6 @@ import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useToast } from "../hooks/useToast";
-import { getSystem } from "../api/endpoints/config";
-import { getPairingCode } from "../api/endpoints/pairingCode";
 import {
   type SystemInfoData,
   type ChannelConnectivityItem,
@@ -65,18 +63,11 @@ import {
   TEXT_BODY_TERTIARY_SX,
   TEXT_DASHBOARD_CARD_TITLE_SX,
 } from "../theme/panelStyles";
-import {
-  setDeviceProbeState,
-  setDeviceSessionState,
-  setRestartPending,
-  useDeviceRuntimeKind,
-} from "../store/deviceStatusStore";
+import { setRestartPending, useDeviceRuntimeKind } from "../store/deviceStatusStore";
 import {
   DEFAULT_DEVICE_BASE_URL,
   deriveDeviceAccessStage,
-  deriveDeviceSetupCardModel,
   normalizeDeviceUrl,
-  validatePairingCodeDraft,
 } from "./deviceAccessFlow";
 
 type ConnectionEditorVariant = "dashboard" | "setup";
@@ -268,96 +259,6 @@ function ConnectionEditor({
   );
 }
 
-function SetupConnectionEditor({
-  urlValue,
-  pairingCodeValue,
-  pairingCodeReveal,
-  onUrlChange,
-  onCodeChange,
-  onPrimaryAction,
-  primaryLabel,
-  primaryDisabled,
-  baseUrlLabel,
-  baseUrlPlaceholder,
-  pairingCodeLabel,
-  pairingCodePlaceholder,
-  showPairingCodeField,
-}: {
-  urlValue: string;
-  pairingCodeValue: string;
-  pairingCodeReveal: ReturnType<typeof useRevealedPassword>;
-  onUrlChange: (value: string) => void;
-  onCodeChange: (value: string) => void;
-  onPrimaryAction: () => void;
-  primaryLabel: string;
-  primaryDisabled: boolean;
-  baseUrlLabel: string;
-  baseUrlPlaceholder: string;
-  pairingCodeLabel: string;
-  pairingCodePlaceholder: string;
-  showPairingCodeField: boolean;
-}) {
-  return (
-    <Box
-      sx={{
-        position: "relative",
-        zIndex: 1,
-        display: "flex",
-        flexDirection: "column",
-        gap: LAYOUT_TOKENS.spacingFormFields,
-      }}
-    >
-      <TextField
-        label={baseUrlLabel}
-        placeholder={baseUrlPlaceholder}
-        value={urlValue}
-        onChange={(e) => onUrlChange(e.target.value)}
-        variant="outlined"
-        fullWidth
-        slotProps={{
-          htmlInput: { style: { fontFamily: "var(--font-mono)" } },
-        }}
-      />
-      {showPairingCodeField ? (
-        <TextField
-          label={pairingCodeLabel}
-          placeholder={pairingCodePlaceholder}
-          value={pairingCodeValue}
-          type={pairingCodeReveal.type}
-          onChange={(e) => onCodeChange(e.target.value)}
-          variant="outlined"
-          fullWidth
-          slotProps={{
-            htmlInput: {
-              maxLength: 6,
-              style: {
-                fontFamily: "var(--font-mono)",
-                letterSpacing: "0.2em",
-              },
-              ...pairingCodeReveal.inputProps,
-            },
-          }}
-        />
-      ) : null}
-      <Button
-        variant="contained"
-        onClick={onPrimaryAction}
-        disabled={primaryDisabled}
-        size="large"
-        sx={{
-          borderRadius: "var(--radius-full)",
-          py: 1.25,
-          fontWeight: 600,
-          boxShadow: "none",
-          "&:hover": { boxShadow: "none" },
-        }}
-      >
-        {primaryLabel}
-      </Button>
-    </Box>
-  );
-}
-
 export function DashboardCard({
   icon,
   title,
@@ -469,11 +370,6 @@ export function DevicePage() {
   const runtimeKind = useDeviceRuntimeKind();
   const [urlInput, setUrlInput] = useState(baseUrl || DEFAULT_DEVICE_BASE_URL);
   const [codeInput, setCodeInput] = useState(pairingCode);
-  const [pairingInitCodeInput, setPairingInitCodeInput] = useState("");
-  const [pairingInitConfirmOpen, setPairingInitConfirmOpen] = useState(false);
-  const [setupDetectedPairingState, setSetupDetectedPairingState] = useState<
-    "unknown" | "uninitialized" | "initialized"
-  >("unknown");
   const pairingCodeReveal = useRevealedPassword();
   const { api, appMode, canAccessProtectedApis } = useDeviceApi();
   const accessStage = deriveDeviceAccessStage(appMode);
@@ -481,9 +377,6 @@ export function DevicePage() {
   const [probeStatus, setProbeStatus] = useState<
     "idle" | "checking" | "ok" | "fail"
   >("idle");
-  const [pairingSubmitting, setPairingSubmitting] = useState<
-    null | "init_pairing" | "unlock"
-  >(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfoData | null>(null);
   const [channelList, setChannelList] = useState<ChannelConnectivityItem[]>([]);
   const [channelLoading, setChannelLoading] = useState(false);
@@ -533,9 +426,6 @@ export function DevicePage() {
     queueMicrotask(() => {
       setUrlInput(nextUrl);
       setCodeInput(nextCode);
-      setPairingInitCodeInput("");
-      setPairingInitConfirmOpen(false);
-      setSetupDetectedPairingState("unknown");
       setSystemInfo(null);
       setChannelList([]);
       setChannelLoading(false);
@@ -566,10 +456,6 @@ export function DevicePage() {
     const savedCode = (pairingCode ?? "").trim();
     return draftUrl !== savedUrl || draftCode !== savedCode;
   }, [urlInput, codeInput, baseUrl, pairingCode]);
-  const pairingInitDirty = useMemo(
-    () => pairingInitCodeInput.trim().length > 0,
-    [pairingInitCodeInput],
-  );
   const wifiDraftDirty = useMemo(
     () =>
       accessStage === "ready" &&
@@ -582,22 +468,6 @@ export function DevicePage() {
     () => buildDeviceOperationalStatusKey(healthData, resourceData),
     [healthData, resourceData],
   );
-  const targetDirty = useMemo(() => {
-    if (accessStage === "ready") return false;
-    return normalizeDeviceUrl(urlInput) !== normalizeDeviceUrl(baseUrl ?? "");
-  }, [accessStage, baseUrl, urlInput]);
-  const setupDisplayMode = useMemo(() => {
-    if (targetDirty || appMode !== "probing") return appMode;
-    if (setupDetectedPairingState === "initialized") return "unlock";
-    if (setupDetectedPairingState === "uninitialized") return "init_pairing";
-    return appMode;
-  }, [appMode, setupDetectedPairingState, targetDirty]);
-  const setupCardModel = useMemo(
-    () => deriveDeviceSetupCardModel(setupDisplayMode, { targetDirty }),
-    [setupDisplayMode, targetDirty],
-  );
-  const setupPairingCodeValue =
-    setupCardModel.stage === "init_pairing" ? pairingInitCodeInput : codeInput;
   const deviceSummaryFields = useMemo(
     () => buildDeviceSummaryFields(systemInfo, healthData, runtimeStatusKey),
     [systemInfo, healthData, runtimeStatusKey],
@@ -611,8 +481,9 @@ export function DevicePage() {
   });
 
   useEffect(() => {
-    setDirty(connectionDraftDirty || pairingInitDirty || wifiDraftDirty);
-  }, [connectionDraftDirty, pairingInitDirty, setDirty, wifiDraftDirty]);
+    if (accessStage !== "ready") return;
+    setDirty(connectionDraftDirty || wifiDraftDirty);
+  }, [accessStage, connectionDraftDirty, setDirty, wifiDraftDirty]);
 
   useEffect(() => {
     return () => setDirty(false);
@@ -639,132 +510,6 @@ export function DevicePage() {
       });
     }
   };
-
-  const handleSetupProbe = useCallback(async () => {
-    const url = normalizeDeviceUrl(urlInput);
-    setProbeStatus("checking");
-    const res = await getPairingCode(url);
-    if (!res.ok || !res.data) {
-      setProbeStatus("fail");
-      setSetupDetectedPairingState("unknown");
-      showToast(
-        `${t("device.probeFail")}: ${translateApiError(t, res.error, "common.error")}`,
-        {
-          variant: "error",
-        },
-      );
-      return;
-    }
-
-    setProbeStatus("ok");
-    setSetupDetectedPairingState(
-      res.data.code_set ? "initialized" : "uninitialized",
-    );
-    setBaseUrl(url);
-    setPairingCode("");
-    setCodeInput("");
-    setPairingInitCodeInput("");
-    setPairingInitConfirmOpen(false);
-    setDeviceSessionState({
-      hasTarget: true,
-      localPairing: "absent",
-    });
-    setDeviceProbeState({
-      transport: "reachable",
-      devicePairing: res.data.code_set ? "initialized" : "uninitialized",
-    });
-    showToast(t("device.probeOk"), { variant: "success" });
-  }, [setBaseUrl, setPairingCode, showToast, t, urlInput]);
-
-  const validateProtectedAccess = useCallback(
-    async (url: string, candidatePairingCode: string) => {
-      const result = await getSystem(url, candidatePairingCode);
-      if (result.ok) return null;
-      return translateApiError(t, result.error, "device.pairingValidateFailed");
-    },
-    [t],
-  );
-
-  const handleRequestPairingInitialization = useCallback(() => {
-    const validationKey = validatePairingCodeDraft(pairingInitCodeInput);
-    if (validationKey) {
-      showToast(t(validationKey), { variant: "error" });
-      return;
-    }
-    setPairingInitConfirmOpen(true);
-  }, [pairingInitCodeInput, showToast, t]);
-
-  const handleInitializePairing = useCallback(async () => {
-    setPairingSubmitting("init_pairing");
-    const normalizedCode = pairingInitCodeInput.trim();
-    const initResult = await api.pairing.initialize(normalizedCode);
-    if (!initResult.ok) {
-      if (initResult.error === "pairing.code_already_set") {
-        setDeviceProbeState({
-          transport: "reachable",
-          devicePairing: "initialized",
-        });
-      }
-      showToast(translateApiError(t, initResult.error, "common.error"), {
-        variant: "error",
-      });
-      setPairingSubmitting(null);
-      return;
-    }
-    const url = normalizeDeviceUrl(baseUrl ?? urlInput);
-    setDeviceProbeState({
-      transport: "reachable",
-      devicePairing: "initialized",
-    });
-    setCodeInput(normalizedCode);
-    const validationError = await validateProtectedAccess(url, normalizedCode);
-    if (validationError) {
-      showToast(validationError, { variant: "error" });
-      setPairingSubmitting(null);
-      return;
-    }
-    setPairingCode(normalizedCode);
-    setPairingInitCodeInput("");
-    showToast(t("device.pairingInitSuccess"), { variant: "success" });
-    setPairingSubmitting(null);
-  }, [
-    api.pairing,
-    baseUrl,
-    pairingInitCodeInput,
-    setPairingCode,
-    showToast,
-    t,
-    urlInput,
-    validateProtectedAccess,
-  ]);
-
-  const handleUnlock = useCallback(async () => {
-    const validationKey = validatePairingCodeDraft(codeInput);
-    if (validationKey) {
-      showToast(t(validationKey), { variant: "error" });
-      return;
-    }
-    setPairingSubmitting("unlock");
-    const normalizedCode = codeInput.trim();
-    const url = normalizeDeviceUrl(baseUrl ?? urlInput);
-    const validationError = await validateProtectedAccess(url, normalizedCode);
-    if (validationError) {
-      showToast(validationError, { variant: "error" });
-      setPairingSubmitting(null);
-      return;
-    }
-    setPairingCode(normalizedCode);
-    showToast(t("device.unlockSuccess"), { variant: "success" });
-    setPairingSubmitting(null);
-  }, [
-    baseUrl,
-    codeInput,
-    setPairingCode,
-    showToast,
-    t,
-    urlInput,
-    validateProtectedAccess,
-  ]);
 
   const handleSaveWifi = useCallback(async () => {
     if (wifiPassInput.trim() && !wifiSsidInput.trim()) {
@@ -1389,6 +1134,10 @@ export function DevicePage() {
     </DashboardCard>
   );
 
+  if (accessStage !== "ready") {
+    return <DeviceAccessCard />;
+  }
+
   const renderWifiCard = () => (
     <DashboardCard
       title={t("device.wifiSetupTitle")}
@@ -1502,138 +1251,6 @@ export function DevicePage() {
     </DashboardCard>
   );
 
-  const renderSetupSurface = (children: React.ReactNode) => (
-    <Box
-      sx={{
-        width: "100%",
-        minHeight: "100%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        px: { xs: 0, sm: 1 },
-        boxSizing: "border-box",
-      }}
-    >
-      <Box
-        sx={{
-          width: "100%",
-          maxWidth: 480,
-          mx: "auto",
-          ...DASHBOARD_CARD_SURFACE_SX,
-          p: { xs: 3, md: 5 },
-          position: "relative",
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-        }}
-      >
-        <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
-          <Box
-            sx={{
-              width: "88px",
-              height: "88px",
-              mx: "auto",
-              mb: 3,
-              borderRadius: "var(--radius-card)",
-              bgcolor: "color-mix(in srgb, var(--primary) 10%, transparent)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              lineHeight: 0,
-              color: "var(--primary)",
-              boxShadow: [
-                "var(--os3d-pedestal-lift-stack)",
-                "0 14px 28px color-mix(in srgb, var(--primary) 10%, transparent)",
-              ].join(", "),
-            }}
-          >
-            {/* BeetleIcon 尺寸由 width/height 控制，勿用 fontSize；与容器约 82% 留白，避免过小 */}
-            <BeetleIcon
-              motion="idle"
-              sx={{
-                width: "72px",
-                height: "72px",
-                flexShrink: 0,
-                display: "block",
-              }}
-            />
-          </Box>
-          <Typography
-            variant="h4"
-            sx={{
-              fontFamily: "var(--font-brand)",
-              fontWeight: 800,
-              letterSpacing: "-0.02em",
-              mb: 1.5,
-            }}
-          >
-            {(() => {
-              const full = t("app.name");
-              const head = full.replace(/\s*OS\s*$/i, "").trim();
-              return (
-                <>
-                  {head}{" "}
-                  <Box component="span" sx={{ color: "var(--primary)" }}>
-                    OS
-                  </Box>
-                </>
-              );
-            })()}
-          </Typography>
-        </Box>
-
-        {children}
-      </Box>
-    </Box>
-  );
-
-  const renderSetupCard = () => {
-    const submitting =
-      pairingSubmitting === "init_pairing" || pairingSubmitting === "unlock";
-    const primaryLabel =
-      submitting
-        ? t("common.saving")
-        : probeStatus === "checking"
-        ? t("device.probing")
-        : setupCardModel.primaryAction === "probe"
-          ? t("device.probe")
-          : setupCardModel.primaryAction === "save_new_pairing"
-            ? t("device.pairingInitSubmit")
-            : t("device.save");
-
-    return renderSetupSurface(
-      <SetupConnectionEditor
-        urlValue={urlInput}
-        pairingCodeValue={setupPairingCodeValue}
-        pairingCodeReveal={pairingCodeReveal}
-        onUrlChange={setUrlInput}
-        onCodeChange={
-          setupCardModel.stage === "init_pairing"
-            ? setPairingInitCodeInput
-            : setCodeInput
-        }
-        onPrimaryAction={() => {
-          if (setupCardModel.primaryAction === "probe") {
-            void handleSetupProbe();
-            return;
-          }
-          if (setupCardModel.primaryAction === "save_new_pairing") {
-            handleRequestPairingInitialization();
-            return;
-          }
-          void handleUnlock();
-        }}
-        primaryLabel={primaryLabel}
-        primaryDisabled={probeStatus === "checking" || submitting}
-        baseUrlLabel={t("device.baseUrlLabel")}
-        baseUrlPlaceholder={t("device.baseUrlPlaceholder")}
-        pairingCodeLabel={t("device.pairingCodeLabel")}
-        pairingCodePlaceholder={t("device.pairingCodePlaceholder")}
-        showPairingCodeField={setupCardModel.showPairingCodeField}
-      />,
-    );
-  };
-
   return (
     <>
       <Box
@@ -1645,9 +1262,7 @@ export function DevicePage() {
           boxSizing: "border-box",
         }}
       >
-        {accessStage !== "ready" ? (
-          renderSetupCard()
-        ) : !dashboardReady ? (
+        {!dashboardReady ? (
           <Box
             sx={{
               display: "flex",
@@ -1783,16 +1398,6 @@ export function DevicePage() {
           </Box>
         )}
       </Box>
-      <ConfirmDialog
-        open={pairingInitConfirmOpen}
-        onClose={() => setPairingInitConfirmOpen(false)}
-        title={t("device.pairingInitConfirmTitle")}
-        description={t("device.pairingInitConfirmDesc")}
-        confirmLabel={t("device.pairingInitSubmit")}
-        onConfirm={() => handleInitializePairing()}
-        confirmDisabled={pairingSubmitting === "init_pairing"}
-        requireExplicitAction
-      />
     </>
   );
 }
