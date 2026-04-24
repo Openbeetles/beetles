@@ -58,14 +58,21 @@ assert_contains 'BUILD_TARGET="aarch64-unknown-linux-gnu"' \
   "Linux Docker aarch64 path must also switch option 5 to the GNU target"
 assert_contains 'BUILD_TARGET="aarch64-unknown-linux-gnu"' \
   "Linux native, remote, and Docker aarch64 paths must keep the GNU target contract"
-assert_contains 'linux-full\)' \
-  "linux-full package profile branch must exist"
-assert_contains 'linux-full\)[[:space:]]*$' \
-  "linux-full package profile must be split out from generic voice+vision+sensor builds"
-assert_contains "roots_csv='default,capability_office,dingtalk'" \
-  "linux-full must resolve from Cargo default plus capability_office and dingtalk"
+assert_contains 'beetle_package_profile_query[[:space:]]*\\' \
+  "build.sh must resolve named package profiles through the Cargo metadata helper"
+assert_contains 'default_package_profile_for_target\(\)' \
+  "build.sh must resolve default package profiles through the Cargo metadata helper"
+assert_absent "roots_csv='default,capability_office,dingtalk'" \
+  "build.sh must not hard-code linux-full package-profile roots after the Cargo metadata migration"
 
-linux_full_features="$(python3 "$FEATURE_EXPANDER" --manifest "$ROOT_DIR/Cargo.toml" --roots 'default,capability_office,dingtalk' --format csv)"
+linux_default_profile="$(python3 "$FEATURE_EXPANDER" --manifest "$ROOT_DIR/Cargo.toml" --default-target-kind linux --format value)"
+if [[ "$linux_default_profile" != "linux-full" ]]; then
+  echo "FAIL: Linux default package profile must remain linux-full" >&2
+  echo "  actual: $linux_default_profile" >&2
+  exit 1
+fi
+
+linux_full_features="$(python3 "$FEATURE_EXPANDER" --manifest "$ROOT_DIR/Cargo.toml" --package-profile 'linux-full' --format csv)"
 assert_csv_contains "$linux_full_features" "capability_office" \
   "linux-full expansion must keep capability_office so account-config APIs compile into Linux builds"
 assert_csv_contains "$linux_full_features" "default_runtime" \
@@ -74,5 +81,7 @@ assert_csv_contains "$linux_full_features" "qq_channel" \
   "linux-full expansion must inherit QQ from Cargo default"
 assert_csv_contains "$linux_full_features" "dingtalk" \
   "linux-full expansion must keep DingTalk explicitly enabled"
+assert_csv_contains "$linux_full_features" "websocket" \
+  "linux-full expansion must keep websocket so Linux defaults no longer trim hosted channels"
 
 echo "linux_aarch64_build_contract_test: ok"

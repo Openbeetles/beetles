@@ -42,8 +42,6 @@ const STA_LINK_MISS_THRESHOLD: u8 = 2;
 static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
 /// SoftAP 已完成启动并配置好本地 IP；用于区分“主线程没等到 ready 信号”和“WiFi 根本没起来”。
 static WIFI_SOFTAP_READY: AtomicBool = AtomicBool::new(false);
-/// connect() 已经把启动期等待窗口耗尽；避免 main 启动链在同一轮里再额外等待一次。
-static WIFI_STARTUP_WAIT_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 /// STA 刚拿到 IP 后额外等待一小段时间，再允许外联 DNS/TLS，减少启动瞬间假失败。
 const STA_OUTBOUND_READY_GRACE_SECS: u64 = 3;
 
@@ -82,9 +80,6 @@ pub fn wait_for_network_ready() {
     if !WIFI_STA_EXPECTED.load(Ordering::Relaxed) {
         return;
     }
-    if WIFI_STARTUP_WAIT_EXHAUSTED.swap(false, Ordering::Relaxed) {
-        return;
-    }
     crate::platform::task_wdt::register_current_task_to_task_wdt();
     let deadline = Instant::now() + Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS);
     while !crate::state::wifi_sta_settled_for_outbound(STA_OUTBOUND_READY_GRACE_SECS) {
@@ -119,7 +114,7 @@ const SOFTAP_PASSWORD: &str = "";
 /// 通道内扫描结果：成功为列表，失败为错误字符串（避免与 crate::error::Result 混淆）。
 #[derive(Clone)]
 enum ScanResponse {
-    Ok(Vec<WifiApEntry>),
+    Ok(Arc<[WifiApEntry]>),
     Err(String),
 }
 
@@ -143,7 +138,7 @@ impl WifiScan for WifiScanHandle {
             stage: "wifi_scan_lock",
         })?;
         match guard.recv_timeout(SCAN_RESP_TIMEOUT) {
-            Ok(ScanResponse::Ok(list)) => Ok(list),
+            Ok(ScanResponse::Ok(list)) => Ok(list.as_ref().to_vec()),
             Ok(ScanResponse::Err(msg)) => Err(Error::config("wifi_scan", msg)),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::config("wifi_scan", "scan timeout")),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Other {
@@ -168,7 +163,6 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let has_sta = !ssid.trim().is_empty();
     WIFI_STA_EXPECTED.store(has_sta, Ordering::Relaxed);
     WIFI_SOFTAP_READY.store(false, Ordering::Relaxed);
-    WIFI_STARTUP_WAIT_EXHAUSTED.store(false, Ordering::Relaxed);
     if !has_sta {
         clear_sta_ip_cache();
     }
@@ -207,7 +201,6 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
         Ok(Err(e)) => Err(e),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             if WIFI_SOFTAP_READY.load(Ordering::Relaxed) {
-                WIFI_STARTUP_WAIT_EXHAUSTED.store(true, Ordering::Relaxed);
                 log::warn!(
                     "[{}] WiFi ready signal missed startup deadline ({}s), but SoftAP is already up; continuing with provisioning path",
                     TAG,
@@ -482,7 +475,7 @@ fn perform_wifi_scan(wifi: &mut BlockingWifi<EspWifi>) -> ScanResponse {
                     })
                     .collect();
                 entries.sort_by(|a, b| b.rssi.cmp(&a.rssi));
-                return ScanResponse::Ok(entries);
+                return ScanResponse::Ok(Arc::from(entries.into_boxed_slice()));
             }
             Err(e) => {
                 last_err_msg = e.to_string();

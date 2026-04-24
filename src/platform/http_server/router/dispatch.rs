@@ -23,13 +23,14 @@ use super::catalog::ROUTE_WEBHOOK_QQ;
 ))]
 use super::catalog::ROUTE_WECOM_WEBHOOK;
 use super::catalog::{
-    ROUTE_CAPABILITY_PACKAGES, ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CONFIG_AUDIO,
-    ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY, ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM,
-    ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE,
-    ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH, ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS,
-    ROUTE_METRICS, ROUTE_OPERATOR_STATUS, ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE,
-    ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT, ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT,
-    ROUTE_SYSTEM_INFO, ROUTE_TOOLS, ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
+    self, OperatorRouteAccess, RouteBodyMode, ROUTE_CAPABILITY_PACKAGES,
+    ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CONFIG_AUDIO, ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY,
+    ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM, ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM,
+    ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE, ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH,
+    ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS, ROUTE_METRICS, ROUTE_OPERATOR_STATUS,
+    ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE, ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT,
+    ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT, ROUTE_SYSTEM_INFO, ROUTE_TOOLS,
+    ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -196,6 +197,13 @@ fn utf8_body(body: &[u8]) -> Result<&str> {
     })
 }
 
+fn read_route_body(body: &[u8], body_mode: RouteBodyMode) -> Result<&str> {
+    match body_mode {
+        RouteBodyMode::None => Ok(""),
+        RouteBodyMode::Utf8(_) => utf8_body(body),
+    }
+}
+
 /// 写操作鉴权：配对码 + CSRF；命中则返回已组装的 JSON 响应。
 #[inline(never)]
 fn guard_pairing_csrf(
@@ -262,6 +270,7 @@ fn dispatch_api_body_route<F>(
     body: &[u8],
     uri: &str,
     restart_on_success: bool,
+    body_mode: RouteBodyMode,
     execute: F,
 ) -> Result<OutgoingResponse>
 where
@@ -270,7 +279,7 @@ where
     if let Some(response) = guard {
         return Ok(response);
     }
-    let body_str = utf8_body(body)?;
+    let body_str = read_route_body(body, body_mode)?;
     let response = api_to_out(execute(body_str)?);
     Ok(apply_restart_action(response, uri, restart_on_success))
 }
@@ -314,6 +323,7 @@ fn dispatch_account_config(
             &incoming.body,
             uri,
             false,
+            RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
             |body_str| {
                 handlers::config::post_accounts(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -347,6 +357,7 @@ fn dispatch_account_config(
             &incoming.body,
             uri,
             false,
+            RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
             |body_str| {
                 handlers::config::post_account_config(ctx, &decoded_key(account_key), body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -366,6 +377,7 @@ fn dispatch_account_config(
             &incoming.body,
             uri,
             false,
+            RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
             |body_str| {
                 handlers::config::post_account_revoke(ctx, &decoded_key(account_key), body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -511,7 +523,11 @@ pub fn dispatch(
     }
 
     let memory_system_kind = ctx.platform.memory_system_kind();
-    if crate::platform::operator_surface::route_requires_operator_window(memory_system_kind, path)
+    let route_spec = catalog::route_spec_for(method, path);
+    let route_body_mode = route_spec.map_or(RouteBodyMode::None, |spec| spec.body_mode);
+    let route_operator_access =
+        route_spec.map_or(OperatorRouteAccess::Hidden, |spec| spec.operator_access);
+    if route_operator_access == OperatorRouteAccess::Windowed
         && crate::platform::operator_surface::current_operator_surface_budget(memory_system_kind)
             .window_required_for_deep_routes
     {
@@ -563,7 +579,7 @@ pub fn dispatch(
             ))
         }
         ("POST", ROUTE_PAIRING_CODE) => {
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
         }
@@ -572,6 +588,7 @@ pub fn dispatch(
             &incoming.body,
             uri,
             false,
+            route_body_mode,
             |body_str| {
                 handlers::config::post_llm(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -596,6 +613,7 @@ pub fn dispatch(
             &incoming.body,
             uri,
             false,
+            route_body_mode,
             |body_str| {
                 handlers::config::post_channels(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -613,6 +631,7 @@ pub fn dispatch(
             &incoming.body,
             uri,
             false,
+            route_body_mode,
             |body_str| {
                 handlers::config::post_system(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -630,6 +649,7 @@ pub fn dispatch(
             &incoming.body,
             uri,
             false,
+            route_body_mode,
             |body_str| {
                 handlers::config::post_hardware(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -647,6 +667,7 @@ pub fn dispatch(
             &incoming.body,
             uri,
             true,
+            route_body_mode,
             |body_str| {
                 handlers::config::post_audio(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -664,6 +685,7 @@ pub fn dispatch(
             &incoming.body,
             uri,
             true,
+            route_body_mode,
             |body_str| {
                 handlers::config::post_display(ctx, body_str)
                     .map_err(|e| err_other("http_router_dispatch", e))
@@ -943,7 +965,7 @@ pub fn dispatch(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let r = handlers::memory_maintenance::post(ctx, body_str);
             Ok(api_to_out(r))
         }
@@ -964,7 +986,7 @@ pub fn dispatch(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let r = handlers::capability_packages::post(ctx, body_str);
             Ok(api_to_out(r))
         }
@@ -993,7 +1015,7 @@ pub fn dispatch(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let r = handlers::skills::post(ctx, body_str);
             Ok(api_to_out(r))
         }
@@ -1016,7 +1038,7 @@ pub fn dispatch(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let r = handlers::skills::import(ctx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
@@ -1045,7 +1067,7 @@ pub fn dispatch(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let token = incoming
                 .header_ci("X-Webhook-Token")
                 .or_else(|| common::token_from_uri(uri));
@@ -1059,7 +1081,10 @@ pub fn dispatch(
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         ("POST", ROUTE_FEISHU_EVENT) => {
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(
+                &incoming.body,
+                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
+            )?;
             let signature = incoming.header_ci("X-Lark-Signature").unwrap_or("");
             let timestamp = incoming.header_ci("X-Lark-Request-Timestamp").unwrap_or("");
             let nonce = incoming.header_ci("X-Lark-Request-Nonce").unwrap_or("");
@@ -1080,7 +1105,10 @@ pub fn dispatch(
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         ("POST", ROUTE_DINGTALK_WEBHOOK) => {
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(
+                &incoming.body,
+                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
+            )?;
             let r = handlers::dingtalk_webhook::post(
                 &env.inbound_tx,
                 &env.dingtalk_session_store,
@@ -1118,7 +1146,10 @@ pub fn dispatch(
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         ("POST", ROUTE_WECOM_WEBHOOK) => {
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(
+                &incoming.body,
+                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
+            )?;
             let r = handlers::wecom_webhook::post(ctx, uri, &env.inbound_tx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
@@ -1216,7 +1247,10 @@ fn dispatch_ota(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(Some(o));
             }
-            let body_str = utf8_body(&incoming.body)?;
+            let body_str = read_route_body(
+                &incoming.body,
+                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
+            )?;
             let (r, do_restart) = crate::platform::http_server::handlers::ota::post(ctx, body_str)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             let mut out = api_to_out(r);

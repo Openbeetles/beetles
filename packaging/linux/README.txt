@@ -3,7 +3,7 @@ Beetle Linux bundle
 
 Audience
 --------
-This tarball is for manual installs, integrators, and release inspection. The primary public SSH deploy flow is still `./build.sh --deploy-linux`. Optional context: docs/en-us/linux-release-rollback.md (or docs/zh-cn/linux-release-rollback.md).
+This tarball is for manual installs, integrators, and release inspection. The public bundle flow is `TARGET=linux ./build.sh --package-linux`; the public SSH deploy flow is `./build.sh --deploy-linux`. Optional context: docs/en-us/linux-release-rollback.md (or docs/zh-cn/linux-release-rollback.md).
 
 Binary
 ------

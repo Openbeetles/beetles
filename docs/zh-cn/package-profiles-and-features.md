@@ -18,12 +18,15 @@
 1. `Cargo.toml` `[features]`
    - 编译期真源
    - 决定能力域、通道和运行时面是否进入产物
-2. `build.sh --package-profile`
+2. `Cargo.toml` `[package.metadata.beetle.package_profiles]`
+   - package profile 与 target 默认值真源
+   - 决定 `build.sh` / `build.ps1` 的默认包型和每个包型对应的根 feature
+3. `build.sh` / `build.ps1`
    - 用户与发布流程入口
-   - 通过根 feature 选择包型
-3. `scripts/expand_cargo_features.py`
-   - feature 闭包展开工具
-   - 用于查看某个根 feature 集最终会展开成哪些本地 feature
+   - 只解析 Cargo 真源，不再手写 profile 合同
+4. `scripts/expand_cargo_features.py`
+   - feature / package-profile 查询工具
+   - 用于查看某个根 feature 集或 package profile 最终会展开成哪些本地 feature
 
 ## 3. 默认映射
 
@@ -36,8 +39,9 @@
 说明：
 
 - `default` 是 host/developer 默认构建，不是默认 ESP 包
-- 默认 ESP 官方包使用 `voice+vision+sensor`
-- 默认 Linux 官方包使用 `linux-full`
+- 默认包型名由 `Cargo.toml [package.metadata.beetle.package_profiles.defaults]` 决定
+- 默认 ESP 官方包当前是 `voice+vision+sensor`
+- 默认 Linux 官方包当前是 `linux-full`
 
 ## 4. Feature 分组
 
@@ -66,7 +70,7 @@
 | `wecom` | 企微通道 | `default` 开启 |
 | `qq_channel` | QQ 通道；附带 Ed25519 验签依赖 | `default` 开启 |
 | `dingtalk` | 钉钉通道 | 默认关闭；`linux-full` 显式补回 |
-| `websocket` | websocket 通道预留面 | 默认关闭 |
+| `websocket` | websocket 通道预留面 | 默认关闭；`linux-full` 显式补回 |
 
 ### 4.4 Runtime surface
 
@@ -86,10 +90,10 @@
 
 ## 5. `build.sh` package profile 映射
 
-`build.sh` 不手写完整 feature 串。当前实现是：
+`build.sh` / `build.ps1` 不手写 profile roots 或完整 feature 串。当前实现是：
 
-- 先选择根 feature
-- 再从 `Cargo.toml` 动态展开本地 feature 闭包
+- 先从 `Cargo.toml [package.metadata.beetle.package_profiles]` 读取包型 roots
+- 再从 `Cargo.toml [features]` 动态展开本地 feature 闭包
 
 当前包型合同如下：
 
@@ -102,8 +106,8 @@
 | `voice+vision` | `default_runtime + capability_voice + capability_vision` | 语音 + 视觉 |
 | `voice+sensor` | `default_runtime + capability_voice + capability_sensor` | 语音 + 传感器 |
 | `vision+sensor` | `default_runtime + capability_vision + capability_sensor` | 视觉 + 传感器 |
-| `voice+vision+sensor` | `default_runtime + capability_voice + capability_vision + capability_sensor` | 默认 ESP 官方包 |
-| `linux-full` | `default + capability_office + dingtalk` | 默认 Linux 官方包 |
+| `voice+vision+sensor` | `default_runtime + capability_voice + capability_vision + capability_sensor + qq_channel` | 默认 ESP 官方包 |
+| `linux-full` | `default + capability_office + dingtalk + websocket` | 默认 Linux 官方包 |
 
 默认值：
 
@@ -117,7 +121,7 @@
 ```bash
 python3 scripts/expand_cargo_features.py \
   --manifest Cargo.toml \
-  --roots default,capability_office,dingtalk \
+  --package-profile linux-full \
   --format csv
 ```
 
@@ -126,7 +130,7 @@ python3 scripts/expand_cargo_features.py \
 ```bash
 python3 scripts/expand_cargo_features.py \
   --manifest Cargo.toml \
-  --roots default_runtime,capability_voice,capability_vision,capability_sensor \
+  --default-target-kind esp \
   --format shell-args
 ```
 
@@ -189,9 +193,9 @@ TARGET=linux ./build.sh --package-profile linux-full
 
 - `default` 不等于默认 ESP 包
 - `core-only` 仍然包含 `default_runtime`
-- `linux-full` 的当前合同是 `default + capability_office + dingtalk`
+- `linux-full` 的当前合同是 `default + capability_office + dingtalk + websocket`
 - `capability_office` 是默认关闭，不代表后续禁止在 ESP 包中显式开启
-- 若需要查看展开后的完整 feature 集，应使用 `scripts/expand_cargo_features.py`，不要在外部脚本或文档中复制一份手写展开列表
+- 若需要查看展开后的完整 feature 集或默认 package profile，应使用 `scripts/expand_cargo_features.py`，不要在外部脚本或文档中复制一份手写列表
 
 ## 10. 相关文档
 

@@ -19,9 +19,11 @@
 TARGET=linux ./build.sh
 TARGET=linux-armv7 ./build.sh
 TARGET=linux-aarch64 ./build.sh
+TARGET=linux ./build.sh --package-linux
 ```
 
 如已有构建产物，可直接进入部署步骤。
+如果你想走最省事的发布路径，优先用 `TARGET=linux ./build.sh --package-linux`；`BUILD_METHOD=auto` 会在 macOS 上先尝试 Docker，再尝试已保存的远端 Linux 主机，最后才回落到本地交叉构建。
 
 ## 2. 部署 Beetls OS
 

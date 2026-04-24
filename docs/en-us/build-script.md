@@ -12,6 +12,7 @@
 | Build Linux x86_64 | `TARGET=linux ./build.sh` |
 | Build Linux armv7 | `TARGET=linux-armv7 ./build.sh` |
 | Build Linux aarch64 | `TARGET=linux-aarch64 ./build.sh` |
+| Build and package a Linux bundle | `TARGET=linux ./build.sh --package-linux` |
 | Deploy an existing Linux artifact | `./build.sh --deploy-linux` |
 | Flash the on-board C6 helper firmware | `./build.sh flash-c6` |
 | Flash C6 and then the P4 main firmware | `./build.sh flash-all` |
@@ -81,23 +82,28 @@ What matters most:
 TARGET=linux ./build.sh
 TARGET=linux-armv7 ./build.sh
 TARGET=linux-aarch64 ./build.sh
+TARGET=linux ./build.sh --package-linux
 ./build.sh --deploy-linux
 ```
 
 What matters most:
 
 - on an interactive terminal, a successful Linux build asks whether to deploy over SSH right away
+- `--package-linux` builds the selected Linux target and writes a release tarball to `dist/`
+- `--package-linux` derives the bundle version from `Cargo.toml package.version`, so the public release path no longer needs a second manual packaging command
+- `BUILD_METHOD=auto` is now non-interactive: on macOS it prefers Docker, then a saved remote Linux host, and only then falls back to local cross-build
 - `--deploy-linux` does not compile; it deploys an existing artifact
 - `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetls OS state root `skills/` directory
 - `./build.sh` is the main Linux build and deploy entry; Docker helper scripts are internal helpers behind `BUILD_METHOD=docker`
+- `TARGET=linux BUILD_METHOD=docker` builds the GNU target inside an amd64 Linux container, avoiding a fake musl cross sysroot for normal Linux system-library dependencies
 - for ARM Linux targets, `BUILD_METHOD=docker` automatically boots the matching host-architecture GNU build container
 
 ## Package Profiles
 
-`build.sh` package profiles and `Cargo.toml` features are separate contract layers:
+`build.sh` package profiles and `Cargo.toml` feature/metadata are separate contract layers:
 
-- package profile: user-facing and release-facing entrypoint
-- feature closure: expanded dynamically from `Cargo.toml`
+- package profile: user-facing and release-facing entrypoint, but names and roots now resolve from `Cargo.toml [package.metadata.beetle.package_profiles]`
+- feature closure: expanded dynamically from `Cargo.toml [features]`
 
 For the full mapping, direct cargo forms, and default contract, see:
 
@@ -128,8 +134,9 @@ Defaults:
 
 - Linux targets default to `linux-full`
 - ESP targets default to `voice+vision+sensor`
-- `linux-full` currently expands from `default + capability_office + dingtalk`
-- ESP profiles currently all start from `default_runtime` and then add `capability_voice`, `capability_vision`, and/or `capability_sensor`
+- both defaults now come from `Cargo.toml [package.metadata.beetle.package_profiles.defaults]`
+- `linux-full` currently expands from `default + capability_office + dingtalk + websocket`, so Linux defaults no longer trim hosted runtime channels
+- ESP profiles currently all start from `default_runtime`; the default ESP package also carries `qq_channel`
 
 ## Linux Build Methods
 
@@ -137,7 +144,7 @@ Defaults:
 
 | Value | What it means |
 |-------|---------------|
-| `auto` | default; let the script choose |
+| `auto` | default; non-interactive backend selection |
 | `local` | build on the current machine |
 | `docker` | build Linux targets inside Docker |
 | `remote` | sync the repo to a remote Linux host and build there |
@@ -150,6 +157,13 @@ BUILD_METHOD=docker TARGET=linux-aarch64 ./build.sh
 BUILD_METHOD=remote TARGET=linux ./build.sh
 ```
 
+`auto` currently resolves like this:
+
+- on Linux hosts: local build
+- on macOS: Docker when the daemon is reachable
+- otherwise on macOS: a saved remote Linux host, if one was already configured
+- otherwise: local cross-build as the last fallback
+
 ## Interactive Prompt And Non-Interactive Use
 
 By default, after a successful build the script asks what to do next when all of these are true:
@@ -158,6 +172,7 @@ By default, after a successful build the script asks what to do next when all of
 - you did not pass `--no-deploy`
 - `BEETLE_SKIP_DEPLOY_PROMPT=1` is not set
 - you did not already use `--flash`
+- you did not already use `--package-linux`
 
 Common patterns:
 
@@ -183,12 +198,13 @@ Both are useful for automation and CI.
 ## Where Build Artifacts Go
 
 - Linux artifacts go to `target/<target>/release/beetle`
+- Linux release bundles written by `--package-linux` go to `dist/beetle-v<version>-linux-<arch>.tar.gz`
 - ESP artifacts go to `target/<target>/release-size/beetle`
 - ESP builds also emit `target/<target>/release-size/beetle.bin` for later flashing
 - that image is produced through `espflash save-image`, so build-only runs do not depend on Python `esptool` imports
 - after a successful build, the script prints the exact artifact path
 
-If you plan to use `--deploy-linux`, make sure the matching Linux artifact already exists.
+If you plan to use `--deploy-linux`, make sure the matching Linux artifact already exists. If you want a distributable tarball instead of an SSH deploy, use `--package-linux`.
 
 ## Read Next
 

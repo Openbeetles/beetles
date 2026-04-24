@@ -1,6 +1,5 @@
 //! Shared HTTP route catalog used by transport registration and dispatch.
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteMethod {
     Get,
@@ -9,8 +8,8 @@ pub(crate) enum RouteMethod {
     Options,
 }
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 impl RouteMethod {
+    #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
@@ -19,23 +18,30 @@ impl RouteMethod {
             Self::Options => "OPTIONS",
         }
     }
+
+    pub(crate) fn parse(method: &str) -> Option<Self> {
+        match method {
+            "GET" => Some(Self::Get),
+            "POST" => Some(Self::Post),
+            "DELETE" => Some(Self::Delete),
+            "OPTIONS" => Some(Self::Options),
+            _ => None,
+        }
+    }
 }
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteBodyMode {
     None,
     Utf8(usize),
 }
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteDispatchMode {
     Direct,
     Worker,
 }
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OperatorRouteAccess {
     Hidden,
@@ -43,7 +49,6 @@ pub(crate) enum OperatorRouteAccess {
     Windowed,
 }
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HttpRouteSpec {
     pub(crate) path: &'static str,
@@ -53,7 +58,6 @@ pub(crate) struct HttpRouteSpec {
     pub(crate) operator_access: OperatorRouteAccess,
 }
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 impl HttpRouteSpec {
     pub(crate) const fn direct(
         path: &'static str,
@@ -112,6 +116,18 @@ impl HttpRouteSpec {
             operator_access,
         }
     }
+}
+
+fn route_spec_groups() -> &'static [&'static [HttpRouteSpec]] {
+    &[
+        ROOT_ROUTE_SPECS,
+        PAIRING_AND_CONFIG_ROUTE_SPECS,
+        OBSERVABILITY_ROUTE_SPECS,
+        MEMORY_AND_SKILL_ROUTE_SPECS,
+        ACTION_ROUTE_SPECS,
+        #[cfg(feature = "ota")]
+        OTA_ROUTE_SPECS,
+    ]
 }
 
 pub(crate) const ROUTE_ROOT: &str = "/";
@@ -193,13 +209,11 @@ pub(crate) const ROUTE_OTA_CHECK: &str = "/api/ota/check";
 #[cfg(feature = "ota")]
 pub(crate) const ROUTE_OTA: &str = "/api/ota";
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) const ROOT_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::direct(ROUTE_ROOT, RouteMethod::Get, RouteBodyMode::None),
     HttpRouteSpec::direct(ROUTE_ROOT, RouteMethod::Options, RouteBodyMode::None),
 ];
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::direct_operator(
         ROUTE_PAIRING_CODE,
@@ -343,7 +357,6 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::direct(ROUTE_CSRF_TOKEN, RouteMethod::Options, RouteBodyMode::None),
 ];
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::direct_operator(
         ROUTE_HEALTH,
@@ -417,7 +430,6 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
     ),
 ];
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::worker_operator(
         ROUTE_TOOLS,
@@ -447,6 +459,17 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
     ),
     HttpRouteSpec::worker(
         ROUTE_MEMORY_STATUS,
+        RouteMethod::Options,
+        RouteBodyMode::None,
+    ),
+    HttpRouteSpec::worker_operator(
+        ROUTE_MEMORY_MAINTENANCE,
+        RouteMethod::Post,
+        RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
+        OperatorRouteAccess::Windowed,
+    ),
+    HttpRouteSpec::worker(
+        ROUTE_MEMORY_MAINTENANCE,
         RouteMethod::Options,
         RouteBodyMode::None,
     ),
@@ -499,7 +522,6 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
     ),
 ];
 
-#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::direct_operator(
         ROUTE_RESTART,
@@ -527,10 +549,7 @@ pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::worker(ROUTE_WEBHOOK, RouteMethod::Options, RouteBodyMode::None),
 ];
 
-#[cfg(all(
-    feature = "ota",
-    any(test, target_arch = "xtensa", target_arch = "riscv32")
-))]
+#[cfg(feature = "ota")]
 pub(crate) const OTA_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::worker_operator(
         ROUTE_OTA_CHECK,
@@ -547,3 +566,70 @@ pub(crate) const OTA_ROUTE_SPECS: &[HttpRouteSpec] = &[
     ),
     HttpRouteSpec::worker(ROUTE_OTA, RouteMethod::Options, RouteBodyMode::None),
 ];
+
+pub(crate) fn route_spec_for(method: &str, path: &str) -> Option<HttpRouteSpec> {
+    let method = RouteMethod::parse(method)?;
+    route_spec_for_method(method, path)
+}
+
+pub(crate) fn route_spec_for_method(method: RouteMethod, path: &str) -> Option<HttpRouteSpec> {
+    for group in route_spec_groups() {
+        if let Some(spec) = group
+            .iter()
+            .copied()
+            .find(|spec| spec.method == method && spec.path == path)
+        {
+            return Some(spec);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{compiled_enabled_channel_ids, selectable_channel_entries, CHANNEL_QQ_CHANNEL};
+
+    #[test]
+    fn compiled_enabled_channel_ids_follow_selectable_catalog_order() {
+        let ids = compiled_enabled_channel_ids();
+        assert_eq!(ids.first().copied(), Some(""));
+        let selectable = selectable_channel_entries()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(&ids[1..], selectable.as_slice());
+        #[cfg(feature = "dingtalk")]
+        assert!(ids.contains(&CHANNEL_DINGTALK));
+        #[cfg(not(feature = "dingtalk"))]
+        assert!(!ids.contains(&crate::channel_capability::CHANNEL_DINGTALK));
+        #[cfg(feature = "qq_channel")]
+        assert!(ids.contains(&CHANNEL_QQ_CHANNEL));
+        #[cfg(not(feature = "qq_channel"))]
+        assert!(!ids.contains(&crate::channel_capability::CHANNEL_QQ_CHANNEL));
+    }
+
+    #[test]
+    fn route_lookup_returns_spec_metadata_from_catalog() {
+        let spec = route_spec_for("POST", ROUTE_CONFIG_CHANNELS).expect("route spec");
+        assert_eq!(spec.method.as_str(), "POST");
+        assert_eq!(spec.path, ROUTE_CONFIG_CHANNELS);
+        assert!(matches!(spec.body_mode, RouteBodyMode::Utf8(_)));
+        assert_eq!(spec.dispatch_mode, RouteDispatchMode::Direct);
+        assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
+    }
+
+    #[test]
+    fn route_lookup_marks_windowed_worker_routes() {
+        let spec = route_spec_for("GET", ROUTE_RESOURCE).expect("route spec");
+        assert_eq!(spec.dispatch_mode, RouteDispatchMode::Worker);
+        assert_eq!(spec.operator_access, OperatorRouteAccess::Windowed);
+    }
+
+    #[test]
+    fn route_lookup_keeps_memory_maintenance_body_contract() {
+        let spec = route_spec_for("POST", ROUTE_MEMORY_MAINTENANCE).expect("route spec");
+        assert_eq!(spec.dispatch_mode, RouteDispatchMode::Worker);
+        assert_eq!(spec.operator_access, OperatorRouteAccess::Windowed);
+        assert!(matches!(spec.body_mode, RouteBodyMode::Utf8(_)));
+    }
+}

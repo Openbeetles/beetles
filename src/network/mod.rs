@@ -341,6 +341,9 @@ pub fn create_http_client_with_config(
     config: &AppConfig,
     class: HttpClientClass,
 ) -> Result<Box<dyn PlatformHttpClient>> {
+    // On ESP, outbound callers own the STA settle wait. Keep it on the
+    // governed HTTP entrypoint instead of blocking the entire startup path.
+    crate::platform::wait_for_network_ready();
     match class {
         HttpClientClass::Background => platform.create_http_client(config),
         HttpClientClass::Interactive => platform.create_interactive_http_client(config),

@@ -214,7 +214,10 @@ Enter the container:
   docker exec -it $CONTAINER_NAME /bin/bash
 
 Build Beetle for Linux armv7 GNU cross-target:
-  docker exec -it $CONTAINER_NAME /bin/bash -lc 'cd $WORKDIR_IN_CONTAINER && cargo build --release --target armv7-unknown-linux-gnueabihf --no-default-features --features default,capability_office,dingtalk'
+  docker exec -it $CONTAINER_NAME /bin/bash -lc 'cd $WORKDIR_IN_CONTAINER && TARGET=linux-armv7 ./build.sh --no-deploy'
+
+Build and package a Linux release bundle through the public entrypoint:
+  docker exec -it $CONTAINER_NAME /bin/bash -lc 'cd $WORKDIR_IN_CONTAINER && TARGET=linux-armv7 ./build.sh --package-linux'
 
 Inside the container, Beetle lives at:
   $WORKDIR_IN_CONTAINER

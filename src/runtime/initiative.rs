@@ -10,11 +10,12 @@ use crate::memory::{
 };
 use crate::orchestrator::{self, PressureLevel, ResourceSnapshot};
 use crate::platform::Platform;
+use crate::runtime::presence::inspect_platform_presence_with_resource;
 use crate::runtime::workflow::{
     append_workflow_audit, WorkflowAuditRecord, WorkflowDisposition, WorkflowEffect, WorkflowKind,
     WorkflowRecoveryPolicy, WorkflowTrigger,
 };
-use crate::runtime::{inspect_platform_presence, PresenceState, RuntimeModeSnapshot};
+use crate::runtime::{PresenceSnapshot, PresenceState, RuntimeModeSnapshot};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -523,8 +524,19 @@ fn append_initiative_workflow_audit(
 }
 
 pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> InitiativeSnapshot {
-    let presence = inspect_platform_presence(platform, now_secs);
     let resource = orchestrator::snapshot();
+    let presence = inspect_platform_presence_with_resource(platform, &resource, now_secs);
+    inspect_platform_initiative_with_presence(platform, &presence, &resource, now_secs)
+}
+
+/// Inspect initiative from a precomputed presence/resource pair.
+/// 使用预计算的 presence/resource 组合计算 initiative，避免重复快照。
+pub fn inspect_platform_initiative_with_presence(
+    platform: &dyn Platform,
+    presence: &PresenceSnapshot,
+    resource: &ResourceSnapshot,
+    now_secs: u64,
+) -> InitiativeSnapshot {
     let subject_id = board_subject_scope_id();
     let continuity = platform
         .self_continuity_store()
@@ -552,7 +564,7 @@ pub fn inspect_platform_initiative(platform: &dyn Platform, now_secs: u64) -> In
         pre_signal_gate_decision(
             presence.state,
             presence.runtime_mode,
-            &resource,
+            resource,
             idle_enabled,
         )
     };

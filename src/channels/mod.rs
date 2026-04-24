@@ -85,7 +85,6 @@ pub use qq::{
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
 pub use qq::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[cfg(feature = "qq_channel")]
 pub use qq::{run_qq_ws_loop, QqWsLoopConfig};
 

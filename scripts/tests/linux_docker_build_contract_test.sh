@@ -23,8 +23,22 @@ assert_contains 'cargo_cmd\+="\$cargo_args_quoted"' \
   "docker build helper must append forwarded cargo args into the cargo command"
 assert_contains 'run_linux_docker_build "\$BUILD_TARGET" "\$\{RELEASE_ARGS\[@\]\}"' \
   "docker build helper call sites must forward RELEASE_ARGS so features and build args are preserved"
-assert_contains 'rustup target add x86_64-unknown-linux-musl && \$cargo_cmd' \
-  "x86_64 docker helper must run the shared cargo command"
+docker_release_arg_calls="$(rg -n 'run_linux_docker_build "\$BUILD_TARGET" "\$\{RELEASE_ARGS\[@\]\}"' "$BUILD_SH" | wc -l | tr -d '[:space:]')"
+if [[ "$docker_release_arg_calls" != "2" ]]; then
+  echo "FAIL: docker build must only run from the final release build path and fallback path" >&2
+  echo "  found call count: $docker_release_arg_calls" >&2
+  exit 1
+fi
+assert_contains '3\) BUILD_TARGET="x86_64-unknown-linux-gnu"' \
+  "x86_64 Docker builds must use the native GNU Linux target instead of cross-building musl inside Linux"
+assert_contains 'if \[\[ "\$target" == "x86_64-unknown-linux-gnu" \]\]; then' \
+  "x86_64 docker helper must support the GNU target selected by the Docker path"
+assert_contains 'docker run --rm --platform linux/amd64' \
+  "x86_64 Docker build must force an amd64 container instead of inheriting the host Docker default platform"
+assert_contains '-e DEBIAN_FRONTEND=noninteractive' \
+  "x86_64 Docker build must run apt non-interactively without debconf frontend warnings"
+assert_contains 'apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev' \
+  "x86_64 Docker build must install native Linux dev headers required by linux-full dependencies"
 assert_contains 'bash "\$SCRIPT_ROOT/scripts/docker/linux_armv7_build_docker\.sh"' \
   "armv7 docker build must bootstrap the shared GNU helper container"
 assert_contains 'docker exec beetle-linux-armv7-gnu-cross /bin/bash -lc' \

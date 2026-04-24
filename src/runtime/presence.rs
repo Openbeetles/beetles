@@ -110,9 +110,14 @@ pub fn inspect_platform_display_projection_with_resource(
     )
 }
 
-pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> PresenceSnapshot {
-    let resource = orchestrator::snapshot();
-    let computation = compute_presence(platform, &resource, now_secs);
+/// Inspect platform presence from a pre-sampled resource snapshot.
+/// 使用预采样的 resource snapshot 计算 presence，避免重复快照。
+pub fn inspect_platform_presence_with_resource(
+    platform: &dyn Platform,
+    resource: &ResourceSnapshot,
+    now_secs: u64,
+) -> PresenceSnapshot {
+    let computation = compute_presence(platform, resource, now_secs);
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let release = Some(crate::runtime::inspect_platform_linux_release(
         platform, now_secs,
@@ -139,6 +144,11 @@ pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> Pres
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         release,
     }
+}
+
+pub fn inspect_platform_presence(platform: &dyn Platform, now_secs: u64) -> PresenceSnapshot {
+    let resource = orchestrator::snapshot();
+    inspect_platform_presence_with_resource(platform, &resource, now_secs)
 }
 
 fn compute_presence(

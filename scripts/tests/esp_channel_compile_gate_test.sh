@@ -130,15 +130,29 @@ assert_contains "$CARGO_TOML" '^ed25519-dalek = \{ version = "2\.1", optional = 
   "ed25519-dalek must only enter the graph when qq_channel is compiled"
 assert_contains "$CARGO_TOML" '^qq_channel = \["dep:ed25519-dalek"\]$' \
   "qq_channel feature must own the Ed25519 dependency edge"
+assert_contains "$CARGO_TOML" '^\[package\.metadata\.beetle\.package_profiles\.defaults\]$' \
+  "Cargo.toml must define package-profile defaults in package metadata"
+assert_contains "$CARGO_TOML" '^esp = "voice\+vision\+sensor"$' \
+  "ESP default package profile must resolve from Cargo metadata"
+assert_contains "$CARGO_TOML" '^linux = "linux-full"$' \
+  "Linux default package profile must resolve from Cargo metadata"
+assert_contains "$CARGO_TOML" '^"voice\+vision\+sensor" = \[$' \
+  "Cargo.toml must define the shared ESP package-profile roots"
 
 assert_contains "$BUILD_SH" 'scripts/expand_cargo_features\.py' \
   "build.sh must resolve package profiles from the Cargo feature graph helper"
-assert_contains "$BUILD_SH" "roots_csv='default,capability_office,dingtalk'" \
-  "linux-full package profile must resolve from Cargo default plus capability_office and dingtalk"
-assert_absent "$BUILD_SH" 'default_runtime,telegram,feishu,wecom,capability_voice,capability_vision,capability_sensor,capability_office' \
-  "build.sh must not hard-code the fully expanded linux-full feature list"
+assert_contains "$BUILD_SH" 'package_profile_features\(\)' \
+  "build.sh must keep a dedicated named package-profile resolver helper"
+assert_contains "$BUILD_SH" 'default_package_profile_for_target\(\)' \
+  "build.sh must keep a dedicated default package-profile resolver helper"
+assert_contains "$BUILD_SH" 'beetle_package_profile_query[[:space:]]*\\' \
+  "build.sh must query named package profiles through the Cargo metadata helper"
+assert_contains "$BUILD_SH" 'default_package_profile_for_target\(\)' \
+  "build.sh must query default package profiles through the Cargo metadata helper"
+assert_absent "$BUILD_SH" "roots_csv='default,capability_office,dingtalk'" \
+  "build.sh must not hard-code package-profile roots after the Cargo metadata migration"
 
-linux_full_features="$(python3 "$FEATURE_EXPANDER" --manifest "$CARGO_TOML" --roots 'default,capability_office,dingtalk' --format csv)"
+linux_full_features="$(python3 "$FEATURE_EXPANDER" --manifest "$CARGO_TOML" --package-profile 'linux-full' --format csv)"
 assert_csv_contains "$linux_full_features" "default" \
   "linux-full expansion must retain the Cargo default root feature"
 assert_csv_contains "$linux_full_features" "telegram" \
@@ -153,6 +167,19 @@ assert_csv_contains "$linux_full_features" "dingtalk" \
   "linux-full expansion must keep DingTalk explicitly enabled"
 assert_csv_contains "$linux_full_features" "capability_office" \
   "linux-full expansion must keep capability_office"
+assert_csv_contains "$linux_full_features" "websocket" \
+  "linux-full expansion must now keep websocket so Linux default builds are not runtime-trimmed"
+
+esp_default_profile="$(python3 "$FEATURE_EXPANDER" --manifest "$CARGO_TOML" --default-target-kind esp --format value)"
+if [[ "$esp_default_profile" != "voice+vision+sensor" ]]; then
+  echo "FAIL: ESP default package profile must remain voice+vision+sensor" >&2
+  echo "  actual: $esp_default_profile" >&2
+  exit 1
+fi
+
+esp_default_features="$(python3 "$FEATURE_EXPANDER" --manifest "$CARGO_TOML" --default-target-kind esp --format csv)"
+assert_csv_contains "$esp_default_features" "qq_channel" \
+  "default ESP package expansion must now include QQ from Cargo package-profile metadata"
 
 assert_line_guarded "$CHANNEL_CATALOG_RS" 'const TELEGRAM_ENTRY: CompiledChannelEntry = CompiledChannelEntry {' 'feature = "telegram"' \
   "channel_catalog.rs must gate Telegram catalog entries"
@@ -238,7 +265,7 @@ assert_line_guarded "$LIB_RS" 'pub use channels::WebSocketSink;' 'feature = "web
   "lib.rs must compile-gate websocket public re-exports"
 assert_line_guarded "$MAIN_RS" 'struct TelegramTypingNotifier {' 'feature = "telegram"' \
   "main.rs must compile-gate Telegram typing notifier"
-assert_line_guarded "$MAIN_RS" 'if assembly.communication_plane.start_poll_ingress' 'feature = "telegram"' \
+assert_line_guarded "$MAIN_RS" 'if enabled_channel == "telegram" && !assembly.config.tg_token.trim().is_empty() {' 'feature = "telegram"' \
   "main.rs must compile-gate Telegram poll ingress"
 assert_contains "$ROOT_DIR/src/orchestrator/state.rs" 'pub fn channel_to_index\(channel: &str\) -> Option<usize>' \
   "orchestrator state must derive channel health indexes from the compiled channel catalog"
@@ -250,21 +277,21 @@ assert_line_guarded "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mo
   "HTTP handlers must compile-gate the DingTalk callback handler"
 assert_line_guarded "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod qq_webhook;' 'feature = "qq_channel"' \
   "HTTP handlers must compile-gate the QQ callback handler"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("GET", "/api/wecom/webhook") => {' 'feature = "wecom"' \
+assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("GET", ROUTE_WECOM_WEBHOOK) => {' 'feature = "wecom"' \
   "HTTP router must compile-gate the WeCom verify route"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", "/api/wecom/webhook") => {' 'feature = "wecom"' \
+assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", ROUTE_WECOM_WEBHOOK) => {' 'feature = "wecom"' \
   "HTTP router must compile-gate the WeCom callback route"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", "/api/dingtalk/webhook") => {' 'feature = "dingtalk"' \
+assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", ROUTE_DINGTALK_WEBHOOK) => {' 'feature = "dingtalk"' \
   "HTTP router must compile-gate the DingTalk callback route"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", "/api/webhook/qq") => {' 'feature = "qq_channel"' \
+assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", ROUTE_WEBHOOK_QQ) => {' 'feature = "qq_channel"' \
   "HTTP router must compile-gate the QQ callback route"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("GET /api/wecom/webhook");' 'feature = "wecom"' \
+assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("GET /api/wecom/webhook".to_string());' 'feature = "wecom"' \
   "operator surface inventory must only list the WeCom verify route when compiled"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/wecom/webhook");' 'feature = "wecom"' \
+assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/wecom/webhook".to_string());' 'feature = "wecom"' \
   "operator surface inventory must only list the WeCom callback route when compiled"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/dingtalk/webhook");' 'feature = "dingtalk"' \
+assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/dingtalk/webhook".to_string());' 'feature = "dingtalk"' \
   "operator surface inventory must only list the DingTalk callback route when compiled"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/webhook/qq");' 'feature = "qq_channel"' \
+assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/webhook/qq".to_string());' 'feature = "qq_channel"' \
   "operator surface inventory must only list the QQ callback route when compiled"
 
 echo "esp_channel_compile_gate_test: ok"

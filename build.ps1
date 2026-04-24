@@ -1,6 +1,6 @@
 # One-shot: env check, install espup/ldproxy/toolchain, then release build.
 # ESP firmware: this script injects default --target for release; do not rely on repo .cargo default target.
-# Usage: .\build.ps1  or  .\build.ps1 --target xtensa-esp32s3-espidf
+# Usage: .\build.ps1  or  .\build.ps1 --target xtensa-esp32s3-espidf [--package-profile <name>]
 #        .\build.ps1 clean           清理项目根与短路径 D:\pc_b 的 target（路径过长时只需跑一次）
 #        .\build.ps1 --flash          构建后烧录（数字菜单，默认 1=仅更新；与 build.sh Linux 部署菜单风格一致）
 #        .\build.ps1 --flash-update   构建后烧录且不擦除（跳过菜单）
@@ -24,12 +24,45 @@ $env:CARGO_TARGET_DIR = Join-Path $PSScriptRoot "target"
 # ESP-IDF / kconfgen 读 sdkconfig 时若用系统默认编码（中文 Windows 为 GBK）会报 UnicodeDecodeError，强制 Python 使用 UTF-8
 if ($env:OS -eq "Windows_NT") { $env:PYTHONUTF8 = "1" }
 
-# 解析 --flash / --flash-update / --no-monitor，并从 BOARD 解析 target/features（与 build.sh 一致）
-$flashUpdate = $args -contains "--flash-update"
-$doFlash = ($args -contains "--flash") -or $flashUpdate
-$noMonitor = $args -contains "--no-monitor"
-$buildArgs = $args | Where-Object {
-  $_ -ne "--flash" -and $_ -ne "--no-monitor" -and $_ -ne "--flash-update"
+# 解析 --flash / --flash-update / --no-monitor / --package-profile，并从 BOARD 解析 target/features（与 build.sh 一致）
+$flashUpdate = $false
+$doFlash = $false
+$noMonitor = $false
+$packageProfile = if ($env:PACKAGE_PROFILE) { $env:PACKAGE_PROFILE } else { "" }
+$buildArgs = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+  switch -Regex ($args[$i]) {
+    '^--flash$' {
+      $flashUpdate = $false
+      $doFlash = $true
+      continue
+    }
+    '^--flash-update$' {
+      $flashUpdate = $true
+      $doFlash = $true
+      continue
+    }
+    '^--no-monitor$' {
+      $noMonitor = $true
+      continue
+    }
+    '^--package-profile$' {
+      if (($i + 1) -ge $args.Count) {
+        Write-Error "--package-profile requires a value"
+        exit 1
+      }
+      $i++
+      $packageProfile = $args[$i]
+      continue
+    }
+    '^--package-profile=(.+)$' {
+      $packageProfile = $Matches[1]
+      continue
+    }
+    default {
+      $buildArgs += $args[$i]
+    }
+  }
 }
 
 function Get-TargetMcuFromTriple {
@@ -52,6 +85,44 @@ function Get-DefaultSdkconfigOverlayForTarget {
     "riscv32imafc-esp-espidf" { return "sdkconfig.defaults.esp32p4.board" }
     default { return $null }
   }
+}
+
+function Get-PackageProfileTargetKind {
+  param([string]$TargetTriple)
+  if ($TargetTriple -like "*-unknown-linux*") {
+    return "linux"
+  }
+  return "esp"
+}
+
+function Invoke-BeetlePackageProfileResolver {
+  param([string[]]$ResolverArgs)
+  $resolver = Join-Path $PSScriptRoot "scripts\expand_cargo_features.py"
+  if (-not (Test-Path $resolver)) {
+    Write-Error "Package-profile resolver not found: $resolver"
+    exit 1
+  }
+  $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+  if (-not $pythonCmd) {
+    $pythonCmd = Get-Command python3 -ErrorAction SilentlyContinue
+  }
+  if (-not $pythonCmd -and (Get-Command py -ErrorAction SilentlyContinue)) {
+    $pythonCmd = "py"
+  }
+  if (-not $pythonCmd) {
+    Write-Error "python not found. build.ps1 requires python/python3/py to resolve package profiles from Cargo.toml."
+    exit 1
+  }
+  $manifest = Join-Path $PSScriptRoot "Cargo.toml"
+  if ($pythonCmd -eq "py") {
+    $output = & py -3 $resolver --manifest $manifest @ResolverArgs
+  } else {
+    $output = & $pythonCmd.Source $resolver --manifest $manifest @ResolverArgs
+  }
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+  return ($output | Out-String).Trim()
 }
 
 function Normalize-FlashSize {
@@ -140,7 +211,7 @@ function Get-DetectedEspBoard {
 
 $buildTarget = "xtensa-esp32s3-espidf"
 $buildProfile = "release-size"
-$buildFeatures = ""
+$buildFeatures = @()
 $boardSdkconfigOverlay = $null
 $autoDetectedBoard = $null
 $cliBuildTarget = $null
@@ -213,6 +284,28 @@ if ($boardSdkconfigOverlay -and -not (Test-Path (Join-Path $PSScriptRoot $boardS
   exit 1
 }
 
+if (-not [string]::IsNullOrWhiteSpace($packageProfile) -and $packageProfile -notmatch '^[a-z0-9+_-]+$') {
+  Write-Error "Invalid package profile: $packageProfile"
+  exit 1
+}
+if ([string]::IsNullOrWhiteSpace($packageProfile)) {
+  $targetKind = Get-PackageProfileTargetKind -TargetTriple $buildTarget
+  $packageProfile = Invoke-BeetlePackageProfileResolver @(
+    "--default-target-kind",
+    $targetKind,
+    "--format",
+    "value"
+  )
+}
+$packageProfileFeaturesCsv = Invoke-BeetlePackageProfileResolver @(
+  "--package-profile",
+  $packageProfile,
+  "--format",
+  "csv"
+)
+$buildFeatures = @("--no-default-features", "--features", $packageProfileFeaturesCsv)
+$env:BEETLE_PACKAGE_PROFILE = $packageProfile
+
 # 从 buildTarget 推断 espflash --chip（用于后续打印与烧录）
 $flashChipDerived = $targetMcu
 
@@ -233,10 +326,11 @@ function Write-BuildStatus {
   Write-Host "  Chip (for flash): $(if ($flashChipDerived) { $flashChipDerived } else { '(N/A)' })"
   Write-Host "  Partition table:   $partitionTable"
   Write-Host "  SDKCONFIG overlay: $(if ($boardSdkconfigOverlay) { $boardSdkconfigOverlay } else { '(none)' })"
+  Write-Host "  Package profile:   $(if ($packageProfile) { $packageProfile } else { '(none)' })"
   if ($autoDetectedBoard) {
     Write-Host "  Auto-detected:     $($autoDetectedBoard.Board) via $($autoDetectedBoard.Chip)/$($autoDetectedBoard.FlashSize) on $($autoDetectedBoard.Port)"
   }
-  Write-Host "  Features:          $(if ($buildFeatures) { $buildFeatures } else { '(none)' })"
+  Write-Host "  Features:          $(if ($buildFeatures.Count -gt 0) { $buildFeatures -join ' ' } else { '(none)' })"
   Write-Host "  Profile:           $buildProfile"
   if ($BeforeFlash -and $ChosenPort) {
     Write-Host "  Serial port:        $ChosenPort"
@@ -795,7 +889,7 @@ if (-not (Get-Command ldproxy -ErrorAction SilentlyContinue)) {
 # 构建参数：release 始终在未传 --target 时注入默认 ESP triple（与 build.sh 一致）
 $releaseArgs = @()
 if ($buildArgs -notcontains "--target") { $releaseArgs += "--target", $buildTarget }
-if ($buildFeatures) { $releaseArgs += $buildFeatures }
+if ($buildFeatures.Count -gt 0) { $releaseArgs += $buildFeatures }
 $releaseArgs += $buildArgs
 
 # Windows: run cargo in a cmd that has run vcvars64 (so LIB/kernel32.lib is set). Requires VS with "Desktop dev with C++" and Windows 10/11 SDK. If LNK1181 persists, run build.cmd from "x64 Native Tools Command Prompt for VS".

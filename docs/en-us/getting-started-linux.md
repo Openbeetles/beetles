@@ -19,9 +19,11 @@ Common starting commands:
 TARGET=linux ./build.sh
 TARGET=linux-armv7 ./build.sh
 TARGET=linux-aarch64 ./build.sh
+TARGET=linux ./build.sh --package-linux
 ```
 
 If you already have a built artifact, you can skip ahead to deployment.
+For the simplest release path, prefer `TARGET=linux ./build.sh --package-linux`; `BUILD_METHOD=auto` will try Docker first on macOS, then a saved remote Linux host, and only then a local cross-build.
 
 ## 2. Deploy Beetls OS
 

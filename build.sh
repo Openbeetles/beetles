@@ -16,7 +16,7 @@ NC='\033[0m'
 show_help() {
   cat <<'EOF'
 Usage:
-  ./build.sh [--flash | --flash-update] [--no-monitor] [--no-deploy] [--deploy-linux]
+  ./build.sh [--flash | --flash-update] [--no-monitor] [--no-deploy] [--deploy-linux] [--package-linux]
              [--package-profile <name>] [cargo build args...]
   ./build.sh build-c6
   ./build.sh flash-c6
@@ -24,6 +24,9 @@ Usage:
 
 Linux SSH deploy only (no compile; needs an existing target/*/release/beetle):
   ./build.sh --deploy-linux
+
+Linux release bundle (build + package into dist/):
+  TARGET=linux ./build.sh --package-linux
 
 Hosted coprocessor firmware:
   ./build.sh build-c6
@@ -44,6 +47,7 @@ Quick examples:
   ./build.sh
   ./build.sh --package-profile core-only
   TARGET=linux ./build.sh
+  TARGET=linux ./build.sh --package-linux
   TARGET=linux ./build.sh --package-profile linux-full
   TARGET=linux-armv7 ./build.sh
   TARGET=linux-aarch64 ./build.sh
@@ -53,7 +57,7 @@ Quick examples:
   ./build.sh --deploy-linux
 
 Notes:
-  - On macOS building Linux, auto mode uses Docker only if the daemon is running; otherwise the selected local Linux cross-build path.
+  - On macOS building Linux, auto mode prefers Docker, then a saved remote Linux host, and only falls back to local cross-build when neither is available.
   - BUILD_METHOD=docker bootstraps the required internal helper containers for ARM Linux targets automatically.
   - Force local: BUILD_METHOD=local ./build.sh
   - Force Docker: BUILD_METHOD=docker ./build.sh
@@ -107,6 +111,7 @@ export PATH="/usr/local/cargo/bin:${HOME}/.cargo/bin:${PATH}"
 # --- Parse args (same as build.ps1) ---
 DO_FLASH=""
 DO_DEPLOY_LINUX=""
+DO_PACKAGE_LINUX=""
 NO_MONITOR=""
 NO_DEPLOY_PROMPT=""
 FLASH_NO_ERASE=""
@@ -120,6 +125,7 @@ REMOTE_BUILD_BIN=""
 REMOTE_BUILD_TARGET_ENV=""
 REMOTE_BUILD_ACTIVE=0
 REMOTE_TARGET_PREPARED=0
+AUTO_REMOTE_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)             show_help; exit 0 ;;
@@ -128,6 +134,7 @@ while [[ $# -gt 0 ]]; do
     --no-monitor)          NO_MONITOR=1 ;;
     --no-deploy)           NO_DEPLOY_PROMPT=1 ;;
     --deploy-linux)        DO_DEPLOY_LINUX=1 ;;
+    --package-linux)       DO_PACKAGE_LINUX=1 ;;
     --package-profile)
       shift
       [[ $# -gt 0 ]] || { echo "Error: --package-profile requires a value." >&2; exit 1; }
@@ -143,62 +150,41 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# Package profiles are defined as root Cargo features here and expanded dynamically
-# from Cargo.toml so build.sh does not become a second hand-maintained feature source.
-package_profile_features() {
-  local profile="$1"
-  local roots_csv=""
-  case "$profile" in
-    core-only)
-      roots_csv='default_runtime'
-      ;;
-    voice)
-      roots_csv='default_runtime,capability_voice'
-      ;;
-    vision)
-      roots_csv='default_runtime,capability_vision'
-      ;;
-    sensor)
-      roots_csv='default_runtime,capability_sensor'
-      ;;
-    voice+vision)
-      roots_csv='default_runtime,capability_voice,capability_vision'
-      ;;
-    voice+sensor)
-      roots_csv='default_runtime,capability_voice,capability_sensor'
-      ;;
-    vision+sensor)
-      roots_csv='default_runtime,capability_vision,capability_sensor'
-      ;;
-    voice+vision+sensor)
-      roots_csv='default_runtime,capability_voice,capability_vision,capability_sensor'
-      ;;
-    linux-full)
-      roots_csv='default,capability_office,dingtalk'
-      ;;
-    *)
-      echo "Error: unsupported package profile: $profile" >&2
-      echo "Supported: core-only, voice, vision, sensor, voice+vision, voice+sensor, vision+sensor, voice+vision+sensor, linux-full" >&2
-      exit 1
-      ;;
-  esac
+if [[ -n "$DO_DEPLOY_LINUX" && -n "$DO_PACKAGE_LINUX" ]]; then
+  echo "Error: --deploy-linux and --package-linux cannot be used together." >&2
+  exit 1
+fi
+if [[ -n "$DO_FLASH" && -n "$DO_PACKAGE_LINUX" ]]; then
+  echo "Error: --flash/--flash-update and --package-linux cannot be used together." >&2
+  exit 1
+fi
+
+beetle_package_profile_query() {
   if ! command -v python3 >/dev/null 2>&1; then
     echo "Error: python3 is required so build.sh can resolve package profiles from Cargo.toml." >&2
     exit 1
   fi
   python3 "$SCRIPT_ROOT/scripts/expand_cargo_features.py" \
     --manifest "$SCRIPT_ROOT/Cargo.toml" \
-    --roots "$roots_csv" \
+    "$@"
+}
+
+package_profile_features() {
+  local profile="$1"
+  beetle_package_profile_query \
+    --package-profile "$profile" \
     --format shell-args
 }
 
 default_package_profile_for_target() {
   local target="$1"
+  local target_kind="esp"
   if [[ "$target" =~ -unknown-linux ]]; then
-    printf '%s\n' 'linux-full'
-  else
-    printf '%s\n' 'voice+vision+sensor'
+    target_kind="linux"
   fi
+  beetle_package_profile_query \
+    --default-target-kind "$target_kind" \
+    --format value
 }
 
 target_mcu_from_triple() {
@@ -232,6 +218,72 @@ list_flash_ports() {
     for f in /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.SLAB* /dev/cu.wchusbserial* /dev/cu.UART*; do [[ -e "$f" ]] && ports+=("$f"); done
   fi
   printf '%s\n' "${ports[@]}"
+}
+
+package_linux_release_artifact() {
+  [[ -n "${DO_PACKAGE_LINUX:-}" ]] || return 0
+
+  if [[ ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+    echo "Error: --package-linux only applies to Linux targets (current target: $BUILD_TARGET)." >&2
+    return 1
+  fi
+  if [[ ! -f "$BIN" ]]; then
+    echo "Error: Linux artifact not found for packaging: $BIN" >&2
+    return 1
+  fi
+
+  local package_script="$SCRIPT_ROOT/scripts/package_linux_release.sh"
+  if [[ ! -f "$package_script" ]]; then
+    echo "Error: Linux package script not found: $package_script" >&2
+    return 1
+  fi
+
+  echo ""
+  echo "========== Linux Release Bundle =========="
+  bash "$package_script" --binary "$BIN" --target "$BUILD_TARGET"
+}
+
+finalize_successful_build() {
+  echo ""
+  echo "========== $MSG_BUILD_COMPLETE =========="
+  echo "  $MSG_BINARY: $BIN"
+  ls -lh "$BIN" 2>/dev/null || true
+  if [[ -f "$APP_BIN" ]]; then
+    echo "  Firmware app bin: $APP_BIN"
+    ls -lh "$APP_BIN" 2>/dev/null || true
+  fi
+
+  if [[ "$BUILD_TARGET" =~ -unknown-linux ]] && [[ -n "${DO_PACKAGE_LINUX:-}" ]]; then
+    package_linux_release_artifact || return 1
+  fi
+
+  if [[ -n "$DO_FLASH" ]]; then
+    if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
+      echo -e "${YELLOW}Note: --flash / --flash-update apply to ESP builds only (current target is Linux).${NC}" >&2
+    else
+      run_esp_flash_workflow || return 1
+      return 0
+    fi
+  fi
+
+  if [[ -z "${DO_PACKAGE_LINUX:-}" ]]; then
+    prompt_deploy_maybe
+  fi
+
+  echo ""
+  if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
+    if [[ -n "${DO_PACKAGE_LINUX:-}" ]]; then
+      echo "  Linux bundle ready under: $SCRIPT_ROOT/dist"
+      echo "  Deploy later: ./build.sh --deploy-linux"
+    else
+      echo "  Deploy later: ./build.sh --deploy-linux"
+    fi
+  else
+    if [[ -n "$FLASH_CHIP" ]]; then
+      echo "  Flash later: run ./build.sh again and answer Yes at the deploy prompt, or: ./build.sh --flash / --flash-update"
+    fi
+  fi
+  return 0
 }
 
 linux_detect_pkg_manager() {
@@ -857,11 +909,39 @@ linux_deploy_input_device_info() {
     echo ""
 }
 
+linux_remote_saved_target_available() {
+    linux_deploy_load_deploy_defaults
+    [[ -n "${DEFAULT_DEVICE_IP:-}" ]]
+}
+
+linux_deploy_use_saved_device_info() {
+    linux_deploy_load_deploy_defaults
+    if [ -z "${DEFAULT_DEVICE_IP:-}" ]; then
+        return 1
+    fi
+
+    DEVICE_IP="$DEFAULT_DEVICE_IP"
+    DEVICE_USER="$DEFAULT_DEVICE_USER"
+    SSH_PORT="$DEFAULT_SSH_PORT"
+
+    echo "========== Target Host Information =========="
+    echo ""
+    echo -e "${GREEN}Auto-selected saved host: ${DEVICE_USER}@${DEVICE_IP}:${SSH_PORT}${NC}"
+    echo ""
+}
+
 linux_prepare_remote_target() {
     if [ "${REMOTE_TARGET_PREPARED:-0}" = "1" ]; then
         return 0
     fi
-    linux_deploy_input_device_info
+    if [ "${AUTO_REMOTE_BUILD:-0}" = "1" ]; then
+        linux_deploy_use_saved_device_info || {
+            echo -e "${RED}Error: auto remote build requested but no saved remote host is configured${NC}" >&2
+            exit 1
+        }
+    else
+        linux_deploy_input_device_info
+    fi
     linux_deploy_setup_ssh_mux
     trap linux_deploy_cleanup_ssh_mux EXIT INT TERM
     linux_deploy_test_connection
@@ -916,8 +996,12 @@ linux_remote_input_build_dir() {
     echo "========== Remote Build Directory =========="
     echo ""
     linux_deploy_load_deploy_defaults
-    read -p "Remote project directory [${DEFAULT_REMOTE_BUILD_DIR}]: " REMOTE_BUILD_DIR
-    REMOTE_BUILD_DIR=${REMOTE_BUILD_DIR:-$DEFAULT_REMOTE_BUILD_DIR}
+    if [ "${AUTO_REMOTE_BUILD:-0}" = "1" ]; then
+        REMOTE_BUILD_DIR=${REMOTE_BUILD_DIR:-$DEFAULT_REMOTE_BUILD_DIR}
+    else
+        read -p "Remote project directory [${DEFAULT_REMOTE_BUILD_DIR}]: " REMOTE_BUILD_DIR
+        REMOTE_BUILD_DIR=${REMOTE_BUILD_DIR:-$DEFAULT_REMOTE_BUILD_DIR}
+    fi
     case "$REMOTE_BUILD_DIR" in
         ""|"/")
             echo -e "${RED}Error: remote project directory must not be empty or /${NC}"
@@ -940,6 +1024,24 @@ linux_remote_input_build_dir() {
 }
 
 linux_remote_select_build_role() {
+    if [ -n "${DO_PACKAGE_LINUX:-}" ]; then
+        REMOTE_BUILD_ROLE="pull_package"
+        echo "========== Remote Build Result =========="
+        echo ""
+        echo "  Packaging requested; Beetle will build on the remote host,"
+        echo "  pull the Linux artifact back locally, and package it into dist/."
+        echo ""
+        return 0
+    fi
+    if [ "${AUTO_REMOTE_BUILD:-0}" = "1" ]; then
+        REMOTE_BUILD_ROLE="pull_local"
+        echo "========== Remote Build Result =========="
+        echo ""
+        echo "  Auto mode will build on the saved remote host and pull the artifact"
+        echo "  back to this workspace, so the normal local post-build flow can continue."
+        echo ""
+        return 0
+    fi
     local default_role="1"
     echo "========== Remote Build Result =========="
     echo ""
@@ -963,7 +1065,7 @@ linux_remote_select_build_role() {
 
 linux_apply_docker_target_for_platform() {
     case "$PLATFORM_CHOICE" in
-        3) BUILD_TARGET="x86_64-unknown-linux-musl" ;;
+        3) BUILD_TARGET="x86_64-unknown-linux-gnu" ;;
         4) BUILD_TARGET="armv7-unknown-linux-gnueabihf" ;;
         5) BUILD_TARGET="aarch64-unknown-linux-gnu" ;;
     esac
@@ -1977,10 +2079,10 @@ run_linux_docker_build() {
   echo "  $MSG_USING_DOCKER"
   echo ""
   echo "========== $MSG_BUILD_IN_DOCKER =========="
-  if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
-    docker run --rm -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/workspace -w /workspace \
+  if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+    docker run --rm --platform linux/amd64 -e DEBIAN_FRONTEND=noninteractive -e RUSTUP_TOOLCHAIN=stable -v "$SCRIPT_ROOT":/workspace -w /workspace \
       rust:latest \
-      bash -c "rustup target add x86_64-unknown-linux-musl && $cargo_cmd"
+      bash -c "apt-get update && apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev && rm -rf /var/lib/apt/lists/* && $cargo_cmd"
   elif [[ "$target" == "armv7-unknown-linux-gnueabihf" ]]; then
     bash "$SCRIPT_ROOT/scripts/docker/linux_armv7_build_docker.sh"
     docker exec beetle-linux-armv7-gnu-cross /bin/bash -lc \
@@ -1989,7 +2091,7 @@ run_linux_docker_build() {
     bash "$SCRIPT_ROOT/scripts/docker/linux_aarch64_build_docker.sh"
     docker exec beetle-linux-aarch64 /bin/bash -lc \
       "export PATH='$helper_path_env'; cd /workspace/beetle && $cargo_cmd"
-  elif [[ "$target" == "armv7-unknown-linux-musleabihf" || "$target" == "aarch64-unknown-linux-musl" ]]; then
+  elif [[ "$target" == "x86_64-unknown-linux-musl" || "$target" == "armv7-unknown-linux-musleabihf" || "$target" == "aarch64-unknown-linux-musl" ]]; then
     echo "Error: Docker build target $target is deprecated. Re-run with the current GNU Docker path." >&2
     exit 1
   else
@@ -2307,30 +2409,27 @@ select_linux_build_method() {
       ;;
   esac
 
-  if [[ ! -t 0 ]]; then
-    return 0
-  fi
-
-  local default_choice="1"
-  if [[ "$(uname -s)" == "Darwin" ]] && command -v docker &>/dev/null && docker info &>/dev/null; then
-    default_choice="2"
-  fi
-
-  echo ""
-  echo "========== Linux Build Method =========="
-  echo "  1) Local build on this machine"
-  echo "  2) Docker build on this machine"
-  echo "  3) Remote build over SSH"
-  echo ""
-  read -r -p "Select method [1-3] (default ${default_choice}): " build_choice
-  build_choice=${build_choice:-$default_choice}
-  case "$build_choice" in
-    1) BUILD_METHOD="local" ;;
-    2) BUILD_METHOD="docker" ;;
-    3) BUILD_METHOD="remote" ;;
+  case "$(uname -s)" in
+    Darwin)
+      if command -v docker &>/dev/null && docker info &>/dev/null; then
+        BUILD_METHOD="docker"
+        echo "  Auto-selected Docker build (daemon reachable)."
+      elif linux_remote_saved_target_available; then
+        BUILD_METHOD="remote"
+        AUTO_REMOTE_BUILD=1
+        echo "  Auto-selected remote Linux build (saved host available, Docker daemon unavailable)."
+      else
+        BUILD_METHOD="local"
+        echo "  Auto-selected local Linux cross-build (no Docker daemon and no saved remote host)."
+      fi
+      ;;
+    Linux)
+      BUILD_METHOD="local"
+      echo "  Auto-selected local build on Linux."
+      ;;
     *)
-      echo "Error: invalid Linux build method: $build_choice" >&2
-      exit 1
+      BUILD_METHOD="local"
+      echo "  Auto-selected local build on $(uname -s)."
       ;;
   esac
 }
@@ -2597,9 +2696,6 @@ if [[ -n "${BOARD:-}" ]]; then
   [[ -z "$BUILD_TARGET" ]] && { echo "Error: board $BOARD has no 'target' in board_presets.toml" >&2; exit 1; }
   PARTITION_TABLE=$(echo "$block" | grep -E '^partition_table\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   BOARD_SDKCONFIG_OVERLAY=$(echo "$block" | grep -E '^sdkconfig_overlay\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-  if [[ -z "$PACKAGE_PROFILE" ]]; then
-    PACKAGE_PROFILE=$(echo "$block" | grep -E '^package_profile\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-  fi
   if [[ -z "$PARTITION_TABLE" ]]; then
     case "$BOARD" in
       esp32-s3-8mb)  PARTITION_TABLE=partitions_8mb.csv ;;
@@ -2639,6 +2735,10 @@ if [[ -z "$PACKAGE_PROFILE" ]]; then
 fi
 if [[ ! "$PACKAGE_PROFILE" =~ ^[a-z0-9+_-]+$ ]]; then
   echo "Error: invalid package profile: $PACKAGE_PROFILE" >&2
+  exit 1
+fi
+if [[ -n "$DO_PACKAGE_LINUX" ]] && [[ ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+  echo "Error: --package-linux requires a Linux target (current target: $BUILD_TARGET)." >&2
   exit 1
 fi
 BUILD_FEATURES="$(package_profile_features "$PACKAGE_PROFILE")"
@@ -3192,6 +3292,18 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
         linux_deploy_main
         exit 0
         ;;
+      pull_local)
+        linux_remote_pull_artifact_to_local
+        REMOTE_BUILD_ACTIVE=0
+        linux_deploy_cleanup_ssh_mux
+        REMOTE_TARGET_PREPARED=0
+        SSH_MUX_DIR=""
+        DEVICE_IP=""
+        DEVICE_USER=""
+        SSH_PORT=""
+        finalize_successful_build || exit 1
+        exit 0
+        ;;
       pull_deploy)
         linux_remote_pull_artifact_to_local
         REMOTE_BUILD_ACTIVE=0
@@ -3202,6 +3314,18 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
         DEVICE_USER=""
         SSH_PORT=""
         linux_deploy_main
+        exit 0
+        ;;
+      pull_package)
+        linux_remote_pull_artifact_to_local
+        REMOTE_BUILD_ACTIVE=0
+        linux_deploy_cleanup_ssh_mux
+        REMOTE_TARGET_PREPARED=0
+        SSH_MUX_DIR=""
+        DEVICE_IP=""
+        DEVICE_USER=""
+        SSH_PORT=""
+        finalize_successful_build || exit 1
         exit 0
         ;;
       leave)
@@ -3221,18 +3345,6 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
   # 检查是否在 macOS 上构建 Linux musl
   if [[ "$BUILD_TARGET" =~ -unknown-linux-musl ]] && [[ "$(uname -s)" == "Darwin" ]]; then
     echo "  $MSG_DETECTED_MACOS"
-
-    # 使用 Docker
-    if [[ -n "${USE_DOCKER:-}" ]]; then
-      run_linux_docker_build "$BUILD_TARGET" "${RELEASE_ARGS[@]}"
-
-      echo ""
-      echo "========== $MSG_BUILD_COMPLETE =========="
-      echo "  $MSG_BINARY: $BIN"
-      ls -lh "$BIN" 2>/dev/null || echo "  (check target/$BUILD_TARGET/release/beetle)"
-      prompt_deploy_maybe
-      exit 0
-    fi
 
     # Check and install local musl-cross toolchain when needed.
     if [[ "$BUILD_TARGET" == "x86_64-unknown-linux-musl" ]] && ! command -v x86_64-linux-musl-gcc &>/dev/null; then
@@ -3449,11 +3561,7 @@ fi
 if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
   if [[ -n "${USE_DOCKER:-}" ]]; then
     run_linux_docker_build "$BUILD_TARGET" "${RELEASE_ARGS[@]}"
-    echo ""
-    echo "========== $MSG_BUILD_COMPLETE =========="
-    echo "  $MSG_BINARY: $BIN"
-    ls -lh "$BIN" 2>/dev/null || echo "  (check target/$BUILD_TARGET/release/beetle)"
-    prompt_deploy_maybe
+    finalize_successful_build || exit 1
     exit 0
   fi
 
@@ -3463,11 +3571,7 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
       echo ""
       echo "Local toolchain build failed. Auto-fallback to Docker build..."
       run_linux_docker_build "$BUILD_TARGET" "${RELEASE_ARGS[@]}"
-      echo ""
-      echo "========== $MSG_BUILD_COMPLETE =========="
-      echo "  $MSG_BINARY: $BIN"
-      ls -lh "$BIN" 2>/dev/null || echo "  (check target/$BUILD_TARGET/release/beetle)"
-      prompt_deploy_maybe
+      finalize_successful_build || exit 1
       exit 0
     fi
 
@@ -3484,11 +3588,13 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
       echo "     linker = \"x86_64-linux-musl-gcc\"" >&2
       echo "  4) If your default toolchain is esp, always use +stable for rustup target commands." >&2
       echo "  5) Prefer Docker mode if linker errors persist (recommended)." >&2
+      echo "  6) If you keep one remote Linux host saved, auto mode will use it before falling back to local cross-build." >&2
     elif [[ "$BUILD_TARGET" == "armv7-unknown-linux-musleabihf" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
       echo "Common fixes on macOS (armv7):" >&2
       echo "  1) Prefer Docker mode for armv7 (recommended)." >&2
       echo "  2) Ensure target is installed on stable toolchain:" >&2
       echo "     rustup +stable target add armv7-unknown-linux-musleabihf" >&2
+      echo "  3) If you already saved a remote Linux host, leave BUILD_METHOD=auto and Beetle will pick it next time." >&2
     elif [[ "$BUILD_TARGET" == "aarch64-unknown-linux-musl" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
       echo "Common fixes on macOS (aarch64):" >&2
       echo "  1) Prefer Docker mode for aarch64 (recommended)." >&2
@@ -3496,6 +3602,7 @@ if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
       echo "     rustup +stable target add aarch64-unknown-linux-musl" >&2
       echo "  3) Ensure musl linker is available:" >&2
       echo "     aarch64-linux-musl-gcc --version" >&2
+      echo "  4) If you already saved a remote Linux host, leave BUILD_METHOD=auto and Beetle will pick it next time." >&2
     fi
     exit 1
   fi
@@ -3512,32 +3619,5 @@ if [[ ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
 fi
 
 # --- After build: deploy prompt or --flash (ESP only) ---
-echo ""
-echo "========== $MSG_BUILD_COMPLETE =========="
-echo "  $MSG_BINARY: $BIN"
-ls -lh "$BIN" 2>/dev/null || true
-if [[ -f "$APP_BIN" ]]; then
-  echo "  Firmware app bin: $APP_BIN"
-  ls -lh "$APP_BIN" 2>/dev/null || true
-fi
-
-if [[ -n "$DO_FLASH" ]]; then
-  if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
-    echo -e "${YELLOW}Note: --flash / --flash-update apply to ESP builds only (current target is Linux).${NC}" >&2
-  else
-    run_esp_flash_workflow || exit 1
-    exit 0
-  fi
-fi
-
-prompt_deploy_maybe
-
-echo ""
-if [[ "$BUILD_TARGET" =~ -unknown-linux ]]; then
-  echo "  Deploy later: ./build.sh --deploy-linux"
-else
-  if [[ -n "$FLASH_CHIP" ]]; then
-    echo "  Flash later: run ./build.sh again and answer Yes at the deploy prompt, or: ./build.sh --flash / --flash-update"
-  fi
-fi
+finalize_successful_build || exit 1
 exit 0

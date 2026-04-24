@@ -8,7 +8,7 @@ On Linux, release management follows the deploy, restart, stop, and rollback flo
 
 For a normal Linux release cycle:
 
-1. build the Linux artifact with [build-script.md](build-script.md)
+1. build the Linux artifact with [build-script.md](build-script.md), or produce a distributable tarball with `TARGET=linux ./build.sh --package-linux`
 2. deploy it with `./build.sh --deploy-linux`
 3. check release state with `beetle release status`
 4. use `beetle restart`, `beetle stop`, or `beetle release rollback` only when needed

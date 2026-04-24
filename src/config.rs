@@ -2717,13 +2717,6 @@ pub fn save_llm_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> 
     Ok(())
 }
 
-/// 校验 ChannelsSegment 并写入 SPIFFS config/channels.json；body 即全量，不做合并。
-pub fn save_channels_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
-    let seg: ChannelsSegment =
-        serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
-    save_channels_segment_value(writer, &seg)
-}
-
 /// 校验 ChannelsSegment 并写入 SPIFFS config/channels.json；直接消费已解析的配置对象。
 pub fn save_channels_segment_value(
     writer: &dyn ConfigFileStore,
@@ -2744,10 +2737,8 @@ pub fn save_channels_segment_with_overlay(
 ) -> Result<()> {
     if let Some(value) = tg_group_activation {
         validate_tg_group_activation(value)?;
-    }
-    let previous = writer.read_config_file("config/channels.json")?;
-    save_channels_segment_value(writer, seg)?;
-    if let Some(value) = tg_group_activation {
+        let previous = writer.read_config_file("config/channels.json")?;
+        save_channels_segment_value(writer, seg)?;
         if let Err(error) = write_tg_group_activation(store, value) {
             if let Err(rollback) =
                 restore_config_file(writer, "config/channels.json", previous.as_deref())
@@ -2762,6 +2753,8 @@ pub fn save_channels_segment_with_overlay(
             }
             return Err(error);
         }
+    } else {
+        save_channels_segment_value(writer, seg)?;
     }
     Ok(())
 }
@@ -2778,7 +2771,8 @@ fn restore_config_file(
 }
 
 /// 校验 SystemSegment 并写入对应 NVS 键；body 即全量，不做合并。
-pub fn save_system_segment_to_nvs(store: &dyn ConfigStore, body: &str) -> Result<()> {
+#[cfg(test)]
+pub(crate) fn save_system_segment_to_nvs(store: &dyn ConfigStore, body: &str) -> Result<()> {
     let seg: SystemSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
     save_system_segment_value_to_nvs(store, &seg)

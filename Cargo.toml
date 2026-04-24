@@ -108,18 +108,40 @@ gpio-cdev = "0.6"
 embedded-graphics-framebuf = "0.5.0"
 spidev = "0.6"
 
+[package.metadata.beetle.package_profiles.defaults]
+esp = "voice+vision+sensor"
+linux = "linux-full"
+
+[package.metadata.beetle.package_profiles.profiles]
+core-only = ["default_runtime"]
+voice = ["default_runtime", "capability_voice"]
+vision = ["default_runtime", "capability_vision"]
+sensor = ["default_runtime", "capability_sensor"]
+"voice+vision" = ["default_runtime", "capability_voice", "capability_vision"]
+"voice+sensor" = ["default_runtime", "capability_voice", "capability_sensor"]
+"vision+sensor" = ["default_runtime", "capability_vision", "capability_sensor"]
+"voice+vision+sensor" = [
+    "default_runtime",
+    "capability_voice",
+    "capability_vision",
+    "capability_sensor",
+    "qq_channel",
+]
+linux-full = ["default", "capability_office", "dingtalk", "websocket"]
+
 [features]
 # Feature contract:
 # - `default` is the host/developer default `cargo build`, not the default ESP package profile.
-# - `build.sh --package-profile ...` resolves package roots from this table through
-#   `scripts/expand_cargo_features.py`; do not hand-maintain a second expanded feature list.
+# - `build.sh` / `build.ps1` package-profile defaults and roots are resolved from
+#   `[package.metadata.beetle.package_profiles]` through `scripts/expand_cargo_features.py`;
+#   do not hand-maintain a second package-profile source in scripts.
 # - Public usage guidance lives in `docs/zh-cn/package-profiles-and-features.md` and
 #   `docs/en-us/package-profiles-and-features.md`.
 
 # Runtime bundles
 # `default` is the normal host/developer build: baseline runtime + default channels +
 # baseline multimodal capability domains. Official Linux packages use
-# `linux-full = default + capability_office + dingtalk`.
+# `linux-full = default + capability_office + dingtalk + websocket`.
 default = [
     "default_runtime",
     "telegram",

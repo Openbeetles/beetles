@@ -141,9 +141,13 @@ impl AcousticWakeBackend {
         }
 
         let mic_rms = normalized_rms(mic);
-        let ref_rms = normalized_rms(reference);
         let mic_level = smooth_level(&mut self.smoothed_mic_rms, mic_rms);
-        let ref_level = smooth_level(&mut self.smoothed_ref_rms, ref_rms);
+        let ref_level = if audio_playing {
+            let ref_rms = normalized_rms(reference);
+            smooth_level(&mut self.smoothed_ref_rms, ref_rms)
+        } else {
+            0.0
+        };
         let zcr = zero_crossing_rate(mic);
         let speech_summary = speech_band_summary(mic, self.config.sample_rate_hz);
         let dynamic_threshold = self
@@ -285,7 +289,7 @@ fn zero_crossing_rate(pcm: &[i16]) -> f32 {
 fn speech_band_summary(pcm: &[i16], sample_rate_hz: u32) -> SpeechBandSummary {
     let (speech_bins, speech_bin_count) = band_energies(pcm, sample_rate_hz, &SPEECH_BAND_HZ);
     let speech_total: f32 = speech_bins[..speech_bin_count].iter().copied().sum();
-    let noise_total = band_energy_sum(pcm, sample_rate_hz, &NOISE_BAND_HZ);
+    let noise_total = band_energy_total(pcm, sample_rate_hz, &NOISE_BAND_HZ);
     let total = speech_total + noise_total;
     if speech_bin_count == 0 || total <= f32::EPSILON || speech_total <= f32::EPSILON {
         return SpeechBandSummary::default();
@@ -308,9 +312,15 @@ fn speech_band_summary(pcm: &[i16], sample_rate_hz: u32) -> SpeechBandSummary {
     }
 }
 
-fn band_energy_sum<const N: usize>(pcm: &[i16], sample_rate_hz: u32, bins: &[f32; N]) -> f32 {
-    let (energies, len) = band_energies(pcm, sample_rate_hz, bins);
-    energies[..len].iter().copied().sum()
+fn band_energy_total<const N: usize>(pcm: &[i16], sample_rate_hz: u32, bins: &[f32; N]) -> f32 {
+    let nyquist = (sample_rate_hz as f32) * 0.5;
+    let mut total = 0.0f32;
+    for &hz in bins {
+        if hz > 0.0 && hz < nyquist {
+            total += goertzel_energy(pcm, sample_rate_hz, hz);
+        }
+    }
+    total
 }
 
 fn band_energies<const N: usize>(

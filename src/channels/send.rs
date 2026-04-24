@@ -36,6 +36,13 @@ pub(crate) fn next_queued_outbound_id() -> u32 {
 }
 
 /// 根据 POST 结果打一次 warn：Err 或 status >= 400。
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "wecom",
+    feature = "feishu",
+    feature = "qq_channel",
+))]
 pub fn log_send_failure(tag: &str, res: &Result<(u16, crate::platform::ResponseBody)>) {
     match res {
         Err(e) => log::warn!("[{}] send failed: {}", tag, e),
@@ -45,6 +52,7 @@ pub fn log_send_failure(tag: &str, res: &Result<(u16, crate::platform::ResponseB
 }
 
 /// 执行 POST，失败时打日志，返回结果供需要解析 body 的调用方使用。
+#[cfg(any(feature = "telegram", feature = "dingtalk", feature = "wecom"))]
 pub fn send_post<H: ChannelHttpClient>(
     tag: &str,
     http: &mut H,

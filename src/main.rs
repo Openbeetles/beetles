@@ -1400,10 +1400,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         beetle::platform::task_wdt::feed_current_task();
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         beetle::platform::task_wdt::feed_current_task();
-        beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_display_loop_before_presence");
         let snapshot = beetle::orchestrator::snapshot();
         let now_secs = beetle::util::current_unix_secs();
-        beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_display_loop_after_presence");
         let pressure = match snapshot.pressure {
             beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
             beetle::orchestrator::PressureLevel::Cautious => DisplayPressureLevel::Cautious,
@@ -1519,10 +1517,6 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             };
             match platform.display_command(cmd) {
                 Ok(()) => {
-                    beetle::bootstrap::observe_heap_checkpoint(
-                        TAG,
-                        "heap_display_loop_after_state_command",
-                    );
                     loop_state.last_state = Some(state);
                     loop_state
                         .last_presence_subtitle
@@ -2445,10 +2439,7 @@ fn prepare_runtime_assembly(
     })
 }
 
-fn start_support_planes(
-    assembly: &mut PreparedRuntimeAssembly,
-    wifi_init_ok: bool,
-) -> beetle::Result<()> {
+fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Result<()> {
     #[cfg(feature = "config_api")]
     {
         let shared_runtime_config = Arc::new(RwLock::new((*assembly.config).clone()));
@@ -2540,18 +2531,18 @@ fn start_support_planes(
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("bg_timer_started");
 
-    if wifi_init_ok {
-        beetle::platform::wait_for_network_ready();
-    }
-    // Refresh observable runtime-capability state after Wi-Fi readiness settles.
-    // Support/agent planes no longer depend on a synthetic startup shell.
+    // Refresh runtime capability state from the live Wi-Fi snapshot without
+    // blocking startup on STA settle; heartbeat keeps the contract current.
+    let outbound_transport_ready = match assembly.runtime.platform.memory_system_kind() {
+        beetle::memory::MemorySystemKind::LinuxFull => true,
+        beetle::memory::MemorySystemKind::EspCompact => beetle::platform::is_wifi_sta_connected(),
+    };
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("communication_plane_ready");
-    let state_fs_ready = assembly.runtime.platform.spiffs_usage().is_some();
     beetle::orchestrator::observe_runtime_capabilities_from_platform(
         assembly.runtime.platform.as_ref(),
-        true,
-        Some(state_fs_ready),
+        outbound_transport_ready,
+        None,
     );
     beetle::orchestrator::init();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -3023,7 +3014,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
         None => return,
     };
 
-    if let Err(error) = start_support_planes(&mut assembly, wifi_init_ok) {
+    if let Err(error) = start_support_planes(&mut assembly) {
         log::error!("[{}] support plane startup failed: {}", TAG, error);
         app_runtime_support::record_startup_failure_and_request_restart(
             &assembly.runtime.platform,

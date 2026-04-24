@@ -144,18 +144,28 @@ pub fn build_operator_status(
     let runtime_capabilities = orchestrator::runtime_capability_snapshot();
     let metrics = crate::metrics::snapshot();
     let now_secs = current_unix_secs();
+    let resource = orchestrator::snapshot();
     let reply_pipeline = ReplyPipelineOperatorSummary::from_metrics(&metrics);
     let delivery_diagnosis = build_delivery_diagnosis(DeliveryDiagnosisInput {
         enabled_channel: Some(input.config.enabled_channel.as_str()),
         metrics: metrics.clone(),
         runtime_capabilities: runtime_capabilities.clone(),
     });
-    let presence = runtime::inspect_platform_presence(input.platform, now_secs);
-    let initiative = runtime::inspect_platform_initiative(input.platform, now_secs);
+    let presence = runtime::presence::inspect_platform_presence_with_resource(
+        input.platform,
+        &resource,
+        now_secs,
+    );
+    let initiative = runtime::initiative::inspect_platform_initiative_with_presence(
+        input.platform,
+        &presence,
+        &resource,
+        now_secs,
+    );
     let os_closure = runtime::inspect_beetle_os_closure(&presence, &initiative);
     let system_diagnosis = build_system_diagnosis(SystemDiagnosisInput {
         enabled_channel: Some(input.config.enabled_channel.as_str()),
-        resource: orchestrator::snapshot(),
+        resource,
         metrics: metrics.clone(),
         runtime_capabilities: runtime_capabilities.clone(),
         presence_state: presence.state.as_str(),

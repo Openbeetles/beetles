@@ -12,6 +12,7 @@
 | Linux x86_64 构建 | `TARGET=linux ./build.sh` |
 | Linux armv7 构建 | `TARGET=linux-armv7 ./build.sh` |
 | Linux aarch64 构建 | `TARGET=linux-aarch64 ./build.sh` |
+| Linux 发布包构建 | `TARGET=linux ./build.sh --package-linux` |
 | 已构建 Linux 产物部署 | `./build.sh --deploy-linux` |
 | 板载 C6 辅助固件烧录 | `./build.sh flash-c6` |
 | C6 与 P4 固件顺序烧录 | `./build.sh flash-all` |
@@ -81,23 +82,28 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 TARGET=linux ./build.sh
 TARGET=linux-armv7 ./build.sh
 TARGET=linux-aarch64 ./build.sh
+TARGET=linux ./build.sh --package-linux
 ./build.sh --deploy-linux
 ```
 
 说明：
 
 - 交互式构建成功后，脚本会问你是否立刻通过 SSH 部署
+- `--package-linux` 会构建当前 Linux 目标，并把发布 tarball 写到 `dist/`
+- `--package-linux` 会直接从 `Cargo.toml package.version` 生成 bundle 版本，不再要求额外手工跑第二条打包命令
+- `BUILD_METHOD=auto` 现在不再弹构建方式菜单：macOS 下优先 Docker，其次已保存的远端 Linux 主机，最后才回落到本地交叉构建
 - `--deploy-linux` 不重新编译，只部署现有产物
 - `--deploy-linux` 还会把 `spiffs_data/skills/*.md` 里的官方运行时技能同步到远端 Beetls OS state root 的 `skills/` 目录
 - `./build.sh` 是 Linux 构建和部署的主入口；Docker helper 脚本只是 `BUILD_METHOD=docker` 背后的内部帮手
+- `TARGET=linux BUILD_METHOD=docker` 在 amd64 Linux 容器内构建 GNU 目标，避免把 Linux 系统库依赖强行变成 musl 交叉 sysroot 问题
 - ARM Linux 目标在 `BUILD_METHOD=docker` 下会自动拉起对应的 GNU 构建容器
 
 ## 打包方案
 
-`build.sh` 的 package profile 与 `Cargo.toml` feature 是两层合同：
+`build.sh` 的 package profile 与 `Cargo.toml` feature/metadata 是两层合同：
 
-- `package profile`：用户与发布流程入口
-- feature 闭包：从 `Cargo.toml` 动态展开
+- `package profile`：用户与发布流程入口，但 profile 名和 roots 都从 `Cargo.toml [package.metadata.beetle.package_profiles]` 解析
+- feature 闭包：从 `Cargo.toml [features]` 动态展开
 
 详细映射、直接 cargo 写法和默认合同见：
 
@@ -128,8 +134,9 @@ TARGET=linux ./build.sh --package-profile linux-full
 
 - Linux 目标默认用 `linux-full`
 - ESP 目标默认用 `voice+vision+sensor`
-- `linux-full` 当前固定从 `default + capability_office + dingtalk` 展开
-- ESP 各 profile 当前都从 `default_runtime` 起步，再按需叠 `capability_voice / capability_vision / capability_sensor`
+- 这两个默认值现在由 `Cargo.toml [package.metadata.beetle.package_profiles.defaults]` 决定
+- `linux-full` 当前固定从 `default + capability_office + dingtalk + websocket` 展开，作为 Linux 默认不裁剪运行面
+- ESP 各 profile 当前都从 `default_runtime` 起步；默认 ESP 包额外显式带入 `qq_channel`
 
 ## Linux 构建方式
 
@@ -137,7 +144,7 @@ TARGET=linux ./build.sh --package-profile linux-full
 
 | 值 | 用途 |
 |----|------|
-| `auto` | 默认值，让脚本自己选 |
+| `auto` | 默认值，非交互自动选后端 |
 | `local` | 在当前机器本地构建 |
 | `docker` | 在 Docker 里构建 Linux 目标 |
 | `remote` | 把工程同步到远端 Linux 主机，在远端构建 |
@@ -150,6 +157,13 @@ BUILD_METHOD=docker TARGET=linux-aarch64 ./build.sh
 BUILD_METHOD=remote TARGET=linux ./build.sh
 ```
 
+`auto` 当前的决策顺序是：
+
+- Linux 主机上直接本地构建
+- macOS 上优先用可用的 Docker daemon
+- macOS 如果 Docker 不可用，则优先复用已保存的远端 Linux 主机
+- 再不行才回落到本地交叉构建
+
 ## 交互行为与非交互执行
 
 默认情况下，构建成功后脚本会继续追问下一步，只要满足这些条件：
@@ -158,6 +172,7 @@ BUILD_METHOD=remote TARGET=linux ./build.sh
 - 没有传 `--no-deploy`
 - 没有设置 `BEETLE_SKIP_DEPLOY_PROMPT=1`
 - 当前不是已经显式用了 `--flash`
+- 当前不是已经显式用了 `--package-linux`
 
 示例：
 
@@ -183,12 +198,13 @@ BEETLE_SKIP_DEPLOY_PROMPT=1 ./build.sh
 ## 产物路径
 
 - Linux 产物在 `target/<target>/release/beetle`
+- `--package-linux` 生成的 Linux 发布包在 `dist/beetle-v<version>-linux-<arch>.tar.gz`
 - ESP 产物在 `target/<target>/release-size/beetle`
 - ESP 构建还会额外生成 `target/<target>/release-size/beetle.bin`
 - 这个镜像由 `espflash save-image` 生成，所以纯构建路径不再依赖 Python `esptool` 导入
 - 构建成功后，脚本会把实际产物路径直接打印出来
 
-如果你打算用 `--deploy-linux`，先确认对应 Linux 产物已经存在。
+如果你打算用 `--deploy-linux`，先确认对应 Linux 产物已经存在。如果你需要可分发 tarball，而不是直接 SSH 部署，就用 `--package-linux`。
 
 ## 相关文档
 

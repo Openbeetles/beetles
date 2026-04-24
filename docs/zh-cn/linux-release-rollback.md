@@ -8,7 +8,7 @@
 
 常见 Linux 发布流程如下：
 
-1. 先用 [build-script.md](build-script.md) 构建 Linux 产物
+1. 先用 [build-script.md](build-script.md) 构建 Linux 产物，或用 `TARGET=linux ./build.sh --package-linux` 直接生成可分发 tarball
 2. 用 `./build.sh --deploy-linux` 部署
 3. 用 `beetle release status` 查看当前发布状态
 4. 只有在需要时再用 `beetle restart`、`beetle stop` 或 `beetle release rollback`
