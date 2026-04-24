@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -44,6 +44,7 @@ import { ProviderFieldInput } from "./ProviderFieldInput";
 import { formatProbeMessage } from "./accountDetailDialogHelpers";
 import { translateApiError } from "../i18n/apiErrors";
 import { errorMessage, withTimeout } from "../util/withTimeout";
+import { createLatestRequestGuard } from "../util/latestRequest";
 
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -80,6 +81,9 @@ export function AccountDetailDialog({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const detailLoadGuardRef = useRef(createLatestRequestGuard());
+  const probeGuardRef = useRef(createLatestRequestGuard());
+  const deleteGuardRef = useRef(createLatestRequestGuard());
   const saveFeedback = useSaveFeedback(t);
   const {
     status: saveStatus,
@@ -102,6 +106,7 @@ export function AccountDetailDialog({
 
   const load = useCallback(async () => {
     if (!ready || !accountKey) return;
+    const requestId = detailLoadGuardRef.current.next();
     setLoading(true);
     setError("");
     try {
@@ -110,6 +115,7 @@ export function AccountDetailDialog({
         ACCOUNT_REQUEST_TIMEOUT_MS,
         t("accounts.requestTimedOut"),
       );
+      if (!detailLoadGuardRef.current.isCurrent(requestId)) return;
       if (res.ok && res.data) {
         setDetail(res.data);
         const nextValues: Record<string, string> = {};
@@ -122,27 +128,52 @@ export function AccountDetailDialog({
         setDetail(null);
       }
     } catch (error) {
+      if (!detailLoadGuardRef.current.isCurrent(requestId)) return;
       setError(errorMessage(error, t("accounts.detailLoadFailed")));
       setDetail(null);
     }
+    if (!detailLoadGuardRef.current.isCurrent(requestId)) return;
     setLoading(false);
   }, [accountKey, api.config.accounts, ready, t]);
 
   useEffect(() => {
+    const detailGuard = detailLoadGuardRef.current;
+    const probeGuard = probeGuardRef.current;
+    const deleteGuard = deleteGuardRef.current;
+    detailGuard.invalidate();
+    probeGuard.invalidate();
+    deleteGuard.invalidate();
+    let cancelled = false;
+    const resetDetailState = () => {
+      if (cancelled) return;
+      setDetail(null);
+      setError("");
+      setProbeMsg(null);
+      setLoading(false);
+      setProbeBusy(false);
+      setDeleteOpen(false);
+      setDeleteBusy(false);
+      setFieldValues({});
+      dismissSaveFeedback();
+    };
     if (!open || mode !== "detail" || !accountKey) {
       if (!open) {
-        queueMicrotask(() => {
-          setDetail(null);
-          setError("");
-          setProbeMsg(null);
-          setFieldValues({});
-          dismissSaveFeedback();
-        });
+        queueMicrotask(resetDetailState);
       }
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening detail must immediately kick off account fetch
-    void load();
+    queueMicrotask(() => {
+      resetDetailState();
+      if (!cancelled) void load();
+    });
+    return () => {
+      cancelled = true;
+      detailGuard.invalidate();
+      probeGuard.invalidate();
+      deleteGuard.invalidate();
+    };
   }, [open, mode, accountKey, load, dismissSaveFeedback]);
 
   const handleProbe = async () => {
@@ -150,6 +181,7 @@ export function AccountDetailDialog({
       setProbeMsg(t("accounts.needPairingTitle"));
       return;
     }
+    const requestId = probeGuardRef.current.next();
     setProbeBusy(true);
     setProbeMsg(null);
     try {
@@ -158,6 +190,7 @@ export function AccountDetailDialog({
         ACCOUNT_REQUEST_TIMEOUT_MS,
         t("accounts.requestTimedOut"),
       );
+      if (!probeGuardRef.current.isCurrent(requestId)) return;
       setProbeBusy(false);
       if (res.ok && res.data) {
         setProbeMsg(formatProbeMessage(res.data.disposition, res.data.reason, t));
@@ -166,6 +199,7 @@ export function AccountDetailDialog({
         setProbeMsg(translateApiError(t, res.error, "accounts.probeFailed"));
       }
     } catch (error) {
+      if (!probeGuardRef.current.isCurrent(requestId)) return;
       setProbeBusy(false);
       setProbeMsg(errorMessage(error, t("accounts.probeFailed")));
     }
@@ -173,6 +207,7 @@ export function AccountDetailDialog({
 
   const handleDelete = async () => {
     if (!canAccessProtectedApis || !accountKey) return;
+    const requestId = deleteGuardRef.current.next();
     setDeleteBusy(true);
     try {
       const res = await withTimeout(
@@ -180,6 +215,7 @@ export function AccountDetailDialog({
         ACCOUNT_REQUEST_TIMEOUT_MS,
         t("accounts.requestTimedOut"),
       );
+      if (!deleteGuardRef.current.isCurrent(requestId)) return;
       setDeleteBusy(false);
       setDeleteOpen(false);
       if (res.ok) {
@@ -189,6 +225,7 @@ export function AccountDetailDialog({
         setError(translateApiError(t, res.error, "accounts.deleteFailed"));
       }
     } catch (error) {
+      if (!deleteGuardRef.current.isCurrent(requestId)) return;
       setDeleteBusy(false);
       setDeleteOpen(false);
       setError(errorMessage(error, t("accounts.deleteFailed")));

@@ -15,6 +15,7 @@ import {
   setDeviceProbeState,
   setDeviceSessionState,
   resetDeviceRuntimeKind,
+  shouldPreservePairingAuthOnSessionChange,
   updateRestartState,
 } from '../store/deviceStatusStore'
 import {
@@ -29,13 +30,17 @@ import {
 const CONNECTION_POLL_INTERVAL_MS = 10_000
 
 type PollMeta = { prevConnection: 'checking' | 'reachable' | 'unreachable' | 'none'; csrfPrimed: boolean }
+type DeviceSessionMeta = { baseUrl: string; pairingCode: string }
 
 export function DeviceProvider({ children }: { children: React.ReactNode }) {
   const [baseUrl, setBaseUrlState] = useState(getStoredBaseUrl)
   const [pairingCode, setPairingCodeState] = useState(getStoredPairingCode)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollGenerationRef = useRef(0)
-  const previousBaseUrlRef = useRef((getStoredBaseUrl() ?? '').trim())
+  const previousDeviceSessionRef = useRef<DeviceSessionMeta>({
+    baseUrl: (getStoredBaseUrl() ?? '').trim(),
+    pairingCode: (getStoredPairingCode() ?? '').trim(),
+  })
   /** 配对轮询元数据：避免每次成功都 GET /api/csrf_token；仅在换机后首次成功或 unreachable→reachable 时预热。 */
   const pollMetaRef = useRef<PollMeta>({ prevConnection: 'none', csrfPrimed: false })
 
@@ -53,12 +58,22 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     clearCsrfToken()
     resetSystemInfoCache()
     const normalizedBaseUrl = baseUrl?.trim() ?? ''
-    const sameTarget = previousBaseUrlRef.current === normalizedBaseUrl
-    previousBaseUrlRef.current = normalizedBaseUrl
+    const normalizedPairingCode = (pairingCode ?? '').trim()
+    const previousDeviceSession = previousDeviceSessionRef.current
+    const preserveAuth = shouldPreservePairingAuthOnSessionChange({
+      previousBaseUrl: previousDeviceSession.baseUrl,
+      previousPairingCode: previousDeviceSession.pairingCode,
+      nextBaseUrl: normalizedBaseUrl,
+      nextPairingCode: normalizedPairingCode,
+    })
+    previousDeviceSessionRef.current = {
+      baseUrl: normalizedBaseUrl,
+      pairingCode: normalizedPairingCode,
+    }
     setDeviceSessionState({
       hasTarget: Boolean(normalizedBaseUrl),
-      localPairing: deriveLocalPairingState(pairingCode),
-      preserveAuth: sameTarget,
+      localPairing: deriveLocalPairingState(normalizedPairingCode),
+      preserveAuth,
     })
   }, [baseUrl, pairingCode])
 

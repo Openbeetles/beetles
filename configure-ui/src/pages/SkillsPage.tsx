@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useRef,
   useState,
   type SyntheticEvent,
 } from "react";
@@ -59,6 +60,7 @@ import {
 import { SETTINGS_LIST_ROW_PLATE_SX } from "../theme/listItemStyles";
 import { CONTENT_MAX_WIDTH } from "../config/layout";
 import { translateApiError } from "../i18n/apiErrors";
+import { createLatestRequestGuard } from "../util/latestRequest";
 import "./skillsMdEditor.css";
 
 const MAX_CONTENT = 32 * 1024;
@@ -165,6 +167,7 @@ export function SkillsPage() {
   const [deleteSaving, setDeleteSaving] = useState(false);
   const [discardEditOpen, setDiscardEditOpen] = useState(false);
   const [editBodyLoading, setEditBodyLoading] = useState(false);
+  const editLoadGuardRef = useRef(createLatestRequestGuard());
 
   const loadList = useCallback(async () => {
     if (!ready) return;
@@ -201,6 +204,11 @@ export function SkillsPage() {
     return () => window.clearTimeout(id);
   }, [ready, loadList]);
 
+  useEffect(() => {
+    const guard = editLoadGuardRef.current;
+    return () => guard.invalidate();
+  }, []);
+
   const handleToggleEnabled = async (name: string, enabled: boolean) => {
     const res = await api.skills.post({ name, enabled });
     if (res.ok)
@@ -216,11 +224,13 @@ export function SkillsPage() {
   };
 
   const openEdit = async (name: string) => {
+    const requestId = editLoadGuardRef.current.next();
     setEditName(name);
     setEditContent("");
     setEditContentInitial("");
     setEditBodyLoading(true);
     const res = await api.skills.getContent(name);
+    if (!editLoadGuardRef.current.isCurrent(requestId)) return;
     setEditBodyLoading(false);
     if (res.ok) {
       const content = res.data ?? "";

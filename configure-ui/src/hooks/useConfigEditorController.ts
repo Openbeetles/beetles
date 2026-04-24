@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useId } from "react";
 import { useConfigPageLoad } from "./useConfigPageLoad.ts";
 import { useSaveFeedback } from "./useSaveFeedback.ts";
 import { useUnsaved } from "./useUnsaved.ts";
@@ -13,6 +13,7 @@ export interface UseConfigEditorControllerOptions {
   loading: boolean;
   load: () => Promise<void>;
   canLoad?: boolean;
+  dirtyOwner?: string;
 }
 
 export interface RunConfigEditorSaveOptions<TResult extends ConfigSaveResult> {
@@ -28,9 +29,12 @@ export function useConfigEditorController({
   loading,
   load,
   canLoad = true,
+  dirtyOwner,
 }: UseConfigEditorControllerOptions) {
   const saveFeedback = useSaveFeedback(t);
-  const { setDirty } = useUnsaved();
+  const { setDirtyFor, clearDirtyFor } = useUnsaved();
+  const generatedOwner = useId();
+  const owner = dirtyOwner ?? `config-editor-${generatedOwner}`;
 
   useConfigPageLoad({
     hasConfig: hasData,
@@ -40,12 +44,16 @@ export function useConfigEditorController({
   });
 
   const markDirty = useCallback(() => {
-    setDirty(true);
-  }, [setDirty]);
+    setDirtyFor(owner, true);
+  }, [owner, setDirtyFor]);
 
   const markClean = useCallback(() => {
-    setDirty(false);
-  }, [setDirty]);
+    setDirtyFor(owner, false);
+  }, [owner, setDirtyFor]);
+
+  useEffect(() => {
+    return () => clearDirtyFor(owner);
+  }, [clearDirtyFor, owner]);
 
   const runSave = useCallback(
     async <TResult extends ConfigSaveResult>({

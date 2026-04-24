@@ -66,6 +66,8 @@ import {
   normalizeDeviceUrl,
 } from "./deviceAccessFlow";
 
+const DEVICE_PAGE_DIRTY_OWNER = "device-page-connection";
+
 type ConnectionEditorVariant = "dashboard" | "setup";
 
 interface ConnectionEditorProps {
@@ -355,7 +357,7 @@ export function StatRow({ label, value }: { label: string; value: string }) {
 
 export function DevicePage() {
   const { t } = useTranslation();
-  const { setDirty } = useUnsaved();
+  const { setDirtyFor, clearDirtyFor } = useUnsaved();
   const { baseUrl, pairingCode, setBaseUrl, setPairingCode } = useDevice();
   const runtimeKind = useDeviceRuntimeKind();
   const [urlInput, setUrlInput] = useState(baseUrl || DEFAULT_DEVICE_BASE_URL);
@@ -430,13 +432,15 @@ export function DevicePage() {
   });
 
   useEffect(() => {
-    if (accessStage !== "ready") return;
-    setDirty(connectionDraftDirty);
-  }, [accessStage, connectionDraftDirty, setDirty]);
+    setDirtyFor(
+      DEVICE_PAGE_DIRTY_OWNER,
+      accessStage === "ready" && connectionDraftDirty,
+    );
+  }, [accessStage, connectionDraftDirty, setDirtyFor]);
 
   useEffect(() => {
-    return () => setDirty(false);
-  }, [setDirty]);
+    return () => clearDirtyFor(DEVICE_PAGE_DIRTY_OWNER);
+  }, [clearDirtyFor]);
 
   const handleSaveAccess = () => {
     const url = normalizeDeviceUrl(urlInput);

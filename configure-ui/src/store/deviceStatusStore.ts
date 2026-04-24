@@ -70,10 +70,41 @@ function hasTargetFromBaseUrl(baseUrl: string | undefined): boolean {
   return Boolean(baseUrl?.trim());
 }
 
+function normalizeDeviceSessionBaseUrl(baseUrl: string | undefined): string {
+  return (baseUrl ?? "").trim().replace(/\/$/, "");
+}
+
+function normalizeDeviceSessionPairingCode(
+  pairingCode: string | null | undefined,
+): string {
+  return pairingCode?.trim() ?? "";
+}
+
 export function deriveLocalPairingState(
   pairingCode: string | null | undefined,
 ): LocalPairingState {
   return pairingCode?.trim() ? "present" : "absent";
+}
+
+export function shouldPreservePairingAuthOnSessionChange(args: {
+  previousBaseUrl: string | undefined;
+  previousPairingCode: string | null | undefined;
+  nextBaseUrl: string | undefined;
+  nextPairingCode: string | null | undefined;
+}): boolean {
+  const previousBaseUrl = normalizeDeviceSessionBaseUrl(args.previousBaseUrl);
+  const nextBaseUrl = normalizeDeviceSessionBaseUrl(args.nextBaseUrl);
+  if (!previousBaseUrl || previousBaseUrl !== nextBaseUrl) return false;
+
+  const previousCode = normalizeDeviceSessionPairingCode(
+    args.previousPairingCode,
+  );
+  const nextCode = normalizeDeviceSessionPairingCode(args.nextPairingCode);
+  if (previousCode === nextCode) return true;
+
+  // Unlock/init validates a transient code before persisting it, so the only
+  // allowed code-changing preservation is the explicit absent -> present lift.
+  return previousCode === "" && nextCode !== "";
 }
 
 export function deriveAppMode(args: {

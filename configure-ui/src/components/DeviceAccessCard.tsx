@@ -33,6 +33,8 @@ import {
 } from "../theme/panelStyles";
 import { useUnsaved } from "../hooks/useUnsaved";
 
+const DEVICE_ACCESS_DIRTY_OWNER = "device-access-card";
+
 function SetupConnectionEditor({
   urlValue,
   pairingCodeValue,
@@ -129,7 +131,7 @@ function SetupConnectionEditor({
 
 export function DeviceAccessCard() {
   const { t } = useTranslation();
-  const { setDirty } = useUnsaved();
+  const { setDirtyFor, clearDirtyFor } = useUnsaved();
   const { baseUrl, pairingCode, setBaseUrl, setPairingCode } = useDevice();
   const { api, appMode } = useDeviceApi();
   const { showToast } = useToast();
@@ -213,12 +215,15 @@ export function DeviceAccessCard() {
   );
 
   useEffect(() => {
-    setDirty(connectionDraftDirty || pairingInitDirty);
-  }, [connectionDraftDirty, pairingInitDirty, setDirty]);
+    setDirtyFor(
+      DEVICE_ACCESS_DIRTY_OWNER,
+      connectionDraftDirty || pairingInitDirty,
+    );
+  }, [connectionDraftDirty, pairingInitDirty, setDirtyFor]);
 
   useEffect(() => {
-    return () => setDirty(false);
-  }, [setDirty]);
+    return () => clearDirtyFor(DEVICE_ACCESS_DIRTY_OWNER);
+  }, [clearDirtyFor]);
 
   const handleSetupProbe = useCallback(async () => {
     const url = normalizeDeviceUrl(urlInput);

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   deriveAppMode,
   deriveLocalPairingState,
+  shouldPreservePairingAuthOnSessionChange,
   getAppMode,
   markPairingAuthValid,
   setDeviceProbeState,
@@ -167,4 +168,46 @@ test("switching target clears previously validated pairing auth", () => {
   assert.equal(getAppMode(), "unlock");
 
   resetStoreState();
+});
+
+test("pairing auth preservation is scoped to the exact device session", () => {
+  assert.equal(
+    shouldPreservePairingAuthOnSessionChange({
+      previousBaseUrl: "http://192.168.4.1",
+      previousPairingCode: "123456",
+      nextBaseUrl: "http://192.168.4.1/",
+      nextPairingCode: "654321",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPreservePairingAuthOnSessionChange({
+      previousBaseUrl: "http://192.168.4.1",
+      previousPairingCode: "123456",
+      nextBaseUrl: "http://192.168.4.20",
+      nextPairingCode: "123456",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPreservePairingAuthOnSessionChange({
+      previousBaseUrl: "http://192.168.4.1",
+      previousPairingCode: "123456",
+      nextBaseUrl: "http://192.168.4.1",
+      nextPairingCode: "123456",
+    }),
+    true,
+  );
+});
+
+test("pairing auth preservation allows a validated empty-to-present unlock promotion", () => {
+  assert.equal(
+    shouldPreservePairingAuthOnSessionChange({
+      previousBaseUrl: "http://192.168.4.1",
+      previousPairingCode: "",
+      nextBaseUrl: "http://192.168.4.1",
+      nextPairingCode: "123456",
+    }),
+    true,
+  );
 });

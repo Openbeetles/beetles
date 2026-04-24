@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import FormControl from "@mui/material/FormControl";
@@ -53,6 +53,7 @@ import {
 
 const MAX_LEN = 64;
 const MAX_API_URL = 256;
+const AI_CONFIG_DIRTY_OWNER = "ai-config";
 
 /** 与 `LLM_PROVIDER_VALUES` 顺序无关；下拉项与文案一一对应，避免只改数组忘改 MenuItem。 */
 const LLM_PROVIDER_LABEL_KEY: Record<LlmProviderValue, string> = {
@@ -160,10 +161,17 @@ export function AIConfigPage() {
   const { t } = useTranslation();
   const { ready, deviceConnected, canAccessProtectedApis, connectionChecking } = useDeviceApi();
   const { llmConfig, loadLlmConfig, saveLlm, llmLoading, llmError } = useConfig();
-  const { setDirty } = useUnsaved();
+  const { setDirtyFor, clearDirtyFor } = useUnsaved();
   const [removeSourceIndex, setRemoveSourceIndex] = useState<number | null>(null);
   const saveFeedback = useSaveFeedback(t);
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
+
+  const markDirty = () => setDirtyFor(AI_CONFIG_DIRTY_OWNER, true);
+  const markClean = () => setDirtyFor(AI_CONFIG_DIRTY_OWNER, false);
+
+  useEffect(() => {
+    return () => clearDirtyFor(AI_CONFIG_DIRTY_OWNER);
+  }, [clearDirtyFor]);
 
   useConfigPageLoad({
     hasConfig: llmConfig !== null,
@@ -189,7 +197,7 @@ export function AIConfigPage() {
   const { sources, routerIndex, workerIndex } = draft;
 
   const addSource = () => {
-    setDirty(true);
+    markDirty();
     setDraft((prev) => ({
       ...prev,
       sources: [
@@ -210,7 +218,7 @@ export function AIConfigPage() {
   };
   const confirmRemoveSource = () => {
     if (removeSourceIndex == null) return;
-    setDirty(true);
+    markDirty();
     setDraft((prev) => ({
       ...prev,
       sources: prev.sources.filter((_, j) => j !== removeSourceIndex),
@@ -219,7 +227,7 @@ export function AIConfigPage() {
   };
 
   const updateSource = (i: number, field: keyof LlmSource, value: string) => {
-    setDirty(true);
+    markDirty();
     setDraft((prev) => {
       const next = [...prev.sources];
       next[i] = { ...next[i], [field]: value };
@@ -229,7 +237,7 @@ export function AIConfigPage() {
 
   const changeProvider = (i: number, newProviderRaw: string) => {
     const newP = normalizeProvider(newProviderRaw);
-    setDirty(true);
+    markDirty();
     setDraft((prev) => {
       const next = [...prev.sources];
       const cur = next[i];
@@ -263,7 +271,7 @@ export function AIConfigPage() {
       llm_worker_source_index: workerIndex,
     });
     saveFeedback.finishFromResult(result);
-    if (result.ok) setDirty(false);
+    if (result.ok) markClean();
   };
 
   if (llmLoading && !llmConfig) {
@@ -505,7 +513,7 @@ export function AIConfigPage() {
                 label={t("config.llmRouterIndex")}
                 value={routerIndex === null ? "" : String(routerIndex)}
                 onChange={(e) => {
-                  setDirty(true);
+                  markDirty();
                   const v = e.target.value;
                   setDraft((prev) => ({
                     ...prev,
@@ -531,7 +539,7 @@ export function AIConfigPage() {
                 label={t("config.llmWorkerIndex")}
                 value={workerIndex === null ? "" : String(workerIndex)}
                 onChange={(e) => {
-                  setDirty(true);
+                  markDirty();
                   const v = e.target.value;
                   setDraft((prev) => ({
                     ...prev,

@@ -85,7 +85,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const { dirty, setDirty } = useContext(UnsavedContext);
+  const { dirty, clearAllDirty } = useContext(UnsavedContext);
   const { appMode } = useDeviceApi();
   const { showToast } = useToast();
   const deviceConnected = useDeviceConnected();
@@ -139,10 +139,10 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     location.pathname === "/device" || showProtectedRouteBlocker;
 
   const handleUnsavedConfirm = useCallback(() => {
-    setDirty(false);
+    clearAllDirty();
     if (pendingPath) navigate(pendingPath);
     setPendingPath(null);
-  }, [navigate, pendingPath, setDirty]);
+  }, [clearAllDirty, navigate, pendingPath]);
 
   const protectedRouteBlocker = showProtectedRouteBlocker ? (
     <DeviceAccessCard />

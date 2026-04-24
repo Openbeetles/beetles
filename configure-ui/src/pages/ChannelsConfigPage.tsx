@@ -1,4 +1,5 @@
 import MenuItem from "@mui/material/MenuItem";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -38,6 +39,7 @@ import {
 
 const MAX_LEN = 64;
 const MAX_URL = 512;
+const CHANNELS_CONFIG_DIRTY_OWNER = "channels-config";
 const TG_ACTIVATION_OPTIONS = ["mention", "always"] as const;
 
 function validateChannels(
@@ -64,7 +66,7 @@ export function ChannelsConfigPage() {
     channelsLoading,
     channelsError,
   } = useConfig();
-  const { setDirty } = useUnsaved();
+  const { setDirtyFor, clearDirtyFor } = useUnsaved();
   const [form, setForm] = useSyncedNullableState<ChannelsConfigView>(channelsConfig);
   const saveFeedback = useSaveFeedback(t);
   useConfigPageLoad({
@@ -76,11 +78,18 @@ export function ChannelsConfigPage() {
 
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
+  const markDirty = () => setDirtyFor(CHANNELS_CONFIG_DIRTY_OWNER, true);
+  const markClean = () => setDirtyFor(CHANNELS_CONFIG_DIRTY_OWNER, false);
+
+  useEffect(() => {
+    return () => clearDirtyFor(CHANNELS_CONFIG_DIRTY_OWNER);
+  }, [clearDirtyFor]);
+
   const update = (
     key: keyof ChannelsConfigView,
     value: string | number | boolean,
   ) => {
-    setDirty(true);
+    markDirty();
     setForm((prev) => (prev ? { ...prev, [key]: value } : null));
   };
 
@@ -112,7 +121,7 @@ export function ChannelsConfigPage() {
     saveFeedback.begin();
     const result = await saveChannels(segment);
     saveFeedback.finishFromResult(result);
-    if (result.ok) setDirty(false);
+    if (result.ok) markClean();
   };
 
   if (channelsLoading && !channelsConfig) {
