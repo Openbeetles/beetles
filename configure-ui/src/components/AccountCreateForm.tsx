@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -36,6 +36,7 @@ import {
 import { translateApiError } from "../i18n/apiErrors";
 import { ProviderFieldInput } from "./ProviderFieldInput";
 import { errorMessage, withTimeout } from "../util/withTimeout";
+import { createLatestRequestGuard } from "../util/latestRequest";
 
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -61,9 +62,12 @@ export function AccountCreateForm({
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState("");
+  const catalogLoadGuardRef = useRef(createLatestRequestGuard());
+  const createGuardRef = useRef(createLatestRequestGuard());
 
   const loadCatalog = useCallback(async () => {
     if (!ready) return;
+    const requestId = catalogLoadGuardRef.current.next();
     setCatalogLoading(true);
     setCatalogError("");
     const cap =
@@ -74,6 +78,7 @@ export function AccountCreateForm({
         ACCOUNT_REQUEST_TIMEOUT_MS,
         t("accounts.requestTimedOut"),
       );
+      if (!catalogLoadGuardRef.current.isCurrent(requestId)) return;
       if (res.ok && res.data) {
         setCatalog(res.data.items);
       } else {
@@ -81,15 +86,19 @@ export function AccountCreateForm({
         setCatalogError(translateApiError(t, res.error, "accounts.providersLoadFailed"));
       }
     } catch (error) {
+      if (!catalogLoadGuardRef.current.isCurrent(requestId)) return;
       setCatalog([]);
       setCatalogError(errorMessage(error, t("accounts.providersLoadFailed")));
     }
+    if (!catalogLoadGuardRef.current.isCurrent(requestId)) return;
     setCatalogLoading(false);
   }, [api.config.accounts, capabilityFilter, ready, t]);
 
   useEffect(() => {
+    const catalogGuard = catalogLoadGuardRef.current;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial catalog fetch must start on mount/provider-filter change
     void loadCatalog();
+    return () => catalogGuard.invalidate();
   }, [loadCatalog]);
 
   const selectedProvider = useMemo(
@@ -282,12 +291,14 @@ export function AccountCreateForm({
 
     setCreateBusy(true);
     setCreateError("");
+    const requestId = createGuardRef.current.next();
     try {
       const res = await withTimeout(
         api.config.accounts.create(body),
         ACCOUNT_REQUEST_TIMEOUT_MS,
         t("accounts.requestTimedOut"),
       );
+      if (!createGuardRef.current.isCurrent(requestId)) return;
       setCreateBusy(false);
       if (res.ok && res.data) {
         onCreated(res.data.account.account_key);
@@ -295,10 +306,16 @@ export function AccountCreateForm({
         setCreateError(translateApiError(t, res.error, "accounts.createFailed"));
       }
     } catch (error) {
+      if (!createGuardRef.current.isCurrent(requestId)) return;
       setCreateBusy(false);
       setCreateError(errorMessage(error, t("accounts.createFailed")));
     }
   };
+
+  useEffect(() => {
+    const createGuard = createGuardRef.current;
+    return () => createGuard.invalidate();
+  }, []);
 
   if (catalogLoading) {
     return (

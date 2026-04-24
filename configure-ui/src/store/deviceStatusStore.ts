@@ -263,11 +263,21 @@ export function resetPairingAuthState(): void {
 }
 
 export function markPairingAuthValid(): void {
-  if (source.devicePairing !== "initialized") {
+  if (!source.hasTarget) return;
+  if (
+    source.transport === "reachable" &&
+    source.devicePairing === "initialized" &&
+    source.auth === "valid"
+  ) {
     return;
   }
-  if (source.auth === "valid") return;
-  commitSource({ ...source, auth: "valid" });
+  // A protected API success proves both transport reachability and initialized pairing.
+  commitSource({
+    ...source,
+    transport: "reachable",
+    devicePairing: "initialized",
+    auth: "valid",
+  });
 }
 
 export function markPairingAuthInvalid(): void {

@@ -32,10 +32,14 @@ pages with local `sx` rules.
 - Mobile sub-navigation must size items by content, not by full row width, so
   the active configuration partition remains visible when switching between
   form-heavy device panels.
-- Device config and account catalog/list responses must be normalized at the
-  provider/type boundary before pages render. Form pages should not defend each
-  field or list with local `?? ""` / `?? []` fallbacks because that spreads
-  schema compatibility across the UI.
+- Device config, account catalog/list/detail, and skill list responses must be
+  normalized at the provider/type boundary before pages render. Form pages
+  should not defend each field or list with local `?? ""` / `?? []` fallbacks
+  because that spreads schema compatibility across the UI.
+- Any form surface that can switch target identity while a request is in flight
+  must use an owner/request guard before committing state. This applies to
+  account filtering, account detail save/probe/delete, and provider catalog
+  loading in dialogs.
 
 ## Scope
 

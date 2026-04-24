@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeChannelsConfigFromDevice } from "./appConfig.ts";
+import {
+  normalizeChannelsConfigFromDevice,
+  normalizeLlmConfigFromDevice,
+  normalizeSystemConfigFromDevice,
+} from "./appConfig.ts";
 
 test("normalizeChannelsConfigFromDevice fills missing channel string fields", () => {
   const config = normalizeChannelsConfigFromDevice({
@@ -26,4 +30,57 @@ test("normalizeChannelsConfigFromDevice keeps legacy responses usable without ca
   assert.equal(config.tg_token, "token");
   assert.ok(config.available_channels.includes("telegram"));
   assert.ok(config.available_channels.includes("wecom"));
+});
+
+test("normalizeLlmConfigFromDevice keeps partial source rows renderable", () => {
+  const config = normalizeLlmConfigFromDevice({
+    llm_sources: [
+      {
+        provider: "openai",
+        model: "gpt-4o",
+      },
+      null,
+      {
+        api_key: 42,
+        api_url: "https://example.test/v1",
+      },
+    ],
+    llm_router_source_index: 9,
+    llm_worker_source_index: 1,
+  });
+
+  assert.deepEqual(config, {
+    llm_sources: [
+      {
+        provider: "openai",
+        api_key: "",
+        model: "gpt-4o",
+        api_url: "",
+      },
+      {
+        provider: "",
+        api_key: "",
+        model: "",
+        api_url: "https://example.test/v1",
+      },
+    ],
+    llm_router_source_index: null,
+    llm_worker_source_index: 1,
+  });
+});
+
+test("normalizeSystemConfigFromDevice fills missing scalar fields", () => {
+  const config = normalizeSystemConfigFromDevice({
+    wifi_ssid: "Office",
+    session_max_messages: Number.NaN,
+  });
+
+  assert.deepEqual(config, {
+    wifi_ssid: "Office",
+    wifi_pass: "",
+    proxy_url: "",
+    session_max_messages: 32,
+    tg_group_activation: "mention",
+    locale: null,
+  });
 });

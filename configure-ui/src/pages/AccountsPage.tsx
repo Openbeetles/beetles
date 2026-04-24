@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { alpha } from "@mui/material/styles";
 import Box from "@mui/material/Box";
@@ -39,6 +39,7 @@ import {
   PAGE_STACK_OUTER_SX,
 } from "../theme/panelStyles";
 import { LIST_CARD_PLATE_BACKGROUND_IMAGE } from "../theme/listItemStyles";
+import { createLatestRequestGuard } from "../util/latestRequest";
 
 type CapabilityFilter = "all" | AccountCapability;
 
@@ -178,6 +179,7 @@ export function AccountsPage() {
   const [error, setError] = useState("");
   const [unsupportedEndpoint, setUnsupportedEndpoint] = useState(false);
   const [dialog, setDialog] = useState<AccountsDialogState>({ kind: "closed" });
+  const loadGuardRef = useRef(createLatestRequestGuard());
 
   const filters = useMemo(() => {
     if (capFilter === "all") return undefined;
@@ -186,10 +188,12 @@ export function AccountsPage() {
 
   const load = useCallback(async () => {
     if (!ready) return;
+    const requestId = loadGuardRef.current.next();
     setLoading(true);
     setError("");
     setUnsupportedEndpoint(false);
     const res = await api.config.accounts.list(filters);
+    if (!loadGuardRef.current.isCurrent(requestId)) return;
     if (res.ok && res.data) {
       setItems(res.data.items);
     } else {
@@ -197,6 +201,7 @@ export function AccountsPage() {
       let nextUnsupported = false;
       if (res.errorKey === "common.not_found" || res.status === 404) {
         const probe = await api.device.probe();
+        if (!loadGuardRef.current.isCurrent(requestId)) return;
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/config/accounts")) {
           nextUnsupported = true;
@@ -212,10 +217,14 @@ export function AccountsPage() {
 
   useEffect(() => {
     if (!ready) return;
+    const loadGuard = loadGuardRef.current;
     const id = window.setTimeout(() => {
       void load();
     }, 0);
-    return () => window.clearTimeout(id);
+    return () => {
+      window.clearTimeout(id);
+      loadGuard.invalidate();
+    };
   }, [ready, load]);
 
   const showConnectHint = ready && !canAccessProtectedApis;

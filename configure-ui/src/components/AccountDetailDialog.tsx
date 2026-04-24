@@ -85,6 +85,7 @@ export function AccountDetailDialog({
   const detailLoadGuardRef = useRef(createLatestRequestGuard());
   const probeGuardRef = useRef(createLatestRequestGuard());
   const deleteGuardRef = useRef(createLatestRequestGuard());
+  const saveGuardRef = useRef(createLatestRequestGuard());
   const saveFeedback = useSaveFeedback(t);
   const {
     status: saveStatus,
@@ -141,9 +142,11 @@ export function AccountDetailDialog({
     const detailGuard = detailLoadGuardRef.current;
     const probeGuard = probeGuardRef.current;
     const deleteGuard = deleteGuardRef.current;
+    const saveGuard = saveGuardRef.current;
     detailGuard.invalidate();
     probeGuard.invalidate();
     deleteGuard.invalidate();
+    saveGuard.invalidate();
     let cancelled = false;
     const resetDetailState = () => {
       if (cancelled) return;
@@ -174,6 +177,7 @@ export function AccountDetailDialog({
       detailGuard.invalidate();
       probeGuard.invalidate();
       deleteGuard.invalidate();
+      saveGuard.invalidate();
     };
   }, [open, mode, accountKey, load, dismissSaveFeedback]);
 
@@ -269,6 +273,7 @@ export function AccountDetailDialog({
 
     beginSaveFeedback();
     setError("");
+    const requestId = saveGuardRef.current.next();
     try {
       const res = await withTimeout(
         api.config.accounts.saveConfig(accountKey, {
@@ -278,6 +283,7 @@ export function AccountDetailDialog({
         ACCOUNT_REQUEST_TIMEOUT_MS,
         t("accounts.requestTimedOut"),
       );
+      if (!saveGuardRef.current.isCurrent(requestId)) return;
       finishSaveFeedbackFromResult(res);
       if (res.ok && res.data) {
         setDetail(res.data);
@@ -291,6 +297,7 @@ export function AccountDetailDialog({
         setError(translateApiError(t, res.error, "accounts.saveConfigFailed"));
       }
     } catch (error) {
+      if (!saveGuardRef.current.isCurrent(requestId)) return;
       const message = errorMessage(error, t("accounts.saveConfigFailed"));
       failSaveFeedback(message);
       setError(message);

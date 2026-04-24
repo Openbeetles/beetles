@@ -148,6 +148,24 @@ test("first successful unlock reaches ready once the validated pairing is persis
   resetStoreState();
 });
 
+test("protected validation promotes unknown pairing state before local code persists", () => {
+  resetStoreState();
+  setDeviceSessionState({ hasTarget: true, localPairing: "absent" });
+  setDeviceProbeState({ transport: "reachable", devicePairing: "unknown" });
+
+  markPairingAuthValid();
+  assert.equal(getAppMode(), "unlock");
+
+  setDeviceSessionState({
+    hasTarget: true,
+    localPairing: "present",
+    preserveAuth: true,
+  });
+  assert.equal(getAppMode(), "ready");
+
+  resetStoreState();
+});
+
 test("switching target clears previously validated pairing auth", () => {
   resetStoreState();
   setDeviceSessionState({ hasTarget: true, localPairing: "absent" });

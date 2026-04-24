@@ -1,5 +1,5 @@
-import { requestProtected, API_ERROR } from '../client'
-import type { ApiResult } from '../client'
+import { requestProtected, API_ERROR } from '../client.ts'
+import type { ApiResult } from '../client.ts'
 
 export interface SkillItem {
   name: string
@@ -11,19 +11,47 @@ export interface SkillsListResponse {
   order?: string[]
 }
 
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function normalizeSkillItem(value: unknown): SkillItem | null {
+  const record = objectRecord(value)
+  const name = typeof record.name === 'string' ? record.name.trim() : ''
+  if (!name) return null
+  return {
+    name,
+    enabled: record.enabled === true,
+  }
+}
+
+function normalizeSkillsListResponse(data: unknown): SkillsListResponse {
+  const record = objectRecord(data)
+  const skills = Array.isArray(record.skills)
+    ? record.skills
+        .map((item) => normalizeSkillItem(item))
+        .filter((item): item is SkillItem => item !== null)
+    : []
+  const order = Array.isArray(record.order)
+    ? record.order.filter((item): item is string => typeof item === 'string')
+    : skills.map((skill) => skill.name)
+  return { skills, order }
+}
+
 export async function listSkills(
   baseUrl: string,
   pairingCode?: string,
 ): Promise<ApiResult<SkillsListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  const res = await requestProtected<SkillsListResponse>(baseUrl, '/api/skills', {
+  const res = await requestProtected<unknown>(baseUrl, '/api/skills', {
     pairingCode: pairingCode?.trim() || undefined,
   })
-  if (res.ok && res.data) {
-    const d = res.data
-    return { ok: true, data: { skills: d.skills ?? [], order: d.order ?? d.skills?.map((s) => s.name) ?? [] } }
+  if (res.ok) {
+    return { ...res, data: normalizeSkillsListResponse(res.data) }
   }
-  return res
+  return res as ApiResult<SkillsListResponse>
 }
 
 export async function getSkillContent(

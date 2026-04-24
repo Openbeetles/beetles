@@ -110,37 +110,42 @@ def build_bookmark(scene: Scene, palette: Palette) -> None:
     body = _polygon(
         scene,
         [
-            (32, 24),
-            (64, 24),
-            (64, 78),
+            (25, 20),
+            (75, 20),
+            (75, 72),
             (48, 92),
-            (32, 78),
+            (25, 72),
         ],
     )
     _extrude(scene, palette, body, role="warm", depth=8, shadow_offset=(0, 9), shadow_blur=9, gloss=62)
-    fold = _polygon(scene, [(51, 28), (64, 28), (64, 54), (57, 50), (51, 54)])
+    fold = _polygon(scene, [(58, 24), (75, 24), (75, 57), (66, 52), (58, 58)])
     _paint(scene, fold, darken(tone(palette, "warm")[1], 0.18))
-    spine = _rect(scene, 39, 34, 44, 78)
-    _paint(scene, spine, lighten(tone(palette, "warm")[0], 0.08))
-    tip = _polygon(scene, [(41, 73), (55, 73), (48, 84)])
+    spine = _rect(scene, 34, 29, 41, 76)
+    _paint(scene, spine, lighten(tone(palette, "warm")[0], 0.16))
+    crease = _rect(scene, 49, 28, 54, 78)
+    _paint(scene, crease, with_alpha(darken(tone(palette, "warm")[1], 0.22), 110))
+    tip = _polygon(scene, [(38, 71), (58, 71), (48, 84)])
     _paint(scene, tip, darken(tone(palette, "warm")[1], 0.14))
 
 
 def build_bot(scene: Scene, palette: Palette) -> None:
-    head = _rounded_rect(scene, 28, 24, 72, 72, 12)
+    head = _rounded_rect(scene, 22, 25, 78, 74, 13)
     _extrude(scene, palette, head, role="violet", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=58)
-    antenna = union_masks(_rect(scene, 48, 16, 52, 28), _ellipse(scene, 50, 14, 4, 4))
+    antenna = union_masks(_rect(scene, 48, 18, 52, 30), _ellipse(scene, 50, 16, 4, 4))
     _paint(scene, antenna, lighten(tone(palette, "accent")[0], 0.06))
-    visor = _rounded_rect(scene, 35, 39, 65, 58, 8)
+    side_l = _ellipse(scene, 22, 48, 2.6, 3.1)
+    side_r = _ellipse(scene, 78, 48, 2.6, 3.1)
+    _paint(scene, union_masks(side_l, side_r), lighten(tone(palette, "secondary")[0], 0.18))
+    visor = _rounded_rect(scene, 32, 39, 68, 59, 8)
     _paint(scene, visor, darken(tone(palette, "neutral")[2], 0.18))
-    eye_l = _rounded_rect(scene, 41, 44, 46, 52, 3)
-    eye_r = _rounded_rect(scene, 54, 44, 59, 52, 3)
+    eye_l = _rounded_rect(scene, 40, 44, 46, 53, 3)
+    eye_r = _rounded_rect(scene, 54, 44, 60, 53, 3)
     _paint(scene, eye_l, tone(palette, "accent")[0])
     _paint(scene, eye_r, tone(palette, "accent")[0])
-    mouth = _rounded_rect(scene, 44, 62, 56, 66, 2)
+    mouth = _rounded_rect(scene, 43, 64, 57, 68, 2)
     _paint(scene, mouth, darken(tone(palette, "neutral")[2], 0.08))
-    bolt_l = _ellipse(scene, 30, 42, 2, 2)
-    bolt_r = _ellipse(scene, 70, 42, 2, 2)
+    bolt_l = _ellipse(scene, 29, 43, 2, 2)
+    bolt_r = _ellipse(scene, 71, 43, 2, 2)
     _paint(scene, bolt_l, lighten(tone(palette, "secondary")[0], 0.18))
     _paint(scene, bolt_r, lighten(tone(palette, "secondary")[0], 0.18))
 

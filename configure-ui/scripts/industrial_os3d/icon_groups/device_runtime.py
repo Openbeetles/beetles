@@ -7,8 +7,12 @@ from industrial_os3d.icon_groups.common import (
     Palette,
     Scene,
     blank_mask,
+    darken,
     icon,
+    lighten,
     tone,
+    union_masks,
+    with_alpha,
 )
 
 ICON_GROUP = "device_runtime"
@@ -23,6 +27,7 @@ OWNED_ICONS = (
     "keyboard_3d.png",
     "mail_3d.png",
     "microphone_3d.png",
+    "shell_3d.png",
     "speaker_3d.png",
     "time_3d.png",
     "tool_device_ctrl_3d.png",
@@ -196,23 +201,55 @@ def build_garden(scene: Scene, palette: Palette) -> None:
 
 
 def build_keyboard(scene: Scene, palette: Palette) -> None:
-    body = rounded_mask(scene, 14, 34, 86, 78, 14)
+    body = rounded_mask(scene, 13, 35, 87, 78, 13)
     extrude(scene, body, palette, "neutral", depth=10, shadow_blur=12)
 
-    keys = blank_mask(scene.size)
-    draw = ImageDraw.Draw(keys)
     key_specs = [
-        [(21, 40, 27, 46), (31, 40, 37, 46), (41, 40, 47, 46), (51, 40, 57, 46), (61, 40, 67, 46), (71, 40, 77, 46)],
-        [(18, 49, 24, 55), (28, 49, 34, 55), (38, 49, 44, 55), (48, 49, 54, 55), (58, 49, 64, 55), (68, 49, 74, 55), (78, 49, 82, 55)],
-        [(22, 58, 28, 64), (32, 58, 38, 64), (42, 58, 48, 64), (52, 58, 58, 64), (62, 58, 68, 64), (72, 58, 78, 64)],
+        (21, 42, 27, 48), (31, 42, 37, 48), (41, 42, 47, 48), (51, 42, 57, 48), (61, 42, 67, 48), (71, 42, 77, 48),
+        (18, 52, 24, 58), (28, 52, 34, 58), (38, 52, 44, 58), (48, 52, 54, 58), (58, 52, 64, 58), (68, 52, 74, 58), (78, 52, 83, 58),
+        (21, 62, 28, 68), (32, 62, 39, 68), (43, 62, 50, 68), (54, 62, 61, 68), (65, 62, 72, 68), (76, 62, 83, 68),
     ]
-    for row in key_specs:
-        for x1, y1, x2, y2 in row:
-            draw.rounded_rectangle(scene.box(x1, y1, x2, y2), radius=scene.scalar(1.8), fill=255)
-    draw.rounded_rectangle(scene.box(30, 68, 70, 74), radius=scene.scalar(2.2), fill=255)
-    draw.rounded_rectangle(scene.box(20, 68, 27, 74), radius=scene.scalar(1.8), fill=255)
-    draw.rounded_rectangle(scene.box(73, 68, 80, 74), radius=scene.scalar(1.8), fill=255)
-    flat(scene, keys, palette, "neutral")
+    keys = union_masks(*(rounded_mask(scene, *spec, 2) for spec in key_specs))
+    flat(scene, keys, palette, "neutral", alpha=220)
+
+    space = rounded_mask(scene, 31, 70, 69, 75, 2.5)
+    flat(scene, space, palette, "secondary", alpha=220)
+
+    accent_key = rounded_mask(scene, 72, 62, 83, 68, 2)
+    flat(scene, accent_key, palette, "accent", alpha=235)
+
+    glow = scene.line(((21, 39), (77, 39)), 1.4)
+    scene.render_flat(glow, with_alpha(lighten(palette.panel_top, 0.18), 120), with_alpha(palette.panel_top, 70))
+
+
+def build_shell(scene: Scene, palette: Palette) -> None:
+    body = rounded_mask(scene, 16, 24, 84, 80, 12)
+    extrude(scene, body, palette, "neutral", depth=10, shadow_blur=12)
+
+    titlebar = rounded_mask(scene, 16, 24, 84, 42, 12)
+    flat(scene, titlebar, palette, "secondary", alpha=235)
+
+    for index, role in enumerate(("danger", "warm", "accent")):
+        flat(scene, circle_mask(scene, 28 + index * 9, 33, 2.5), palette, role)
+
+    screen = rounded_mask(scene, 22, 41, 78, 74, 7)
+    scene.render_flat(
+        screen,
+        darken(palette.shell_bottom, 0.06),
+        darken(palette.shell_bottom, 0.28),
+    )
+
+    prompt = scene.line(((31, 51), (38, 57), (31, 63)), 3.2)
+    flat(scene, prompt, palette, "accent")
+
+    command = rounded_mask(scene, 43, 55, 64, 60, 2)
+    flat(scene, command, palette, "primary", alpha=235)
+
+    cursor = rounded_mask(scene, 68, 55, 72, 61, 1.5)
+    flat(scene, cursor, palette, "warm")
+
+    reflection = scene.line(((28, 45), (58, 45)), 1.5)
+    scene.render_flat(reflection, with_alpha(lighten(palette.panel_top, 0.12), 112), with_alpha(palette.panel_top, 70))
 
 
 def build_mail(scene: Scene, palette: Palette) -> None:
@@ -234,23 +271,27 @@ def build_mail(scene: Scene, palette: Palette) -> None:
 
 
 def build_microphone(scene: Scene, palette: Palette) -> None:
-    head = rounded_mask(scene, 41, 24, 59, 58, 9)
+    head = rounded_mask(scene, 35, 20, 65, 60, 13)
     extrude(scene, head, palette, "danger", depth=8, shadow_blur=8)
 
-    grille_one = scene.line(((44, 33), (56, 33)), 1.5)
-    grille_two = scene.line(((44, 39), (56, 39)), 1.5)
-    grille_three = scene.line(((44, 45), (56, 45)), 1.5)
+    grille_one = scene.line(((41, 32), (59, 32)), 1.7)
+    grille_two = scene.line(((41, 39), (59, 39)), 1.7)
+    grille_three = scene.line(((41, 46), (59, 46)), 1.7)
     flat(scene, grille_one, palette, "neutral", alpha=180)
     flat(scene, grille_two, palette, "neutral", alpha=180)
     flat(scene, grille_three, palette, "neutral", alpha=180)
 
-    stem = rounded_mask(scene, 48, 54, 52, 74, 2)
+    yoke_left = scene.line(((35, 50), (28, 63), (35, 70)), 3.4)
+    yoke_right = scene.line(((65, 50), (72, 63), (65, 70)), 3.4)
+    flat(scene, union_masks(yoke_left, yoke_right), palette, "secondary")
+
+    stem = rounded_mask(scene, 47, 59, 53, 76, 3)
     extrude(scene, stem, palette, "neutral", depth=8, shadow_blur=8)
 
-    base = rounded_mask(scene, 40, 70, 60, 82, 5)
+    base = rounded_mask(scene, 29, 72, 71, 84, 6)
     extrude(scene, base, palette, "neutral", depth=8, shadow_blur=8)
 
-    stand_pin = scene.line(((50, 58), (50, 70)), 2)
+    stand_pin = scene.line(((50, 60), (50, 73)), 2.2)
     flat(scene, stand_pin, palette, "secondary")
 
 
@@ -372,6 +413,7 @@ ICON_DEFINITIONS: list[IconSpec] = [
     icon("keyboard_3d.png", "slate", build_keyboard),
     icon("mail_3d.png", "sky", build_mail),
     icon("microphone_3d.png", "crimson", build_microphone, depth_bias=1),
+    icon("shell_3d.png", "slate", build_shell),
     icon("speaker_3d.png", "teal", build_speaker),
     icon("time_3d.png", "sky", build_time, depth_bias=1),
     icon("tool_device_ctrl_3d.png", "violet", build_tool_device_ctrl, depth_bias=1),

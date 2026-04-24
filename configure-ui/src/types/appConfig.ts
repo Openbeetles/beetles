@@ -42,6 +42,8 @@ export interface ChannelsConfigView extends ChannelsConfigSegment {
   unavailable_enabled_channel?: string
 }
 
+const DEFAULT_SESSION_MAX_MESSAGES = 32
+
 const LEGACY_AVAILABLE_CHANNELS = [
   '',
   'telegram',
@@ -51,8 +53,38 @@ const LEGACY_AVAILABLE_CHANNELS = [
   'qq_channel',
 ] as const
 
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
 function stringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback
+}
+
+function finiteNumberValue(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function nullableStringValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function normalizeLlmSource(value: unknown): LlmSource | null {
+  const record = objectRecord(value)
+  if (Object.keys(record).length === 0) return null
+  return {
+    provider: stringValue(record.provider),
+    api_key: stringValue(record.api_key),
+    model: stringValue(record.model),
+    api_url: stringValue(record.api_url),
+  }
+}
+
+function normalizeSourceIndex(value: unknown, sourceCount: number): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null
+  return value >= 0 && value < sourceCount ? value : null
 }
 
 function normalizeAvailableChannels(value: unknown): string[] {
@@ -69,6 +101,30 @@ function normalizeAvailableChannels(value: unknown): string[] {
   }
 
   return channels.length > 0 ? channels : ['']
+}
+
+/** 合并 API 返回（旧固件或局部响应可能缺省字段）为完整 LlmConfigSegment。 */
+export function normalizeLlmConfigFromDevice(
+  raw: unknown,
+): LlmConfigSegment {
+  const record = objectRecord(raw)
+  const sources = Array.isArray(record.llm_sources)
+    ? record.llm_sources
+        .map((source) => normalizeLlmSource(source))
+        .filter((source): source is LlmSource => source !== null)
+    : []
+
+  return {
+    llm_sources: sources,
+    llm_router_source_index: normalizeSourceIndex(
+      record.llm_router_source_index,
+      sources.length,
+    ),
+    llm_worker_source_index: normalizeSourceIndex(
+      record.llm_worker_source_index,
+      sources.length,
+    ),
+  }
 }
 
 /** 合并 API 返回（旧固件或局部响应可能缺省字段）为完整 ChannelsConfigView。 */
@@ -100,6 +156,25 @@ export function normalizeChannelsConfigFromDevice(
     ...(unavailableEnabledChannel
       ? { unavailable_enabled_channel: unavailableEnabledChannel }
       : {}),
+  }
+}
+
+/** 合并 API 返回（旧固件或局部响应可能缺省字段）为完整 SystemConfigSegment。 */
+export function normalizeSystemConfigFromDevice(
+  raw: unknown,
+): SystemConfigSegment {
+  const record = objectRecord(raw)
+  return {
+    wifi_ssid: stringValue(record.wifi_ssid),
+    wifi_pass: stringValue(record.wifi_pass),
+    proxy_url: stringValue(record.proxy_url),
+    session_max_messages: finiteNumberValue(
+      record.session_max_messages,
+      DEFAULT_SESSION_MAX_MESSAGES,
+    ),
+    tg_group_activation:
+      record.tg_group_activation === 'always' ? 'always' : 'mention',
+    locale: nullableStringValue(record.locale),
   }
 }
 

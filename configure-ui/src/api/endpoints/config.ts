@@ -5,6 +5,10 @@ import type {
   ChannelsConfigSegment,
   SystemConfigSegment,
 } from '../../types/appConfig'
+import {
+  normalizeLlmConfigFromDevice,
+  normalizeSystemConfigFromDevice,
+} from '../../types/appConfig.ts'
 import type {
   AccountCapability,
   AccountConfigSaveRequest,
@@ -14,14 +18,19 @@ import type {
   AccountProbeResult,
   AccountRevokeRequest,
   AccountRevokeResult,
-  AccountSummary,
   AccountSummaryListResponse,
   AccountUpsertRequest,
   CapabilityStatus,
   CapabilityStatusListResponse,
-  ProviderCatalogItem,
   ProviderCatalogResponse,
 } from '../../types/accountConfig'
+import {
+  normalizeAccountDetailFromDevice,
+  normalizeAccountProbeResultFromDevice,
+  normalizeAccountSummaryListResponseFromDevice,
+  normalizeCapabilityStatusListResponseFromDevice,
+  normalizeProviderCatalogResponseFromDevice,
+} from '../../types/accountConfig.ts'
 import type { ApiResult } from '../client.ts'
 
 function buildConfigQuery(path: string, query: Record<string, string | undefined>): string {
@@ -32,36 +41,6 @@ function buildConfigQuery(path: string, query: Record<string, string | undefined
   }
   const encoded = params.toString()
   return encoded ? `${path}?${encoded}` : path
-}
-
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object'
-    ? (value as Record<string, unknown>)
-    : {}
-}
-
-function normalizeListResponse<T>(
-  data: unknown,
-  legacyArrayKeys: string[] = [],
-): { count: number; items: T[] } {
-  const record = objectRecord(data)
-  let rawItems = record.items
-  if (!Array.isArray(rawItems)) {
-    for (const key of legacyArrayKeys) {
-      if (Array.isArray(record[key])) {
-        rawItems = record[key]
-        break
-      }
-    }
-  }
-  const items = Array.isArray(rawItems) ? (rawItems as T[]) : []
-  return {
-    count:
-      typeof record.count === 'number' && Number.isFinite(record.count)
-        ? record.count
-        : items.length,
-    items,
-  }
 }
 
 function normalizeOkData<T>(
@@ -77,9 +56,10 @@ export async function getLlm(
   pairingCode?: string,
 ): Promise<ApiResult<LlmConfigSegment>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<LlmConfigSegment>(baseUrl, '/api/config/llm', {
+  const result = await requestProtected<unknown>(baseUrl, '/api/config/llm', {
     pairingCode: pairingCode?.trim(),
   })
+  return normalizeOkData(result, normalizeLlmConfigFromDevice)
 }
 
 export async function getChannels(
@@ -97,9 +77,10 @@ export async function getSystem(
   pairingCode?: string,
 ): Promise<ApiResult<SystemConfigSegment>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<SystemConfigSegment>(baseUrl, '/api/config/system', {
+  const result = await requestProtected<unknown>(baseUrl, '/api/config/system', {
     pairingCode: pairingCode?.trim(),
   })
+  return normalizeOkData(result, normalizeSystemConfigFromDevice)
 }
 
 export async function saveLlm(
@@ -159,9 +140,7 @@ export async function getProviders(
       pairingCode: pairingCode?.trim(),
     },
   )
-  return normalizeOkData(result, (data) =>
-    normalizeListResponse<ProviderCatalogItem>(data, ['providers']),
-  )
+  return normalizeOkData(result, normalizeProviderCatalogResponseFromDevice)
 }
 
 export async function getCapabilities(
@@ -172,9 +151,7 @@ export async function getCapabilities(
   const result = await requestProtected<unknown>(baseUrl, '/api/config/capabilities', {
     pairingCode: pairingCode?.trim(),
   })
-  return normalizeOkData(result, (data) =>
-    normalizeListResponse<CapabilityStatus>(data),
-  )
+  return normalizeOkData(result, normalizeCapabilityStatusListResponseFromDevice)
 }
 
 export async function getCapability(
@@ -208,9 +185,7 @@ export async function getAccounts(
       pairingCode: pairingCode?.trim(),
     },
   )
-  return normalizeOkData(result, (data) =>
-    normalizeListResponse<AccountSummary>(data, ['accounts']),
-  )
+  return normalizeOkData(result, normalizeAccountSummaryListResponseFromDevice)
 }
 
 export async function createAccount(
@@ -220,11 +195,12 @@ export async function createAccount(
 ): Promise<ApiResult<AccountDetail>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return requestProtected<AccountDetail>(baseUrl, '/api/config/accounts', {
+  const result = await requestProtected<unknown>(baseUrl, '/api/config/accounts', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),
   })
+  return normalizeOkData(result, normalizeAccountDetailFromDevice)
 }
 
 export async function getAccount(
@@ -233,13 +209,14 @@ export async function getAccount(
   accountKey: string,
 ): Promise<ApiResult<AccountDetail>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<AccountDetail>(
+  const result = await requestProtected<unknown>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}`,
     {
       pairingCode: pairingCode?.trim(),
     },
   )
+  return normalizeOkData(result, normalizeAccountDetailFromDevice)
 }
 
 export async function saveAccountConfig(
@@ -250,7 +227,7 @@ export async function saveAccountConfig(
 ): Promise<ApiResult<AccountDetail>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return requestProtected<AccountDetail>(
+  const result = await requestProtected<unknown>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}/config`,
     {
@@ -259,6 +236,7 @@ export async function saveAccountConfig(
       pairingCode: pairingCode.trim(),
     },
   )
+  return normalizeOkData(result, normalizeAccountDetailFromDevice)
 }
 
 export async function probeAccount(
@@ -268,7 +246,7 @@ export async function probeAccount(
 ): Promise<ApiResult<AccountProbeResult>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return requestProtected<AccountProbeResult>(
+  const result = await requestProtected<unknown>(
     baseUrl,
     `/api/config/accounts/${encodeURIComponent(accountKey)}/probe`,
     {
@@ -276,6 +254,7 @@ export async function probeAccount(
       pairingCode: pairingCode.trim(),
     },
   )
+  return normalizeOkData(result, normalizeAccountProbeResultFromDevice)
 }
 
 export async function revokeAccount(

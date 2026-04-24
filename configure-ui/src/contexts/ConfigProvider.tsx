@@ -6,7 +6,11 @@ import type {
   ChannelsConfigSegment,
   SystemConfigSegment,
 } from "../types/appConfig";
-import { normalizeChannelsConfigFromDevice } from "../types/appConfig";
+import {
+  normalizeChannelsConfigFromDevice,
+  normalizeLlmConfigFromDevice,
+  normalizeSystemConfigFromDevice,
+} from "../types/appConfig";
 import type { DisplayConfig } from "../types/displayConfig";
 import { normalizeDisplayConfig } from "../types/displayConfig";
 import type { HardwareSegment } from "../types/hardwareConfig";
@@ -147,7 +151,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       setLoading: setSystemLoading,
       setError: setSystemError,
       fetch: () => api.config.getSystem() as Promise<ApiResult<SystemConfigSegment>>,
-      applySuccess: (data) => setSystemConfig(data),
+      applySuccess: (data) => setSystemConfig(normalizeSystemConfigFromDevice(data)),
       clearData: () => setSystemConfig(null),
       isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
@@ -160,7 +164,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       setLoading: setLlmLoading,
       setError: setLlmError,
       fetch: () => api.config.getLlm() as Promise<ApiResult<LlmConfigSegment>>,
-      applySuccess: (data) => setLlmConfig(data),
+      applySuccess: (data) => setLlmConfig(normalizeLlmConfigFromDevice(data)),
       clearData: () => setLlmConfig(null),
       isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });
@@ -194,7 +198,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: undefined };
     }
     if (res.ok && res.data != null && typeof res.data === "object") {
-      setSystemConfig(res.data as SystemConfigSegment);
+      setSystemConfig(normalizeSystemConfigFromDevice(res.data as SystemConfigSegment));
       setSystemError(null);
       markDeviceReachable();
       return { ok: true };

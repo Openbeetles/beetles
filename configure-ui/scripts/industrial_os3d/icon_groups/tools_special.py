@@ -229,15 +229,24 @@ def _builder_proxy(scene_obj, palette) -> None:
 
 
 def _builder_sensor_watch(scene_obj, palette) -> None:
-    dish_base = scene_obj.rounded_rect(28, 72, 42, 82, 4)
-    dish = scene_obj.polygon([(36, 34), (52, 58), (28, 52)])
-    stand = scene_obj.rounded_rect(33, 55, 39, 74, 3)
-    _apply_extruded(scene_obj, dish_base, palette, "neutral", depth=5)
+    dish_base = scene_obj.rounded_rect(24, 72, 58, 84, 5)
+    stand = scene_obj.rounded_rect(38, 56, 45, 74, 3)
+    hinge = scene_obj.circle(41.5, 57, 6)
+    _apply_extruded(scene_obj, dish_base, palette, "neutral", depth=6)
     _apply_extruded(scene_obj, stand, palette, "neutral", depth=5)
+    _apply_extruded(scene_obj, hinge, palette, "secondary", depth=5)
+
+    dish = scene_obj.polygon([(30, 33), (67, 57), (30, 66), (23, 50)])
+    lip = scene_obj.line([(31, 35), (63, 56), (31, 64)], 2.3)
     _apply_extruded(scene_obj, dish, palette, "primary", depth=9, glow=True)
+    scene_obj.render_flat(lip, lighten(tone(palette, "accent")[0], 0.12), tone(palette, "accent")[1])
+
+    receiver = scene_obj.circle(68, 56, 3.4)
+    _apply_extruded(scene_obj, receiver, palette, "warm", depth=4)
     arcs = [
-        scene_obj.arc_band(60, 36, 12, 10, 305, 35),
-        scene_obj.arc_band(60, 36, 17, 15, 305, 35),
+        scene_obj.arc_band(72, 38, 13, 10, 302, 35),
+        scene_obj.arc_band(72, 38, 20, 16, 302, 35),
+        scene_obj.arc_band(72, 38, 27, 22, 302, 35),
     ]
     for arc in arcs:
         scene_obj.render_flat(arc, lighten(tone(palette, "accent")[0], 0.12), tone(palette, "accent")[1])
