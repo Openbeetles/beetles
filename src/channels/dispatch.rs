@@ -12,7 +12,6 @@ use crate::bus::CanonicalMessageBody;
 use crate::bus::{OutboundKind, OutboundRx, PcMsg, MAX_CONTENT_LEN};
 use crate::channel_capability::ChannelCapabilityRegistry;
 use crate::config::AppConfig;
-use crate::constants::VOICE_CHANNEL_NAME;
 use crate::error::Result;
 use crate::metrics;
 use crate::orchestrator::AdmissionDecision;
@@ -220,10 +219,11 @@ fn record_channel_ok(channel: &str) {
     crate::orchestrator::record_channel_result_pub(channel, true);
 }
 
-fn outbound_blocked(msg: &crate::bus::PcMsg) -> bool {
-    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    !runtime_mode.action_budget.allow_non_voice_outbound
-        && msg.channel.as_ref() != VOICE_CHANNEL_NAME
+fn outbound_reject_reason(msg: &crate::bus::PcMsg) -> Option<&'static str> {
+    match crate::orchestrator::should_accept_outbound_pub(&msg.channel) {
+        AdmissionDecision::Reject { reason } => Some(reason),
+        AdmissionDecision::Accept | AdmissionDecision::Defer { .. } => None,
+    }
 }
 
 fn push_buffered_msg(
@@ -326,12 +326,23 @@ fn dispatch_via_sink(
         }
     }
 
-    if let AdmissionDecision::Defer { delay_ms } =
-        crate::orchestrator::should_accept_outbound_pub(&msg.channel)
-    {
-        log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        crate::platform::task_wdt::feed_current_task();
+    match crate::orchestrator::should_accept_outbound_pub(&msg.channel) {
+        AdmissionDecision::Accept => {}
+        AdmissionDecision::Defer { delay_ms } => {
+            log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            crate::platform::task_wdt::feed_current_task();
+        }
+        AdmissionDecision::Reject { reason } => {
+            log::info!(
+                "[{}] req_id={} channel={} outbound rejected by admission reason={}",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel,
+                reason
+            );
+            return false;
+        }
     }
     let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
     if background_yield > 0 {
@@ -397,7 +408,7 @@ pub fn run_dispatch(
     loop {
         crate::platform::task_wdt::feed_current_task();
         replay_ready_messages_for_tick(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
-            if outbound_blocked(buffered) {
+            if outbound_reject_reason(buffered).is_some() {
                 return false;
             }
             dispatch_via_sink(TAG, sinks.as_ref(), capability_registry.as_ref(), buffered)
@@ -416,20 +427,22 @@ pub fn run_dispatch(
             continue;
         }
 
-        if outbound_blocked(&msg) {
+        if let Some(reason) = outbound_reject_reason(&msg) {
             if msg.outbound_kind.is_supplemental() {
                 log::warn!(
-                    "[{}] req_id={} channel={} outbound_kind=supplemental dropped while voice-exclusive is active",
+                    "[{}] req_id={} channel={} outbound_kind=supplemental dropped by outbound admission reason={}",
                     TAG,
                     msg.req_id.as_deref().unwrap_or("-"),
-                    msg.channel
+                    msg.channel,
+                    reason
                 );
             } else {
                 log::info!(
-                    "[{}] req_id={} channel={} deferred while voice-exclusive is active",
+                    "[{}] req_id={} channel={} deferred by outbound admission reason={}",
                     TAG,
                     msg.req_id.as_deref().unwrap_or("-"),
-                    msg.channel
+                    msg.channel,
+                    reason
                 );
                 push_buffered_msg(TAG, &mut cooldown_buffer, msg);
             }

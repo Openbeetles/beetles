@@ -23,6 +23,7 @@ import { useDevice } from "../hooks/useDevice";
 import { isDeviceOrPairingErrorKey } from "../i18n/apiErrors";
 import { fetchSystemInfoCoalesced } from "../session/systemInfoCoordinator";
 import { markDeviceReachable } from "../store/deviceStatusStore";
+import { runSingleFlightConfigSave } from "../hooks/configSaveLifecycle";
 
 /** i18n keys for config load errors; 与 shell blocker 重复的设备/配对类不在子页内重复展示 */
 const ERROR_KEY_NO_BASE = "device.bannerNeedDevice";
@@ -102,6 +103,15 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     useState<HardwareSegment | null>(null);
   const [hardwareLoading, setHardwareLoading] = useState(false);
   const [hardwareError, setHardwareError] = useState<string | null>(null);
+  const llmSaveFlightRef = useRef<Promise<{ ok: boolean; error?: string }> | null>(null);
+  const channelsSaveFlightRef = useRef<Promise<{ ok: boolean; error?: string }> | null>(null);
+  const systemSaveFlightRef = useRef<Promise<{ ok: boolean; error?: string }> | null>(null);
+  const displaySaveFlightRef =
+    useRef<Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> | null>(null);
+  const audioSaveFlightRef =
+    useRef<Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> | null>(null);
+  const hardwareSaveFlightRef =
+    useRef<Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> | null>(null);
 
   /** 未进「设备」页时也要能解析平台（显示页等按 Linux/ESP 裁剪 UI）；与 DevicePage 共用协调器避免重复请求。 */
   useEffect(() => {
@@ -135,6 +145,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     deviceSessionKeyRef.current = deviceSessionKey;
+    llmSaveFlightRef.current = null;
+    channelsSaveFlightRef.current = null;
+    systemSaveFlightRef.current = null;
+    displaySaveFlightRef.current = null;
+    audioSaveFlightRef.current = null;
+    hardwareSaveFlightRef.current = null;
     let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled) clearCachedSystemConfig();
@@ -226,7 +242,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: LlmConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveSegment(api.config.saveLlm, body, () => setLlmConfig(body));
+      return runSingleFlightConfigSave(llmSaveFlightRef, () =>
+        saveSegment(api.config.saveLlm, body, () => setLlmConfig(body)),
+      );
     },
     [api.config.saveLlm, saveSegment],
   );
@@ -235,16 +253,18 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: ChannelsConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveSegment(api.config.saveChannels, body, () => {
-        setChannelsConfig((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            ...body,
-            unavailable_enabled_channel: undefined,
-          };
-        });
-      });
+      return runSingleFlightConfigSave(channelsSaveFlightRef, () =>
+        saveSegment(api.config.saveChannels, body, () => {
+          setChannelsConfig((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              ...body,
+              unavailable_enabled_channel: undefined,
+            };
+          });
+        }),
+      );
     },
     [api.config.saveChannels, saveSegment],
   );
@@ -253,9 +273,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: SystemConfigSegment,
     ): Promise<{ ok: boolean; error?: string }> => {
-      return saveSegment(api.config.saveSystem, body, () => {
-        setSystemConfig((prev) => (prev ? { ...prev, ...body } : body));
-      });
+      return runSingleFlightConfigSave(systemSaveFlightRef, () =>
+        saveSegment(api.config.saveSystem, body, () => {
+          setSystemConfig((prev) => (prev ? { ...prev, ...body } : body));
+        }),
+      );
     },
     [api.config.saveSystem, saveSegment],
   );
@@ -280,20 +302,22 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: DisplayConfig,
     ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
-      const sessionKey = deviceSessionKey;
-      const res = await api.display.save(body);
-      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        setDisplayConfig(body);
-      }
-      const err =
-        res.error === API_ERROR.PAIRING_REQUIRED
-          ? "device.pairingCodeRequired"
-          : res.error;
-      return {
-        ok: res.ok ?? false,
-        error: err,
-        restartRequired: Boolean(res.ok && res.data?.restart_required),
-      };
+      return runSingleFlightConfigSave(displaySaveFlightRef, async () => {
+        const sessionKey = deviceSessionKey;
+        const res = await api.display.save(body);
+        if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+          setDisplayConfig(body);
+        }
+        const err =
+          res.error === API_ERROR.PAIRING_REQUIRED
+            ? "device.pairingCodeRequired"
+            : res.error;
+        return {
+          ok: res.ok ?? false,
+          error: err,
+          restartRequired: Boolean(res.ok && res.data?.restart_required),
+        };
+      });
     },
     [api.display, deviceSessionKey],
   );
@@ -315,20 +339,22 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: AudioConfig,
     ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
-      const sessionKey = deviceSessionKey;
-      const res = await api.audio.save(body);
-      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        setAudioConfig(body);
-      }
-      const err =
-        res.error === API_ERROR.PAIRING_REQUIRED
-          ? "device.pairingCodeRequired"
-          : res.error;
-      return {
-        ok: res.ok ?? false,
-        error: err,
-        restartRequired: Boolean(res.ok && res.data?.restart_required),
-      };
+      return runSingleFlightConfigSave(audioSaveFlightRef, async () => {
+        const sessionKey = deviceSessionKey;
+        const res = await api.audio.save(body);
+        if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+          setAudioConfig(body);
+        }
+        const err =
+          res.error === API_ERROR.PAIRING_REQUIRED
+            ? "device.pairingCodeRequired"
+            : res.error;
+        return {
+          ok: res.ok ?? false,
+          error: err,
+          restartRequired: Boolean(res.ok && res.data?.restart_required),
+        };
+      });
     },
     [api.audio, deviceSessionKey],
   );
@@ -359,20 +385,22 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     async (
       body: HardwareSegment,
     ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
-      const sessionKey = deviceSessionKey;
-      const res = await api.hardware.save(body);
-      if (res.ok && deviceSessionKeyRef.current === sessionKey) {
-        setHardwareSegment(body);
-      }
-      const err =
-        res.error === API_ERROR.PAIRING_REQUIRED
-          ? "device.pairingCodeRequired"
-          : res.error;
-      return {
-        ok: res.ok ?? false,
-        error: err,
-        restartRequired: Boolean(res.ok),
-      };
+      return runSingleFlightConfigSave(hardwareSaveFlightRef, async () => {
+        const sessionKey = deviceSessionKey;
+        const res = await api.hardware.save(body);
+        if (res.ok && deviceSessionKeyRef.current === sessionKey) {
+          setHardwareSegment(body);
+        }
+        const err =
+          res.error === API_ERROR.PAIRING_REQUIRED
+            ? "device.pairingCodeRequired"
+            : res.error;
+        return {
+          ok: res.ok ?? false,
+          error: err,
+          restartRequired: Boolean(res.ok),
+        };
+      });
     },
     [api.hardware, deviceSessionKey],
   );

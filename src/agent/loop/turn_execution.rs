@@ -521,7 +521,7 @@ pub(super) fn execute_turn(
                 crate::orchestrator::PressureLevel::Normal => {}
                 crate::orchestrator::PressureLevel::Cautious
                 | crate::orchestrator::PressureLevel::Critical => {
-                    match crate::orchestrator::can_call_llm_pub() {
+                    match crate::orchestrator::can_call_llm_for_channel_pub(&msg.channel) {
                         LlmDecision::Proceed => {}
                         LlmDecision::RetryLater { .. } | LlmDecision::Degrade { .. } => {
                             if final_content.is_empty() {
@@ -586,7 +586,6 @@ pub(super) fn execute_turn(
         };
         let response = request_plan.recover_response(response);
         crate::platform::task_wdt::feed_current_task();
-        metrics::record_wdt_feed();
 
         let tc_count = response.tool_calls.as_ref().map_or(0, |v| v.len());
         if log::log_enabled!(log::Level::Debug) {

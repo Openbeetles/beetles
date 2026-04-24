@@ -24,6 +24,46 @@ type ProtectedApiAuthObserver = ((event: ProtectedApiAuthEvent) => void) | null
 
 let csrfToken: string | null = null
 let protectedApiAuthObserver: ProtectedApiAuthObserver = null
+const deviceRequestQueues = new Map<string, Promise<void>>()
+
+function requestQueueKey(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/$/, '')
+}
+
+async function runQueuedDeviceRequest<T>(
+  baseUrl: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const key = requestQueueKey(baseUrl)
+  const previous = deviceRequestQueues.get(key) ?? Promise.resolve()
+  let releaseCurrent!: () => void
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve
+  })
+  const queued = previous.catch(() => undefined).then(() => current)
+  deviceRequestQueues.set(key, queued)
+  await previous.catch(() => undefined)
+  try {
+    return await task()
+  } finally {
+    releaseCurrent()
+    if (deviceRequestQueues.get(key) === queued) {
+      deviceRequestQueues.delete(key)
+    }
+  }
+}
+
+async function fetchQueuedText(
+  baseUrl: string,
+  url: string,
+  init?: RequestInit,
+): Promise<{ res: Response; text: string }> {
+  return runQueuedDeviceRequest(baseUrl, async () => {
+    const res = await fetch(url, init)
+    const text = await res.text()
+    return { res, text }
+  })
+}
 
 export function clearCsrfToken(): void {
   csrfToken = null
@@ -31,13 +71,20 @@ export function clearCsrfToken(): void {
 
 export async function fetchCsrfToken(baseUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(buildUrl(baseUrl, '/api/csrf_token'))
+    const { res, text } = await fetchQueuedText(
+      baseUrl,
+      buildUrl(baseUrl, '/api/csrf_token'),
+    )
     if (!res.ok) {
       csrfToken = null
       return null
     }
-    const data = await res.json()
-    csrfToken = data.csrf_token || null
+    const data = text ? JSON.parse(text) : null
+    const token =
+      data && typeof data === 'object' && 'csrf_token' in data
+        ? String((data as { csrf_token: unknown }).csrf_token || '')
+        : ''
+    csrfToken = token || null
     return csrfToken
   } catch {
     csrfToken = null
@@ -121,12 +168,11 @@ async function requestInternal<T = unknown>(
   }
 
   try {
-    const res = await fetch(url, {
+    const { res, text } = await fetchQueuedText(baseUrl, url, {
       method,
       headers,
       body: typeof body === 'object' ? JSON.stringify(body) : body,
     })
-    const text = await res.text()
     let data: unknown
     try {
       data = text ? JSON.parse(text) : null

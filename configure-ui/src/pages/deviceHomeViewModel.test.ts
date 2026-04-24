@@ -13,6 +13,7 @@ import {
   buildMemoryMetrics,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
+  buildWorkflowSummaryFields,
 } from "./deviceHomeViewModel.ts";
 
 test("buildMemoryMetrics hides Linux-only non-applicable PSRAM and largest-block placeholders", () => {
@@ -122,6 +123,38 @@ test("buildFaultAndRecoveryMetrics keeps WiFi recovery events out of fault count
   );
 });
 
+test("buildWorkflowSummaryFields maps optional health workflow audit fields", () => {
+  assert.deepEqual(buildWorkflowSummaryFields({}), []);
+
+  const health: HealthData = {
+    workflow: {
+      total_retained: 8,
+      executed: 3,
+      deferred: 1,
+      suppressed: 2,
+      canceled: 1,
+      no_trigger: 1,
+      failed: 0,
+    },
+  };
+
+  const fields = buildWorkflowSummaryFields(health);
+
+  assert.deepEqual(
+    fields.map((item) => item.id),
+    [
+      "workflow_total_retained",
+      "workflow_executed",
+      "workflow_deferred",
+      "workflow_suppressed",
+      "workflow_canceled",
+      "workflow_no_trigger",
+      "workflow_failed",
+    ],
+  );
+  assert.equal(fields.find((item) => item.id === "workflow_executed")?.value, 3);
+});
+
 test("buildRuntimeStrategyView explains cautious pressure with behavior hints and budget stats", () => {
   const resource: ResourceSnapshotData = {
     pressure: "Cautious",
@@ -185,7 +218,6 @@ test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () =
     llm_last_ms: 13,
     tool_calls: 14,
     dispatch_send_ok: 15,
-    wdt_feeds: 16,
     last_active_epoch_secs: 1_775_792_000,
   };
 
@@ -206,7 +238,6 @@ test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () =
       "dispatch_send_ok",
       "inbound_depth",
       "outbound_depth",
-      "wdt_feeds",
       "last_active_epoch_secs",
     ],
   );
@@ -231,7 +262,6 @@ test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", ()
     llm_last_ms: 13,
     tool_calls: 14,
     dispatch_send_ok: 15,
-    wdt_feeds: 16,
     last_active_epoch_secs: 1_775_792_000,
   };
 
@@ -252,7 +282,6 @@ test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", ()
       "dispatch_send_ok",
       "inbound_depth",
       "outbound_depth",
-      "wdt_feeds",
       "last_active_epoch_secs",
       "cpu_usage_percent",
       "process_memory_kb",

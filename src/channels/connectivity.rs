@@ -12,7 +12,6 @@ pub const CONNECTIVITY_NOT_CONFIGURED_KEY: &str = "network.connectivity_not_conf
 pub const CONNECTIVITY_CHECK_FAILED_KEY: &str = "network.connectivity_check_failed";
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
 pub const CONNECTIVITY_TOKEN_INVALID_KEY: &str = "network.connectivity_token_invalid";
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY: &str = "network.channel_connectivity_unavailable";
 
 /// 单通道连通性结果；与前端约定字段名。
@@ -119,7 +118,6 @@ fn webhook_item(config: &AppConfig) -> ChannelConnectivityItem {
     item("webhook", configured, configured, message_key)
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn active_channel_configured(config: &AppConfig) -> bool {
     let active_id = crate::normalize_compiled_enabled_channel(&config.enabled_channel);
     crate::build_channel_capability_registry(config, false)
@@ -128,7 +126,6 @@ fn active_channel_configured(config: &AppConfig) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn build_unavailable_snapshot(config: &AppConfig, _loc: Locale) -> ChannelConnectivitySnapshot {
     let active_id = crate::normalize_compiled_enabled_channel(&config.enabled_channel);
     let active_configured = active_channel_configured(config);

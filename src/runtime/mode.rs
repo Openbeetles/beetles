@@ -9,6 +9,7 @@ pub enum RuntimeMode {
     Booting,
     Pairing,
     Normal,
+    ConfigActive,
     VoiceExclusive,
     Maintenance,
     RecoverySafeMode,
@@ -20,6 +21,7 @@ impl RuntimeMode {
             Self::Booting => "booting",
             Self::Pairing => "pairing",
             Self::Normal => "normal",
+            Self::ConfigActive => "config_active",
             Self::VoiceExclusive => "voice_exclusive",
             Self::Maintenance => "maintenance",
             Self::RecoverySafeMode => "recovery_safe_mode",
@@ -35,6 +37,7 @@ pub struct RuntimeModeActionBudget {
     pub allow_best_effort_delayed_tasks: bool,
     pub allow_idle_self_runtime: bool,
     pub allow_non_voice_outbound: bool,
+    pub allow_realtime_voice_connect: bool,
     pub allow_external_wss_connect: bool,
     pub require_external_wss_suspended: bool,
 }
@@ -48,6 +51,8 @@ pub struct RuntimeModeSource {
     pub voice_exclusive_active: bool,
     pub background_maintenance_active: bool,
     pub config_plane_alive: bool,
+    pub config_active: bool,
+    pub config_activity_phase: crate::runtime::ConfigActivityPhase,
     pub channel_plane_alive: bool,
     pub voice_plane_alive: bool,
     pub agent_plane_alive: bool,
@@ -67,6 +72,8 @@ pub struct RuntimeModeSnapshot {
     pub voice_exclusive_active: bool,
     pub background_maintenance_active: bool,
     pub config_plane_alive: bool,
+    pub config_active: bool,
+    pub config_activity_phase: crate::runtime::ConfigActivityPhase,
     pub channel_plane_alive: bool,
     pub voice_plane_alive: bool,
     pub agent_plane_alive: bool,
@@ -83,6 +90,7 @@ impl RuntimeModeSnapshot {
             RuntimeMode::Booting => Some("boot_phase_active"),
             RuntimeMode::Pairing => Some("pairing_required"),
             RuntimeMode::Normal => None,
+            RuntimeMode::ConfigActive => Some("config_active"),
             RuntimeMode::VoiceExclusive => Some("voice_exclusive_active"),
             RuntimeMode::Maintenance => Some("background_maintenance_active"),
             RuntimeMode::RecoverySafeMode => Some("recovery_safe_mode"),
@@ -122,6 +130,8 @@ pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
         voice_exclusive_active: source.voice_exclusive_active,
         background_maintenance_active: source.background_maintenance_active,
         config_plane_alive: source.config_plane_alive,
+        config_active: source.config_active,
+        config_activity_phase: source.config_activity_phase,
         channel_plane_alive: source.channel_plane_alive,
         voice_plane_alive: source.voice_plane_alive,
         agent_plane_alive: source.agent_plane_alive,
@@ -140,6 +150,8 @@ fn derive_mode(source: RuntimeModeSource) -> RuntimeMode {
         RuntimeMode::Booting
     } else if source.voice_exclusive_active {
         RuntimeMode::VoiceExclusive
+    } else if source.config_active {
+        RuntimeMode::ConfigActive
     } else if source.background_maintenance_active {
         RuntimeMode::Maintenance
     } else if source.pairing_state_known && source.pairing_required {
@@ -158,6 +170,7 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_best_effort_delayed_tasks: false,
             allow_idle_self_runtime: false,
             allow_non_voice_outbound: true,
+            allow_realtime_voice_connect: false,
             allow_external_wss_connect: true,
             require_external_wss_suspended: false,
         },
@@ -168,7 +181,19 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_best_effort_delayed_tasks: true,
             allow_idle_self_runtime: true,
             allow_non_voice_outbound: true,
+            allow_realtime_voice_connect: true,
             allow_external_wss_connect: true,
+            require_external_wss_suspended: false,
+        },
+        RuntimeMode::ConfigActive => RuntimeModeActionBudget {
+            allow_periodic_maintenance: false,
+            allow_due_user_timers: true,
+            allow_heartbeat_injection: false,
+            allow_best_effort_delayed_tasks: false,
+            allow_idle_self_runtime: false,
+            allow_non_voice_outbound: false,
+            allow_realtime_voice_connect: false,
+            allow_external_wss_connect: false,
             require_external_wss_suspended: false,
         },
         RuntimeMode::VoiceExclusive => RuntimeModeActionBudget {
@@ -178,6 +203,7 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_best_effort_delayed_tasks: false,
             allow_idle_self_runtime: false,
             allow_non_voice_outbound: false,
+            allow_realtime_voice_connect: true,
             allow_external_wss_connect: false,
             require_external_wss_suspended: true,
         },
@@ -188,6 +214,7 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_best_effort_delayed_tasks: false,
             allow_idle_self_runtime: false,
             allow_non_voice_outbound: true,
+            allow_realtime_voice_connect: true,
             allow_external_wss_connect: true,
             require_external_wss_suspended: false,
         },
@@ -198,6 +225,7 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_best_effort_delayed_tasks: false,
             allow_idle_self_runtime: false,
             allow_non_voice_outbound: true,
+            allow_realtime_voice_connect: false,
             allow_external_wss_connect: false,
             require_external_wss_suspended: false,
         },
@@ -248,6 +276,38 @@ mod tests {
         assert!(!snapshot.action_budget.allow_periodic_maintenance);
         assert!(snapshot.action_budget.allow_due_user_timers);
         assert!(!snapshot.action_budget.allow_idle_self_runtime);
+    }
+
+    #[test]
+    fn config_active_mode_suspends_external_wss_and_background_work() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            config_active: true,
+            config_plane_alive: true,
+            ..RuntimeModeSource::default()
+        });
+        assert_eq!(snapshot.current_mode, RuntimeMode::ConfigActive);
+        assert!(snapshot.config_plane_alive);
+        assert!(snapshot.config_active);
+        assert!(!snapshot.action_budget.allow_periodic_maintenance);
+        assert!(snapshot.action_budget.allow_due_user_timers);
+        assert!(!snapshot.action_budget.allow_heartbeat_injection);
+        assert!(!snapshot.action_budget.allow_best_effort_delayed_tasks);
+        assert!(!snapshot.action_budget.allow_non_voice_outbound);
+        assert!(!snapshot.action_budget.allow_realtime_voice_connect);
+        assert!(!snapshot.action_budget.allow_external_wss_connect);
+        assert!(!snapshot.action_budget.require_external_wss_suspended);
+    }
+
+    #[test]
+    fn voice_exclusive_outranks_config_active() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            config_active: true,
+            voice_exclusive_active: true,
+            ..RuntimeModeSource::default()
+        });
+        assert_eq!(snapshot.current_mode, RuntimeMode::VoiceExclusive);
+        assert!(snapshot.config_active);
+        assert!(snapshot.voice_exclusive_active);
     }
 
     #[test]

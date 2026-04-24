@@ -166,6 +166,17 @@ fn inspect_runtime_mode_plane(mode: RuntimeModeSnapshot) -> BeetleOsPlaneReport 
                 outstanding.push("voice_exclusive_does_not_require_wss_suspend".to_string());
             }
         }
+        RuntimeMode::ConfigActive => {
+            if !mode.config_active {
+                outstanding.push("config_active_mode_without_config_activity".to_string());
+            }
+            if mode.action_budget.allow_external_wss_connect {
+                outstanding.push("config_active_allows_external_wss_connect".to_string());
+            }
+            if mode.action_budget.allow_periodic_maintenance {
+                outstanding.push("config_active_allows_periodic_maintenance".to_string());
+            }
+        }
         RuntimeMode::Maintenance => {
             if !mode.background_maintenance_active {
                 outstanding.push("maintenance_mode_without_background_flag".to_string());
@@ -384,6 +395,7 @@ mod tests {
                 allow_best_effort_delayed_tasks: false,
                 allow_idle_self_runtime: false,
                 allow_non_voice_outbound: true,
+                allow_realtime_voice_connect: false,
                 allow_external_wss_connect: true,
                 require_external_wss_suspended: false,
             },
@@ -394,6 +406,7 @@ mod tests {
                 allow_best_effort_delayed_tasks: true,
                 allow_idle_self_runtime: true,
                 allow_non_voice_outbound: true,
+                allow_realtime_voice_connect: true,
                 allow_external_wss_connect: true,
                 require_external_wss_suspended: false,
             },
@@ -404,8 +417,20 @@ mod tests {
                 allow_best_effort_delayed_tasks: false,
                 allow_idle_self_runtime: false,
                 allow_non_voice_outbound: false,
+                allow_realtime_voice_connect: true,
                 allow_external_wss_connect: false,
                 require_external_wss_suspended: true,
+            },
+            RuntimeMode::ConfigActive => RuntimeModeActionBudget {
+                allow_periodic_maintenance: false,
+                allow_due_user_timers: true,
+                allow_heartbeat_injection: false,
+                allow_best_effort_delayed_tasks: false,
+                allow_idle_self_runtime: false,
+                allow_non_voice_outbound: false,
+                allow_realtime_voice_connect: false,
+                allow_external_wss_connect: false,
+                require_external_wss_suspended: false,
             },
             RuntimeMode::Maintenance => RuntimeModeActionBudget {
                 allow_periodic_maintenance: false,
@@ -414,6 +439,7 @@ mod tests {
                 allow_best_effort_delayed_tasks: false,
                 allow_idle_self_runtime: false,
                 allow_non_voice_outbound: true,
+                allow_realtime_voice_connect: true,
                 allow_external_wss_connect: true,
                 require_external_wss_suspended: false,
             },
@@ -424,6 +450,7 @@ mod tests {
                 allow_best_effort_delayed_tasks: false,
                 allow_idle_self_runtime: false,
                 allow_non_voice_outbound: true,
+                allow_realtime_voice_connect: false,
                 allow_external_wss_connect: false,
                 require_external_wss_suspended: false,
             },
@@ -437,6 +464,12 @@ mod tests {
             voice_exclusive_active: mode == RuntimeMode::VoiceExclusive,
             background_maintenance_active: mode == RuntimeMode::Maintenance,
             config_plane_alive: false,
+            config_active: mode == RuntimeMode::ConfigActive,
+            config_activity_phase: if mode == RuntimeMode::ConfigActive {
+                crate::runtime::ConfigActivityPhase::Active
+            } else {
+                crate::runtime::ConfigActivityPhase::Idle
+            },
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,

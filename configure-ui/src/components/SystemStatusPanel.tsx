@@ -21,6 +21,8 @@ import {
   buildMemoryMetrics,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
+  buildWorkflowSummaryFields,
+  type HomeMetricField,
   type RuntimeStrategyBudgetField,
   type RuntimeStrategyViewModel,
 } from "../pages/deviceHomeViewModel";
@@ -474,6 +476,158 @@ function DigitalCounter({
   );
 }
 
+function WorkflowSummaryPanel({
+  fields,
+  t,
+}: {
+  fields: HomeMetricField[];
+  t: TFunction;
+}) {
+  const fieldById = new Map(fields.map((item) => [item.id, item]));
+  const total = fieldById.get("workflow_total_retained");
+  const executed = fieldById.get("workflow_executed");
+  const failed = fieldById.get("workflow_failed");
+  const secondaryFields = fields.filter(
+    (item) => item.id !== "workflow_total_retained" && item.id !== "workflow_executed",
+  );
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        gap: DASHBOARD_BLOCK_GAP,
+        height: "100%",
+        justifyContent: "center",
+      }}
+    >
+      <Box
+        sx={{
+          p: 1.5,
+          bgcolor: DASHBOARD_INSET_WELL_BG,
+          borderRadius: "var(--radius-chip)",
+          border: failed && failed.value > 0
+            ? "1px solid color-mix(in srgb, var(--semantic-danger) 34%, transparent)"
+            : "1px solid color-mix(in srgb, var(--border) 22%, transparent)",
+          boxShadow: "var(--os3d-chip-lift-stack)",
+          minWidth: 0,
+        }}
+      >
+        <Typography
+          variant="caption"
+          component="div"
+          sx={{
+            color: "var(--foreground-soft)",
+            fontWeight: 600,
+            fontSize: "0.68rem",
+            lineHeight: 1.15,
+            mb: 0.5,
+          }}
+        >
+          {t("device.systemStatusWorkflowExecuted")}
+        </Typography>
+        <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.6, minWidth: 0 }}>
+          <Typography
+            component="span"
+            sx={{
+              color: "var(--primary)",
+              fontFamily: "var(--font-mono)",
+              fontSize: "1.55rem",
+              fontWeight: 800,
+              lineHeight: 1,
+            }}
+          >
+            {executed?.value ?? 0}
+          </Typography>
+          <Typography
+            component="span"
+            sx={{
+              color: "var(--text-tertiary)",
+              fontFamily: "var(--font-mono)",
+              fontWeight: 700,
+              lineHeight: 1,
+            }}
+          >
+            / {total?.value ?? 0}
+          </Typography>
+          <Typography
+            component="span"
+            sx={{
+              color: "var(--text-tertiary)",
+              fontSize: "0.7rem",
+              fontWeight: 600,
+              lineHeight: 1,
+              ml: "auto",
+            }}
+          >
+            {total ? t(total.labelKey) : t("device.systemStatusWorkflowRecent")}
+          </Typography>
+        </Box>
+      </Box>
+
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: 1,
+        }}
+      >
+        {secondaryFields.map((item) => {
+          const isDanger = item.id === "workflow_failed" && item.value > 0;
+          return (
+            <Box
+              key={item.id}
+              sx={{
+                px: 1.15,
+                py: 0.95,
+                minWidth: 0,
+                borderRadius: "var(--radius-chip)",
+                bgcolor: DASHBOARD_INSET_WELL_BG,
+                border: isDanger
+                  ? "1px solid color-mix(in srgb, var(--semantic-danger) 34%, transparent)"
+                  : "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+                boxShadow: "var(--os3d-chip-lift-stack)",
+              }}
+            >
+              <Typography
+                variant="caption"
+                component="div"
+                sx={{
+                  color: isDanger ? "var(--semantic-danger)" : "var(--foreground-soft)",
+                  fontWeight: 600,
+                  fontSize: "0.66rem",
+                  lineHeight: 1.15,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  mb: 0.25,
+                }}
+              >
+                {t(item.labelKey)}
+              </Typography>
+              <Typography
+                component="div"
+                sx={{
+                  color: isDanger ? "var(--semantic-danger)" : "var(--foreground)",
+                  fontFamily: "var(--font-mono)",
+                  fontWeight: 800,
+                  fontSize: "1rem",
+                  lineHeight: 1.05,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {item.value}
+              </Typography>
+            </Box>
+          );
+        })}
+      </Box>
+    </Box>
+  );
+}
+
 function formatStrategyBudgetValue(
   value: number,
   kind: "bytes" | "seconds",
@@ -513,6 +667,8 @@ export function SystemStatusPanel({
   const groupedFaults = buildFaultAndRecoveryMetrics(met);
   const strategy = buildRuntimeStrategyView(res);
   const runtimeTelemetry = buildRuntimeTelemetryFields(runtimeKind, res, met);
+  const workflowFields = buildWorkflowSummaryFields(healthData);
+  const hasWorkflow = workflowFields.length > 0;
 
   const storageUsed = res?.storage_used_kb || 0;
   const storageTotal = res?.storage_total_kb || 0;
@@ -569,10 +725,21 @@ export function SystemStatusPanel({
         </DashboardCard>
       </Box>
 
-      {/* Traffic & Ops (Span 12 cols, 2 rows) */}
-      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+      {hasWorkflow ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard
+            title={t("device.systemStatusWorkflow")}
+            icon={<Os3dIcon src={OS_ICON_DASHBOARD.workflow} variant="tile" />}
+          >
+            <WorkflowSummaryPanel fields={workflowFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {/* Traffic & Ops */}
+      <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: hasWorkflow ? "span 8" : "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusGroupRuntime")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.runtime} variant="tile" />}>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" }, gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", lg: hasWorkflow ? "repeat(4, 1fr)" : "repeat(6, 1fr)" }, gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
             {runtimeTelemetry.map((item) => {
               let value: string | number;
               switch (item.valueKind) {

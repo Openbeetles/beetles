@@ -11,42 +11,51 @@ pub enum TaskCore {
 #[serde(rename_all = "snake_case")]
 /// 线程底层执行面：标准线程层或 ESP 原生任务。
 pub enum TaskSpawnSurface {
-    StdThread,
+    /// Rust std-compatible pthread surface. `std::sync` blocking primitives are allowed here.
+    StdThreadCompat,
+    /// Raw ESP/FreeRTOS task surface. Only FreeRTOS-native blocking primitives are allowed here.
     EspNativeTask,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[derive(Clone, Copy, Debug)]
+struct NativeTaskPolicy {
+    name: &'static str,
+    reason: &'static str,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+const ESP_NATIVE_TASK_ALLOWLIST: &[NativeTaskPolicy] = &[
+    // Intentionally empty until a worker is proven to use FreeRTOS-native
+    // blocking primitives only. Rust closures with Mutex/Condvar/mpsc stay on
+    // `StdThreadCompat` even when pinned to a core.
+];
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn native_task_policy(name: &str) -> Option<&'static NativeTaskPolicy> {
+    ESP_NATIVE_TASK_ALLOWLIST
+        .iter()
+        .find(|policy| policy.name == name)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+pub fn native_task_allowlist_hit(name: &str) -> bool {
+    native_task_policy(name).is_some()
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 fn native_task_name_policy(name: &str) -> bool {
-    matches!(
-        name,
-        "agent_loop"
-            | "audio_io_worker"
-            | "bg_timer"
-            | "dispatch"
-            | "display"
-            | "heartbeat"
-            | "restart_defer"
-            | "voice_realtime"
-            | "voice_realtime_connect"
-            | "voice_session"
-            | "voice_session_worker"
-            | "wifi_worker"
-            | "qq_ws"
-            | "feishu_ws"
-            | "tg_poll"
-            | "tg_sender"
-            | "fs_sender"
-            | "dt_sender"
-            | "wc_sender"
-            | "qq_sender"
-            | "http_server"
-            | "http_route_exec"
-    )
+    native_task_allowlist_hit(name)
+}
+
+#[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), not(test)))]
+pub fn native_task_allowlist_hit(_name: &str) -> bool {
+    false
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod imp {
-    use super::{native_task_name_policy, TaskCore, TaskSpawnSurface};
+    use super::{native_task_policy, TaskCore, TaskSpawnSurface};
     use core::ffi::c_void;
     use esp_idf_hal::cpu::Core;
     use esp_idf_hal::task;
@@ -145,7 +154,7 @@ mod imp {
     }
 
     fn should_use_native_task(name: &str) -> bool {
-        native_task_name_policy(name)
+        super::native_task_name_policy(name)
     }
 
     fn spawn_std_thread<F>(
@@ -244,9 +253,16 @@ mod imp {
 
     pub fn planned_spawn_surface(name: &str) -> TaskSpawnSurface {
         if should_use_native_task(name) {
+            if let Some(policy) = native_task_policy(name) {
+                log::info!(
+                    "[task_affinity] native task allowlist hit name={} reason={}",
+                    policy.name,
+                    policy.reason
+                );
+            }
             TaskSpawnSurface::EspNativeTask
         } else {
-            TaskSpawnSurface::StdThread
+            TaskSpawnSurface::StdThreadCompat
         }
     }
 
@@ -264,7 +280,7 @@ mod imp {
         F: FnOnce() + Send + 'static,
     {
         match planned_spawn_surface(name.as_str()) {
-            TaskSpawnSurface::StdThread => spawn_std_thread(name, stack_size, core, f),
+            TaskSpawnSurface::StdThreadCompat => spawn_std_thread(name, stack_size, core, f),
             TaskSpawnSurface::EspNativeTask => spawn_native_task(name, stack_size, core, f),
         }
     }
@@ -290,7 +306,7 @@ mod imp {
     }
 
     pub fn planned_spawn_surface(_name: &str) -> TaskSpawnSurface {
-        TaskSpawnSurface::StdThread
+        TaskSpawnSurface::StdThreadCompat
     }
 
     pub fn spawn_named_with_affinity<F>(
@@ -324,34 +340,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn realtime_voice_tasks_use_expected_spawn_surface() {
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            assert_eq!(
-                planned_spawn_surface("voice_realtime"),
-                TaskSpawnSurface::EspNativeTask
-            );
-            assert_eq!(
-                planned_spawn_surface("voice_realtime_connect"),
-                TaskSpawnSurface::EspNativeTask
-            );
-        }
-
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            assert_eq!(
-                planned_spawn_surface("voice_realtime"),
-                TaskSpawnSurface::StdThread
-            );
-            assert_eq!(
-                planned_spawn_surface("voice_realtime_connect"),
-                TaskSpawnSurface::StdThread
-            );
-        }
+    fn rust_std_blocking_workers_stay_on_std_thread_compat_surface() {
+        assert_eq!(
+            planned_spawn_surface("voice_realtime"),
+            TaskSpawnSurface::StdThreadCompat
+        );
+        assert_eq!(
+            planned_spawn_surface("voice_realtime_connect"),
+            TaskSpawnSurface::StdThreadCompat
+        );
+        assert_eq!(
+            planned_spawn_surface("agent_loop"),
+            TaskSpawnSurface::StdThreadCompat
+        );
+        assert_eq!(
+            planned_spawn_surface("audio_io_worker"),
+            TaskSpawnSurface::StdThreadCompat
+        );
     }
 
     #[test]
-    fn http_route_exec_requests_native_task_surface() {
-        assert!(native_task_name_policy("http_route_exec"));
+    fn native_task_allowlist_is_explicit_and_empty_until_freertos_native_worker_exists() {
+        assert!(ESP_NATIVE_TASK_ALLOWLIST.is_empty());
+        let reason_bytes: usize = ESP_NATIVE_TASK_ALLOWLIST
+            .iter()
+            .map(|policy| policy.reason.len())
+            .sum();
+        assert_eq!(reason_bytes, 0);
+        for name in [
+            "http_config_exec",
+            "http_diag_exec",
+            "http_ota_exec",
+            "http_snapshot_exec",
+        ] {
+            assert!(!native_task_name_policy(name));
+        }
     }
 }

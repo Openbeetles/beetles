@@ -72,9 +72,29 @@ What matters most:
 
 - `--flash` goes straight into the flash flow after build
 - `--flash` keeps NVS by default; if you need a full erase, the script offers that choice
-- `--flash-update` skips the erase choice and uses update-style flashing directly; it refreshes bootloader, partition table, otadata, and app in place without a full-chip erase of NVS/SPIFFS
+- `--flash-update` skips the erase choice and uses update-style flashing directly; it refreshes bootloader, partition table, otadata, and app in place without a full-chip erase. NVS is kept, but SPIFFS config is safe only when the SPIFFS partition offset and size are unchanged.
 - `--no-monitor` means do not open the serial monitor after flashing
 - if the serial port is obvious, the script usually picks it; otherwise it asks
+
+## ESP Panic Attribution And Artifact Identity
+
+After every ESP build, `build.sh` archives the files needed for symbolization under:
+
+```bash
+target/esp-artifacts/<git-sha>-<elf-sha>/
+```
+
+The directory contains `beetle.elf` as the default Rust symbolization ELF, plus `libespidf.elf`, `libespidf.map`, `partition-table.bin`, and `artifact.env`. Startup logs print the matching build `git_sha`, build time, app ELF SHA, runtime partition-table SHA, and parsed partition layout summary.
+
+When a Guru Meditation / panic happens, record the artifact identity from the startup log first, then symbolize addresses with the matching artifact directory:
+
+```bash
+scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
+```
+
+Do not guess final addresses with an ELF/map from another build. ESP panic attribution must start from the matching artifact id.
+
+`--flash-update` refreshes bootloader, the compiled partition table, otadata, and the app while preserving data partitions such as NVS/SPIFFS only when their offset and size stay unchanged. This prevents a new app from running against an old partition table during bring-up, but changing the SPIFFS extent can make ESP-IDF format the filesystem. The default 16MB S3 layout removes the old `model` partition and keeps the current post-migration SPIFFS extent at `0xA20000/0x5D0000`; do not change that extent again unless you are intentionally migrating or reformatting user configuration.
 
 ## Common Linux Workflows
 

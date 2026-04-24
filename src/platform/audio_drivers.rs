@@ -12,6 +12,8 @@ use crate::platform::psram_vec::PsramVec;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::runtime::thread_plan;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::util::STACK_AUDIO_IO_STD_COMPAT;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::{Arc, Condvar, Mutex};
@@ -566,6 +568,11 @@ impl AudioRingBuffer {
     }
 
     #[inline]
+    fn capacity(&self) -> usize {
+        self.cap
+    }
+
+    #[inline]
     fn available(&self) -> usize {
         self.cap.saturating_sub(self.len)
     }
@@ -674,6 +681,14 @@ impl Drop for AudioRingBuffer {
 const AUDIO_STAGING_CAPACITY_SECS: usize = 4;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+/// Audio owner contract for the ESP software rings.
+///
+/// - StartCapture / StartPlayback are represented by orchestrator audio flags.
+/// - Drain is observed through speaker/staging buffered sample counters.
+/// - Stop is `request_stop`, which wakes every blocked reader/writer.
+/// - Abort / ClearQueues is `clear_output_queues`.
+/// - DoneWrite / UnblockReader are the condition-variable notifications emitted after writes,
+///   clears, and stop.
 struct SharedAudioBuffers {
     mic: Mutex<AudioRingBuffer>,
     mic_cv: Condvar,
@@ -688,6 +703,78 @@ struct SharedAudioBuffers {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[derive(Clone, Copy)]
+struct AudioQueueCapacities {
+    mic: usize,
+    speaker: usize,
+    staging: usize,
+    reference: usize,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl SharedAudioBuffers {
+    fn is_stopping(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    fn capacities(&self) -> AudioQueueCapacities {
+        AudioQueueCapacities {
+            mic: self
+                .mic
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .capacity(),
+            speaker: self
+                .speaker
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .capacity(),
+            staging: self
+                .staging
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .capacity(),
+            reference: self
+                .reference
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .capacity(),
+        }
+    }
+
+    fn notify_all_waiters(&self) {
+        self.mic_cv.notify_all();
+        self.speaker_cv.notify_all();
+        self.staging_cv.notify_all();
+        self.reference_cv.notify_all();
+    }
+
+    fn request_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.notify_all_waiters();
+    }
+
+    fn clear_output_queues(&self) {
+        let mut staging_guard = self.staging.lock().unwrap_or_else(|e| e.into_inner());
+        staging_guard.clear();
+        drop(staging_guard);
+
+        let mut speaker_guard = self.speaker.lock().unwrap_or_else(|e| e.into_inner());
+        speaker_guard.clear();
+        self.speaker_generation.fetch_add(1, Ordering::Relaxed);
+        drop(speaker_guard);
+
+        let mut reference_guard = self.reference.lock().unwrap_or_else(|e| e.into_inner());
+        reference_guard.clear();
+        drop(reference_guard);
+
+        crate::metrics::record_audio_speaker_queue_depth_last_samples(0);
+        crate::metrics::record_audio_reference_queue_depth_last_samples(0);
+        self.notify_all_waiters();
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn pop_speaker_frame_for_output(
     shared: &SharedAudioBuffers,
     out: &mut [i16],
@@ -699,7 +786,7 @@ fn pop_speaker_frame_for_output(
     loop {
         let available = guard.len();
         if available == 0 {
-            if shared.stop.load(Ordering::Relaxed) {
+            if shared.is_stopping() {
                 return None;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -716,10 +803,7 @@ fn pop_speaker_frame_for_output(
             }
             continue;
         }
-        if available < min_samples
-            && !shared.stop.load(Ordering::Relaxed)
-            && Instant::now() < deadline
-        {
+        if available < min_samples && !shared.is_stopping() && Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if !remaining.is_zero() {
                 let waited = shared
@@ -751,7 +835,7 @@ fn wait_for_speaker_work_or_stop(shared: &SharedAudioBuffers, timeout: Duration)
         }
     }
     let guard = shared.speaker.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.len() > 0 || shared.stop.load(Ordering::Relaxed) {
+    if guard.len() > 0 || shared.is_stopping() {
         return;
     }
     let _ = shared
@@ -974,9 +1058,24 @@ impl AudioPipelineState {
         let speaker_enabled = backend.speaker_ready();
         let worker_shared = Arc::clone(&shared);
         let worker_plan = thread_plan("audio_io_worker");
+        let worker_surface =
+            crate::platform::task_affinity::planned_spawn_surface("audio_io_worker");
+        let capacities = shared.capacities();
+        log::info!(
+            "[audio] worker starting name=audio_io_worker surface={:?} stack={} mic={} speaker={} reference={} cap_mic={} cap_speaker={} cap_staging={} cap_reference={}",
+            worker_surface,
+            STACK_AUDIO_IO_STD_COMPAT,
+            mic_enabled,
+            speaker_enabled,
+            mic_enabled && speaker_enabled,
+            capacities.mic,
+            capacities.speaker,
+            capacities.staging,
+            capacities.reference,
+        );
         let worker = crate::util::spawn_guarded_with_profile_handle(
             "audio_io_worker",
-            8192,
+            STACK_AUDIO_IO_STD_COMPAT,
             worker_plan.core,
             worker_plan.role,
             move || {
@@ -991,7 +1090,7 @@ impl AudioPipelineState {
                     crate::platform::task_wdt::feed_current_task();
                     let loop_start = Instant::now();
                     crate::metrics::record_audio_worker_turn();
-                    if worker_shared.stop.load(Ordering::Relaxed) {
+                    if worker_shared.is_stopping() {
                         break;
                     }
                     let mut progressed = false;
@@ -1159,6 +1258,7 @@ impl AudioPipelineState {
                     crate::metrics::record_audio_loop_us(loop_start.elapsed().as_micros());
                     crate::platform::task_wdt::feed_current_task();
                 }
+                log::info!("[audio] worker stopped name=audio_io_worker");
             },
         )
         .map_err(|e| Error::config("audio_init", format!("spawn audio worker failed: {}", e)))?;
@@ -1196,37 +1296,7 @@ impl AudioPipelineState {
         if !self.speaker_enabled {
             return Err(Error::config("audio_speaker", "speaker not initialized"));
         }
-        // Clear staging first, then speaker, then reference.
-        let mut staging_guard = self
-            .shared
-            .staging
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        staging_guard.clear();
-        self.shared.staging_cv.notify_all();
-        drop(staging_guard);
-
-        let mut guard = self
-            .shared
-            .speaker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        guard.clear();
-        self.shared
-            .speaker_generation
-            .fetch_add(1, Ordering::Relaxed);
-        crate::metrics::record_audio_speaker_queue_depth_last_samples(0);
-        self.shared.speaker_cv.notify_all();
-        drop(guard);
-
-        let mut reference_guard = self
-            .shared
-            .reference
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        reference_guard.clear();
-        crate::metrics::record_audio_reference_queue_depth_last_samples(0);
-        self.shared.reference_cv.notify_all();
+        self.shared.clear_output_queues();
         Ok(())
     }
 
@@ -1245,6 +1315,9 @@ impl AudioPipelineState {
                 .wait_timeout(guard, Duration::from_millis(I2S_IO_TIMEOUT_MS as u64))
                 .unwrap_or_else(|e| e.into_inner());
             guard = waited.0;
+        }
+        if self.shared.is_stopping() && guard.len() == 0 {
+            return Ok(0);
         }
         let n = guard.pop_into(out);
         Ok(n)
@@ -1273,6 +1346,9 @@ impl AudioPipelineState {
                 .unwrap_or_else(|e| e.into_inner());
             guard = waited.0;
         }
+        if self.shared.is_stopping() && guard.len() == 0 {
+            return Ok(0);
+        }
         let n = guard.pop_into(out);
         crate::metrics::record_audio_reference_queue_depth_last_samples(guard.len());
         if n > 0 {
@@ -1292,12 +1368,15 @@ impl AudioPipelineState {
         }
         let mut written = 0usize;
         while written < buf.len() {
+            if self.shared.is_stopping() {
+                return Err(Error::config("audio_speaker", "audio owner stopped"));
+            }
             let mut guard = self
                 .shared
                 .speaker
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            while guard.available() == 0 {
+            while guard.available() == 0 && !self.shared.is_stopping() {
                 let waited = self
                     .shared
                     .speaker_cv
@@ -1310,6 +1389,9 @@ impl AudioPipelineState {
                         "speaker ring buffer blocked",
                     ));
                 }
+            }
+            if self.shared.is_stopping() {
+                return Err(Error::config("audio_speaker", "audio owner stopped"));
             }
             let n = guard.push_slice_blocking(&buf[written..]);
             written += n;
@@ -1325,6 +1407,9 @@ impl AudioPipelineState {
         }
         if buf.is_empty() {
             return Ok(0);
+        }
+        if self.shared.is_stopping() {
+            return Err(Error::config("audio_speaker", "audio owner stopped"));
         }
         let mut guard = self
             .shared
@@ -1348,6 +1433,9 @@ impl AudioPipelineState {
         if buf.is_empty() {
             return Ok(0);
         }
+        if self.shared.is_stopping() {
+            return Err(Error::config("audio_speaker", "audio owner stopped"));
+        }
         let mut guard = self
             .shared
             .staging
@@ -1356,6 +1444,7 @@ impl AudioPipelineState {
         let written = guard.push_slice_blocking(buf);
         if written > 0 {
             // Wake the worker so it can transfer staging → speaker.
+            self.shared.staging_cv.notify_one();
             self.shared.speaker_cv.notify_one();
         }
         Ok(written)
@@ -1375,10 +1464,7 @@ impl AudioPipelineState {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl Drop for AudioPipelineState {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
-        self.shared.mic_cv.notify_all();
-        self.shared.speaker_cv.notify_all();
-        self.shared.reference_cv.notify_all();
+        self.shared.request_stop();
         if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }

@@ -7,4 +7,6 @@ mod dispatch;
 mod types;
 
 pub use dispatch::dispatch;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub use dispatch::dispatch_without_inbound;
 pub use types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};

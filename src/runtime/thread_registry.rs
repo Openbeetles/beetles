@@ -86,6 +86,9 @@ pub struct ThreadRuntimeSnapshot {
     pub core_target: ThreadCoreTarget,
     pub role: ThreadRoleSnapshot,
     pub spawn_surface: TaskSpawnSurface,
+    pub native_allowlist_hit: bool,
+    pub native_std_sync_forbidden: bool,
+    pub task_wdt_policy: crate::platform::task_wdt::TaskWdtThreadPolicy,
     pub execution_class: ThreadExecutionClass,
     pub risk_class: ThreadRiskClass,
     pub tls_capable: bool,
@@ -106,8 +109,13 @@ pub struct ThreadRegistrySnapshot {
     pub core0_threads: usize,
     pub core1_threads: usize,
     pub unpinned_threads: usize,
-    pub std_thread_threads: usize,
+    pub std_thread_compat_threads: usize,
     pub esp_native_task_threads: usize,
+    pub esp_native_allowlist_hit_threads: usize,
+    pub esp_native_std_sync_forbidden_threads: usize,
+    pub task_wdt_owner_threads: usize,
+    pub task_wdt_feed_only_threads: usize,
+    pub task_wdt_unmanaged_threads: usize,
     pub tls_capable_threads: usize,
     pub http_capable_threads: usize,
     pub wss_capable_threads: usize,
@@ -196,6 +204,7 @@ pub fn runtime_mode_snapshot() -> RuntimeModeSnapshot {
 pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
     let plane = runtime_plane_flags();
     let ext_wss = crate::network::external_wss_runtime_snapshot();
+    let config_activity = crate::runtime::governance::config_activity_snapshot();
     crate::runtime::mode::RuntimeModeSource {
         wifi_sta_connected: crate::state::wifi_sta_connected(),
         boot_phase_active: crate::state::boot_phase_active(),
@@ -204,6 +213,8 @@ pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
         voice_exclusive_active: crate::state::voice_exclusive_active(),
         background_maintenance_active: crate::state::background_maintenance_active(),
         config_plane_alive: crate::state::config_plane_active(),
+        config_active: config_activity.active,
+        config_activity_phase: config_activity.phase,
         channel_plane_alive: plane.channel_plane_alive,
         voice_plane_alive: plane.voice_plane_alive,
         agent_plane_alive: plane.agent_plane_alive,
@@ -238,7 +249,7 @@ fn runtime_plane_flags() -> RuntimePlaneFlags {
 pub fn format_baseline_log_line() -> String {
     let snapshot = build_snapshot(false);
     format!(
-        "threads alive={} historical={} stack_total={} io={} interactive={} background={} core0={} core1={} unpinned={} std={} native={} tls={} http={} wss={} mode_sensitive={} high_risk={} critical={} low_margin={} hw_samples={}",
+        "threads alive={} historical={} stack_total={} io={} interactive={} background={} core0={} core1={} unpinned={} std_compat={} native={} native_allowlist_hits={} native_std_sync_forbidden={} twdt_owner={} twdt_feed_only={} twdt_unmanaged={} tls={} http={} wss={} mode_sensitive={} high_risk={} critical={} low_margin={} hw_samples={}",
         snapshot.alive_threads,
         snapshot.historical_threads,
         snapshot.total_stack_bytes,
@@ -248,8 +259,13 @@ pub fn format_baseline_log_line() -> String {
         snapshot.core0_threads,
         snapshot.core1_threads,
         snapshot.unpinned_threads,
-        snapshot.std_thread_threads,
+        snapshot.std_thread_compat_threads,
         snapshot.esp_native_task_threads,
+        snapshot.esp_native_allowlist_hit_threads,
+        snapshot.esp_native_std_sync_forbidden_threads,
+        snapshot.task_wdt_owner_threads,
+        snapshot.task_wdt_feed_only_threads,
+        snapshot.task_wdt_unmanaged_threads,
         snapshot.tls_capable_threads,
         snapshot.http_capable_threads,
         snapshot.wss_capable_threads,
@@ -292,7 +308,7 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} channel_plane={} voice_plane={} agent_plane={} timers={} periodic_maintenance={} non_voice_outbound={} ext_wss_connect={} ext_wss_suspend={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
         mode.current_mode.as_str(),
         mode.wifi_sta_connected,
         mode.boot_phase_active,
@@ -302,12 +318,15 @@ pub fn format_runtime_mode_log_line() -> String {
         mode.background_maintenance_active,
         mode.recovery_safe_mode_active,
         mode.config_plane_alive,
+        mode.config_active,
+        mode.config_activity_phase.as_str(),
         mode.channel_plane_alive,
         mode.voice_plane_alive,
         mode.agent_plane_alive,
         mode.action_budget.allow_due_user_timers,
         mode.action_budget.allow_periodic_maintenance,
         mode.action_budget.allow_non_voice_outbound,
+        mode.action_budget.allow_realtime_voice_connect,
         mode.action_budget.allow_external_wss_connect,
         mode.action_budget.require_external_wss_suspended,
     )
@@ -323,8 +342,13 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
     let mut core0_threads = 0usize;
     let mut core1_threads = 0usize;
     let mut unpinned_threads = 0usize;
-    let mut std_thread_threads = 0usize;
+    let mut std_thread_compat_threads = 0usize;
     let mut esp_native_task_threads = 0usize;
+    let mut esp_native_allowlist_hit_threads = 0usize;
+    let mut esp_native_std_sync_forbidden_threads = 0usize;
+    let mut task_wdt_owner_threads = 0usize;
+    let mut task_wdt_feed_only_threads = 0usize;
+    let mut task_wdt_unmanaged_threads = 0usize;
     let mut tls_capable_threads = 0usize;
     let mut http_capable_threads = 0usize;
     let mut wss_capable_threads = 0usize;
@@ -337,6 +361,8 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
 
     for entry in guard.iter().filter(|entry| entry.alive) {
         let profile = thread_profile(entry.name.as_str());
+        let task_wdt_policy =
+            crate::platform::task_wdt::thread_policy_for_name(entry.name.as_str());
         let stack_free = sample_stack_high_water_free_bytes(entry)
             .map(|free| normalize_stack_high_water_free_bytes(entry.stack_size, free));
         let stack_used = stack_free.map(|free| entry.stack_size.saturating_sub(free));
@@ -386,8 +412,25 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
             None => unpinned_threads += 1,
         }
         match entry.spawn_surface {
-            TaskSpawnSurface::StdThread => std_thread_threads += 1,
-            TaskSpawnSurface::EspNativeTask => esp_native_task_threads += 1,
+            TaskSpawnSurface::StdThreadCompat => std_thread_compat_threads += 1,
+            TaskSpawnSurface::EspNativeTask => {
+                esp_native_task_threads += 1;
+                esp_native_std_sync_forbidden_threads += 1;
+            }
+        }
+        let native_allowlist_hit =
+            crate::platform::task_affinity::native_task_allowlist_hit(entry.name.as_str());
+        if native_allowlist_hit {
+            esp_native_allowlist_hit_threads += 1;
+        }
+        match task_wdt_policy {
+            crate::platform::task_wdt::TaskWdtThreadPolicy::Owner => task_wdt_owner_threads += 1,
+            crate::platform::task_wdt::TaskWdtThreadPolicy::FeedOnly => {
+                task_wdt_feed_only_threads += 1
+            }
+            crate::platform::task_wdt::TaskWdtThreadPolicy::Unmanaged => {
+                task_wdt_unmanaged_threads += 1
+            }
         }
 
         if include_details {
@@ -402,6 +445,12 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
                 core_target: core_target_snapshot(entry.core_target),
                 role: role_snapshot(entry.role),
                 spawn_surface: entry.spawn_surface,
+                native_allowlist_hit,
+                native_std_sync_forbidden: matches!(
+                    entry.spawn_surface,
+                    TaskSpawnSurface::EspNativeTask
+                ),
+                task_wdt_policy,
                 execution_class: profile.execution_class,
                 risk_class: profile.risk_class,
                 tls_capable: profile.tls_capable,
@@ -437,8 +486,13 @@ fn build_snapshot(include_details: bool) -> ThreadRegistrySnapshot {
         core0_threads,
         core1_threads,
         unpinned_threads,
-        std_thread_threads,
+        std_thread_compat_threads,
         esp_native_task_threads,
+        esp_native_allowlist_hit_threads,
+        esp_native_std_sync_forbidden_threads,
+        task_wdt_owner_threads,
+        task_wdt_feed_only_threads,
+        task_wdt_unmanaged_threads,
         tls_capable_threads,
         http_capable_threads,
         wss_capable_threads,
@@ -488,7 +542,7 @@ fn thread_profile(name: &str) -> ThreadProfile {
                 mode_sensitive: true,
             }
         }
-        "qq_ws" | "feishu_ws" => ThreadProfile {
+        "qq_ws" | "feishu_ws" | "wecom_aibot" | "dingtalk_stream" => ThreadProfile {
             execution_class: ThreadExecutionClass::Channel,
             risk_class: ThreadRiskClass::Critical,
             tls_capable: true,
@@ -506,14 +560,16 @@ fn thread_profile(name: &str) -> ThreadProfile {
                 mode_sensitive: true,
             }
         }
-        "http_route_exec" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Config,
-            risk_class: ThreadRiskClass::High,
-            tls_capable: true,
-            http_capable: true,
-            wss_capable: false,
-            mode_sensitive: true,
-        },
+        "http_config_exec" | "http_diag_exec" | "http_ota_exec" | "http_snapshot_exec" => {
+            ThreadProfile {
+                execution_class: ThreadExecutionClass::Config,
+                risk_class: ThreadRiskClass::High,
+                tls_capable: true,
+                http_capable: true,
+                wss_capable: false,
+                mode_sensitive: true,
+            }
+        }
         "config_plane_watch" => ThreadProfile {
             execution_class: ThreadExecutionClass::Runtime,
             risk_class: ThreadRiskClass::Low,
@@ -615,34 +671,112 @@ pub fn reset_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn registry_test_guard() -> MutexGuard<'static, ()> {
+        let guard = REGISTRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        guard
+    }
 
     #[test]
     fn baseline_log_line_reports_historical_threads_separately() {
-        reset_for_tests();
+        let _guard = registry_test_guard();
         register_thread(
             "dispatch",
             8192,
             None,
             HttpThreadRole::Io,
-            TaskSpawnSurface::StdThread,
+            TaskSpawnSurface::StdThreadCompat,
         );
         register_thread(
-            "http_route_exec",
+            "http_config_exec",
             32768,
             None,
             HttpThreadRole::Io,
-            TaskSpawnSurface::StdThread,
+            TaskSpawnSurface::StdThreadCompat,
         );
-        mark_thread_stopped("http_route_exec");
+        mark_thread_stopped("http_config_exec");
 
         let snapshot = snapshot();
         assert_eq!(snapshot.alive_threads, 1);
         assert_eq!(snapshot.historical_threads, 2);
+        assert_eq!(snapshot.task_wdt_feed_only_threads, 1);
+        assert_eq!(snapshot.task_wdt_unmanaged_threads, 0);
 
         let line = format_baseline_log_line();
         assert!(line.contains("alive=1"));
         assert!(line.contains("historical=2"));
+        assert!(line.contains("std_compat=1"));
+        assert!(line.contains("native=0"));
+        assert!(line.contains("native_std_sync_forbidden=0"));
+        assert!(line.contains("twdt_feed_only=1"));
         assert!(!line.contains("registered="));
+
+        reset_for_tests();
+    }
+
+    #[test]
+    fn native_surface_details_mark_std_sync_forbidden() {
+        let _guard = registry_test_guard();
+        register_thread(
+            "native_probe",
+            4096,
+            Some(SpawnCore::Core0),
+            HttpThreadRole::Background,
+            TaskSpawnSurface::EspNativeTask,
+        );
+
+        let snapshot = snapshot();
+        assert_eq!(snapshot.esp_native_task_threads, 1);
+        assert_eq!(snapshot.esp_native_std_sync_forbidden_threads, 1);
+        assert_eq!(snapshot.std_thread_compat_threads, 0);
+        assert_eq!(snapshot.details.len(), 1);
+        assert!(snapshot.details[0].native_std_sync_forbidden);
+
+        reset_for_tests();
+    }
+
+    #[test]
+    fn snapshot_counts_task_wdt_owner_and_feed_only_threads() {
+        let _guard = registry_test_guard();
+        register_thread(
+            "agent_loop",
+            32768,
+            Some(SpawnCore::Core1),
+            HttpThreadRole::Interactive,
+            TaskSpawnSurface::StdThreadCompat,
+        );
+        register_thread(
+            "http_config_exec",
+            32768,
+            Some(SpawnCore::Core0),
+            HttpThreadRole::Io,
+            TaskSpawnSurface::StdThreadCompat,
+        );
+        register_thread(
+            "config_plane_watch",
+            8192,
+            Some(SpawnCore::Core1),
+            HttpThreadRole::Background,
+            TaskSpawnSurface::StdThreadCompat,
+        );
+
+        let snapshot = snapshot();
+        assert_eq!(snapshot.task_wdt_owner_threads, 1);
+        assert_eq!(snapshot.task_wdt_feed_only_threads, 1);
+        assert_eq!(snapshot.task_wdt_unmanaged_threads, 1);
+        assert_eq!(
+            snapshot.details[0].task_wdt_policy,
+            crate::platform::task_wdt::TaskWdtThreadPolicy::Owner
+        );
+
+        let line = format_baseline_log_line();
+        assert!(line.contains("twdt_owner=1"));
+        assert!(line.contains("twdt_feed_only=1"));
+        assert!(line.contains("twdt_unmanaged=1"));
 
         reset_for_tests();
     }
@@ -655,8 +789,9 @@ mod tests {
 
     #[test]
     fn runtime_mode_snapshot_reads_global_runtime_flags() {
+        let _guard = registry_test_guard();
         let _state_guard = crate::state::test_state_guard();
-        reset_for_tests();
+        crate::runtime::governance::reset_runtime_governance_state_for_tests();
         crate::state::set_boot_phase_active(false);
         crate::state::set_pairing_state_known(true);
         crate::state::set_pairing_required(true);

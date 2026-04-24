@@ -2803,20 +2803,157 @@ if [[ -n "$DO_FLASH" ]] && [[ ! "$BUILD_TARGET" =~ -unknown-linux ]] && [[ -z "$
   exit 1
 fi
 
+sha256_file() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    echo "Error: need shasum or sha256sum to compute artifact identity" >&2
+    return 1
+  fi
+}
+
+prepare_build_identity_env() {
+  local git_sha="unknown"
+  local git_dirty="unknown"
+  local partition_csv_sha="unknown"
+
+  if git -C "$SCRIPT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git_sha="$(git -C "$SCRIPT_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+    if git -C "$SCRIPT_ROOT" diff --quiet --ignore-submodules -- \
+      && git -C "$SCRIPT_ROOT" diff --cached --quiet --ignore-submodules --; then
+      git_dirty="0"
+    else
+      git_dirty="1"
+    fi
+  fi
+
+  if [[ -f "$PARTITION_CSV" ]]; then
+    partition_csv_sha="$(sha256_file "$PARTITION_CSV" || printf 'unknown')"
+  fi
+
+  BEETLE_BUILD_TIME_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  export BEETLE_BUILD_GIT_SHA="$git_sha"
+  export BEETLE_BUILD_GIT_DIRTY="$git_dirty"
+  export BEETLE_BUILD_TIME_UTC
+  export BEETLE_PARTITION_CSV_SHA256="$partition_csv_sha"
+}
+
+refresh_esp_idf_build_outputs() {
+  [[ "$BUILD_TARGET" =~ -unknown-linux ]] && return 0
+
+  ESP_IDF_BUILD_DIR=""
+  local candidate
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    if [[ -f "$candidate/libespidf.elf" && -f "$candidate/libespidf.map" ]]; then
+      ESP_IDF_BUILD_DIR="$candidate"
+      break
+    fi
+    [[ -z "$ESP_IDF_BUILD_DIR" ]] && ESP_IDF_BUILD_DIR="$candidate"
+  done < <(find "$RELEASE_DIR/build" -path '*/out/build' -type d 2>/dev/null | sort)
+
+  OTADATA_BIN=""
+  FLASHER_ARGS_JSON=""
+  APP_FLASH_MODE=""
+  APP_FLASH_SIZE=""
+  APP_FLASH_FREQ=""
+  if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
+    OTADATA_BIN="$ESP_IDF_BUILD_DIR/ota_data_initial.bin"
+    FLASHER_ARGS_JSON="$ESP_IDF_BUILD_DIR/flasher_args.json"
+    if [[ -f "$FLASHER_ARGS_JSON" ]]; then
+      APP_FLASH_MODE="$(sed -n 's/.*"flash_mode":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
+      APP_FLASH_SIZE="$(sed -n 's/.*"flash_size":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
+      APP_FLASH_FREQ="$(sed -n 's/.*"flash_freq":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
+    fi
+  fi
+}
+
+collect_esp_build_artifacts() {
+  [[ "$BUILD_TARGET" =~ -unknown-linux ]] && return 0
+  refresh_esp_idf_build_outputs
+
+  local elf_src="$BIN"
+  local idf_elf_src="${ESP_IDF_BUILD_DIR:-}/libespidf.elf"
+  local map_src="${ESP_IDF_BUILD_DIR:-}/libespidf.map"
+  if [[ ! -f "$elf_src" || ! -f "$idf_elf_src" || ! -f "$map_src" || ! -f "$PARTITION_TABLE_BIN" ]]; then
+    echo "Error: missing ESP symbol artifacts after build." >&2
+    echo "  beetle.elf:         ${elf_src:-<not found>}" >&2
+    echo "  libespidf.elf:      ${idf_elf_src:-<not found>}" >&2
+    echo "  libespidf.map:      ${map_src:-<not found>}" >&2
+    echo "  partition-table.bin: $PARTITION_TABLE_BIN" >&2
+    return 1
+  fi
+
+  local elf_sha idf_elf_sha partition_sha app_sha="missing" bootloader_sha="missing" otadata_sha="missing"
+  elf_sha="$(sha256_file "$elf_src")" || return 1
+  idf_elf_sha="$(sha256_file "$idf_elf_src")" || return 1
+  partition_sha="$(sha256_file "$PARTITION_TABLE_BIN")" || return 1
+  [[ -f "$APP_BIN" ]] && app_sha="$(sha256_file "$APP_BIN")"
+  [[ -f "$BOOTLOADER_BIN" ]] && bootloader_sha="$(sha256_file "$BOOTLOADER_BIN")"
+  [[ -f "$OTADATA_BIN" ]] && otadata_sha="$(sha256_file "$OTADATA_BIN")"
+
+  local git_sha="${BEETLE_BUILD_GIT_SHA:-unknown}"
+  local artifact_id="${git_sha}-${elf_sha}"
+  local artifact_dir="$EFFECTIVE_TARGET_DIR/esp-artifacts/$artifact_id"
+  mkdir -p "$artifact_dir"
+  cp "$elf_src" "$artifact_dir/beetle.elf"
+  cp "$idf_elf_src" "$artifact_dir/libespidf.elf"
+  cp "$map_src" "$artifact_dir/libespidf.map"
+  cp "$PARTITION_TABLE_BIN" "$artifact_dir/partition-table.bin"
+  [[ -f "$APP_BIN" ]] && cp "$APP_BIN" "$artifact_dir/beetle.bin"
+  [[ -f "$BOOTLOADER_BIN" ]] && cp "$BOOTLOADER_BIN" "$artifact_dir/bootloader.bin"
+  [[ -f "$OTADATA_BIN" ]] && cp "$OTADATA_BIN" "$artifact_dir/ota_data_initial.bin"
+
+  cat > "$artifact_dir/artifact.env" <<EOF
+artifact_id=$artifact_id
+git_sha=$git_sha
+git_dirty=${BEETLE_BUILD_GIT_DIRTY:-unknown}
+build_time_utc=${BEETLE_BUILD_TIME_UTC:-unknown}
+target=$BUILD_TARGET
+package_profile=${PACKAGE_PROFILE:-}
+features=${BUILD_FEATURES:-}
+elf_sha256=$elf_sha
+idf_elf_sha256=$idf_elf_sha
+partition_table_sha256=$partition_sha
+partition_csv_sha256=${BEETLE_PARTITION_CSV_SHA256:-unknown}
+app_bin_sha256=$app_sha
+bootloader_sha256=$bootloader_sha
+otadata_sha256=$otadata_sha
+symbol_elf=beetle.elf
+idf_elf=libespidf.elf
+map=libespidf.map
+partition_table=partition-table.bin
+EOF
+
+  echo ""
+  echo "========== ESP artifact identity =========="
+  echo "  Artifact id:        $artifact_id"
+  echo "  Artifact dir:       $artifact_dir"
+  echo "  Git SHA:            $git_sha"
+  echo "  Symbol ELF SHA256:  $elf_sha"
+  echo "  IDF ELF SHA256:     $idf_elf_sha"
+  echo "  Partition SHA256:   $partition_sha"
+  echo "  Symbolize example:  scripts/esp_symbolize_panic.sh \"$artifact_dir\" 0x4037f815"
+}
+
 # --- Flash mode: numbered menu (same style as Linux deploy mode menu; sets ERASE_BEFORE_FLASH; may exit) ---
 # FLASH_NO_ERASE=1 (--flash-update): skip menu, never erase.
 select_flash_mode() {
   local port="$1" triple="$2"
   ERASE_BEFORE_FLASH=0
   if [[ -n "$FLASH_NO_ERASE" ]]; then
-    echo -e "${GREEN}✓ Flash mode: update only — entire flash will NOT be erased (NVS / config preserved).${NC}"
+    echo -e "${YELLOW}! Flash mode: update only — no full-chip erase, but partition-table changes can still make SPIFFS reformat.${NC}"
     echo "  Bootloader, partition table, otadata, and app will be refreshed in place."
+    echo "  NVS is kept; config files are kept only when the SPIFFS partition offset and size are unchanged."
     echo ""
     return 0
   fi
   echo "========== Flash mode =========="
   echo ""
-  echo "  1) Update flash — keep NVS, WiFi credentials, SPIFFS; refresh bootloader + partition table + app"
+  echo "  1) Update flash — keep NVS; SPIFFS config is preserved only if partition offset/size are unchanged"
   echo "  2) Full chip erase then flash — wipes entire flash (factory reset / partition change)"
   echo "  3) Cancel"
   echo ""
@@ -3196,12 +3333,6 @@ run_esp_flash_workflow() {
   echo "  App bin: $APP_BIN"
   echo "  Partition table: $PARTITION_FOR_FLASH"
 
-  if [[ ! -f "$OTADATA_BIN" ]]; then
-    echo "Error: otadata bin not found: ${OTADATA_BIN:-<empty>}" >&2
-    echo "Expected ESP-IDF output under: ${ESP_IDF_BUILD_DIR:-<not found>}" >&2
-    return 1
-  fi
-
   if [[ "$ERASE_BEFORE_FLASH" -eq 1 ]]; then
     if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" || ! -f "$OTADATA_BIN" ]]; then
       echo "Error: missing bootloader/partition-table/otadata bin required after full erase." >&2
@@ -3227,10 +3358,11 @@ run_esp_flash_workflow() {
       return 1
     fi
   else
-    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" ]]; then
-      echo "Error: missing bootloader/partition-table bin required for update flash." >&2
+    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" || ! -f "$OTADATA_BIN" ]]; then
+      echo "Error: missing bootloader/partition-table/otadata bin required for update flash." >&2
       echo "  bootloader: $BOOTLOADER_BIN" >&2
       echo "  partition : $PARTITION_TABLE_BIN" >&2
+      echo "  otadata   : ${OTADATA_BIN:-<empty>}" >&2
       return 1
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
@@ -3559,6 +3691,7 @@ for a in "${BUILD_ARGS[@]}"; do [[ "$a" == "--target" ]] && HAS_TARGET=1; done
 [[ $HAS_TARGET -eq 0 ]] && RELEASE_ARGS+=(--target "$BUILD_TARGET")
 [[ -n "$BUILD_FEATURES" ]] && RELEASE_ARGS+=($BUILD_FEATURES)
 RELEASE_ARGS+=("${BUILD_ARGS[@]}")
+prepare_build_identity_env
 
 # --- Build (same as build.ps1) ---
 echo ""
@@ -3627,7 +3760,9 @@ else
 fi
 
 if [[ ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
+  refresh_esp_idf_build_outputs
   generate_app_bin_from_elf || exit 1
+  collect_esp_build_artifacts || exit 1
 fi
 
 # --- After build: deploy prompt or --flash (ESP only) ---

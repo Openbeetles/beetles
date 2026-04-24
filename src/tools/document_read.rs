@@ -118,7 +118,11 @@ pub(crate) fn read_document_source(
     ctx: &mut dyn ToolContext,
 ) -> Result<ReadableDocument> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        match crate::orchestrator::can_execute_tool_pub(tool_name, true) {
+        match crate::orchestrator::can_execute_tool_for_channel_pub(
+            tool_name,
+            true,
+            ctx.current_channel().unwrap_or(""),
+        ) {
             ToolDecision::Allow => {}
             ToolDecision::Deny { reason } => {
                 return Err(Error::config(stage, format!("tool denied: {reason}")));
@@ -195,7 +199,11 @@ fn read_url_document_outcome(
     stage: &'static str,
     ctx: &mut dyn ToolContext,
 ) -> Result<ToolExecutionOutcome> {
-    match crate::orchestrator::can_execute_tool_pub("document_read", true) {
+    match crate::orchestrator::can_execute_tool_for_channel_pub(
+        "document_read",
+        true,
+        ctx.current_channel().unwrap_or(""),
+    ) {
         ToolDecision::Allow => {}
         ToolDecision::Deny { reason } => {
             return unsupported_document_outcome(source, &format!("tool denied: {reason}"));

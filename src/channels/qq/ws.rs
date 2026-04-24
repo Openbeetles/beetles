@@ -1,6 +1,6 @@
 //! QQ WSS 入站：取 gateway URL → Hello/Identify → 心跳 → Dispatch 入队。
 //! 支持频道 AT_MESSAGE_CREATE、群聊 GROUP_AT_MESSAGE_CREATE、私聊 C2C_MESSAGE_CREATE。
-//! 与 HTTP webhook 可并存，由 main 按配置决定是否 spawn。
+//! QQ 入站只走官方 WSS；本地 HTTP callback 已移除。
 
 use crate::channels::send::{record_outbound_http_failure, record_outbound_http_success};
 use crate::channels::wss_gateway::{

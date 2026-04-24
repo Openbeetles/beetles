@@ -11,16 +11,18 @@ pub struct ThreadPlan {
 
 pub fn thread_plan(name: &str) -> ThreadPlan {
     match name {
-        "wifi_worker" | "dispatch" | "tg_poll" | "feishu_ws" | "qq_ws" | "tg_sender"
-        | "fs_sender" | "dt_sender" | "wc_sender" | "qq_sender" | "config_plane_watch"
-        | "restart_defer" => ThreadPlan {
+        "wifi_worker" | "dispatch" | "tg_poll" | "feishu_ws" | "qq_ws" | "wecom_aibot"
+        | "dingtalk_stream" | "tg_sender" | "fs_sender" | "dt_sender" | "wc_sender"
+        | "qq_sender" | "config_plane_watch" | "restart_defer" => ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
-        "http_route_exec" => ThreadPlan {
-            core: Some(SpawnCore::Core1),
-            role: HttpThreadRole::Io,
-        },
+        "http_config_exec" | "http_diag_exec" | "http_ota_exec" | "http_snapshot_exec" => {
+            ThreadPlan {
+                core: Some(SpawnCore::Core1),
+                role: HttpThreadRole::Io,
+            }
+        }
         "agent_loop" => ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Interactive,

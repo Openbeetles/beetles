@@ -47,6 +47,7 @@ const LLM_RETRY_LATER_DELAY_MS_MIN: u64 = 240;
 const OUTBOUND_DEFER_DELAY_MS_CAUTIOUS_MIN: u64 = 120;
 const OUTBOUND_BACKGROUND_YIELD_MS_MIN: u64 = 80;
 const OUTBOUND_BACKGROUND_YIELD_MS_MAX: u64 = 260;
+const MODE_TRANSITION_DEFER_MS: u64 = 250;
 
 #[inline]
 fn queue_total(state: &OrchestratorState) -> u32 {
@@ -72,6 +73,52 @@ fn critical_inbound_defer_delay_ms(state: &OrchestratorState) -> u64 {
     let scaled = LOW_MEM_DEFER_SLEEP_MS_MIN
         + (base.saturating_sub(LOW_MEM_DEFER_SLEEP_MS_MIN)) * total / threshold;
     scaled.clamp(LOW_MEM_DEFER_SLEEP_MS_MIN, base)
+}
+
+#[inline]
+fn current_runtime_mode() -> crate::runtime::RuntimeModeSnapshot {
+    crate::runtime::thread_registry::runtime_mode_snapshot()
+}
+
+#[inline]
+fn is_voice_channel(channel: &str) -> bool {
+    channel == crate::constants::VOICE_CHANNEL_NAME
+}
+
+#[inline]
+fn non_voice_block_mode(
+    mode: crate::runtime::RuntimeModeSnapshot,
+    channel: &str,
+) -> Option<crate::runtime::RuntimeMode> {
+    if !mode.action_budget.allow_non_voice_outbound && !is_voice_channel(channel) {
+        Some(mode.current_mode)
+    } else {
+        None
+    }
+}
+
+fn non_voice_background_reason(mode: crate::runtime::RuntimeMode) -> &'static str {
+    match mode {
+        crate::runtime::RuntimeMode::ConfigActive => "config_active_background",
+        crate::runtime::RuntimeMode::VoiceExclusive => "voice_exclusive_background",
+        _ => "mode_background_skip",
+    }
+}
+
+fn non_voice_network_tool_reason(mode: crate::runtime::RuntimeMode) -> &'static str {
+    match mode {
+        crate::runtime::RuntimeMode::ConfigActive => "config_active_non_voice_network_tool",
+        crate::runtime::RuntimeMode::VoiceExclusive => "voice_exclusive_non_voice_network_tool",
+        _ => "mode_non_voice_network_tool",
+    }
+}
+
+fn non_voice_outbound_reason(mode: crate::runtime::RuntimeMode) -> &'static str {
+    match mode {
+        crate::runtime::RuntimeMode::ConfigActive => "config_active_non_voice_outbound",
+        crate::runtime::RuntimeMode::VoiceExclusive => "voice_exclusive_non_voice_outbound",
+        _ => "mode_non_voice_outbound",
+    }
 }
 
 /// ESP：按「最大连续块」相对 `TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES` 的缺口缩放退避。
@@ -125,8 +172,34 @@ pub fn should_accept_inbound(
     channel: &str,
     ingress: IngressKind,
 ) -> AdmissionDecision {
+    should_accept_inbound_with_mode(state, channel, ingress, current_runtime_mode())
+}
+
+pub(crate) fn should_accept_inbound_with_mode(
+    state: &OrchestratorState,
+    channel: &str,
+    ingress: IngressKind,
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> AdmissionDecision {
     let pressure = PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
     let work_class = classify_system_work(channel, ingress);
+    if let Some(block_mode) = non_voice_block_mode(mode, channel) {
+        if work_class == SystemWorkClass::BackgroundLowPriority {
+            return AdmissionDecision::Reject {
+                reason: non_voice_background_reason(block_mode),
+            };
+        }
+        return AdmissionDecision::Defer {
+            delay_ms: MODE_TRANSITION_DEFER_MS,
+        };
+    }
+    if !mode.action_budget.allow_periodic_maintenance
+        && work_class == SystemWorkClass::BackgroundLowPriority
+    {
+        return AdmissionDecision::Reject {
+            reason: "mode_background_skip",
+        };
+    }
 
     match pressure {
         PressureLevel::Critical => {
@@ -162,6 +235,23 @@ pub fn should_accept_inbound(
 /// agent 准备调用 LLM 前调用。
 /// Called by agent before invoking LLM.
 pub fn can_call_llm(state: &OrchestratorState) -> LlmDecision {
+    can_call_llm_for_channel(state, "")
+}
+
+pub fn can_call_llm_for_channel(state: &OrchestratorState, channel: &str) -> LlmDecision {
+    can_call_llm_for_channel_with_mode(state, channel, current_runtime_mode())
+}
+
+pub(crate) fn can_call_llm_for_channel_with_mode(
+    state: &OrchestratorState,
+    channel: &str,
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> LlmDecision {
+    if non_voice_block_mode(mode, channel).is_some() {
+        return LlmDecision::RetryLater {
+            delay_ms: MODE_TRANSITION_DEFER_MS,
+        };
+    }
     let pressure = PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
 
     match pressure {
@@ -203,6 +293,38 @@ pub fn can_execute_tool(
     _tool_name: &str,
     requires_network: bool,
 ) -> ToolDecision {
+    can_execute_tool_for_channel(state, _tool_name, requires_network, "")
+}
+
+pub fn can_execute_tool_for_channel(
+    state: &OrchestratorState,
+    _tool_name: &str,
+    requires_network: bool,
+    channel: &str,
+) -> ToolDecision {
+    can_execute_tool_for_channel_with_mode(
+        state,
+        _tool_name,
+        requires_network,
+        channel,
+        current_runtime_mode(),
+    )
+}
+
+pub(crate) fn can_execute_tool_for_channel_with_mode(
+    state: &OrchestratorState,
+    _tool_name: &str,
+    requires_network: bool,
+    channel: &str,
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> ToolDecision {
+    if requires_network {
+        if let Some(block_mode) = non_voice_block_mode(mode, channel) {
+            return ToolDecision::Deny {
+                reason: non_voice_network_tool_reason(block_mode),
+            };
+        }
+    }
     let pressure = PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
 
     match pressure {
@@ -233,6 +355,19 @@ pub fn can_execute_tool(
 /// dispatch 发送前调用。出站消息已消耗 LLM 计算资源，优先 Defer 而非 Reject。
 /// Called by dispatch before sending. Outbound messages already consumed LLM compute; prefer Defer over Reject.
 pub fn should_accept_outbound(state: &OrchestratorState, _channel: &str) -> AdmissionDecision {
+    should_accept_outbound_with_mode(state, _channel, current_runtime_mode())
+}
+
+pub(crate) fn should_accept_outbound_with_mode(
+    state: &OrchestratorState,
+    channel: &str,
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> AdmissionDecision {
+    if let Some(block_mode) = non_voice_block_mode(mode, channel) {
+        return AdmissionDecision::Reject {
+            reason: non_voice_outbound_reason(block_mode),
+        };
+    }
     let pressure = PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
     let congested = is_queue_congested(state);
     match pressure {
@@ -301,6 +436,25 @@ mod tests {
         s
     }
 
+    fn normal_mode() -> crate::runtime::RuntimeModeSnapshot {
+        crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+            boot_phase_active: false,
+            pairing_required: false,
+            pairing_state_known: false,
+            voice_exclusive_active: false,
+            background_maintenance_active: false,
+            recovery_safe_mode_active: false,
+            ..crate::runtime::mode::RuntimeModeSource::default()
+        })
+    }
+
+    fn voice_exclusive_mode() -> crate::runtime::RuntimeModeSnapshot {
+        crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+            voice_exclusive_active: true,
+            ..crate::runtime::mode::RuntimeModeSource::default()
+        })
+    }
+
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     #[test]
     fn linux_cautious_llm_proceeds_when_internal_above_min() {
@@ -309,14 +463,17 @@ mod tests {
             0,
             PressureLevel::Cautious,
         );
-        assert!(matches!(can_call_llm(&s), LlmDecision::Proceed));
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()),
+            LlmDecision::Proceed
+        ));
     }
 
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     #[test]
     fn linux_cautious_llm_retry_when_internal_below_min() {
         let s = state_with_heap(1024, 0, PressureLevel::Cautious);
-        match can_call_llm(&s) {
+        match can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()) {
             LlmDecision::RetryLater { delay_ms } => {
                 assert!(delay_ms >= super::LLM_RETRY_LATER_DELAY_MS_MIN);
                 assert!(delay_ms <= LLM_RETRY_LATER_DELAY_MS);
@@ -336,7 +493,10 @@ mod tests {
             TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32 + 1024,
             PressureLevel::Cautious,
         );
-        assert!(matches!(can_call_llm(&s), LlmDecision::Proceed));
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()),
+            LlmDecision::Proceed
+        ));
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -347,14 +507,17 @@ mod tests {
             (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1024),
             PressureLevel::Cautious,
         );
-        assert!(matches!(can_call_llm(&s), LlmDecision::RetryLater { .. }));
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()),
+            LlmDecision::RetryLater { .. }
+        ));
     }
 
     #[test]
     fn cautious_rejects_low_priority_background_jobs() {
         let s = state_with_heap(200_000, 200_000, PressureLevel::Cautious);
         assert!(matches!(
-            should_accept_inbound(&s, CHANNEL_CRON, IngressKind::System),
+            should_accept_inbound_with_mode(&s, CHANNEL_CRON, IngressKind::System, normal_mode()),
             AdmissionDecision::Reject {
                 reason: "cautious_background_skip"
             }
@@ -367,11 +530,21 @@ mod tests {
         s.inbound_depth
             .store(PRESSURE_QUEUE_CONGESTION_THRESHOLD, Ordering::Relaxed);
         assert!(matches!(
-            should_accept_inbound(&s, CHANNEL_SELF_RUNTIME, IngressKind::System),
+            should_accept_inbound_with_mode(
+                &s,
+                CHANNEL_SELF_RUNTIME,
+                IngressKind::System,
+                normal_mode()
+            ),
             AdmissionDecision::Defer { .. }
         ));
         assert!(matches!(
-            should_accept_inbound(&s, CHANNEL_POST_REPLY_MAINTENANCE, IngressKind::System),
+            should_accept_inbound_with_mode(
+                &s,
+                CHANNEL_POST_REPLY_MAINTENANCE,
+                IngressKind::System,
+                normal_mode()
+            ),
             AdmissionDecision::Defer { .. }
         ));
     }
@@ -380,8 +553,99 @@ mod tests {
     fn cautious_keeps_interactive_system_messages() {
         let s = state_with_heap(200_000, 200_000, PressureLevel::Cautious);
         assert!(matches!(
-            should_accept_inbound(&s, "qq_channel", IngressKind::System),
+            should_accept_inbound_with_mode(&s, "qq_channel", IngressKind::System, normal_mode()),
             AdmissionDecision::Accept
+        ));
+    }
+
+    #[test]
+    fn config_active_blocks_background_and_non_voice_outbound_at_admission() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Normal);
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                config_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        assert!(matches!(
+            should_accept_inbound_with_mode(&s, CHANNEL_CRON, IngressKind::System, mode),
+            AdmissionDecision::Reject {
+                reason: "config_active_background"
+            }
+        ));
+        assert!(matches!(
+            should_accept_outbound_with_mode(&s, "qq_channel", mode),
+            AdmissionDecision::Reject {
+                reason: "config_active_non_voice_outbound"
+            }
+        ));
+        assert!(matches!(
+            can_execute_tool_for_channel_with_mode(&s, "web_fetch", true, "qq_channel", mode),
+            ToolDecision::Deny {
+                reason: "config_active_non_voice_network_tool"
+            }
+        ));
+    }
+
+    #[test]
+    fn voice_exclusive_blocks_non_voice_outbound_at_admission() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Normal);
+        let mode = voice_exclusive_mode();
+
+        assert!(matches!(
+            should_accept_outbound_with_mode(&s, "qq_channel", mode),
+            AdmissionDecision::Reject {
+                reason: "voice_exclusive_non_voice_outbound"
+            }
+        ));
+        assert!(matches!(
+            should_accept_outbound_with_mode(&s, crate::constants::VOICE_CHANNEL_NAME, mode),
+            AdmissionDecision::Accept
+        ));
+    }
+
+    #[test]
+    fn voice_exclusive_defers_non_voice_inbound_at_admission() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Normal);
+        let mode = voice_exclusive_mode();
+
+        assert!(matches!(
+            should_accept_inbound_with_mode(&s, "qq_channel", IngressKind::User, mode),
+            AdmissionDecision::Defer { .. }
+        ));
+        assert!(matches!(
+            should_accept_inbound_with_mode(
+                &s,
+                crate::constants::VOICE_CHANNEL_NAME,
+                IngressKind::User,
+                mode
+            ),
+            AdmissionDecision::Accept
+        ));
+    }
+
+    #[test]
+    fn voice_exclusive_gates_llm_and_network_tools_by_channel() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Normal);
+        let mode = voice_exclusive_mode();
+
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, crate::constants::VOICE_CHANNEL_NAME, mode),
+            LlmDecision::Proceed
+        ));
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", mode),
+            LlmDecision::RetryLater { .. }
+        ));
+        assert!(matches!(
+            can_execute_tool_for_channel_with_mode(&s, "web_fetch", true, "qq_channel", mode),
+            ToolDecision::Deny {
+                reason: "voice_exclusive_non_voice_network_tool"
+            }
+        ));
+        assert!(matches!(
+            can_execute_tool_for_channel_with_mode(&s, "memory_manage", false, "qq_channel", mode),
+            ToolDecision::Allow
         ));
     }
 }

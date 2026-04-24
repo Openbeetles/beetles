@@ -3,14 +3,14 @@
 
 use super::auth;
 use super::catalog::{
-    self, OperatorRouteAccess, RouteBodyMode, ROUTE_CAPABILITY_PACKAGES,
-    ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CONFIG_AUDIO, ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY,
-    ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM, ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM,
-    ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE, ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH,
-    ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS, ROUTE_METRICS, ROUTE_OPERATOR_STATUS,
-    ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE, ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT,
-    ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT, ROUTE_SYSTEM_INFO, ROUTE_TOOLS,
-    ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
+    self, OperatorRouteAccess, RouteBodyMode, RouteExecutionClass, ROUTE_CAPABILITY_PACKAGES,
+    ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CHANNEL_CONNECTIVITY_REFRESH, ROUTE_CONFIG_AUDIO,
+    ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY, ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM,
+    ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE,
+    ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH, ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS,
+    ROUTE_METRICS, ROUTE_OPERATOR_STATUS, ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE,
+    ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT, ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT,
+    ROUTE_SYSTEM_INFO, ROUTE_TOOLS, ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
 };
 #[cfg(all(
     feature = "capability_office",
@@ -214,6 +214,24 @@ fn err_other(stage: &'static str, msg: impl std::fmt::Display) -> Error {
 
 fn json_ok(body: String) -> OutgoingResponse {
     OutgoingResponse::json(200, "OK", CORS_HEADERS, body.into_bytes())
+}
+
+fn rejected_route_response(path: &str) -> OutgoingResponse {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "path".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
+    api_to_out(ApiResponse::err_key_with_meta(
+        410,
+        "Gone",
+        "http.route_removed",
+        Some("http_router_dispatch"),
+        Some("route is not available in this runtime"),
+        None,
+        None,
+        extra,
+    ))
 }
 
 fn apply_restart_action(
@@ -481,6 +499,32 @@ pub fn dispatch(
     env: &RouterEnv,
     incoming: IncomingRequest,
 ) -> Result<OutgoingResponse> {
+    dispatch_impl(ctx, Some(env), incoming)
+}
+
+/// Dispatch a worker route that is known not to need inbound webhook state.
+///
+/// ESP worker lanes use this entry point so worker startup does not clone the
+/// inbound bus sender. The system-owned `/api/webhook` route stays on the
+/// immediate lane, where `RouterEnv` is still available.
+#[inline(never)]
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
+pub fn dispatch_without_inbound(
+    ctx: &HandlerContext,
+    incoming: IncomingRequest,
+) -> Result<OutgoingResponse> {
+    dispatch_impl(ctx, None, incoming)
+}
+
+#[inline(never)]
+fn dispatch_impl(
+    ctx: &HandlerContext,
+    env: Option<&RouterEnv>,
+    incoming: IncomingRequest,
+) -> Result<OutgoingResponse> {
     let path = path_only(&incoming.uri);
     let method = incoming.method.as_str();
     let uri = incoming.uri.as_str();
@@ -502,6 +546,9 @@ pub fn dispatch(
     let route_body_mode = route_spec.map_or(RouteBodyMode::None, |spec| spec.body_mode);
     let route_operator_access =
         route_spec.map_or(OperatorRouteAccess::Hidden, |spec| spec.operator_access);
+    if route_spec.is_some_and(|spec| spec.execution_class == RouteExecutionClass::RejectedRoute) {
+        return Ok(rejected_route_response(path));
+    }
     if route_operator_access == OperatorRouteAccess::Windowed
         && crate::platform::operator_surface::current_operator_surface_budget(memory_system_kind)
             .window_required_for_deep_routes
@@ -853,7 +900,33 @@ pub fn dispatch(
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
-            match handlers::channel_connectivity::body(ctx) {
+            match handlers::channel_connectivity::body(ctx, false) {
+                Ok(body) => Ok(OutgoingResponse::json(
+                    200,
+                    "OK",
+                    CORS_HEADERS,
+                    body.into_bytes(),
+                )),
+                Err(msg) => Ok(api_to_out(ApiResponse::err_key_with_meta(
+                    500,
+                    "Internal Server Error",
+                    "channel.snapshot_failed",
+                    Some("channel_connectivity"),
+                    Some(msg.as_str()),
+                    None,
+                    None,
+                    serde_json::Map::new(),
+                ))),
+            }
+        }
+        ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH) => {
+            if let Some(r) = auth::require_activated(store) {
+                return Ok(api_to_out(r));
+            }
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            match handlers::channel_connectivity::body(ctx, true) {
                 Ok(body) => Ok(OutgoingResponse::json(
                     200,
                     "OK",
@@ -1042,6 +1115,15 @@ pub fn dispatch(
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
+            let Some(env) = env else {
+                return Ok(OutgoingResponse::json(
+                    404,
+                    "Not Found",
+                    CORS_HEADERS,
+                    br#"{"ok":false,"error":"webhook ingress is not available on this route lane"}"#
+                        .to_vec(),
+                ));
+            };
             let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let token = incoming
                 .header_ci("X-Webhook-Token")
@@ -1187,6 +1269,31 @@ mod tests {
             .expect("dispatch");
             assert_eq!(out.status, 404, "{method} {uri}");
         }
+    }
+
+    #[test]
+    fn custom_webhook_route_reaches_handler() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        let out = dispatch(
+            &ctx,
+            &env,
+            IncomingRequest {
+                method: "POST".to_string(),
+                uri: "/api/webhook".to_string(),
+                headers: vec![
+                    ("X-Pairing-Code".to_string(), "123456".to_string()),
+                    ("X-CSRF-Token".to_string(), csrf),
+                    ("X-Webhook-Token".to_string(), "token".to_string()),
+                ],
+                body: br#"{"ignored":true}"#.to_vec(),
+            },
+        )
+        .expect("dispatch");
+
+        assert_eq!(out.status, 403);
     }
 
     #[cfg(all(

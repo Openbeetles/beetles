@@ -25,6 +25,7 @@
 - 保存配置类接口提交完整对象，不支持只传要改的单个字段：
   `POST /api/config/llm`、`POST /api/config/channels`、`POST /api/config/system`、
   `POST /api/config/hardware`、`POST /api/config/audio`、`POST /api/config/display`。
+- ESP 设备上的自定义前端应把同一设备的 `/api/*` 请求串行化；首屏只做必要的激活、安全和轻量状态请求，`/api/channel_connectivity`、`/api/wifi/scan`、硬件发现等慢诊断接口应由用户显式触发。不要新增或依赖 `/api/device_snapshot` 这类大全局聚合接口。
 
 ### 鉴权级别
 
@@ -1274,7 +1275,6 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 - `ota_available`
 - `locale`
 - `lan_ip`
-- `workflow`
 - `programmable_reasoning`
 - `storage_media`
 

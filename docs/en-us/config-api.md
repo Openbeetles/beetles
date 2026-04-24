@@ -25,6 +25,7 @@ Each endpoint is described in terms of purpose, request, and response.
 - Config-save routes expect the full object, not a partial patch:
   `POST /api/config/llm`, `POST /api/config/channels`, `POST /api/config/system`,
   `POST /api/config/hardware`, `POST /api/config/audio`, `POST /api/config/display`.
+- Custom frontends targeting ESP devices should serialize `/api/*` calls for the same device. First-screen loads should stay limited to activation, security, and lightweight status requests; slow diagnostics such as `/api/channel_connectivity`, `/api/wifi/scan`, and hardware discovery should be user-triggered. Do not add or depend on a catch-all `/api/device_snapshot` aggregate.
 
 ### Auth levels
 
@@ -1269,7 +1270,6 @@ Common fields:
 - `ota_available`
 - `locale`
 - `lan_ip`
-- `workflow`
 - `programmable_reasoning`
 - `storage_media`
 

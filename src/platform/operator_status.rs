@@ -259,6 +259,7 @@ pub fn build_operator_status(
     })
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) fn build_programmable_reasoning_system_info_summary(
     platform: &dyn Platform,
 ) -> crate::error::Result<crate::ProgrammableReasoningSystemInfoSummary> {

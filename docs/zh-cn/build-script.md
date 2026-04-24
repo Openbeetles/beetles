@@ -72,9 +72,29 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 
 - `--flash` 会在构建完成后直接进入烧录流程
 - `--flash` 默认保留 NVS；如果你需要全擦，脚本会给你选项
-- `--flash-update` 不进擦除选择，直接按更新方式烧录；会原地刷新 bootloader、分区表、otadata 和 app，但不会整片擦除 NVS/SPIFFS
+- `--flash-update` 不进擦除选择，直接按更新方式烧录；会原地刷新 bootloader、分区表、otadata 和 app，但不会整片擦除。NVS 会保留；只有 SPIFFS 分区 offset 和 size 都不变时，SPIFFS 配置才可认为安全保留。
 - `--no-monitor` 表示烧录完成后不打开串口监视
 - 若串口可唯一识别，脚本自动选择该串口；否则进入选择流程
+
+## ESP panic 定责与产物身份
+
+每次 ESP 构建完成后，`build.sh` 会把符号化所需产物归档到：
+
+```bash
+target/esp-artifacts/<git-sha>-<elf-sha>/
+```
+
+目录内包含默认用于 Rust 地址符号化的 `beetle.elf`，以及 `libespidf.elf`、`libespidf.map`、`partition-table.bin` 和 `artifact.env`。启动日志会打印同一轮构建的 `git_sha`、构建时间、app ELF SHA、运行中分区表 SHA 与分区布局摘要。
+
+发生 Guru Meditation / panic 时，先记录启动日志里的 artifact identity，再用同一目录符号化地址：
+
+```bash
+scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
+```
+
+禁止用其他构建轮次的 ELF/map 猜地址；ESP panic 定责必须以匹配的 artifact id 为准。
+
+`--flash-update` 会刷新 bootloader、编译后的分区表、otadata 和 app；只有当 NVS/SPIFFS 的 offset 与 size 不变时，数据区才可被保留，避免新 app 搭配旧分区表污染排查结论；如果改变 SPIFFS extent，ESP-IDF 可能会格式化文件系统。默认 16MB S3 分区表删除旧 `model` 分区，并保持当前迁移后的 SPIFFS extent 为 `0xA20000/0x5D0000`；除非明确要迁移或格式化用户配置，否则不要再次改变这个 extent。
 
 ## Linux 示例
 

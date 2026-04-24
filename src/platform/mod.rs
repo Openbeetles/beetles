@@ -12,6 +12,7 @@ pub mod esp32;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub(crate) mod esp_runtime_policy;
 pub mod fetch_url;
+pub mod firmware_identity;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) mod fs_atomic;
 pub(crate) mod hardware_drivers;
@@ -57,6 +58,7 @@ pub use abstraction::{
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use esp32::Esp32Platform;
 pub use fetch_url::fetch_url_with_client;
+pub use firmware_identity::startup_identity_lines;
 pub use heap::debug_heap_checkpoint;
 pub use heartbeat_file::read_heartbeat_file;
 pub use http_client::EspHttpClient;

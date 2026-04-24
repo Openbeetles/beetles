@@ -1,11 +1,28 @@
 fn main() {
     let target = std::env::var("TARGET").unwrap_or_default();
     println!("cargo:rerun-if-env-changed=BEETLE_PACKAGE_PROFILE");
+    println!("cargo:rerun-if-env-changed=BEETLE_BUILD_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=BEETLE_BUILD_GIT_DIRTY");
+    println!("cargo:rerun-if-env-changed=BEETLE_BUILD_TIME_UTC");
+    println!("cargo:rerun-if-env-changed=BEETLE_PARTITION_CSV_SHA256");
     println!("cargo:rerun-if-env-changed=ESP_IDF_SDKCONFIG_DEFAULTS");
     if let Ok(profile) = std::env::var("BEETLE_PACKAGE_PROFILE") {
         let trimmed = profile.trim();
         if !trimmed.is_empty() {
             println!("cargo:rustc-env=BEETLE_PACKAGE_PROFILE={}", trimmed);
+        }
+    }
+    for key in [
+        "BEETLE_BUILD_GIT_SHA",
+        "BEETLE_BUILD_GIT_DIRTY",
+        "BEETLE_BUILD_TIME_UTC",
+        "BEETLE_PARTITION_CSV_SHA256",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                println!("cargo:rustc-env={}={}", key, trimmed);
+            }
         }
     }
     // Artifact target triple: Xtensa or ESP-IDF RISC-V only (avoid matching unrelated "esp" substrings).

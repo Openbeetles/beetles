@@ -72,20 +72,26 @@ export function SystemLogsPage() {
     }),
   );
 
-  const loadLogs = useCallback(() => {
+  const loadLogs = useCallback((includeDiagnose = true) => {
     if (!ready || !deviceConnected) return;
     setLogsState((prev) => ({ ...prev, loading: true, error: "" }));
-    Promise.all([api.system.health(), api.system.metrics(), api.system.diagnose()])
-      .then(([healthRes, metricsRes, diagnoseRes]) => {
+    void (async () => {
+      try {
+        const healthRes = await api.system.health();
+        const metricsRes = healthRes.ok ? await api.system.metrics() : null;
+        const diagnoseRes =
+          includeDiagnose && metricsRes?.ok ? await api.system.diagnose() : null;
         const nextHealth = healthRes.ok && healthRes.data ? healthRes.data : null;
-        const nextMetrics = metricsRes.ok && metricsRes.data ? metricsRes.data : null;
-        const nextDiagnose = diagnoseRes.ok && diagnoseRes.data ? diagnoseRes.data : [];
+        const nextMetrics =
+          metricsRes?.ok && metricsRes.data ? metricsRes.data : null;
+        const nextDiagnose =
+          diagnoseRes?.ok && diagnoseRes.data ? diagnoseRes.data : [];
         const nextError =
           !healthRes.ok
             ? (healthRes.error ?? "")
-            : !metricsRes.ok
+            : metricsRes && !metricsRes.ok
               ? (metricsRes.error ?? "")
-              : !diagnoseRes.ok
+              : diagnoseRes && !diagnoseRes.ok
                 ? (diagnoseRes.error ?? "")
                 : "";
         setLogsState({
@@ -93,10 +99,10 @@ export function SystemLogsPage() {
           error: nextError,
           data: { health: nextHealth, metrics: nextMetrics, diagnose: nextDiagnose },
         });
-      })
-      .catch(() =>
-        setLogsState((prev) => ({ ...prev, loading: false, error: "config.errorNetwork" })),
-      );
+      } catch {
+        setLogsState((prev) => ({ ...prev, loading: false, error: "config.errorNetwork" }));
+      }
+    })();
   }, [api.system, deviceConnected, ready]);
 
   useEffect(() => {
@@ -107,7 +113,7 @@ export function SystemLogsPage() {
       return;
     }
     const id = window.setTimeout(() => {
-      void loadLogs();
+      loadLogs(false);
     }, 0);
     return () => window.clearTimeout(id);
   }, [deviceConnected, ready, loadLogs]);

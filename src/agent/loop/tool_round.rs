@@ -320,7 +320,11 @@ fn execute_tool_call(
         }
     };
     let needs_net = permit.requires_network();
-    match crate::orchestrator::can_execute_tool_pub(&tc.name, needs_net) {
+    match crate::orchestrator::can_execute_tool_for_channel_pub(
+        &tc.name,
+        needs_net,
+        request_plan.policy().channel,
+    ) {
         ToolDecision::Deny { reason } => {
             log::info!("[agent_tool] {} denied: {}", tc.name, reason);
             if let Err(error) = registry.record_resource_denial(&permit, reason) {

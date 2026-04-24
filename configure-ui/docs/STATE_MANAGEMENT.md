@@ -31,6 +31,9 @@
 14. 配对码发生“已有值 → 另一个已有值”变化时，必须清空已验证 auth；不能只因 baseUrl 相同就沿用 ready 状态。
 15. 弹窗/详情页若允许快速切换对象（如 skill、account），加载响应提交前必须确认仍是最新请求；保存动作不得使用旧对象的内容或字段形状。
 16. `dirty=false` 只能清理当前 owner，除非用户明确确认丢弃全局未保存更改；页面卸载时必须清理自己的 owner。
+17. 面向同一设备 `baseUrl` 的 `/api/*` 传输必须由 `src/api/client.ts` 串行排队；页面和 endpoint 层不得绕过 `useDeviceApi().api.*` 直接 `fetch` 设备接口。
+18. 配置段保存必须通过 `ConfigContext` 暴露的 save 方法进入 single-flight guard；同一段保存中重复触发应返回 `config.saveInProgress`，不得复用旧 payload 的成功结果，也不得发起第二个 POST。
+19. 设备页首屏不得自动触发慢诊断：`channel_connectivity`、`wifi/scan`、硬件发现必须由用户显式动作进入；dashboard 只允许按职责顺序读取轻量状态。
 
 ## 3. 新页面接入清单
 

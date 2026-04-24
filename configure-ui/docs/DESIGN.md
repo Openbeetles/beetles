@@ -74,7 +74,7 @@
 
 - **路径单源**：`src/config/osIcons.ts`（`OS_ICON_NAV`、`OS_ICON_DASHBOARD`、`OS_ICON_SHELL`）；展示统一用 **`Os3dIcon`**（与任务栏 `OsIcon` 同滤镜，父级给足尺寸）。
 - **页内尺寸口径**：工具管理页列表图标尺寸与图标槽位使用 `LAYOUT_TOKENS.toolsListIconPx` / `LAYOUT_TOKENS.toolsListIconSlotPx`，不要在页面里重复写死 `24px`、`40px` 一类 magic number。
-- **新增或替换资源**：优先扩展当前 **Industrial OS3D** 生成管线（`scripts/generate_industrial_os3d_icons.py` + `scripts/industrial_os3d/icon_groups/*`），保持统一 palette、primitive 与对象优先的构图口径；若参考第三方资源，也只能作为语义参考，不应直接回贴到 shipped `public/icons/`。更新后用 `--audit-dir` 生成总览板与几何指标，检查主体饱满度、dock 小尺寸识别和是否出现线稿化。
+- **新增或替换资源**：优先扩展当前 **Industrial OS3D** 生成管线（`scripts/generate_industrial_os3d_icons.py` + `scripts/industrial_os3d/icon_groups/*`），保持统一 palette、primitive 与对象优先的构图口径；消费语义和现有文件名不一致时必须新增语义命名资产，不把错名资源重画成另一种含义。若参考第三方资源，也只能作为语义参考，不应直接回贴到 shipped `public/icons/`。更新后用 `--audit-dir` 生成总览板与几何指标，检查主体饱满度、dock 小尺寸识别和是否出现线稿化。
 
 ## 反馈分层与语义色
 

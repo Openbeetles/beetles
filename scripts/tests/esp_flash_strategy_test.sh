@@ -164,16 +164,64 @@ assert_file_contains \
   "build.sh should refresh the partition table during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'missing bootloader/partition-table bin required for update flash.' \
-  "build.sh should fail fast when update flash lacks the compiled partition table"
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"' \
+  "build.sh should refresh the bootloader during update flash"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"' \
+  "build.sh should refresh otadata during update flash"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"' \
+  "build.sh should refresh the app image during update flash"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'missing bootloader/partition-table/otadata bin required for update flash.' \
+  "build.sh should fail fast when update flash lacks any compiled boot artifact"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'esp-artifacts/$artifact_id' \
+  "build.sh should collect a stable ESP artifact directory keyed by git and ELF SHA"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'libespidf.elf' \
+  "build.sh should preserve the ESP-IDF ELF for IDF-side address comparison"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'beetle.elf' \
+  "build.sh should preserve the final cargo ELF used for Rust panic symbolization"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'symbol_elf=beetle.elf' \
+  "build.sh should record beetle.elf as the default symbolization ELF"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'libespidf.map' \
+  "build.sh should preserve the ESP-IDF map used for panic symbolization"
+if [[ ! -x "$ROOT_DIR/scripts/esp_symbolize_panic.sh" ]]; then
+  echo "FAIL: scripts/esp_symbolize_panic.sh should be executable" >&2
+  exit 1
+fi
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
   'spiffs  , data, spiffs  , 0xA20000, 0x5D0000' \
-  "default S3 partition table should give the removed wake resource area back to SPIFFS"
+  "default S3 partition table should keep the current post-migration SPIFFS extent while removing the wake resource partition"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'ota_0   , app , ota_0   , 0x20000 , 0x540000' \
+  "default S3 partition table should keep ota_0 expanded for current app size"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'ota_1   , app , ota_1   , 0x560000, 0x4C0000' \
+  "default S3 partition table should keep ota_1 compressed to preserve SPIFFS start"
 assert_file_not_contains \
   "$ROOT_DIR/partitions.csv" \
   'model' \
   "default S3 partition table must not restore the removed wake resource partition"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'SPIFFS config is preserved only if partition offset/size are unchanged' \
+  "build.sh update-flash prompt must not imply SPIFFS config survives partition layout changes"
 assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
   'python3 -m esptool --chip "$FLASH_CHIP" elf2image' \

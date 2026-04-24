@@ -31,33 +31,28 @@ export async function loadDeviceHealthBundle(
   loaders: DeviceHealthLoaders,
 ): Promise<DeviceHealthBundleResult> {
   try {
-    const [healthRes, resourceRes, metricsRes] = await Promise.all([
-      loaders.health(),
-      loaders.resource(),
-      loaders.metrics(),
-    ]);
+    const healthRes = await loaders.health();
+    if (!healthRes.ok || !healthRes.data) {
+      return { ok: false, error: healthRes.error ?? "" };
+    }
 
-    if (
-      healthRes.ok &&
-      healthRes.data &&
-      resourceRes.ok &&
-      resourceRes.data &&
-      metricsRes.ok &&
-      metricsRes.data
-    ) {
-      return {
-        ok: true,
-        data: {
-          health: healthRes.data,
-          resource: resourceRes.data,
-          metrics: metricsRes.data,
-        },
-      };
+    const resourceRes = await loaders.resource();
+    if (!resourceRes.ok || !resourceRes.data) {
+      return { ok: false, error: resourceRes.error ?? "" };
+    }
+
+    const metricsRes = await loaders.metrics();
+    if (!metricsRes.ok || !metricsRes.data) {
+      return { ok: false, error: metricsRes.error ?? "" };
     }
 
     return {
-      ok: false,
-      error: healthRes.error ?? resourceRes.error ?? metricsRes.error ?? "",
+      ok: true,
+      data: {
+        health: healthRes.data,
+        resource: resourceRes.data,
+        metrics: metricsRes.data,
+      },
     };
   } catch {
     return {

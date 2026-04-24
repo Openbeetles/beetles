@@ -10,13 +10,14 @@ export const OS_ICON_NAV: Record<string, string> = {
   "/device": "/icons/home_3d.png",
   "/ai-config": "/icons/bot_3d.png",
   "/channels-config": "/icons/chat_3d.png",
-  /** 账户管理（密码箱 / 凭据保管） */
-  "/accounts": "/icons/safe_3d.png",
-  "/skills": "/icons/puzzle_3d.png",
+  /** 账户管理（身份卡 / 凭据） */
+  "/accounts": "/icons/accounts_3d.png",
+  /** 技能管理（能力卡片 / 技能库） */
+  "/skills": "/icons/skills_3d.png",
   "/tools": "/icons/tools_3d.png",
   /** 设备配置入口（子页见 `OS_ICON_DEVICE_CONFIG`） */
   "/device-config": "/icons/devices_3d.png",
-  "/system-logs": "/icons/history_3d.png",
+  "/system-logs": "/icons/system_logs_3d.png",
   "/system-config": "/icons/settings_3d.png",
 };
 
@@ -46,7 +47,7 @@ export const OS_ICON_DASHBOARD = {
   deviceUnreachable: "/icons/device_unreachable_3d.png",
   /** 设备信息摘要 */
   deviceInfo: "/icons/device_info_3d.png",
-  /** 通道连通性（与主导航「对话气泡」区分：信号格） */
+  /** 通道连通性（中心枢纽 / 多通道状态节点） */
   channels: "/icons/dash_channels_3d.png",
   /** 存储占用 */
   storage: "/icons/storage_3d.png",
@@ -56,6 +57,8 @@ export const OS_ICON_DASHBOARD = {
   strategy: "/icons/strategy_3d.png",
   /** 运行时 / 交换 */
   runtime: "/icons/runtime_3d.png",
+  /** 工作流审计 / 自治任务 */
+  workflow: "/icons/tool_task_3d.png",
 } as const;
 
 export type OsDashboardIconKey = keyof typeof OS_ICON_DASHBOARD;

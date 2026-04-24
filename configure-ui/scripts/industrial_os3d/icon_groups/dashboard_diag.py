@@ -255,14 +255,38 @@ def build_bookmark_tabs(scene: Scene, palette) -> None:
 
 
 def build_dash_channels(scene: Scene, palette) -> None:
-    render_dashboard_card(scene, palette, 18, 19, 82, 75, "teal")
-    for x1, x2, y1, y2, role in ((28, 38, 31, 63, "primary"), (43, 53, 25, 63, "accent"), (58, 68, 35, 63, "secondary")):
-        render_plate(scene, palette, x1, y1, x2, y2, role=role, radius=6, depth=6, shadow_blur=7)
-    render_line(scene, palette, [(24, 28), (32, 28), (32, 31)], 2.4, "accent")
-    render_line(scene, palette, [(53, 31), (61, 31), (61, 35)], 2.4, "primary")
-    render_line(scene, palette, [(68, 43), (75, 43)], 2.2, "secondary")
-    render_line(scene, palette, [(24, 68), (76, 68)], 3.0, "secondary")
-    render_line(scene, palette, [(24, 68), (24, 76)], 2.1, "accent")
+    left = scene.rounded_rect(17, 31, 39, 52, 7)
+    right = scene.rounded_rect(61, 27, 83, 48, 7)
+    bottom = scene.rounded_rect(37, 64, 63, 82, 7)
+    hub = scene.rounded_rect(38, 37, 62, 61, 9)
+
+    render_line(scene, palette, [(39, 43), (50, 49), (61, 39)], 4.2, "accent")
+    render_line(scene, palette, [(50, 57), (50, 66)], 4.0, "secondary")
+
+    for mask, role in ((left, "sky"), (right, "secondary"), (bottom, "teal")):
+        top, bottom_color, side = tone(palette, role)
+        scene.render_extruded(mask, top, bottom_color, side, depth=7, shadow_blur=9, gloss=52)
+
+    top, bottom_color, side = tone(palette, "primary")
+    scene.render_extruded(hub, top, bottom_color, side, depth=8, shadow_blur=10, gloss=56)
+
+    hub_screen = scene.rounded_rect(43, 43, 57, 55, 4)
+    scene.render_flat(hub_screen, darken(palette.shell_bottom, 0.08), darken(palette.shell_bottom, 0.2))
+
+    status_masks = union_masks(
+        scene.circle(24, 38, 2.0),
+        scene.circle(68, 34, 2.0),
+        scene.circle(44, 70, 2.0),
+        scene.circle(56, 70, 2.0),
+    )
+    scene.render_flat(status_masks, palette.accent_top, palette.accent_bottom)
+
+    for x1, x2, y in ((27, 34, 45), (70, 79, 41), (43, 57, 76)):
+        stripe = scene.rounded_rect(x1, y - 1.3, x2, y + 1.3, 1.3)
+        scene.render_flat(stripe, lighten(palette.panel_top, 0.08), darken(palette.panel_bottom, 0.04), alpha=160)
+
+    hub_dot = scene.circle(50, 49, 3.1)
+    scene.render_extruded(hub_dot, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.22), depth=3, shadow_blur=4)
 
 
 def build_dash_connection(scene: Scene, palette) -> None:

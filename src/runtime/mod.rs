@@ -36,8 +36,9 @@ pub use delayed_task::{
     service_delayed_tasks,
 };
 pub use governance::{
-    set_recovery_safe_mode_active, sync_pairing_state_from_store, BackgroundMaintenanceGuard,
-    ConfigPlaneGuard,
+    config_activity_active, config_activity_snapshot, set_recovery_safe_mode_active,
+    sync_pairing_state_from_store, BackgroundMaintenanceGuard, ConfigActivityGuard,
+    ConfigActivityPhase, ConfigActivitySnapshot, ConfigPlaneGuard, CONFIG_ACTIVITY_WINDOW_SECS,
 };
 pub use initiative::{
     initiative_tick, inspect_platform_initiative, InitiativeAction, InitiativeSignalSnapshot,

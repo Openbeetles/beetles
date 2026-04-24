@@ -10,7 +10,6 @@ export interface MetricsSnapshotData {
   llm_last_ms?: number
   tool_calls?: number
   tool_errors?: number
-  wdt_feeds?: number
   dispatch_send_ok?: number
   dispatch_send_fail?: number
   errors_agent_router?: number
@@ -72,11 +71,22 @@ export interface HealthAudioData {
   duplex_capabilities?: HealthAudioCapabilitiesData
 }
 
+export interface WorkflowAuditSummaryData {
+  total_retained?: number
+  executed?: number
+  deferred?: number
+  suppressed?: number
+  canceled?: number
+  no_trigger?: number
+  failed?: number
+}
+
 export interface HealthData {
   wifi?: string
   last_error?: string
   display?: HealthDisplayData
   audio?: HealthAudioData
+  workflow?: WorkflowAuditSummaryData
 }
 
 export interface DiagnoseItem {

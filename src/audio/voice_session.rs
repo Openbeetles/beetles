@@ -266,6 +266,15 @@ fn handle_wake_interaction<F>(
             );
             return;
         }
+        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+        if !runtime_mode.action_budget.allow_realtime_voice_connect {
+            log::info!(
+                "[{}] skip realtime voice connect under runtime_mode={}",
+                TAG,
+                runtime_mode.current_mode.as_str()
+            );
+            return;
+        }
         let _voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG);
         match connect_realtime_session_via_worker(cfg).and_then(|connected| {
             run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected)

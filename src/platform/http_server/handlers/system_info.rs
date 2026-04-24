@@ -28,6 +28,33 @@ fn current_time_str() -> String {
     render_current_time(current_unix_secs_wallclock())
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn storage_free_programmable_reasoning_summary() -> crate::ProgrammableReasoningSystemInfoSummary {
+    crate::programmable_reasoning_system_info_summary(
+        &crate::skills::RuntimeSkillDoctrineSnapshot::default(),
+        &crate::skills::RuntimeSkillGenomeSnapshot::default(),
+        &crate::skills::CapabilityAtomOperatorSummary::default(),
+        &crate::ProgrammableReasoningReplayInspection::default(),
+    )
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn programmable_reasoning_system_info_summary(
+    _ctx: &HandlerContext,
+) -> Result<crate::ProgrammableReasoningSystemInfoSummary, std::io::Error> {
+    Ok(storage_free_programmable_reasoning_summary())
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn programmable_reasoning_system_info_summary(
+    ctx: &HandlerContext,
+) -> Result<crate::ProgrammableReasoningSystemInfoSummary, std::io::Error> {
+    crate::platform::operator_status::build_programmable_reasoning_system_info_summary(
+        ctx.platform.as_ref(),
+    )
+    .map_err(to_io)
+}
+
 fn render_current_time(secs: Option<u64>) -> String {
     match secs {
         Some(secs) => format_unix_utc(secs),
@@ -73,11 +100,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
     let lan_ip = ctx.platform.lan_ipv4().unwrap_or_else(|| "—".to_string());
-    let programmable_reasoning =
-        crate::platform::operator_status::build_programmable_reasoning_system_info_summary(
-            ctx.platform.as_ref(),
-        )
-        .map_err(to_io)?;
+    let programmable_reasoning = programmable_reasoning_system_info_summary(ctx)?;
     #[allow(unused_mut)]
     let mut json = serde_json::json!({
         "product_name": product_name,
@@ -87,7 +110,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "ota_available": ota_available,
         "locale": locale,
         "lan_ip": lan_ip,
-        "workflow": crate::runtime::workflow_audit_snapshot(8).summary,
         "programmable_reasoning": programmable_reasoning,
     });
 
@@ -156,7 +178,9 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{body, format_unix_utc, render_current_time};
+    use super::{
+        body, format_unix_utc, render_current_time, storage_free_programmable_reasoning_summary,
+    };
     use serde_json::Value;
 
     #[test]
@@ -174,10 +198,23 @@ mod tests {
         assert!(parsed.get("firmware_version").is_some());
         assert!(parsed.get("board_id").is_some());
         assert!(parsed.get("lan_ip").is_some());
+        assert!(parsed.get("workflow").is_none());
         assert_eq!(
             parsed["programmable_reasoning"]["stage"].as_str(),
             Some("capability_atoms_exchange")
         );
+    }
+
+    #[test]
+    fn storage_free_programmable_reasoning_summary_does_not_claim_runtime_inspection() {
+        let summary = storage_free_programmable_reasoning_summary();
+
+        assert_eq!(
+            summary.stage,
+            crate::ProgrammableReasoningStage::CapabilityAtomsExchange
+        );
+        assert!(!summary.inspection_ready);
+        assert!(!summary.replay_ready);
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

@@ -1,6 +1,7 @@
 //! 甲壳虫 (beetle) - ESP32-S3 firmware entry.
 //! Firmware version is embedded for OTA and ops.
-//! Startup order: NVS → SPIFFS → soul-kernel recovery → config → WiFi → memory/session stores → MessageBus → self-check → cron/heartbeat/sinks/dispatch/CLI → agent_loop.
+//! Startup order: ESP app_main initializes platform/logging, then hands off
+//! Rust-heavy boot/runtime work to runtime_bootstrap with an explicit stack.
 //! ESP32: no graceful shutdown; process runs until power off.
 #![allow(clippy::items_after_test_module)]
 
@@ -2145,7 +2146,66 @@ fn main() {
     log::info!("========================================");
     log::info!("  甲壳虫 beetle v{}", VERSION);
     log::info!("========================================");
-    bootstrap_platform_runtime(platform);
+    for line in beetle::platform::startup_identity_lines() {
+        log::info!("{}", line);
+    }
+    spawn_esp_runtime_bootstrap(platform);
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn spawn_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
+    let runtime_platform = Arc::clone(&platform);
+    let spawn_result = beetle::util::spawn_guarded_with_profile_handle(
+        "runtime_bootstrap",
+        beetle::util::STACK_ESP_RUNTIME_BOOT,
+        None,
+        beetle::util::HttpThreadRole::Background,
+        move || run_esp_runtime_bootstrap(runtime_platform),
+    );
+    match spawn_result {
+        Ok(_handle) => {
+            log::info!(
+                "[{}] runtime_bootstrap spawned; returning from app_main to release IDF main_task stack",
+                TAG
+            );
+        }
+        Err(error) => {
+            log::error!("[{}] runtime_bootstrap spawn failed: {}", TAG, error);
+            platform.request_restart();
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn run_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
+    let restart_platform = Arc::clone(&platform);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        bootstrap_platform_runtime(platform);
+    }));
+    match result {
+        Ok(()) => {
+            log::error!("[{}] runtime_bootstrap returned; restart requested", TAG);
+        }
+        Err(payload) => {
+            log::error!(
+                "[{}] runtime_bootstrap panicked: {}; restart requested",
+                TAG,
+                panic_payload_message(payload.as_ref())
+            );
+        }
+    }
+    restart_platform.request_restart();
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        (*msg).to_string()
+    } else if let Some(msg) = payload.downcast_ref::<String>() {
+        msg.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 fn log_soul_kernel_recovery_report(report: &beetle::runtime::SoulKernelRecoveryReport) {
@@ -2208,13 +2268,7 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
                 }
             }
             if let Err(error) = handle.join() {
-                let message = if let Some(msg) = error.downcast_ref::<&str>() {
-                    (*msg).to_string()
-                } else if let Some(msg) = error.downcast_ref::<String>() {
-                    msg.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
+                let message = panic_payload_message(error.as_ref());
                 log::error!("[{}] startup_recovery join failed: {}", TAG, message);
             }
         }
@@ -3056,8 +3110,6 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             return;
         }
     };
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::platform::task_wdt::register_current_task_to_task_wdt();
     beetle::state::set_boot_phase_active(false);
     run_runtime_guard_loop(Arc::clone(&assembly.runtime.platform), agent_handle);
 }

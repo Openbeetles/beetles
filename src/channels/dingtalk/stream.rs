@@ -161,6 +161,13 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
 {
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     loop {
+        if !crate::runtime::thread_registry::runtime_mode_snapshot()
+            .action_budget
+            .allow_external_wss_connect
+        {
+            std::thread::sleep(Duration::from_secs(backoff_secs));
+            continue;
+        }
         let mut http = match create_http() {
             Ok(http) => http,
             Err(error) => {
@@ -191,6 +198,16 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
         backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
         loop {
             crate::platform::task_wdt::feed_current_task();
+            if !crate::runtime::thread_registry::runtime_mode_snapshot()
+                .action_budget
+                .allow_external_wss_connect
+            {
+                log::info!(
+                    "[{}] disconnecting external WSS under runtime mode gate",
+                    TAG
+                );
+                break;
+            }
             match conn.recv_timeout(Duration::from_secs(RECV_TIMEOUT_SECS)) {
                 Ok(Some(WssEvent::Binary(data))) => {
                     let frame = match std::str::from_utf8(data.as_slice()) {

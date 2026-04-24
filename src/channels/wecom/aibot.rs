@@ -414,6 +414,12 @@ fn send_json_command<C: WssConnection>(conn: &mut C, command: &Value) -> Result<
     conn.send_text(&command.to_string())
 }
 
+fn external_wss_connect_allowed() -> bool {
+    crate::runtime::thread_registry::runtime_mode_snapshot()
+        .action_budget
+        .allow_external_wss_connect
+}
+
 pub fn run_wecom_aibot_loop<C, Connect>(
     bot_id: String,
     bot_secret: String,
@@ -434,6 +440,10 @@ pub fn run_wecom_aibot_loop<C, Connect>(
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     let mut pending_outbound: Option<QueuedOutboundMessage> = None;
     loop {
+        if !external_wss_connect_allowed() {
+            std::thread::sleep(Duration::from_secs(backoff_secs));
+            continue;
+        }
         let mut conn = match connect(&url) {
             Ok(conn) => conn,
             Err(error) => {
@@ -451,6 +461,13 @@ pub fn run_wecom_aibot_loop<C, Connect>(
         }
         let mut last_ping = Instant::now();
         'session: loop {
+            if !external_wss_connect_allowed() {
+                log::info!(
+                    "[{}] disconnecting external WSS under runtime mode gate",
+                    TAG
+                );
+                break 'session;
+            }
             while let Some(message) = pending_outbound
                 .take()
                 .or_else(|| outbound_rx.try_recv().ok())

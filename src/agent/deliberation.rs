@@ -228,6 +228,12 @@ mod tests {
             voice_exclusive_active: false,
             background_maintenance_active: false,
             config_plane_alive: false,
+            config_active: mode == RuntimeMode::ConfigActive,
+            config_activity_phase: if mode == RuntimeMode::ConfigActive {
+                crate::runtime::ConfigActivityPhase::Active
+            } else {
+                crate::runtime::ConfigActivityPhase::Idle
+            },
             channel_plane_alive: true,
             voice_plane_alive: false,
             agent_plane_alive: true,
@@ -241,7 +247,11 @@ mod tests {
                 allow_heartbeat_injection: true,
                 allow_best_effort_delayed_tasks: true,
                 allow_idle_self_runtime: mode == RuntimeMode::Normal,
-                allow_non_voice_outbound: mode != RuntimeMode::VoiceExclusive,
+                allow_non_voice_outbound: !matches!(
+                    mode,
+                    RuntimeMode::VoiceExclusive | RuntimeMode::ConfigActive
+                ),
+                allow_realtime_voice_connect: mode != RuntimeMode::ConfigActive,
                 allow_external_wss_connect: mode == RuntimeMode::Normal,
                 require_external_wss_suspended: mode == RuntimeMode::VoiceExclusive,
             },

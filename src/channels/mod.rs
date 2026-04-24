@@ -37,7 +37,6 @@ mod websocket;
 pub(crate) mod wecom;
 mod wss_gateway;
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use connectivity::build_unavailable_snapshot;
 pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
 #[cfg(all(

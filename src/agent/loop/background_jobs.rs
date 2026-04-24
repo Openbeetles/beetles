@@ -1280,7 +1280,7 @@ fn run_detached_background_work_wake(
         }
     }
     if wake.key.kind.needs_llm() {
-        match crate::orchestrator::can_call_llm_pub() {
+        match crate::orchestrator::can_call_llm_for_channel_pub(&wake.key.owner_channel) {
             crate::orchestrator::admission::LlmDecision::Proceed => {}
             crate::orchestrator::admission::LlmDecision::RetryLater { delay_ms } => {
                 reschedule_detached_work(
@@ -1453,7 +1453,6 @@ pub(super) fn handle_admission_defer(
     }
     std::thread::sleep(Duration::from_millis(delay_ms));
     crate::platform::task_wdt::feed_current_task();
-    metrics::record_wdt_feed();
 }
 
 #[cold]

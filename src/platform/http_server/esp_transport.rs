@@ -13,9 +13,9 @@ use crate::platform::http_server::router::catalog::OTA_ROUTE_SPECS;
 use crate::platform::http_server::router::{
     self,
     catalog::{
-        HttpRouteSpec, RouteBodyMode, RouteDispatchMode, RouteMethod, ACTION_ROUTE_SPECS,
-        MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS,
-        ROOT_ROUTE_SPECS,
+        HttpRouteSpec, RouteBodyMode, RouteExecutionClass, RouteMethod, RouteWorkerContract,
+        RouteWorkerLane, ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS,
+        OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
     },
     IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
@@ -25,66 +25,118 @@ use embedded_svc::http::server::Request;
 use embedded_svc::http::{Headers, Method};
 use esp_idf_svc::http::server::Connection;
 use esp_idf_svc::http::server::EspHttpServer;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{
+    sync_channel, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError,
+};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const ESP_ROUTE_EXEC_QUEUE_CAPACITY: usize = 4;
-const ESP_ROUTE_EXEC_TIMEOUT: Duration = Duration::from_secs(20);
-const ESP_ROUTE_EXEC_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS: usize = 2;
 
 struct EspRouteJob {
     incoming: IncomingRequest,
     reply_tx: SyncSender<OutgoingResponse>,
+    enqueued_at: Instant,
 }
 
 struct EspRouteExecutorInner {
     submit_tx: SyncSender<EspRouteJob>,
+    submit_gate: Arc<RouteSubmitGate>,
+}
+
+struct RouteSubmitGate {
+    accepting: AtomicBool,
+    mutex: Mutex<()>,
+}
+
+impl RouteSubmitGate {
+    fn new() -> Self {
+        Self {
+            accepting: AtomicBool::new(true),
+            mutex: Mutex::new(()),
+        }
+    }
 }
 
 #[derive(Clone)]
 struct EspRouteExecutor {
+    contract: RouteWorkerContract,
     inner: LazyExecutor<EspRouteExecutorInner, std::io::Error>,
 }
 
 impl EspRouteExecutor {
     fn new(
+        class: RouteExecutionClass,
         ctx: &Arc<HandlerContext>,
-        env: &RouterEnv,
         config_store: &Arc<dyn ConfigStore + Send + Sync>,
     ) -> Self {
+        let contract = class
+            .worker_contract()
+            .expect("route executor requires worker contract");
         let ctx = Arc::clone(ctx);
-        let env = env.clone();
         let store = Arc::clone(config_store);
         Self {
+            contract,
             inner: LazyExecutor::new(move || {
-                let (submit_tx, rx) = sync_channel(ESP_ROUTE_EXEC_QUEUE_CAPACITY);
+                let (submit_tx, rx) = sync_channel(contract.queue_capacity);
+                let submit_gate = Arc::new(RouteSubmitGate::new());
                 let ctx = Arc::clone(&ctx);
-                let env = env.clone();
                 let store = Arc::clone(&store);
+                let worker_gate = Arc::clone(&submit_gate);
+                let thread_name = route_worker_thread_name(contract.lane);
                 let _task = crate::runtime::thread_util::spawn_planned_handle(
-                    "http_route_exec",
+                    thread_name,
                     crate::util::STACK_HTTP_ROUTE_WORKER,
-                    move || run_esp_route_executor(ctx, env, store, rx),
+                    move || {
+                        run_esp_route_executor(thread_name, contract, ctx, store, rx, worker_gate)
+                    },
                 )?;
-                log::info!("[http_server] http_route_exec lazy-started on first request");
-                crate::orchestrator::log_startup_memory_checkpoint("http_route_exec_spawn");
-                Ok(EspRouteExecutorInner { submit_tx })
+                log::info!(
+                    "[http_server] {} lazy-started class={:?} lane={:?} workers={} queue_cap={} timeout={}s idle_timeout={}s reject_status={} socket_reserve={} counter={}",
+                    thread_name,
+                    class,
+                    contract.lane,
+                    contract.worker_threads,
+                    contract.queue_capacity,
+                    contract.timeout_secs,
+                    contract.idle_timeout_secs,
+                    contract.reject_status,
+                    contract.socket_reserve,
+                    contract.counter_name
+                );
+                crate::orchestrator::log_startup_memory_checkpoint(route_worker_spawn_stage(
+                    contract.lane,
+                ));
+                Ok(EspRouteExecutorInner {
+                    submit_tx,
+                    submit_gate,
+                })
             }),
         }
     }
 
-    fn execute(&self, store: &dyn ConfigStore, incoming: IncomingRequest) -> OutgoingResponse {
+    fn execute(
+        &self,
+        store: &dyn ConfigStore,
+        incoming: IncomingRequest,
+        path: &str,
+    ) -> OutgoingResponse {
         let (reply_tx, reply_rx) = sync_channel(1);
-        let mut pending_job = Some(EspRouteJob { incoming, reply_tx });
+        let mut pending_job = Some(EspRouteJob {
+            incoming,
+            reply_tx,
+            enqueued_at: Instant::now(),
+        });
         for attempt in 0..ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
             let inner = match self.inner.get() {
                 Ok(inner) => inner,
                 Err(err) => {
-                    return internal_server_error_response(
+                    return route_worker_reject_response(
                         store,
-                        "http_route_exec_start",
+                        self.contract,
+                        path,
+                        "http_route_worker_start",
                         format!("dispatch worker start failed: {}", err),
                     );
                 }
@@ -92,64 +144,200 @@ impl EspRouteExecutor {
             let job = pending_job
                 .take()
                 .expect("route executor retry must keep pending job");
+            let submit_guard = inner
+                .submit_gate
+                .mutex
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !inner.submit_gate.accepting.load(Ordering::Acquire) {
+                drop(submit_guard);
+                let _ = self.inner.clear_if(&inner);
+                pending_job = Some(job);
+                if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
+                    return route_worker_reject_response(
+                        store,
+                        self.contract,
+                        path,
+                        "http_route_worker_submit",
+                        "dispatch worker exited before accepting job".to_string(),
+                    );
+                }
+                continue;
+            }
             match inner.submit_tx.try_send(job) {
                 Ok(()) => {
-                    return match reply_rx.recv_timeout(ESP_ROUTE_EXEC_TIMEOUT) {
+                    drop(submit_guard);
+                    return match reply_rx
+                        .recv_timeout(Duration::from_secs(self.contract.timeout_secs))
+                    {
                         Ok(out) => out,
-                        Err(RecvTimeoutError::Timeout) => internal_server_error_response(
-                            store,
-                            "http_route_exec_wait",
-                            "dispatch timed out".to_string(),
-                        ),
+                        Err(RecvTimeoutError::Timeout) => {
+                            crate::metrics::record_http_route_timeout();
+                            route_worker_reject_response(
+                                store,
+                                self.contract,
+                                path,
+                                "http_route_worker_wait",
+                                "dispatch timed out".to_string(),
+                            )
+                        }
                         Err(RecvTimeoutError::Disconnected) => {
                             let _ = self.inner.clear_if(&inner);
-                            internal_server_error_response(
+                            route_worker_reject_response(
                                 store,
-                                "http_route_exec_wait",
+                                self.contract,
+                                path,
+                                "http_route_worker_wait",
                                 "dispatch worker stopped".to_string(),
                             )
                         }
                     };
                 }
                 Err(TrySendError::Disconnected(job)) => {
+                    drop(submit_guard);
                     let _ = self.inner.clear_if(&inner);
                     pending_job = Some(job);
                     if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
-                        return internal_server_error_response(
+                        return route_worker_reject_response(
                             store,
-                            "http_route_exec_submit",
+                            self.contract,
+                            path,
+                            "http_route_worker_submit",
                             "dispatch queue unavailable after worker restart".to_string(),
                         );
                     }
                 }
                 Err(TrySendError::Full(_job)) => {
-                    return internal_server_error_response(
+                    drop(submit_guard);
+                    return route_worker_reject_response(
                         store,
-                        "http_route_exec_submit",
+                        self.contract,
+                        path,
+                        "http_route_worker_submit",
                         "dispatch queue full".to_string(),
                     );
                 }
             }
         }
-        internal_server_error_response(
+        route_worker_reject_response(
             store,
-            "http_route_exec_submit",
+            self.contract,
+            path,
+            "http_route_worker_submit",
             "dispatch queue unavailable".to_string(),
         )
     }
 }
 
-fn internal_server_error_response(
+#[derive(Clone)]
+struct EspRouteExecutors {
+    config: EspRouteExecutor,
+    diagnostic: EspRouteExecutor,
+    ota: EspRouteExecutor,
+    snapshot: EspRouteExecutor,
+}
+
+impl EspRouteExecutors {
+    fn new(ctx: &Arc<HandlerContext>, config_store: &Arc<dyn ConfigStore + Send + Sync>) -> Self {
+        Self {
+            config: EspRouteExecutor::new(RouteExecutionClass::AsyncConfigRoute, ctx, config_store),
+            diagnostic: EspRouteExecutor::new(
+                RouteExecutionClass::SlowDiagnosticRoute,
+                ctx,
+                config_store,
+            ),
+            ota: EspRouteExecutor::new(RouteExecutionClass::OtaRoute, ctx, config_store),
+            snapshot: EspRouteExecutor::new(
+                RouteExecutionClass::StaleSnapshotRoute,
+                ctx,
+                config_store,
+            ),
+        }
+    }
+
+    fn for_class(&self, class: RouteExecutionClass) -> Option<&EspRouteExecutor> {
+        match class {
+            RouteExecutionClass::ImmediateRoute | RouteExecutionClass::RejectedRoute => None,
+            RouteExecutionClass::AsyncConfigRoute => Some(&self.config),
+            RouteExecutionClass::SlowDiagnosticRoute => Some(&self.diagnostic),
+            RouteExecutionClass::OtaRoute => Some(&self.ota),
+            RouteExecutionClass::StaleSnapshotRoute => Some(&self.snapshot),
+        }
+    }
+}
+
+fn route_worker_thread_name(lane: RouteWorkerLane) -> &'static str {
+    match lane {
+        RouteWorkerLane::Config => "http_config_exec",
+        RouteWorkerLane::Diagnostic => "http_diag_exec",
+        RouteWorkerLane::Ota => "http_ota_exec",
+        RouteWorkerLane::Snapshot => "http_snapshot_exec",
+    }
+}
+
+fn route_worker_spawn_stage(lane: RouteWorkerLane) -> &'static str {
+    match lane {
+        RouteWorkerLane::Config => "http_config_exec_spawn",
+        RouteWorkerLane::Diagnostic => "http_diag_exec_spawn",
+        RouteWorkerLane::Ota => "http_ota_exec_spawn",
+        RouteWorkerLane::Snapshot => "http_snapshot_exec_spawn",
+    }
+}
+
+fn status_text(status: u16) -> &'static str {
+    match status {
+        409 => "Conflict",
+        503 => "Service Unavailable",
+        _ => "Internal Server Error",
+    }
+}
+
+fn route_worker_reject_response(
     _store: &dyn ConfigStore,
+    contract: RouteWorkerContract,
+    path: &str,
     stage: &'static str,
     detail: String,
 ) -> OutgoingResponse {
-    log::warn!("{}: {}", stage, detail);
+    log::warn!(
+        "{}: lane={:?} path={} {}",
+        stage,
+        contract.lane,
+        path,
+        detail
+    );
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "route_lane".to_string(),
+        serde_json::Value::String(format!("{:?}", contract.lane)),
+    );
+    extra.insert(
+        "path".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
+    extra.insert(
+        "queue_capacity".to_string(),
+        serde_json::Value::from(contract.queue_capacity as u64),
+    );
+    extra.insert(
+        "socket_reserve".to_string(),
+        serde_json::Value::from(contract.socket_reserve as u64),
+    );
     OutgoingResponse {
-        status: 500,
-        status_text: "Internal Server Error",
+        status: contract.reject_status,
+        status_text: status_text(contract.reject_status),
         headers: CORS_HEADERS,
-        body: ApiResponse::err_500_key(api_contract::COMMON_OPERATION_FAILED).body,
+        body: ApiResponse::err_key_with_meta(
+            contract.reject_status,
+            status_text(contract.reject_status),
+            "http.route_worker_busy",
+            Some(stage),
+            Some(detail.as_str()),
+            None,
+            None,
+            extra,
+        )
+        .body,
         restart: RestartAction::None,
     }
 }
@@ -185,44 +373,82 @@ fn dispatch_incoming(
     }
 }
 
+fn execute_esp_route_job(
+    contract: RouteWorkerContract,
+    ctx: &Arc<HandlerContext>,
+    store: &Arc<dyn ConfigStore + Send + Sync>,
+    job: EspRouteJob,
+) {
+    let queue_wait = job.enqueued_at.elapsed();
+    crate::metrics::record_http_route_queue_wait_ms(queue_wait.as_millis());
+    log::debug!(
+        "{}: lane={:?} counter={}",
+        contract.begin_stage,
+        contract.lane,
+        contract.counter_name
+    );
+    crate::platform::task_wdt::feed_current_task();
+    let out = {
+        let _wdt_pause =
+            crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task();
+        let handler_start = Instant::now();
+        let out = match router::dispatch_without_inbound(ctx.as_ref(), job.incoming) {
+            Ok(out) => out,
+            Err(error) => routed_error_response(store.as_ref(), error),
+        };
+        crate::metrics::record_http_route_handler_ms(handler_start.elapsed().as_millis());
+        out
+    };
+    let _ = job.reply_tx.send(out);
+    log::debug!(
+        "{}: lane={:?} counter={}",
+        contract.complete_stage,
+        contract.lane,
+        contract.counter_name
+    );
+    crate::platform::task_wdt::feed_current_task();
+}
+
 fn run_esp_route_executor(
+    name: &'static str,
+    contract: RouteWorkerContract,
     ctx: Arc<HandlerContext>,
-    env: RouterEnv,
     store: Arc<dyn ConfigStore + Send + Sync>,
     rx: Receiver<EspRouteJob>,
+    submit_gate: Arc<RouteSubmitGate>,
 ) {
-    let mut idle_deadline = Instant::now() + ESP_ROUTE_EXEC_IDLE_TIMEOUT;
     loop {
-        let wait = crate::platform::esp_runtime_policy::bounded_watchdog_wait(Some(
-            idle_deadline.saturating_duration_since(Instant::now()),
-        ));
-        match rx.recv_timeout(wait) {
+        match rx.recv_timeout(Duration::from_secs(contract.idle_timeout_secs)) {
             Ok(job) => {
-                crate::platform::task_wdt::feed_current_task();
-                let out = {
-                    let _wdt_pause =
-                        crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task(
-                        );
-                    dispatch_incoming(&ctx, &env, store.as_ref(), job.incoming)
-                };
-                let _ = job.reply_tx.send(out);
-                crate::platform::task_wdt::feed_current_task();
-                idle_deadline = Instant::now() + ESP_ROUTE_EXEC_IDLE_TIMEOUT;
+                execute_esp_route_job(contract, &ctx, &store, job);
             }
             Err(RecvTimeoutError::Timeout) => {
-                crate::platform::task_wdt::feed_current_task();
-                if Instant::now() < idle_deadline {
-                    continue;
+                let _submit_guard = submit_gate
+                    .mutex
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match rx.try_recv() {
+                    Ok(job) => {
+                        drop(_submit_guard);
+                        execute_esp_route_job(contract, &ctx, &store, job);
+                    }
+                    Err(TryRecvError::Empty) => {
+                        submit_gate.accepting.store(false, Ordering::Release);
+                        log::info!(
+                            "[http_server] {} idle-stopping lane={:?} after {}s",
+                            name,
+                            contract.lane,
+                            contract.idle_timeout_secs
+                        );
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => break,
                 }
-                log::info!(
-                    "[http_server] http_route_exec idle-stopped after {}s",
-                    ESP_ROUTE_EXEC_IDLE_TIMEOUT.as_secs()
-                );
-                break;
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    log::info!("[http_server] {} stopped", name);
 }
 
 fn esp_method(method: RouteMethod) -> Method {
@@ -286,6 +512,28 @@ fn write_api_resp<C: Connection>(req: Request<C>, r: ApiResponse) -> HandlerResu
     Ok(())
 }
 
+fn config_voice_conflict_response(path: &str) -> ApiResponse {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "path".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
+    extra.insert(
+        "retry_after_secs".to_string(),
+        serde_json::Value::from(crate::runtime::CONFIG_ACTIVITY_WINDOW_SECS),
+    );
+    ApiResponse::err_key_with_meta(
+        409,
+        "Conflict",
+        "runtime.config_blocked_by_voice",
+        Some("config_activity_admission"),
+        Some("realtime voice session is active"),
+        None,
+        None,
+        extra,
+    )
+}
+
 #[inline(never)]
 fn write_outgoing<C: Connection>(
     ctx: &Arc<HandlerContext>,
@@ -323,16 +571,37 @@ fn esp_dispatch_route<C: Connection>(
     ctx: &Arc<HandlerContext>,
     env: &RouterEnv,
     store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
+    executors: &EspRouteExecutors,
     mut req: Request<C>,
     spec: HttpRouteSpec,
 ) -> HandlerResult {
     let uri = req.uri().to_string();
     let restart_reason = uri.clone();
     let headers = collect_headers(&req);
+    if spec.execution_class == RouteExecutionClass::RejectedRoute {
+        let incoming = IncomingRequest {
+            method: spec.method.as_str().to_string(),
+            uri,
+            headers,
+            body: Vec::new(),
+        };
+        let out = dispatch_incoming(ctx, env, store.as_ref(), incoming);
+        return write_outgoing(ctx, req, out, restart_reason.as_str());
+    }
+    if spec.rejects_during_voice_exclusive() && crate::state::voice_exclusive_active() {
+        return write_api_resp(req, config_voice_conflict_response(spec.path));
+    }
+    let mut config_activity_guard = spec
+        .config_activity_phase()
+        .map(|phase| crate::runtime::ConfigActivityGuard::enter(phase, spec.path));
     let body = match read_body_esp(&mut req, store.as_ref(), spec.body_mode) {
         Ok(b) => b,
-        Err(r) => return write_api_resp(req, r),
+        Err(r) => {
+            if let Some(guard) = config_activity_guard.as_mut() {
+                guard.finish_status(r.status);
+            }
+            return write_api_resp(req, r);
+        }
     };
     let incoming = IncomingRequest {
         method: spec.method.as_str().to_string(),
@@ -340,10 +609,21 @@ fn esp_dispatch_route<C: Connection>(
         headers,
         body,
     };
-    let out = match spec.dispatch_mode {
-        RouteDispatchMode::Direct => dispatch_incoming(ctx, env, store.as_ref(), incoming),
-        RouteDispatchMode::Worker => executor.execute(store.as_ref(), incoming),
+    let out = match spec.execution_class {
+        RouteExecutionClass::ImmediateRoute => {
+            dispatch_incoming(ctx, env, store.as_ref(), incoming)
+        }
+        RouteExecutionClass::RejectedRoute => {
+            unreachable!("rejected routes return before body read")
+        }
+        class => executors
+            .for_class(class)
+            .expect("worker route must have executor")
+            .execute(store.as_ref(), incoming, spec.path),
     };
+    if let Some(guard) = config_activity_guard.as_mut() {
+        guard.finish_status(out.status);
+    }
     write_outgoing(ctx, req, out, restart_reason.as_str())
 }
 
@@ -354,19 +634,19 @@ fn register_esp_route(
     ctx: &Arc<HandlerContext>,
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
+    executors: &EspRouteExecutors,
     spec: HttpRouteSpec,
 ) -> Result<()> {
     let ctx = Arc::clone(ctx);
     let env = env.clone();
     let store = Arc::clone(config_store);
-    let executor = executor.clone();
+    let executors = executors.clone();
     server
         .fn_handler(
             spec.path,
             esp_method(spec.method),
             move |req| -> HandlerResult {
-                esp_dispatch_route(&ctx, &env, &store, &executor, req, spec)
+                esp_dispatch_route(&ctx, &env, &store, &executors, req, spec)
             },
         )
         .map_err(|e| crate::error::Error::Other {
@@ -383,11 +663,11 @@ fn register_esp_route_specs(
     ctx: &Arc<HandlerContext>,
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
-    executor: &EspRouteExecutor,
+    executors: &EspRouteExecutors,
     specs: &[HttpRouteSpec],
 ) -> Result<()> {
     for spec in specs {
-        register_esp_route(server, ctx, env, config_store, executor, *spec)?;
+        register_esp_route(server, ctx, env, config_store, executors, *spec)?;
     }
     Ok(())
 }
@@ -407,14 +687,14 @@ pub(super) fn register_all_esp_routes(
     env: &RouterEnv,
     config_store: &Arc<dyn ConfigStore + Send + Sync>,
 ) -> Result<()> {
-    let executor = EspRouteExecutor::new(ctx, env, config_store);
-    register_esp_route_specs(server, ctx, env, config_store, &executor, ROOT_ROUTES)?;
+    let executors = EspRouteExecutors::new(ctx, config_store);
+    register_esp_route_specs(server, ctx, env, config_store, &executors, ROOT_ROUTES)?;
     register_esp_route_specs(
         server,
         ctx,
         env,
         config_store,
-        &executor,
+        &executors,
         PAIRING_AND_CONFIG_ROUTES,
     )?;
     register_esp_route_specs(
@@ -422,7 +702,7 @@ pub(super) fn register_all_esp_routes(
         ctx,
         env,
         config_store,
-        &executor,
+        &executors,
         OBSERVABILITY_ROUTES,
     )?;
     register_esp_route_specs(
@@ -430,12 +710,12 @@ pub(super) fn register_all_esp_routes(
         ctx,
         env,
         config_store,
-        &executor,
+        &executors,
         MEMORY_AND_SKILL_ROUTES,
     )?;
-    register_esp_route_specs(server, ctx, env, config_store, &executor, ACTION_ROUTES)?;
+    register_esp_route_specs(server, ctx, env, config_store, &executors, ACTION_ROUTES)?;
     #[cfg(feature = "ota")]
-    register_esp_route_specs(server, ctx, env, config_store, &executor, OTA_ROUTES)?;
+    register_esp_route_specs(server, ctx, env, config_store, &executors, OTA_ROUTES)?;
     Ok(())
 }
 
@@ -447,10 +727,10 @@ mod tests {
         ACTION_ROUTES, MEMORY_AND_SKILL_ROUTES, OBSERVABILITY_ROUTES, PAIRING_AND_CONFIG_ROUTES,
         ROOT_ROUTES,
     };
-    use crate::platform::http_server::router::catalog::RouteDispatchMode;
+    use crate::platform::http_server::router::catalog::RouteExecutionClass;
     use embedded_svc::http::Method;
 
-    fn dispatch_mode_for(path: &str, method: Method) -> Option<RouteDispatchMode> {
+    fn execution_class_for(path: &str, method: Method) -> Option<RouteExecutionClass> {
         for routes in [
             ROOT_ROUTES,
             PAIRING_AND_CONFIG_ROUTES,
@@ -462,7 +742,7 @@ mod tests {
                 .iter()
                 .find(|spec| spec.path == path && esp_method(spec.method) == method)
             {
-                return Some(spec.dispatch_mode);
+                return Some(spec.execution_class);
             }
         }
         #[cfg(feature = "ota")]
@@ -470,7 +750,7 @@ mod tests {
             .iter()
             .find(|spec| spec.path == path && esp_method(spec.method) == method)
         {
-            return Some(spec.dispatch_mode);
+            return Some(spec.execution_class);
         }
         None
     }
@@ -478,73 +758,89 @@ mod tests {
     #[test]
     fn lightweight_control_plane_routes_dispatch_directly() {
         assert_eq!(
-            dispatch_mode_for("/api/pairing_code", Method::Get),
-            Some(RouteDispatchMode::Direct)
+            execution_class_for("/api/pairing_code", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/csrf_token", Method::Get),
-            Some(RouteDispatchMode::Direct)
+            execution_class_for("/api/csrf_token", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/config/system", Method::Get),
-            Some(RouteDispatchMode::Direct)
-        );
-        assert_eq!(
-            dispatch_mode_for("/api/health", Method::Get),
-            Some(RouteDispatchMode::Direct)
-        );
-        assert_eq!(
-            dispatch_mode_for("/api/metrics", Method::Get),
-            Some(RouteDispatchMode::Direct)
-        );
-        assert_eq!(
-            dispatch_mode_for("/api/operator/window", Method::Post),
-            Some(RouteDispatchMode::Direct)
+            execution_class_for("/api/health", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
         );
     }
 
     #[test]
-    fn heavy_esp_observability_routes_dispatch_on_worker_lane() {
+    fn config_routes_dispatch_on_config_lane() {
         assert_eq!(
-            dispatch_mode_for("/api/operator/status", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/config/system", Method::Get),
+            Some(RouteExecutionClass::AsyncConfigRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/resource", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/config/system", Method::Post),
+            Some(RouteExecutionClass::AsyncConfigRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/diagnose", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/operator/window", Method::Post),
+            Some(RouteExecutionClass::AsyncConfigRoute)
+        );
+    }
+
+    #[test]
+    fn snapshot_routes_are_not_config_or_diagnostic_workers() {
+        assert_eq!(
+            execution_class_for("/api/channel_connectivity", Method::Get),
+            Some(RouteExecutionClass::StaleSnapshotRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/system_info", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/metrics", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+    }
+
+    #[test]
+    fn esp_observability_routes_keep_crash_sensitive_paths_immediate() {
+        assert_eq!(
+            execution_class_for("/api/operator/status", Method::Get),
+            Some(RouteExecutionClass::SlowDiagnosticRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/resource", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/diagnose", Method::Get),
+            Some(RouteExecutionClass::SlowDiagnosticRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/system_info", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
         );
     }
 
     #[test]
     fn slow_or_external_routes_stay_on_worker_lane() {
         assert_eq!(
-            dispatch_mode_for("/api/wifi/scan", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/wifi/scan", Method::Get),
+            Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/hardware/discovery", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/hardware/discovery", Method::Get),
+            Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/channel_connectivity", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/channel_connectivity/refresh", Method::Post),
+            Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
         assert_eq!(
-            dispatch_mode_for("/api/skills/import", Method::Post),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/skills/import", Method::Post),
+            Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
         #[cfg(feature = "ota")]
         assert_eq!(
-            dispatch_mode_for("/api/ota/check", Method::Get),
-            Some(RouteDispatchMode::Worker)
+            execution_class_for("/api/ota/check", Method::Get),
+            Some(RouteExecutionClass::OtaRoute)
         );
     }
 }

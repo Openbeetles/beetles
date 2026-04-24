@@ -930,10 +930,11 @@ pub fn is_private_url(url: &str) -> bool {
 // | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
+// | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
-// | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state
+// | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
-// | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 48 KB | 32 KB | ← on-demand config-plane worker; native task + extra ESP headroom to avoid callback-stack corruption under device page fan-out
+// | http_config/diag/ota/snapshot_exec    | STACK_HTTP_ROUTE_WORKER| 48 KB | 32 KB | ← lane-specific config-plane workers; std-compatible surface with extra ESP headroom to avoid callback-stack corruption under device page fan-out
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
@@ -954,6 +955,11 @@ const LINUX_RUSTLS_THREAD_STACK: usize = 96 * 1024;
 const DEFAULT_GUARD_STACK_SIZE: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// ESP runtime bootstrap：承接 SPIFFS recovery、runtime assembly、registry、audio init
+/// 与后续 guard loop。不能继续跑在 ESP-IDF `main_task` 的窄栈上。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
 
 /// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
 /// 2026-04-11 实机日志显示 `qq_ws` 在 16KB 预算下仍保留 ~11KB 余量，
@@ -990,6 +996,11 @@ pub const STACK_DISPATCH: usize = 6 * 1024;
 /// 当前先收口到 8KB，优先回收 4KB internal SRAM 给 TLS/WSS，同时保留高于旧 6KB 的安全边际。
 pub const STACK_DISPLAY: usize = 8 * 1024;
 
+/// `audio_io_worker`：I2S + acoustic wake 常驻音频 owner。
+/// 它使用 Rust `Mutex` / `Condvar` 协调软件 ring buffer，因此必须运行在
+/// `StdThreadCompat` surface；该常量明确表达它不是 ESP native task 的省栈入口。
+pub const STACK_AUDIO_IO_STD_COMPAT: usize = 8 * 1024;
+
 /// `voice_session`：语音会话调度线程。
 /// 常驻线程只做事件 intake / 合并 / worker 拉起；realtime WSS 已迁移到独立 transient worker。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1011,10 +1022,11 @@ pub const STACK_VOICE_REALTIME: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// `http_route_exec`：ESP HTTP 配置/状态路由执行线程。
-/// 该线程承接 SPIFFS/NVS/serde、operator surface 与 continuity inspection 等重活，
-/// 避免压在 IDF HTTPD 回调线程上。2026-04-23 实机日志显示旧 32KB 预算只剩约 2KB
-/// 高水位余量，已落到回溯损坏/非法取指的危险边缘；当前回收旧风险后提升到 48KB。
+/// ESP HTTP route workers：`http_config_exec` / `http_diag_exec` / `http_ota_exec`
+/// / `http_snapshot_exec`。这些 lane 承接 SPIFFS/NVS/serde、operator surface、
+/// diagnostics 与 channel connectivity refresh 等重活，避免压在 IDF HTTPD 回调线程上。
+/// 2026-04-23 实机日志显示旧 32KB 预算只剩约 2KB 高水位余量，已落到回溯损坏/非法取指的
+/// 危险边缘；当前回收旧风险后提升到 48KB。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_HTTP_ROUTE_WORKER: usize = 48 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1057,23 +1069,25 @@ pub type TaskHandle = crate::platform::task_affinity::TaskHandle;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 fn esp_should_auto_manage_task_wdt(
+    name: &str,
     spawn_surface: crate::platform::task_affinity::TaskSpawnSurface,
 ) -> bool {
-    matches!(
-        spawn_surface,
-        crate::platform::task_affinity::TaskSpawnSurface::EspNativeTask
-    )
+    let _ = spawn_surface;
+    crate::platform::task_wdt::thread_policy_for_name(name)
+        == crate::platform::task_wdt::TaskWdtThreadPolicy::Owner
 }
 
 fn should_auto_manage_task_wdt(
+    name: &str,
     spawn_surface: crate::platform::task_affinity::TaskSpawnSurface,
 ) -> bool {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        return esp_should_auto_manage_task_wdt(spawn_surface);
+        return esp_should_auto_manage_task_wdt(name, spawn_surface);
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
+        let _ = name;
         let _ = spawn_surface;
         false
     }
@@ -1132,7 +1146,11 @@ where
     let tag_for_spawn = tag.clone();
     let core_target = core;
     let spawn_surface = crate::platform::task_affinity::planned_spawn_surface(name);
-    let auto_manage_task_wdt = should_auto_manage_task_wdt(spawn_surface);
+    let auto_manage_task_wdt = should_auto_manage_task_wdt(name, spawn_surface);
+    let native_std_sync_forbidden = matches!(
+        spawn_surface,
+        crate::platform::task_affinity::TaskSpawnSurface::EspNativeTask
+    );
     let wrapped = move || {
         crate::orchestrator::set_current_http_thread_role(role);
         if auto_manage_task_wdt {
@@ -1146,11 +1164,12 @@ where
             spawn_surface,
         );
         log::info!(
-            "[thread] started name={} core_target={:?} role={:?} surface={:?}",
+            "[thread] started name={} core_target={:?} role={:?} surface={:?} native_std_sync_forbidden={}",
             tag,
             core_target,
             role,
-            spawn_surface
+            spawn_surface,
+            native_std_sync_forbidden
         );
         #[cfg(feature = "thread_panic_catch")]
         {
@@ -1323,6 +1342,7 @@ mod thread_stack_budget_tests {
         assert_eq!(STACK_CHANNEL_SENDER, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_VOICE_SESSION, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_VOICE_REALTIME, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_AUDIO_IO_STD_COMPAT, 8 * 1024);
         assert_eq!(LINUX_RUSTLS_THREAD_STACK, 96 * 1024);
     }
 }
@@ -1332,12 +1352,34 @@ mod task_wdt_spawn_policy_tests {
     use super::*;
 
     #[test]
-    fn esp_auto_task_wdt_management_stays_on_native_task_surface_only() {
+    fn esp_auto_task_wdt_management_is_limited_to_long_lived_owners() {
         assert!(esp_should_auto_manage_task_wdt(
+            "agent_loop",
+            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
+        ));
+        assert!(esp_should_auto_manage_task_wdt(
+            "wifi_worker",
+            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
+        ));
+        assert!(esp_should_auto_manage_task_wdt(
+            "audio_io_worker",
+            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
+        ));
+        assert!(!esp_should_auto_manage_task_wdt(
+            "native_worker",
             crate::platform::task_affinity::TaskSpawnSurface::EspNativeTask
         ));
         assert!(!esp_should_auto_manage_task_wdt(
-            crate::platform::task_affinity::TaskSpawnSurface::StdThread
+            "http_config_exec",
+            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
+        ));
+        assert!(!esp_should_auto_manage_task_wdt(
+            "restart_defer",
+            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
+        ));
+        assert!(!esp_should_auto_manage_task_wdt(
+            "voice_session_worker",
+            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
         ));
     }
 }

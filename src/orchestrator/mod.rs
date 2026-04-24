@@ -276,9 +276,23 @@ pub fn can_call_llm_pub() -> LlmDecision {
     admission::can_call_llm(&STATE)
 }
 
+/// LLM 调用门控，带当前请求通道上下文。
+pub fn can_call_llm_for_channel_pub(channel: &str) -> LlmDecision {
+    admission::can_call_llm_for_channel(&STATE, channel)
+}
+
 /// 工具执行门控。
 pub fn can_execute_tool_pub(tool_name: &str, requires_network: bool) -> ToolDecision {
     admission::can_execute_tool(&STATE, tool_name, requires_network)
+}
+
+/// 工具执行门控，带当前请求通道上下文。
+pub fn can_execute_tool_for_channel_pub(
+    tool_name: &str,
+    requires_network: bool,
+    channel: &str,
+) -> ToolDecision {
+    admission::can_execute_tool_for_channel(&STATE, tool_name, requires_network, channel)
 }
 
 /// 出站门禁决策。

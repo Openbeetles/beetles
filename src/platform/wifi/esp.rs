@@ -74,13 +74,12 @@ pub fn passive_scan_handle() -> Option<WifiScanHandle> {
 /// 阻塞直到出站网络就绪（STA 已连接）；轮询 2s 并喂狗。仅 ESP 生效，host 立即返回。
 /// 供 WSS、通道发送、Agent 等对外请求入口在发起请求前调用，避免无网时无意义请求与资源耗尽。
 ///
-/// 须在首次 `feed_current_task` 前将当前任务加入 TWDT（`main` 中本函数早于 `register_current_task_to_task_wdt` 的其它调用点）。
+/// 该等待可能由任意出站线程调用；它只做 feed-only 边界让步，禁止在请求路径注册 TWDT。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn wait_for_network_ready() {
     if !WIFI_STA_EXPECTED.load(Ordering::Relaxed) {
         return;
     }
-    crate::platform::task_wdt::register_current_task_to_task_wdt();
     let deadline = Instant::now() + Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS);
     while !crate::state::wifi_sta_settled_for_outbound(STA_OUTBOUND_READY_GRACE_SECS) {
         crate::platform::task_wdt::feed_current_task();

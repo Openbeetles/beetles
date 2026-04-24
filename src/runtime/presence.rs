@@ -328,6 +328,12 @@ mod tests {
             voice_exclusive_active: mode == RuntimeMode::VoiceExclusive,
             background_maintenance_active: mode == RuntimeMode::Maintenance,
             config_plane_alive: false,
+            config_active: mode == RuntimeMode::ConfigActive,
+            config_activity_phase: if mode == RuntimeMode::ConfigActive {
+                crate::runtime::ConfigActivityPhase::Active
+            } else {
+                crate::runtime::ConfigActivityPhase::Idle
+            },
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,

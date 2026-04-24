@@ -108,7 +108,9 @@ pub fn speak_text(
         }
         Err(error) => Err(error),
     })();
-    result?;
+    abort_playback_on_stream_error(result, || {
+        let _ = platform.clear_speaker_buffer();
+    })?;
     interrupted |= accept_local_interrupt(platform, playback_state.interrupt_armed)?;
     if !interrupted {
         interrupted |= wait_for_platform_playback_drain(
@@ -205,6 +207,19 @@ fn wait_for_playback_drain(
     }
 }
 
+fn abort_playback_on_stream_error(
+    result: Result<()>,
+    mut abort_output: impl FnMut(),
+) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            abort_output();
+            Err(error)
+        }
+    }
+}
+
 struct PlaybackStateGuard {
     interrupt_armed: bool,
 }
@@ -267,7 +282,7 @@ mod tests {
 
     use crate::error::Result;
 
-    use super::wait_for_playback_drain;
+    use super::{abort_playback_on_stream_error, wait_for_playback_drain};
 
     #[test]
     fn playback_drain_fails_when_speaker_drops_before_queue_drains() {
@@ -307,5 +322,18 @@ mod tests {
         )?;
         assert!(interrupted);
         Ok(())
+    }
+
+    #[test]
+    fn playback_stream_error_aborts_output_queue() {
+        let mut aborts = 0usize;
+        let error = abort_playback_on_stream_error(
+            Err(crate::error::Error::config("tts_baidu", "stream failed")),
+            || aborts += 1,
+        )
+        .expect_err("stream error should be preserved");
+
+        assert_eq!(error.stage(), "tts_baidu");
+        assert_eq!(aborts, 1);
     }
 }

@@ -192,6 +192,8 @@ panic = "abort"
 [profile.release-size]
 inherits = "release"
 opt-level = "z"
+debug = true
+strip = false
 
 [patch.crates-io]
 esp-idf-svc = { path = "third_party/esp-idf-svc" }

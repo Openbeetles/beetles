@@ -24,6 +24,98 @@ function jsonResponse(init: MockResponseInit): Response {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+async function flushQueuedRequestStart() {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+test('request serializes concurrent calls to the same device', async () => {
+  clearCsrfToken()
+
+  const first = deferred<Response>()
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.endsWith('/api/health')) return first.promise
+    return jsonResponse({ body: { pressure: 'Normal' } })
+  }) as typeof fetch
+
+  let health: ReturnType<typeof request> | null = null
+  let resource: ReturnType<typeof request> | null = null
+  try {
+    health = request('http://device', '/api/health')
+    resource = request('http://device', '/api/resource')
+    await flushQueuedRequestStart()
+
+    assert.deepEqual(calls, ['http://device/api/health'])
+
+    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    assert.equal((await health).ok, true)
+    assert.equal((await resource).ok, true)
+    assert.deepEqual(calls, [
+      'http://device/api/health',
+      'http://device/api/resource',
+    ])
+  } finally {
+    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    await Promise.allSettled([health, resource].filter(Boolean) as Promise<unknown>[])
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
+test('request queues csrf token fetches behind an in-flight device request', async () => {
+  clearCsrfToken()
+
+  const first = deferred<Response>()
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.endsWith('/api/health')) return first.promise
+    if (url.endsWith('/api/csrf_token')) {
+      return jsonResponse({ body: { csrf_token: 'csrf-queued' } })
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }) as typeof fetch
+
+  let health: ReturnType<typeof request> | null = null
+  let csrf: ReturnType<typeof fetchCsrfToken> | null = null
+  try {
+    health = request('http://device', '/api/health')
+    csrf = fetchCsrfToken('http://device')
+    await flushQueuedRequestStart()
+
+    assert.deepEqual(calls, ['http://device/api/health'])
+
+    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    assert.equal((await health).ok, true)
+    assert.equal(await csrf, 'csrf-queued')
+    assert.deepEqual(calls, [
+      'http://device/api/health',
+      'http://device/api/csrf_token',
+    ])
+  } finally {
+    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    await Promise.allSettled([health, csrf].filter(Boolean) as Promise<unknown>[])
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
 test('request opens operator window and retries the original request once', async () => {
   clearCsrfToken()
 

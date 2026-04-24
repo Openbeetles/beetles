@@ -2,12 +2,8 @@ import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { useTranslation } from "react-i18next";
 import { LAYOUT_TOKENS } from "../config/themeTokens";
-import {
-  PANEL_STATE_AREA_SX,
-  TEXT_BODY_TERTIARY_SX,
-} from "../theme/panelStyles";
+import { PANEL_STATE_AREA_SX } from "../theme/panelStyles";
 
 /** 与 InlineAlert / 全屏状态蒙层对齐的语义色带。 */
 export type PanelStateTone = "neutral" | "warning" | "danger";
@@ -266,11 +262,10 @@ export function PanelStateBlock({
 }
 
 /**
- * 骨架屏外统一加一句「加载中」与 `aria-busy`，与空态标题同级降噪。
- * Wrap skeletons so loading reads consistently across config pages.
+ * 骨架屏统一包裹：保留 `aria-busy` 语义，不再重复渲染可见加载文案。
+ * Wrap skeletons with loading semantics while letting placeholders carry the state.
  */
 export function PanelStateLoading({ children }: { children: ReactNode }) {
-  const { t } = useTranslation();
   return (
     <Box
       aria-busy="true"
@@ -278,16 +273,6 @@ export function PanelStateLoading({ children }: { children: ReactNode }) {
       role="status"
       sx={{ display: "flex", flexDirection: "column", gap: 2, width: "100%" }}
     >
-      <Typography
-        variant="body2"
-        component="p"
-        sx={{
-          ...TEXT_BODY_TERTIARY_SX,
-          m: 0,
-        }}
-      >
-        {t("common.loading")}
-      </Typography>
       {children}
     </Box>
   );

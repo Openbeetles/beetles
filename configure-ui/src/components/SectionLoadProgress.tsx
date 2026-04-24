@@ -1,6 +1,5 @@
 import Box from "@mui/material/Box";
 import LinearProgress from "@mui/material/LinearProgress";
-import Typography from "@mui/material/Typography";
 
 /** 与 ChannelConnectivityPanel 顶栏一致，供设备页多卡片复用 */
 const LINEAR_SX = {
@@ -14,23 +13,18 @@ const LINEAR_SX = {
 
 export interface SectionLoadProgressProps {
   loading: boolean;
-  /** 尚无缓存内容时显示；已有数据刷新时仅保留顶条 */
+  /** 兼容旧调用方保留；当前仅显示进度条。 */
   idleHint?: string;
 }
 
 /**
- * 设置区块加载态：细条 indeterminate LinearProgress，可选一句说明。
+ * 设置区块加载态：仅保留细条 indeterminate LinearProgress。
  */
-export function SectionLoadProgress({ loading, idleHint }: SectionLoadProgressProps) {
+export function SectionLoadProgress({ loading }: SectionLoadProgressProps) {
   if (!loading) return null;
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-      <LinearProgress aria-busy sx={LINEAR_SX} />
-      {idleHint?.trim() ? (
-        <Typography variant="body2" sx={{ color: "var(--text-tertiary)", fontSize: "var(--font-size-caption)" }}>
-          {idleHint}
-        </Typography>
-      ) : null}
+    <Box aria-busy="true" role="status">
+      <LinearProgress sx={LINEAR_SX} />
     </Box>
   );
 }

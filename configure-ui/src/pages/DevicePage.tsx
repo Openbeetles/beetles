@@ -580,12 +580,6 @@ export function DevicePage() {
     void runChannelLoad({ notify: true, clearError: true });
   }, [runChannelLoad]);
 
-  useEffect(() => {
-    if (!canAccessProtectedApis || !baseUrl?.trim()) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial device sync intentionally enters loading as soon as the session becomes reachable
-    return runChannelLoad({ notify: false, clearError: false });
-  }, [canAccessProtectedApis, baseUrl, runChannelLoad]);
-
   const channelNameKey: Record<string, string> = {
     telegram: "channelTelegram",
     feishu: "channelFeishu",
@@ -940,20 +934,7 @@ export function DevicePage() {
       <Typography variant="subtitle2" sx={TEXT_DASHBOARD_CARD_TITLE_SX}>
         {t("device.pageTitle")}
       </Typography>
-      <Typography
-        sx={{
-          fontSize: "var(--font-size-h4)",
-          fontWeight: 700,
-          lineHeight: "var(--line-height-snug)",
-          color: "var(--text-primary)",
-        }}
-      >
-        {t("device.systemStatusLoading")}
-      </Typography>
-      <SectionLoadProgress
-        loading={healthLoading}
-        idleHint={t("device.systemStatusLoading")}
-      />
+      <SectionLoadProgress loading={healthLoading} />
     </Box>
   );
 

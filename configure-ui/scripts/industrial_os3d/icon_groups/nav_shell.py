@@ -22,6 +22,7 @@ from industrial_os3d.icon_groups.common import (
 ICON_GROUP = "nav_shell"
 
 OWNED_ICONS = (
+    "accounts_3d.png",
     "bookmark_3d.png",
     "bot_3d.png",
     "chat_3d.png",
@@ -34,7 +35,9 @@ OWNED_ICONS = (
     "puzzle_3d.png",
     "safe_3d.png",
     "settings_3d.png",
+    "skills_3d.png",
     "strategy_3d.png",
+    "system_logs_3d.png",
     "theme_3d.png",
     "tools_3d.png",
     "unsaved_changes_3d.png",
@@ -210,32 +213,78 @@ def build_history(scene: Scene, palette: Palette) -> None:
     _paint(scene, arrow, tone(palette, "accent")[1])
 
 
-def _render_home_beetle(scene: Scene, palette: Palette) -> None:
-    wing_left = _polygon(scene, [(45, 54), (36, 49), (30, 57), (32, 68), (41, 74), (48, 66)])
-    wing_right = _polygon(scene, [(55, 54), (64, 49), (70, 57), (68, 68), (59, 74), (52, 66)])
-    abdomen = _rounded_rect(scene, 44, 57, 56, 77, 3)
-    thorax = _rounded_rect(scene, 42, 48, 58, 60, 4)
-    crown = _polygon(scene, [(44, 48), (50, 40), (56, 48), (53, 53), (47, 53)])
-    shell = union_masks(abdomen, thorax, crown)
+def build_system_logs(scene: Scene, palette: Palette) -> None:
+    back = _rounded_rect(scene, 24, 28, 76, 75, 9)
+    front = _rounded_rect(scene, 19, 22, 81, 70, 10)
+    _extrude(scene, palette, back, role="neutral", depth=5, shadow_offset=(0, 6), shadow_blur=8, gloss=38)
+    _extrude(scene, palette, front, role="secondary", depth=8, shadow_offset=(0, 9), shadow_blur=10, gloss=54)
 
-    _extrude(scene, palette, wing_left, role="secondary", depth=5, shadow_offset=(0, 6), shadow_blur=7, gloss=46)
-    _extrude(scene, palette, wing_right, role="secondary", depth=5, shadow_offset=(0, 6), shadow_blur=7, gloss=46)
-    _extrude(scene, palette, shell, role="primary", depth=6, shadow_offset=(0, 7), shadow_blur=8, gloss=58)
+    header = _rounded_rect(scene, 19, 22, 81, 36, 9)
+    _paint(scene, header, tone(palette, "neutral")[0])
+    for x, role in ((29, "danger"), (38, "warm"), (47, "accent")):
+        _paint(scene, _ellipse(scene, x, 29, 2.2, 2.2), tone(palette, role)[0])
 
-    seam = _clipped_line(scene, union_masks(abdomen, thorax), [(50, 49), (50, 76)], 2.2)
-    _paint(scene, seam, lighten(tone(palette, "accent")[0], 0.08))
+    screen = _rounded_rect(scene, 25, 37, 75, 65, 5)
+    _paint(scene, screen, darken(tone(palette, "neutral")[2], 0.16))
 
-    chest = _ellipse(scene, 50, 55, 1.7, 1.7)
-    _paint(scene, chest, tone(palette, "accent")[0])
+    rows = [
+        (31, 44, 57, "accent"),
+        (31, 52, 64, "secondary"),
+        (31, 60, 52, "warm"),
+    ]
+    for x1, y, x2, role in rows:
+        _paint(scene, _ellipse(scene, 29, y, 1.8, 1.8), tone(palette, role)[0])
+        _paint(scene, _line(scene, [(x1 + 5, y), (x2, y)], 2.1), lighten(tone(palette, role)[0], 0.08))
 
-    antenna = union_masks(
-        _line(scene, [(46, 45), (41, 39)], 1.6),
-        _line(scene, [(54, 45), (59, 39)], 1.6),
-        _ellipse(scene, 41, 39, 1.2, 1.2),
-        _ellipse(scene, 59, 39, 1.2, 1.2),
+    tail = _rounded_rect(scene, 35, 69, 68, 77, 4)
+    _extrude(scene, palette, tail, role="neutral", depth=4, shadow_offset=(0, 5), shadow_blur=6, gloss=36)
+    spark = union_masks(
+        _line(scene, [(67, 43), (73, 37), (79, 39)], 2.2),
+        _ellipse(scene, 79, 39, 2.2, 2.2),
     )
-    _paint(scene, antenna, lighten(tone(palette, "accent")[0], 0.04))
-    scene.render_glow(union_masks(wing_left, wing_right, shell), blur=8, alpha=24)
+    _paint(scene, spark, tone(palette, "warm")[0])
+
+
+def _render_home_beetle(scene: Scene, palette: Palette) -> None:
+    abdomen = _ellipse(scene, 50, 68, 8.6, 9.8)
+    thorax = _ellipse(scene, 50, 59, 6.8, 5.0)
+    head = _ellipse(scene, 50, 52, 4.8, 4.0)
+    beetle = union_masks(abdomen, thorax, head)
+
+    legs = union_masks(
+        _line(scene, [(44, 60), (38, 57)], 1.3),
+        _line(scene, [(56, 60), (62, 57)], 1.3),
+        _line(scene, [(43, 67), (37, 67)], 1.3),
+        _line(scene, [(57, 67), (63, 67)], 1.3),
+        _line(scene, [(44, 74), (39, 77)], 1.3),
+        _line(scene, [(56, 74), (61, 77)], 1.3),
+    )
+    antenna = union_masks(
+        _line(scene, [(47, 49), (43, 46)], 1.1),
+        _line(scene, [(53, 49), (57, 46)], 1.1),
+        _ellipse(scene, 43, 46, 0.8, 0.8),
+        _ellipse(scene, 57, 46, 0.8, 0.8),
+    )
+    _paint(scene, union_masks(legs, antenna), with_alpha(darken(tone(palette, "neutral")[2], 0.14), 150))
+
+    _extrude(scene, palette, abdomen, role="primary", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=48)
+    _extrude(scene, palette, thorax, role="primary", depth=3, shadow_offset=(0, 3), shadow_blur=4, gloss=44)
+    _extrude(scene, palette, head, role="primary", depth=3, shadow_offset=(0, 3), shadow_blur=4, gloss=42)
+
+    seam = _clipped_line(scene, abdomen, [(50, 60), (50, 77)], 1.3)
+    _paint(scene, seam, with_alpha(darken(tone(palette, "primary")[1], 0.12), 175))
+
+    spots = union_masks(
+        _ellipse(scene, 45.5, 65, 1.25, 1.25),
+        _ellipse(scene, 54.5, 65, 1.25, 1.25),
+        _ellipse(scene, 46, 72, 1.15, 1.15),
+        _ellipse(scene, 54, 72, 1.15, 1.15),
+    )
+    _paint(scene, spots, tone(palette, "accent")[0])
+
+    eyes = union_masks(_ellipse(scene, 48.3, 51.3, 0.7, 0.7), _ellipse(scene, 51.7, 51.3, 0.7, 0.7))
+    _paint(scene, eyes, lighten(tone(palette, "neutral")[0], 0.18))
+    scene.render_glow(beetle, blur=6, alpha=18)
 
 
 def build_home(scene: Scene, palette: Palette) -> None:
@@ -257,15 +306,28 @@ def build_home(scene: Scene, palette: Palette) -> None:
 
 
 def build_link(scene: Scene, palette: Palette) -> None:
-    link_a = subtract_mask(_rounded_rect(scene, 26, 36, 54, 62, 11), _rounded_rect(scene, 34, 44, 46, 54, 5))
-    link_b = subtract_mask(_rounded_rect(scene, 46, 34, 74, 60, 11), _rounded_rect(scene, 54, 42, 66, 50, 5))
-    bridge = _rounded_rect(scene, 41, 46, 59, 52, 3)
-    _extrude(scene, palette, union_masks(link_a, link_b, bridge), role="sky", depth=6, shadow_offset=(0, 7), shadow_blur=8, gloss=56)
-    highlight = union_masks(
-        _rounded_rect(scene, 30, 41, 50, 45, 2),
-        _rounded_rect(scene, 50, 39, 70, 43, 2),
+    cable = _line(scene, [(39, 54), (49, 48), (61, 46)], 8)
+    _extrude(scene, palette, cable, role="accent", depth=5, shadow_offset=(0, 5), shadow_blur=7, gloss=44)
+
+    left = _rounded_rect(scene, 17, 39, 43, 69, 8)
+    right = _rounded_rect(scene, 57, 31, 83, 61, 8)
+    _extrude(scene, palette, left, role="sky", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=56)
+    _extrude(scene, palette, right, role="secondary", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=56)
+
+    left_socket = _rounded_rect(scene, 25, 49, 37, 58, 4)
+    right_socket = _rounded_rect(scene, 63, 41, 75, 50, 4)
+    _paint(scene, union_masks(left_socket, right_socket), darken(tone(palette, "neutral")[2], 0.16))
+
+    pins = union_masks(
+        _rounded_rect(scene, 36, 50, 47, 57, 3),
+        _rounded_rect(scene, 53, 42, 64, 49, 3),
     )
-    _paint(scene, highlight, lighten(tone(palette, "accent")[0], 0.15))
+    _paint(scene, pins, tone(palette, "accent")[0])
+
+    status = union_masks(_ellipse(scene, 27, 44, 2.1, 2.1), _ellipse(scene, 74, 36, 2.1, 2.1))
+    _paint(scene, status, lighten(tone(palette, "accent")[0], 0.1))
+    shine = union_masks(_line(scene, [(22, 43), (39, 43)], 1.5), _line(scene, [(62, 35), (79, 35)], 1.5))
+    _paint(scene, shine, with_alpha((255, 255, 255, 255), 130))
 
 
 def build_power(scene: Scene, palette: Palette) -> None:
@@ -308,6 +370,87 @@ def build_puzzle(scene: Scene, palette: Palette) -> None:
     _extrude(scene, palette, piece, role="accent", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=56)
     nub = _ellipse(scene, 46, 28, 4.5, 4.5)
     _paint(scene, nub, lighten(tone(palette, "accent")[0], 0.08))
+
+
+def build_skills(scene: Scene, palette: Palette) -> None:
+    back = _rounded_rect(scene, 31, 23, 75, 69, 9)
+    middle = _rounded_rect(scene, 25, 28, 80, 76, 10)
+    front = _rounded_rect(scene, 18, 34, 72, 82, 11)
+    _extrude(scene, palette, back, role="neutral", depth=5, shadow_offset=(0, 6), shadow_blur=8, gloss=38)
+    _extrude(scene, palette, middle, role="secondary", depth=6, shadow_offset=(0, 7), shadow_blur=8, gloss=48)
+    _extrude(scene, palette, front, role="primary", depth=8, shadow_offset=(0, 9), shadow_blur=10, gloss=56)
+
+    header = _rounded_rect(scene, 18, 34, 72, 47, 10)
+    _paint(scene, header, lighten(tone(palette, "primary")[0], 0.15))
+    tab_a = _rounded_rect(scene, 30, 25, 44, 33, 4)
+    tab_b = _rounded_rect(scene, 54, 30, 68, 38, 4)
+    _paint(scene, union_masks(tab_a, tab_b), tone(palette, "accent")[0])
+
+    skill_core = _polygon(
+        scene,
+        [
+            (48, 48),
+            (54, 58),
+            (65, 60),
+            (56, 66),
+            (58, 77),
+            (48, 70),
+            (38, 77),
+            (40, 66),
+            (31, 60),
+            (42, 58),
+        ],
+    )
+    _extrude(scene, palette, skill_core, role="accent", depth=5, shadow_offset=(0, 5), shadow_blur=6, gloss=48)
+
+    node_top = _ellipse(scene, 48, 58, 3.2, 3.2)
+    node_left = _ellipse(scene, 39, 64, 2.6, 2.6)
+    node_right = _ellipse(scene, 57, 64, 2.6, 2.6)
+    links = union_masks(_line(scene, [(48, 58), (39, 64)], 1.8), _line(scene, [(48, 58), (57, 64)], 1.8))
+    _paint(scene, links, with_alpha((255, 255, 255, 255), 150))
+    _paint(scene, union_masks(node_top, node_left, node_right), lighten(tone(palette, "neutral")[0], 0.24))
+
+    rows = union_masks(
+        _rounded_rect(scene, 25, 52, 35, 55, 1.6),
+        _rounded_rect(scene, 25, 71, 34, 74, 1.6),
+        _rounded_rect(scene, 61, 52, 67, 55, 1.6),
+        _rounded_rect(scene, 62, 71, 67, 74, 1.6),
+    )
+    _paint(scene, rows, darken(tone(palette, "primary")[1], 0.08))
+
+    shine = _line(scene, [(25, 39), (60, 39)], 1.5)
+    _paint(scene, shine, with_alpha((255, 255, 255, 255), 130))
+
+
+def build_accounts(scene: Scene, palette: Palette) -> None:
+    back_card = _rounded_rect(scene, 27, 23, 79, 70, 9)
+    front_card = _rounded_rect(scene, 20, 30, 73, 79, 10)
+    _extrude(scene, palette, back_card, role="neutral", depth=5, shadow_offset=(0, 6), shadow_blur=8, gloss=42)
+    _extrude(scene, palette, front_card, role="sky", depth=8, shadow_offset=(0, 9), shadow_blur=10, gloss=56)
+
+    header = _rounded_rect(scene, 20, 30, 73, 43, 10)
+    _paint(scene, header, lighten(tone(palette, "sky")[0], 0.14))
+    badge = union_masks(_ellipse(scene, 41, 51, 7.2, 7.2), _rounded_rect(scene, 29, 60, 53, 73, 7))
+    _extrude(scene, palette, badge, role="primary", depth=5, shadow_offset=(0, 5), shadow_blur=7, gloss=48)
+
+    face_cut = _ellipse(scene, 41, 51, 3.2, 3.2)
+    neck_cut = _rounded_rect(scene, 38, 57, 44, 63, 2)
+    shoulder_cut = _rounded_rect(scene, 33, 64, 49, 69, 3)
+    _paint(scene, union_masks(face_cut, neck_cut, shoulder_cut), lighten(tone(palette, "neutral")[0], 0.22))
+
+    line_a = _rounded_rect(scene, 56, 49, 70, 53, 2)
+    line_b = _rounded_rect(scene, 56, 59, 68, 63, 2)
+    _paint(scene, union_masks(line_a, line_b), darken(tone(palette, "neutral")[2], 0.06))
+
+    key_ring = subtract_mask(_ellipse(scene, 67, 67, 6.3, 6.3), _ellipse(scene, 67, 67, 3.4, 3.4))
+    key_shaft = _line(scene, [(70, 67), (82, 67)], 4.2)
+    key_teeth = union_masks(_rect(scene, 78, 67, 81, 74), _rect(scene, 82, 67, 85, 71))
+    _extrude(scene, palette, union_masks(key_ring, key_shaft, key_teeth), role="warm", depth=5, shadow_offset=(0, 5), shadow_blur=6, gloss=44)
+
+    status_dot = _ellipse(scene, 29, 37, 2.2, 2.2)
+    _paint(scene, status_dot, tone(palette, "accent")[0])
+    shine = _line(scene, [(28, 35), (64, 35)], 1.5)
+    _paint(scene, shine, with_alpha((255, 255, 255, 255), 130))
 
 
 def build_safe(scene: Scene, palette: Palette) -> None:
@@ -373,37 +516,70 @@ def build_theme(scene: Scene, palette: Palette) -> None:
 
 
 def build_tools(scene: Scene, palette: Palette) -> None:
-    wrench_head = subtract_mask(_ellipse(scene, 32, 35, 9, 9), _ellipse(scene, 32, 35, 5, 5))
-    wrench_head = subtract_mask(wrench_head, _polygon(scene, [(27, 31), (34, 38), (31, 41), (24, 34)]))
-    wrench_handle = _rounded_rect(scene, 32, 36, 64, 44, 3)
-    driver_handle = _rounded_rect(scene, 54, 52, 74, 68, 5)
-    driver_shaft = _rounded_rect(scene, 47, 44, 55, 74, 3)
-    driver_tip = _polygon(scene, [(49, 74), (53, 74), (51, 82)])
-    tool_a = union_masks(wrench_head, wrench_handle)
-    tool_b = union_masks(driver_handle, driver_shaft, driver_tip)
-    tool_b = shift_mask(tool_b, dx=scene.offset_px(-1), dy=scene.offset_px(-1))
-    _extrude(scene, palette, tool_a, role="slate", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=56)
-    _extrude(scene, palette, tool_b, role="accent", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=56)
+    handle_outer = _rounded_rect(scene, 35, 24, 65, 43, 7)
+    handle_inner = _rounded_rect(scene, 42, 31, 58, 43, 4)
+    handle = subtract_mask(handle_outer, handle_inner)
+    _extrude(scene, palette, handle, role="neutral", depth=5, shadow_offset=(0, 5), shadow_blur=7, gloss=38)
+
+    case = _rounded_rect(scene, 17, 39, 83, 80, 10)
+    _extrude(scene, palette, case, role="slate", depth=9, shadow_offset=(0, 9), shadow_blur=11, gloss=54)
+
+    lid = _rounded_rect(scene, 20, 34, 80, 53, 8)
+    _extrude(scene, palette, lid, role="secondary", depth=6, shadow_offset=(0, 6), shadow_blur=8, gloss=48)
+
+    tray = _rounded_rect(scene, 23, 54, 77, 75, 6)
+    _paint(scene, tray, darken(tone(palette, "neutral")[2], 0.06))
+
+    latch = _rounded_rect(scene, 45, 48, 55, 59, 3)
+    _extrude(scene, palette, latch, role="warm", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=38)
+
+    wrench_head = subtract_mask(_ellipse(scene, 35, 60, 8, 8), _ellipse(scene, 35, 60, 4.2, 4.2))
+    wrench_head = subtract_mask(wrench_head, _polygon(scene, [(30, 55), (37, 62), (33, 66), (26, 59)]))
+    wrench_handle = union_masks(
+        _line(scene, [(41, 61), (64, 70)], 6.2),
+        _ellipse(scene, 64, 70, 3.2, 3.2),
+    )
+    _paint(scene, union_masks(wrench_head, wrench_handle), lighten(tone(palette, "neutral")[0], 0.18))
+
+    driver = union_masks(
+        _line(scene, [(61, 45), (38, 69)], 5.2),
+        _polygon(scene, [(34, 72), (39, 67), (43, 72), (38, 77)]),
+        _rounded_rect(scene, 59, 41, 70, 49, 3),
+    )
+    _paint(scene, driver, tone(palette, "accent")[0])
+
+    shine = _line(scene, [(25, 42), (72, 42)], 1.6)
+    _paint(scene, shine, with_alpha((255, 255, 255, 255), 120))
 
 
 def build_unsaved_changes(scene: Scene, palette: Palette) -> None:
-    page = _polygon(scene, [(30, 24), (60, 24), (70, 34), (70, 78), (30, 78)])
-    fold = _polygon(scene, [(60, 24), (70, 34), (60, 34)])
-    _extrude(scene, palette, page, role="danger", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=56)
-    _paint(scene, fold, lighten(tone(palette, "danger")[0], 0.12))
-    pencil_body = _rounded_rect(scene, 37, 56, 63, 62, 2)
-    pencil_tip = _polygon(scene, [(63, 56), (70, 49), (72, 51), (65, 62), (63, 62)])
-    pencil_eraser = _rounded_rect(scene, 33, 54, 38, 64, 2)
-    pencil = union_masks(pencil_body, pencil_tip, pencil_eraser)
-    _paint(scene, pencil, tone(palette, "accent")[0])
-    burst = union_masks(
-        _rect(scene, 50, 42, 52, 48),
-        _rect(scene, 47, 45, 55, 47),
-    )
-    _paint(scene, burst, tone(palette, "warm")[0])
+    page = _polygon(scene, [(27, 22), (61, 22), (74, 35), (74, 80), (27, 80)])
+    fold = _polygon(scene, [(61, 22), (74, 35), (61, 35)])
+    _extrude(scene, palette, page, role="neutral", depth=7, shadow_offset=(0, 8), shadow_blur=9, gloss=52)
+    _paint(scene, fold, darken(tone(palette, "neutral")[0], 0.08))
+
+    title = _rounded_rect(scene, 35, 39, 59, 43, 2)
+    line_a = _rounded_rect(scene, 35, 51, 63, 55, 2)
+    line_b = _rounded_rect(scene, 35, 62, 55, 66, 2)
+    _paint(scene, union_masks(title, line_a, line_b), darken(tone(palette, "neutral")[2], 0.08))
+
+    pencil_body = _line(scene, [(39, 73), (65, 52)], 8)
+    pencil_wood = _polygon(scene, [(63, 50), (72, 44), (70, 52)])
+    pencil_tip = _polygon(scene, [(70, 45), (75, 42), (72, 49)])
+    pencil_eraser = _rounded_rect(scene, 33, 70, 43, 79, 3)
+    _extrude(scene, palette, pencil_body, role="warm", depth=5, shadow_offset=(0, 5), shadow_blur=6, gloss=46)
+    _paint(scene, pencil_wood, lighten(tone(palette, "warm")[0], 0.08))
+    _paint(scene, pencil_tip, darken(tone(palette, "neutral")[2], 0.12))
+    _paint(scene, pencil_eraser, tone(palette, "danger")[0])
+
+    pending = _ellipse(scene, 65, 31, 7, 7)
+    _extrude(scene, palette, pending, role="accent", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=42)
+    _paint(scene, _rect(scene, 64, 26, 66, 32), lighten(tone(palette, "neutral")[0], 0.2))
+    _paint(scene, _ellipse(scene, 65, 35, 1.4, 1.4), lighten(tone(palette, "neutral")[0], 0.2))
 
 
 ICON_DEFINITIONS: list[IconSpec] = [
+    icon("accounts_3d.png", "sky", build_accounts),
     icon("bookmark_3d.png", "amber", build_bookmark),
     icon("bot_3d.png", "violet", build_bot),
     icon("chat_3d.png", "sky", build_chat),
@@ -416,7 +592,9 @@ ICON_DEFINITIONS: list[IconSpec] = [
     icon("puzzle_3d.png", "mint", build_puzzle),
     icon("safe_3d.png", "slate", build_safe),
     icon("settings_3d.png", "violet", build_settings),
+    icon("skills_3d.png", "mint", build_skills),
     icon("strategy_3d.png", "coral", build_strategy),
+    icon("system_logs_3d.png", "slate", build_system_logs),
     icon("theme_3d.png", "amber", build_theme),
     icon("tools_3d.png", "slate", build_tools),
     icon("unsaved_changes_3d.png", "crimson", build_unsaved_changes),

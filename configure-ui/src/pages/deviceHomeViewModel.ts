@@ -54,7 +54,6 @@ export interface RuntimeTelemetryField {
     | "dispatch_send_ok"
     | "inbound_depth"
     | "outbound_depth"
-    | "wdt_feeds"
     | "last_active_epoch_secs"
     | "cpu_usage_percent"
     | "process_memory_kb"
@@ -102,6 +101,20 @@ const FAULT_METRIC_DEFS = [
 const RECOVERY_METRIC_DEFS = [
   { id: "wifi_reconnect_total", labelKey: "device.systemStatusWifiReconnect" },
   { id: "wifi_ap_restart_total", labelKey: "device.systemStatusWifiApRestart" },
+] as const;
+
+const WORKFLOW_SUMMARY_DEFS = [
+  {
+    id: "workflow_total_retained",
+    source: "total_retained",
+    labelKey: "device.systemStatusWorkflowRecent",
+  },
+  { id: "workflow_executed", source: "executed", labelKey: "device.systemStatusWorkflowExecuted" },
+  { id: "workflow_deferred", source: "deferred", labelKey: "device.systemStatusWorkflowDeferred" },
+  { id: "workflow_suppressed", source: "suppressed", labelKey: "device.systemStatusWorkflowSuppressed" },
+  { id: "workflow_canceled", source: "canceled", labelKey: "device.systemStatusWorkflowCanceled" },
+  { id: "workflow_no_trigger", source: "no_trigger", labelKey: "device.systemStatusWorkflowNoTrigger" },
+  { id: "workflow_failed", source: "failed", labelKey: "device.systemStatusWorkflowFailed" },
 ] as const;
 
 export function buildMemoryMetrics(
@@ -289,6 +302,18 @@ export function buildFaultAndRecoveryMetrics(
   return { faults, recovery };
 }
 
+export function buildWorkflowSummaryFields(health: HealthData | null): HomeMetricField[] {
+  const workflow = health?.workflow;
+  if (!workflow) return [];
+  return WORKFLOW_SUMMARY_DEFS.filter(({ source }) => workflow[source] != null).map(
+    ({ id, source, labelKey }) => ({
+      id,
+      labelKey,
+      value: Number(workflow[source] ?? 0),
+    }),
+  );
+}
+
 export function buildDeviceOperationalStatusKey(
   health: HealthData | null,
   resource: ResourceSnapshotData | null,
@@ -356,7 +381,6 @@ export function buildRuntimeTelemetryFields(
   pushNumber("dispatch_send_ok", "device.systemStatusDispatchOk", metrics?.dispatch_send_ok);
   pushNumber("inbound_depth", "device.systemStatusInboundDepth", resource?.inbound_depth);
   pushNumber("outbound_depth", "device.systemStatusOutboundDepth", resource?.outbound_depth);
-  pushNumber("wdt_feeds", "device.systemStatusWdtFeeds", metrics?.wdt_feeds);
   pushNumber(
     "last_active_epoch_secs",
     "device.systemStatusLastActiveAt",

@@ -1498,7 +1498,7 @@ fn handle_llm_gate(
     config: &AgentLoopConfig,
 ) -> GateResult {
     crate::orchestrator::refresh_heap_if_stale();
-    match crate::orchestrator::can_call_llm_pub() {
+    match crate::orchestrator::can_call_llm_for_channel_pub(&msg.channel) {
         LlmDecision::Proceed => GateResult::Proceed(Box::new(msg)),
         LlmDecision::RetryLater { delay_ms } => {
             let is_system = msg.ingress == IngressKind::System;
@@ -1790,7 +1790,6 @@ fn run_agent_loop_main(
             AgentRecvStatus::Message(m) => *m,
             AgentRecvStatus::Timeout => {
                 crate::platform::task_wdt::feed_current_task();
-                metrics::record_wdt_feed();
                 continue;
             }
             AgentRecvStatus::Disconnected => break,
@@ -4586,6 +4585,8 @@ mod tests {
                 voice_exclusive_active: false,
                 background_maintenance_active: false,
                 config_plane_alive: false,
+                config_active: false,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -4600,6 +4601,7 @@ mod tests {
                     allow_best_effort_delayed_tasks: true,
                     allow_idle_self_runtime: true,
                     allow_non_voice_outbound: true,
+                    allow_realtime_voice_connect: true,
                     allow_external_wss_connect: true,
                     require_external_wss_suspended: false,
                 },
@@ -4682,6 +4684,8 @@ mod tests {
                 voice_exclusive_active: false,
                 background_maintenance_active: false,
                 config_plane_alive: false,
+                config_active: false,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -4696,6 +4700,7 @@ mod tests {
                     allow_best_effort_delayed_tasks: true,
                     allow_idle_self_runtime: true,
                     allow_non_voice_outbound: true,
+                    allow_realtime_voice_connect: true,
                     allow_external_wss_connect: true,
                     require_external_wss_suspended: false,
                 },
@@ -4901,6 +4906,8 @@ mod tests {
                 voice_exclusive_active: false,
                 background_maintenance_active: false,
                 config_plane_alive: false,
+                config_active: false,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -4915,6 +4922,7 @@ mod tests {
                     allow_best_effort_delayed_tasks: true,
                     allow_idle_self_runtime: true,
                     allow_non_voice_outbound: true,
+                    allow_realtime_voice_connect: true,
                     allow_external_wss_connect: true,
                     require_external_wss_suspended: false,
                 },
@@ -5698,6 +5706,8 @@ mod tests {
             voice_exclusive_active: false,
             background_maintenance_active: false,
             config_plane_alive: false,
+            config_active: false,
+            config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
             channel_plane_alive: true,
             voice_plane_alive: false,
             agent_plane_alive: true,
@@ -5712,6 +5722,7 @@ mod tests {
                 allow_best_effort_delayed_tasks: true,
                 allow_idle_self_runtime: true,
                 allow_non_voice_outbound: true,
+                allow_realtime_voice_connect: true,
                 allow_external_wss_connect: true,
                 require_external_wss_suspended: false,
             },
@@ -7721,6 +7732,8 @@ mod tests {
                 voice_exclusive_active: false,
                 background_maintenance_active: false,
                 config_plane_alive: false,
+                config_active: false,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -7735,6 +7748,7 @@ mod tests {
                     allow_best_effort_delayed_tasks: true,
                     allow_idle_self_runtime: true,
                     allow_non_voice_outbound: true,
+                    allow_realtime_voice_connect: true,
                     allow_external_wss_connect: true,
                     require_external_wss_suspended: false,
                 },

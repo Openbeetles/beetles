@@ -39,7 +39,6 @@ static TOOL_ERRORS: AtomicU32 = AtomicU32::new(0);
 static TOOL_PROTOCOL_FORCED_ROUNDS: AtomicU32 = AtomicU32::new(0);
 static TOOL_PROTOCOL_VIOLATION: AtomicU32 = AtomicU32::new(0);
 static FINAL_ANSWER_CALLS: AtomicU32 = AtomicU32::new(0);
-static WDT_FEEDS: AtomicU32 = AtomicU32::new(0);
 static DISPATCH_SEND_OK: AtomicU32 = AtomicU32::new(0);
 static DISPATCH_SEND_FAIL: AtomicU32 = AtomicU32::new(0);
 static OUTBOUND_ENQUEUE_FAIL: AtomicU32 = AtomicU32::new(0);
@@ -50,6 +49,9 @@ static CHANNEL_HTTP_OK: AtomicU32 = AtomicU32::new(0);
 static CHANNEL_HTTP_FAIL: AtomicU32 = AtomicU32::new(0);
 static LAST_ACTIVE_EPOCH_SECS: AtomicU32 = AtomicU32::new(0);
 static HTTP_PERMIT_WAIT_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static HTTP_ROUTE_QUEUE_WAIT_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static HTTP_ROUTE_HANDLER_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static HTTP_ROUTE_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_INPUT_CAPTURE_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static VOICE_INPUT_STT_HTTP_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static VOICE_OUTPUT_TTS_HTTP_LAST_MS: AtomicU32 = AtomicU32::new(0);
@@ -247,11 +249,6 @@ pub fn record_final_answer_call() {
 }
 
 #[inline]
-pub fn record_wdt_feed() {
-    WDT_FEEDS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[inline]
 pub fn record_dispatch_send(ok: bool) {
     if ok {
         DISPATCH_SEND_OK.fetch_add(1, Ordering::Relaxed);
@@ -294,6 +291,21 @@ pub fn record_channel_http_result(ok: bool) {
 #[inline]
 pub fn record_http_permit_wait_ms(ms: u128) {
     HTTP_PERMIT_WAIT_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_http_route_queue_wait_ms(ms: u128) {
+    HTTP_ROUTE_QUEUE_WAIT_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_http_route_handler_ms(ms: u128) {
+    HTTP_ROUTE_HANDLER_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_http_route_timeout() {
+    HTTP_ROUTE_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 #[inline]
@@ -598,7 +610,6 @@ pub fn snapshot() -> MetricsSnapshot {
         tool_protocol_forced_rounds: TOOL_PROTOCOL_FORCED_ROUNDS.load(Ordering::Relaxed) as u64,
         tool_protocol_violation: TOOL_PROTOCOL_VIOLATION.load(Ordering::Relaxed) as u64,
         final_answer_calls: FINAL_ANSWER_CALLS.load(Ordering::Relaxed) as u64,
-        wdt_feeds: WDT_FEEDS.load(Ordering::Relaxed) as u64,
         dispatch_send_ok: DISPATCH_SEND_OK.load(Ordering::Relaxed) as u64,
         dispatch_send_fail: DISPATCH_SEND_FAIL.load(Ordering::Relaxed) as u64,
         outbound_enqueue_fail: OUTBOUND_ENQUEUE_FAIL.load(Ordering::Relaxed) as u64,
@@ -610,6 +621,9 @@ pub fn snapshot() -> MetricsSnapshot {
         channel_http_ok: CHANNEL_HTTP_OK.load(Ordering::Relaxed) as u64,
         channel_http_fail: CHANNEL_HTTP_FAIL.load(Ordering::Relaxed) as u64,
         http_permit_wait_last_ms: HTTP_PERMIT_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
+        http_route_queue_wait_last_ms: HTTP_ROUTE_QUEUE_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
+        http_route_handler_last_ms: HTTP_ROUTE_HANDLER_LAST_MS.load(Ordering::Relaxed) as u64,
+        http_route_timeout_total: HTTP_ROUTE_TIMEOUT_TOTAL.load(Ordering::Relaxed) as u64,
         voice_input_capture_last_ms: VOICE_INPUT_CAPTURE_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_input_stt_http_last_ms: VOICE_INPUT_STT_HTTP_LAST_MS.load(Ordering::Relaxed) as u64,
         voice_output_tts_http_last_ms: VOICE_OUTPUT_TTS_HTTP_LAST_MS.load(Ordering::Relaxed) as u64,
@@ -690,6 +704,28 @@ mod tests {
         assert_eq!(after.errors_tool_execute, before.errors_tool_execute + 1);
         assert_eq!(after.errors_other, before.errors_other);
     }
+
+    #[test]
+    fn http_route_worker_metrics_are_recorded_and_logged() {
+        let before = snapshot();
+
+        record_http_route_queue_wait_ms(123);
+        record_http_route_handler_ms(456);
+        record_http_route_timeout();
+
+        let after = snapshot();
+        assert_eq!(after.http_route_queue_wait_last_ms, 123);
+        assert_eq!(after.http_route_handler_last_ms, 456);
+        assert_eq!(
+            after.http_route_timeout_total,
+            before.http_route_timeout_total + 1
+        );
+
+        let line = after.to_baseline_log_line();
+        assert!(line.contains("http_route_queue_wait_ms=123"));
+        assert!(line.contains("http_route_handler_ms=456"));
+        assert!(line.contains("http_route_timeout_total="));
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -718,7 +754,6 @@ pub struct MetricsSnapshot {
     pub tool_protocol_forced_rounds: u64,
     pub tool_protocol_violation: u64,
     pub final_answer_calls: u64,
-    pub wdt_feeds: u64,
     pub dispatch_send_ok: u64,
     pub dispatch_send_fail: u64,
     pub outbound_enqueue_fail: u64,
@@ -728,6 +763,9 @@ pub struct MetricsSnapshot {
     pub channel_http_ok: u64,
     pub channel_http_fail: u64,
     pub http_permit_wait_last_ms: u64,
+    pub http_route_queue_wait_last_ms: u64,
+    pub http_route_handler_last_ms: u64,
+    pub http_route_timeout_total: u64,
     pub voice_input_capture_last_ms: u64,
     pub voice_input_stt_http_last_ms: u64,
     pub voice_output_tts_http_last_ms: u64,
@@ -793,7 +831,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} wdt_feeds={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.messages_out,
             self.llm_calls,
@@ -818,7 +856,6 @@ impl MetricsSnapshot {
             self.tool_protocol_forced_rounds,
             self.tool_protocol_violation,
             self.final_answer_calls,
-            self.wdt_feeds,
             self.dispatch_send_ok,
             self.dispatch_send_fail,
             self.outbound_enqueue_fail,
@@ -828,6 +865,9 @@ impl MetricsSnapshot {
             self.channel_http_ok,
             self.channel_http_fail,
             self.http_permit_wait_last_ms,
+            self.http_route_queue_wait_last_ms,
+            self.http_route_handler_last_ms,
+            self.http_route_timeout_total,
             self.voice_input_capture_last_ms,
             self.voice_input_stt_http_last_ms,
             self.voice_output_tts_http_last_ms,

@@ -346,7 +346,7 @@ export function ChannelConnectivityPanel({
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1.75 }}>
       <SectionLoadProgress
         loading={loading}
-        idleHint={!hasList ? t("device.channelConnectivityLoading") : undefined}
+        idleHint={!hasList ? t("device.channelConnectivityIdle") : undefined}
       />
 
       {showBlockingError && (

@@ -12,6 +12,21 @@ import {
   loadDeviceHealthBundle,
 } from "./devicePageLoaders.ts";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushLoaderContinuation() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 test("loadDeviceHealthBundle returns the full bundle when all three endpoints succeed", async () => {
   const health: HealthData = { wifi: "connected" };
   const resource: ResourceSnapshotData = { pressure: "Cautious" };
@@ -30,6 +45,73 @@ test("loadDeviceHealthBundle returns the full bundle when all three endpoints su
       resource,
       metrics,
     },
+  });
+});
+
+test("loadDeviceHealthBundle starts resource and metrics only after earlier endpoints settle", async () => {
+  const health: HealthData = { wifi: "connected" };
+  const resource: ResourceSnapshotData = { pressure: "Normal" };
+  const metrics: MetricsSnapshotData = { llm_calls: 1 };
+  const healthDeferred = deferred<ApiResult<HealthData>>();
+  const resourceDeferred = deferred<ApiResult<ResourceSnapshotData>>();
+  const metricsDeferred = deferred<ApiResult<MetricsSnapshotData>>();
+  const calls: string[] = [];
+
+  const pending = loadDeviceHealthBundle({
+    health: async () => {
+      calls.push("health");
+      return healthDeferred.promise;
+    },
+    resource: async () => {
+      calls.push("resource");
+      return resourceDeferred.promise;
+    },
+    metrics: async () => {
+      calls.push("metrics");
+      return metricsDeferred.promise;
+    },
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(calls, ["health"]);
+
+  healthDeferred.resolve({ ok: true, data: health });
+  await flushLoaderContinuation();
+  assert.deepEqual(calls, ["health", "resource"]);
+
+  resourceDeferred.resolve({ ok: true, data: resource });
+  await flushLoaderContinuation();
+  assert.deepEqual(calls, ["health", "resource", "metrics"]);
+
+  metricsDeferred.resolve({ ok: true, data: metrics });
+  assert.deepEqual(await pending, {
+    ok: true,
+    data: { health, resource, metrics },
+  });
+});
+
+test("loadDeviceHealthBundle stops after the first failed endpoint", async () => {
+  const calls: string[] = [];
+
+  const result = await loadDeviceHealthBundle({
+    health: async () => {
+      calls.push("health");
+      return { ok: false, error: "health unavailable" };
+    },
+    resource: async () => {
+      calls.push("resource");
+      return { ok: true, data: { pressure: "Normal" } };
+    },
+    metrics: async () => {
+      calls.push("metrics");
+      return { ok: true, data: { llm_calls: 1 } };
+    },
+  });
+
+  assert.deepEqual(calls, ["health"]);
+  assert.deepEqual(result, {
+    ok: false,
+    error: "health unavailable",
   });
 });
 
