@@ -123,7 +123,11 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
             }}
           >
             {items.map((item) => (
-              <ListItem key={item.segment} disablePadding sx={{ flexShrink: 0 }}>
+              <ListItem
+                key={item.segment}
+                disablePadding
+                sx={{ flexShrink: 0, width: { xs: "auto", md: "100%" } }}
+              >
                 <ListItemButton
                   selected={tab === item.segment}
                   aria-current={tab === item.segment ? "page" : undefined}

@@ -17,14 +17,14 @@ import type {
   ProviderCatalogItem,
 } from "../types/accountConfig";
 import {
-  CONFIG_PANEL_SX,
   DIALOG_FORM_SCROLL_WELL_SX,
   DIALOG_FORM_SUBMIT_BAR_SX,
-  PANEL_SECTION_PADDING,
 } from "../theme/panelStyles";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import {
   PageLoadErrorState,
+  FormCard,
+  FormGrid,
   PanelStateLoading,
   SectionLoadingSkeleton,
 } from "./form";
@@ -360,31 +360,28 @@ export function AccountCreateForm({
         </Typography>
       ) : null}
 
-      <Box sx={{ ...CONFIG_PANEL_SX, p: PANEL_SECTION_PADDING }}>
-        <FormControl fullWidth>
-          <InputLabel id="account-create-provider-label">
-            {t("accounts.selectProvider")}
-          </InputLabel>
-          <Select
-            labelId="account-create-provider-label"
-            label={t("accounts.selectProvider")}
-            value={providerKind}
-            onChange={(e) => setProviderKind(e.target.value)}
-          >
-            {catalog.map((p) => (
-              <MenuItem key={p.provider_kind} value={p.provider_kind}>
-                {localizeAccountProviderName(t, {
-                  providerKind: p.provider_kind,
-                  displayNameKey: p.display_name_key,
-                })}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      </Box>
-
-      <Box sx={{ ...CONFIG_PANEL_SX, p: PANEL_SECTION_PADDING }}>
-        <Stack spacing={0}>
+      <FormCard>
+        <FormGrid columns={1}>
+          <FormControl fullWidth>
+            <InputLabel id="account-create-provider-label">
+              {t("accounts.selectProvider")}
+            </InputLabel>
+            <Select
+              labelId="account-create-provider-label"
+              label={t("accounts.selectProvider")}
+              value={providerKind}
+              onChange={(e) => setProviderKind(e.target.value)}
+            >
+              {catalog.map((p) => (
+                <MenuItem key={p.provider_kind} value={p.provider_kind}>
+                  {localizeAccountProviderName(t, {
+                    providerKind: p.provider_kind,
+                    displayNameKey: p.display_name_key,
+                  })}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <TextField
             fullWidth
             label={t("accounts.accountLabelOptional")}
@@ -392,11 +389,11 @@ export function AccountCreateForm({
             onChange={(e) => setAccountLabelInput(e.target.value)}
             inputProps={{ autoComplete: "off" }}
           />
-        </Stack>
-      </Box>
+        </FormGrid>
+      </FormCard>
 
       {localizedProviderInputFields.length > 0 ? (
-        <Box sx={{ ...CONFIG_PANEL_SX, p: PANEL_SECTION_PADDING }}>
+        <FormCard>
           <Typography
             variant="subtitle2"
             color="text.secondary"
@@ -404,7 +401,7 @@ export function AccountCreateForm({
           >
             {t("accounts.providerFields")}
           </Typography>
-          <Stack spacing={3}>
+          <FormGrid>
             {localizedProviderAccountFields.map((field) => (
               <ProviderFieldInput
                 key={field.key}
@@ -431,8 +428,8 @@ export function AccountCreateForm({
                 }
               />
             ))}
-          </Stack>
-        </Box>
+          </FormGrid>
+        </FormCard>
       ) : null}
       </Stack>
       {submitBar}

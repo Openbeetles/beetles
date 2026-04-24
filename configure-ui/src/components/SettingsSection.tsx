@@ -74,13 +74,13 @@ export function SettingsSection({
               borderRadius: "var(--radius-chip)",
               backgroundColor: loadingSurface
                 ? "transparent"
-                : "color-mix(in srgb, var(--primary) 8%, var(--card))",
+                : "color-mix(in srgb, var(--primary) 7%, var(--card))",
               boxShadow: loadingSurface
                 ? "none"
-                : "var(--os3d-pedestal-lift-stack)",
+                : "0 8px 18px -14px color-mix(in srgb, var(--primary) 40%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 58%, transparent)",
               border: loadingSurface
                 ? "none"
-                : "1px solid color-mix(in srgb, var(--primary) 12%, transparent)",
+                : "1px solid color-mix(in srgb, var(--primary) 16%, transparent)",
             }}
           >
             {icon}
@@ -112,8 +112,8 @@ export function SettingsSection({
             surfaceTone === "loading"
               ? undefined
               : [
-                  "linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 100%)",
-                  "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
+                  "linear-gradient(180deg, color-mix(in srgb, var(--surface) 54%, transparent) 0%, transparent 100%)",
+                  "linear-gradient(135deg, color-mix(in srgb, var(--primary) 2.5%, transparent) 0%, transparent 100%)",
                 ].join(", "),
           display: "flex",
           flexDirection: "column",
@@ -150,8 +150,8 @@ export function SettingsSection({
           surfaceTone === "loading"
             ? undefined
             : [
-                "linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 100%)",
-                "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
+                "linear-gradient(180deg, color-mix(in srgb, var(--surface) 54%, transparent) 0%, transparent 100%)",
+                "linear-gradient(135deg, color-mix(in srgb, var(--primary) 2.5%, transparent) 0%, transparent 100%)",
               ].join(", "),
         ...sxProp,
       }}

@@ -33,7 +33,7 @@ export function SettingsRow({
       spacing={1}
       alignItems="stretch"
       sx={{
-        py: 2,
+        py: 1.5,
         borderBottom: divider ? "var(--divider-row)" : "none",
       }}
     >

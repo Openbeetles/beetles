@@ -14,6 +14,7 @@ import {
   PanelStateBlock,
   PanelStateLoading,
   FormSectionSubCollapsible,
+  FormGrid,
   InlineAlert,
   PageLoadErrorState,
   SaveFeedback,
@@ -271,16 +272,6 @@ export function HardwareGpioPanel() {
     );
   }
 
-  const fieldGridSx = {
-    display: "grid",
-    gap: 2,
-    gridTemplateColumns: {
-      xs: "minmax(0, 1fr)",
-      md: "repeat(2, minmax(0, 1fr))",
-    },
-    "& .MuiFormControl-root": { minWidth: 0 },
-  } as const;
-
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert
@@ -347,7 +338,7 @@ export function HardwareGpioPanel() {
                 </IconButton>
               }
             >
-              <Box sx={fieldGridSx}>
+              <FormGrid>
                 <TextField
                   fullWidth
                   required
@@ -555,7 +546,7 @@ export function HardwareGpioPanel() {
                   slotProps={{ htmlInput: { maxLength: 256 } }}
                   sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
                 />
-              </Box>
+              </FormGrid>
             </FormSectionSubCollapsible>
           ))}
           <Box>
@@ -608,7 +599,7 @@ export function HardwareGpioPanel() {
                   </IconButton>
                 }
               >
-                <Box sx={fieldGridSx}>
+                <FormGrid>
                   <TextField
                     fullWidth
                     required
@@ -826,7 +817,7 @@ export function HardwareGpioPanel() {
                     slotProps={{ htmlInput: { maxLength: 256 } }}
                     sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
                   />
-                </Box>
+                </FormGrid>
               </FormSectionSubCollapsible>
             ))}
             <Box sx={{ mt: 1 }}>

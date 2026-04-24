@@ -3,12 +3,13 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormLoadingSkeleton,
+  FormGrid,
+  FormSwitchRow,
   PanelStateBlock,
   PanelStateLoading,
   FormSectionSubCollapsible,
@@ -259,28 +260,30 @@ export function ChannelsConfigPage() {
           title="Telegram"
           defaultOpen={!form.enabled_channel || form.enabled_channel === "telegram"}
         >
-          <TextField
-            label={t("config.tgToken")}
-            value={form.tg_token}
-            onChange={(e) => update("tg_token", e.target.value)}
-            type={isRevealed("tg_token") ? "text" : "password"}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                style: { fontFamily: "var(--font-mono)" },
-                ...getRevealHandlers("tg_token"),
-              },
-            }}
-          />
-          <TextField
-            label={t("config.tgAllowedChatIds")}
-            value={form.tg_allowed_chat_ids}
-            onChange={(e) => update("tg_allowed_chat_ids", e.target.value)}
-            fullWidth
-            helperText={t("config.tgAllowedChatIdsHelp")}
-            slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
-          />
+          <FormGrid>
+            <TextField
+              label={t("config.tgToken")}
+              value={form.tg_token}
+              onChange={(e) => update("tg_token", e.target.value)}
+              type={isRevealed("tg_token") ? "text" : "password"}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  style: { fontFamily: "var(--font-mono)" },
+                  ...getRevealHandlers("tg_token"),
+                },
+              }}
+            />
+            <TextField
+              label={t("config.tgAllowedChatIds")}
+              value={form.tg_allowed_chat_ids}
+              onChange={(e) => update("tg_allowed_chat_ids", e.target.value)}
+              fullWidth
+              helperText={t("config.tgAllowedChatIdsHelp")}
+              slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
+            />
+          </FormGrid>
           <SettingsRow
             label={t("config.tgGroupActivation")}
             divider={false}
@@ -311,33 +314,35 @@ export function ChannelsConfigPage() {
           title={t("config.feishu")}
           defaultOpen={form.enabled_channel === "feishu"}
         >
-          <TextField
-            label={t("config.feishuAppId")}
-            value={form.feishu_app_id}
-            onChange={(e) => update("feishu_app_id", e.target.value)}
-            fullWidth
-            slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
-          />
-          <TextField
-            label={t("config.feishuAppSecret")}
-            value={form.feishu_app_secret}
-            onChange={(e) => update("feishu_app_secret", e.target.value)}
-            type={isRevealed("feishu_app_secret") ? "text" : "password"}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                ...getRevealHandlers("feishu_app_secret"),
-              },
-            }}
-          />
-          <TextField
-            label={t("config.feishuAllowedChatIds")}
-            value={form.feishu_allowed_chat_ids}
-            onChange={(e) => update("feishu_allowed_chat_ids", e.target.value)}
-            fullWidth
-            slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
-          />
+          <FormGrid>
+            <TextField
+              label={t("config.feishuAppId")}
+              value={form.feishu_app_id}
+              onChange={(e) => update("feishu_app_id", e.target.value)}
+              fullWidth
+              slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+            />
+            <TextField
+              label={t("config.feishuAppSecret")}
+              value={form.feishu_app_secret}
+              onChange={(e) => update("feishu_app_secret", e.target.value)}
+              type={isRevealed("feishu_app_secret") ? "text" : "password"}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  ...getRevealHandlers("feishu_app_secret"),
+                },
+              }}
+            />
+            <TextField
+              label={t("config.feishuAllowedChatIds")}
+              value={form.feishu_allowed_chat_ids}
+              onChange={(e) => update("feishu_allowed_chat_ids", e.target.value)}
+              fullWidth
+              slotProps={{ htmlInput: { maxLength: MAX_LEN * 4 } }}
+            />
+          </FormGrid>
         </FormSectionSubCollapsible>
         ) : null}
 
@@ -346,31 +351,33 @@ export function ChannelsConfigPage() {
           title={t("config.dingtalk")}
           defaultOpen={form.enabled_channel === "dingtalk"}
         >
-          <TextField
-            label={t("config.dingtalkClientId")}
-            value={form.dingtalk_client_id}
-            onChange={(e) => update("dingtalk_client_id", e.target.value)}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                style: { fontFamily: "var(--font-mono)" },
-              },
-            }}
-          />
-          <TextField
-            label={t("config.dingtalkClientSecret")}
-            value={form.dingtalk_client_secret}
-            onChange={(e) => update("dingtalk_client_secret", e.target.value)}
-            type={isRevealed("dingtalk_client_secret") ? "text" : "password"}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                ...getRevealHandlers("dingtalk_client_secret"),
-              },
-            }}
-          />
+          <FormGrid>
+            <TextField
+              label={t("config.dingtalkClientId")}
+              value={form.dingtalk_client_id}
+              onChange={(e) => update("dingtalk_client_id", e.target.value)}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  style: { fontFamily: "var(--font-mono)" },
+                },
+              }}
+            />
+            <TextField
+              label={t("config.dingtalkClientSecret")}
+              value={form.dingtalk_client_secret}
+              onChange={(e) => update("dingtalk_client_secret", e.target.value)}
+              type={isRevealed("dingtalk_client_secret") ? "text" : "password"}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  ...getRevealHandlers("dingtalk_client_secret"),
+                },
+              }}
+            />
+          </FormGrid>
         </FormSectionSubCollapsible>
         ) : null}
 
@@ -379,45 +386,47 @@ export function ChannelsConfigPage() {
           title={t("config.wecom")}
           defaultOpen={form.enabled_channel === "wecom"}
         >
-          <TextField
-            label={t("config.wecomBotId")}
-            value={form.wecom_bot_id}
-            onChange={(e) => update("wecom_bot_id", e.target.value)}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                style: { fontFamily: "var(--font-mono)" },
-              },
-            }}
-          />
-          <TextField
-            label={t("config.wecomBotSecret")}
-            value={form.wecom_bot_secret}
-            onChange={(e) => update("wecom_bot_secret", e.target.value)}
-            type={isRevealed("wecom_bot_secret") ? "text" : "password"}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                ...getRevealHandlers("wecom_bot_secret"),
-              },
-            }}
-          />
-          <TextField
-            label={t("config.wecomWsUrl")}
-            value={form.wecom_ws_url}
-            onChange={(e) => update("wecom_ws_url", e.target.value)}
-            type="url"
-            fullWidth
-            helperText={`${form.wecom_ws_url.length}/${MAX_URL}`}
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_URL,
-                style: { fontFamily: "var(--font-mono)" },
-              },
-            }}
-          />
+          <FormGrid>
+            <TextField
+              label={t("config.wecomBotId")}
+              value={form.wecom_bot_id}
+              onChange={(e) => update("wecom_bot_id", e.target.value)}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  style: { fontFamily: "var(--font-mono)" },
+                },
+              }}
+            />
+            <TextField
+              label={t("config.wecomBotSecret")}
+              value={form.wecom_bot_secret}
+              onChange={(e) => update("wecom_bot_secret", e.target.value)}
+              type={isRevealed("wecom_bot_secret") ? "text" : "password"}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  ...getRevealHandlers("wecom_bot_secret"),
+                },
+              }}
+            />
+            <TextField
+              label={t("config.wecomWsUrl")}
+              value={form.wecom_ws_url}
+              onChange={(e) => update("wecom_ws_url", e.target.value)}
+              type="url"
+              fullWidth
+              helperText={`${form.wecom_ws_url.length}/${MAX_URL}`}
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_URL,
+                  style: { fontFamily: "var(--font-mono)" },
+                },
+              }}
+            />
+          </FormGrid>
         </FormSectionSubCollapsible>
         ) : null}
 
@@ -426,58 +435,58 @@ export function ChannelsConfigPage() {
           title={t("config.qqChannel")}
           defaultOpen={form.enabled_channel === "qq_channel"}
         >
-          <TextField
-            label={t("config.qqChannelAppId")}
-            value={form.qq_channel_app_id}
-            onChange={(e) => update("qq_channel_app_id", e.target.value)}
-            fullWidth
-            slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
-          />
-          <TextField
-            label={t("config.qqChannelSecret")}
-            value={form.qq_channel_secret}
-            onChange={(e) => update("qq_channel_secret", e.target.value)}
-            type={isRevealed("qq_channel_secret") ? "text" : "password"}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                ...getRevealHandlers("qq_channel_secret"),
-              },
-            }}
-          />
+          <FormGrid>
+            <TextField
+              label={t("config.qqChannelAppId")}
+              value={form.qq_channel_app_id}
+              onChange={(e) => update("qq_channel_app_id", e.target.value)}
+              fullWidth
+              slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+            />
+            <TextField
+              label={t("config.qqChannelSecret")}
+              value={form.qq_channel_secret}
+              onChange={(e) => update("qq_channel_secret", e.target.value)}
+              type={isRevealed("qq_channel_secret") ? "text" : "password"}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  ...getRevealHandlers("qq_channel_secret"),
+                },
+              }}
+            />
+          </FormGrid>
         </FormSectionSubCollapsible>
         ) : null}
 
         <FormSectionSubCollapsible title="Webhook" defaultOpen={form.webhook_enabled}>
-          <FormControlLabel
+          <FormSwitchRow
+            title={t("config.webhookEnabled")}
+            divider={false}
             control={
               <Switch
                 checked={form.webhook_enabled}
                 onChange={(e) => update("webhook_enabled", e.target.checked)}
-                sx={{
-                  "& .MuiSwitch-switchBase": {
-                    borderRadius: "var(--radius-control)",
-                  },
-                }}
               />
             }
-            label={t("config.webhookEnabled")}
           />
-          <TextField
-            label={t("config.webhookToken")}
-            value={form.webhook_token}
-            onChange={(e) => update("webhook_token", e.target.value)}
-            type={isRevealed("webhook_token") ? "text" : "password"}
-            fullWidth
-            slotProps={{
-              htmlInput: {
-                maxLength: MAX_LEN,
-                style: { fontFamily: "var(--font-mono)" },
-                ...getRevealHandlers("webhook_token"),
-              },
-            }}
-          />
+          <FormGrid columns={1}>
+            <TextField
+              label={t("config.webhookToken")}
+              value={form.webhook_token}
+              onChange={(e) => update("webhook_token", e.target.value)}
+              type={isRevealed("webhook_token") ? "text" : "password"}
+              fullWidth
+              slotProps={{
+                htmlInput: {
+                  maxLength: MAX_LEN,
+                  style: { fontFamily: "var(--font-mono)" },
+                  ...getRevealHandlers("webhook_token"),
+                },
+              }}
+            />
+          </FormGrid>
         </FormSectionSubCollapsible>
           </>
         )}

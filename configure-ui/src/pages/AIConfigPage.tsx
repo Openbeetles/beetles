@@ -16,7 +16,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Os3dIcon } from "../components/Os3dIcon";
 import { OS_ICON_NAV } from "../config/osIcons";
 import {
-  FormFieldStack,
+  FormGrid,
   FormLoadingSkeleton,
   PanelStateBlock,
   PanelStateLoading,
@@ -428,7 +428,7 @@ export function AIConfigPage() {
                 </Box>
               }
             >
-              <FormFieldStack>
+              <FormGrid>
                 <FormControl fullWidth>
                   <InputLabel id={`llm-provider-${i}`}>{t("config.llmProvider")}</InputLabel>
                   <Select
@@ -481,7 +481,7 @@ export function AIConfigPage() {
                     },
                   }}
                 />
-              </FormFieldStack>
+              </FormGrid>
             </FormSectionSubCollapsible>
           ))}
           <Button

@@ -37,7 +37,9 @@
 - **页级纵向节奏**：配置页根容器优先使用 `PAGE_STACK_OUTER_SX` / `PAGE_SCROLL_STACK_SX`（`src/theme/panelStyles.ts`），**gap** 引用 **`LAYOUT_TOKENS.spacingPageStack`** 等同源常量，避免页面根上手写零散 `gap`。
 - **区块内间距**：小节之间、表单项之间使用 **`LAYOUT_TOKENS`** 中的 **`spacingSectionStack`、`spacingFormFields`** 等，与 `SettingsSection` / `SettingsRow` 节奏一致。
 - **Settings 行**：`SettingsRow` **始终纵向**（标签在上、控件在下）；**说明/helper 不要用窄 `maxWidth`/`ch` 人为过早换行**，保持与正文同宽或自然换行。
-- **表单布局**：**禁止**为「留白」而做左右分栏拉空一栏；需要分组时用 `SettingsSection`、`FormSectionSub`、`FormFieldStack` 等现有结构，而不是空列。
+- **表单布局**：**禁止**为「留白」而做左右分栏拉空一栏；字段矩阵统一使用 `FormGrid`，禁止页面自定义 `fieldGridSx` / `gridTemplateColumns` 复制品。需要分组时用 `SettingsSection`、`FormSectionSub`、`FormSectionSubCollapsible`、`FormFieldStack` 等现有结构，而不是空列。
+- **二元设置行**：Switch / Checkbox 这类二元设置优先使用 `FormSwitchRow`，保持标题、说明与控件在同一基线；不要直接把裸 `FormControlLabel` 散落在复杂表单里。
+- **表单视觉基线**：0.1.0 表单采用 **Modern Workstation** 方向：中性工作站面板、轻量子模块、清晰字段井、低厚度阴影。避免旧式奶油色厚卡片、过大圆角、过多嵌套光泽；Glass Console 只适合状态/诊断面板，不作为全站表单基线。
 - **卡片**：配置区、仪表盘等允许使用 **校准过的 3D 投影栈**（如 `--os3d-content-plate-stack`），但必须配合细描边与材质高光；不要重新发明另一套重影。
 
 ## Shell 布局（桌面隐喻）
@@ -56,6 +58,7 @@
 
 - **静态多行列表**（仅展示、非导航）：`src/theme/listItemStyles.ts` 的 **`SETTINGS_SECTION_LIST_ROW_SX` / `SETTINGS_SECTION_LIST_EMPTY_SX`**（如 Tools / Skills 区块内列表），浅底、圆角与输入 well 一致。
 - **可点击侧栏 / 子导航行**：使用 **`ListItemButton`**，**选中 / hover / 无 ripple** 由 **`appTheme` 的 `MuiListItemButton`** 统一，调用方（如 `ConfigSubNavLayout`）**只写布局类 `sx`**（`py` / `px` / `width` / `whiteSpace` 等），**禁止**在页面重复粘贴 `&.Mui-selected` 色块与圆角。
+- **窄屏子导航**：横向子导航的 `ListItem` 必须按内容宽度排布，禁止继承默认 `width: 100%` 把每个分区撑成一屏；当前路由与可见高亮必须同步。
 
 ### Toast（Snackbar）
 

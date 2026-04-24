@@ -15,12 +15,13 @@ export function FormCard({
     <Box
       sx={{
         p: 2,
-        borderRadius: "calc(var(--radius-card) - 6px)",
-        bgcolor: "color-mix(in srgb, var(--card) 84%, var(--form-group-well))",
+        borderRadius: "var(--radius-control)",
+        bgcolor: "color-mix(in srgb, var(--card) 88%, var(--form-group-well))",
         backgroundImage:
-          "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 100%)",
-        border: "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
-        boxShadow: "var(--os3d-section-module-stack)",
+          "linear-gradient(180deg, color-mix(in srgb, var(--surface) 54%, transparent) 0%, transparent 100%)",
+        border: "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
+        boxShadow:
+          "0 1px 2px color-mix(in srgb, var(--foreground) 5%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 58%, transparent)",
       }}
     >
       {(header || action) && (

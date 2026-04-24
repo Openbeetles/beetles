@@ -11,7 +11,7 @@ interface SectionSubTitleRowProps {
   accentStretch?: boolean;
 }
 
-/** 表单子区块标题：主色竖线 + 标签；折叠 / 非折叠共用，避免两套样式漂移。 */
+/** 表单子区块标题：紧凑状态点 + 标签；折叠 / 非折叠共用，避免两套样式漂移。 */
 export function SectionSubTitleRow({
   title,
   accentStretch = false,
@@ -29,19 +29,19 @@ export function SectionSubTitleRow({
       <Box
         aria-hidden
         sx={{
-          width: accentStretch ? 8 : 7,
+          width: accentStretch ? 9 : 8,
           flexShrink: 0,
-          height: accentStretch ? 18 : 14,
-          borderRadius: 999,
+          height: accentStretch ? 9 : 8,
+          borderRadius: "var(--radius-chip)",
           backgroundColor:
-            "color-mix(in srgb, var(--primary) 16%, var(--surface))",
+            "color-mix(in srgb, var(--primary) 68%, var(--accent))",
           backgroundImage:
-            "linear-gradient(180deg, color-mix(in srgb, #fff 42%, transparent) 0%, transparent 100%)",
+            "linear-gradient(180deg, color-mix(in srgb, var(--primary-fg) 28%, transparent) 0%, transparent 100%)",
           border:
-            "1px solid color-mix(in srgb, var(--primary) 14%, var(--border))",
+            "1px solid color-mix(in srgb, var(--primary) 18%, transparent)",
           boxShadow: [
-            "inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent)",
-            "0 8px 14px -12px color-mix(in srgb, var(--primary) 42%, transparent)",
+            "inset 0 1px 0 color-mix(in srgb, var(--primary-fg) 34%, transparent)",
+            "0 6px 12px -10px color-mix(in srgb, var(--primary) 48%, transparent)",
           ].join(", "),
           alignSelf: "center",
         }}

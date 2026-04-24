@@ -106,13 +106,13 @@ export const DIALOG_FORM_SUBMIT_BAR_SX = {
 export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
   bgcolor: "var(--card)",
-  border: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
   backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 6%, transparent) 34%, transparent 76%)",
-    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 5%, transparent) 0%, transparent 36%, color-mix(in srgb, var(--accent) 4%, transparent) 100%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 40%, transparent) 0%, transparent 68%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 62%, transparent) 0%, transparent 82%)",
+    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 2.5%, transparent) 0%, transparent 42%, color-mix(in srgb, var(--accent) 2%, transparent) 100%)",
   ].join(", "),
-  boxShadow: "var(--os3d-content-plate-stack)",
+  boxShadow:
+    "0 18px 46px color-mix(in srgb, var(--foreground) 8%, transparent), 0 1px 2px color-mix(in srgb, var(--foreground) 5%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 62%, transparent)",
   isolation: "isolate",
 } as const
 
@@ -148,15 +148,15 @@ export const DASHBOARD_CARD_SURFACE_SX = {
  * 表单/设置区内部的二级模块：比主面板更紧、更清爽，读作控制面板里的独立设置簇。
  */
 export const FORM_SECTION_MODULE_SX = {
-  borderRadius: "calc(var(--radius-card) - 2px)",
-  bgcolor: "color-mix(in srgb, var(--surface) 46%, var(--card))",
+  borderRadius: "var(--radius-control)",
+  bgcolor: "color-mix(in srgb, var(--card) 86%, var(--surface))",
   backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 18%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 40%, transparent 88%)",
-    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 4%, transparent) 0%, transparent 100%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 28%, transparent) 0%, transparent 100%)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 58%, transparent) 0%, transparent 86%)",
+    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 2.5%, transparent) 0%, transparent 58%, color-mix(in srgb, var(--accent) 2%, transparent) 100%)",
   ].join(", "),
-  boxShadow: "var(--os3d-section-module-stack)",
-  border: "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
+  boxShadow:
+    "0 1px 2px color-mix(in srgb, var(--foreground) 5%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 64%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
   overflow: "hidden",
   isolation: "isolate",
 } as const
@@ -164,11 +164,12 @@ export const FORM_SECTION_MODULE_SX = {
 /** 二级模块头：轻抬起的标题条，强调结构分组而不是网页 sticky strip。 */
 export const FORM_SECTION_MODULE_HEADER_SX = {
   px: 2,
-  py: 1.45,
-  bgcolor: "color-mix(in srgb, var(--card) 78%, var(--surface))",
+  py: 1.35,
+  bgcolor: "color-mix(in srgb, var(--card) 90%, var(--surface))",
   backgroundImage:
-    "linear-gradient(180deg, color-mix(in srgb, #fff 24%, transparent) 0%, color-mix(in srgb, #fff 8%, transparent) 48%, transparent 84%)",
-  boxShadow: "var(--os3d-section-module-header-stack)",
+    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 68%, transparent) 0%, transparent 100%)",
+  borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+  boxShadow: "none",
 } as const
 
 /** 二级模块正文：保持轻微井感，让字段区和标题条有清晰前后层次。 */
@@ -176,7 +177,33 @@ export const FORM_SECTION_MODULE_BODY_SX = {
   px: 2,
   pt: 2,
   pb: 2,
-  bgcolor: "color-mix(in srgb, var(--card) 84%, var(--form-group-well))",
+  bgcolor: "color-mix(in srgb, var(--card) 92%, var(--form-group-well))",
+} as const
+
+/** 表单内底部操作轨道：提交动作与保存反馈固定在同一基线。 */
+export const FORM_ACTION_BAR_SX = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 1.5,
+  mt: 2,
+  pt: 1.5,
+  borderTop: "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
+} as const
+
+/** 二元设置行：标题/说明在左，Switch/Checkbox 在右，避免 FormControlLabel 漂移。 */
+export const FORM_SWITCH_ROW_SX = {
+  width: "100%",
+  m: 0,
+  px: 0,
+  py: 1.25,
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 1.5,
+  "& .MuiFormControlLabel-label": {
+    flex: "1 1 auto",
+    minWidth: 0,
+  },
 } as const
 
 /**

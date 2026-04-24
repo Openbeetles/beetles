@@ -39,9 +39,6 @@ export function FormSectionSubCollapsible({
       }}
     >
       <Box
-        component="button"
-        type="button"
-        onClick={() => setOpen((o) => !o)}
         sx={{
           ...FORM_SECTION_MODULE_HEADER_SX,
           display: "flex",
@@ -49,38 +46,44 @@ export function FormSectionSubCollapsible({
           justifyContent: "space-between",
           width: "100%",
           gap: 1,
-          border: 0,
-          boxShadow: "var(--os3d-section-module-header-stack)",
-          cursor: "pointer",
-          color: "var(--foreground)",
-          font: "inherit",
-          textAlign: "left",
-          "&:focus-visible": {
-            outline:
-              "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
-            outlineOffset: "var(--focus-ring-offset)",
-          },
         }}
-        aria-expanded={open}
-        aria-controls={collapseId}
-        id={headerId}
-        aria-label={
-          open
-            ? t("form.collapseSection", { title })
-            : t("form.expandSection", { title })
-        }
       >
-        <SectionSubTitleRow title={title} accentStretch />
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          {action != null ? (
-            <Box
-              component="span"
-              onClick={(e) => e.stopPropagation()}
-              sx={{ display: "flex" }}
-            >
-              {action}
-            </Box>
-          ) : null}
+        <Box
+          component="button"
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flex: "1 1 auto",
+            minWidth: 0,
+            gap: 1,
+            p: 0,
+            border: 0,
+            boxShadow: "none",
+            bgcolor: "transparent",
+            cursor: "pointer",
+            color: "var(--foreground)",
+            font: "inherit",
+            textAlign: "left",
+            "&:focus-visible": {
+              outline:
+                "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
+              outlineOffset: "var(--focus-ring-offset)",
+              borderRadius: "var(--radius-control)",
+            },
+          }}
+          aria-expanded={open}
+          aria-controls={collapseId}
+          id={headerId}
+          aria-label={
+            open
+              ? t("form.collapseSection", { title })
+              : t("form.expandSection", { title })
+          }
+        >
+          <SectionSubTitleRow title={title} accentStretch />
           <Box
             component="span"
             sx={{
@@ -89,11 +92,13 @@ export function FormSectionSubCollapsible({
               justifyContent: "center",
               width: "var(--icon-container-md)",
               height: "var(--icon-container-md)",
-              borderRadius: "var(--radius-chip)",
+              borderRadius: "var(--radius-control)",
               flexShrink: 0,
               color: "var(--primary)",
-              bgcolor: "color-mix(in srgb, var(--primary) 10%, var(--card))",
-              boxShadow: "var(--os3d-control-soft-lift-stack)",
+              bgcolor: "color-mix(in srgb, var(--primary) 7%, var(--card))",
+              border:
+                "1px solid color-mix(in srgb, var(--primary) 16%, transparent)",
+              boxShadow: "none",
               transition:
                 "background-color var(--transition-duration) ease, color var(--transition-duration) ease",
             }}
@@ -106,6 +111,11 @@ export function FormSectionSubCollapsible({
             )}
           </Box>
         </Box>
+        {action != null ? (
+          <Box component="span" sx={{ display: "flex", flexShrink: 0 }}>
+            {action}
+          </Box>
+        ) : null}
       </Box>
       <Collapse in={open}>
         <Box

@@ -12,6 +12,8 @@ import Typography from "@mui/material/Typography";
 import CloseRounded from "@mui/icons-material/CloseRounded";
 import {
   InlineAlert,
+  FormCard,
+  FormGrid,
   PageLoadErrorState,
   PanelStateBlock,
   PanelStateLoading,
@@ -31,7 +33,6 @@ import {
 } from "../i18n/providerFields";
 import type { AccountDetail } from "../types/accountConfig";
 import {
-  CONFIG_PANEL_SX,
   DIALOG_FORM_SCROLL_WELL_SX,
   DIALOG_FORM_SUBMIT_BAR_SX,
   TEXT_BODY_TERTIARY_SX,
@@ -466,7 +467,7 @@ export function AccountDetailDialog({
                 />
               ) : (
                 <Stack spacing={2} sx={{ width: "100%" }}>
-                  <Box sx={{ ...CONFIG_PANEL_SX, p: 2 }}>
+                  <FormCard>
                     <Typography variant="subtitle2" color="text.secondary">
                       {t("accounts.detailProvider")}
                     </Typography>
@@ -487,10 +488,10 @@ export function AccountDetailDialog({
                         {a.external_account_id}
                       </Typography>
                     ) : null}
-                  </Box>
+                  </FormCard>
 
                   {asmt ? (
-                    <Box sx={{ ...CONFIG_PANEL_SX, p: 2 }}>
+                    <FormCard>
                       <Typography
                         variant="subtitle2"
                         color="text.secondary"
@@ -545,10 +546,10 @@ export function AccountDetailDialog({
                           </Typography>
                         ) : null}
                       </Stack>
-                    </Box>
+                    </FormCard>
                   ) : null}
 
-                  <Box sx={{ ...CONFIG_PANEL_SX, p: 2 }}>
+                  <FormCard>
                     <Typography
                       variant="subtitle2"
                       color="text.secondary"
@@ -556,23 +557,22 @@ export function AccountDetailDialog({
                     >
                       {t("accounts.providerFields")}
                     </Typography>
-                    <Stack spacing={3}>
+                    <FormGrid>
                       {localizedDetailFields.map((field) => (
-                        <Box key={field.key}>
-                          <ProviderFieldInput
-                            field={field}
-                            value={fieldValues[field.key] ?? ""}
-                            onChange={(nextValue) => {
-                              setFieldValues((prev) => ({
-                                ...prev,
-                                [field.key]: nextValue,
-                              }));
-                            }}
-                          />
-                        </Box>
+                        <ProviderFieldInput
+                          key={field.key}
+                          field={field}
+                          value={fieldValues[field.key] ?? ""}
+                          onChange={(nextValue) => {
+                            setFieldValues((prev) => ({
+                              ...prev,
+                              [field.key]: nextValue,
+                            }));
+                          }}
+                        />
                       ))}
-                    </Stack>
-                  </Box>
+                    </FormGrid>
+                  </FormCard>
 
                 </Stack>
               )}

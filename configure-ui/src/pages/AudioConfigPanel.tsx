@@ -23,6 +23,8 @@ import {
   PanelStateLoading,
   FormSectionSub,
   FormSectionSubCollapsible,
+  FormGrid,
+  FormSwitchRow,
   InlineAlert,
   PageLoadErrorState,
   SaveFeedback,
@@ -168,17 +170,6 @@ export function AudioConfigPanel() {
     })
   }
 
-  const fieldGridSx = {
-    display: 'grid',
-    gap: 2,
-    gridTemplateColumns: {
-      xs: 'minmax(0, 1fr)',
-      md: 'repeat(2, minmax(0, 1fr))',
-    },
-    '& .MuiFormControl-root': {
-      minWidth: 0,
-    },
-  } as const
   const audioOn = form.enabled
   const realtimeReady = audioRealtimeConfigured(form)
   const realtimeWakeEnabled = realtimeReady && form.wake_word.enabled
@@ -360,14 +351,15 @@ export function AudioConfigPanel() {
       >
         <FormFieldStack>
           <FormSectionSub title={t('audioConfig.sectionBasic')}>
-            <FormControlLabel
+            <FormSwitchRow
+              title={t('audioConfig.enabled')}
+              divider={false}
               control={
                 <Switch
                   checked={form.enabled}
                   onChange={(_, checked) => setDraftSafe({ ...form, enabled: checked })}
                 />
               }
-              label={t('audioConfig.enabled')}
             />
             {!audioOn ? (
               <Typography variant="body2" sx={{ mt: 1, color: "var(--text-tertiary)" }}>
@@ -401,7 +393,9 @@ export function AudioConfigPanel() {
                 {activeAudioTab === 0 && (
                   <>
               <FormSectionSub title={t('audioConfig.sectionMicrophone')}>
-                <FormControlLabel
+                <FormSwitchRow
+                  title={t('audioConfig.microphoneEnabled')}
+                  divider={false}
                   control={
                     <Switch
                       checked={form.microphone.enabled}
@@ -413,11 +407,10 @@ export function AudioConfigPanel() {
                       }
                     />
                   }
-                  label={t('audioConfig.microphoneEnabled')}
                 />
                 {micOn ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <Box sx={fieldGridSx}>
+                    <FormGrid>
                     <FormControl fullWidth>
                       <InputLabel id="mic-device-type">{t('audioConfig.deviceType')}</InputLabel>
                       <Select
@@ -465,8 +458,8 @@ export function AudioConfigPanel() {
                         ))}
                       </Select>
                     </FormControl>
-                    </Box>
-                    <Box sx={fieldGridSx}>
+                    </FormGrid>
+                    <FormGrid>
                     <FormControl fullWidth>
                       <InputLabel id="mic-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
                       <Select
@@ -606,12 +599,14 @@ export function AudioConfigPanel() {
                         })
                       }}
                     />
-                    </Box>
+                    </FormGrid>
                   </Box>
                 ) : null}
               </FormSectionSub>
               <FormSectionSub title={t('audioConfig.sectionSpeaker')}>
-                <FormControlLabel
+                <FormSwitchRow
+                  title={t('audioConfig.speakerEnabled')}
+                  divider={false}
                   control={
                     <Switch
                       checked={form.speaker.enabled}
@@ -623,11 +618,10 @@ export function AudioConfigPanel() {
                       }
                     />
                   }
-                  label={t('audioConfig.speakerEnabled')}
                 />
                 {spkOn ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <Box sx={fieldGridSx}>
+                    <FormGrid>
                       <FormControl fullWidth>
                         <InputLabel id="spk-device-type">{t('audioConfig.deviceType')}</InputLabel>
                         <Select
@@ -742,8 +736,8 @@ export function AudioConfigPanel() {
                           </Button>
                         </Box>
                       ) : null}
-                    </Box>
-                    <Box sx={fieldGridSx}>
+                    </FormGrid>
+                    <FormGrid>
                       <FormControl fullWidth>
                         <InputLabel id="spk-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
                         <Select
@@ -842,7 +836,7 @@ export function AudioConfigPanel() {
                           />
                         </>
                       ) : null}
-                    </Box>
+                    </FormGrid>
                     {speakerUsesUsbDevice && selectedUsbAudioDevice && usbSpeakerSupportsInput(selectedUsbAudioDevice) ? (
                       <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                         {t('audioConfig.speakerUsbComboHint')}
@@ -870,7 +864,7 @@ export function AudioConfigPanel() {
                               {t('audioConfig.speechFallbackReservedHelp')}
                             </Typography>
                           ) : null}
-                          <Box sx={fieldGridSx}>
+                          <FormGrid>
                             <FormControl fullWidth>
                               <InputLabel id="speech-provider">{t('audioConfig.serviceProvider')}</InputLabel>
                               <Select
@@ -961,8 +955,8 @@ export function AudioConfigPanel() {
                                 }
                               />
                             ) : null}
-                          </Box>
-                          <Box sx={fieldGridSx}>
+                          </FormGrid>
+                          <FormGrid>
                             {showSpeechInput ? (
                               <FormControl fullWidth>
                                 <InputLabel id="speech-lang">{t('audioConfig.speechLanguage')}</InputLabel>
@@ -1071,7 +1065,7 @@ export function AudioConfigPanel() {
                                 </Select>
                               </FormControl>
                             ) : null}
-                          </Box>
+                          </FormGrid>
                         </Box>
                       </FormSectionSubCollapsible>
                     ) : null}
@@ -1093,7 +1087,7 @@ export function AudioConfigPanel() {
                           label={t('audioConfig.wakeWordEnabled')}
                         />
                         {form.wake_word.enabled ? (
-                          <Box sx={fieldGridSx}>
+                          <FormGrid>
                             {showWakePrompt ? (
                               <TextField
                                 sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
@@ -1263,7 +1257,7 @@ export function AudioConfigPanel() {
                                 })
                               }}
                             />
-                          </Box>
+                          </FormGrid>
                         ) : null}
                       </Box>
                     ) : null}
@@ -1279,7 +1273,7 @@ export function AudioConfigPanel() {
                           <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                             {`${t('audioConfig.realtimeSampleRateHint')} ${realtimeSampleRate} Hz`}
                           </Typography>
-                          <Box sx={fieldGridSx}>
+                          <FormGrid>
                             <FormControl fullWidth>
                               <InputLabel id="realtime-provider">{t('audioConfig.realtimeProvider')}</InputLabel>
                               <Select
@@ -1386,8 +1380,8 @@ export function AudioConfigPanel() {
                                 })
                               }
                             />
-                          </Box>
-                          <Box sx={fieldGridSx}>
+                          </FormGrid>
+                          <FormGrid>
                             <TextField
                               sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
                               label={t('audioConfig.realtimeWsUrl')}
@@ -1419,7 +1413,7 @@ export function AudioConfigPanel() {
                                 })
                               }
                             />
-                          </Box>
+                          </FormGrid>
                         </Box>
                       </FormSectionSubCollapsible>
                     ) : null}
@@ -1430,7 +1424,7 @@ export function AudioConfigPanel() {
                 <>
                   {showAmbientBlock ? (
                     <FormSectionSub title={t('audioConfig.sectionAmbient')}>
-                      <Box sx={fieldGridSx}>
+                      <FormGrid>
                         <FormControlLabel
                           sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
                           control={
@@ -1554,13 +1548,13 @@ export function AudioConfigPanel() {
                             </FormControl>
                           </>
                         ) : null}
-                      </Box>
+                      </FormGrid>
                     </FormSectionSub>
                   ) : null}
 
                   {showLedBlock ? (
                     <FormSectionSub title={t('audioConfig.sectionLed')}>
-                      <Box sx={fieldGridSx}>
+                      <FormGrid>
                         <FormControlLabel
                           sx={{ gridColumn: { xs: '1', md: '1 / -1' } }}
                           control={
@@ -1685,7 +1679,7 @@ export function AudioConfigPanel() {
                             </FormControl>
                           </>
                         ) : null}
-                      </Box>
+                      </FormGrid>
                     </FormSectionSub>
                   ) : null}
                 </>

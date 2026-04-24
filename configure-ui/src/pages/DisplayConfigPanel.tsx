@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
@@ -14,6 +13,8 @@ import {
   PanelStateBlock,
   PanelStateLoading,
   FormSectionSub,
+  FormGrid,
+  FormSwitchRow,
   InlineAlert,
   PageLoadErrorState,
   SaveFeedback,
@@ -147,18 +148,6 @@ export function DisplayConfigPanel() {
     });
   };
 
-  const fieldGridSx = {
-    display: "grid",
-    gap: 2,
-    gridTemplateColumns: {
-      xs: "minmax(0, 1fr)",
-      md: "repeat(2, minmax(0, 1fr))",
-    },
-    "& .MuiFormControl-root": {
-      minWidth: 0,
-    },
-  } as const;
-
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
       <InlineAlert
@@ -204,16 +193,17 @@ export function DisplayConfigPanel() {
       >
         <FormFieldStack>
           <FormSectionSub title={t("displayConfig.sectionBasic")}>
-            <FormControlLabel
+            <FormSwitchRow
+              title={t("displayConfig.enabled")}
+              divider={false}
               control={
                 <Switch
                   checked={form.enabled}
                   onChange={(_, checked) => setField("enabled", checked)}
                 />
               }
-              label={t("displayConfig.enabled")}
             />
-            <Box sx={fieldGridSx}>
+            <FormGrid>
               {isLinuxRuntime ? (
                 <TextField
                   select
@@ -307,7 +297,9 @@ export function DisplayConfigPanel() {
                     <MenuItem value="rgb">RGB</MenuItem>
                     <MenuItem value="bgr">BGR</MenuItem>
                   </TextField>
-                  <FormControlLabel
+                  <FormSwitchRow
+                    title={t("displayConfig.invertColors")}
+                    divider={false}
                     control={
                       <Switch
                         checked={form.invert_colors}
@@ -317,11 +309,12 @@ export function DisplayConfigPanel() {
                         disabled={!form.enabled}
                       />
                     }
-                    label={t("displayConfig.invertColors")}
                   />
                   {showLinuxSpiByteSwap ? (
                     <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-                      <FormControlLabel
+                      <FormSwitchRow
+                        title={t("displayConfig.linuxSpiSwapBytes")}
+                        divider={false}
                         control={
                           <Switch
                             checked={form.linux_spi_swap_bytes}
@@ -331,7 +324,6 @@ export function DisplayConfigPanel() {
                             disabled={!form.enabled}
                           />
                         }
-                        label={t("displayConfig.linuxSpiSwapBytes")}
                       />
                       <Typography
                         variant="body2"
@@ -343,11 +335,11 @@ export function DisplayConfigPanel() {
                   ) : null}
                 </>
               ) : null}
-            </Box>
+            </FormGrid>
           </FormSectionSub>
 
           <FormSectionSub title={t("displayConfig.sectionGeometry")}>
-            <Box sx={fieldGridSx}>
+            <FormGrid>
               <TextField
                 type="number"
                 label={t("displayConfig.width")}
@@ -392,12 +384,12 @@ export function DisplayConfigPanel() {
                   />
                 </>
               ) : null}
-            </Box>
+            </FormGrid>
           </FormSectionSub>
 
           {isLinuxRuntime ? (
             <FormSectionSub title={t("displayConfig.sectionFramebuffer")}>
-              <Box sx={fieldGridSx}>
+              <FormGrid>
                 <TextField
                   fullWidth
                   disabled={!form.enabled}
@@ -417,13 +409,13 @@ export function DisplayConfigPanel() {
                     setField("backlight_sysfs", v === "" ? null : e.target.value);
                   }}
                 />
-              </Box>
+              </FormGrid>
             </FormSectionSub>
           ) : null}
 
           {!showLinuxFramebuffer ? (
             <FormSectionSub title={t("displayConfig.sectionSpi")}>
-              <Box sx={fieldGridSx}>
+              <FormGrid>
                 <TextField
                   select
                   fullWidth
@@ -486,7 +478,7 @@ export function DisplayConfigPanel() {
                     editor.markDirty();
                   }}
                 />
-              </Box>
+              </FormGrid>
             </FormSectionSub>
           ) : null}
 
