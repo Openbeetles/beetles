@@ -35,18 +35,9 @@ log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-# QQ 频道 Ed25519 验签；仅在 qq_channel 编译面打开时引入。
-ed25519-dalek = { version = "2.1", optional = true, default-features = false, features = [
-    "std",
-] }
-hex = "0.4"
 getrandom = "0.2"
 indexmap = "2.0"
 base64 = "0.22"
-aes = "0.8"
-cbc = "0.1"
-hmac = "0.12"
-sha2 = "0.10"
 urlencoding = "2.1"
 regex = { version = "1.11", default-features = false, features = ["std"] }
 
@@ -176,8 +167,7 @@ tools_network_extra = []
 thread_panic_catch = []
 
 # Channel surfaces
-# `qq_channel` pulls Ed25519 verification support for QQ inbound validation.
-qq_channel = ["dep:ed25519-dalek"]
+qq_channel = []
 telegram = []
 feishu = [] # 通道核心功能；默认 cargo build 开启，ESP package profile 显式决定是否带入
 dingtalk = []

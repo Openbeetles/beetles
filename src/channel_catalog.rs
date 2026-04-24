@@ -1,7 +1,10 @@
 //! Compile-time channel catalog for runtime/config/display surfaces.
 //! 编译期通道目录：为 capability / config / display / connectivity 提供单一真源。
 
-#[cfg(feature = "dingtalk")]
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 use crate::channel_capability::CHANNEL_DINGTALK;
 #[cfg(feature = "feishu")]
 use crate::channel_capability::CHANNEL_FEISHU;
@@ -41,7 +44,10 @@ const FEISHU_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     show_on_display: true,
 };
 
-#[cfg(feature = "dingtalk")]
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 const DINGTALK_ENTRY: CompiledChannelEntry = CompiledChannelEntry {
     id: CHANNEL_DINGTALK,
     display_label: "DT",
@@ -93,7 +99,10 @@ pub fn compiled_channel_entries() -> &'static [CompiledChannelEntry] {
         TELEGRAM_ENTRY,
         #[cfg(feature = "feishu")]
         FEISHU_ENTRY,
-        #[cfg(feature = "dingtalk")]
+        #[cfg(all(
+            feature = "dingtalk",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         DINGTALK_ENTRY,
         #[cfg(feature = "wecom")]
         WECOM_ENTRY,
@@ -112,7 +121,10 @@ pub fn compiled_enabled_channel_ids() -> &'static [&'static str] {
         CHANNEL_TELEGRAM,
         #[cfg(feature = "feishu")]
         CHANNEL_FEISHU,
-        #[cfg(feature = "dingtalk")]
+        #[cfg(all(
+            feature = "dingtalk",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ))]
         CHANNEL_DINGTALK,
         #[cfg(feature = "wecom")]
         CHANNEL_WECOM,

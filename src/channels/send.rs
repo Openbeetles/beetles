@@ -1,12 +1,47 @@
 //! 通道出站 HTTP 发送与统一失败日志，供各通道 flush 使用。
 //! Shared POST + log-on-failure for channel outbound; reduces duplicate match/log code.
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 use super::ChannelHttpClient;
 use crate::bus::{CanonicalMessageBody, OutboundKind};
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 use crate::error::{Error, Result};
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 use std::time::Duration;
 
 static NEXT_QUEUED_OUTBOUND_ID: AtomicU32 = AtomicU32::new(1);
@@ -22,9 +57,30 @@ pub struct QueuedOutboundMessage {
     pub outbound_kind: OutboundKind,
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) const CHANNEL_SENDER_MAX_RETRIES: u8 = 3;
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 const CHANNEL_SENDER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) enum SenderLoopEvent {
     Message(Box<QueuedOutboundMessage>),
     Timeout,
@@ -39,7 +95,6 @@ pub(crate) fn next_queued_outbound_id() -> u32 {
 #[cfg(any(
     feature = "telegram",
     feature = "dingtalk",
-    feature = "wecom",
     feature = "feishu",
     feature = "qq_channel",
 ))]
@@ -52,7 +107,7 @@ pub fn log_send_failure(tag: &str, res: &Result<(u16, crate::platform::ResponseB
 }
 
 /// 执行 POST，失败时打日志，返回结果供需要解析 body 的调用方使用。
-#[cfg(any(feature = "telegram", feature = "dingtalk", feature = "wecom"))]
+#[cfg(any(feature = "telegram", feature = "dingtalk"))]
 pub fn send_post<H: ChannelHttpClient>(
     tag: &str,
     http: &mut H,
@@ -96,14 +151,35 @@ pub(crate) fn record_outbound_http_failure(error: &crate::error::Error) {
     }
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn start_sender_loop(tag: &str) {
     log::info!("[{}] sender loop started", tag);
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn feed_sender_loop_wdt() {
     crate::platform::task_wdt::feed_current_task();
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn recv_sender_loop_event(
     rx: &Receiver<QueuedOutboundMessage>,
     tag: &str,
@@ -121,11 +197,25 @@ pub(crate) fn recv_sender_loop_event(
     }
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn sleep_sender_retry_delay() {
     std::thread::sleep(Duration::from_secs(2));
     feed_sender_loop_wdt();
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 fn drain_sender_pending(
     rx: &Receiver<QueuedOutboundMessage>,
     pending: &mut VecDeque<QueuedOutboundMessage>,
@@ -135,6 +225,13 @@ fn drain_sender_pending(
     }
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn run_buffered_sender_loop<SendOne>(
     rx: Receiver<QueuedOutboundMessage>,
     tag: &'static str,
@@ -203,6 +300,13 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
     }
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn ensure_sender_http<H, F>(
     http: &mut Option<H>,
     create_http: &mut F,
@@ -234,6 +338,13 @@ where
     }
 }
 
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) fn log_sender_drop(
     tag: &str,
     req_id: Option<&str>,

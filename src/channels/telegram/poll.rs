@@ -313,6 +313,23 @@ fn message_mentions_bot(
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
 
+fn clear_telegram_webhook<H: ChannelHttpClient>(http: &mut H, token: &str) -> Result<()> {
+    let url = format!(
+        "{}{}/deleteWebhook?drop_pending_updates=false",
+        TELEGRAM_API_BASE, token
+    );
+    let (status, _) = http
+        .http_get(&url)
+        .map_err(|e| map_stage(e, "telegram_delete_webhook"))?;
+    if status >= 400 {
+        return Err(Error::Http {
+            status_code: status,
+            stage: "telegram_delete_webhook",
+        });
+    }
+    Ok(())
+}
+
 /// 轮询一次 getUpdates，解析消息并推入 inbound_tx；失败返回 Err 带 stage，调用方退避。
 /// NOTE: 保留参数显式传递，避免把状态收敛到全局可变对象；待后续仅提取参数对象时再移除 allow。
 #[allow(clippy::too_many_arguments)]
@@ -535,10 +552,12 @@ mod tests {
     struct StubHttp {
         get_results: VecDeque<Result<(u16, ResponseBody)>>,
         post_results: VecDeque<Result<(u16, ResponseBody)>>,
+        get_urls: Vec<String>,
     }
 
     impl ChannelHttpClient for StubHttp {
-        fn http_get(&mut self, _url: &str) -> Result<(u16, ResponseBody)> {
+        fn http_get(&mut self, url: &str) -> Result<(u16, ResponseBody)> {
+            self.get_urls.push(url.to_string());
             self.get_results
                 .pop_front()
                 .unwrap_or_else(|| Ok((200, ResponseBody::Heap(br#"{"result":[]}"#.to_vec()))))
@@ -566,6 +585,24 @@ mod tests {
         ) -> Result<(u16, ResponseBody)> {
             self.http_post(_url, _body)
         }
+    }
+
+    #[test]
+    fn telegram_delete_webhook_before_polling_uses_official_switch_back_endpoint() {
+        let mut http = StubHttp {
+            get_results: VecDeque::from([Ok((
+                200,
+                ResponseBody::Heap(br#"{"ok":true,"result":true}"#.to_vec()),
+            ))]),
+            ..Default::default()
+        };
+
+        clear_telegram_webhook(&mut http, "token").expect("clear webhook");
+
+        assert_eq!(
+            http.get_urls,
+            ["https://api.telegram.org/bottoken/deleteWebhook?drop_pending_updates=false"]
+        );
     }
 
     #[derive(Default)]
@@ -754,16 +791,35 @@ pub fn run_telegram_poll_loop<H, F>(
         }
     };
 
-    let bot_username = match super::send::get_bot_username(&mut http, &token) {
-        Ok(Some(u)) => Some(u),
-        _ => None,
-    };
-
+    let mut webhook_cleared = false;
+    let mut bot_username: Option<String> = None;
     let mut offset: Option<i64> = None;
     const POLL_INTERVAL_SECS: u64 = 5;
     const BACKOFF_SECS: u64 = 30;
 
     loop {
+        if !webhook_cleared {
+            match clear_telegram_webhook(&mut http, &token) {
+                Ok(()) => {
+                    webhook_cleared = true;
+                    bot_username = match super::send::get_bot_username(&mut http, &token) {
+                        Ok(Some(u)) => Some(u),
+                        _ => None,
+                    };
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[{}] deleteWebhook before getUpdates failed, retrying in {}s: {}",
+                        TAG_TG,
+                        BACKOFF_SECS,
+                        e
+                    );
+                    ChannelHttpClient::reset_connection_for_retry(&mut http);
+                    std::thread::sleep(std::time::Duration::from_secs(BACKOFF_SECS));
+                    continue;
+                }
+            }
+        }
         match poll_telegram_once(
             &mut http,
             &token,
@@ -780,6 +836,7 @@ pub fn run_telegram_poll_loop<H, F>(
             Err(e) => {
                 log::warn!("[{}] poll failed: {}, backoff {}s", TAG_TG, e, BACKOFF_SECS);
                 ChannelHttpClient::reset_connection_for_retry(&mut http);
+                webhook_cleared = false;
                 std::thread::sleep(std::time::Duration::from_secs(BACKOFF_SECS));
             }
         }

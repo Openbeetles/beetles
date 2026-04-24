@@ -437,17 +437,6 @@ impl ApiResponse {
             body: Self::json_error_body(msg),
         }
     }
-    #[cfg(all(
-        feature = "feishu",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub fn err_404(msg: &str) -> Self {
-        Self {
-            status: 404,
-            status_text: "Not Found",
-            body: Self::json_error_body(msg),
-        }
-    }
     pub fn err_404_key(error_key: &str) -> Self {
         Self::err_key(404, "Not Found", error_key)
     }

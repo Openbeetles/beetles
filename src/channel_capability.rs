@@ -416,14 +416,12 @@ fn channel_is_configured(channel: &str, config: &AppConfig, voice_channel_enable
         }
         #[cfg(feature = "dingtalk")]
         CHANNEL_DINGTALK => {
-            !config.dingtalk_webhook_url.trim().is_empty()
-                || config.enabled_channel == CHANNEL_DINGTALK
+            !config.dingtalk_client_id.trim().is_empty()
+                && !config.dingtalk_client_secret.trim().is_empty()
         }
         #[cfg(feature = "wecom")]
         CHANNEL_WECOM => {
-            !config.wecom_corp_id.trim().is_empty()
-                && !config.wecom_corp_secret.trim().is_empty()
-                && config.wecom_agent_id.trim().parse::<u32>().is_ok()
+            !config.wecom_bot_id.trim().is_empty() && !config.wecom_bot_secret.trim().is_empty()
         }
         #[cfg(feature = "qq_channel")]
         CHANNEL_QQ_CHANNEL => {
@@ -567,9 +565,8 @@ mod tests {
     fn registry_skips_uncompiled_wecom_channel() {
         let mut config = AppConfig::load_from_env();
         config.enabled_channel = CHANNEL_WECOM.to_string();
-        config.wecom_corp_id = "corp".to_string();
-        config.wecom_corp_secret = "secret".to_string();
-        config.wecom_agent_id = "100".to_string();
+        config.wecom_bot_id = "bot-id".to_string();
+        config.wecom_bot_secret = "bot-secret".to_string();
 
         let registry = build_channel_capability_registry(&config, true);
 
@@ -585,7 +582,8 @@ mod tests {
     fn registry_skips_uncompiled_dingtalk_channel() {
         let mut config = AppConfig::load_from_env();
         config.enabled_channel = CHANNEL_DINGTALK.to_string();
-        config.dingtalk_webhook_url = "https://example.com/dingtalk".to_string();
+        config.dingtalk_client_id = "ding-client".to_string();
+        config.dingtalk_client_secret = "ding-secret".to_string();
 
         let registry = build_channel_capability_registry(&config, true);
 

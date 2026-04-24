@@ -5,14 +5,11 @@
     feature = "telegram",
     feature = "feishu",
     feature = "dingtalk",
-    feature = "wecom",
     feature = "qq_channel",
     test
 ))]
 mod chunk;
 mod connectivity;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-mod crypto;
 #[cfg(feature = "dingtalk")]
 pub(crate) mod dingtalk;
 mod dispatch;
@@ -47,6 +44,11 @@ pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectiv
     feature = "dingtalk",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))
 ))]
+pub use dingtalk::run_dingtalk_stream_loop;
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
 pub use dingtalk::DingtalkSessionStore;
 #[cfg(feature = "dingtalk")]
 pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};
@@ -67,24 +69,12 @@ pub use feishu::{
     acquire_tenant_token as feishu_acquire_token, event_body_to_pcmsg, feishu_edit_message,
     feishu_send_and_get_id, flush_feishu_sends, run_feishu_sender_loop, FeishuTokenCache,
 };
-#[cfg(all(
-    feature = "feishu",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub use feishu::{
-    handle_http_event, FeishuEventResponse, FeishuMessageDedupStore, FeishuRequestHeaders,
-};
 pub use http_client::ChannelHttpClient;
 #[cfg(feature = "qq_channel")]
 pub use qq::{
     flush_qq_channel_sends, is_ws_online, new_shared_qq_token_cache, new_shared_qq_ws_status,
     run_qq_sender_loop, QqInboundDedupStore, QqMsgIdCache, SharedQqTokenCache, SharedQqWsStatus,
 };
-#[cfg(all(
-    feature = "qq_channel",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub use qq::{handle_webhook, QqHandlerResult, QQ_WEBHOOK_BODY_MAX};
 #[cfg(feature = "qq_channel")]
 pub use qq::{run_qq_ws_loop, QqWsLoopConfig};
 
@@ -98,7 +88,9 @@ pub use voice_sink::VoiceSink;
 #[cfg(feature = "websocket")]
 pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};
 #[cfg(feature = "wecom")]
-pub use wecom::{flush_wecom_sends, run_wecom_sender_loop};
+pub use wecom::{
+    new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,
+};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use wss_gateway::{connect_esp_wss, EspWssConnection};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

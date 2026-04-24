@@ -243,26 +243,5 @@ pub mod tools;
 pub mod webhook;
 pub mod wifi_scan;
 
-#[cfg(all(
-    feature = "dingtalk",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub mod dingtalk_webhook;
-#[cfg(all(
-    feature = "feishu",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub mod feishu_event;
-#[cfg(all(
-    feature = "qq_channel",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub mod qq_webhook;
-#[cfg(all(
-    feature = "wecom",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub mod wecom_webhook;
-
 #[cfg(feature = "ota")]
 pub mod ota;

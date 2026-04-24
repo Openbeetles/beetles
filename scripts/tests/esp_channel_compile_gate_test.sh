@@ -126,10 +126,18 @@ assert_feature_block_absent "$CARGO_TOML" "default" "dingtalk" \
   "default cargo feature set must not include dingtalk"
 assert_feature_block_absent "$CARGO_TOML" "default" "websocket" \
   "default cargo feature set must not include websocket"
-assert_contains "$CARGO_TOML" '^ed25519-dalek = \{ version = "2\.1", optional = true,' \
-  "ed25519-dalek must only enter the graph when qq_channel is compiled"
-assert_contains "$CARGO_TOML" '^qq_channel = \["dep:ed25519-dalek"\]$' \
-  "qq_channel feature must own the Ed25519 dependency edge"
+assert_absent "$CARGO_TOML" 'ed25519-dalek' \
+  "QQ webhook Ed25519 dependency must not remain after webhook removal"
+assert_absent "$CARGO_TOML" '^hmac = ' \
+  "legacy webhook HMAC dependency must not remain after webhook removal"
+assert_absent "$CARGO_TOML" '^sha2 = ' \
+  "legacy webhook SHA-2 dependency must not remain after webhook removal"
+assert_absent "$CARGO_TOML" '^aes = ' \
+  "legacy webhook AES dependency must not remain after webhook removal"
+assert_absent "$CARGO_TOML" '^cbc = ' \
+  "legacy webhook CBC dependency must not remain after webhook removal"
+assert_absent "$CARGO_TOML" '^hex = ' \
+  "legacy webhook hex dependency must not remain after webhook removal"
 assert_contains "$CARGO_TOML" '^\[package\.metadata\.beetle\.package_profiles\.defaults\]$' \
   "Cargo.toml must define package-profile defaults in package metadata"
 assert_contains "$CARGO_TOML" '^esp = "voice\+vision\+sensor"$' \
@@ -212,8 +220,8 @@ assert_line_guarded "$CHANNELS_MOD_RS" 'acquire_tenant_token as feishu_acquire_t
   "channels/mod.rs must compile-gate Feishu re-exports"
 assert_line_guarded "$CHANNELS_MOD_RS" 'pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};' 'feature = "dingtalk"' \
   "channels/mod.rs must compile-gate DingTalk re-exports"
-assert_line_guarded "$CHANNELS_MOD_RS" 'pub use wecom::{flush_wecom_sends, run_wecom_sender_loop};' 'feature = "wecom"' \
-  "channels/mod.rs must compile-gate WeCom re-exports"
+assert_line_guarded "$CHANNELS_MOD_RS" 'new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,' 'feature = "wecom"' \
+  "channels/mod.rs must compile-gate WeCom AI Bot re-exports"
 assert_line_guarded "$CHANNELS_MOD_RS" 'flush_qq_channel_sends, is_ws_online, new_shared_qq_token_cache, new_shared_qq_ws_status,' 'feature = "qq_channel"' \
   "channels/mod.rs must compile-gate QQ re-exports"
 assert_line_guarded "$CHANNELS_MOD_RS" 'pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};' 'feature = "websocket"' \
@@ -233,8 +241,6 @@ assert_line_guarded "$CHANNELS_DISPATCH_RS" 'if let Some(c) = rx_set.dingtalk.ta
   "dispatch.rs must compile-gate DingTalk sender spawn"
 assert_line_guarded "$CHANNELS_DISPATCH_RS" 'let wecom = if enabled == "wecom"' 'feature = "wecom"' \
   "dispatch.rs must compile-gate WeCom sink assembly"
-assert_line_guarded "$CHANNELS_DISPATCH_RS" 'if let Some(c) = rx_set.wecom.take() {' 'feature = "wecom"' \
-  "dispatch.rs must compile-gate WeCom sender spawn"
 assert_line_guarded "$CHANNELS_DISPATCH_RS" 'let qq_channel = if enabled == "qq_channel"' 'feature = "qq_channel"' \
   "dispatch.rs must compile-gate QQ sink assembly"
 assert_line_guarded "$CHANNELS_DISPATCH_RS" 'if let Some(c) = rx_set.qq_channel.take() {' 'feature = "qq_channel"' \
@@ -257,8 +263,8 @@ assert_line_guarded "$LIB_RS" 'flush_telegram_sends, get_bot_username, poll_tele
   "lib.rs must compile-gate Telegram public re-exports"
 assert_line_guarded "$LIB_RS" 'pub use channels::{flush_dingtalk_sends, run_dingtalk_sender_loop};' 'feature = "dingtalk"' \
   "lib.rs must compile-gate DingTalk public re-exports"
-assert_line_guarded "$LIB_RS" 'pub use channels::{flush_wecom_sends, run_wecom_sender_loop};' 'feature = "wecom"' \
-  "lib.rs must compile-gate WeCom public re-exports"
+assert_line_guarded "$LIB_RS" 'new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,' 'feature = "wecom"' \
+  "lib.rs must compile-gate WeCom AI Bot public re-exports"
 assert_line_guarded "$LIB_RS" 'pub use channels::{flush_qq_channel_sends, run_qq_sender_loop};' 'feature = "qq_channel"' \
   "lib.rs must compile-gate QQ public re-exports"
 assert_line_guarded "$LIB_RS" 'pub use channels::WebSocketSink;' 'feature = "websocket"' \
@@ -267,31 +273,29 @@ assert_line_guarded "$MAIN_RS" 'struct TelegramTypingNotifier {' 'feature = "tel
   "main.rs must compile-gate Telegram typing notifier"
 assert_line_guarded "$MAIN_RS" 'if enabled_channel == "telegram" && !assembly.config.tg_token.trim().is_empty() {' 'feature = "telegram"' \
   "main.rs must compile-gate Telegram poll ingress"
+assert_line_guarded "$MAIN_RS" 'if enabled_channel == "wecom" {' 'feature = "wecom"' \
+  "main.rs must compile-gate WeCom AI Bot WSS ingress"
 assert_contains "$ROOT_DIR/src/orchestrator/state.rs" 'pub fn channel_to_index\(channel: &str\) -> Option<usize>' \
   "orchestrator state must derive channel health indexes from the compiled channel catalog"
 assert_contains "$ROOT_DIR/src/capability_package.rs" 'if channel != "\*" && !crate::channel_catalog::channel_is_compiled\(channel\) \{' \
   "capability package validation must reject channel compatibility entries for uncompiled channels"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod wecom_webhook;' 'feature = "wecom"' \
-  "HTTP handlers must compile-gate the WeCom callback handler"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod dingtalk_webhook;' 'feature = "dingtalk"' \
-  "HTTP handlers must compile-gate the DingTalk callback handler"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod qq_webhook;' 'feature = "qq_channel"' \
-  "HTTP handlers must compile-gate the QQ callback handler"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("GET", ROUTE_WECOM_WEBHOOK) => {' 'feature = "wecom"' \
-  "HTTP router must compile-gate the WeCom verify route"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", ROUTE_WECOM_WEBHOOK) => {' 'feature = "wecom"' \
-  "HTTP router must compile-gate the WeCom callback route"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", ROUTE_DINGTALK_WEBHOOK) => {' 'feature = "dingtalk"' \
-  "HTTP router must compile-gate the DingTalk callback route"
-assert_line_guarded "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" '("POST", ROUTE_WEBHOOK_QQ) => {' 'feature = "qq_channel"' \
-  "HTTP router must compile-gate the QQ callback route"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("GET /api/wecom/webhook".to_string());' 'feature = "wecom"' \
-  "operator surface inventory must only list the WeCom verify route when compiled"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/wecom/webhook".to_string());' 'feature = "wecom"' \
-  "operator surface inventory must only list the WeCom callback route when compiled"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/dingtalk/webhook".to_string());' 'feature = "dingtalk"' \
-  "operator surface inventory must only list the DingTalk callback route when compiled"
-assert_line_guarded "$ROOT_DIR/src/platform/operator_surface.rs" 'endpoints.push("POST /api/webhook/qq".to_string());' 'feature = "qq_channel"' \
-  "operator surface inventory must only list the QQ callback route when compiled"
+assert_absent "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod wecom_webhook;' \
+  "HTTP handlers must not re-register the removed WeCom callback handler"
+assert_absent "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod dingtalk_webhook;' \
+  "HTTP handlers must not re-register the removed DingTalk callback handler"
+assert_absent "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod qq_webhook;' \
+  "HTTP handlers must not re-register the removed QQ callback handler"
+assert_absent "$ROOT_DIR/src/platform/http_server/handlers/mod.rs" 'pub mod feishu_event;' \
+  "HTTP handlers must not re-register the removed Feishu callback handler"
+assert_contains "$ROOT_DIR/src/platform/http_server/router/dispatch.rs" 'social_channel_webhook_routes_are_not_registered' \
+  "HTTP router must keep a regression test proving removed social webhook routes return 404"
+assert_absent "$ROOT_DIR/src/platform/operator_surface.rs" '/api/wecom/webhook' \
+  "operator surface inventory must not list removed WeCom callback routes"
+assert_absent "$ROOT_DIR/src/platform/operator_surface.rs" '/api/dingtalk/webhook' \
+  "operator surface inventory must not list removed DingTalk callback routes"
+assert_absent "$ROOT_DIR/src/platform/operator_surface.rs" '/api/webhook/qq' \
+  "operator surface inventory must not list removed QQ callback routes"
+assert_absent "$ROOT_DIR/src/platform/operator_surface.rs" '/api/feishu/event' \
+  "operator surface inventory must not list removed Feishu callback routes"
 
 echo "esp_channel_compile_gate_test: ok"

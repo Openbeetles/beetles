@@ -289,9 +289,27 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 }
             };
 
+            if last_heartbeat.elapsed() >= heartbeat_interval {
+                let payload = match driver.build_heartbeat(last_seq) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("[{}] build_heartbeat failed: {}", tag, e);
+                        Vec::new()
+                    }
+                };
+                if !payload.is_empty() {
+                    log::debug!("[{}] send heartbeat len={}", tag, payload.len());
+                    if conn.send_binary_owned(payload).is_err() {
+                        log::warn!("[{}] send heartbeat failed", tag);
+                        session_ended = true;
+                        continue;
+                    }
+                }
+                last_heartbeat = Instant::now();
+            }
+
             match conn.recv_timeout(recv_wait) {
                 Ok(Some(WssEvent::Binary(data))) => {
-                    last_heartbeat = Instant::now();
                     log::debug!("[{}] recv binary len={}", tag, data.len());
                     match driver.on_recv(data.as_slice()) {
                         Ok(WssRecvAction::Dispatch(Some(msg))) => {
@@ -421,25 +439,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     );
                     session_ended = true;
                 }
-                Ok(None) => {
-                    if last_heartbeat.elapsed() >= heartbeat_interval {
-                        let payload = match driver.build_heartbeat(last_seq) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                log::warn!("[{}] build_heartbeat failed: {}", tag, e);
-                                continue;
-                            }
-                        };
-                        if !payload.is_empty() {
-                            log::debug!("[{}] send heartbeat len={}", tag, payload.len());
-                            if conn.send_binary_owned(payload).is_err() {
-                                log::warn!("[{}] send heartbeat failed", tag);
-                                session_ended = true;
-                            }
-                        }
-                        last_heartbeat = Instant::now();
-                    }
-                }
+                Ok(None) => {}
                 Err(e) => {
                     crate::metrics::record_error_by_stage(e.metrics_stage());
                     log::warn!("[{}] recv failed: {}", tag, e);

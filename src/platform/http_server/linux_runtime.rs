@@ -25,10 +25,6 @@ pub(crate) fn default_linux_max_body_bytes(path: &str, method: &str) -> usize {
         "/api/capability_packages" => {
             crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN
         }
-        #[cfg(feature = "feishu")]
-        "/api/feishu/event" => 64 * 1024,
-        #[cfg(feature = "qq_channel")]
-        "/api/webhook/qq" => crate::channels::QQ_WEBHOOK_BODY_MAX,
         _ => common::POST_BODY_MAX_LEN,
     }
 }

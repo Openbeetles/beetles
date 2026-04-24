@@ -207,35 +207,6 @@ fn host_control_plane_inventory(
     ];
     if inbound_webhooks_enabled {
         endpoints.push("POST /api/webhook".to_string());
-        #[cfg(all(
-            feature = "feishu",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            endpoints.push("POST /api/feishu/event".to_string());
-        }
-        #[cfg(all(
-            feature = "dingtalk",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            endpoints.push("POST /api/dingtalk/webhook".to_string());
-        }
-        #[cfg(all(
-            feature = "wecom",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            endpoints.push("GET /api/wecom/webhook".to_string());
-            endpoints.push("POST /api/wecom/webhook".to_string());
-        }
-        #[cfg(all(
-            feature = "qq_channel",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        {
-            endpoints.push("POST /api/webhook/qq".to_string());
-        }
     }
     if ota_supported {
         endpoints.push("GET /api/ota/check".to_string());

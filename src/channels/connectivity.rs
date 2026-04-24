@@ -10,15 +10,8 @@ use serde::Serialize;
 
 pub const CONNECTIVITY_NOT_CONFIGURED_KEY: &str = "network.connectivity_not_configured";
 pub const CONNECTIVITY_CHECK_FAILED_KEY: &str = "network.connectivity_check_failed";
-#[cfg(any(
-    feature = "telegram",
-    feature = "feishu",
-    feature = "wecom",
-    feature = "qq_channel"
-))]
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
 pub const CONNECTIVITY_TOKEN_INVALID_KEY: &str = "network.connectivity_token_invalid";
-#[cfg(feature = "dingtalk")]
-pub const CONNECTIVITY_SESSION_REPLY_ONLY_KEY: &str = "network.connectivity_session_reply_only";
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY: &str = "network.channel_connectivity_unavailable";
 
@@ -56,34 +49,16 @@ pub(crate) fn item(
 
 /// Canonical probe outcome for channel connectivity checks.
 /// 通道连通性探测的统一结果口径。
-#[cfg(any(
-    feature = "telegram",
-    feature = "feishu",
-    feature = "dingtalk",
-    feature = "wecom",
-    feature = "qq_channel"
-))]
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
 pub(crate) enum ProbeStatus {
     Ok,
-    #[cfg(any(
-        feature = "telegram",
-        feature = "feishu",
-        feature = "wecom",
-        feature = "qq_channel"
-    ))]
     InvalidToken,
     CheckFailed,
 }
 
 /// Builds a connectivity item from a common "configured -> probe -> normalized message" flow.
 /// 统一处理“已配置 -> 探测 -> 归一化消息”的通道连通性骨架。
-#[cfg(any(
-    feature = "telegram",
-    feature = "feishu",
-    feature = "dingtalk",
-    feature = "wecom",
-    feature = "qq_channel"
-))]
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
 pub(crate) fn probe_item<F>(id: &'static str, configured: bool, probe: F) -> ChannelConnectivityItem
 where
     F: FnOnce() -> ProbeStatus,
@@ -93,12 +68,6 @@ where
     }
     match probe() {
         ProbeStatus::Ok => item(id, true, true, None),
-        #[cfg(any(
-            feature = "telegram",
-            feature = "feishu",
-            feature = "wecom",
-            feature = "qq_channel"
-        ))]
         ProbeStatus::InvalidToken => item(id, true, false, Some(CONNECTIVITY_TOKEN_INVALID_KEY)),
         ProbeStatus::CheckFailed => item(id, true, false, Some(CONNECTIVITY_CHECK_FAILED_KEY)),
     }
@@ -294,9 +263,8 @@ mod tests {
     fn build_snapshot_skips_uncompiled_wecom_channel() {
         let mut config = AppConfig::load_from_env();
         config.enabled_channel = "wecom".to_string();
-        config.wecom_corp_id = "corp".to_string();
-        config.wecom_corp_secret = "secret".to_string();
-        config.wecom_agent_id = "100".to_string();
+        config.wecom_bot_id = "bot-id".to_string();
+        config.wecom_bot_secret = "bot-secret".to_string();
 
         let mut http = StubHttp;
         let snapshot = build_snapshot(&config, &mut http, Locale::Zh);
@@ -308,7 +276,8 @@ mod tests {
     fn build_snapshot_skips_uncompiled_dingtalk_channel() {
         let mut config = AppConfig::load_from_env();
         config.enabled_channel = "dingtalk".to_string();
-        config.dingtalk_webhook_url = "https://example.com/dingtalk".to_string();
+        config.dingtalk_client_id = "ding-client".to_string();
+        config.dingtalk_client_secret = "ding-secret".to_string();
 
         let mut http = StubHttp;
         let snapshot = build_snapshot(&config, &mut http, Locale::Zh);

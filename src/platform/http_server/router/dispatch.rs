@@ -2,26 +2,6 @@
 //! Single route dispatch; behavior matches ESP `register!` in `mod.rs`.
 
 use super::auth;
-#[cfg(all(
-    feature = "dingtalk",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use super::catalog::ROUTE_DINGTALK_WEBHOOK;
-#[cfg(all(
-    feature = "feishu",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use super::catalog::ROUTE_FEISHU_EVENT;
-#[cfg(all(
-    feature = "qq_channel",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use super::catalog::ROUTE_WEBHOOK_QQ;
-#[cfg(all(
-    feature = "wecom",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use super::catalog::ROUTE_WECOM_WEBHOOK;
 use super::catalog::{
     self, OperatorRouteAccess, RouteBodyMode, ROUTE_CAPABILITY_PACKAGES,
     ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CONFIG_AUDIO, ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY,
@@ -50,11 +30,6 @@ use crate::platform::http_server::common::{
 };
 use crate::platform::http_server::handlers::{self, HandlerContext};
 use crate::platform::{HardwareCapability, HardwareDiscoveryBus};
-#[cfg(all(
-    feature = "qq_channel",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use std::sync::Arc;
 
 const OPTIONS_BODY: &[u8] = b" ";
 
@@ -1076,131 +1051,6 @@ pub fn dispatch(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        #[cfg(all(
-            feature = "feishu",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("POST", ROUTE_FEISHU_EVENT) => {
-            let body_str = read_route_body(
-                &incoming.body,
-                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
-            )?;
-            let signature = incoming.header_ci("X-Lark-Signature").unwrap_or("");
-            let timestamp = incoming.header_ci("X-Lark-Request-Timestamp").unwrap_or("");
-            let nonce = incoming.header_ci("X-Lark-Request-Nonce").unwrap_or("");
-            let r = handlers::feishu_event::post(
-                ctx,
-                &env.inbound_tx,
-                &env.feishu_message_dedup_store,
-                signature,
-                timestamp,
-                nonce,
-                body_str,
-            )
-            .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
-        #[cfg(all(
-            feature = "dingtalk",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("POST", ROUTE_DINGTALK_WEBHOOK) => {
-            let body_str = read_route_body(
-                &incoming.body,
-                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
-            )?;
-            let r = handlers::dingtalk_webhook::post(
-                &env.inbound_tx,
-                &env.dingtalk_session_store,
-                body_str,
-            )
-            .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
-        #[cfg(all(
-            feature = "wecom",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("GET", ROUTE_WECOM_WEBHOOK) => {
-            let config = ctx.config();
-            let r = handlers::wecom_webhook::get_verify(
-                uri,
-                &config.wecom_token,
-                &config.wecom_encoding_aes_key,
-                &config.wecom_corp_id,
-            );
-            let headers = if r.status == 200 {
-                CORS_AND_TEXT_PLAIN
-            } else {
-                CORS_HEADERS
-            };
-            Ok(OutgoingResponse::json(
-                r.status,
-                r.status_text,
-                headers,
-                r.body.to_vec(),
-            ))
-        }
-        #[cfg(all(
-            feature = "wecom",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("POST", ROUTE_WECOM_WEBHOOK) => {
-            let body_str = read_route_body(
-                &incoming.body,
-                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
-            )?;
-            let r = handlers::wecom_webhook::post(ctx, uri, &env.inbound_tx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(api_to_out(r))
-        }
-        #[cfg(all(
-            feature = "qq_channel",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        ("POST", ROUTE_WEBHOOK_QQ) => {
-            if !env.qq_webhook_enabled {
-                return Ok(OutgoingResponse::json(
-                    404,
-                    "Not Found",
-                    CORS_HEADERS,
-                    br#"{"error":"not found"}"#.to_vec(),
-                ));
-            }
-            let ts = incoming.header_ci("X-Signature-Timestamp");
-            let sig = incoming.header_ci("X-Signature-Ed25519");
-            match handlers::qq_webhook::post(
-                store,
-                &incoming.body,
-                ts,
-                sig,
-                &env.qq_app_id,
-                &env.qq_secret,
-                &env.inbound_tx,
-                Arc::clone(&env.qq_msg_id_cache),
-                Arc::clone(&env.qq_inbound_dedup_store),
-            ) {
-                Ok(handlers::qq_webhook::QqWebhookOutcome::UrlVerification {
-                    plain_token,
-                    signature,
-                }) => {
-                    let body = serde_json::json!({
-                        "plain_token": plain_token,
-                        "signature": signature
-                    });
-                    Ok(OutgoingResponse::json(
-                        200,
-                        "OK",
-                        CORS_HEADERS,
-                        body.to_string().into_bytes(),
-                    ))
-                }
-                Ok(handlers::qq_webhook::QqWebhookOutcome::EventHandled) => {
-                    Ok(OutgoingResponse::json(200, "OK", CORS_HEADERS, Vec::new()))
-                }
-                Err(r) => Ok(api_to_out(r)),
-            }
-        }
         _ => {
             #[cfg(feature = "ota")]
             {
@@ -1274,15 +1124,8 @@ mod tests {
     use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
-    #[cfg(any(feature = "feishu", feature = "dingtalk", feature = "qq_channel"))]
-    use std::collections::HashMap;
     use std::sync::OnceLock;
-    #[cfg(any(
-        feature = "feishu",
-        feature = "dingtalk",
-        feature = "qq_channel",
-        feature = "capability_office"
-    ))]
+    #[cfg(feature = "capability_office")]
     use std::sync::{Arc, Mutex};
 
     #[cfg(all(
@@ -1307,38 +1150,7 @@ mod tests {
     fn build_router_env() -> RouterEnv {
         let (inbound_tx, _inbound_rx, _inbound_depth) =
             new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            #[cfg(feature = "feishu")]
-            let feishu_message_dedup_store = Arc::new(Mutex::new(HashMap::new()));
-            #[cfg(feature = "dingtalk")]
-            let dingtalk_session_store = Arc::new(Mutex::new(HashMap::new()));
-            #[cfg(feature = "qq_channel")]
-            let qq_msg_id_cache = Arc::new(Mutex::new(HashMap::new()));
-            #[cfg(feature = "qq_channel")]
-            let qq_inbound_dedup_store = Arc::new(Mutex::new(HashMap::new()));
-            RouterEnv::new(
-                inbound_tx,
-                #[cfg(feature = "feishu")]
-                feishu_message_dedup_store,
-                #[cfg(feature = "dingtalk")]
-                dingtalk_session_store,
-                #[cfg(feature = "qq_channel")]
-                qq_msg_id_cache,
-                #[cfg(feature = "qq_channel")]
-                qq_inbound_dedup_store,
-                #[cfg(feature = "qq_channel")]
-                false,
-                #[cfg(feature = "qq_channel")]
-                String::new(),
-                #[cfg(feature = "qq_channel")]
-                String::new(),
-            )
-        }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            RouterEnv::new(inbound_tx)
-        }
+        RouterEnv::new(inbound_tx)
     }
 
     fn build_authed_ctx() -> HandlerContext {
@@ -1348,6 +1160,33 @@ mod tests {
             .expect("set pairing code");
         CSRF_INIT.get_or_init(|| crate::platform::csrf::init().expect("init csrf"));
         ctx
+    }
+
+    #[test]
+    fn social_channel_webhook_routes_are_not_registered() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        for (method, uri) in [
+            ("POST", "/api/feishu/event"),
+            ("POST", "/api/dingtalk/webhook"),
+            ("GET", "/api/wecom/webhook"),
+            ("POST", "/api/wecom/webhook"),
+            ("POST", "/api/webhook/qq"),
+        ] {
+            let out = dispatch(
+                &ctx,
+                &env,
+                IncomingRequest {
+                    method: method.to_string(),
+                    uri: uri.to_string(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            )
+            .expect("dispatch");
+            assert_eq!(out.status, 404, "{method} {uri}");
+        }
     }
 
     #[cfg(all(

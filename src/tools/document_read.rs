@@ -529,7 +529,7 @@ mod tests {
         state_fs
             .write(
                 "config/channels.json",
-                br#"{"tg_token":"123456:live-secret","wecom_corp_secret":"corp-secret","enabled_channel":"telegram"}"#,
+                br#"{"tg_token":"123456:live-secret","wecom_bot_secret":"bot-secret","enabled_channel":"telegram"}"#,
             )
             .unwrap();
         let tool = DocumentReadTool::new(state_fs);
@@ -550,7 +550,7 @@ mod tests {
         assert!(content.contains("[REDACTED]"));
         assert!(content.contains("\"enabled_channel\": \"telegram\""));
         assert!(!content.contains("123456:live-secret"));
-        assert!(!content.contains("corp-secret"));
+        assert!(!content.contains("bot-secret"));
     }
 
     #[test]

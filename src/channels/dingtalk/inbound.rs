@@ -1,4 +1,4 @@
-//! 钉钉入站 Webhook：解析应用机器人回调，缓存 sessionWebhook，并按官方消息体入队。
+//! 钉钉 Stream 入站：解析机器人消息 callback data，缓存 sessionWebhook，并按官方消息体入队。
 
 use crate::bus::{
     AssetSourcePlatform, AudioBody, CanonicalMessageBody, CardBody, CardFormat, FileBody,
@@ -7,7 +7,7 @@ use crate::bus::{
 use crate::error::Result;
 use serde_json::Value;
 
-const TAG: &str = "dingtalk_webhook";
+const TAG: &str = "dingtalk_stream";
 
 /// 钉钉回调请求体核心字段（仅解析需要的部分）。
 #[derive(serde::Deserialize)]
@@ -178,15 +178,15 @@ fn build_body(cb: &DingtalkCallbackBody) -> Result<Option<CanonicalMessageBody>>
     Ok(Some(body))
 }
 
-/// 处理钉钉回调 body，提取消息并入队。返回 Ok(()) 表示成功入队或无需入队。
-pub fn handle(
+fn handle_with_transport(
     body: &str,
     inbound_tx: &InboundTx,
     session_store: &super::DingtalkSessionStore,
-) -> Result<()> {
+    source_transport: MessageTransport,
+) -> Result<bool> {
     let cb: DingtalkCallbackBody = serde_json::from_str(body).map_err(|e| {
         log::warn!("[{}] parse body failed: {}", TAG, e);
-        crate::error::Error::config("dingtalk_webhook", e.to_string())
+        crate::error::Error::config("dingtalk_stream", e.to_string())
     })?;
 
     // chat_id: prefer conversationId (group), fallback to senderId.
@@ -211,7 +211,7 @@ pub fn handle(
     }
     let Some(body) = build_body(&cb)? else {
         log::debug!("[{}] empty or unsupported body, skip", TAG);
-        return Ok(());
+        return Ok(true);
     };
 
     let sender = cb.sender_nick.as_deref().unwrap_or("unknown");
@@ -231,16 +231,31 @@ pub fn handle(
         format!("dingtalk_message:{msg_id}")
     };
     let msg = PcMsg::new_inbound_with_body("dingtalk", chat_id, body, is_group)?
-        .with_inbound_provenance(MessageTransport::Webhook, msg_id, "", inbound_dedup_key);
-    if inbound_tx.send(msg).is_err() {
-        log::warn!("[{}] inbound_tx send failed (queue full?)", TAG);
+        .with_inbound_provenance(source_transport, msg_id, "", inbound_dedup_key);
+    match inbound_tx.try_send(msg) {
+        Ok(()) => Ok(true),
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            log::warn!("[{}] inbound queue full, skip stream ack", TAG);
+            Ok(false)
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::warn!("[{}] inbound_tx disconnected, skip stream ack", TAG);
+            Ok(false)
+        }
     }
-    Ok(())
+}
+
+pub(super) fn handle_stream_callback_body(
+    body: &str,
+    inbound_tx: &InboundTx,
+    session_store: &super::DingtalkSessionStore,
+) -> Result<bool> {
+    handle_with_transport(body, inbound_tx, session_store, MessageTransport::Wss)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::handle;
+    use super::handle_stream_callback_body;
     use crate::bus::{new_inbound_channel, CanonicalMessageBody};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -256,7 +271,7 @@ mod tests {
         let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
-        handle(&body, &inbound_tx, &session_store).expect("handle");
+        handle_stream_callback_body(&body, &inbound_tx, &session_store).expect("handle");
 
         let msg = inbound_rx.try_recv().expect("message");
         assert_eq!(msg.chat_id.as_ref(), "conv-1");
@@ -281,7 +296,7 @@ mod tests {
         let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
-        handle(&body, &inbound_tx, &session_store).expect("handle");
+        handle_stream_callback_body(&body, &inbound_tx, &session_store).expect("handle");
 
         let msg = inbound_rx.try_recv().expect("message");
         match msg.body {
@@ -316,7 +331,7 @@ mod tests {
         let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
-        handle(&body, &inbound_tx, &session_store).expect("handle");
+        handle_stream_callback_body(&body, &inbound_tx, &session_store).expect("handle");
 
         let msg = inbound_rx.try_recv().expect("message");
         match msg.body {

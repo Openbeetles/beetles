@@ -87,7 +87,7 @@ pub const NVS_MAX_VALUE_LEN: usize = 512;
 
 /// 配置字段长度上界（wifi/通道/LLM 单字段）。校验统一引用，避免魔法数。
 pub const CONFIG_FIELD_MAX_LEN: usize = 64;
-/// URL 类字段长度上界（如 dingtalk_webhook_url）。
+/// URL 类字段长度上界（如 wecom_ws_url）。
 pub const CONFIG_URL_MAX_LEN: usize = 512;
 pub const CONFIG_ACCOUNT_KEY_MAX_LEN: usize = 64;
 pub const CONFIG_ACCOUNT_LABEL_MAX_LEN: usize = 64;
@@ -107,8 +107,6 @@ fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
     }
 }
 
-/// 企业微信 default_touser 长度上界。
-pub const CONFIG_WECOM_TOUSER_MAX: usize = 128;
 /// 会话条数合法范围。
 pub const CONFIG_SESSION_MAX_MESSAGES_MIN: u32 = 1;
 pub const CONFIG_SESSION_MAX_MESSAGES_MAX: u32 = 128;
@@ -153,30 +151,25 @@ pub struct AppConfig {
     // Feishu
     pub feishu_app_id: String,
     pub feishu_app_secret: String,
-    /// 飞书事件回调 Verification Token；Webhook 模式明文校验使用。
-    pub feishu_verification_token: String,
-    /// 飞书事件回调 Encrypt Key；配置后 HTTP 事件走签名校验 + AES-256-CBC 解密。
-    pub feishu_encrypt_key: String,
     /// 逗号分隔的 chat_id 白名单；空则拒绝所有入站。环境变量 BEETLE_FEISHU_ALLOWED_CHAT_IDS。
     pub feishu_allowed_chat_ids: String,
 
-    /// 钉钉自定义机器人 Webhook 完整 URL；空则不出站。环境变量 BEETLE_DINGTALK_WEBHOOK_URL。
-    pub dingtalk_webhook_url: String,
+    /// 钉钉 Stream Mode Client ID；用于注册官方长连接。
+    #[serde(default)]
+    pub dingtalk_client_id: String,
+    /// 钉钉 Stream Mode Client Secret；用于注册官方长连接。
+    #[serde(default)]
+    pub dingtalk_client_secret: String,
 
-    /// 企业微信企业 ID；与 wecom_corp_secret、wecom_agent_id 均非空且 agent_id 可解析为 u32 时启用出站。
-    pub wecom_corp_id: String,
-    /// 企业微信应用凭证密钥。
-    pub wecom_corp_secret: String,
-    /// 企业微信应用 ID（整型，存为字符串）。
-    pub wecom_agent_id: String,
-    /// 默认接收人：userid 或 @all；出站时 chat_id 为空则用此值。
-    pub wecom_default_touser: String,
-    /// 企业微信回调 Token（用于签名校验，可选）。
-    pub wecom_token: String,
-    /// 企业微信回调 EncodingAESKey（用于消息加解密，可选）。
-    pub wecom_encoding_aes_key: String,
-    /// 钉钉自定义机器人加签密钥（自定义机器人安全设置的 secret，可选）。
-    pub dingtalk_app_secret: String,
+    /// 企业微信 AI Bot BotID；用于官方长连接订阅。
+    #[serde(default)]
+    pub wecom_bot_id: String,
+    /// 企业微信 AI Bot Secret；用于官方长连接订阅。
+    #[serde(default)]
+    pub wecom_bot_secret: String,
+    /// 企业微信 AI Bot 长连接地址；为空时使用官方默认 `wss://openws.work.weixin.qq.com`。
+    #[serde(default)]
+    pub wecom_ws_url: String,
 
     /// QQ 频道机器人 App ID；与 qq_channel_secret 均非空时启用回调与出站。
     #[serde(default)]
@@ -289,31 +282,18 @@ impl AppConfig {
                 .into(),
             feishu_app_id: option_env!("BEETLE_FEISHU_APP_ID").unwrap_or("").into(),
             feishu_app_secret: option_env!("BEETLE_FEISHU_APP_SECRET").unwrap_or("").into(),
-            feishu_verification_token: option_env!("BEETLE_FEISHU_VERIFICATION_TOKEN")
-                .unwrap_or("")
-                .into(),
-            feishu_encrypt_key: option_env!("BEETLE_FEISHU_ENCRYPT_KEY")
-                .unwrap_or("")
-                .into(),
             feishu_allowed_chat_ids: option_env!("BEETLE_FEISHU_ALLOWED_CHAT_IDS")
                 .unwrap_or("")
                 .into(),
-            dingtalk_webhook_url: option_env!("BEETLE_DINGTALK_WEBHOOK_URL")
+            dingtalk_client_id: option_env!("BEETLE_DINGTALK_CLIENT_ID")
                 .unwrap_or("")
                 .into(),
-            wecom_corp_id: option_env!("BEETLE_WECOM_CORP_ID").unwrap_or("").into(),
-            wecom_corp_secret: option_env!("BEETLE_WECOM_CORP_SECRET").unwrap_or("").into(),
-            wecom_agent_id: option_env!("BEETLE_WECOM_AGENT_ID").unwrap_or("").into(),
-            wecom_default_touser: option_env!("BEETLE_WECOM_DEFAULT_TOUSER")
+            dingtalk_client_secret: option_env!("BEETLE_DINGTALK_CLIENT_SECRET")
                 .unwrap_or("")
                 .into(),
-            wecom_token: option_env!("BEETLE_WECOM_TOKEN").unwrap_or("").into(),
-            wecom_encoding_aes_key: option_env!("BEETLE_WECOM_ENCODING_AES_KEY")
-                .unwrap_or("")
-                .into(),
-            dingtalk_app_secret: option_env!("BEETLE_DINGTALK_APP_SECRET")
-                .unwrap_or("")
-                .into(),
+            wecom_bot_id: option_env!("BEETLE_WECOM_BOT_ID").unwrap_or("").into(),
+            wecom_bot_secret: option_env!("BEETLE_WECOM_BOT_SECRET").unwrap_or("").into(),
+            wecom_ws_url: option_env!("BEETLE_WECOM_WS_URL").unwrap_or("").into(),
             api_key: option_env!("BEETLE_API_KEY").unwrap_or("").into(),
             model: option_env!("BEETLE_MODEL")
                 .unwrap_or("claude-opus-4-5")
@@ -497,24 +477,17 @@ impl AppConfig {
                 self.tg_allowed_chat_ids = seg.tg_allowed_chat_ids;
                 self.feishu_app_id = seg.feishu_app_id;
                 self.feishu_app_secret = seg.feishu_app_secret;
-                self.feishu_verification_token = seg.feishu_verification_token;
-                self.feishu_encrypt_key = seg.feishu_encrypt_key;
                 self.feishu_allowed_chat_ids = seg.feishu_allowed_chat_ids;
-                self.dingtalk_webhook_url = seg.dingtalk_webhook_url;
-                self.wecom_corp_id = seg.wecom_corp_id;
-                self.wecom_corp_secret = seg.wecom_corp_secret;
-                self.wecom_agent_id = seg.wecom_agent_id;
-                self.wecom_default_touser = seg.wecom_default_touser;
-                self.wecom_token = seg.wecom_token;
-                self.wecom_encoding_aes_key = seg.wecom_encoding_aes_key;
-                self.dingtalk_app_secret = seg.dingtalk_app_secret;
+                self.dingtalk_client_id = seg.dingtalk_client_id;
+                self.dingtalk_client_secret = seg.dingtalk_client_secret;
+                self.wecom_bot_id = seg.wecom_bot_id;
+                self.wecom_bot_secret = seg.wecom_bot_secret;
+                self.wecom_ws_url = seg.wecom_ws_url;
                 self.qq_channel_app_id = seg.qq_channel_app_id;
                 self.qq_channel_secret = seg.qq_channel_secret;
                 self.webhook_enabled = seg.webhook_enabled;
                 self.webhook_token = seg.webhook_token;
-                if is_valid_enabled_channel(seg.enabled_channel.as_str()) {
-                    self.enabled_channel = seg.enabled_channel;
-                }
+                self.enabled_channel = seg.enabled_channel;
             }
             Err(e) => {
                 log::warn!("[config] merge_channels_from_json parse failed: {}", e);
@@ -696,8 +669,6 @@ impl AppConfig {
                 }
                 if self.feishu_app_id.len() > CONFIG_FIELD_MAX_LEN
                     || self.feishu_app_secret.len() > CONFIG_FIELD_MAX_LEN
-                    || self.feishu_verification_token.len() > CONFIG_FIELD_MAX_LEN
-                    || self.feishu_encrypt_key.len() > CONFIG_FIELD_MAX_LEN
                 {
                     return Err(Error::config(
                         "config",
@@ -706,30 +677,42 @@ impl AppConfig {
                 }
             }
             "dingtalk" => {
-                if self.dingtalk_webhook_url.len() > CONFIG_URL_MAX_LEN {
+                if self.dingtalk_client_id.trim().is_empty()
+                    || self.dingtalk_client_secret.trim().is_empty()
+                {
                     return Err(Error::config(
                         "config",
-                        format!(
-                            "dingtalk_webhook_url length must be <= {}",
-                            CONFIG_URL_MAX_LEN
-                        ),
+                        "enabled_channel=dingtalk requires dingtalk_client_id and dingtalk_client_secret",
+                    ));
+                }
+                if self.dingtalk_client_id.len() > CONFIG_FIELD_MAX_LEN
+                    || self.dingtalk_client_secret.len() > CONFIG_FIELD_MAX_LEN
+                {
+                    return Err(Error::config(
+                        "config",
+                        format!("dingtalk field length must be <= {}", CONFIG_FIELD_MAX_LEN),
                     ));
                 }
             }
             "wecom" => {
-                if self.wecom_corp_id.trim().is_empty()
-                    || self.wecom_corp_secret.trim().is_empty()
-                    || self.wecom_agent_id.trim().is_empty()
+                if self.wecom_bot_id.trim().is_empty() || self.wecom_bot_secret.trim().is_empty() {
+                    return Err(Error::config(
+                        "config",
+                        "enabled_channel=wecom requires wecom_bot_id and wecom_bot_secret",
+                    ));
+                }
+                if self.wecom_bot_id.len() > CONFIG_FIELD_MAX_LEN
+                    || self.wecom_bot_secret.len() > CONFIG_FIELD_MAX_LEN
                 {
                     return Err(Error::config(
                         "config",
-                        "enabled_channel=wecom requires wecom_corp_id, wecom_corp_secret, wecom_agent_id",
+                        format!("wecom field length must be <= {}", CONFIG_FIELD_MAX_LEN),
                     ));
                 }
-                if self.wecom_agent_id.trim().parse::<u32>().is_err() {
+                if self.wecom_ws_url.len() > CONFIG_URL_MAX_LEN {
                     return Err(Error::config(
                         "config",
-                        "wecom_agent_id must be a valid u32",
+                        format!("wecom_ws_url length must be <= {}", CONFIG_URL_MAX_LEN),
                     ));
                 }
             }
@@ -887,22 +870,22 @@ impl AppConfig {
             "qq_channel_secret",
         )?;
         validate_field_len(
-            &c.dingtalk_webhook_url,
-            CONFIG_URL_MAX_LEN,
-            "dingtalk_webhook_url",
-        )?;
-        validate_field_len(&c.wecom_corp_id, CONFIG_FIELD_MAX_LEN, "wecom_corp_id")?;
-        validate_field_len(
-            &c.wecom_corp_secret,
+            &c.dingtalk_client_id,
             CONFIG_FIELD_MAX_LEN,
-            "wecom_corp_secret",
+            "dingtalk_client_id",
         )?;
-        validate_field_len(&c.wecom_agent_id, CONFIG_FIELD_MAX_LEN, "wecom_agent_id")?;
         validate_field_len(
-            &c.wecom_default_touser,
-            CONFIG_WECOM_TOUSER_MAX,
-            "wecom_default_touser",
+            &c.dingtalk_client_secret,
+            CONFIG_FIELD_MAX_LEN,
+            "dingtalk_client_secret",
         )?;
+        validate_field_len(&c.wecom_bot_id, CONFIG_FIELD_MAX_LEN, "wecom_bot_id")?;
+        validate_field_len(
+            &c.wecom_bot_secret,
+            CONFIG_FIELD_MAX_LEN,
+            "wecom_bot_secret",
+        )?;
+        validate_field_len(&c.wecom_ws_url, CONFIG_URL_MAX_LEN, "wecom_ws_url")?;
         crate::llm::ensure_legacy_llm_sources(&mut c);
         validate_llm_sources(&c.llm_sources)?;
         validate_llm_source_indices(
@@ -1029,27 +1012,17 @@ pub struct ChannelsSegment {
     #[serde(default)]
     pub feishu_app_secret: String,
     #[serde(default)]
-    pub feishu_verification_token: String,
-    #[serde(default)]
-    pub feishu_encrypt_key: String,
-    #[serde(default)]
     pub feishu_allowed_chat_ids: String,
     #[serde(default)]
-    pub dingtalk_webhook_url: String,
+    pub dingtalk_client_id: String,
     #[serde(default)]
-    pub wecom_corp_id: String,
+    pub dingtalk_client_secret: String,
     #[serde(default)]
-    pub wecom_corp_secret: String,
+    pub wecom_bot_id: String,
     #[serde(default)]
-    pub wecom_agent_id: String,
+    pub wecom_bot_secret: String,
     #[serde(default)]
-    pub wecom_default_touser: String,
-    #[serde(default)]
-    pub wecom_token: String,
-    #[serde(default)]
-    pub wecom_encoding_aes_key: String,
-    #[serde(default)]
-    pub dingtalk_app_secret: String,
+    pub wecom_ws_url: String,
     #[serde(default)]
     pub qq_channel_app_id: String,
     #[serde(default)]
@@ -1069,17 +1042,12 @@ impl ChannelsSegment {
             tg_allowed_chat_ids: config.tg_allowed_chat_ids.clone(),
             feishu_app_id: config.feishu_app_id.clone(),
             feishu_app_secret: config.feishu_app_secret.clone(),
-            feishu_verification_token: config.feishu_verification_token.clone(),
-            feishu_encrypt_key: config.feishu_encrypt_key.clone(),
             feishu_allowed_chat_ids: config.feishu_allowed_chat_ids.clone(),
-            dingtalk_webhook_url: config.dingtalk_webhook_url.clone(),
-            wecom_corp_id: config.wecom_corp_id.clone(),
-            wecom_corp_secret: config.wecom_corp_secret.clone(),
-            wecom_agent_id: config.wecom_agent_id.clone(),
-            wecom_default_touser: config.wecom_default_touser.clone(),
-            wecom_token: config.wecom_token.clone(),
-            wecom_encoding_aes_key: config.wecom_encoding_aes_key.clone(),
-            dingtalk_app_secret: config.dingtalk_app_secret.clone(),
+            dingtalk_client_id: config.dingtalk_client_id.clone(),
+            dingtalk_client_secret: config.dingtalk_client_secret.clone(),
+            wecom_bot_id: config.wecom_bot_id.clone(),
+            wecom_bot_secret: config.wecom_bot_secret.clone(),
+            wecom_ws_url: config.wecom_ws_url.clone(),
             qq_channel_app_id: config.qq_channel_app_id.clone(),
             qq_channel_secret: config.qq_channel_secret.clone(),
             webhook_enabled: config.webhook_enabled,
@@ -1732,14 +1700,10 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
     if seg.tg_token.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_id.len() > CONFIG_FIELD_MAX_LEN
-        || seg.feishu_verification_token.len() > CONFIG_FIELD_MAX_LEN
-        || seg.feishu_encrypt_key.len() > CONFIG_FIELD_MAX_LEN
-        || seg.wecom_corp_id.len() > CONFIG_FIELD_MAX_LEN
-        || seg.wecom_corp_secret.len() > CONFIG_FIELD_MAX_LEN
-        || seg.wecom_agent_id.len() > CONFIG_FIELD_MAX_LEN
-        || seg.wecom_token.len() > CONFIG_FIELD_MAX_LEN
-        || seg.wecom_encoding_aes_key.len() > CONFIG_FIELD_MAX_LEN
-        || seg.dingtalk_app_secret.len() > CONFIG_FIELD_MAX_LEN
+        || seg.dingtalk_client_id.len() > CONFIG_FIELD_MAX_LEN
+        || seg.dingtalk_client_secret.len() > CONFIG_FIELD_MAX_LEN
+        || seg.wecom_bot_id.len() > CONFIG_FIELD_MAX_LEN
+        || seg.wecom_bot_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.qq_channel_app_id.len() > CONFIG_FIELD_MAX_LEN
         || seg.qq_channel_secret.len() > CONFIG_FIELD_MAX_LEN
     {
@@ -1748,22 +1712,10 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
             format!("channel field length must be <= {}", CONFIG_FIELD_MAX_LEN),
         ));
     }
-    if seg.dingtalk_webhook_url.len() > CONFIG_URL_MAX_LEN {
+    if seg.wecom_ws_url.len() > CONFIG_URL_MAX_LEN {
         return Err(Error::config(
             "config",
-            format!(
-                "dingtalk_webhook_url length must be <= {}",
-                CONFIG_URL_MAX_LEN
-            ),
-        ));
-    }
-    if seg.wecom_default_touser.len() > CONFIG_WECOM_TOUSER_MAX {
-        return Err(Error::config(
-            "config",
-            format!(
-                "wecom_default_touser length must be <= {}",
-                CONFIG_WECOM_TOUSER_MAX
-            ),
+            format!("wecom_ws_url length must be <= {}", CONFIG_URL_MAX_LEN),
         ));
     }
     Ok(())
@@ -3108,6 +3060,83 @@ mod tests {
 
         assert!(config.proxy_url.is_empty());
         assert_eq!(load_errors, vec!["proxy_unsupported_on_target"]);
+    }
+
+    #[cfg(feature = "dingtalk")]
+    #[test]
+    fn dingtalk_channel_requires_stream_credentials() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = "dingtalk".to_string();
+        config.dingtalk_client_id.clear();
+        config.dingtalk_client_secret.clear();
+
+        let error = config
+            .validate_for_channels()
+            .expect_err("dingtalk requires stream credentials");
+        assert!(error.to_string().contains(
+            "enabled_channel=dingtalk requires dingtalk_client_id and dingtalk_client_secret"
+        ));
+
+        config.dingtalk_client_id = "ding-client".to_string();
+        config.dingtalk_client_secret = "ding-secret".to_string();
+        config
+            .validate_for_channels()
+            .expect("dingtalk stream credentials are sufficient");
+    }
+
+    #[cfg(feature = "wecom")]
+    #[test]
+    fn wecom_channel_requires_aibot_credentials() {
+        let mut config = AppConfig::load_from_env();
+        config.enabled_channel = "wecom".to_string();
+        config.wecom_bot_id.clear();
+        config.wecom_bot_secret.clear();
+
+        let error = config
+            .validate_for_channels()
+            .expect_err("wecom requires ai bot credentials");
+        assert!(error
+            .to_string()
+            .contains("enabled_channel=wecom requires wecom_bot_id and wecom_bot_secret"));
+
+        config.wecom_bot_id = "bot-id".to_string();
+        config.wecom_bot_secret = "bot-secret".to_string();
+        config
+            .validate_for_channels()
+            .expect("wecom ai bot credentials are sufficient");
+    }
+
+    #[test]
+    fn channels_segment_ignores_unknown_removed_fields() {
+        let json = r#"{
+            "enabled_channel": "telegram",
+            "tg_token": "123456:token",
+            "removed_social_webhook_field": "ignored"
+        }"#;
+        let seg: ChannelsSegment = serde_json::from_str(json).expect("unknown fields ignored");
+        assert_eq!(seg.enabled_channel, "telegram");
+        assert_eq!(seg.tg_token, "123456:token");
+
+        let serialized = serde_json::to_value(&seg).expect("serialize segment");
+        assert!(!serialized
+            .as_object()
+            .unwrap()
+            .contains_key("removed_social_webhook_field"));
+    }
+
+    #[test]
+    fn merge_channels_preserves_unavailable_enabled_channel_for_api_warning() {
+        let mut config = AppConfig::load_from_env();
+        let mut errors = Vec::new();
+
+        config.merge_channels_from_json(r#"{"enabled_channel":"future_channel"}"#, &mut errors);
+
+        assert!(errors.is_empty());
+        assert_eq!(config.enabled_channel, "future_channel");
+        assert_eq!(
+            ChannelsSegment::from_app_config(&config).enabled_channel,
+            ""
+        );
     }
 
     #[test]

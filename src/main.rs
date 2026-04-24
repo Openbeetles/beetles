@@ -27,7 +27,15 @@ use beetle::runtime::spawn_planned;
 use beetle::runtime::{spawn_planned_handle, thread_plan};
 #[cfg(feature = "telegram")]
 use beetle::send_chat_action;
-#[cfg(any(feature = "feishu", feature = "qq_channel"))]
+#[cfg(any(
+    feature = "feishu",
+    all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ),
+    feature = "wecom",
+    feature = "qq_channel"
+))]
 use beetle::util::STACK_CHANNEL_WS;
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH};
@@ -130,15 +138,12 @@ struct PreparedRuntimeAssembly {
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     bus: RuntimeBus,
     #[cfg(all(
-        feature = "feishu",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore,
-    #[cfg(all(
         feature = "dingtalk",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     dingtalk_session_store: beetle::channels::DingtalkSessionStore,
+    #[cfg(feature = "wecom")]
+    wecom_aibot_route_store: beetle::channels::WecomAibotRouteStore,
     #[cfg(feature = "qq_channel")]
     qq_msg_id_cache: beetle::channels::QqMsgIdCache,
     #[cfg(feature = "qq_channel")]
@@ -179,41 +184,6 @@ struct HttpServerSpawnContext {
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
     shared_config: Arc<RwLock<AppConfig>>,
-    #[cfg(all(
-        feature = "feishu",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore,
-    #[cfg(all(
-        feature = "dingtalk",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    dingtalk_session_store: beetle::channels::DingtalkSessionStore,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    msg_id_cache: beetle::channels::QqMsgIdCache,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    inbound_dedup_store: beetle::channels::QqInboundDedupStore,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    qq_webhook_enabled: bool,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    qq_app_id: String,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    qq_secret: String,
 }
 
 /// 从 orchestrator snapshot 的 internal 堆空闲字节数估算已用百分比。
@@ -349,20 +319,6 @@ fn spawn_http_config_server(
             ctx.system_inbound_tx,
             ctx.skill_prompt_cache,
             ctx.inbound_tx,
-            #[cfg(feature = "feishu")]
-            ctx.feishu_message_dedup_store,
-            #[cfg(feature = "dingtalk")]
-            ctx.dingtalk_session_store,
-            #[cfg(feature = "qq_channel")]
-            ctx.msg_id_cache,
-            #[cfg(feature = "qq_channel")]
-            ctx.inbound_dedup_store,
-            #[cfg(feature = "qq_channel")]
-            ctx.qq_webhook_enabled,
-            #[cfg(feature = "qq_channel")]
-            ctx.qq_app_id,
-            #[cfg(feature = "qq_channel")]
-            ctx.qq_secret,
             ctx.shared_config,
         );
         if let Err(e) = result {
@@ -439,7 +395,17 @@ fn voice_sink_sender(
         .map(|session| session.tx.clone())
 }
 
-#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ),
+    feature = "wecom",
+    feature = "qq_channel",
+    test
+))]
 fn finalize_required_thread_start<F>(
     tag: &str,
     started_label: &str,
@@ -456,7 +422,17 @@ where
     Ok(())
 }
 
-#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ),
+    feature = "wecom",
+    feature = "qq_channel",
+    test
+))]
 fn spawn_required_planned_thread<F>(
     tag: &str,
     name: &str,
@@ -2291,17 +2267,13 @@ fn prepare_runtime_assembly(
     );
 
     #[cfg(all(
-        feature = "feishu",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    let feishu_message_dedup_store: beetle::channels::FeishuMessageDedupStore =
-        Arc::new(Mutex::new(HashMap::new()));
-    #[cfg(all(
         feature = "dingtalk",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     let dingtalk_session_store: beetle::channels::DingtalkSessionStore =
         Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(feature = "wecom")]
+    let wecom_aibot_route_store = beetle::channels::new_wecom_aibot_route_store();
     #[cfg(feature = "qq_channel")]
     let qq_msg_id_cache: beetle::channels::QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
     #[cfg(feature = "qq_channel")]
@@ -2412,15 +2384,12 @@ fn prepare_runtime_assembly(
         skill_prompt_cache,
         bus,
         #[cfg(all(
-            feature = "feishu",
-            not(any(target_arch = "xtensa", target_arch = "riscv32"))
-        ))]
-        feishu_message_dedup_store,
-        #[cfg(all(
             feature = "dingtalk",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         dingtalk_session_store,
+        #[cfg(feature = "wecom")]
+        wecom_aibot_route_store,
         #[cfg(feature = "qq_channel")]
         qq_msg_id_cache,
         #[cfg(feature = "qq_channel")]
@@ -2458,42 +2427,6 @@ fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Resul
             skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
             inbound_tx: assembly.bus.user_inbound_tx.clone(),
             shared_config: Arc::clone(&shared_runtime_config),
-            #[cfg(all(
-                feature = "feishu",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            feishu_message_dedup_store: Arc::clone(&assembly.feishu_message_dedup_store),
-            #[cfg(all(
-                feature = "dingtalk",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            dingtalk_session_store: Arc::clone(&assembly.dingtalk_session_store),
-            #[cfg(all(
-                feature = "qq_channel",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            msg_id_cache: Arc::clone(&assembly.qq_msg_id_cache),
-            #[cfg(all(
-                feature = "qq_channel",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            inbound_dedup_store: Arc::clone(&assembly.qq_inbound_dedup_store),
-            #[cfg(all(
-                feature = "qq_channel",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            qq_webhook_enabled: !assembly.config.qq_channel_app_id.trim().is_empty()
-                && !assembly.config.qq_channel_secret.trim().is_empty(),
-            #[cfg(all(
-                feature = "qq_channel",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            qq_app_id: assembly.config.qq_channel_app_id.clone(),
-            #[cfg(all(
-                feature = "qq_channel",
-                not(any(target_arch = "xtensa", target_arch = "riscv32"))
-            ))]
-            qq_secret: assembly.config.qq_channel_secret.clone(),
         })?;
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         beetle::orchestrator::log_startup_memory_checkpoint("config_api_spawned");
@@ -2580,6 +2513,8 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
         ))]
         &assembly.dingtalk_session_store,
+        #[cfg(feature = "wecom")]
+        &assembly.wecom_aibot_route_store,
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if assembly.runtime.platform.display_available() {
@@ -2697,6 +2632,81 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                     },
                 )?;
             }
+        }
+    }
+
+    #[cfg(all(
+        feature = "dingtalk",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    if enabled_channel == "dingtalk" {
+        if assembly.config.dingtalk_client_id.trim().is_empty()
+            || assembly.config.dingtalk_client_secret.trim().is_empty()
+        {
+            log::warn!(
+                "[{}] DingTalk Stream not started: client_id or client_secret empty",
+                TAG
+            );
+        } else {
+            let dt_client_id = assembly.config.dingtalk_client_id.clone();
+            let dt_client_secret = assembly.config.dingtalk_client_secret.clone();
+            let dt_inbound_tx = assembly.bus.user_inbound_tx.clone();
+            let dt_session_store = Arc::clone(&assembly.dingtalk_session_store);
+            let http_factory = assembly
+                .network_governor
+                .http_factory(HttpClientClass::Background);
+            spawn_required_planned_thread(
+                TAG,
+                "dingtalk_stream",
+                STACK_CHANNEL_WS,
+                "DingTalk Stream loop started",
+                "dingtalk_stream_spawn",
+                move || {
+                    beetle::run_dingtalk_stream_loop(
+                        dt_client_id,
+                        dt_client_secret,
+                        dt_inbound_tx,
+                        dt_session_store,
+                        move || http_factory(),
+                        beetle::network::connect_external_wss,
+                    )
+                },
+            )?;
+        }
+    }
+
+    #[cfg(feature = "wecom")]
+    if enabled_channel == "wecom" {
+        if let Some(c) = channel_rx_set.wecom.take() {
+            let wc_bot_id = c.bot_id;
+            let wc_bot_secret = c.bot_secret;
+            let wc_websocket_url = c.websocket_url;
+            let wc_inbound_tx = assembly.bus.user_inbound_tx.clone();
+            let wc_route_store = c.route_store;
+            let wc_rx = c.rx;
+            spawn_required_planned_thread(
+                TAG,
+                "wecom_aibot",
+                STACK_CHANNEL_WS,
+                "WeCom AI Bot loop started",
+                "wecom_aibot_spawn",
+                move || {
+                    beetle::run_wecom_aibot_loop(
+                        wc_bot_id,
+                        wc_bot_secret,
+                        wc_websocket_url,
+                        wc_inbound_tx,
+                        wc_rx,
+                        wc_route_store,
+                        beetle::network::connect_external_wss,
+                    )
+                },
+            )?;
+        } else {
+            log::warn!(
+                "[{}] WeCom AI Bot not started: bot_id or bot_secret empty",
+                TAG
+            );
         }
     }
 

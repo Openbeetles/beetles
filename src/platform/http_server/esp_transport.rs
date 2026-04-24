@@ -241,8 +241,6 @@ fn collect_headers(req: &impl Headers) -> Vec<(String, String)> {
         "X-Pairing-Code",
         "X-CSRF-Token",
         "X-Webhook-Token",
-        "X-Signature-Timestamp",
-        "X-Signature-Ed25519",
     ];
     let mut v = Vec::new();
     for name in NAMES {

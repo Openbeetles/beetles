@@ -184,26 +184,6 @@ pub(crate) const ROUTE_SKILLS_IMPORT: &str = "/api/skills/import";
 pub(crate) const ROUTE_RESTART: &str = "/api/restart";
 pub(crate) const ROUTE_CONFIG_RESET: &str = "/api/config_reset";
 pub(crate) const ROUTE_WEBHOOK: &str = "/api/webhook";
-#[cfg(all(
-    feature = "feishu",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub(crate) const ROUTE_FEISHU_EVENT: &str = "/api/feishu/event";
-#[cfg(all(
-    feature = "dingtalk",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub(crate) const ROUTE_DINGTALK_WEBHOOK: &str = "/api/dingtalk/webhook";
-#[cfg(all(
-    feature = "wecom",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub(crate) const ROUTE_WECOM_WEBHOOK: &str = "/api/wecom/webhook";
-#[cfg(all(
-    feature = "qq_channel",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-pub(crate) const ROUTE_WEBHOOK_QQ: &str = "/api/webhook/qq";
 #[cfg(feature = "ota")]
 pub(crate) const ROUTE_OTA_CHECK: &str = "/api/ota/check";
 #[cfg(feature = "ota")]
@@ -599,7 +579,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(&ids[1..], selectable.as_slice());
         #[cfg(feature = "dingtalk")]
-        assert!(ids.contains(&CHANNEL_DINGTALK));
+        assert!(ids.contains(&crate::CHANNEL_DINGTALK));
         #[cfg(not(feature = "dingtalk"))]
         assert!(!ids.contains(&crate::channel_capability::CHANNEL_DINGTALK));
         #[cfg(feature = "qq_channel")]

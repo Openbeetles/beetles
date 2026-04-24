@@ -1,4 +1,4 @@
-//! 钉钉通道：出站优先走应用机器人 sessionWebhook，会话外再回退到自定义机器人 Webhook。
+//! 钉钉通道：出站只走应用机器人 sessionWebhook。
 //! 单条按 4096 字符分片。Sink 统一为 dispatch::QueuedSink。
 
 use crate::bus::{CanonicalMessageBody, CardBody, TextBody, TextFormat};
@@ -9,103 +9,50 @@ use crate::channels::send::{
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 
-use base64::Engine as _;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use crate::channels::dingtalk::active_session_webhook;
 
 /// 单条消息最大字符数，与飞书/Telegram 对齐。
 const DINGTALK_MAX_MESSAGE_LEN: usize = 4096;
 
-const CONNECTIVITY_MESSAGE: &str = "BOT, Hello";
-
-type HmacSha256 = Hmac<Sha256>;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DingtalkWebhookTarget {
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     SessionWebhook(String),
-    CustomWebhook(String),
 }
 
 impl DingtalkWebhookTarget {
     fn webhook_url(&self) -> &str {
         match self {
-            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             Self::SessionWebhook(url) => url,
-            Self::CustomWebhook(url) => url,
         }
     }
 
     fn supports_session_card(&self) -> bool {
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            matches!(self, Self::SessionWebhook(_))
-        }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            let _ = self;
-            false
-        }
+        let _ = self;
+        true
     }
-}
-
-fn signed_custom_webhook_url(webhook_url: &str, secret: &str) -> crate::error::Result<String> {
-    let webhook_url = webhook_url.trim();
-    let secret = secret.trim();
-    if webhook_url.is_empty() || secret.is_empty() {
-        return Ok(webhook_url.to_string());
-    }
-    let timestamp_ms = crate::util::current_unix_secs().saturating_mul(1000);
-    let string_to_sign = format!("{timestamp_ms}\n{secret}");
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| {
-        crate::error::Error::config("dingtalk_sign", format!("invalid secret: {}", e))
-    })?;
-    mac.update(string_to_sign.as_bytes());
-    let sign = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
-    let sep = if webhook_url.contains('?') { '&' } else { '?' };
-    Ok(format!(
-        "{webhook_url}{sep}timestamp={timestamp_ms}&sign={}",
-        urlencoding::encode(&sign)
-    ))
-}
-
-fn resolve_custom_webhook(
-    default_webhook_url: &str,
-    app_secret: &str,
-) -> crate::error::Result<DingtalkWebhookTarget> {
-    if default_webhook_url.trim().is_empty() {
-        return Err(crate::error::Error::config(
-            "dingtalk_send",
-            "no active sessionWebhook and dingtalk_webhook_url is empty",
-        ));
-    }
-    Ok(DingtalkWebhookTarget::CustomWebhook(
-        signed_custom_webhook_url(default_webhook_url, app_secret)?,
-    ))
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn resolve_target_webhook(
-    default_webhook_url: &str,
-    app_secret: &str,
-) -> crate::error::Result<DingtalkWebhookTarget> {
-    resolve_custom_webhook(default_webhook_url, app_secret)
+fn resolve_target_webhook() -> crate::error::Result<DingtalkWebhookTarget> {
+    Err(crate::error::Error::config(
+        "dingtalk_send",
+        "DingTalk sessionWebhook replies require Stream Mode session state",
+    ))
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn resolve_target_webhook(
     chat_id: &str,
-    default_webhook_url: &str,
-    app_secret: &str,
     session_store: &super::DingtalkSessionStore,
 ) -> crate::error::Result<DingtalkWebhookTarget> {
     if let Some(webhook_url) = active_session_webhook(session_store, chat_id)? {
         return Ok(DingtalkWebhookTarget::SessionWebhook(webhook_url));
     }
-    resolve_custom_webhook(default_webhook_url, app_secret)
+    Err(crate::error::Error::config(
+        "dingtalk_send",
+        "no active DingTalk sessionWebhook; wait for an inbound Stream message before replying",
+    ))
 }
 
 fn markdown_title(markdown: &str) -> String {
@@ -270,79 +217,19 @@ fn render_dingtalk_payloads(
     }
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn sender_has_any_target(webhook_url: &str) -> bool {
-    !webhook_url.is_empty()
-}
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn sender_has_any_target(webhook_url: &str, session_store: &super::DingtalkSessionStore) -> bool {
-    if !webhook_url.is_empty() {
-        return true;
-    }
-    session_store
-        .lock()
-        .map(|guard| !guard.is_empty())
-        .unwrap_or(false)
-}
-
 /// 连通性检查：供 GET /api/channel_connectivity 使用。
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
-    http: &mut H,
+    _http: &mut H,
 ) -> super::super::connectivity::ChannelConnectivityItem {
-    if config.dingtalk_webhook_url.trim().is_empty() && config.enabled_channel == "dingtalk" {
-        return crate::channels::connectivity::item(
-            "dingtalk",
-            true,
-            true,
-            Some(crate::channels::connectivity::CONNECTIVITY_SESSION_REPLY_ONLY_KEY),
-        );
-    }
-    let configured = !config.dingtalk_webhook_url.trim().is_empty();
-    crate::channels::connectivity::probe_item("dingtalk", configured, || {
-        let body = serde_json::json!({
-            "msgtype": "text",
-            "text": { "content": CONNECTIVITY_MESSAGE }
-        });
-        let body_bytes = match serde_json::to_vec(&body) {
-            Ok(b) => b,
-            Err(e) => {
-                log::warn!("[dingtalk_connectivity] json: {}", e);
-                return crate::channels::connectivity::ProbeStatus::CheckFailed;
-            }
-        };
-        let signed_url = match signed_custom_webhook_url(
-            config.dingtalk_webhook_url.trim(),
-            &config.dingtalk_app_secret,
-        ) {
-            Ok(url) => url,
-            Err(e) => {
-                log::warn!("[dingtalk_connectivity] sign: {}", e);
-                return crate::channels::connectivity::ProbeStatus::CheckFailed;
-            }
-        };
-        let (status, _) = match http.http_post(&signed_url, &body_bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                log::warn!("[dingtalk_connectivity] post: {}", e);
-                return crate::channels::connectivity::ProbeStatus::CheckFailed;
-            }
-        };
-        if (200..300).contains(&status) {
-            crate::channels::connectivity::ProbeStatus::Ok
-        } else {
-            log::warn!("[dingtalk_connectivity] webhook status {}", status);
-            crate::channels::connectivity::ProbeStatus::CheckFailed
-        }
-    })
+    let configured = !config.dingtalk_client_id.trim().is_empty()
+        && !config.dingtalk_client_secret.trim().is_empty();
+    crate::channels::connectivity::item("dingtalk", configured, configured, None)
 }
 
 fn send_one_dingtalk<H: ChannelHttpClient>(
     http: &mut H,
     message: &QueuedOutboundMessage,
-    default_webhook_url: &str,
-    app_secret: &str,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     session_store: &super::DingtalkSessionStore,
 ) -> crate::error::Result<()> {
@@ -350,8 +237,6 @@ fn send_one_dingtalk<H: ChannelHttpClient>(
     let target = resolve_target_webhook(
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         &message.chat_id,
-        default_webhook_url,
-        app_secret,
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         session_store,
     )?;
@@ -370,25 +255,14 @@ fn send_one_dingtalk<H: ChannelHttpClient>(
 /// 从 rx 取出待发送（一次性 drain）。
 pub fn flush_dingtalk_sends<H: ChannelHttpClient>(
     rx: &std::sync::mpsc::Receiver<QueuedOutboundMessage>,
-    webhook_url: &str,
-    app_secret: &str,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     session_store: &super::DingtalkSessionStore,
     http: &mut H,
 ) {
-    if !sender_has_any_target(
-        webhook_url,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        session_store,
-    ) {
-        return;
-    }
     while let Ok(message) = rx.try_recv() {
         if let Err(error) = send_one_dingtalk(
             http,
             &message,
-            webhook_url,
-            app_secret,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             session_store,
         ) {
@@ -403,8 +277,6 @@ pub fn flush_dingtalk_sends<H: ChannelHttpClient>(
 /// 持续运行的钉钉发送循环：sender 线程内**复用**同一 HTTP 客户端，减轻 lwIP socket / TLS 压力。
 pub fn run_dingtalk_sender_loop<H, F>(
     rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
-    webhook_url: &str,
-    app_secret: &str,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     session_store: &super::DingtalkSessionStore,
     mut create_http: F,
@@ -413,13 +285,6 @@ pub fn run_dingtalk_sender_loop<H, F>(
     F: FnMut() -> crate::error::Result<H>,
 {
     const TAG: &str = "dingtalk_sender";
-    if !sender_has_any_target(
-        webhook_url,
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        session_store,
-    ) {
-        return;
-    }
     let mut http: Option<H> = None;
     run_buffered_sender_loop(rx, TAG, |message, attempt| {
         if !ensure_sender_http(&mut http, &mut create_http, TAG, attempt) {
@@ -434,8 +299,6 @@ pub fn run_dingtalk_sender_loop<H, F>(
         match send_one_dingtalk(
             h,
             message,
-            webhook_url,
-            app_secret,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             session_store,
         ) {
@@ -548,14 +411,21 @@ mod tests {
             "Alert",
         );
         let mut http = FakeHttp::default();
+        let session_store =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        crate::channels::dingtalk::store_session_webhook(
+            &session_store,
+            "chat-1",
+            "https://example.invalid/session",
+            None,
+        )
+        .expect("store session");
 
         send_one_dingtalk(
             &mut http,
             &message,
-            "https://example.invalid/custom",
-            "",
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-            &std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            &session_store,
         )
         .expect("send");
 

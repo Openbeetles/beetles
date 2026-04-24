@@ -1,5 +1,4 @@
 //! 飞书长连接入站：HTTP 取 wss URL，建 WSS，收 protobuf 帧，解析 EVENT 入队。
-//! 与 POST /api/feishu/event HTTP 回调并存。
 //! 委托 wss_gateway 统一循环，本模块实现 FeishuWssDriver。
 
 use crate::bus::InboundTx;

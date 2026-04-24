@@ -1,8 +1,6 @@
-//! 飞书通道：出站 Sink/flush，入站 HTTP 事件与长连接 WS，连通性检查。
+//! 飞书通道：长连接事件入站、OpenAPI 出站与连通性检查。
 //! 一通道一目录，所有飞书相关逻辑集中于此。
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-mod dedup;
 pub(crate) mod send;
 #[allow(unused_imports)]
 pub use send::{
@@ -11,13 +9,6 @@ pub use send::{
     send_and_get_id as feishu_send_and_get_id, FeishuTokenCache, FeishuTokenRequest,
     FeishuTokenResponse, FEISHU_TOKEN_URL,
 };
-
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-mod event;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use dedup::FeishuMessageDedupStore;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub use event::{handle_http_event, FeishuEventResponse, FeishuRequestHeaders};
 
 mod frame;
 // pbbp2 仅 ws 使用，不对外 re-export

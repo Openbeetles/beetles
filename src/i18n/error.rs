@@ -98,16 +98,11 @@ fn map_config_body(m: &str) -> Message {
     if m.starts_with("channel field length must be <=") {
         return Message::ConfigChannelFieldLen;
     }
-    if m.contains("dingtalk_webhook_url length must be <=")
-        || m.contains("wecom_default_touser length must be <=")
-    {
+    if m.contains("wecom_ws_url length must be <=") {
         return Message::ConfigFieldTooLong;
     }
     if m == "wifi_ssid and wifi_pass length must be <=" {
         return Message::ConfigFieldTooLong;
-    }
-    if m == "wecom_agent_id must be a valid u32" {
-        return Message::ConfigRejected;
     }
     if m.contains("enabled_channel=") && m.contains("requires") {
         return Message::ConfigRejected;

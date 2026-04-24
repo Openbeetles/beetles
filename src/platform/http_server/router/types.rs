@@ -2,99 +2,17 @@
 //! Request/response types for the router layer (no esp-idf types).
 
 use crate::bus::InboundTx;
-#[cfg(all(
-    feature = "dingtalk",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use crate::channels::DingtalkSessionStore;
-#[cfg(all(
-    feature = "feishu",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use crate::channels::FeishuMessageDedupStore;
-#[cfg(all(
-    feature = "qq_channel",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use crate::channels::{QqInboundDedupStore, QqMsgIdCache};
 
-/// 与 webhook、QQ 回调相关的跨 handler 资源。
-/// Cross-handler resources for webhooks and QQ callbacks.
+/// Router resources shared by HTTP handlers.
+/// 路由层共享资源；社交通道入站不再通过 HTTP callback 注入。
 #[derive(Clone)]
 pub struct RouterEnv {
     pub inbound_tx: InboundTx,
-    #[cfg(all(
-        feature = "feishu",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub feishu_message_dedup_store: FeishuMessageDedupStore,
-    #[cfg(all(
-        feature = "dingtalk",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub dingtalk_session_store: DingtalkSessionStore,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub qq_msg_id_cache: QqMsgIdCache,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub qq_inbound_dedup_store: QqInboundDedupStore,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub qq_webhook_enabled: bool,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub qq_app_id: String,
-    #[cfg(all(
-        feature = "qq_channel",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
-    pub qq_secret: String,
 }
 
 impl RouterEnv {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     pub fn new(inbound_tx: InboundTx) -> Self {
         Self { inbound_tx }
-    }
-
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        inbound_tx: InboundTx,
-        #[cfg(feature = "feishu")] feishu_message_dedup_store: FeishuMessageDedupStore,
-        #[cfg(feature = "dingtalk")] dingtalk_session_store: DingtalkSessionStore,
-        #[cfg(feature = "qq_channel")] qq_msg_id_cache: QqMsgIdCache,
-        #[cfg(feature = "qq_channel")] qq_inbound_dedup_store: QqInboundDedupStore,
-        #[cfg(feature = "qq_channel")] qq_webhook_enabled: bool,
-        #[cfg(feature = "qq_channel")] qq_app_id: String,
-        #[cfg(feature = "qq_channel")] qq_secret: String,
-    ) -> Self {
-        Self {
-            inbound_tx,
-            #[cfg(feature = "feishu")]
-            feishu_message_dedup_store,
-            #[cfg(feature = "dingtalk")]
-            dingtalk_session_store,
-            #[cfg(feature = "qq_channel")]
-            qq_msg_id_cache,
-            #[cfg(feature = "qq_channel")]
-            qq_inbound_dedup_store,
-            #[cfg(feature = "qq_channel")]
-            qq_webhook_enabled,
-            #[cfg(feature = "qq_channel")]
-            qq_app_id,
-            #[cfg(feature = "qq_channel")]
-            qq_secret,
-        }
     }
 }
 

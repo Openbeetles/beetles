@@ -258,22 +258,20 @@ Request body: `application/json`
 
 Field groups:
 
-- Common: `enabled_channel`
+- Common: `enabled_channel`, `tg_group_activation`
 - Telegram: `tg_token`, `tg_allowed_chat_ids`
-- Feishu: `feishu_app_id`, `feishu_app_secret`, `feishu_verification_token`, `feishu_encrypt_key`, `feishu_allowed_chat_ids`
-- DingTalk: `dingtalk_webhook_url`, `dingtalk_app_secret`
-- WeCom: `wecom_corp_id`, `wecom_corp_secret`, `wecom_agent_id`, `wecom_default_touser`, `wecom_token`, `wecom_encoding_aes_key`
+- Feishu: `feishu_app_id`, `feishu_app_secret`, `feishu_allowed_chat_ids`
+- DingTalk: `dingtalk_client_id`, `dingtalk_client_secret`
+- WeCom: `wecom_bot_id`, `wecom_bot_secret`, `wecom_ws_url`
 - QQ Channel: `qq_channel_app_id`, `qq_channel_secret`
 - Custom webhook: `webhook_enabled`, `webhook_token`
 
 Field notes:
 
-- `feishu_verification_token`: Feishu HTTP event-subscription Verification Token; validated for both plaintext and decrypted event payloads.
-- `feishu_encrypt_key`: Feishu HTTP event-subscription Encrypt Key; when configured, `/api/feishu/event` verifies `X-Lark-Signature` and decrypts `encrypt` using Feishu's official scheme.
-- `dingtalk_webhook_url`: DingTalk custom-robot webhook for proactive sends outside the current conversation; when empty, `enabled_channel=dingtalk` still works in session-reply-only mode via callback `sessionWebhook`.
-- `dingtalk_app_secret`: DingTalk custom-robot signing secret; only used for proactive sends to `dingtalk_webhook_url`.
-- `wecom_token`: WeCom callback Token; `GET/POST /api/wecom/webhook` require it and verify signatures with it.
-- `wecom_encoding_aes_key`: WeCom secure-mode EncodingAESKey; when configured, GET verification decrypts `echostr` and POST decrypts the XML `Encrypt` payload.
+- `dingtalk_client_id` / `dingtalk_client_secret`: DingTalk Stream Mode connection credentials for subscribing to `/v1.0/im/bot/messages/get`.
+- `wecom_bot_id` / `wecom_bot_secret`: WeCom AI Bot long-connection credentials.
+- `wecom_ws_url`: WeCom AI Bot WebSocket URL; when empty, Beetle uses `wss://openws.work.weixin.qq.com`.
+- Legacy social-platform HTTP callback / platform custom-robot fields have been removed from the config model; same-named unknown keys in old config files are ignored. User-owned `POST /api/webhook` remains controlled by `webhook_enabled` / `webhook_token`.
 
 Allowed `enabled_channel` values:
 
@@ -1406,19 +1404,10 @@ Common failures:
 - `413`: content is too large.
 - `503`: message queue is full.
 
-**Platform callback routes**
+**Social-channel transport**
 
-These routes receive platform callback payloads directly. Request bodies, signatures, and validation follow the platform's own rules:
-
-- `POST /api/feishu/event`
-- `POST /api/dingtalk/webhook`
-- `GET /api/wecom/webhook`
-- `POST /api/wecom/webhook`
-- `POST /api/webhook/qq`
-
-Current behavior:
-
-- Feishu: `/api/feishu/event` supports `url_verification` and `im.message.receive_v1`; it validates `feishu_verification_token`, verifies `X-Lark-Signature` and decrypts `encrypt` when `feishu_encrypt_key` is configured, and deduplicates HTTP webhook delivery by `message_id`.
-- DingTalk: `/api/dingtalk/webhook` receives app-robot callbacks and caches `sessionWebhook` for in-session replies; proactive sends still use `dingtalk_webhook_url`, signed with `dingtalk_app_secret` when configured.
-- WeCom: `GET /api/wecom/webhook` supports both plaintext and secure-mode URL verification; `POST /api/wecom/webhook` supports plaintext XML and secure-mode `Encrypt` XML, verifies `msg_signature`, and checks decrypted `receiveid == wecom_corp_id`; when no reply content is needed it returns HTTP 200 with an empty body.
-- QQ: `POST /api/webhook/qq` still verifies signatures with QQ Bot's Ed25519 scheme; outbound group/C2C replies require an existing passive-reply `msg_id`, and connectivity now requires both access-token exchange and an online QQ WebSocket session.
+- Feishu: inbound uses event-subscription long connection; outbound uses Feishu IM OpenAPI.
+- DingTalk: inbound uses Stream Mode WSS; outbound only uses active-session `sessionWebhook`.
+- WeCom: inbound and outbound use AI Bot WSS, defaulting to `wss://openws.work.weixin.qq.com`.
+- QQ: inbound uses Gateway WSS; group/C2C replies still require an existing passive-reply `msg_id`.
+- Telegram: inbound uses `getUpdates` long polling; polling startup calls `deleteWebhook(drop_pending_updates=false)` to clear remote webhook configuration.

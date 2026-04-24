@@ -116,6 +116,11 @@ pub use bus::{
     ImageBody, MediaAssetRef, MediaLocatorKind, MessageBodyKind, MessageBus, PcMsg,
     PlatformNativeBody, TextBody, TextFormat, VideoBody, DEFAULT_CAPACITY, MAX_CONTENT_LEN,
 };
+#[cfg(all(
+    feature = "dingtalk",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+pub use channels::run_dingtalk_stream_loop;
 #[cfg(feature = "feishu")]
 pub use channels::run_feishu_ws_loop;
 #[cfg(any(
@@ -144,7 +149,9 @@ pub use channels::{
     TelegramCommandCtx,
 };
 #[cfg(feature = "wecom")]
-pub use channels::{flush_wecom_sends, run_wecom_sender_loop};
+pub use channels::{
+    new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,
+};
 pub use channels::{
     run_dispatch, ChannelHttpClient, ChannelSinks, LogSink, MessageSink, WssConnectProfile,
 };

@@ -32,7 +32,14 @@ use crate::util::truncate_content_to_max;
     feature = "wecom",
     feature = "qq_channel"
 ))]
-use crate::util::{truncate_content_to_max, STACK_CHANNEL_SENDER};
+use crate::util::truncate_content_to_max;
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "qq_channel"
+))]
+use crate::util::STACK_CHANNEL_SENDER;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 #[cfg(any(
@@ -474,8 +481,6 @@ pub struct FeishuRxConfig {
 #[cfg(feature = "dingtalk")]
 pub struct DingtalkRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
-    pub webhook_url: String,
-    pub app_secret: String,
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub session_store: super::DingtalkSessionStore,
 }
@@ -483,10 +488,10 @@ pub struct DingtalkRxConfig {
 #[cfg(feature = "wecom")]
 pub struct WecomRxConfig {
     pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
-    pub corp_id: String,
-    pub corp_secret: String,
-    pub agent_id: String,
-    pub default_touser: String,
+    pub bot_id: String,
+    pub bot_secret: String,
+    pub websocket_url: String,
+    pub route_store: super::WecomAibotRouteStore,
 }
 
 #[cfg(feature = "qq_channel")]
@@ -528,6 +533,7 @@ pub fn build_channel_sinks(
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     dingtalk_session_store: &super::DingtalkSessionStore,
+    #[cfg(feature = "wecom")] wecom_aibot_route_store: &super::WecomAibotRouteStore,
 ) -> (ChannelSinks, ChannelRxSet) {
     #[cfg(not(any(
         feature = "telegram",
@@ -600,8 +606,6 @@ pub fn build_channel_sinks(
         );
         Some(DingtalkRxConfig {
             rx,
-            webhook_url: config.dingtalk_webhook_url.clone(),
-            app_secret: config.dingtalk_app_secret.clone(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             session_store: Arc::clone(dingtalk_session_store),
         })
@@ -611,18 +615,17 @@ pub fn build_channel_sinks(
 
     #[cfg(feature = "wecom")]
     let wecom = if enabled == "wecom"
-        && !config.wecom_corp_id.trim().is_empty()
-        && !config.wecom_corp_secret.trim().is_empty()
-        && config.wecom_agent_id.trim().parse::<u32>().is_ok()
+        && !config.wecom_bot_id.trim().is_empty()
+        && !config.wecom_bot_secret.trim().is_empty()
     {
         let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register("wecom", Box::new(QueuedSink::new(tx, "wecom_send_queue")));
         Some(WecomRxConfig {
             rx,
-            corp_id: config.wecom_corp_id.clone(),
-            corp_secret: config.wecom_corp_secret.clone(),
-            agent_id: config.wecom_agent_id.clone(),
-            default_touser: config.wecom_default_touser.clone(),
+            bot_id: config.wecom_bot_id.clone(),
+            bot_secret: config.wecom_bot_secret.clone(),
+            websocket_url: config.wecom_ws_url.clone(),
+            route_store: Arc::clone(wecom_aibot_route_store),
         })
     } else {
         None
@@ -671,7 +674,6 @@ pub fn build_channel_sinks(
     feature = "telegram",
     feature = "feishu",
     feature = "dingtalk",
-    feature = "wecom",
     feature = "qq_channel"
 ))]
 fn spawn_sender_thread<F>(
@@ -701,7 +703,6 @@ pub fn spawn_sender_threads(
         feature = "telegram",
         feature = "feishu",
         feature = "dingtalk",
-        feature = "wecom",
         feature = "qq_channel"
     ))]
     const TAG: &str = "beetle";
@@ -709,7 +710,6 @@ pub fn spawn_sender_threads(
         feature = "telegram",
         feature = "feishu",
         feature = "dingtalk",
-        feature = "wecom",
         feature = "qq_channel"
     )))]
     let _ = (&*rx_set, tg_token, &create_http);
@@ -719,7 +719,6 @@ pub fn spawn_sender_threads(
             feature = "telegram",
             feature = "feishu",
             feature = "dingtalk",
-            feature = "wecom",
             feature = "qq_channel"
         )
     ))]
@@ -775,8 +774,6 @@ pub fn spawn_sender_threads(
     if let Some(c) = rx_set.dingtalk.take() {
         let f = Arc::clone(&create_http);
         let dt_rx = c.rx;
-        let dt_url = c.webhook_url;
-        let dt_secret = c.app_secret;
         #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         let dt_session_store = c.session_store;
         spawn_sender_thread(
@@ -792,42 +789,8 @@ pub fn spawn_sender_threads(
                     move || {
                         super::run_dingtalk_sender_loop(
                             dt_rx,
-                            &dt_url,
-                            &dt_secret,
                             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
                             &dt_session_store,
-                            move || f(),
-                        );
-                    },
-                )
-            },
-        )?;
-    }
-    #[cfg(feature = "wecom")]
-    if let Some(c) = rx_set.wecom.take() {
-        let f = Arc::clone(&create_http);
-        let wc_rx = c.rx;
-        let wc_cid = c.corp_id;
-        let wc_sec = c.corp_secret;
-        let wc_aid = c.agent_id;
-        let wc_usr = c.default_touser;
-        spawn_sender_thread(
-            TAG,
-            "WeCom sender thread started",
-            "wecom_sender_spawn",
-            move || {
-                crate::util::spawn_guarded_with_profile_handle(
-                    "wc_sender",
-                    STACK_CHANNEL_SENDER,
-                    Some(crate::util::SpawnCore::Core0),
-                    crate::util::HttpThreadRole::Io,
-                    move || {
-                        super::run_wecom_sender_loop(
-                            wc_rx,
-                            &wc_cid,
-                            &wc_sec,
-                            &wc_aid,
-                            &wc_usr,
                             move || f(),
                         );
                     },
@@ -879,7 +842,6 @@ mod tests {
         feature = "telegram",
         feature = "feishu",
         feature = "dingtalk",
-        feature = "wecom",
         feature = "qq_channel"
     ))]
     use super::spawn_sender_thread;
@@ -972,7 +934,6 @@ mod tests {
         feature = "telegram",
         feature = "feishu",
         feature = "dingtalk",
-        feature = "wecom",
         feature = "qq_channel"
     ))]
     #[test]
