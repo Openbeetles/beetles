@@ -225,7 +225,9 @@ fn load_history_from_path(path: &Path) -> Result<Vec<TurnLedger>> {
     Ok(stored.items)
 }
 
-fn load_recent_persona_evidence_from_path(path: &Path) -> Result<Option<RecentPersonaEvidence>> {
+fn load_recent_persona_evidence_from_path(
+    path: &Path,
+) -> Result<Option<Option<RecentPersonaEvidence>>> {
     let buf = match read_file(path) {
         Ok(buf) => buf,
         Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -234,14 +236,14 @@ fn load_recent_persona_evidence_from_path(path: &Path) -> Result<Option<RecentPe
         Err(error) => return Err(error.with_stage("recent_persona_evidence_read")),
     };
     if buf.is_empty() {
-        return Ok(None);
+        return Ok(Some(None));
     }
     let stored: StoredRecentPersonaEvidence = serde_json::from_slice(&buf)
         .map_err(|e| Error::config("recent_persona_evidence_read", e.to_string()))?;
     if stored.evidence.is_meaningful() {
-        Ok(Some(stored.evidence))
+        Ok(Some(Some(stored.evidence)))
     } else {
-        Ok(None)
+        Ok(Some(None))
     }
 }
 
@@ -307,7 +309,10 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
     fn recent_persona_evidence(&self, chat_id: &str) -> Result<Option<RecentPersonaEvidence>> {
         let path = recent_persona_evidence_path(chat_id)?;
         if let Some(evidence) = load_recent_persona_evidence_from_path(&path)? {
-            return Ok(Some(evidence));
+            return Ok(evidence);
+        }
+        if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
+            return Ok(None);
         }
         let ledgers = self.list_recent(chat_id, RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK)?;
         Ok(derive_recent_persona_evidence(
@@ -347,10 +352,7 @@ impl SpiffsTurnLedgerStore {
         evidence: Option<RecentPersonaEvidence>,
     ) -> Result<()> {
         let path = recent_persona_evidence_path(chat_id)?;
-        let Some(evidence) = evidence else {
-            ignore_missing_remove(&path)?;
-            return Ok(());
-        };
+        let evidence = evidence.unwrap_or_default();
         let json = serde_json::to_vec(&StoredRecentPersonaEvidence { evidence })
             .map_err(|e| Error::config("recent_persona_evidence_write", e.to_string()))?;
         write_file(path, &json)
@@ -465,6 +467,61 @@ mod tests {
         let loaded = store.recent_persona_evidence(&chat_id).unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().meaningful_turns, 1);
+
+        store.clear(&chat_id).unwrap();
+    }
+
+    #[test]
+    fn recent_persona_evidence_empty_sidecar_blocks_history_fallback() {
+        let store = super::SpiffsTurnLedgerStore::new();
+        let chat_id = format!(
+            "recent-persona-empty-sidecar-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        store.clear(&chat_id).unwrap();
+        store.set(&chat_id, &meaningful_persona_ledger()).unwrap();
+
+        let history = history_path(&chat_id).unwrap();
+        let evidence = recent_persona_evidence_path(&chat_id).unwrap();
+        assert!(history.exists());
+        assert!(evidence.exists());
+        super::write_file(&evidence, br#"{"evidence":{}}"#).unwrap();
+
+        let loaded = store.recent_persona_evidence(&chat_id).unwrap();
+        assert!(loaded.is_none());
+
+        store.clear(&chat_id).unwrap();
+    }
+
+    #[test]
+    fn terminal_turn_without_persona_materializes_empty_recent_persona_sidecar() {
+        let store = super::SpiffsTurnLedgerStore::new();
+        let chat_id = format!(
+            "recent-persona-empty-write-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        store.clear(&chat_id).unwrap();
+        let ledger = TurnLedger {
+            ingress: IngressKind::User,
+            status: TurnLedgerStatus::Answered,
+            started_at_ms: 1_000,
+            updated_at_ms: 2_000,
+            finished_at_ms: 2_000,
+            ..TurnLedger::default()
+        };
+
+        store.set(&chat_id, &ledger).unwrap();
+
+        let evidence = recent_persona_evidence_path(&chat_id).unwrap();
+        assert!(evidence.exists());
+        let loaded = store.recent_persona_evidence(&chat_id).unwrap();
+        assert!(loaded.is_none());
 
         store.clear(&chat_id).unwrap();
     }

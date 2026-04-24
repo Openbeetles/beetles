@@ -36,8 +36,8 @@ pub(super) fn enqueue_post_reply_maintenance_job(
     task_learning_selected_ids: &[String],
     reuse_outcome: crate::skills::RuntimeSkillReuseOutcome,
     reuse_outcome_note: &str,
+    memory_profile: crate::memory::MemoryProfile,
 ) -> bool {
-    let _ = system_inbound_tx;
     match crate::agent::has_meaningful_foreground_work_for_chat(
         active_work_store,
         msg.chat_id.as_ref(),
@@ -116,6 +116,35 @@ pub(super) fn enqueue_post_reply_maintenance_job(
             return false;
         }
     };
+    if matches!(memory_profile, crate::memory::MemoryProfile::Embedded) {
+        let due_at = std::time::Instant::now()
+            + std::time::Duration::from_millis(POST_REPLY_MAINTENANCE_DELAY_MS);
+        let scheduled = crate::runtime::schedule_system_inbound_msg(
+            due_at,
+            system_inbound_tx.clone(),
+            job,
+            std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
+            "post_reply_maintenance",
+        );
+        if scheduled {
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::DeferUntil,
+                "post_reply_maintenance_scheduled",
+                crate::runtime::WorkflowEffect::EnqueueSystemJob,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
+            return true;
+        }
+        append_post_reply_workflow_audit(
+            crate::runtime::WorkflowDisposition::ExecuteFailed,
+            "post_reply_maintenance_queue_full",
+            crate::runtime::WorkflowEffect::Noop,
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+        );
+        return false;
+    }
     let key = crate::agent::DetachedWorkKey::new(
         msg.channel.as_ref(),
         msg.chat_id.as_ref(),
@@ -1709,6 +1738,7 @@ mod tests {
             &[],
             crate::skills::RuntimeSkillReuseOutcome::Neutral,
             "final_answer",
+            crate::memory::MemoryProfile::Standard,
         );
 
         assert!(!scheduled);
@@ -1740,6 +1770,7 @@ mod tests {
             &[],
             crate::skills::RuntimeSkillReuseOutcome::Neutral,
             "final_answer",
+            crate::memory::MemoryProfile::Standard,
         );
 
         assert!(scheduled);
@@ -1749,5 +1780,42 @@ mod tests {
             DetachedJobKind::PostReplyMaintenance,
         );
         assert!(store.get(&key).expect("load").is_some());
+    }
+
+    #[test]
+    fn embedded_post_reply_maintenance_uses_delayed_system_queue() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let store = StubDetachedWorkStore::default();
+        let active_work_store = StubActiveWorkStore::default();
+        let (system_inbound_tx, _system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
+
+        let scheduled = enqueue_post_reply_maintenance_job(
+            &active_work_store,
+            &store,
+            &system_inbound_tx,
+            &msg,
+            "请先提供 SMTP 授权码。",
+            0,
+            false,
+            PromptRecallIntent::default(),
+            &[],
+            &[],
+            crate::skills::RuntimeSkillReuseOutcome::Neutral,
+            "final_answer",
+            crate::memory::MemoryProfile::Embedded,
+        );
+
+        assert!(scheduled);
+        let key = DetachedWorkKey::new(
+            "qq_channel",
+            "chat-1",
+            DetachedJobKind::PostReplyMaintenance,
+        );
+        assert!(
+            store.get(&key).expect("load").is_none(),
+            "embedded post-reply scheduling should not write detached-work SPIFFS state on agent_loop"
+        );
     }
 }

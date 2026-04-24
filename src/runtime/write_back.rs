@@ -12,8 +12,7 @@ use crate::memory::{
     RelationshipPortfolioStore, RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore,
     SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
     SessionMessage, SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense,
-    WorldSenseStore, RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK,
-    RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+    WorldSenseStore, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +23,21 @@ use std::time::{Duration, Instant};
 const WRITE_BACK_DELAY_MS: u64 = 75;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 const WRITE_BACK_DELAY_MS: u64 = 25;
+
+type WriteBackTask = Box<dyn FnOnce() + Send + 'static>;
+
+fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBackTask) -> bool {
+    match crate::runtime::schedule_critical_delayed_task(due_at, task) {
+        Ok(()) => true,
+        Err(_) => {
+            log::warn!(
+                "[write_back:{}] critical delayed queue full, keeping pending writes queued",
+                label
+            );
+            false
+        }
+    }
+}
 
 #[derive(Clone)]
 enum PendingValue<V> {
@@ -118,13 +132,8 @@ fn schedule_map_flush<T, V>(
     let delayed_inner = Arc::clone(&inner);
     let delayed_pending = Arc::clone(&pending);
     let task = Box::new(move || flush_map(delayed_inner, delayed_pending, apply));
-    if !crate::runtime::schedule_delayed_task(due_at, task) {
+    if !schedule_write_back_task(pending.label, due_at, task) {
         pending.clear_scheduled();
-        log::warn!(
-            "[write_back:{}] delayed task queue full, flushing inline",
-            pending.label
-        );
-        flush_map(inner, pending, apply);
     }
 }
 
@@ -432,19 +441,8 @@ impl TurnLedgerStore for BufferedTurnLedgerStore {
         match pending {
             Some(None) => Ok(None),
             Some(Some(ledger)) if ledger.status.is_terminal() => {
-                let mut recent = self
-                    .inner
-                    .list_recent(chat_id, RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK)?;
-                recent.retain(|existing| {
-                    let same_req_id =
-                        !ledger.req_id.trim().is_empty() && existing.req_id == ledger.req_id;
-                    let same_started_at =
-                        ledger.started_at_ms > 0 && existing.started_at_ms == ledger.started_at_ms;
-                    !(same_req_id || same_started_at)
-                });
-                recent.insert(0, ledger);
                 Ok(derive_recent_persona_evidence(
-                    &recent,
+                    std::slice::from_ref(&ledger),
                     RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
                 ))
             }
@@ -485,13 +483,8 @@ impl BufferedSessionSummaryStore {
         let pending = Arc::clone(&self.pending);
         let flush_scheduled = Arc::clone(&self.flush_scheduled);
         let task = Box::new(move || flush_session_summary_store(inner, pending, flush_scheduled));
-        if !crate::runtime::schedule_delayed_task(due_at, task) {
+        if !schedule_write_back_task("session_summary_write_back", due_at, task) {
             self.flush_scheduled.store(false, Ordering::Release);
-            flush_session_summary_store(
-                Arc::clone(&self.inner),
-                Arc::clone(&self.pending),
-                Arc::clone(&self.flush_scheduled),
-            );
         }
     }
 }
@@ -599,9 +592,8 @@ fn flush_session_summary_store(
             let next_flag = Arc::clone(&flush_scheduled);
             let task =
                 Box::new(move || flush_session_summary_store(next_inner, next_pending, next_flag));
-            if !crate::runtime::schedule_delayed_task(due_at, task) {
+            if !schedule_write_back_task("session_summary_write_back", due_at, task) {
                 flush_scheduled.store(false, Ordering::Release);
-                flush_session_summary_store(inner, pending, flush_scheduled);
             }
         }
     }
@@ -761,10 +753,8 @@ impl BufferedSessionStore {
         let inner = Arc::clone(&self.inner);
         let pending = Arc::clone(&self.pending);
         let task = Box::new(move || flush_session_store(inner, pending));
-        if !crate::runtime::schedule_delayed_task(due_at, task) {
+        if !schedule_write_back_task("session_store", due_at, task) {
             self.pending.clear_scheduled();
-            log::warn!("[write_back:session_store] delayed task queue full, flushing inline");
-            flush_session_store(Arc::clone(&self.inner), Arc::clone(&self.pending));
         }
     }
 }
@@ -909,7 +899,8 @@ impl SessionStore for BufferedSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{ExecutionStatus, SessionStore};
+    use crate::memory::{ExecutionStatus, SessionStore, TurnLedgerStatus};
+    use std::sync::atomic::AtomicUsize;
 
     #[derive(Default)]
     struct StubExecutionStateStore {
@@ -946,6 +937,50 @@ mod tests {
     #[derive(Default)]
     struct StubSessionStore {
         entries: Mutex<HashMap<String, Vec<SessionMessage>>>,
+    }
+
+    #[derive(Default)]
+    struct CountingTurnLedgerStore {
+        list_recent_calls: AtomicUsize,
+        set_calls: AtomicUsize,
+    }
+
+    impl TurnLedgerStore for CountingTurnLedgerStore {
+        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
+            Ok(None)
+        }
+
+        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+            self.set_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(&self, _chat_id: &str, _limit: usize) -> Result<Vec<TurnLedger>> {
+            self.list_recent_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+    }
+
+    fn meaningful_turn_ledger() -> TurnLedger {
+        TurnLedger {
+            ingress: crate::bus::IngressKind::User,
+            status: TurnLedgerStatus::Answered,
+            started_at_ms: 1_000,
+            updated_at_ms: 2_000,
+            finished_at_ms: 2_000,
+            final_reply_delivered: true,
+            canonical_reply_source: "final_answer".to_string(),
+            persona: Some(crate::memory::TurnPersonaLedger {
+                reply_scope: "brief".to_string(),
+                reply_delivered: true,
+                ..crate::memory::TurnPersonaLedger::default()
+            }),
+            ..TurnLedger::default()
+        }
     }
 
     impl SessionStore for StubSessionStore {
@@ -1000,8 +1035,8 @@ mod tests {
 
     #[test]
     fn buffered_execution_state_reads_pending_before_flush() {
-        let _guard = crate::runtime::delayed_task::delayed_task_test_guard();
-        crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
         let inner: Arc<dyn ExecutionStateStore + Send + Sync> =
             Arc::new(StubExecutionStateStore::default());
         let store = BufferedExecutionStateStore::wrap(inner);
@@ -1023,8 +1058,8 @@ mod tests {
 
     #[test]
     fn buffered_session_store_merges_pending_messages() {
-        let _guard = crate::runtime::delayed_task::delayed_task_test_guard();
-        crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
         let inner: Arc<dyn SessionStore + Send + Sync> = Arc::new(StubSessionStore::default());
         let store = BufferedSessionStore::wrap(inner);
 
@@ -1035,6 +1070,56 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].content, "hi");
         assert_eq!(recent[1].content, "hello");
+    }
+
+    #[test]
+    fn buffered_turn_ledger_uses_pending_terminal_for_recent_persona_evidence() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner = Arc::new(CountingTurnLedgerStore::default());
+        let counter = Arc::clone(&inner);
+        let store = BufferedTurnLedgerStore::wrap(inner as Arc<dyn TurnLedgerStore + Send + Sync>);
+
+        store.set("chat", &meaningful_turn_ledger()).unwrap();
+        let evidence = store.recent_persona_evidence("chat").unwrap();
+
+        assert!(evidence.is_some());
+        assert_eq!(evidence.unwrap().meaningful_turns, 1);
+        assert_eq!(
+            counter.list_recent_calls.load(Ordering::Relaxed),
+            0,
+            "pending terminal evidence must not scan persisted history"
+        );
+    }
+
+    #[test]
+    fn buffered_turn_ledger_keeps_pending_when_delayed_queue_is_full() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let due_at = Instant::now() + Duration::from_secs(60);
+        let mut accepted = 0usize;
+        while crate::runtime::schedule_critical_delayed_task(due_at, Box::new(|| {})).is_ok() {
+            accepted += 1;
+            assert!(
+                accepted < 256,
+                "critical delayed queue cap should be finite"
+            );
+        }
+        assert!(accepted > 0);
+
+        let inner = Arc::new(CountingTurnLedgerStore::default());
+        let counter = Arc::clone(&inner);
+        let store = BufferedTurnLedgerStore::wrap(inner as Arc<dyn TurnLedgerStore + Send + Sync>);
+
+        store.set("chat", &meaningful_turn_ledger()).unwrap();
+        let evidence = store.recent_persona_evidence("chat").unwrap();
+
+        assert!(evidence.is_some());
+        assert_eq!(
+            counter.set_calls.load(Ordering::Relaxed),
+            0,
+            "full delayed queue must not flush SPIFFS-backed turn ledger inline on agent_loop"
+        );
     }
 
     #[test]

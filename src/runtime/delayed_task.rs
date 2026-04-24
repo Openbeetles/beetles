@@ -165,6 +165,36 @@ pub fn schedule_critical_delayed_task(
     schedule_delayed_task_with_priority(due_at, DelayedTaskPriority::Critical, task)
 }
 
+pub fn schedule_system_inbound_msg(
+    due_at: Instant,
+    tx: crate::bus::SystemInboundTx,
+    msg: crate::bus::PcMsg,
+    retry_delay: Duration,
+    label: &'static str,
+) -> bool {
+    let task = Box::new(move || match tx.try_send(msg) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(msg)) => {
+            log::warn!(
+                "[delayed_task:{}] system queue full, retrying after {}ms",
+                label,
+                retry_delay.as_millis()
+            );
+            let _ = schedule_system_inbound_msg(
+                Instant::now() + retry_delay,
+                tx,
+                msg,
+                retry_delay,
+                label,
+            );
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::warn!("[delayed_task:{}] system queue disconnected", label);
+        }
+    });
+    schedule_delayed_task(due_at, task)
+}
+
 pub fn service_delayed_tasks() {
     service_delayed_tasks_with_scope(DelayedTaskServiceScope::AllEligible);
 }
@@ -226,6 +256,17 @@ pub fn delayed_task_test_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
+pub fn delayed_task_test_scope() -> (
+    std::sync::MutexGuard<'static, ()>,
+    std::sync::MutexGuard<'static, ()>,
+) {
+    let state_guard = crate::state::test_state_guard();
+    let delayed_guard = delayed_task_test_guard();
+    reset_delayed_tasks_for_tests();
+    (state_guard, delayed_guard)
+}
+
+#[cfg(test)]
 fn pending_counts_for_tests() -> (usize, usize) {
     let pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
     let best_effort = pending
@@ -246,8 +287,7 @@ mod tests {
 
     #[test]
     fn service_delayed_tasks_runs_due_jobs_in_due_order() {
-        let _guard = delayed_task_test_guard();
-        reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
         let executed = Arc::new(Mutex::new(Vec::new()));
         let now = Instant::now();
 
@@ -270,8 +310,7 @@ mod tests {
 
     #[test]
     fn next_delayed_task_wait_caps_to_soonest_due_job() {
-        let _guard = delayed_task_test_guard();
-        reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
         let now = Instant::now();
         schedule_delayed_task(now + Duration::from_millis(15), Box::new(|| {}));
         schedule_delayed_task(now + Duration::from_millis(40), Box::new(|| {}));
@@ -282,8 +321,7 @@ mod tests {
 
     #[test]
     fn best_effort_queue_has_hard_cap() {
-        let _guard = delayed_task_test_guard();
-        reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
         let due_at = Instant::now() + Duration::from_secs(60);
         for _ in 0..DELAYED_TASK_BEST_EFFORT_MAX {
             assert!(schedule_delayed_task(due_at, Box::new(|| {})));
@@ -297,8 +335,7 @@ mod tests {
 
     #[test]
     fn critical_job_can_evict_oldest_best_effort_when_total_is_full() {
-        let _guard = delayed_task_test_guard();
-        reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
         let due_at = Instant::now() + Duration::from_secs(60);
         for _ in 0..DELAYED_TASK_BEST_EFFORT_MAX {
             assert!(schedule_delayed_task(due_at, Box::new(|| {})));
@@ -319,8 +356,7 @@ mod tests {
 
     #[test]
     fn scheduling_new_job_does_not_run_overdue_jobs_inline() {
-        let _guard = delayed_task_test_guard();
-        reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
         let executed = Arc::new(Mutex::new(Vec::new()));
         let now = Instant::now();
 
@@ -355,8 +391,7 @@ mod tests {
 
     #[test]
     fn critical_only_service_skips_best_effort_jobs() {
-        let _guard = delayed_task_test_guard();
-        reset_delayed_tasks_for_tests();
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
         let executed = Arc::new(Mutex::new(Vec::new()));
         let now = Instant::now();
 

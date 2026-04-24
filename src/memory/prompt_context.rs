@@ -1090,6 +1090,66 @@ mod tests {
     }
 
     #[test]
+    fn esp_compact_first_user_turn_skips_recent_persona_history_scan_without_constitution() {
+        let session_store = StubSessionStore::default();
+        let summary_store = StubSessionSummaryStore::default();
+        let long_term_memory_store = StubLongTermMemoryStore::default();
+        let self_authored_core_store = StubSelfAuthoredCoreStore {
+            core: Mutex::new(Some(SelfAuthoredCore {
+                identity_anchor: "board beetle".to_string(),
+                default_response_mode: "brief".to_string(),
+                default_task_scope: "brief".to_string(),
+                updated_at: 1,
+                ..SelfAuthoredCore::default()
+            })),
+        };
+        let turn_ledger_store = CountingTurnLedgerStore::default();
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
+            system_max_len: 1024,
+            now_secs: 100,
+            participation_plan: PromptParticipationPlan::embedded_first_turn_default(),
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &session_store,
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &summary_store,
+            long_term_memory_store: &long_term_memory_store,
+            execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &self_authored_core_store,
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &turn_ledger_store,
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert!(context.relationship_constitution_text.is_some());
+        assert_eq!(turn_ledger_store.list_recent_calls(), 0);
+    }
+
+    #[test]
     fn linux_full_first_user_turn_keeps_relation_rebuild_reads_available() {
         let session_store = StubSessionStore::default();
         let summary_store = StubSessionSummaryStore::default();

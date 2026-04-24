@@ -610,6 +610,7 @@ pub(super) fn complete_turn(
             &task_learning_selected_ids,
             reuse_outcome,
             reuse_outcome_note,
+            config.runtime.memory_system_kind.memory_profile(),
         )
     {
         log::debug!(

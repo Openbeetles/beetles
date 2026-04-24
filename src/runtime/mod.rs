@@ -33,7 +33,7 @@ pub use acceptance::{
 pub use continuity_flush::{flush_reboot_continuity_bundle, request_restart_with_continuity_flush};
 pub use delayed_task::{
     next_delayed_task_wait, schedule_critical_delayed_task, schedule_delayed_task,
-    service_delayed_tasks,
+    schedule_system_inbound_msg, service_delayed_tasks,
 };
 pub use governance::{
     config_activity_active, config_activity_snapshot, set_recovery_safe_mode_active,

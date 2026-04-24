@@ -93,7 +93,7 @@ fn self_runtime_post_reply_no_trigger_reason(
 }
 
 pub fn enqueue_self_runtime_post_reply(
-    _system_inbound_tx: &SystemInboundTx,
+    system_inbound_tx: &SystemInboundTx,
     detached_work_store: &dyn DetachedWorkStore,
     active_work_store: &dyn crate::agent::ActiveWorkStore,
     self_continuity_store: &dyn SelfContinuityStore,
@@ -166,18 +166,27 @@ pub fn enqueue_self_runtime_post_reply(
         );
         return false;
     }
+    let payload = SelfRuntimeJobPayload {
+        trigger: SelfRuntimeTrigger::PostReply,
+        source_channel: source_channel.to_string(),
+        user_content: truncate_content_to_max(user_content, 512).into_owned(),
+        reply_content: truncate_content_to_max(reply_content, 768).into_owned(),
+        tool_calls,
+        external_content_used,
+        now_secs,
+    };
+    if matches!(profile, MemoryProfile::Embedded) {
+        return schedule_self_runtime_system_queue_job(
+            system_inbound_tx,
+            chat_id,
+            payload,
+            SELF_RUNTIME_POST_REPLY_DELAY_MS,
+        );
+    }
     schedule_self_runtime_job(
         detached_work_store,
         chat_id,
-        SelfRuntimeJobPayload {
-            trigger: SelfRuntimeTrigger::PostReply,
-            source_channel: source_channel.to_string(),
-            user_content: truncate_content_to_max(user_content, 512).into_owned(),
-            reply_content: truncate_content_to_max(reply_content, 768).into_owned(),
-            tool_calls,
-            external_content_used,
-            now_secs,
-        },
+        payload,
         SELF_RUNTIME_POST_REPLY_DELAY_MS,
     )
 }
@@ -303,6 +312,48 @@ fn schedule_self_runtime_job(
             );
             false
         }
+    }
+}
+
+fn schedule_self_runtime_system_queue_job(
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    payload: SelfRuntimeJobPayload,
+    delay_ms: u64,
+) -> bool {
+    let audit_channel = payload.source_channel.clone();
+    let trigger = payload.trigger;
+    let Some((_key, job)) = build_detached_self_runtime_job(chat_id, &payload) else {
+        return false;
+    };
+    let due_at = std::time::Instant::now() + std::time::Duration::from_millis(delay_ms);
+    let scheduled = crate::runtime::schedule_system_inbound_msg(
+        due_at,
+        system_inbound_tx.clone(),
+        job,
+        std::time::Duration::from_millis(1_000),
+        "self_runtime_post_reply",
+    );
+    if scheduled {
+        append_self_runtime_workflow_audit(
+            trigger,
+            crate::runtime::WorkflowDisposition::DeferUntil,
+            "self_runtime_scheduled",
+            crate::runtime::WorkflowEffect::EnqueueSystemJob,
+            Some(chat_id),
+            Some(audit_channel.as_str()),
+        );
+        true
+    } else {
+        append_self_runtime_workflow_audit(
+            trigger,
+            crate::runtime::WorkflowDisposition::ExecuteFailed,
+            "self_runtime_queue_full",
+            crate::runtime::WorkflowEffect::Noop,
+            Some(chat_id),
+            Some(audit_channel.as_str()),
+        );
+        false
     }
 }
 
@@ -796,10 +847,11 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn delayed_task_runtime_guard() -> std::sync::MutexGuard<'static, ()> {
-        let guard = crate::runtime::delayed_task::delayed_task_test_guard();
-        crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
-        guard
+    fn delayed_task_runtime_guard() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        crate::runtime::delayed_task::delayed_task_test_scope()
     }
 
     #[derive(Default)]
@@ -1248,6 +1300,49 @@ mod tests {
             .expect("load detached work")
             .expect("stored record");
         assert_eq!(stored.state, DetachedWorkState::Pending);
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.deferred, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimePostReply
+        );
+    }
+
+    #[test]
+    fn embedded_self_runtime_post_reply_uses_delayed_system_queue() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
+        reset_workflow_audit_for_tests();
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
+
+        let scheduled = enqueue_self_runtime_post_reply(
+            &system_inbound_tx,
+            &detached_work_store,
+            &StubActiveWorkStore::default(),
+            &StubSelfContinuityStore::default(),
+            &StubAutonomyStrategyStore::default(),
+            &StubSelfAuthoredCoreStore,
+            MemoryProfile::Embedded,
+            "chat-a",
+            "qq_channel",
+            "user",
+            "reply",
+            0,
+            false,
+        );
+
+        assert!(scheduled);
+        let key = DetachedWorkKey::new(
+            "qq_channel",
+            "chat-a",
+            DetachedJobKind::SelfRuntimePostReply,
+        );
+        assert!(
+            detached_work_store.get(&key).expect("load").is_none(),
+            "embedded post-reply self-runtime should not write detached-work SPIFFS state on agent_loop"
+        );
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.deferred, 1);
         assert_eq!(

@@ -169,6 +169,22 @@ fn disabled_recall_report(
     }
 }
 
+fn should_load_recent_persona_evidence_for_prompt(
+    params: &PromptMemoryContextParams<'_>,
+    seed: &PromptContextSeed,
+) -> bool {
+    if matches!(
+        params.memory_system_kind,
+        super::MemorySystemKind::EspCompact
+    ) && seed.esp_compact_first_turn_graph
+    {
+        return false;
+    }
+    !seed.reuse_stored_relationship_constitution
+        || params.participation_plan.load_l2_background_governance
+        || params.participation_plan.load_l3_private_depth
+}
+
 #[inline(never)]
 pub(crate) fn seed_prompt_context(
     params: &PromptMemoryContextParams<'_>,
@@ -424,9 +440,7 @@ pub(crate) fn load_constitutional_stage(
             .map(Box::new)
         })
         .flatten();
-    let recent_persona_evidence = (!seed.reuse_stored_relationship_constitution
-        || params.participation_plan.load_l2_background_governance
-        || params.participation_plan.load_l3_private_depth)
+    let recent_persona_evidence = should_load_recent_persona_evidence_for_prompt(params, seed)
         .then(|| {
             load_optional_with_health(health, "recent_persona_evidence", || {
                 load_recent_persona_evidence(params.turn_ledger_store, &seed.relationship_id)

@@ -43,6 +43,7 @@ struct QqSendRuntime<'a, H, F> {
     turn_tracker: &'a mut QqTurnReservationTracker,
     active_reservation: &'a mut Option<QqRetryableSendReservation>,
     create_http: &'a mut F,
+    record_channel_health: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -791,7 +792,9 @@ where
                 message.transport_send_id,
             );
             if !is_supplemental {
-                crate::orchestrator::record_channel_result_pub("qq_channel", true);
+                if runtime.record_channel_health {
+                    crate::orchestrator::record_channel_result_pub("qq_channel", true);
+                }
                 record_outbound_http_success();
             }
             log::debug!(
@@ -808,7 +811,9 @@ where
         }
         Err(error) => {
             if !is_supplemental {
-                crate::orchestrator::record_channel_result_pub("qq_channel", false);
+                if runtime.record_channel_health {
+                    crate::orchestrator::record_channel_result_pub("qq_channel", false);
+                }
                 record_outbound_http_failure(&error);
             }
             log::warn!(
@@ -864,6 +869,7 @@ pub fn run_qq_sender_loop<H, F>(
         turn_tracker: &mut turn_tracker,
         active_reservation: &mut active_reservation,
         create_http: &mut create_http,
+        record_channel_health: true,
     };
     run_buffered_sender_loop(rx, TAG, |message, attempt| {
         feed_sender_loop_wdt();
@@ -928,6 +934,7 @@ impl ActiveChannelSender for QqOutboundDriver {
             turn_tracker: &mut self.turn_tracker,
             active_reservation: &mut self.active_reservation,
             create_http: &mut create,
+            record_channel_health: false,
         };
         send_queued_qq_message(message, attempt, &mut runtime)
     }
@@ -1194,6 +1201,7 @@ mod tests {
             turn_tracker: &mut turn_tracker,
             active_reservation: &mut active_reservation,
             create_http: &mut create_http,
+            record_channel_health: true,
         };
         let message = queued_message(
             99,

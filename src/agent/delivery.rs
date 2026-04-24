@@ -1323,11 +1323,14 @@ mod tests {
     }
 
     fn reset_delayed_tasks() {
-        crate::runtime::delayed_task::reset_delayed_tasks_for_tests();
+        // `delayed_task_test_lock` owns reset so tests take the state lock first.
     }
 
-    fn delayed_task_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::runtime::delayed_task::delayed_task_test_guard()
+    fn delayed_task_test_lock() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        crate::runtime::delayed_task::delayed_task_test_scope()
     }
 
     fn service_due_delayed_tasks_after(wait_ms: u64) {

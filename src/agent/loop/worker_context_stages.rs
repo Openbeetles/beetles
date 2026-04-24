@@ -84,6 +84,17 @@ fn record_prompt_memory_health_issue(
     issues.push(format!("{layer} ({})", error.stage().trim()));
 }
 
+fn should_load_pre_reply_recent_persona_evidence(
+    memory_system_kind: crate::memory::MemorySystemKind,
+    participation_plan: crate::memory::PromptParticipationPlan,
+) -> bool {
+    !matches!(
+        memory_system_kind,
+        crate::memory::MemorySystemKind::EspCompact
+    ) || participation_plan.load_l2_background_governance
+        || participation_plan.load_l3_private_depth
+}
+
 #[inline(never)]
 pub(super) fn compute_prepare_runtime(
     session: &mut WorkerPrepareSession,
@@ -340,19 +351,26 @@ pub(super) fn load_prepare_prompt_memory(
             has_self_model_text
         );
     }
-    let recent_persona_evidence = match load_recent_persona_evidence(
-        config.runtime.turn_ledger_store.as_ref(),
-        &runtime_stage.relationship_id,
+    let recent_persona_evidence = if should_load_pre_reply_recent_persona_evidence(
+        config.runtime.memory_system_kind,
+        runtime_stage.participation_plan,
     ) {
-        Ok(value) => value,
-        Err(error) => {
-            record_prompt_memory_health_issue(
-                &mut prompt_memory_health_issues,
-                "recent_persona_evidence",
-                &error,
-            );
-            None
+        match load_recent_persona_evidence(
+            config.runtime.turn_ledger_store.as_ref(),
+            &runtime_stage.relationship_id,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                record_prompt_memory_health_issue(
+                    &mut prompt_memory_health_issues,
+                    "recent_persona_evidence",
+                    &error,
+                );
+                None
+            }
         }
+    } else {
+        None
     };
     let prompt_mental_privacy_state = runtime_stage
         .active_governance_mode
@@ -858,4 +876,39 @@ pub(super) fn finalize_prepare_context(
         mental_privacy_adjudication: governance_stage.mental_privacy_adjudication.map(Box::new),
         persona_priority_adjudication: governance_stage.persona_priority_adjudication.map(Box::new),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_load_pre_reply_recent_persona_evidence;
+    use crate::memory::{MemorySystemKind, PromptParticipationPlan};
+
+    #[test]
+    fn esp_compact_default_pre_reply_skips_recent_persona_history() {
+        assert!(!should_load_pre_reply_recent_persona_evidence(
+            MemorySystemKind::EspCompact,
+            PromptParticipationPlan::embedded_first_turn_default(),
+        ));
+    }
+
+    #[test]
+    fn esp_compact_l2_background_keeps_recent_persona_evidence() {
+        let plan = PromptParticipationPlan {
+            load_l2_background_governance: true,
+            ..PromptParticipationPlan::embedded_first_turn_default()
+        };
+
+        assert!(should_load_pre_reply_recent_persona_evidence(
+            MemorySystemKind::EspCompact,
+            plan,
+        ));
+    }
+
+    #[test]
+    fn full_runtime_keeps_recent_persona_evidence() {
+        assert!(should_load_pre_reply_recent_persona_evidence(
+            MemorySystemKind::LinuxFull,
+            PromptParticipationPlan::embedded_first_turn_default(),
+        ));
+    }
 }
