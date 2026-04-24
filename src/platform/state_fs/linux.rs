@@ -56,6 +56,15 @@ impl StateFs for LinuxStateFs {
         }
     }
 
+    fn exists(&self, rel_path: &str) -> Result<bool> {
+        let path = abs(rel_path)?;
+        match std::fs::metadata(&path) {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Error::io("state_fs", e)),
+        }
+    }
+
     fn list_dir(&self, rel_path: &str) -> Result<Vec<String>> {
         let rel = crate::util::normalize_state_rel_path(rel_path)?;
         let path = state_mount_path().join(rel);

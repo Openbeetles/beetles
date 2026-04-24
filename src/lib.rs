@@ -184,8 +184,8 @@ pub use platform::{
 };
 pub use platform::{
     AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,
-    AudioReferenceCapability, ConfigStore, MemorySnapshot, Platform, SkillStorage, StateFs,
-    StorageMediaInfo, StorageMediaKind,
+    AudioReferenceCapability, ConfigStore, MemorySnapshot, Platform, SkillStorage, StateBytes,
+    StateFs, StorageMediaInfo, StorageMediaKind,
 };
 pub use reasoning::{
     adjudicate_skill_crystal_candidate, build_experience_crystal_operator_summary,

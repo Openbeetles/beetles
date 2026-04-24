@@ -2,7 +2,7 @@
 
 use super::api_contract;
 use super::common::{self, CORS_HEADERS};
-use super::router::{IncomingRequest, OutgoingResponse, RestartAction};
+use super::router::{IncomingBody, IncomingRequest, OutgoingResponse, RestartAction};
 use crate::error::{Error, Result};
 use std::io::Read as _;
 use std::sync::Arc;
@@ -123,7 +123,7 @@ fn handle_linux_request<H, A>(
         method,
         uri,
         headers,
-        body,
+        body: IncomingBody::from_vec(body),
     });
     let restart = response.restart;
     respond(log_tag, request, response);

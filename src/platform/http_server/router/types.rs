@@ -3,6 +3,8 @@
 
 use crate::bus::InboundTx;
 
+pub type IncomingBody = crate::platform::ByteBuffer;
+
 /// Router resources shared by HTTP handlers.
 /// 路由层共享资源；社交通道入站不再通过 HTTP callback 注入。
 #[derive(Clone)]
@@ -24,7 +26,7 @@ pub struct IncomingRequest {
     /// 完整 URI（含 query），与 ESP `uri()` 一致；路由用 `path_only(uri)` 解析路径。
     pub uri: String,
     pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+    pub body: IncomingBody,
 }
 
 impl IncomingRequest {

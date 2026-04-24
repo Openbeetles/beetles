@@ -80,17 +80,17 @@ impl Tool for DocumentSearchTool {
 
         let response = if scope.is_empty() {
             self.search_directory(query, scope_arg, &scope, limit, case_sensitive)?
-        } else if let Some(raw) = self.state_fs.read(&scope)? {
-            let sanitized = sanitize_state_file_read(&scope, &raw, "tool_document_search")?;
+        } else if let Some(raw) = self.state_fs.read_bytes(&scope)? {
             let stats = SearchStats {
                 scanned_files: 1,
                 scanned_raw_bytes: raw.len().min(MAX_TOTAL_RAW_BYTES),
                 ..SearchStats::default()
             };
-            let matches = search_file(&scope, sanitized.as_ref(), query, case_sensitive)
-                .into_iter()
-                .take(limit)
-                .collect::<Vec<_>>();
+            let matches =
+                search_file_with_sanitized_content(&scope, raw.as_ref(), query, case_sensitive)?
+                    .into_iter()
+                    .take(limit)
+                    .collect::<Vec<_>>();
             build_response(query, scope_arg, matches, stats)
         } else if self
             .state_fs
@@ -137,16 +137,17 @@ impl DocumentSearchTool {
                     break;
                 }
 
-                let Some(raw) = self.state_fs.read(&child)? else {
+                let Some(raw) = self.state_fs.read_bytes(&child)? else {
                     continue;
                 };
-                let sanitized = sanitize_state_file_read(&child, &raw, "tool_document_search")?;
                 stats.scanned_files = stats.scanned_files.saturating_add(1);
                 stats.scanned_raw_bytes = stats
                     .scanned_raw_bytes
                     .saturating_add(raw.len())
                     .min(MAX_TOTAL_RAW_BYTES);
-                if let Some(hit) = search_file(&child, sanitized.as_ref(), query, case_sensitive) {
+                if let Some(hit) =
+                    search_file_with_sanitized_content(&child, raw.as_ref(), query, case_sensitive)?
+                {
                     matches.push(hit);
                     if matches.len() >= limit {
                         stats.truncated = true;
@@ -263,6 +264,19 @@ fn join_rel_path(parent: &str, child: &str) -> String {
     } else {
         format!("{parent}/{child}")
     }
+}
+
+fn search_file_with_sanitized_content(
+    path: &str,
+    raw: &[u8],
+    query: &str,
+    case_sensitive: bool,
+) -> Result<Option<Value>> {
+    if raw.len() > MAX_FILE_RAW_BYTES {
+        return Ok(search_file(path, raw, query, case_sensitive));
+    }
+    let sanitized = sanitize_state_file_read(path, raw, "tool_document_search")?;
+    Ok(search_file(path, sanitized.as_ref(), query, case_sensitive))
 }
 
 fn search_file(path: &str, raw: &[u8], query: &str, case_sensitive: bool) -> Option<Value> {

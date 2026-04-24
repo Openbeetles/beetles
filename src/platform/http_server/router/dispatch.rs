@@ -1203,7 +1203,7 @@ mod tests {
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
     };
-    use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
+    use crate::platform::http_server::router::{IncomingBody, IncomingRequest, RouterEnv};
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
     use std::sync::OnceLock;
@@ -1263,7 +1263,7 @@ mod tests {
                     method: method.to_string(),
                     uri: uri.to_string(),
                     headers: Vec::new(),
-                    body: Vec::new(),
+                    body: IncomingBody::empty(),
                 },
             )
             .expect("dispatch");
@@ -1288,7 +1288,7 @@ mod tests {
                     ("X-CSRF-Token".to_string(), csrf),
                     ("X-Webhook-Token".to_string(), "token".to_string()),
                 ],
-                body: br#"{"ignored":true}"#.to_vec(),
+                body: IncomingBody::from_vec(br#"{"ignored":true}"#.to_vec()),
             },
         )
         .expect("dispatch");
@@ -1392,7 +1392,7 @@ mod tests {
             method: "GET".to_string(),
             uri: uri.to_string(),
             headers: vec![("X-Pairing-Code".to_string(), "123456".to_string())],
-            body: Vec::new(),
+            body: IncomingBody::empty(),
         }
     }
 
@@ -1401,7 +1401,7 @@ mod tests {
             method: "GET".to_string(),
             uri: uri.to_string(),
             headers: Vec::new(),
-            body: Vec::new(),
+            body: IncomingBody::empty(),
         }
     }
 
@@ -1419,7 +1419,9 @@ mod tests {
                 ("X-CSRF-Token".to_string(), csrf),
                 ("Content-Type".to_string(), "application/json".to_string()),
             ],
-            body: serde_json::to_vec(&body).expect("serialize request body"),
+            body: IncomingBody::from_vec(
+                serde_json::to_vec(&body).expect("serialize request body"),
+            ),
         }
     }
 
@@ -1436,7 +1438,7 @@ mod tests {
                 ("X-Pairing-Code".to_string(), "123456".to_string()),
                 ("X-CSRF-Token".to_string(), csrf),
             ],
-            body: Vec::new(),
+            body: IncomingBody::empty(),
         }
     }
 
@@ -1513,7 +1515,7 @@ mod tests {
             method: "GET".to_string(),
             uri: "/api/config/llm".to_string(),
             headers: vec![("X-Pairing-Code".to_string(), "123456".to_string())],
-            body: Vec::new(),
+            body: IncomingBody::empty(),
         };
 
         let response = dispatch(&ctx, &env, request).expect("dispatch llm config route");
@@ -1568,7 +1570,7 @@ mod tests {
                 ("X-CSRF-Token".to_string(), csrf),
                 ("Content-Type".to_string(), "application/json".to_string()),
             ],
-            body: br#"{"action":"run_repair_plan"}"#.to_vec(),
+            body: IncomingBody::from_vec(br#"{"action":"run_repair_plan"}"#.to_vec()),
         };
 
         let response = dispatch(&ctx, &env, request).expect("dispatch maintenance route");

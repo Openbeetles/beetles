@@ -3,6 +3,8 @@
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 use embedded_io::Read;
 use std::fmt::Debug;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+use std::io::Write;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const MAX_OPEN_SOCKETS: usize = 4;
@@ -32,12 +34,11 @@ pub const CORS_OPTIONS_HEADERS: &[(&str, &str)] = &[
     ("Content-Type", "text/plain; charset=utf-8"),
     ("Content-Length", "1"),
 ];
-/// 读 body 时的错误：读失败或非 UTF-8。
+/// 读 body 时的错误：底层读取失败。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 #[derive(Debug)]
 pub enum BodyReadError {
     ReadFailed,
-    InvalidUtf8,
 }
 
 /// 无 Content-Length 时首次分配大小，避免小 POST 也占满 4KB。
@@ -46,18 +47,19 @@ const BODY_READ_CHUNK_INITIAL: usize = 1024;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 const BODY_READ_CHUNK_SIZE: usize = 512;
 
-/// 从请求体读取 UTF-8 字符串，上限 max_len。有 content_len 时单次分配；无时按块读取，减少小 body 的分配。
-/// 使用 embedded_io::Read，与 ESP 的 Request 实现一致。
+/// 从请求体读取原始字节，上限 max_len。有 content_len 时按已知长度分配；
+/// 无时按块读取，减少小 body 的分配。UTF-8 校验留给 route 边界执行。
+/// 使用 embedded_io::Read，与 ESP 的 Request 实现一致。大 body 返回外部优先的 `ByteBuffer`。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
-pub fn read_body_utf8_impl<R: Read>(
+pub fn read_body_bytes_impl<R: Read>(
     r: &mut R,
     content_len: Option<u64>,
     max_len: usize,
-) -> Result<String, BodyReadError> {
+) -> Result<crate::platform::ByteBuffer, BodyReadError> {
     let target_len = content_len
         .map(|l| (l.min(max_len as u64)) as usize)
         .unwrap_or(BODY_READ_CHUNK_INITIAL.min(max_len));
-    let mut buf = Vec::with_capacity(target_len);
+    let mut buf = crate::platform::ByteBuffer::with_capacity(target_len);
     let mut chunk = [0u8; BODY_READ_CHUNK_SIZE];
     loop {
         let remain = max_len.saturating_sub(buf.len());
@@ -69,12 +71,13 @@ pub fn read_body_utf8_impl<R: Read>(
         if n == 0 {
             break;
         }
-        buf.extend_from_slice(&chunk[..n]);
+        buf.write_all(&chunk[..n])
+            .map_err(|_| BodyReadError::ReadFailed)?;
         if content_len.is_some() && buf.len() >= target_len {
             break;
         }
     }
-    String::from_utf8(buf).map_err(|_| BodyReadError::InvalidUtf8)
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -83,12 +86,38 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn read_body_utf8_impl_respects_max_len_with_known_content_length() {
+    fn read_body_bytes_impl_respects_max_len_with_known_content_length() {
         let payload = b"hello-world";
         let mut cursor = payload.as_slice();
         let body =
-            read_body_utf8_impl(&mut cursor, Some(payload.len() as u64), 5).expect("read body");
-        assert_eq!(body, "hello");
+            read_body_bytes_impl(&mut cursor, Some(payload.len() as u64), 5).expect("read body");
+        assert_eq!(std::str::from_utf8(body.as_ref()).expect("utf8"), "hello");
+    }
+
+    #[test]
+    fn read_body_bytes_impl_uses_external_preferred_buffer_for_large_bodies() {
+        let payload = vec![b'a'; crate::platform::ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD + 1];
+        let mut cursor = payload.as_slice();
+        let body = read_body_bytes_impl(&mut cursor, Some(payload.len() as u64), payload.len())
+            .expect("read body");
+
+        assert!(body.is_external_preferred());
+        assert_eq!(body.as_ref(), payload.as_slice());
+    }
+
+    #[test]
+    fn read_body_bytes_impl_does_not_preallocate_route_max_without_content_length() {
+        let payload = b"small";
+        let mut cursor = payload.as_slice();
+        let body = read_body_bytes_impl(
+            &mut cursor,
+            None,
+            crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN,
+        )
+        .expect("read body");
+
+        assert!(!body.is_external_preferred());
+        assert_eq!(body.as_ref(), payload);
     }
 
     #[test]

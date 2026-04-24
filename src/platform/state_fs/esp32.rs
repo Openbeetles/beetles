@@ -2,7 +2,7 @@
 //! ESP32: state files delegate to `platform::spiffs` (including SPIFFS mutex).
 
 use crate::error::{Error, Result};
-use crate::platform::abstraction::StateFs;
+use crate::platform::abstraction::{StateBytes, StateFs};
 use crate::platform::spiffs::{self, MAX_WRITE_SIZE};
 use crate::platform::state_root::state_mount_path;
 use std::path::{Path, PathBuf};
@@ -26,10 +26,27 @@ fn map_read_result(r: std::result::Result<Vec<u8>, Error>) -> Result<Option<Vec<
     }
 }
 
+fn map_read_bytes_result(
+    r: std::result::Result<crate::platform::psram_vec::PsramVec<u8>, Error>,
+) -> Result<Option<StateBytes>> {
+    match r {
+        Ok(b) => Ok(Some(StateBytes::from_psram_vec(b))),
+        Err(e) => match &e {
+            Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            _ => Err(e),
+        },
+    }
+}
+
 impl StateFs for Esp32StateFs {
     fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
         let path = abs_path(rel_path)?;
         map_read_result(spiffs::read_file_to_vec(&path))
+    }
+
+    fn read_bytes(&self, rel_path: &str) -> Result<Option<StateBytes>> {
+        let path = abs_path(rel_path)?;
+        map_read_bytes_result(spiffs::read_file(&path))
     }
 
     fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
@@ -53,6 +70,15 @@ impl StateFs for Esp32StateFs {
                 Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 _ => Err(e),
             },
+        }
+    }
+
+    fn exists(&self, rel_path: &str) -> Result<bool> {
+        let path = abs_path(rel_path)?;
+        match std::fs::metadata(&path) {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(Error::io("state_fs", error)),
         }
     }
 

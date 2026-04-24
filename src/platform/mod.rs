@@ -5,6 +5,7 @@ pub mod abstraction;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) mod audio_drivers;
 pub mod board_info;
+pub mod byte_buffer;
 pub mod csrf;
 pub mod display_driver;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -52,9 +53,10 @@ pub use abstraction::{
     AudioDuplexCapabilities, AudioDuplexProfile, AudioEchoCancellationCapability,
     AudioReferenceCapability, ConfigStore, HardwareCapability, HardwareDiscovery,
     HardwareDiscoveryBus, HardwareDiscoveryItem, HardwareDiscoveryQuery, HardwareDiscoveryResponse,
-    MemorySnapshot, Platform, PlatformHttpClient, SkillMetaStore, SkillStorage, StateFs,
-    StorageMediaInfo, StorageMediaKind,
+    MemorySnapshot, Platform, PlatformHttpClient, SkillMetaStore, SkillStorage, StateBytes,
+    StateFs, StorageMediaInfo, StorageMediaKind,
 };
+pub use byte_buffer::ByteBuffer;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use esp32::Esp32Platform;
 pub use fetch_url::fetch_url_with_client;

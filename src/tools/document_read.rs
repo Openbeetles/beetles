@@ -133,7 +133,7 @@ pub(crate) fn read_document_source(
 
     let rel = normalize_state_rel_path(source).map_err(|_| Error::config(stage, "invalid path"))?;
     let raw = state_fs
-        .read(&rel)?
+        .read_bytes(&rel)?
         .ok_or_else(|| Error::config(stage, "file not found"))?;
     if raw.len() > MAX_LOCAL_RAW_BYTES {
         return Err(Error::config(stage, "file too large"));
@@ -174,7 +174,7 @@ fn read_local_document_outcome(
         Ok(value) => value,
         Err(_) => return missing_local_source_outcome(source),
     };
-    let Some(raw) = state_fs.read(&rel)? else {
+    let Some(raw) = state_fs.read_bytes(&rel)? else {
         return missing_local_source_outcome(source);
     };
     if raw.len() > MAX_LOCAL_RAW_BYTES {

@@ -4,7 +4,7 @@
 use crate::channel_capability::ChannelCapabilityRegistry;
 use crate::error::{Error, Result};
 use crate::tools::ToolPolicyContext;
-use crate::StateFs;
+use crate::{StateBytes, StateFs};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -768,7 +768,7 @@ pub fn build_capability_package_operator_snapshot(
         ..CapabilityPackageOperatorSnapshot::default()
     };
     for entry in registry.packages {
-        let bundle = load_capability_package_bundle(fs, &entry.package_id)?;
+        let bundle = load_capability_package_bundle_without_assets(fs, &entry.package_id)?;
         let manifest = bundle.as_ref().map(|payload| &payload.manifest);
         let compatible_now = manifest
             .map(|manifest| manifest_supports_channel(manifest, current_channel))
@@ -1141,7 +1141,8 @@ fn validate_overlay_conflicts(
         if exclude_package_id.is_some_and(|value| value == entry.package_id) {
             continue;
         }
-        let Some(bundle) = load_capability_package_bundle(fs, &entry.package_id)? else {
+        let Some(bundle) = load_capability_package_bundle_without_assets(fs, &entry.package_id)?
+        else {
             continue;
         };
         if !channels_overlap(
@@ -1236,10 +1237,10 @@ fn merge_visibility_override(
 }
 
 fn read_capability_package_registry(fs: &dyn StateFs) -> Result<CapabilityPackageRegistry> {
-    let Some(bytes) = fs.read(&capability_package_registry_path())? else {
+    let Some(bytes) = fs.read_bytes(&capability_package_registry_path())? else {
         return Ok(CapabilityPackageRegistry::default());
     };
-    serde_json::from_slice(&bytes)
+    serde_json::from_slice(bytes.as_ref())
         .map_err(|error| Error::config("capability_package", error.to_string()))
 }
 
@@ -1289,6 +1290,21 @@ fn load_capability_package_bundle(
     fs: &dyn StateFs,
     package_id: &str,
 ) -> Result<Option<CapabilityPackageInstallPayload>> {
+    load_capability_package_bundle_with_assets(fs, package_id, true)
+}
+
+fn load_capability_package_bundle_without_assets(
+    fs: &dyn StateFs,
+    package_id: &str,
+) -> Result<Option<CapabilityPackageInstallPayload>> {
+    load_capability_package_bundle_with_assets(fs, package_id, false)
+}
+
+fn load_capability_package_bundle_with_assets(
+    fs: &dyn StateFs,
+    package_id: &str,
+    include_assets: bool,
+) -> Result<Option<CapabilityPackageInstallPayload>> {
     let Some((manifest_bytes, layout)) = read_existing_package_file(
         fs,
         &manifest_path(package_id),
@@ -1337,17 +1353,21 @@ fn load_capability_package_bundle(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    let assets = manifest
-        .assets
-        .iter()
-        .map(|asset| {
-            read_asset_file(
-                fs,
-                package_rel_path_for_layout(layout, package_id, &asset.path),
-                &asset.path,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let assets = if include_assets {
+        manifest
+            .assets
+            .iter()
+            .map(|asset| {
+                read_asset_file(
+                    fs,
+                    package_rel_path_for_layout(layout, package_id, &asset.path),
+                    &asset.path,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
     Ok(Some(CapabilityPackageInstallPayload {
         manifest,
         skills,
@@ -1416,10 +1436,12 @@ fn clear_bundle_files_for_layout(
         }
         CapabilityPackageStorageLayout::EspCompact => manifest_path_for_layout(layout, package_id),
     };
-    let Some(manifest_bytes) = fs.read(&manifest_rel_path)? else {
+    let Some(manifest_bytes) = fs.read_bytes(&manifest_rel_path)? else {
         return Ok(false);
     };
-    if let Ok(manifest) = serde_json::from_slice::<CapabilityPackageManifest>(&manifest_bytes) {
+    if let Ok(manifest) =
+        serde_json::from_slice::<CapabilityPackageManifest>(manifest_bytes.as_ref())
+    {
         for rel_path in bundle_file_rel_paths_for_layout(layout, package_id, &manifest) {
             fs.remove(&rel_path)?;
         }
@@ -1537,7 +1559,8 @@ fn load_active_package_bundles(
         if !entry.enabled {
             continue;
         }
-        let Some(payload) = load_capability_package_bundle(fs, &entry.package_id)? else {
+        let Some(payload) = load_capability_package_bundle_without_assets(fs, &entry.package_id)?
+        else {
             continue;
         };
         if !manifest_supports_channel(&payload.manifest, channel) {
@@ -1675,14 +1698,14 @@ fn read_existing_package_file(
     fs: &dyn StateFs,
     current_rel_path: &str,
     legacy_rel_path: Option<&str>,
-) -> Result<Option<(Vec<u8>, CapabilityPackageStorageLayout)>> {
-    if let Some(bytes) = fs.read(current_rel_path)? {
+) -> Result<Option<(StateBytes, CapabilityPackageStorageLayout)>> {
+    if let Some(bytes) = fs.read_bytes(current_rel_path)? {
         return Ok(Some((bytes, current_storage_layout())));
     }
     let Some(legacy_rel_path) = legacy_rel_path else {
         return Ok(None);
     };
-    let Some(bytes) = fs.read(legacy_rel_path)? else {
+    let Some(bytes) = fs.read_bytes(legacy_rel_path)? else {
         return Ok(None);
     };
     Ok(Some((bytes, CapabilityPackageStorageLayout::Standard)))
@@ -1736,13 +1759,13 @@ fn read_text_file(
     rel_path: String,
     logical_path: &str,
 ) -> Result<CapabilityPackageTextFile> {
-    let Some(bytes) = fs.read(&rel_path)? else {
+    let Some(bytes) = fs.read_bytes(&rel_path)? else {
         return Err(Error::config(
             "capability_package",
             "package text file is missing",
         ));
     };
-    let content = String::from_utf8(bytes)
+    let content = String::from_utf8(bytes.into_vec())
         .map_err(|error| Error::config("capability_package", error.to_string()))?;
     Ok(CapabilityPackageTextFile {
         path: logical_path.to_string(),
@@ -1755,7 +1778,7 @@ fn read_asset_file(
     rel_path: String,
     original_path: &str,
 ) -> Result<CapabilityPackageAssetFile> {
-    let Some(bytes) = fs.read(&rel_path)? else {
+    let Some(bytes) = fs.read_bytes(&rel_path)? else {
         return Err(Error::config(
             "capability_package",
             "package asset file is missing",
@@ -1763,7 +1786,7 @@ fn read_asset_file(
     };
     Ok(CapabilityPackageAssetFile {
         path: original_path.to_string(),
-        content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        content_base64: base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()),
     })
 }
 
@@ -1870,7 +1893,11 @@ impl CapabilityPackageWorkflowManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::platform::StateBytes;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
 
     #[derive(Default)]
     struct MemoryStateFs {
@@ -1927,6 +1954,88 @@ mod tests {
             }
             Ok(names.into_iter().collect())
         }
+    }
+
+    #[derive(Default)]
+    struct ReadBytesOnlyStateFs {
+        files: Mutex<BTreeMap<String, Vec<u8>>>,
+        read_calls: AtomicUsize,
+        read_bytes_calls: AtomicUsize,
+    }
+
+    impl StateFs for ReadBytesOnlyStateFs {
+        fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            let _ = rel_path;
+            self.read_calls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::config(
+                "state_fs_test",
+                "capability package should use read_bytes for registry reads",
+            ))
+        }
+
+        fn read_bytes(&self, rel_path: &str) -> Result<Option<StateBytes>> {
+            self.read_bytes_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(rel_path)
+                .cloned()
+                .map(StateBytes::from_vec))
+        }
+
+        fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, rel_path: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(rel_path);
+            Ok(())
+        }
+
+        fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn capability_registry_reads_use_state_bytes() {
+        let fs = ReadBytesOnlyStateFs::default();
+        let registry = CapabilityPackageRegistry {
+            packages: vec![CapabilityPackageRegistryEntry {
+                package_id: "pkg".to_string(),
+                version: "1.0.0".to_string(),
+                display_name: "Package".to_string(),
+                description: String::new(),
+                enabled: true,
+                installed_at: 1,
+                updated_at: 1,
+                required_capabilities: Vec::new(),
+                channel_compatibility: Vec::new(),
+                skill_fragment_count: 0,
+                workflow_count: 0,
+                policy_count: 0,
+                asset_count: 0,
+                rollback_available: false,
+                rollback_updated_at: 0,
+            }],
+        };
+        let bytes = serde_json::to_vec(&registry).expect("registry json");
+        fs.write(&capability_package_registry_path(), &bytes)
+            .expect("seed registry");
+
+        let loaded = read_capability_package_registry(&fs).expect("read registry");
+
+        assert_eq!(loaded.packages.len(), 1);
+        assert_eq!(fs.read_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fs.read_bytes_calls.load(Ordering::SeqCst), 1);
     }
 
     fn sample_payload() -> CapabilityPackageInstallPayload {
@@ -2046,7 +2155,7 @@ mod tests {
         .expect("fallback payload");
 
         assert_eq!(layout, CapabilityPackageStorageLayout::Standard);
-        assert_eq!(bytes, br#"{"package_id":"desk_flow"}"#);
+        assert_eq!(bytes.as_ref(), br#"{"package_id":"desk_flow"}"#);
     }
 
     #[test]
@@ -2251,6 +2360,27 @@ mod tests {
         assert_eq!(bundle.skills[0].path, "skills/desk_brief.md");
         assert_eq!(bundle.workflows[0].path, "workflows/triage_mail.md");
         assert_eq!(bundle.policies[0].path, "policies/tool_policy.json");
+    }
+
+    #[test]
+    fn runtime_bundle_load_does_not_require_asset_bytes() {
+        let fs = MemoryStateFs::default();
+        let payload = sample_payload();
+        let package_id = payload.manifest.package_id.clone();
+        install_capability_package(&fs, &sample_capabilities(), &payload, 10)
+            .expect("install package");
+        fs.remove(&package_rel_path(&package_id, "assets/brief.txt"))
+            .expect("remove asset");
+
+        let prompt = build_capability_package_runtime_prompt_bundle(
+            &fs,
+            &sample_capabilities(),
+            "telegram",
+            4096,
+        )
+        .expect("runtime prompt bundle");
+
+        assert_eq!(prompt.active_packages, vec![package_id]);
     }
 
     #[test]

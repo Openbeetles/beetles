@@ -5,6 +5,7 @@
 
 use crate::config::{AppConfig, LlmSource};
 use crate::error::{Error, Result};
+use crate::llm::request_body::LlmRequestBody;
 use crate::llm::types::MAX_REQUEST_BODY_LEN;
 use crate::llm::types::{AnthropicResponse, StopReason, ToolCall};
 use crate::llm::{LlmClient, LlmHttpClient, LlmResponse, Message, ToolChoicePolicy, ToolSpec};
@@ -77,11 +78,11 @@ impl LlmClient for AnthropicClient {
 
         if self.stream {
             crate::llm::retry::with_retry(2, 500, TAG, http, |http| {
-                do_request_streaming(http, &self.api_base, &self.api_key, &body, None)
+                do_request_streaming(http, &self.api_base, &self.api_key, body.as_ref(), None)
             })
         } else {
             crate::llm::retry::with_retry(2, 500, TAG, http, |http| {
-                do_request(http, &self.api_base, &self.api_key, &body)
+                do_request(http, &self.api_base, &self.api_key, body.as_ref())
             })
         }
     }
@@ -110,7 +111,13 @@ impl LlmClient for AnthropicClient {
         // 与 chat() 保持同一重试策略；仅首轮传递 progress 回调，后续重试避免重复回放增量。
         let mut progress = Some(on_progress);
         crate::llm::retry::with_retry(2, 500, TAG, http, |http| {
-            do_request_streaming(http, &self.api_base, &self.api_key, &body, progress.take())
+            do_request_streaming(
+                http,
+                &self.api_base,
+                &self.api_key,
+                body.as_ref(),
+                progress.take(),
+            )
         })
     }
 }
@@ -123,49 +130,46 @@ fn build_request_body(
     tools: Option<&[ToolSpec]>,
     tool_choice: ToolChoicePolicy,
     stream: bool,
-) -> Result<Vec<u8>> {
-    fn push_json_string_field(out: &mut String, key: &str, value: &str) {
-        out.push('"');
-        out.push_str(key);
-        out.push_str("\":");
-        crate::util::push_json_string_escaped(out, value);
+) -> Result<LlmRequestBody> {
+    fn push_json_string_field(out: &mut LlmRequestBody, key: &str, value: &str) -> Result<()> {
+        out.push_json_string_field(key, value)
     }
 
-    fn push_messages_field(out: &mut String, messages: &[Message]) {
-        out.push_str("\"messages\":[");
+    fn push_messages_field(out: &mut LlmRequestBody, messages: &[Message]) -> Result<()> {
+        out.push_str("\"messages\":[")?;
         for (idx, message) in messages.iter().enumerate() {
             if idx > 0 {
-                out.push(',');
+                out.push_byte(b',')?;
             }
-            out.push('{');
-            push_json_string_field(out, "role", &message.role);
-            out.push(',');
-            push_json_string_field(out, "content", &message.content);
-            out.push('}');
+            out.push_byte(b'{')?;
+            push_json_string_field(out, "role", &message.role)?;
+            out.push_byte(b',')?;
+            push_json_string_field(out, "content", &message.content)?;
+            out.push_byte(b'}')?;
         }
-        out.push(']');
+        out.push_byte(b']')
     }
 
-    fn push_tools_field(out: &mut String, tools: &[ToolSpec]) {
-        out.push_str(",\"tools\":[");
+    fn push_tools_field(out: &mut LlmRequestBody, tools: &[ToolSpec]) -> Result<()> {
+        out.push_str(",\"tools\":[")?;
         for (idx, tool) in tools.iter().enumerate() {
             if idx > 0 {
-                out.push(',');
+                out.push_byte(b',')?;
             }
-            out.push('{');
-            push_json_string_field(out, "name", &tool.name);
-            out.push(',');
-            push_json_string_field(out, "description", &tool.description);
-            out.push_str(",\"input_schema\":");
-            out.push_str(tool.parameters_json());
-            out.push('}');
+            out.push_byte(b'{')?;
+            push_json_string_field(out, "name", &tool.name)?;
+            out.push_byte(b',')?;
+            push_json_string_field(out, "description", &tool.description)?;
+            out.push_str(",\"input_schema\":")?;
+            out.push_str(tool.parameters_json())?;
+            out.push_byte(b'}')?;
         }
-        out.push(']');
+        out.push_byte(b']')
     }
 
     let mut num_buf = [0u8; 20];
     let max_tokens_str = crate::util::usize_to_decimal_buf(&mut num_buf, max_tokens as usize);
-    let mut body = String::with_capacity(
+    let mut body = LlmRequestBody::with_estimated_capacity(
         model.len()
             + system.len()
             + messages
@@ -186,35 +190,30 @@ fn build_request_body(
                 })
                 .unwrap_or(0)
             + 128,
+        MAX_REQUEST_BODY_LEN,
     );
-    body.push('{');
-    push_json_string_field(&mut body, "model", model);
-    body.push_str(",\"max_tokens\":");
-    body.push_str(max_tokens_str);
+    body.push_byte(b'{')?;
+    push_json_string_field(&mut body, "model", model)?;
+    body.push_str(",\"max_tokens\":")?;
+    body.push_str(max_tokens_str)?;
     if !system.is_empty() {
-        body.push(',');
-        push_json_string_field(&mut body, "system", system);
+        body.push_byte(b',')?;
+        push_json_string_field(&mut body, "system", system)?;
     }
-    body.push(',');
-    push_messages_field(&mut body, messages);
+    body.push_byte(b',')?;
+    push_messages_field(&mut body, messages)?;
     let has_tools = tools.is_some_and(|items| !items.is_empty());
     if let Some(items) = tools.filter(|items| !items.is_empty()) {
-        push_tools_field(&mut body, items);
+        push_tools_field(&mut body, items)?;
     }
     if has_tools && tool_choice == ToolChoicePolicy::Require {
-        body.push_str(",\"tool_choice\":{\"type\":\"any\"}");
+        body.push_str(",\"tool_choice\":{\"type\":\"any\"}")?;
     }
     if stream {
-        body.push_str(",\"stream\":true");
+        body.push_str(",\"stream\":true")?;
     }
-    body.push('}');
-    if body.len() > MAX_REQUEST_BODY_LEN {
-        return Err(Error::config(
-            "llm_request",
-            format!("request body exceeds {} bytes", MAX_REQUEST_BODY_LEN),
-        ));
-    }
-    Ok(body.into_bytes())
+    body.push_byte(b'}')?;
+    body.finish(MAX_REQUEST_BODY_LEN)
 }
 
 fn do_request(
@@ -505,5 +504,27 @@ mod tests {
                 .and_then(|x| x.as_str()),
             Some("any")
         );
+    }
+
+    #[test]
+    fn large_request_body_uses_shared_external_preferred_buffer() {
+        let content = "x".repeat(crate::platform::ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD + 1);
+        let body = build_request_body(
+            "m",
+            128,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content,
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+            false,
+        )
+        .expect("ok");
+
+        assert!(body.is_external_preferred());
+        let v: serde_json::Value = serde_json::from_slice(body.as_ref()).expect("json");
+        assert_eq!(v["messages"][0]["role"], "user");
     }
 }

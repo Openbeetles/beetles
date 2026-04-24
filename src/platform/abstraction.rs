@@ -23,11 +23,19 @@ use crate::task_execution::{
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Owned bytes read from platform state storage.
+/// ESP implementations may keep the raw bytes in PSRAM for large files.
+pub type StateBytes = crate::platform::byte_buffer::ByteBuffer;
+
 /// 状态根目录下的受控文件访问（相对路径）。ESP 委托 SPIFFS + 互斥；Linux 由 `LinuxPlatform` 实现。
 /// Controlled file access under the platform state root (relative paths).
 pub trait StateFs: Send + Sync {
     /// 读取文件，不存在返回 `Ok(None)`。
     fn read(&self, rel_path: &str) -> crate::error::Result<Option<Vec<u8>>>;
+    /// 读取文件为 owned bytes；大对象调用链应优先用本接口避免强制落入 heap `Vec`。
+    fn read_bytes(&self, rel_path: &str) -> crate::error::Result<Option<StateBytes>> {
+        Ok(self.read(rel_path)?.map(StateBytes::from_vec))
+    }
     /// 写入文件；实现须先创建父目录再写入。单文件大小上界由实现保证（与 `spiffs::MAX_WRITE_SIZE` 一致）。
     fn write(&self, rel_path: &str, data: &[u8]) -> crate::error::Result<()>;
     /// 删除文件，不存在时 `Ok(())`。
@@ -36,7 +44,7 @@ pub trait StateFs: Send + Sync {
     fn list_dir(&self, rel_path: &str) -> crate::error::Result<Vec<String>>;
     /// 文件是否存在。
     fn exists(&self, rel_path: &str) -> crate::error::Result<bool> {
-        Ok(self.read(rel_path)?.is_some())
+        Ok(self.read_bytes(rel_path)?.is_some())
     }
 }
 

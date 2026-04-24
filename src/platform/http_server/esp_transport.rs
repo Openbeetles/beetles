@@ -17,7 +17,7 @@ use crate::platform::http_server::router::{
         RouteWorkerLane, ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS,
         OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
     },
-    IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
+    IncomingBody, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
 use crate::platform::ConfigStore;
 use embedded_io::Write as _;
@@ -482,21 +482,24 @@ fn read_body_esp<C: Connection>(
     req: &mut Request<C>,
     store: &dyn ConfigStore,
     mode: RouteBodyMode,
-) -> std::result::Result<Vec<u8>, ApiResponse> {
+) -> std::result::Result<IncomingBody, ApiResponse> {
     match mode {
-        RouteBodyMode::None => Ok(Vec::new()),
+        RouteBodyMode::None => Ok(IncomingBody::empty()),
         RouteBodyMode::Utf8(max) => {
-            match common::read_body_utf8_impl(req, req.content_len(), max) {
-                Ok(s) => Ok(s.into_bytes()),
+            match common::read_body_bytes_impl(req, req.content_len(), max) {
+                Ok(body) => {
+                    if std::str::from_utf8(body.as_ref()).is_ok() {
+                        Ok(body)
+                    } else {
+                        let _ = store;
+                        Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
+                    }
+                }
                 Err(BodyReadError::ReadFailed) => {
                     let _ = store;
                     Err(ApiResponse::err_500_key(
                         api_contract::COMMON_BODY_READ_FAILED,
                     ))
-                }
-                Err(BodyReadError::InvalidUtf8) => {
-                    let _ = store;
-                    Err(ApiResponse::err_400_key(api_contract::COMMON_INVALID_UTF8))
                 }
             }
         }
@@ -583,7 +586,7 @@ fn esp_dispatch_route<C: Connection>(
             method: spec.method.as_str().to_string(),
             uri,
             headers,
-            body: Vec::new(),
+            body: IncomingBody::empty(),
         };
         let out = dispatch_incoming(ctx, env, store.as_ref(), incoming);
         return write_outgoing(ctx, req, out, restart_reason.as_str());

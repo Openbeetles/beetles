@@ -2,6 +2,7 @@
 //! LLM trait and implementations; HTTP client injected by main.
 
 mod compat;
+mod request_body;
 mod retry;
 pub mod sse;
 pub(crate) mod tool_fallback;
