@@ -550,16 +550,15 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: true,
             mode_sensitive: true,
         },
-        "qq_sender" | "tg_sender" | "fs_sender" | "dt_sender" | "wc_sender" | "tg_poll" => {
-            ThreadProfile {
-                execution_class: ThreadExecutionClass::Channel,
-                risk_class: ThreadRiskClass::High,
-                tls_capable: true,
-                http_capable: true,
-                wss_capable: false,
-                mode_sensitive: true,
-            }
-        }
+        "qq_sender" | "tg_sender" | "fs_sender" | "dt_sender" | "wc_sender" | "tg_poll"
+        | "os_outbound" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Channel,
+            risk_class: ThreadRiskClass::High,
+            tls_capable: true,
+            http_capable: true,
+            wss_capable: false,
+            mode_sensitive: true,
+        },
         "http_config_exec" | "http_diag_exec" | "http_ota_exec" | "http_snapshot_exec" => {
             ThreadProfile {
                 execution_class: ThreadExecutionClass::Config,

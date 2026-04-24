@@ -39,7 +39,7 @@ use beetle::send_chat_action;
 ))]
 use beetle::util::STACK_CHANNEL_WS;
 use beetle::util::STACK_VOICE_CONTROL;
-use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH};
+use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH, STACK_OS_OUTBOUND};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use beetle::Esp32Platform;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -2805,6 +2805,9 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         }
     }
 
+    let channel_http_factory = assembly
+        .network_governor
+        .http_factory(HttpClientClass::Background);
     let outbound_rx_for_dispatch = assembly
         .bus
         .outbound_rx
@@ -2812,16 +2815,55 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         .ok_or_else(|| beetle::Error::config("dispatch_spawn", "outbound_rx already taken"))?;
     let sinks_clone = Arc::clone(&sinks);
     let channel_capability_registry = Arc::clone(&assembly.channel_capability_registry);
-    spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
-        run_dispatch(
-            outbound_rx_for_dispatch,
-            sinks_clone,
-            channel_capability_registry,
-        )
-    })
-    .map_err(|error| beetle::Error::io("dispatch_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
+    let os_outbound_active = {
+        #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
+        let active_outbound = beetle::channels::build_esp_active_outbound_driver(
+            assembly.config.as_ref(),
+            #[cfg(feature = "qq_channel")]
+            &assembly.qq_msg_id_cache,
+            #[cfg(feature = "qq_channel")]
+            &assembly.qq_token_cache,
+            Arc::clone(&channel_http_factory),
+        );
+        #[cfg(not(any(feature = "telegram", feature = "feishu", feature = "qq_channel")))]
+        let active_outbound = None;
+        if let Some(active_outbound) = active_outbound {
+            spawn_planned_handle("os_outbound", STACK_OS_OUTBOUND, move || {
+                beetle::channels::run_os_outbound_worker(
+                    outbound_rx_for_dispatch,
+                    active_outbound,
+                    sinks_clone,
+                    channel_capability_registry,
+                )
+            })
+            .map_err(|error| beetle::Error::io("os_outbound_spawn", error))?;
+            beetle::orchestrator::log_startup_memory_checkpoint("os_outbound_spawn");
+            true
+        } else {
+            spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
+                run_dispatch(
+                    outbound_rx_for_dispatch,
+                    sinks_clone,
+                    channel_capability_registry,
+                )
+            })
+            .map_err(|error| beetle::Error::io("dispatch_spawn", error))?;
+            beetle::orchestrator::log_startup_memory_checkpoint("dispatch_spawn");
+            false
+        }
+    };
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        spawn_planned_handle("dispatch", STACK_DISPATCH, move || {
+            run_dispatch(
+                outbound_rx_for_dispatch,
+                sinks_clone,
+                channel_capability_registry,
+            )
+        })
+        .map_err(|error| beetle::Error::io("dispatch_spawn", error))?;
+    }
 
     #[cfg(feature = "telegram")]
     if enabled_channel == "telegram" && !assembly.config.tg_token.trim().is_empty() {
@@ -2874,16 +2916,24 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         }
     }
 
-    let create_http = assembly
-        .network_governor
-        .http_factory(HttpClientClass::Background);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if !os_outbound_active {
+        beetle::channels::spawn_sender_threads(
+            &mut channel_rx_set,
+            &assembly.config.tg_token,
+            Arc::clone(&channel_http_factory),
+        )?;
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     beetle::channels::spawn_sender_threads(
         &mut channel_rx_set,
         &assembly.config.tg_token,
-        create_http,
+        channel_http_factory,
     )?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("sender_threads_spawned");
+    if !os_outbound_active {
+        beetle::orchestrator::log_startup_memory_checkpoint("sender_threads_spawned");
+    }
 
     Ok(())
 }

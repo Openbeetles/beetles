@@ -772,13 +772,37 @@ mod tests {
     }
 
     #[test]
-    fn config_routes_dispatch_on_config_lane() {
+    fn cached_config_reads_dispatch_directly_and_writes_use_config_lane() {
         assert_eq!(
             execution_class_for("/api/config/system", Method::Get),
-            Some(RouteExecutionClass::AsyncConfigRoute)
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/config/llm", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/config/channels", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/config/hardware", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/config/audio", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/config/display", Method::Get),
+            Some(RouteExecutionClass::ImmediateRoute)
         );
         assert_eq!(
             execution_class_for("/api/config/system", Method::Post),
+            Some(RouteExecutionClass::AsyncConfigRoute)
+        );
+        assert_eq!(
+            execution_class_for("/api/config/hardware", Method::Post),
             Some(RouteExecutionClass::AsyncConfigRoute)
         );
         assert_eq!(

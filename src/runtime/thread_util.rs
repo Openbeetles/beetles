@@ -11,9 +11,9 @@ pub struct ThreadPlan {
 
 pub fn thread_plan(name: &str) -> ThreadPlan {
     match name {
-        "wifi_worker" | "dispatch" | "tg_poll" | "feishu_ws" | "qq_ws" | "wecom_aibot"
-        | "dingtalk_stream" | "tg_sender" | "fs_sender" | "dt_sender" | "wc_sender"
-        | "qq_sender" | "config_plane_watch" | "restart_defer" => ThreadPlan {
+        "wifi_worker" | "dispatch" | "os_outbound" | "tg_poll" | "feishu_ws" | "qq_ws"
+        | "wecom_aibot" | "dingtalk_stream" | "tg_sender" | "fs_sender" | "dt_sender"
+        | "wc_sender" | "qq_sender" | "config_plane_watch" | "restart_defer" => ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },

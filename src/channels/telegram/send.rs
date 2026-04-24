@@ -5,8 +5,14 @@ use crate::bus::{
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::platform::PlatformHttpClient;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::sync::Arc;
 
 use super::super::connectivity;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use super::super::send::ActiveChannelSender;
 use super::super::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
     run_buffered_sender_loop, QueuedOutboundMessage,
@@ -374,6 +380,68 @@ pub fn run_telegram_sender_loop<H, F>(
             }
         }
     });
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) struct TelegramOutboundDriver {
+    token: String,
+    http: Option<Box<dyn PlatformHttpClient>>,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn telegram_outbound_driver(
+    token: String,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+) -> Box<dyn ActiveChannelSender> {
+    Box::new(TelegramOutboundDriver {
+        token,
+        http: None,
+        create_http,
+    })
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl ActiveChannelSender for TelegramOutboundDriver {
+    fn tag(&self) -> &'static str {
+        "telegram_sender"
+    }
+
+    fn send_attempt(
+        &mut self,
+        message: &QueuedOutboundMessage,
+        attempt: u8,
+    ) -> crate::error::Result<()> {
+        const TAG: &str = "telegram_sender";
+        let create_http = Arc::clone(&self.create_http);
+        let mut create = || create_http();
+        if !ensure_sender_http(&mut self.http, &mut create, TAG, attempt) {
+            return Err(Error::config(TAG, "create http failed"));
+        }
+        let Some(h) = self.http.as_mut() else {
+            return Err(Error::config(TAG, "sender http missing after ensure"));
+        };
+        match send_media_message(h, &self.token, message) {
+            Ok(()) => {
+                record_outbound_http_success();
+                Ok(())
+            }
+            Err(error) => {
+                record_outbound_http_failure(&error);
+                log::warn!(
+                    "[{}] send failed (attempt {}), chat_id={}: {}",
+                    TAG,
+                    attempt,
+                    message.chat_id,
+                    error
+                );
+                if !matches!(error, Error::Config { .. }) {
+                    self.http = None;
+                }
+                Err(error)
+            }
+        }
+    }
 }
 
 fn map_stage(e: Error, stage: &'static str) -> Error {

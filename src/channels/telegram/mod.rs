@@ -4,6 +4,8 @@ mod poll;
 pub(crate) mod send;
 
 pub use poll::{poll_telegram_once, run_telegram_poll_loop, TelegramCommandCtx};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) use send::telegram_outbound_driver;
 pub use send::{
     check_connectivity, edit_message_text, flush_telegram_sends, get_bot_username,
     run_telegram_sender_loop, send_and_get_id as tg_send_and_get_id, send_chat_action,

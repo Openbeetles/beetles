@@ -1642,6 +1642,33 @@ pub struct HardwareSegment {
     pub i2c_sensors: Vec<I2cSensorEntry>,
 }
 
+impl HardwareSegment {
+    pub fn from_app_config(config: &AppConfig) -> Self {
+        Self {
+            hardware_devices: config.hardware_devices.clone(),
+            i2c_bus: config.i2c_bus.clone(),
+            i2c_devices: config.i2c_devices.clone(),
+            i2c_sensors: config.i2c_sensors.clone(),
+        }
+    }
+}
+
+impl AudioSegment {
+    pub fn from_app_config(config: &AppConfig) -> Self {
+        config
+            .audio
+            .clone()
+            .unwrap_or_else(default_disabled_audio_segment)
+    }
+}
+
+pub fn display_segment_from_app_config(config: &AppConfig) -> DisplayConfig {
+    config
+        .display
+        .clone()
+        .unwrap_or_else(default_disabled_display_config)
+}
+
 /// 校验主用/备用下标在 `llm_sources` 范围内（与 Web UI 一致）。
 fn validate_llm_source_indices(len: usize, router: Option<u32>, worker: Option<u32>) -> Result<()> {
     if let Some(i) = router {

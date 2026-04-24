@@ -266,16 +266,22 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         while !session_ended {
             crate::platform::task_wdt::feed_current_task();
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-            if !crate::runtime::thread_registry::runtime_mode_snapshot()
-                .action_budget
-                .allow_external_wss_connect
             {
-                log::info!(
-                    "[{}] disconnecting external WSS for realtime voice mode switch",
-                    tag
-                );
-                session_ended = true;
-                continue;
+                let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+                let keep_existing_for_config_write = runtime_mode.current_mode
+                    == crate::runtime::RuntimeMode::ConfigActive
+                    && !runtime_mode.action_budget.require_external_wss_suspended;
+                if !runtime_mode.action_budget.allow_external_wss_connect
+                    && !keep_existing_for_config_write
+                {
+                    log::info!(
+                        "[{}] disconnecting external WSS under runtime mode gate current_mode={}",
+                        tag,
+                        runtime_mode.current_mode.as_str()
+                    );
+                    session_ended = true;
+                    continue;
+                }
             }
 
             let recv_wait = {

@@ -64,6 +64,10 @@ impl ConfigActivityPhase {
             Self::Cleanup => "cleanup",
         }
     }
+
+    pub fn blocks_new_non_voice_network_work(self) -> bool {
+        matches!(self, Self::Persisting | Self::Stopping | Self::Cleanup)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

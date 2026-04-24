@@ -7,10 +7,16 @@ use crate::error::{Error as BeetleError, Result as BeetleResult};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::channels::send::ActiveChannelSender;
 use crate::channels::send::{
     ensure_sender_http, feed_sender_loop_wdt, record_outbound_http_failure,
     record_outbound_http_success, run_buffered_sender_loop, QueuedOutboundMessage,
 };
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::platform::PlatformHttpClient;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::sync::Arc;
 
 use super::msg_id::{pop_msg_id, QqMsgIdCache};
 use super::token::{
@@ -863,6 +869,68 @@ pub fn run_qq_sender_loop<H, F>(
         feed_sender_loop_wdt();
         send_queued_qq_message(message, attempt, &mut runtime)
     });
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) struct QqOutboundDriver {
+    app_id: String,
+    secret: String,
+    cache: QqMsgIdCache,
+    shared_token_cache: SharedQqTokenCache,
+    http: Option<Box<dyn PlatformHttpClient>>,
+    token_cache: Option<CachedQqToken>,
+    turn_tracker: QqTurnReservationTracker,
+    active_reservation: Option<QqRetryableSendReservation>,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn qq_outbound_driver(
+    app_id: String,
+    secret: String,
+    cache: QqMsgIdCache,
+    shared_token_cache: SharedQqTokenCache,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+) -> Box<dyn ActiveChannelSender> {
+    Box::new(QqOutboundDriver {
+        app_id,
+        secret,
+        cache,
+        shared_token_cache,
+        http: None,
+        token_cache: None,
+        turn_tracker: QqTurnReservationTracker::default(),
+        active_reservation: None,
+        create_http,
+    })
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl ActiveChannelSender for QqOutboundDriver {
+    fn tag(&self) -> &'static str {
+        "qq_sender"
+    }
+
+    fn send_attempt(
+        &mut self,
+        message: &QueuedOutboundMessage,
+        attempt: u8,
+    ) -> crate::error::Result<()> {
+        let create_http = Arc::clone(&self.create_http);
+        let mut create = || create_http();
+        let mut runtime = QqSendRuntime {
+            app_id: &self.app_id,
+            secret: &self.secret,
+            cache: &self.cache,
+            shared_token_cache: &self.shared_token_cache,
+            http: &mut self.http,
+            token_cache: &mut self.token_cache,
+            turn_tracker: &mut self.turn_tracker,
+            active_reservation: &mut self.active_reservation,
+            create_http: &mut create,
+        };
+        send_queued_qq_message(message, attempt, &mut runtime)
+    }
 }
 
 #[cfg(test)]

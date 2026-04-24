@@ -388,6 +388,189 @@ fn dispatch_via_sink(
     false
 }
 
+fn dispatch_or_buffer_via_sink(
+    tag: &str,
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    sinks: &ChannelSinks,
+    capability_registry: &ChannelCapabilityRegistry,
+    msg: crate::bus::PcMsg,
+) {
+    if let Some(reason) = outbound_reject_reason(&msg) {
+        if msg.outbound_kind.is_supplemental() {
+            log::warn!(
+                "[{}] req_id={} channel={} outbound_kind=supplemental dropped by outbound admission reason={}",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel,
+                reason
+            );
+        } else {
+            log::info!(
+                "[{}] req_id={} channel={} deferred by outbound admission reason={}",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel,
+                reason
+            );
+            push_buffered_msg(tag, cooldown_buffer, msg);
+        }
+        return;
+    }
+
+    if is_channel_in_cooldown(&msg.channel) {
+        if msg.outbound_kind.is_supplemental() {
+            log::warn!(
+                "[{}] req_id={} channel={} outbound_kind=supplemental dropped while channel is in cooldown",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel
+            );
+        } else {
+            push_buffered_msg(tag, cooldown_buffer, msg);
+        }
+        return;
+    }
+
+    let _ = dispatch_via_sink(tag, sinks, capability_registry, &msg);
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+pub struct ActiveOutboundDriverConfig {
+    channel: String,
+    driver_builder: Box<dyn FnOnce() -> Box<dyn super::send::ActiveChannelSender> + Send>,
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn queued_from_prepared(
+    prepared: super::outbound_text::PreparedOutboundMessage,
+) -> super::send::QueuedOutboundMessage {
+    let content = truncate_content_to_max(&prepared.content, MAX_CONTENT_LEN);
+    super::send::QueuedOutboundMessage {
+        transport_send_id: super::send::next_queued_outbound_id(),
+        chat_id: prepared.msg.chat_id.to_string(),
+        content: content.into_owned(),
+        body: prepared.msg.body,
+        platform_thread_id: prepared.msg.platform_thread_id,
+        req_id: prepared.msg.req_id,
+        outbound_kind: prepared.msg.outbound_kind,
+    }
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn dispatch_via_active_driver(
+    tag: &str,
+    capability_registry: &ChannelCapabilityRegistry,
+    driver: &mut dyn super::send::ActiveChannelSender,
+    msg: &crate::bus::PcMsg,
+) -> bool {
+    let prepared = super::outbound_text::prepare_outbound_message_for_channel(
+        msg,
+        capability_registry.get(msg.channel.as_ref()),
+    );
+    let queued = queued_from_prepared(prepared);
+
+    crate::platform::task_wdt::feed_current_task();
+    if queued.outbound_kind.is_supplemental() {
+        match driver.send_attempt(&queued, 1) {
+            Ok(()) => {
+                metrics::record_dispatch_send(true);
+                log::debug!(
+                    "[latency][{}] req_id={} channel={} outbound_kind=supplemental attempt=1 status=ok",
+                    tag,
+                    queued.req_id.as_deref().unwrap_or("-"),
+                    msg.channel
+                );
+                return true;
+            }
+            Err(error) => {
+                metrics::record_dispatch_send(false);
+                log::warn!(
+                    "[{}] req_id={} channel={} outbound_kind=supplemental send failed: {}",
+                    tag,
+                    queued.req_id.as_deref().unwrap_or("-"),
+                    msg.channel,
+                    error
+                );
+                return false;
+            }
+        }
+    }
+
+    match crate::orchestrator::should_accept_outbound_pub(&msg.channel) {
+        AdmissionDecision::Accept => {}
+        AdmissionDecision::Defer { delay_ms } => {
+            log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            crate::platform::task_wdt::feed_current_task();
+        }
+        AdmissionDecision::Reject { reason } => {
+            log::info!(
+                "[{}] req_id={} channel={} outbound rejected by admission reason={}",
+                tag,
+                queued.req_id.as_deref().unwrap_or("-"),
+                msg.channel,
+                reason
+            );
+            return false;
+        }
+    }
+    let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
+    if background_yield > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(background_yield));
+        crate::platform::task_wdt::feed_current_task();
+    }
+
+    let max_retries = super::send::max_retries_for_message(&queued);
+    let mut last_err = None;
+    for retry in 0..max_retries {
+        let attempt = retry + 1;
+        if retry > 0 {
+            super::send::sleep_sender_retry_delay();
+        }
+        match driver.send_attempt(&queued, attempt) {
+            Ok(()) => {
+                log::debug!(
+                    "[latency][{}] req_id={} channel={} driver={} attempt={} status=ok",
+                    tag,
+                    queued.req_id.as_deref().unwrap_or("-"),
+                    msg.channel,
+                    driver.tag(),
+                    attempt
+                );
+                record_channel_ok(&msg.channel);
+                metrics::record_dispatch_send(true);
+                return true;
+            }
+            Err(error) => {
+                if matches!(error, crate::error::Error::Config { .. }) {
+                    last_err = Some(error);
+                    break;
+                }
+                last_err = Some(error);
+            }
+        }
+    }
+    record_channel_fail(&msg.channel);
+    metrics::record_dispatch_send(false);
+    metrics::record_error_by_stage("channel_dispatch");
+    super::send::log_sender_drop(
+        driver.tag(),
+        queued.req_id.as_deref(),
+        Some(queued.chat_id.as_str()),
+        max_retries,
+    );
+    if let Some(error) = last_err {
+        log::warn!(
+            "[{}] req_id={} channel={} send failed after retries: {}",
+            tag,
+            queued.req_id.as_deref().unwrap_or("-"),
+            msg.channel,
+            error
+        );
+    }
+    false
+}
+
 /// 熔断冷却期暂存的消息上限，防止无限积累。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const COOLDOWN_BUFFER_MAX: usize = 16;
@@ -427,6 +610,83 @@ pub fn run_dispatch(
             continue;
         }
 
+        dispatch_or_buffer_via_sink(
+            TAG,
+            &mut cooldown_buffer,
+            sinks.as_ref(),
+            capability_registry.as_ref(),
+            msg,
+        );
+    }
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+/// 单 active-channel OS 出站 worker：ESP 用它替代 `dispatch + *_sender` 常驻线程组合。
+pub fn run_os_outbound_worker(
+    outbound_rx: OutboundRx,
+    active: ActiveOutboundDriverConfig,
+    local_sinks: Arc<ChannelSinks>,
+    capability_registry: Arc<ChannelCapabilityRegistry>,
+) {
+    const TAG: &str = "os_outbound";
+    let active_channel: Arc<str> = Arc::from(active.channel.as_str());
+    let mut active_driver = (active.driver_builder)();
+    let mut cooldown_buffer: VecDeque<crate::bus::PcMsg> = VecDeque::new();
+
+    loop {
+        crate::platform::task_wdt::feed_current_task();
+        replay_ready_messages_for_tick(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
+            if buffered.channel != active_channel {
+                if outbound_reject_reason(buffered).is_some() {
+                    return false;
+                }
+                return dispatch_via_sink(
+                    TAG,
+                    local_sinks.as_ref(),
+                    capability_registry.as_ref(),
+                    buffered,
+                );
+            }
+            if outbound_reject_reason(buffered).is_some() {
+                return false;
+            }
+            dispatch_via_active_driver(
+                TAG,
+                capability_registry.as_ref(),
+                active_driver.as_mut(),
+                buffered,
+            )
+        });
+
+        let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
+            Ok(m) => m,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(error) => {
+                log::warn!(
+                    "[{}] outbound disconnected, worker exiting: {:?}",
+                    TAG,
+                    error
+                );
+                break;
+            }
+        };
+
+        let content = truncate_content_to_max(&msg.content, MAX_CONTENT_LEN);
+        if content.trim() == "SILENT" || msg.channel.as_ref() == "cron" {
+            continue;
+        }
+
+        if msg.channel != active_channel {
+            dispatch_or_buffer_via_sink(
+                TAG,
+                &mut cooldown_buffer,
+                local_sinks.as_ref(),
+                capability_registry.as_ref(),
+                msg,
+            );
+            continue;
+        }
+
         if let Some(reason) = outbound_reject_reason(&msg) {
             if msg.outbound_kind.is_supplemental() {
                 log::warn!(
@@ -462,7 +722,78 @@ pub fn run_dispatch(
             }
             continue;
         }
-        let _ = dispatch_via_sink(TAG, sinks.as_ref(), capability_registry.as_ref(), &msg);
+
+        let _ = dispatch_via_active_driver(
+            TAG,
+            capability_registry.as_ref(),
+            active_driver.as_mut(),
+            &msg,
+        );
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
+pub fn build_esp_active_outbound_driver(
+    config: &AppConfig,
+    #[cfg(feature = "qq_channel")] qq_msg_id_cache: &super::QqMsgIdCache,
+    #[cfg(feature = "qq_channel")] qq_token_cache: &super::SharedQqTokenCache,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+) -> Option<ActiveOutboundDriverConfig> {
+    let enabled = crate::normalize_compiled_enabled_channel(&config.enabled_channel);
+    match enabled {
+        #[cfg(feature = "telegram")]
+        "telegram" if !config.tg_token.trim().is_empty() => Some(ActiveOutboundDriverConfig {
+            channel: "telegram".to_string(),
+            driver_builder: {
+                let token = config.tg_token.clone();
+                let create_http = Arc::clone(&create_http);
+                Box::new(move || super::telegram::telegram_outbound_driver(token, create_http))
+            },
+        }),
+        #[cfg(feature = "feishu")]
+        "feishu"
+            if !config.feishu_app_id.trim().is_empty()
+                && !config.feishu_app_secret.trim().is_empty() =>
+        {
+            Some(ActiveOutboundDriverConfig {
+                channel: "feishu".to_string(),
+                driver_builder: {
+                    let app_id = config.feishu_app_id.clone();
+                    let app_secret = config.feishu_app_secret.clone();
+                    let create_http = Arc::clone(&create_http);
+                    Box::new(move || {
+                        super::feishu::feishu_outbound_driver(app_id, app_secret, create_http)
+                    })
+                },
+            })
+        }
+        #[cfg(feature = "qq_channel")]
+        "qq_channel"
+            if !config.qq_channel_app_id.trim().is_empty()
+                && !config.qq_channel_secret.trim().is_empty() =>
+        {
+            Some(ActiveOutboundDriverConfig {
+                channel: "qq_channel".to_string(),
+                driver_builder: {
+                    let app_id = config.qq_channel_app_id.clone();
+                    let secret = config.qq_channel_secret.clone();
+                    let msg_id_cache = Arc::clone(qq_msg_id_cache);
+                    let token_cache = qq_token_cache.clone();
+                    let create_http = Arc::clone(&create_http);
+                    Box::new(move || {
+                        super::qq::qq_outbound_driver(
+                            app_id,
+                            secret,
+                            msg_id_cache,
+                            token_cache,
+                            create_http,
+                        )
+                    })
+                },
+            })
+        }
+        _ => None,
     }
 }
 
@@ -872,6 +1203,25 @@ mod tests {
         attempts: Arc<AtomicUsize>,
     }
 
+    struct FailingActiveDriver {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl crate::channels::send::ActiveChannelSender for FailingActiveDriver {
+        fn tag(&self) -> &'static str {
+            "failing_active_driver"
+        }
+
+        fn send_attempt(
+            &mut self,
+            _message: &crate::channels::send::QueuedOutboundMessage,
+            _attempt: u8,
+        ) -> Result<()> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            Err(Error::config("failing_active_driver", "synthetic failure"))
+        }
+    }
+
     impl super::MessageSink for FailingSink {
         fn send(&self, _chat_id: &str, _content: &str) -> Result<()> {
             self.attempts.fetch_add(1, Ordering::Relaxed);
@@ -977,6 +1327,25 @@ mod tests {
             "channel_dispatch",
             &sinks,
             &capability_registry,
+            &msg,
+        ));
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn supplemental_active_outbound_driver_fails_fast_without_retries() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut driver = FailingActiveDriver {
+            attempts: Arc::clone(&attempts),
+        };
+        let mut msg = build_msg("ready", "chat-1", "supplemental");
+        msg.outbound_kind = OutboundKind::Supplemental;
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
+
+        assert!(!super::dispatch_via_active_driver(
+            "os_outbound",
+            &capability_registry,
+            &mut driver,
             &msg,
         ));
         assert_eq!(attempts.load(Ordering::Relaxed), 1);

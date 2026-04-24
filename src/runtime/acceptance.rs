@@ -170,9 +170,6 @@ fn inspect_runtime_mode_plane(mode: RuntimeModeSnapshot) -> BeetleOsPlaneReport 
             if !mode.config_active {
                 outstanding.push("config_active_mode_without_config_activity".to_string());
             }
-            if mode.action_budget.allow_external_wss_connect {
-                outstanding.push("config_active_allows_external_wss_connect".to_string());
-            }
             if mode.action_budget.allow_periodic_maintenance {
                 outstanding.push("config_active_allows_periodic_maintenance".to_string());
             }
@@ -427,9 +424,9 @@ mod tests {
                 allow_heartbeat_injection: false,
                 allow_best_effort_delayed_tasks: false,
                 allow_idle_self_runtime: false,
-                allow_non_voice_outbound: false,
+                allow_non_voice_outbound: true,
                 allow_realtime_voice_connect: false,
-                allow_external_wss_connect: false,
+                allow_external_wss_connect: true,
                 require_external_wss_suspended: false,
             },
             RuntimeMode::Maintenance => RuntimeModeActionBudget {

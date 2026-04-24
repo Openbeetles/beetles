@@ -927,7 +927,8 @@ pub fn is_private_url(url: &str) -> bool {
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 96 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 40 KB | 96 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 48 KB | 96 KB |
+// | os_outbound                           | STACK_OS_OUTBOUND      | 12 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
@@ -979,10 +980,11 @@ pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 /// ESP `agent_loop` 栈预算。
 ///
 /// 2026-04-24 实机符号化显示，QQ 入站首条真实消息在
-/// `execute_turn -> prompt_context -> SPIFFS cached-json read` 路径上使用接近
-/// 32KB 栈，并最终在 SPIFFS/heap 查询处表现为 LoadProhibited。40KB 先给出
-/// 可度量余量；更大的 SRAM 总账收口应通过线程/worker 预算治理单独推进。
-pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 40 * 1024;
+/// `execute_turn -> prompt_context -> turn-ledger SPIFFS read` 路径上已把
+/// 40KB 预算推到危险边缘，并在 SPIFFS/heap 查询处表现为 LoadProhibited。
+/// 48KB 是当前启动顺序下仍可创建、且不把 ESP 拉到 96KB Linux 档的止血预算；
+/// 更大的 SRAM 总账收口应通过线程/worker 预算治理单独推进。
+pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 48 * 1024;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -996,6 +998,12 @@ pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 pub const STACK_CHANNEL_SENDER: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// `os_outbound`：ESP 单 active-channel 出站 worker，合并 dispatch 与 HTTP sender。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_OS_OUTBOUND: usize = 12 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_OS_OUTBOUND: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `dispatch`：出站调度线程。
 /// 仅承接 outbound admission、cooldown replay 与 send retry；
@@ -1360,8 +1368,12 @@ mod thread_stack_budget_tests {
     #[test]
     fn esp_agent_loop_stack_keeps_prompt_spiffs_headroom() {
         assert!(
-            ESP_AGENT_LOOP_STACK_BUDGET >= 40 * 1024,
+            ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,
             "ESP agent_loop needs headroom for first real inbound prompt + SPIFFS reads"
+        );
+        assert!(
+            ESP_AGENT_LOOP_STACK_BUDGET <= 64 * 1024,
+            "ESP agent_loop must not copy the Linux 96KB budget without first freeing resident SRAM"
         );
     }
 
@@ -1371,6 +1383,19 @@ mod thread_stack_budget_tests {
             STACK_ESP_RUNTIME_GUARD,
             8 * 1024,
             "runtime guard must not keep the bootstrap 32KB stack alive after startup"
+        );
+    }
+
+    #[test]
+    fn os_outbound_stack_accounts_for_dispatch_plus_sender_without_linux_budget() {
+        assert!(
+            STACK_OS_OUTBOUND >= 10 * 1024,
+            "os_outbound combines dispatch and channel HTTP sender state"
+        );
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        assert!(
+            STACK_OS_OUTBOUND < STACK_DISPATCH + STACK_CHANNEL_SENDER,
+            "ESP os_outbound should recover resident stack versus dispatch + sender"
         );
     }
 }

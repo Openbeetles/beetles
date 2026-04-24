@@ -197,7 +197,7 @@ pub(crate) fn should_accept_inbound_with_mode(
         && work_class == SystemWorkClass::BackgroundLowPriority
     {
         return AdmissionDecision::Reject {
-            reason: "mode_background_skip",
+            reason: non_voice_background_reason(mode.current_mode),
         };
     }
 
@@ -559,11 +559,12 @@ mod tests {
     }
 
     #[test]
-    fn config_active_blocks_background_and_non_voice_outbound_at_admission() {
+    fn config_active_blocks_background_but_allows_user_channel_network_work() {
         let s = state_with_heap(200_000, 200_000, PressureLevel::Normal);
         let mode =
             crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
                 config_active: true,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Active,
                 ..crate::runtime::mode::RuntimeModeSource::default()
             });
 
@@ -575,15 +576,47 @@ mod tests {
         ));
         assert!(matches!(
             should_accept_outbound_with_mode(&s, "qq_channel", mode),
+            AdmissionDecision::Accept
+        ));
+        assert!(matches!(
+            can_execute_tool_for_channel_with_mode(&s, "web_fetch", true, "qq_channel", mode),
+            ToolDecision::Allow
+        ));
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", mode),
+            LlmDecision::Proceed
+        ));
+    }
+
+    #[test]
+    fn config_persisting_defers_new_non_voice_network_work() {
+        let s = state_with_heap(200_000, 200_000, PressureLevel::Normal);
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                config_active: true,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Persisting,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        assert!(matches!(
+            should_accept_outbound_with_mode(&s, "qq_channel", mode),
             AdmissionDecision::Reject {
                 reason: "config_active_non_voice_outbound"
             }
+        ));
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", mode),
+            LlmDecision::RetryLater { .. }
         ));
         assert!(matches!(
             can_execute_tool_for_channel_with_mode(&s, "web_fetch", true, "qq_channel", mode),
             ToolDecision::Deny {
                 reason: "config_active_non_voice_network_tool"
             }
+        ));
+        assert!(matches!(
+            should_accept_outbound_with_mode(&s, crate::constants::VOICE_CHANNEL_NAME, mode),
+            AdmissionDecision::Accept
         ));
     }
 

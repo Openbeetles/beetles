@@ -376,13 +376,13 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Options,
         RouteBodyMode::None,
     ),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_LLM,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
     HttpRouteSpec::immediate(ROUTE_CONFIG_LLM, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::async_config_operator(
         ROUTE_CONFIG_LLM,
@@ -391,13 +391,13 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     )
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_CHANNELS,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_CHANNELS,
         RouteMethod::Options,
@@ -410,13 +410,13 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     )
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_SYSTEM,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_SYSTEM,
         RouteMethod::Options,
@@ -429,13 +429,13 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     )
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_HARDWARE,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_HARDWARE,
         RouteMethod::Options,
@@ -448,13 +448,13 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     )
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_AUDIO,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_AUDIO,
         RouteMethod::Options,
@@ -467,13 +467,13 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     )
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_DISPLAY,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_DISPLAY,
         RouteMethod::Options,
@@ -853,6 +853,12 @@ mod tests {
                             | (RouteMethod::Get, ROUTE_PAIRING_CODE)
                             | (RouteMethod::Post, ROUTE_PAIRING_CODE)
                             | (RouteMethod::Get, ROUTE_CSRF_TOKEN)
+                            | (RouteMethod::Get, ROUTE_CONFIG_LLM)
+                            | (RouteMethod::Get, ROUTE_CONFIG_CHANNELS)
+                            | (RouteMethod::Get, ROUTE_CONFIG_SYSTEM)
+                            | (RouteMethod::Get, ROUTE_CONFIG_HARDWARE)
+                            | (RouteMethod::Get, ROUTE_CONFIG_AUDIO)
+                            | (RouteMethod::Get, ROUTE_CONFIG_DISPLAY)
                             | (RouteMethod::Get, ROUTE_HEALTH)
                             | (RouteMethod::Post, ROUTE_WEBHOOK)
                     ),
@@ -865,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn config_routes_are_async_config_routes() {
+    fn cached_config_reads_are_immediate_but_writes_use_config_lane() {
         for path in [
             ROUTE_CONFIG_LLM,
             ROUTE_CONFIG_CHANNELS,
@@ -874,21 +880,25 @@ mod tests {
             ROUTE_CONFIG_AUDIO,
             ROUTE_CONFIG_DISPLAY,
         ] {
-            for method in [RouteMethod::Get, RouteMethod::Post] {
-                let spec = route_spec_for_method(method, path).expect("config route");
-                assert_eq!(
-                    spec.execution_class,
-                    RouteExecutionClass::AsyncConfigRoute,
-                    "{} {} must use config worker",
-                    method.as_str(),
-                    path
-                );
-            }
+            let get = route_spec_for_method(RouteMethod::Get, path).expect("config get");
+            assert_eq!(
+                get.execution_class,
+                RouteExecutionClass::ImmediateRoute,
+                "cached {} GET must not require the 48KB ESP config worker",
+                path
+            );
+            let post = route_spec_for_method(RouteMethod::Post, path).expect("config post");
+            assert_eq!(
+                post.execution_class,
+                RouteExecutionClass::AsyncConfigRoute,
+                "{} POST must use config worker",
+                path
+            );
         }
     }
 
     #[test]
-    fn config_ui_routes_extend_config_activity_without_marking_lightweight_routes() {
+    fn config_ui_routes_extend_config_activity_for_light_reads_and_heavy_writes() {
         let pairing = route_spec_for("GET", ROUTE_PAIRING_CODE).expect("pairing");
         assert_eq!(
             pairing.config_activity_phase(),
@@ -944,6 +954,8 @@ mod tests {
 
     #[test]
     fn realtime_voice_blocks_heavy_config_activity_routes_only() {
+        let config_get = route_spec_for("GET", ROUTE_CONFIG_SYSTEM).expect("config get");
+        assert!(!config_get.rejects_during_voice_exclusive());
         let config_post = route_spec_for("POST", ROUTE_CONFIG_SYSTEM).expect("config post");
         assert!(config_post.rejects_during_voice_exclusive());
         let diagnostic = route_spec_for("GET", ROUTE_WIFI_SCAN).expect("wifi scan");

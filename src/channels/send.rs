@@ -81,6 +81,37 @@ const CHANNEL_SENDER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
     feature = "qq_channel",
     test
 ))]
+pub(crate) trait ActiveChannelSender {
+    fn tag(&self) -> &'static str;
+    fn send_attempt(
+        &mut self,
+        message: &QueuedOutboundMessage,
+        attempt: u8,
+    ) -> crate::error::Result<()>;
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
+pub(crate) fn max_retries_for_message(message: &QueuedOutboundMessage) -> u8 {
+    if message.outbound_kind.is_supplemental() {
+        1
+    } else {
+        CHANNEL_SENDER_MAX_RETRIES
+    }
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 pub(crate) enum SenderLoopEvent {
     Message(Box<QueuedOutboundMessage>),
     Timeout,
@@ -257,11 +288,7 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
         };
         feed_sender_loop_wdt();
 
-        let max_retries = if message.outbound_kind.is_supplemental() {
-            1
-        } else {
-            CHANNEL_SENDER_MAX_RETRIES
-        };
+        let max_retries = max_retries_for_message(&message);
         let mut sent = false;
         for retry in 0..max_retries {
             let attempt = retry + 1;

@@ -2,6 +2,8 @@
 //! 一通道一目录，所有飞书相关逻辑集中于此。
 
 pub(crate) mod send;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) use send::feishu_outbound_driver;
 #[allow(unused_imports)]
 pub use send::{
     acquire_tenant_token, check_connectivity, edit_message as feishu_edit_message,

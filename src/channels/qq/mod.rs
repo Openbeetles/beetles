@@ -15,6 +15,8 @@ mod token;
 mod ws;
 
 pub use msg_id::{QqInboundDedupStore, QqMsgIdCache};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) use send::qq_outbound_driver;
 pub use send::{check_connectivity, flush_qq_channel_sends, run_qq_sender_loop};
 pub use status::{is_ws_online, new_shared_qq_ws_status, SharedQqWsStatus};
 pub use token::{new_shared_qq_token_cache, SharedQqTokenCache};

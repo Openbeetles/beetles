@@ -27,6 +27,7 @@ pub fn thread_policy_for_name(name: &str) -> TaskWdtThreadPolicy {
         | "http_ota_exec"
         | "http_snapshot_exec"
         | "dispatch"
+        | "os_outbound"
         | "bg_timer"
         | "heartbeat"
         | "qq_ws"
@@ -284,6 +285,10 @@ mod tests {
         );
         assert_eq!(
             thread_policy_for_name("http_config_exec"),
+            TaskWdtThreadPolicy::FeedOnly
+        );
+        assert_eq!(
+            thread_policy_for_name("os_outbound"),
             TaskWdtThreadPolicy::FeedOnly
         );
         assert_eq!(

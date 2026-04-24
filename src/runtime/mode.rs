@@ -121,6 +121,7 @@ impl RuntimeModeSnapshot {
 
 pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
     let current_mode = derive_mode(source);
+    let action_budget = action_budget_for_source(current_mode, source.config_activity_phase);
     RuntimeModeSnapshot {
         current_mode,
         wifi_sta_connected: source.wifi_sta_connected,
@@ -139,7 +140,7 @@ pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
         external_wss_suspend_requested: source.external_wss_suspend_requested,
         external_wss_suspended: source.external_wss_suspended,
         recovery_safe_mode_active: source.recovery_safe_mode_active,
-        action_budget: action_budget_for_mode(current_mode),
+        action_budget,
     }
 }
 
@@ -161,7 +162,22 @@ fn derive_mode(source: RuntimeModeSource) -> RuntimeMode {
     }
 }
 
-fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
+fn action_budget_for_source(
+    mode: RuntimeMode,
+    config_phase: crate::runtime::ConfigActivityPhase,
+) -> RuntimeModeActionBudget {
+    let mut budget = base_action_budget_for_mode(mode);
+    if mode == RuntimeMode::ConfigActive && config_phase.blocks_new_non_voice_network_work() {
+        budget.allow_non_voice_outbound = false;
+        // Persisting/stopping config work should not start a new external WSS/TLS
+        // session, but it also must not force-drop an already healthy user channel.
+        budget.allow_external_wss_connect = false;
+        budget.require_external_wss_suspended = false;
+    }
+    budget
+}
+
+fn base_action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
     match mode {
         RuntimeMode::Booting | RuntimeMode::Pairing => RuntimeModeActionBudget {
             allow_periodic_maintenance: false,
@@ -191,9 +207,9 @@ fn action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_heartbeat_injection: false,
             allow_best_effort_delayed_tasks: false,
             allow_idle_self_runtime: false,
-            allow_non_voice_outbound: false,
+            allow_non_voice_outbound: true,
             allow_realtime_voice_connect: false,
-            allow_external_wss_connect: false,
+            allow_external_wss_connect: true,
             require_external_wss_suspended: false,
         },
         RuntimeMode::VoiceExclusive => RuntimeModeActionBudget {
@@ -279,10 +295,11 @@ mod tests {
     }
 
     #[test]
-    fn config_active_mode_suspends_external_wss_and_background_work() {
+    fn config_active_mode_keeps_external_wss_and_user_outbound_but_pauses_background_work() {
         let snapshot = snapshot_from_source(RuntimeModeSource {
             config_active: true,
             config_plane_alive: true,
+            config_activity_phase: crate::runtime::ConfigActivityPhase::Active,
             ..RuntimeModeSource::default()
         });
         assert_eq!(snapshot.current_mode, RuntimeMode::ConfigActive);
@@ -292,6 +309,22 @@ mod tests {
         assert!(snapshot.action_budget.allow_due_user_timers);
         assert!(!snapshot.action_budget.allow_heartbeat_injection);
         assert!(!snapshot.action_budget.allow_best_effort_delayed_tasks);
+        assert!(snapshot.action_budget.allow_non_voice_outbound);
+        assert!(!snapshot.action_budget.allow_realtime_voice_connect);
+        assert!(snapshot.action_budget.allow_external_wss_connect);
+        assert!(!snapshot.action_budget.require_external_wss_suspended);
+    }
+
+    #[test]
+    fn config_persisting_pauses_new_non_voice_network_work_without_forcing_wss_suspend() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            config_active: true,
+            config_plane_alive: true,
+            config_activity_phase: crate::runtime::ConfigActivityPhase::Persisting,
+            ..RuntimeModeSource::default()
+        });
+        assert_eq!(snapshot.current_mode, RuntimeMode::ConfigActive);
+        assert!(!snapshot.action_budget.allow_periodic_maintenance);
         assert!(!snapshot.action_budget.allow_non_voice_outbound);
         assert!(!snapshot.action_budget.allow_realtime_voice_connect);
         assert!(!snapshot.action_budget.allow_external_wss_connect);

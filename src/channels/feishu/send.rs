@@ -6,6 +6,8 @@ use crate::bus::{
     MediaAssetRef, MediaLocatorKind, MessageTransport, PcMsg, PlatformNativeBody, TextBody,
     TextFormat, VideoBody,
 };
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::channels::send::ActiveChannelSender;
 use crate::channels::send::{
     ensure_sender_http, record_outbound_http_failure, record_outbound_http_success,
     run_buffered_sender_loop, QueuedOutboundMessage,
@@ -13,7 +15,11 @@ use crate::channels::send::{
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::platform::PlatformHttpClient;
 use serde_json::{json, Value};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::sync::Arc;
 
 pub const FEISHU_TOKEN_URL: &str =
     "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
@@ -499,6 +505,76 @@ pub fn run_feishu_sender_loop<H, F>(
             }
         }
     });
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) struct FeishuOutboundDriver {
+    app_id: String,
+    app_secret: String,
+    http: Option<Box<dyn PlatformHttpClient>>,
+    token_cache: FeishuTokenCache,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn feishu_outbound_driver(
+    app_id: String,
+    app_secret: String,
+    create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
+) -> Box<dyn ActiveChannelSender> {
+    Box::new(FeishuOutboundDriver {
+        app_id,
+        app_secret,
+        http: None,
+        token_cache: FeishuTokenCache::new(),
+        create_http,
+    })
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl ActiveChannelSender for FeishuOutboundDriver {
+    fn tag(&self) -> &'static str {
+        "feishu_sender"
+    }
+
+    fn send_attempt(
+        &mut self,
+        message: &QueuedOutboundMessage,
+        attempt: u8,
+    ) -> crate::error::Result<()> {
+        const TAG: &str = "feishu_sender";
+        let create_http = Arc::clone(&self.create_http);
+        let mut create = || create_http();
+        if !ensure_sender_http(&mut self.http, &mut create, TAG, attempt) {
+            return Err(Error::config(TAG, "create http failed"));
+        }
+        let Some(h) = self.http.as_mut() else {
+            return Err(Error::config(TAG, "sender http missing after ensure"));
+        };
+        let token = match self
+            .token_cache
+            .ensure_token(h, &self.app_id, &self.app_secret, TAG)
+        {
+            Ok(token) => token,
+            Err(error) => {
+                self.token_cache.invalidate();
+                self.http = None;
+                return Err(error);
+            }
+        };
+        match send_feishu_message(h, token.as_str(), message) {
+            Ok(()) => {
+                record_outbound_http_success();
+                Ok(())
+            }
+            Err(error) => {
+                record_outbound_http_failure(&error);
+                self.token_cache.invalidate();
+                self.http = None;
+                Err(error)
+            }
+        }
+    }
 }
 
 /// 发送消息并返回平台侧 message_id（字符串形式）；供流式编辑使用。

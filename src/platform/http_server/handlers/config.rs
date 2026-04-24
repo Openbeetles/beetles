@@ -556,19 +556,11 @@ pub fn delete_account(
     }
 }
 
-/// GET /api/config/hardware：返回 HardwareSegment JSON（文件不存在时返回空 devices）。路由层要求配对码。
+/// GET /api/config/hardware：从缓存返回 HardwareSegment JSON。路由层要求配对码。
 pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    match ctx
-        .config_file_store
-        .read_config_file("config/hardware.json")
-    {
-        Ok(Some(b)) => {
-            let s = String::from_utf8_lossy(&b);
-            Ok(s.into_owned())
-        }
-        Ok(None) => Ok(r#"{"hardware_devices":[]}"#.to_string()),
-        Err(e) => Err(to_io(e.to_string())),
-    }
+    let config = ctx.config();
+    let segment = config::HardwareSegment::from_app_config(&config);
+    serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
 /// POST /api/config/hardware：校验并写入 HardwareSegment 到 SPIFFS config/hardware.json。
@@ -582,9 +574,11 @@ pub fn post_hardware(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
     }
 }
 
-/// GET /api/config/audio：返回 AudioSegment JSON（文件不存在时返回 disabled 默认配置）。路由层要求配对码。
+/// GET /api/config/audio：从缓存返回 AudioSegment JSON（未配置时返回 disabled 默认配置）。路由层要求配对码。
 pub fn get_audio_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    config::get_audio_segment(ctx.config_file_store.as_ref()).map_err(|e| to_io(e.to_string()))
+    let config = ctx.config();
+    let segment = config::AudioSegment::from_app_config(&config);
+    serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
 /// POST /api/config/audio：校验并写入 AudioSegment 到 SPIFFS config/audio.json。
@@ -600,9 +594,11 @@ pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::
     }
 }
 
-/// GET /api/config/display：返回 DisplayConfig JSON（文件不存在时返回 disabled 默认配置）。路由层要求配对码。
+/// GET /api/config/display：从缓存返回 DisplayConfig JSON（未配置时返回 disabled 默认配置）。路由层要求配对码。
 pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    config::get_display_segment(ctx.config_file_store.as_ref()).map_err(|e| to_io(e.to_string()))
+    let config = ctx.config();
+    let segment = config::display_segment_from_app_config(&config);
+    serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
 /// POST /api/config/display：校验并写入 DisplayConfig 到 SPIFFS config/display.json。
@@ -629,11 +625,29 @@ pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std
 
 #[cfg(test)]
 mod tests {
-    use super::{get_system_body, post_system};
+    use super::{
+        get_audio_body, get_display_body, get_hardware_body, get_system_body, post_system,
+    };
     use crate::config::{self, ConfigFileStore};
     use crate::error::Result;
     use serde_json::Value;
     use std::sync::Arc;
+
+    struct PanicConfigFileStore;
+
+    impl ConfigFileStore for PanicConfigFileStore {
+        fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("cached config GET should not read config files");
+        }
+
+        fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+            panic!("cached config GET should not write config files");
+        }
+
+        fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+            panic!("cached config GET should not remove config files");
+        }
+    }
 
     #[test]
     fn get_system_body_returns_only_system_segment() {
@@ -691,23 +705,24 @@ mod tests {
     }
 
     #[test]
+    fn cached_runtime_config_getters_do_not_read_config_files() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(PanicConfigFileStore);
+
+        let hardware: Value =
+            serde_json::from_str(&get_hardware_body(&ctx).expect("hardware body")).unwrap();
+        let audio: Value =
+            serde_json::from_str(&get_audio_body(&ctx).expect("audio body")).unwrap();
+        let display: Value =
+            serde_json::from_str(&get_display_body(&ctx).expect("display body")).unwrap();
+
+        assert_eq!(hardware["hardware_devices"].as_array().unwrap().len(), 0);
+        assert_eq!(audio["enabled"], false);
+        assert_eq!(display["enabled"], false);
+    }
+
+    #[test]
     fn post_system_updates_cached_config_without_reloading_config_files() {
-        struct PanicConfigFileStore;
-
-        impl ConfigFileStore for PanicConfigFileStore {
-            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
-                panic!("post_system should not reload config files");
-            }
-
-            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
-                panic!("post_system should not write config files");
-            }
-
-            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
-                panic!("post_system should not remove config files");
-            }
-        }
-
         let mut ctx = build_test_context();
         ctx.config_file_store = Arc::new(PanicConfigFileStore);
 
