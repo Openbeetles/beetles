@@ -826,7 +826,6 @@ export const zhCN = {
       detailLoadFailed: '无法加载账户详情',
       detailMissingTitle: '未找到该账户',
       detailMissingDesc: '可能已被删除或账户标识无效。',
-      detailProvider: '提供方',
       detailAssessment: '评估',
       missingFields: '缺失字段',
       probe: '探测',

@@ -506,9 +506,6 @@ export function AccountDetailDialog({
                       gap={2}
                     >
                       <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="subtitle2" color="text.secondary">
-                          {t("accounts.detailProvider")}
-                        </Typography>
                         <Typography fontWeight={700}>
                           {localizeAccountProviderName(t, {
                             providerKind: a.provider_kind,
@@ -619,13 +616,6 @@ export function AccountDetailDialog({
                   </FormCard>
 
                   <FormCard>
-                    <Typography
-                      variant="subtitle2"
-                      color="text.secondary"
-                      gutterBottom
-                    >
-                      {t("accounts.providerFields")}
-                    </Typography>
                     <FormGrid>
                       {localizedDetailFields.map((field) => (
                         <ProviderFieldInput

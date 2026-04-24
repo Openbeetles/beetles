@@ -43,7 +43,11 @@ pages with local `sx` rules.
 - Account detail status is part of the identity summary, not a standalone form
   section. Keep readiness, next action, probe, and missing-field feedback inline
   with the account header so the credential form remains the primary visual
-  path.
+  path. The summary title starts with the provider/account identity itself; do
+  not add generic eyebrow labels such as "Provider" above it. The credential
+  card in the detail dialog also starts directly with fields; avoid generic
+  subheads such as "Connection & credentials" when the fields already provide
+  the structure.
 
 ## Scope
 

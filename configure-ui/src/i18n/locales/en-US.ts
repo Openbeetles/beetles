@@ -835,7 +835,6 @@ export const enUS = {
       detailLoadFailed: 'Could not load account',
       detailMissingTitle: 'Account not found',
       detailMissingDesc: 'It may have been removed or the key is invalid.',
-      detailProvider: 'Provider',
       detailAssessment: 'Assessment',
       missingFields: 'Missing fields',
       probe: 'Probe',
