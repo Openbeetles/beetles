@@ -14,6 +14,7 @@ use crate::platform::AudioDuplexCapabilities;
 use crate::Platform;
 use base64::Engine;
 use serde_json::json;
+use std::io::Read as _;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -135,6 +136,7 @@ struct RealtimeLoopState {
     current_local_turn_committed: bool,
     local_turn_generation: u32,
     server_response_generation: u32,
+    output_pcm_decode_buf: Vec<i16>,
     last_activity: Instant,
 }
 
@@ -161,6 +163,7 @@ impl RealtimeLoopState {
             current_local_turn_committed: false,
             local_turn_generation: 0,
             server_response_generation: 0,
+            output_pcm_decode_buf: Vec::new(),
             last_activity: Instant::now(),
         }
     }
@@ -1030,14 +1033,7 @@ fn handle_json_server_message(
                 .get("delta")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| Error::config("realtime_voice_parse", "audio delta missing"))?;
-            let pcm = decode_pcm16_delta(delta)?;
-            if !pcm.is_empty() {
-                queue_output_audio(
-                    platform,
-                    state,
-                    audio_cfg.speaker.sample_rate,
-                    pcm.as_slice(),
-                )?;
+            if queue_pcm16_delta_audio(platform, state, audio_cfg.speaker.sample_rate, delta)? {
                 state.awaiting_response = true;
                 state.mark_server_response_activity(now);
             }
@@ -1094,36 +1090,65 @@ fn summarize_close(close: Option<&WssCloseInfo>) -> String {
         .unwrap_or_else(|| "peer closed".to_string())
 }
 
-fn decode_pcm16_delta(delta_b64: &str) -> Result<Vec<i16>> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(delta_b64.as_bytes())
-        .map_err(|e| {
+fn decode_pcm16_delta_into(delta_b64: &str, out: &mut Vec<i16>) -> Result<()> {
+    out.clear();
+    let mut reader = base64::read::DecoderReader::new(
+        delta_b64.as_bytes(),
+        &base64::engine::general_purpose::STANDARD,
+    );
+    let mut buf = [0u8; 512];
+    let mut pending_low: Option<u8> = None;
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| {
             Error::config(
                 "realtime_voice_parse",
                 format!("audio base64 decode failed: {}", e),
             )
         })?;
-    if bytes.len() % 2 != 0 {
-        return Err(Error::config(
-            "realtime_voice_parse",
-            "pcm16 delta length must be even",
-        ));
+        if n == 0 {
+            break;
+        }
+        let mut start = 0usize;
+        if let Some(low) = pending_low.take() {
+            out.push(i16::from_le_bytes([low, buf[0]]));
+            start = 1;
+        }
+        let chunks = buf[start..n].chunks_exact(2);
+        for chunk in chunks.clone() {
+            out.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+        }
+        if let Some(&low) = chunks.remainder().first() {
+            pending_low = Some(low);
+        }
     }
-    decode_pcm16_bytes(bytes.as_slice())
-}
-
-fn decode_pcm16_bytes(bytes: &[u8]) -> Result<Vec<i16>> {
-    if !bytes.len().is_multiple_of(2) {
+    if pending_low.is_some() {
+        out.clear();
         return Err(Error::config(
             "realtime_voice_parse",
             "pcm16 payload length must be even",
         ));
     }
-    let mut pcm = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
-    }
-    Ok(pcm)
+    Ok(())
+}
+
+fn queue_pcm16_delta_audio(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    sample_rate_hz: u32,
+    delta_b64: &str,
+) -> Result<bool> {
+    let mut pcm = std::mem::take(&mut state.output_pcm_decode_buf);
+    let result = (|| {
+        decode_pcm16_delta_into(delta_b64, &mut pcm)?;
+        if pcm.is_empty() {
+            return Ok(false);
+        }
+        queue_output_audio(platform, state, sample_rate_hz, pcm.as_slice())?;
+        Ok(true)
+    })();
+    pcm.clear();
+    state.output_pcm_decode_buf = pcm;
+    result
 }
 
 fn playback_target_buffer_samples(sample_rate_hz: u32) -> usize {
@@ -1389,10 +1414,12 @@ fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {
 mod tests {
     use super::{
         build_realtime_headers, build_realtime_ws_url, build_session_update,
-        realtime_ws_url_needs_openai_beta, server_message_marks_session_ready, RealtimeProvider,
-        RealtimeUploadEncoder, REALTIME_OPENAI_BETA,
+        decode_pcm16_delta_into, realtime_ws_url_needs_openai_beta,
+        server_message_marks_session_ready, RealtimeProvider, RealtimeUploadEncoder,
+        REALTIME_OPENAI_BETA,
     };
     use crate::config::default_disabled_audio_segment;
+    use base64::Engine as _;
 
     fn realtime_cfg(provider: &str) -> crate::config::AudioSegment {
         let mut cfg = default_disabled_audio_segment();
@@ -1472,6 +1499,18 @@ mod tests {
         let payload = encoder.build_append_event(RealtimeProvider::Qwen, &[1, 2, 3]);
         assert!(payload.contains("\"event_id\":\"audio_"));
         assert!(payload.contains("\"type\":\"input_audio_buffer.append\""));
+    }
+
+    #[test]
+    fn pcm16_delta_decode_reuses_output_buffer() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode([1u8, 0, 255, 255]);
+        let mut out = Vec::with_capacity(16);
+        let original_capacity = out.capacity();
+
+        decode_pcm16_delta_into(encoded.as_str(), &mut out).unwrap();
+
+        assert_eq!(out, vec![1, -1]);
+        assert_eq!(out.capacity(), original_capacity);
     }
 
     #[test]

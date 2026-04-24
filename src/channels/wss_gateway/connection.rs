@@ -15,40 +15,92 @@ pub enum WssConnectProfile {
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) const MAX_WSS_SEND_PAYLOAD_BYTES: usize = 64 * 1024;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+type RawDrop = unsafe fn(*mut u8, usize);
+
+enum WssBinaryStorage {
+    Vec {
+        data: Vec<u8>,
+        recycler: Option<fn(Vec<u8>)>,
+    },
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    Raw {
+        ptr: *mut u8,
+        len: usize,
+        drop_fn: RawDrop,
+    },
+}
+
 /// 单次收到的 WSS 二进制负载。可选回收器用于高频路径复用缓冲，降低分配抖动。
 pub struct WssBinary {
-    data: Vec<u8>,
-    recycler: Option<fn(Vec<u8>)>,
+    storage: WssBinaryStorage,
 }
 
 impl WssBinary {
     pub fn from_vec(data: Vec<u8>) -> Self {
         Self {
-            data,
-            recycler: None,
+            storage: WssBinaryStorage::Vec {
+                data,
+                recycler: None,
+            },
         }
     }
 
     pub fn from_vec_with_recycler(data: Vec<u8>, recycler: fn(Vec<u8>)) -> Self {
         Self {
-            data,
-            recycler: Some(recycler),
+            storage: WssBinaryStorage::Vec {
+                data,
+                recycler: Some(recycler),
+            },
+        }
+    }
+
+    /// Build a payload view over an externally allocated buffer.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must remain valid for `len` bytes until this value is dropped. `drop_fn`
+    /// must free that exact allocation once.
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    pub(crate) unsafe fn from_raw_parts_with_drop(
+        ptr: *mut u8,
+        len: usize,
+        drop_fn: RawDrop,
+    ) -> Self {
+        Self {
+            storage: WssBinaryStorage::Raw { ptr, len, drop_fn },
         }
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        self.data.as_slice()
+        match &self.storage {
+            WssBinaryStorage::Vec { data, .. } => data.as_slice(),
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+            WssBinaryStorage::Raw { ptr, len, .. } => {
+                if ptr.is_null() || *len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(*ptr, *len) }
+                }
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.data.len()
+        match &self.storage {
+            WssBinaryStorage::Vec { data, .. } => data.len(),
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+            WssBinaryStorage::Raw { len, .. } => *len,
+        }
     }
 }
+
+unsafe impl Send for WssBinary {}
 
 impl std::fmt::Debug for WssBinary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WssBinary")
-            .field("len", &self.data.len())
+            .field("len", &self.len())
             .finish()
     }
 }
@@ -61,10 +113,24 @@ impl AsRef<[u8]> for WssBinary {
 
 impl Drop for WssBinary {
     fn drop(&mut self) {
-        if let Some(recycler) = self.recycler.take() {
-            let mut data = std::mem::take(&mut self.data);
-            data.clear();
-            recycler(data);
+        match &mut self.storage {
+            WssBinaryStorage::Vec { data, recycler } => {
+                if let Some(recycler) = recycler.take() {
+                    let mut data = std::mem::take(data);
+                    data.clear();
+                    recycler(data);
+                }
+            }
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+            WssBinaryStorage::Raw { ptr, len, drop_fn } => {
+                if !ptr.is_null() {
+                    unsafe {
+                        drop_fn(*ptr, *len);
+                    }
+                    *ptr = std::ptr::null_mut();
+                    *len = 0;
+                }
+            }
         }
     }
 }
@@ -141,5 +207,28 @@ mod tests {
     #[test]
     fn boxed_wss_connection_can_cross_threads() {
         assert_send::<Box<dyn WssConnection>>();
+    }
+
+    #[test]
+    fn raw_wss_binary_uses_drop_callback_without_vec_copy() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe fn drop_raw(ptr: *mut u8, len: usize) {
+            DROPPED.fetch_add(len, Ordering::SeqCst);
+            let slice = std::ptr::slice_from_raw_parts_mut(ptr, len);
+            let _ = unsafe { Box::from_raw(slice) };
+        }
+
+        let data: Box<[u8]> = Box::new([1u8, 2, 3, 4]);
+        let len = data.len();
+        let ptr = Box::into_raw(data) as *mut u8;
+
+        let binary = unsafe { WssBinary::from_raw_parts_with_drop(ptr, len, drop_raw) };
+        assert_eq!(binary.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(binary.len(), 4);
+        drop(binary);
+        assert_eq!(DROPPED.load(Ordering::SeqCst), 4);
     }
 }

@@ -539,6 +539,15 @@ impl Platform for Esp32Platform {
                 crate::platform::AudioDuplexCapabilities::unavailable();
             return Ok(());
         }
+        if !crate::config::audio_runtime_pipeline_enabled(config) {
+            *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .audio_capabilities
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) =
+                crate::platform::AudioDuplexCapabilities::unavailable();
+            return Ok(());
+        }
         match crate::platform::audio_drivers::AudioPipelineState::from_config(config) {
             Ok(state) => {
                 let capabilities = state.duplex_capabilities().normalized();

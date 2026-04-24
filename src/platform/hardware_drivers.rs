@@ -573,10 +573,6 @@ const DHT_MAX_RETRIES: u8 = 3;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const DHT_RETRY_DELAY_MS: u64 = 150;
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-static DHT_SAMPLE_CRIT: esp_idf_hal::interrupt::IsrCriticalSection =
-    esp_idf_hal::interrupt::IsrCriticalSection::new();
-
 /// 等待 `gpio_get_level(pin) == target`，超时返回 `Err`。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 unsafe fn dht_wait_until_level(
@@ -601,8 +597,6 @@ unsafe fn dht_wait_until_level(
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 unsafe fn dht_sample_raw_frame(pin: i32) -> Result<[u8; 5]> {
     use esp_idf_svc::sys::{esp_rom_delay_us, gpio_get_level};
-
-    let _g = DHT_SAMPLE_CRIT.enter();
 
     dht_wait_until_level(
         pin,
@@ -1259,5 +1253,25 @@ pub fn drive_i2c_sensor_stub(addr: u8, model: &str) -> Result<String> {
             r#"{{"temperature":22.0,"humidity":55.0,"model":"{}","stub":true}}"#,
             model
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dht_sampling_does_not_hold_isr_critical_section_across_frame() {
+        let source = include_str!("hardware_drivers.rs");
+        let start = source
+            .find("unsafe fn dht_sample_raw_frame")
+            .expect("DHT sample function must exist");
+        let tail = &source[start..];
+        let end = tail
+            .find("/// 读取 DHT 温湿度")
+            .expect("DHT sample function must stay before public read helper");
+        let sample_source = &tail[..end];
+        let critical_type = ["Isr", "Critical", "Section"].concat();
+
+        assert!(!sample_source.contains(&critical_type));
+        assert!(!sample_source.contains(".enter()"));
     }
 }

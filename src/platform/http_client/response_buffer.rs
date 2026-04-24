@@ -5,8 +5,18 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResponseBodyReadPlan {
-    Heap { initial_cap: usize },
-    PsramExact { cap: usize },
+    Heap {
+        initial_cap: usize,
+    },
+    PsramExact {
+        cap: usize,
+    },
+    GrowThenPsram {
+        initial_cap: usize,
+        psram_initial_cap: usize,
+        psram_max_cap: usize,
+        switch_len: usize,
+    },
 }
 
 pub(crate) fn choose_response_body_read_plan(
@@ -27,7 +37,17 @@ pub(crate) fn choose_response_body_read_plan(
                     cap: seed_len.max(initial_response_body_cap).min(max_len),
                 };
             }
-            None => return ResponseBodyReadPlan::PsramExact { cap: max_len },
+            None => {
+                return ResponseBodyReadPlan::GrowThenPsram {
+                    initial_cap: initial_response_body_cap.min(max_len),
+                    psram_initial_cap: psram_prealloc_threshold
+                        .saturating_mul(2)
+                        .max(initial_response_body_cap)
+                        .min(max_len),
+                    psram_max_cap: max_len,
+                    switch_len: psram_prealloc_threshold.min(max_len),
+                };
+            }
         }
     }
 
@@ -40,9 +60,17 @@ mod tests {
     use super::{choose_response_body_read_plan, ResponseBodyReadPlan};
 
     #[test]
-    fn unknown_length_prefers_psram_exact_on_esp() {
+    fn unknown_length_starts_small_then_moves_to_psram_on_esp() {
         let plan = choose_response_body_read_plan(512 * 1024, None, true, 8 * 1024, 8 * 1024);
-        assert_eq!(plan, ResponseBodyReadPlan::PsramExact { cap: 512 * 1024 });
+        assert_eq!(
+            plan,
+            ResponseBodyReadPlan::GrowThenPsram {
+                initial_cap: 8 * 1024,
+                psram_initial_cap: 16 * 1024,
+                psram_max_cap: 512 * 1024,
+                switch_len: 8 * 1024,
+            }
+        );
     }
 
     #[test]

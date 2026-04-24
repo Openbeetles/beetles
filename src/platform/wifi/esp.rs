@@ -294,12 +294,13 @@ fn run_scan_loop(
 
         let recv_result = if has_sta {
             let wait = next_sta_poll.saturating_duration_since(Instant::now());
-            scan_req_rx.recv_timeout(wait)
+            scan_req_rx.recv_timeout(crate::platform::esp_runtime_policy::bounded_watchdog_wait(
+                Some(wait),
+            ))
         } else {
-            match scan_req_rx.recv() {
-                Ok(req) => Ok(req),
-                Err(_) => Err(mpsc::RecvTimeoutError::Disconnected),
-            }
+            scan_req_rx.recv_timeout(crate::platform::esp_runtime_policy::bounded_watchdog_wait(
+                None,
+            ))
         };
 
         match recv_result {

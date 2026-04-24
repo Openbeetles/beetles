@@ -453,6 +453,11 @@ impl AppConfig {
             &mut load_errors,
             |json, errors| c.merge_office_accounts_from_json(json, errors),
         );
+        sanitize_proxy_url_for_target(
+            &mut c,
+            proxy_supported_on_current_target(),
+            &mut load_errors,
+        );
         crate::llm::ensure_legacy_llm_sources(&mut c);
         c.load_errors = if load_errors.is_empty() {
             None
@@ -660,13 +665,7 @@ impl AppConfig {
 
     /// 校验：proxy_url 为空或形如 scheme://host 或 scheme://host:port。
     pub fn validate_proxy(&self) -> Result<()> {
-        if self.proxy_url.trim().is_empty() {
-            return Ok(());
-        }
-        parse_proxy_url_to_host_port(self.proxy_url.trim()).ok_or_else(|| {
-            Error::config("config", "proxy_url must be empty or like http://host:port")
-        })?;
-        Ok(())
+        validate_proxy_url_for_target(self.proxy_url.trim(), proxy_supported_on_current_target())
     }
 
     /// 启动期通道校验：enabled_channel 对应凭证非空且长度在界内；失败返回 Config 错误，不打印凭证。
@@ -796,6 +795,57 @@ pub fn parse_proxy_url_to_host_port(url: &str) -> Option<(String, String)> {
         return None;
     }
     Some((host.to_string(), port))
+}
+
+/// Return whether the current compile target has a working HTTP proxy transport.
+///
+/// ESP targets currently do not implement CONNECT tunneling, so accepting
+/// `proxy_url` there would create a client that fails every request.
+pub fn proxy_supported_on_current_target() -> bool {
+    !cfg!(any(target_arch = "xtensa", target_arch = "riscv32"))
+}
+
+/// Validate `proxy_url` using an explicit target capability flag.
+///
+/// The flag keeps tests independent from the host target while production uses
+/// [`proxy_supported_on_current_target`].
+pub fn validate_proxy_url_for_target(proxy_url: &str, proxy_supported: bool) -> Result<()> {
+    let proxy_url = proxy_url.trim();
+    if proxy_url.is_empty() {
+        return Ok(());
+    }
+    parse_proxy_url_to_host_port(proxy_url).ok_or_else(|| {
+        Error::config("config", "proxy_url must be empty or like http://host:port")
+    })?;
+    if !proxy_supported {
+        return Err(Error::config(
+            "config",
+            "proxy_url is not supported on this target",
+        ));
+    }
+    Ok(())
+}
+
+fn sanitize_proxy_url_for_target(
+    config: &mut AppConfig,
+    proxy_supported: bool,
+    load_errors: &mut Vec<String>,
+) {
+    let proxy_url = config.proxy_url.trim();
+    if proxy_url.is_empty() {
+        return;
+    }
+    if validate_proxy_url_for_target(proxy_url, proxy_supported).is_ok() {
+        return;
+    }
+    let error_code = if parse_proxy_url_to_host_port(proxy_url).is_some() && !proxy_supported {
+        "proxy_unsupported_on_target"
+    } else {
+        "proxy_url_invalid"
+    };
+    log::warn!("[config] dropping unsupported proxy_url ({})", error_code);
+    config.proxy_url.clear();
+    load_errors.push(error_code.to_string());
 }
 
 // 以下仍属 impl AppConfig（与 parse_proxy_url_to_host_port 并列的 impl 块继续）
@@ -1532,6 +1582,14 @@ pub fn audio_realtime_enabled(seg: &AudioSegment) -> bool {
         && !seg.realtime.voice.trim().is_empty()
 }
 
+/// Return whether the audio runtime has a physical endpoint worth initializing.
+///
+/// Feature flags such as ambient listening or LED indication do not by
+/// themselves justify starting the ESP audio worker.
+pub fn audio_runtime_pipeline_enabled(seg: &AudioSegment) -> bool {
+    seg.enabled && (seg.microphone.enabled || seg.speaker.enabled)
+}
+
 // ── Hardware device config constants ──
 const MAX_HARDWARE_DEVICES: usize = 8;
 const MAX_PWM_DEVICES: usize = 4;
@@ -1739,14 +1797,7 @@ fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
             ),
         ));
     }
-    if !seg.proxy_url.trim().is_empty()
-        && parse_proxy_url_to_host_port(seg.proxy_url.trim()).is_none()
-    {
-        return Err(Error::config(
-            "config",
-            "proxy_url must be empty or like http://host:port",
-        ));
-    }
+    validate_proxy_url_for_target(seg.proxy_url.trim(), proxy_supported_on_current_target())?;
     normalize_optional_locale(seg.locale.as_deref())?;
     Ok(())
 }
@@ -3024,6 +3075,39 @@ mod tests {
         seg.speaker.enabled = true;
 
         assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn audio_runtime_pipeline_requires_physical_audio_endpoint() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.ambient_listening.enabled = true;
+        seg.led_indicator.enabled = true;
+
+        assert!(!audio_runtime_pipeline_enabled(&seg));
+
+        seg.speaker.enabled = true;
+        assert!(audio_runtime_pipeline_enabled(&seg));
+    }
+
+    #[test]
+    fn proxy_validation_rejects_valid_proxy_on_unsupported_target() {
+        let error = validate_proxy_url_for_target("http://proxy.local:8080", false)
+            .expect_err("proxy must be rejected when target does not support CONNECT");
+
+        assert!(error.to_string().contains("proxy_url is not supported"));
+    }
+
+    #[test]
+    fn proxy_sanitize_drops_loaded_proxy_on_unsupported_target() {
+        let mut config = AppConfig::load_from_env();
+        let mut load_errors = Vec::new();
+        config.proxy_url = "http://proxy.local:8080".to_string();
+
+        sanitize_proxy_url_for_target(&mut config, false, &mut load_errors);
+
+        assert!(config.proxy_url.is_empty());
+        assert_eq!(load_errors, vec!["proxy_unsupported_on_target"]);
     }
 
     #[test]

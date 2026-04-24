@@ -209,13 +209,7 @@ fn next_delayed_task_wait_with_policy(max_wait: Duration, allow_best_effort: boo
 
 #[cfg(test)]
 pub fn reset_delayed_tasks_for_tests() {
-    crate::state::set_voice_exclusive_active(false);
-    crate::state::set_background_maintenance_active(false);
-    crate::state::set_config_plane_active(false);
-    crate::state::set_boot_phase_active(false);
-    crate::state::set_pairing_state_known(false);
-    crate::state::set_pairing_required(false);
-    crate::state::set_recovery_safe_mode_active(false);
+    crate::runtime::governance::reset_runtime_governance_state_for_tests();
     state()
         .pending
         .lock()

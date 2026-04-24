@@ -1,7 +1,7 @@
-//! HTTP(S) 客户端：GET/POST、超时、响应体大小上限；可选 proxy（CONNECT 未实现时返回错误）。
-//! HTTP(S) client: GET/POST, timeout, response size limit; optional proxy.
+//! HTTP(S) 客户端：GET/POST、超时、响应体大小上限；ESP 不支持 proxy CONNECT。
+//! HTTP(S) client: GET/POST, timeout, response size limit; ESP does not support proxy CONNECT.
 
-use crate::config::{parse_proxy_url_to_host_port, AppConfig};
+use crate::config::{validate_proxy_url_for_target, AppConfig};
 use crate::error::{Error, Result};
 use crate::orchestrator::Priority;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -98,15 +98,15 @@ impl EspHttpClient {
         Self::new_optional_proxy(None, priority)
     }
 
-    /// 新建客户端；若 config.proxy_url 非空则解析为 host:port 并标记使用 proxy（CONNECT 隧道未实现时请求会失败）。
+    /// 新建客户端；ESP 不支持 proxy CONNECT，非空 `proxy_url` 会直接返回配置错误。
     pub fn new_with_config(config: &AppConfig) -> Result<Self> {
         Self::new_with_config_and_priority(config, Priority::Normal)
     }
 
     /// 新建客户端并显式指定优先级。
     pub fn new_with_config_and_priority(config: &AppConfig, priority: Priority) -> Result<Self> {
-        let proxy = parse_proxy_url_to_host_port(config.proxy_url.trim());
-        Self::new_optional_proxy(proxy, priority)
+        validate_proxy_url_for_target(config.proxy_url.trim(), false)?;
+        Self::new_optional_proxy(None, priority)
     }
 
     fn default_http_config() -> HttpConfig {
@@ -119,10 +119,10 @@ impl EspHttpClient {
 
     fn new_optional_proxy(proxy: Option<(String, String)>, priority: Priority) -> Result<Self> {
         if proxy.is_some() {
-            log::warn!(
-                "[{}] proxy CONNECT tunnel not implemented, request will fail",
-                TAG
-            );
+            return Err(Error::config(
+                "proxy_connect",
+                "proxy_url is not supported on ESP; leave proxy_url empty",
+            ));
         }
         let proxy_host = proxy.map(|(host, _port)| host);
         Ok(EspHttpClient {
@@ -406,6 +406,21 @@ where
                 return read_response_body_into_psram(psram_ptr, cap, r);
             }
         }
+        ResponseBodyReadPlan::GrowThenPsram {
+            initial_cap,
+            psram_initial_cap,
+            psram_max_cap,
+            switch_len,
+        } => {
+            return read_response_body_grow_then_psram(
+                initial_cap,
+                psram_initial_cap,
+                psram_max_cap,
+                switch_len,
+                max_len,
+                r,
+            );
+        }
         ResponseBodyReadPlan::Heap { .. } => {}
     }
 
@@ -414,8 +429,151 @@ where
     let initial_cap = match plan {
         ResponseBodyReadPlan::Heap { initial_cap } => initial_cap,
         ResponseBodyReadPlan::PsramExact { cap } => cap.min(INITIAL_RESPONSE_BODY_CAP),
+        ResponseBodyReadPlan::GrowThenPsram { initial_cap, .. } => initial_cap,
     };
     read_response_body_into_heap_like(Vec::with_capacity(initial_cap), max_len, r)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn read_response_body_grow_then_psram<R: Read>(
+    initial_cap: usize,
+    psram_initial_cap: usize,
+    psram_max_cap: usize,
+    switch_len: usize,
+    max_len: usize,
+    r: &mut R,
+) -> Result<ResponseBody>
+where
+    R::Error: std::error::Error + 'static,
+{
+    let mut heap = Vec::with_capacity(initial_cap.min(max_len));
+    let mut psram: Option<(*mut u8, usize, usize)> = None;
+    let mut buf = [0u8; RESPONSE_READ_CHUNK];
+    loop {
+        let n = match read_with_retry(r, &mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                if let Some((ptr, _, _)) = psram.take() {
+                    unsafe {
+                        crate::platform::heap::free_spiram_buffer(ptr);
+                    }
+                }
+                return Err(e);
+            }
+        };
+        if n == 0 {
+            break;
+        }
+        let current_len = psram.as_ref().map(|(_, len, _)| *len).unwrap_or(heap.len());
+        let remain = max_len.saturating_sub(current_len);
+        if remain == 0 {
+            log::warn!("[{}] response body truncated at {} bytes", TAG, max_len);
+            drain_response(r);
+            break;
+        }
+        let take = n.min(remain);
+        if let Some((ptr, len, cap)) = psram.as_mut() {
+            let required = len.saturating_add(take).min(max_len);
+            if required > *cap {
+                let new_cap = next_psram_response_cap(required, *cap, psram_max_cap.min(max_len));
+                if let Some(new_ptr) = alloc_spiram_buffer(new_cap) {
+                    if *len > 0 {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(*ptr, new_ptr, *len);
+                        }
+                    }
+                    unsafe {
+                        crate::platform::heap::free_spiram_buffer(*ptr);
+                    }
+                    *ptr = new_ptr;
+                    *cap = new_cap;
+                } else {
+                    let available = cap.saturating_sub(*len);
+                    let to_copy = take.min(available);
+                    if to_copy > 0 {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr.add(*len), to_copy);
+                        }
+                        *len += to_copy;
+                    }
+                    log::warn!("[{}] response body truncated at {} bytes", TAG, *len);
+                    drain_response(r);
+                    break;
+                }
+            }
+            let available = cap.saturating_sub(*len);
+            let to_copy = take.min(available);
+            if to_copy > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr.add(*len), to_copy);
+                }
+                *len += to_copy;
+            }
+            if to_copy < take {
+                log::warn!("[{}] response body truncated at {} bytes", TAG, *cap);
+                drain_response(r);
+                break;
+            }
+        } else if heap.len().saturating_add(take) <= switch_len {
+            heap.extend_from_slice(&buf[..take]);
+        } else {
+            let cap = next_psram_response_cap(
+                heap.len().saturating_add(take),
+                psram_initial_cap,
+                psram_max_cap.min(max_len),
+            );
+            if let Some(ptr) = alloc_spiram_buffer(cap) {
+                let mut len = heap.len();
+                if len > 0 {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(heap.as_ptr(), ptr, len);
+                    }
+                }
+                let available = cap.saturating_sub(len);
+                let to_copy = take.min(available);
+                if to_copy > 0 {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr.add(len), to_copy);
+                    }
+                    len += to_copy;
+                }
+                heap.clear();
+                psram = Some((ptr, len, cap));
+                if to_copy < take {
+                    log::warn!("[{}] response body truncated at {} bytes", TAG, cap);
+                    drain_response(r);
+                    break;
+                }
+            } else {
+                heap.extend_from_slice(&buf[..take]);
+            }
+        }
+        if take < n {
+            drain_response(r);
+            break;
+        }
+    }
+    if let Some((ptr, len, _)) = psram {
+        Ok(ResponseBody::PSRAM {
+            ptr: Some(ptr),
+            len,
+        })
+    } else {
+        Ok(ResponseBody::Heap(heap))
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn next_psram_response_cap(required: usize, current_cap: usize, max_cap: usize) -> usize {
+    let mut cap = current_cap.max(RESPONSE_READ_CHUNK).min(max_cap);
+    while cap < required && cap < max_cap {
+        let next = cap.saturating_mul(2).min(max_cap);
+        if next <= cap {
+            break;
+        }
+        cap = next;
+    }
+    cap.max(required).min(max_cap)
 }
 
 fn read_response_body_into_heap_like<R: Read>(

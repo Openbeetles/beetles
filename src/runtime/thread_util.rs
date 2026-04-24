@@ -67,3 +67,27 @@ where
     }
     spawn_guarded_with_profile_handle(name, stack_size, plan.core, plan.role, f)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn esp_native_idle_waits_are_bounded_for_watchdog_feeds() {
+        let wait = crate::platform::esp_runtime_policy::bounded_watchdog_wait(None);
+        assert!(wait <= crate::platform::esp_runtime_policy::ESP_TASK_WDT_IDLE_POLL);
+
+        let long = crate::platform::esp_runtime_policy::bounded_watchdog_wait(Some(
+            Duration::from_secs(30),
+        ));
+        assert_eq!(
+            long,
+            crate::platform::esp_runtime_policy::ESP_TASK_WDT_IDLE_POLL
+        );
+    }
+
+    #[test]
+    fn esp_task_wdt_pause_guard_is_constructible_for_opaque_dispatch() {
+        let _guard = crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task();
+    }
+}

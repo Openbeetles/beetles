@@ -25,9 +25,9 @@ use embedded_svc::http::server::Request;
 use embedded_svc::http::{Headers, Method};
 use esp_idf_svc::http::server::Connection;
 use esp_idf_svc::http::server::EspHttpServer;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SendError, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const ESP_ROUTE_EXEC_QUEUE_CAPACITY: usize = 4;
 const ESP_ROUTE_EXEC_TIMEOUT: Duration = Duration::from_secs(20);
@@ -92,7 +92,7 @@ impl EspRouteExecutor {
             let job = pending_job
                 .take()
                 .expect("route executor retry must keep pending job");
-            match inner.submit_tx.send(job) {
+            match inner.submit_tx.try_send(job) {
                 Ok(()) => {
                     return match reply_rx.recv_timeout(ESP_ROUTE_EXEC_TIMEOUT) {
                         Ok(out) => out,
@@ -111,7 +111,7 @@ impl EspRouteExecutor {
                         }
                     };
                 }
-                Err(SendError(job)) => {
+                Err(TrySendError::Disconnected(job)) => {
                     let _ = self.inner.clear_if(&inner);
                     pending_job = Some(job);
                     if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
@@ -121,6 +121,13 @@ impl EspRouteExecutor {
                             "dispatch queue unavailable after worker restart".to_string(),
                         );
                     }
+                }
+                Err(TrySendError::Full(_job)) => {
+                    return internal_server_error_response(
+                        store,
+                        "http_route_exec_submit",
+                        "dispatch queue full".to_string(),
+                    );
                 }
             }
         }
@@ -184,16 +191,29 @@ fn run_esp_route_executor(
     store: Arc<dyn ConfigStore + Send + Sync>,
     rx: Receiver<EspRouteJob>,
 ) {
+    let mut idle_deadline = Instant::now() + ESP_ROUTE_EXEC_IDLE_TIMEOUT;
     loop {
-        match rx.recv_timeout(ESP_ROUTE_EXEC_IDLE_TIMEOUT) {
+        let wait = crate::platform::esp_runtime_policy::bounded_watchdog_wait(Some(
+            idle_deadline.saturating_duration_since(Instant::now()),
+        ));
+        match rx.recv_timeout(wait) {
             Ok(job) => {
-                let out = match router::dispatch(ctx.as_ref(), &env, job.incoming) {
-                    Ok(out) => out,
-                    Err(error) => routed_error_response(store.as_ref(), error),
+                crate::platform::task_wdt::feed_current_task();
+                let out = {
+                    let _wdt_pause =
+                        crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task(
+                        );
+                    dispatch_incoming(&ctx, &env, store.as_ref(), job.incoming)
                 };
                 let _ = job.reply_tx.send(out);
+                crate::platform::task_wdt::feed_current_task();
+                idle_deadline = Instant::now() + ESP_ROUTE_EXEC_IDLE_TIMEOUT;
             }
             Err(RecvTimeoutError::Timeout) => {
+                crate::platform::task_wdt::feed_current_task();
+                if Instant::now() < idle_deadline {
+                    continue;
+                }
                 log::info!(
                     "[http_server] http_route_exec idle-stopped after {}s",
                     ESP_ROUTE_EXEC_IDLE_TIMEOUT.as_secs()

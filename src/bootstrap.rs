@@ -214,6 +214,13 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
     if !audio_cfg.enabled {
         return;
     }
+    if !config::audio_runtime_pipeline_enabled(audio_cfg) {
+        log::info!(
+            "[{}] audio skipped (enabled=true but no microphone/speaker runtime endpoint)",
+            TAG
+        );
+        return;
+    }
     if let Err(e) = platform.init_audio(audio_cfg) {
         log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
     } else {

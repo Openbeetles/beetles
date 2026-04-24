@@ -43,6 +43,23 @@ pub fn set_recovery_safe_mode_active(active: bool) {
 }
 
 #[cfg(test)]
+pub fn set_pairing_state_for_tests(known: bool, required: bool) {
+    crate::state::set_pairing_state_known(known);
+    crate::state::set_pairing_required(required);
+}
+
+#[cfg(test)]
+pub fn reset_runtime_governance_state_for_tests() {
+    crate::state::set_voice_exclusive_active(false);
+    crate::state::set_background_maintenance_active(false);
+    crate::state::set_config_plane_active(false);
+    crate::state::set_boot_phase_active(false);
+    crate::state::set_pairing_state_known(false);
+    crate::state::set_pairing_required(false);
+    crate::state::set_recovery_safe_mode_active(false);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

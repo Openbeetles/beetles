@@ -76,6 +76,13 @@ unsafe extern "C" {
     fn beetle_wss_destroy(client: *mut BeetleWssClient);
 }
 
+unsafe fn free_beetle_wss_payload(ptr: *mut u8, len: usize) {
+    let mut event = BeetleWssEvent { data: ptr, len };
+    unsafe {
+        beetle_wss_free_event(&mut event);
+    }
+}
+
 struct EspWssTuning {
     connect_timeout: Duration,
     io_timeout: Duration,
@@ -265,7 +272,7 @@ impl WssConnection for EspWssConnection {
         match status {
             BEETLE_WSS_OK => {
                 let data = if event.len == 0 {
-                    Vec::new()
+                    WssBinary::from_vec(Vec::new())
                 } else if event.data.is_null() {
                     unsafe {
                         beetle_wss_free_event(&mut event);
@@ -278,12 +285,16 @@ impl WssConnection for EspWssConnection {
                         stage: "wss_esp_recv",
                     });
                 } else {
-                    unsafe { std::slice::from_raw_parts(event.data, event.len) }.to_vec()
+                    let binary = unsafe {
+                        WssBinary::from_raw_parts_with_drop(
+                            event.data,
+                            event.len,
+                            free_beetle_wss_payload,
+                        )
+                    };
+                    binary
                 };
-                unsafe {
-                    beetle_wss_free_event(&mut event);
-                }
-                Ok(Some(WssEvent::Binary(WssBinary::from_vec(data))))
+                Ok(Some(WssEvent::Binary(data)))
             }
             BEETLE_WSS_TIMEOUT => Ok(None),
             BEETLE_WSS_CLOSED => Ok(Some(WssEvent::Closed(read_close_info(self.raw)?))),

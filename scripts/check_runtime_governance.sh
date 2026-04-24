@@ -40,12 +40,14 @@ if rg -n 'register_current_task_to_task_wdt\s*\(' src \
   --glob '!src/util.rs' \
   --glob '!src/main.rs' \
   --glob '!src/platform/task_wdt.rs' \
+  --glob '!src/platform/esp_runtime_policy.rs' \
   --glob '!src/platform/wifi/esp.rs' >/dev/null; then
   echo "FAIL: direct TWDT registration escaped unified spawn/main owners" >&2
   rg -n 'register_current_task_to_task_wdt\s*\(' src \
     --glob '!src/util.rs' \
     --glob '!src/main.rs' \
     --glob '!src/platform/task_wdt.rs' \
+    --glob '!src/platform/esp_runtime_policy.rs' \
     --glob '!src/platform/wifi/esp.rs' >&2
   exit 1
 fi

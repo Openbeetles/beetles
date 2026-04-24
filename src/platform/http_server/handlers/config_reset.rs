@@ -131,8 +131,10 @@ mod tests {
 
     impl Drop for PairingStateRestore {
         fn drop(&mut self) {
-            crate::state::set_pairing_state_known(self.pairing_state_known);
-            crate::state::set_pairing_required(self.pairing_required);
+            crate::runtime::governance::set_pairing_state_for_tests(
+                self.pairing_state_known,
+                self.pairing_required,
+            );
         }
     }
 
@@ -141,8 +143,7 @@ mod tests {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         let _state_guard = crate::state::test_state_guard();
         let _pairing_state = PairingStateRestore::capture();
-        crate::state::set_pairing_state_known(false);
-        crate::state::set_pairing_required(false);
+        crate::runtime::governance::set_pairing_state_for_tests(false, false);
         let store = MemoryConfigStore::with_pairing_code("123456");
         let removed = Mutex::new(Vec::new());
 
@@ -172,8 +173,7 @@ mod tests {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         let _state_guard = crate::state::test_state_guard();
         let _pairing_state = PairingStateRestore::capture();
-        crate::state::set_pairing_state_known(false);
-        crate::state::set_pairing_required(false);
+        crate::runtime::governance::set_pairing_state_for_tests(false, false);
         let store = MemoryConfigStore::with_pairing_code("123456");
 
         let error = run_config_reset(&store, |rel_path| {
@@ -194,6 +194,10 @@ mod tests {
 
     #[test]
     fn post_with_hooks_reloads_cached_config_after_successful_reset() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        let _state_guard = crate::state::test_state_guard();
+        let _pairing_state = PairingStateRestore::capture();
+        crate::runtime::governance::set_pairing_state_for_tests(false, false);
         let store = MemoryConfigStore::with_pairing_code("123456");
         let reloaded = AtomicBool::new(false);
 
@@ -209,6 +213,10 @@ mod tests {
 
     #[test]
     fn post_with_hooks_reloads_cached_config_after_failed_reset() {
+        let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        let _state_guard = crate::state::test_state_guard();
+        let _pairing_state = PairingStateRestore::capture();
+        crate::runtime::governance::set_pairing_state_for_tests(false, false);
         let store = MemoryConfigStore::with_pairing_code("123456");
         let reloaded = AtomicBool::new(false);
 

@@ -481,7 +481,8 @@ impl Drop for I2sStdBackend {
 /// PSRAM-backed circular buffer for audio samples.
 /// On xtensa (ESP32-S3) the backing memory is allocated from PSRAM via
 /// `heap_caps_malloc(MALLOC_CAP_SPIRAM)`, freeing ~128KB of internal SRAM.
-/// On riscv32 or when PSRAM is unavailable, falls back to standard heap.
+/// Only tiny scratch rings may fall back to standard heap; large rings fail
+/// initialization instead of consuming internal SRAM needed by TLS/WiFi/agent.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[derive(Default)]
 struct AudioRingBuffer {
@@ -498,13 +499,14 @@ unsafe impl Send for AudioRingBuffer {}
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl AudioRingBuffer {
-    fn with_capacity(cap: usize) -> Self {
+    fn try_with_capacity(cap: usize) -> Result<Self> {
         if cap == 0 {
-            return Self::default();
+            return Ok(Self::default());
         }
         let byte_size = cap * core::mem::size_of::<i16>();
 
-        // Try PSRAM first (xtensa only), fall back to standard heap.
+        // Try PSRAM first (xtensa only). Large audio rings must not silently
+        // fall back to internal heap because TLS/WiFi share that scarce memory.
         #[cfg(target_arch = "xtensa")]
         {
             if let Some(ptr) = alloc_spiram_buffer(byte_size) {
@@ -514,31 +516,48 @@ impl AudioRingBuffer {
                     "[audio] ring buffer {}KB allocated in PSRAM",
                     byte_size / 1024
                 );
-                return Self {
+                return Ok(Self {
                     buf: ptr as *mut i16,
                     cap,
                     head: 0,
                     len: 0,
                     spiram: true,
-                };
+                });
             }
         }
 
-        // Fallback: standard heap (riscv32 or PSRAM unavailable)
-        let mut v = vec![0; cap];
+        if !crate::audio::runtime_policy::allow_internal_audio_ring_fallback(byte_size) {
+            return Err(Error::config(
+                "audio_init",
+                format!(
+                    "PSRAM unavailable for {}KB audio ring buffer; refusing internal heap fallback",
+                    byte_size / 1024
+                ),
+            ));
+        }
+
+        // Tiny fallback: standard heap for small scratch rings only.
+        let mut v = Vec::new();
+        v.try_reserve_exact(cap).map_err(|e| {
+            Error::config(
+                "audio_init",
+                format!("audio ring buffer internal heap allocation failed: {}", e),
+            )
+        })?;
+        v.resize(cap, 0);
         let ptr = v.as_mut_ptr();
         core::mem::forget(v); // ownership transferred to raw pointer
         log::info!(
             "[audio] ring buffer {}KB allocated in internal heap (PSRAM unavailable)",
             byte_size / 1024
         );
-        Self {
+        Ok(Self {
             buf: ptr,
             cap,
             head: 0,
             len: 0,
             spiram: false,
-        }
+        })
     }
 
     #[inline]
@@ -844,13 +863,19 @@ fn validate_speaker_for_pipeline(seg: &AudioSegment) -> Result<()> {
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl AudioPipelineState {
-    /// 仅应在 `audio.enabled == true` 时由 `Esp32Platform::init_audio` 调用。
-    /// Call only when `audio.enabled == true` from `Esp32Platform::init_audio`.
+    /// 仅应在存在真实 microphone/speaker 端点时由 `Esp32Platform::init_audio` 调用。
+    /// Call only when a real microphone/speaker endpoint exists.
     pub fn from_config(seg: &AudioSegment) -> Result<Self> {
         if !seg.enabled {
             return Err(Error::config(
                 "audio_init",
                 "AudioPipelineState::from_config requires audio.enabled == true",
+            ));
+        }
+        if !crate::config::audio_runtime_pipeline_enabled(seg) {
+            return Err(Error::config(
+                "audio_init",
+                "AudioPipelineState::from_config requires microphone or speaker endpoint",
             ));
         }
         if seg.microphone.enabled && seg.microphone.bits_per_sample != 16 {
@@ -915,13 +940,13 @@ impl AudioPipelineState {
             0
         };
         let shared = Arc::new(SharedAudioBuffers {
-            mic: Mutex::new(AudioRingBuffer::with_capacity(mic_cap)),
+            mic: Mutex::new(AudioRingBuffer::try_with_capacity(mic_cap)?),
             mic_cv: Condvar::new(),
-            speaker: Mutex::new(AudioRingBuffer::with_capacity(speaker_cap)),
+            speaker: Mutex::new(AudioRingBuffer::try_with_capacity(speaker_cap)?),
             speaker_cv: Condvar::new(),
-            staging: Mutex::new(AudioRingBuffer::with_capacity(staging_cap)),
+            staging: Mutex::new(AudioRingBuffer::try_with_capacity(staging_cap)?),
             staging_cv: Condvar::new(),
-            reference: Mutex::new(AudioRingBuffer::with_capacity(reference_cap)),
+            reference: Mutex::new(AudioRingBuffer::try_with_capacity(reference_cap)?),
             reference_cv: Condvar::new(),
             speaker_generation: AtomicU32::new(1),
             stop: AtomicBool::new(false),
