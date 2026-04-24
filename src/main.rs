@@ -38,8 +38,10 @@ use beetle::send_chat_action;
     feature = "qq_channel"
 ))]
 use beetle::util::STACK_CHANNEL_WS;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use beetle::util::STACK_OS_OUTBOUND;
 use beetle::util::STACK_VOICE_CONTROL;
-use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH, STACK_OS_OUTBOUND};
+use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use beetle::Esp32Platform;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -3167,10 +3169,7 @@ fn start_runtime_planes(
     wifi_init_ok: bool,
 ) -> Option<Option<beetle::util::TaskHandle>> {
     beetle::state::set_boot_phase_active(true);
-    let mut assembly = match prepare_runtime_assembly(platform, config, wifi_init_ok) {
-        Some(assembly) => assembly,
-        None => return None,
-    };
+    let mut assembly = prepare_runtime_assembly(platform, config, wifi_init_ok)?;
 
     if let Err(error) = start_support_planes(&mut assembly) {
         log::error!("[{}] support plane startup failed: {}", TAG, error);

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::{read_file, write_file};
+use super::{read_file, write_json_file};
 
 pub(crate) struct StoreOp<R> {
     pub(crate) result: R,
@@ -90,7 +90,7 @@ where
     fn persist(&self, value: &T) -> Result<()> {
         let json = serde_json::to_vec(value)
             .map_err(|e| Error::config(self.stage_persist, e.to_string()))?;
-        write_file((self.path_fn)(), &json)
+        write_json_file((self.path_fn)(), &json)
     }
 }
 

@@ -9,7 +9,7 @@ use crate::memory::{
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::{read_file, state_path_join, write_file};
+use super::{read_file, state_path_join, write_json_file};
 
 fn full_path() -> PathBuf {
     state_path_join(REL_PATH_CONTINUITY_CAPSULES)
@@ -81,7 +81,7 @@ impl SpiffsContinuityCapsuleStore {
     fn persist(&self, entries: &[ContinuityCapsule]) -> Result<()> {
         let json = serde_json::to_vec(entries)
             .map_err(|error| Error::config("continuity_capsule_persist", error.to_string()))?;
-        write_file((self.path_fn.as_ref())(), &json)
+        write_json_file((self.path_fn.as_ref())(), &json)
     }
 }
 

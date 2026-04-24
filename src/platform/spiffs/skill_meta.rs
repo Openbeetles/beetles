@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::{read_file, state_path_join, write_file};
+use super::{read_file, state_path_join, write_json_file};
 
 const REL_PATH: &str = "config/skills_meta.json";
 
@@ -88,7 +88,7 @@ impl SkillMetaStore for SpiffsSkillMetaStore {
         };
         let json = serde_json::to_string(&meta)
             .map_err(|e| Error::config("skills_meta", e.to_string()))?;
-        write_file(full_path(), json.as_bytes())
+        write_json_file(full_path(), json.as_bytes())
     }
 }
 

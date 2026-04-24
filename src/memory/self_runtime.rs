@@ -38,10 +38,12 @@ use self::governance::{
     normalize_self_runtime_decision, PersonaDistillationSnapshot, SelfRuntimeBoundaryReason,
 };
 use self::llm::decide_self_runtime;
-use self::scheduler::idle_memory_hygiene_budget_allows_run;
 pub use self::scheduler::{
     enqueue_self_runtime_idle_tick, enqueue_self_runtime_operator_request,
     enqueue_self_runtime_post_reply, self_runtime_tick,
+};
+use self::scheduler::{
+    idle_memory_hygiene_budget_allows_run, self_runtime_post_reply_no_trigger_reason,
 };
 #[cfg(test)]
 use self::scheduler::{idle_self_runtime_due, should_enqueue_self_runtime_post_reply_with_state};
@@ -1680,6 +1682,43 @@ fn self_runtime_load_guard_outcome(
     }))
 }
 
+fn skipped_self_runtime_outcome() -> Box<SelfRuntimeOutcome> {
+    Box::new(SelfRuntimeOutcome {
+        decision: None,
+        world_sense_result: Ok(WorldSenseRefreshOutcome::Skipped),
+        autonomy_strategy_result: Ok(AutonomyStrategyRefreshOutcome::Skipped),
+        inner_life_result: Ok(InnerLifeRefreshOutcome::Skipped),
+        private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
+        self_model_result: Ok(SelfModelRefreshOutcome::Skipped),
+        self_authored_core_result: Ok(SelfAuthoredCoreRefreshOutcome::Skipped),
+        self_continuity_result: Ok(SelfContinuityRefreshOutcome::Skipped),
+        task_learning_result: Ok(TaskLearningMaintenanceOutcome::default()),
+        private_garden_result: Ok(PrivateGardenGovernanceOutcome::Skipped),
+        boundary_persona_result: Ok(BoundaryPersonaRefreshOutcome::Skipped),
+        outer_voice_result: Ok(OuterVoiceRefreshOutcome::Skipped),
+    })
+}
+
+fn self_runtime_post_reply_loaded_skip_reason(
+    state: &LoadedSelfRuntimeState,
+    payload: &SelfRuntimeJobPayload,
+    profile: MemoryProfile,
+) -> Option<&'static str> {
+    if payload.trigger != SelfRuntimeTrigger::PostReply {
+        return None;
+    }
+    self_runtime_post_reply_no_trigger_reason(
+        state.self_continuity.as_ref(),
+        state.autonomy_strategy.as_ref(),
+        state.self_authored_core.is_some(),
+        payload.source_channel.as_str(),
+        payload.tool_calls,
+        payload.external_content_used,
+        payload.now_secs,
+        profile,
+    )
+}
+
 fn merge_self_continuity_touch_result(
     refresh_result: Result<SelfContinuityRefreshOutcome>,
     touch_result: Result<()>,
@@ -1703,6 +1742,16 @@ pub fn run_self_runtime(
     let state = load_self_runtime_state(&ctx, chat_id, payload, profile, authority_plan);
     if let Some(outcome) = self_runtime_load_guard_outcome(chat_id, state.as_ref()) {
         return outcome;
+    }
+    if let Some(reason) =
+        self_runtime_post_reply_loaded_skip_reason(state.as_ref(), payload, profile)
+    {
+        log::debug!(
+            "[self_runtime] skip post-reply runtime chat_id={} reason={}",
+            chat_id,
+            reason
+        );
+        return skipped_self_runtime_outcome();
     }
     crate::platform::task_wdt::feed_current_task();
     let prelude =
@@ -2565,6 +2614,36 @@ mod tests {
         assert!(outcome.self_model_result.is_err());
         assert!(outcome.self_continuity_result.is_err());
         assert!(outcome.task_learning_result.is_err());
+    }
+
+    #[test]
+    fn post_reply_loaded_runtime_skip_reuses_scheduler_gate() {
+        let mut state = sample_loaded_self_runtime_state();
+        state.self_continuity = Some(crate::memory::SelfContinuity {
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: 980,
+            ..crate::memory::SelfContinuity::default()
+        });
+        state.autonomy_strategy = Some(crate::memory::AutonomyStrategy {
+            idle_enabled: true,
+            idle_interval_secs: 300,
+            ..crate::memory::AutonomyStrategy::default()
+        });
+        state.self_authored_core = Some(crate::memory::SelfAuthoredCore::default());
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "hi".to_string(),
+            reply_content: "hello".to_string(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+
+        assert_eq!(
+            self_runtime_post_reply_loaded_skip_reason(&state, &payload, MemoryProfile::Embedded),
+            Some("post_reply_runtime_recently_ran")
+        );
     }
 
     #[test]

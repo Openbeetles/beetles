@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::cached_json::{load_json_or_default, CachedJsonFileStore, StoreOp};
-use super::{list_dir, read_file, remove_file, state_path_join, write_file};
+use super::{append_line_file, list_dir, read_file, remove_file, state_path_join, write_json_file};
 
 const RUN_INDEX_STAGE_LOCK: &str = "task_run_index_lock";
 const RUN_INDEX_STAGE_CACHE: &str = "task_run_index_cache";
@@ -219,7 +219,7 @@ impl TaskRunStore for SpiffsTaskRunStore {
         ensure_parent_dir(&path, "task_run_dir")?;
         let encoded = serde_json::to_vec(record)
             .map_err(|error| Error::config("task_run_write", error.to_string()))?;
-        write_file(&path, &encoded)?;
+        write_json_file(&path, &encoded)?;
         self.upsert_index(record)
     }
 
@@ -285,7 +285,7 @@ impl TaskArtifactStore for SpiffsTaskArtifactStore {
         ensure_parent_dir(&path, "task_artifact_dir")?;
         let encoded = serde_json::to_vec(record)
             .map_err(|error| Error::config("task_artifact_write", error.to_string()))?;
-        write_file(path, &encoded)
+        write_json_file(path, &encoded)
     }
 
     fn list_for_run(&self, run_id: &str, limit: usize) -> Result<Vec<TaskArtifactRecord>> {
@@ -353,24 +353,10 @@ impl TaskExecutionLedgerStore for SpiffsTaskExecutionLedgerStore {
     fn append(&self, run_id: &str, entry: &TaskExecutionLedgerEntry) -> Result<()> {
         let path = ledger_file_path(run_id);
         ensure_parent_dir(&path, "task_execution_ledger_dir")?;
-        let mut existing = String::new();
-        match super::read_file_to_vec(&path) {
-            Ok(buf) => {
-                existing = String::from_utf8(buf).map_err(|error| {
-                    Error::config("task_execution_ledger_utf8", error.to_string())
-                })?;
-            }
-            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.with_stage("task_execution_ledger_read")),
-        }
         let line = serde_json::to_string(entry)
             .map_err(|error| Error::config("task_execution_ledger_write", error.to_string()))?;
-        if !existing.is_empty() && !existing.ends_with('\n') {
-            existing.push('\n');
-        }
-        existing.push_str(&line);
-        existing.push('\n');
-        write_file(path, existing.as_bytes())
+        append_line_file(path, line.as_bytes())
+            .map_err(|error| error.with_stage("task_execution_ledger_write"))
     }
 
     fn list(&self, run_id: &str, limit: usize) -> Result<Vec<TaskExecutionLedgerEntry>> {
@@ -456,7 +442,7 @@ impl TaskLearningStore for SpiffsTaskLearningStore {
         ensure_parent_dir(&path, "task_learning_dir")?;
         let encoded = serde_json::to_vec(record)
             .map_err(|error| Error::config("task_learning_write", error.to_string()))?;
-        write_file(&path, &encoded)?;
+        write_json_file(&path, &encoded)?;
         self.upsert_index(record)
     }
 

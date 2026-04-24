@@ -7,7 +7,9 @@ use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::ffi::CString;
-use std::io::{Read, Write};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -28,6 +30,13 @@ pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
     {
         state_mount_path().join(rel.as_ref())
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteTailPadding {
+    None,
+    JsonWhitespace,
+    Newlines,
 }
 
 #[cfg_attr(
@@ -319,37 +328,153 @@ pub fn read_file_to_vec(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     })
 }
 
-/// 写字节到文件。超过 MAX_WRITE_SIZE 返回错误。
-/// ESP：SPIFFS 不支持可靠 rename，直接覆盖。host：同目录 tmp + fsync + rename（原子替换）。
-pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_write_file_no_unlink(
+    path_str: &str,
+    data: &[u8],
+    tail_padding: WriteTailPadding,
+    stage: &'static str,
+) -> Result<()> {
+    let old_len = if tail_padding != WriteTailPadding::None {
+        std::fs::metadata(path_str)
+            .ok()
+            .and_then(|meta| usize::try_from(meta.len()).ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(tail_padding == WriteTailPadding::None)
+        .open(path_str)
+        .map_err(|e| Error::io(stage, e))?;
+    file.write_all(data).map_err(|e| Error::io(stage, e))?;
+    if tail_padding != WriteTailPadding::None && old_len > data.len() {
+        let mut remaining = old_len - data.len();
+        const JSON_PAD: &[u8] = b"                                                                ";
+        const LINE_PAD: &[u8] =
+            b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+        let pad = match tail_padding {
+            WriteTailPadding::None => unreachable!(),
+            WriteTailPadding::JsonWhitespace => JSON_PAD,
+            WriteTailPadding::Newlines => LINE_PAD,
+        };
+        while remaining > 0 {
+            let n = remaining.min(pad.len());
+            file.write_all(&pad[..n]).map_err(|e| Error::io(stage, e))?;
+            remaining -= n;
+        }
+    }
+    file.sync_all().map_err(|e| Error::io(stage, e))?;
+    Ok(())
+}
+
+pub(crate) fn write_file_unlocked(
+    path: &Path,
+    data: &[u8],
+    tail_padding: WriteTailPadding,
+    stage: &'static str,
+) -> Result<()> {
     if data.len() > MAX_WRITE_SIZE {
         return Err(Error::config(
-            "spiffs_write",
+            stage,
             format!("write size {} exceeds limit {}", data.len(), MAX_WRITE_SIZE),
+        ));
+    }
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| Error::config(stage, "invalid path"))?;
+        esp_write_file_no_unlink(path_str, data, tail_padding, stage)
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let _ = tail_padding;
+        crate::platform::fs_atomic::atomic_write(path, data)
+    }
+}
+
+/// 写字节到文件。超过 MAX_WRITE_SIZE 返回错误。
+/// ESP：SPIFFS 运行态禁止 unlink+rewrite，普通字节路径直接覆盖；host：同目录 tmp + fsync + rename（原子替换）。
+pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
+    let p = path.as_ref();
+    with_fs_lock(|| write_file_unlocked(p, data, WriteTailPadding::None, "spiffs_write"))
+}
+
+/// 写 JSON 状态文件。ESP 上短写用 JSON 合法空白覆盖旧尾部，避免 `SPIFFS_remove`。
+/// Write JSON state. On ESP, shorter writes pad the previous tail with JSON whitespace instead of unlinking.
+pub fn write_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
+    let p = path.as_ref();
+    with_fs_lock(|| {
+        write_file_unlocked(
+            p,
+            data,
+            WriteTailPadding::JsonWhitespace,
+            "spiffs_write_json",
+        )
+    })
+}
+
+/// 写换行分隔文本状态。ESP 上短写用空行覆盖旧尾部，避免 JSONL/session 旧行复活。
+/// Write newline-delimited text state. On ESP, shorter writes blank old tails with newlines.
+pub fn write_line_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
+    let p = path.as_ref();
+    with_fs_lock(|| write_file_unlocked(p, data, WriteTailPadding::Newlines, "spiffs_write_line"))
+}
+
+/// 追加一条换行分隔记录。若既有文件末尾缺少换行，先补一个换行再写入。
+/// Append one newline-delimited record, preserving valid JSONL when legacy content lacks LF.
+pub fn append_line_file(path: impl AsRef<Path>, line: &[u8]) -> Result<()> {
+    if line.len() + 2 > MAX_WRITE_SIZE {
+        return Err(Error::config(
+            "spiffs_append_line",
+            format!(
+                "append line size {} exceeds limit {}",
+                line.len(),
+                MAX_WRITE_SIZE
+            ),
         ));
     }
     let p = path.as_ref();
     with_fs_lock(|| {
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            let path_str = p
-                .to_str()
-                .ok_or_else(|| Error::config("spiffs_write", "invalid path"))?;
-            // ESP-IDF SPIFFS+VFS：部分环境下 `create` 短写不会缩短对象长度，文件尾残留旧字节，
-            // 导致 JSON 解析报 trailing characters。先删再建与截断等价且更可靠。
-            // ESP-IDF SPIFFS+VFS: shorter writes may not shrink the object; stale tail breaks JSON parse.
-            let _ = std::fs::remove_file(path_str);
-            let mut f =
-                std::fs::File::create(path_str).map_err(|e| Error::io("spiffs_write", e))?;
-            f.write_all(data)
-                .map_err(|e| Error::io("spiffs_write", e))?;
-            f.sync_all().map_err(|e| Error::io("spiffs_write", e))?;
-            Ok(())
+        let path_str = p
+            .to_str()
+            .ok_or_else(|| Error::config("spiffs_append_line", "invalid path"))?;
+        let needs_separator = match std::fs::metadata(path_str) {
+            Ok(meta) if meta.len() > 0 => {
+                let mut existing = std::fs::File::open(path_str)
+                    .map_err(|e| Error::io("spiffs_append_line", e))?;
+                existing
+                    .seek(SeekFrom::End(-1))
+                    .map_err(|e| Error::io("spiffs_append_line", e))?;
+                let mut last = [0_u8; 1];
+                existing
+                    .read_exact(&mut last)
+                    .map_err(|e| Error::io("spiffs_append_line", e))?;
+                last[0] != b'\n'
+            }
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(Error::io("spiffs_append_line", error)),
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path_str)
+            .map_err(|e| Error::io("spiffs_append_line", e))?;
+        if needs_separator {
+            file.write_all(b"\n")
+                .map_err(|e| Error::io("spiffs_append_line", e))?;
         }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            crate::platform::fs_atomic::atomic_write(p, data)
-        }
+        file.write_all(line)
+            .map_err(|e| Error::io("spiffs_append_line", e))?;
+        file.write_all(b"\n")
+            .map_err(|e| Error::io("spiffs_append_line", e))?;
+        file.sync_all()
+            .map_err(|e| Error::io("spiffs_append_line", e))?;
+        Ok(())
     })
 }
 
@@ -465,7 +590,7 @@ pub use world_sense::SpiffsWorldSenseStore;
 
 #[cfg(test)]
 mod tests {
-    use super::esp_storage_rel_path;
+    use super::{append_line_file, esp_storage_rel_path, write_json_file};
     use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
         REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES, REL_PATH_CORE_REVISION_LEDGERS,
@@ -478,6 +603,63 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const MAX_SAFE_ESP_REL_PATH_LEN: usize = 31;
+
+    #[test]
+    fn json_tail_padding_is_valid_after_shorter_rewrite() {
+        let mut bytes = br#"{"ok":true}"#.to_vec();
+        bytes
+            .extend_from_slice(b"                                                                ");
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["ok"], true);
+    }
+
+    #[test]
+    fn line_tail_padding_is_ignored_by_jsonl_reader() {
+        let mut bytes = br#"{"ok":true}"#.to_vec();
+        bytes.extend_from_slice(b"\n\n\n\n");
+        let text = String::from_utf8(bytes).unwrap();
+        let lines = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(lines, vec![r#"{"ok":true}"#]);
+    }
+
+    #[test]
+    fn write_json_file_keeps_shorter_rewrite_parseable() {
+        let path = std::env::temp_dir().join(format!(
+            "beetle-spiffs-json-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        write_json_file(&path, br#"{"long":"value","items":[1,2,3]}"#).unwrap();
+        write_json_file(&path, br#"{"short":true}"#).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["short"], true);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn append_line_file_repairs_missing_separator() {
+        let path = std::env::temp_dir().join(format!(
+            "beetle-spiffs-jsonl-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(&path, br#"{"old":true}"#).unwrap();
+        append_line_file(&path, br#"{"new":true}"#).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(lines, vec![r#"{"old":true}"#, r#"{"new":true}"#]);
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn esp_storage_rel_path_keeps_short_paths_stable() {

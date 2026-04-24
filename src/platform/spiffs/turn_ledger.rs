@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::platform::state_root::state_mount_path;
 
-use super::{read_file, remove_file, write_file};
+use super::{read_file, remove_file, write_json_file};
 const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const LEDGER_FILE_EXT: &str = ".json";
 const REL_PATH_TURN_LEDGERS_FLAT_SPIFFS: &str = "memory/tl";
@@ -271,7 +271,7 @@ impl TurnLedgerStore for SpiffsTurnLedgerStore {
         let path = ledger_path(chat_id)?;
         let json = serde_json::to_vec(&StoredTurnLedger(ledger.clone()))
             .map_err(|e| Error::config("turn_ledger_persist", e.to_string()))?;
-        write_file(path, &json)?;
+        write_json_file(path, &json)?;
         if ledger.status.is_terminal() {
             self.append_history(chat_id, ledger)?;
         }
@@ -342,7 +342,7 @@ impl SpiffsTurnLedgerStore {
             derive_recent_persona_evidence(&items, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS);
         let json = serde_json::to_vec(&StoredTurnLedgerHistory { items })
             .map_err(|e| Error::config("turn_ledger_history_write", e.to_string()))?;
-        write_file(path, &json)?;
+        write_json_file(path, &json)?;
         self.write_recent_persona_evidence(chat_id, evidence)
     }
 
@@ -355,7 +355,7 @@ impl SpiffsTurnLedgerStore {
         let evidence = evidence.unwrap_or_default();
         let json = serde_json::to_vec(&StoredRecentPersonaEvidence { evidence })
             .map_err(|e| Error::config("recent_persona_evidence_write", e.to_string()))?;
-        write_file(path, &json)
+        write_json_file(path, &json)
     }
 }
 
@@ -488,7 +488,7 @@ mod tests {
         let evidence = recent_persona_evidence_path(&chat_id).unwrap();
         assert!(history.exists());
         assert!(evidence.exists());
-        super::write_file(&evidence, br#"{"evidence":{}}"#).unwrap();
+        crate::platform::spiffs::write_json_file(&evidence, br#"{"evidence":{}}"#).unwrap();
 
         let loaded = store.recent_persona_evidence(&chat_id).unwrap();
         assert!(loaded.is_none());
@@ -540,7 +540,7 @@ mod tests {
 
         let legacy_path = state_path_join("memory/turn_ledgers.json");
         let legacy_bytes = format!(r#"{{"{chat_id}":{{}}}}"#).into_bytes();
-        super::write_file(&legacy_path, &legacy_bytes).unwrap();
+        crate::platform::spiffs::write_json_file(&legacy_path, &legacy_bytes).unwrap();
 
         let loaded = store.get(&chat_id).unwrap();
         assert!(loaded.is_none());

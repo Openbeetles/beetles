@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::{read_file, state_path_join, write_file};
+use super::{read_file, state_path_join, write_json_file};
 
 const MAX_OFFICE_CREDENTIALS: usize = 16;
 
@@ -62,7 +62,7 @@ impl SpiffsOfficeCredentialStore {
         };
         let json = serde_json::to_vec(&segment)
             .map_err(|error| Error::config("office_credentials_persist", error.to_string()))?;
-        write_file(full_path(), &json)
+        write_json_file(full_path(), &json)
     }
 }
 

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::{read_file, state_path_join, write_file};
+use super::{read_file, state_path_join, write_json_file};
 
 fn full_path() -> PathBuf {
     state_path_join(REL_PATH_PENDING_RETRY)
@@ -105,7 +105,7 @@ impl PendingRetryStore for SpiffsPendingRetryStore {
         };
         let json = serde_json::to_vec(&entry)
             .map_err(|e| Error::config("pending_retry_save", e.to_string()))?;
-        write_file(full_path(), &json)?;
+        write_json_file(full_path(), &json)?;
         cache.entry = Some(entry);
         Ok(())
     }
@@ -121,7 +121,7 @@ impl PendingRetryStore for SpiffsPendingRetryStore {
             return Ok(None);
         };
         if replay_count >= PENDING_RETRY_MAX_REPLAY {
-            let _ = write_file(full_path(), b"{}");
+            let _ = write_json_file(full_path(), b"{}");
             cache.entry = None;
             log::info!(
                 "[spiffs_pending_retry] replay_count {} >= {}, cleared",
@@ -134,7 +134,7 @@ impl PendingRetryStore for SpiffsPendingRetryStore {
     }
 
     fn clear_pending_retry(&self) -> Result<()> {
-        write_file(full_path(), b"{}")?;
+        write_json_file(full_path(), b"{}")?;
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.loaded = true;
         cache.entry = None;

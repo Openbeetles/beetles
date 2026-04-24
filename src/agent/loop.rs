@@ -221,6 +221,19 @@ fn is_lane_background_job(msg: &PcMsg) -> bool {
         || is_detached_work_wake(msg)
 }
 
+fn should_persist_background_job_as_detached(
+    msg: &PcMsg,
+    profile: crate::memory::MemoryProfile,
+) -> bool {
+    if matches!(profile, crate::memory::MemoryProfile::Embedded)
+        && is_lane_background_job(msg)
+        && !is_detached_work_wake(msg)
+    {
+        return false;
+    }
+    true
+}
+
 const BACKGROUND_DEFER_DELAY_MS: u64 = 1_000;
 const DETACHED_WAKE_RETRY_DELAY_MS: u64 = 250;
 const IDLE_SELF_RUNTIME_RETRY_DELAY_MS: u64 = 5_000;
@@ -1760,11 +1773,16 @@ fn run_agent_loop_main(
 
     let recv_timeout = Duration::from_secs(INBOUND_RECV_TIMEOUT_SECS);
     loop {
-        wake_due_detached_background_work(
-            config.runtime.detached_work_store.as_ref(),
-            &system_inbound_tx,
-            2,
-        );
+        if !matches!(
+            config.runtime.memory_system_kind.memory_profile(),
+            crate::memory::MemoryProfile::Embedded
+        ) {
+            wake_due_detached_background_work(
+                config.runtime.detached_work_store.as_ref(),
+                &system_inbound_tx,
+                2,
+            );
+        }
         let prefer_system_once = consecutive_user_msgs >= MAX_CONSECUTIVE_USER_MSGS;
         let mut before_poll = || {
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -1797,6 +1815,10 @@ fn run_agent_loop_main(
         if msg.ingress == IngressKind::System
             && is_lane_background_job(&msg)
             && !is_detached_work_wake(&msg)
+            && should_persist_background_job_as_detached(
+                &msg,
+                config.runtime.memory_system_kind.memory_profile(),
+            )
         {
             match adopt_background_job_as_detached(
                 config.runtime.detached_work_store.as_ref(),

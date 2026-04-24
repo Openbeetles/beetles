@@ -52,7 +52,7 @@ fn append_self_runtime_workflow_audit(
     );
 }
 
-fn self_runtime_post_reply_no_trigger_reason(
+pub(super) fn self_runtime_post_reply_no_trigger_reason(
     continuity: Option<&crate::memory::SelfContinuity>,
     strategy: Option<&crate::memory::AutonomyStrategy>,
     has_self_authored_core: bool,
@@ -108,6 +108,23 @@ pub fn enqueue_self_runtime_post_reply(
     external_content_used: bool,
 ) -> bool {
     let now_secs = current_unix_secs();
+    let payload = SelfRuntimeJobPayload {
+        trigger: SelfRuntimeTrigger::PostReply,
+        source_channel: source_channel.to_string(),
+        user_content: truncate_content_to_max(user_content, 512).into_owned(),
+        reply_content: truncate_content_to_max(reply_content, 768).into_owned(),
+        tool_calls,
+        external_content_used,
+        now_secs,
+    };
+    if matches!(profile, MemoryProfile::Embedded) {
+        return schedule_self_runtime_system_queue_job(
+            system_inbound_tx,
+            chat_id,
+            payload,
+            SELF_RUNTIME_POST_REPLY_DELAY_MS,
+        );
+    }
     match crate::agent::has_meaningful_foreground_work_for_chat(active_work_store, chat_id) {
         Ok(true) => {
             append_self_runtime_workflow_audit(
@@ -166,23 +183,6 @@ pub fn enqueue_self_runtime_post_reply(
         );
         return false;
     }
-    let payload = SelfRuntimeJobPayload {
-        trigger: SelfRuntimeTrigger::PostReply,
-        source_channel: source_channel.to_string(),
-        user_content: truncate_content_to_max(user_content, 512).into_owned(),
-        reply_content: truncate_content_to_max(reply_content, 768).into_owned(),
-        tool_calls,
-        external_content_used,
-        now_secs,
-    };
-    if matches!(profile, MemoryProfile::Embedded) {
-        return schedule_self_runtime_system_queue_job(
-            system_inbound_tx,
-            chat_id,
-            payload,
-            SELF_RUNTIME_POST_REPLY_DELAY_MS,
-        );
-    }
     schedule_self_runtime_job(
         detached_work_store,
         chat_id,
@@ -216,11 +216,17 @@ pub(super) fn should_enqueue_self_runtime_post_reply_with_state(
 }
 
 pub fn enqueue_self_runtime_idle_tick(
-    _system_inbound_tx: &SystemInboundTx,
+    system_inbound_tx: &SystemInboundTx,
     detached_work_store: &dyn DetachedWorkStore,
     chat_id: &str,
 ) -> bool {
-    enqueue_self_runtime_idle_tick_for_relation(detached_work_store, chat_id, "self_runtime_idle")
+    enqueue_self_runtime_idle_tick_for_relation(
+        system_inbound_tx,
+        detached_work_store,
+        chat_id,
+        "self_runtime_idle",
+        MemoryProfile::Standard,
+    )
 }
 
 pub fn enqueue_self_runtime_operator_request(
@@ -245,10 +251,28 @@ pub fn enqueue_self_runtime_operator_request(
 }
 
 fn enqueue_self_runtime_idle_tick_for_relation(
+    system_inbound_tx: &SystemInboundTx,
     detached_work_store: &dyn DetachedWorkStore,
     chat_id: &str,
     source_channel: &str,
+    profile: MemoryProfile,
 ) -> bool {
+    if matches!(profile, MemoryProfile::Embedded) {
+        return schedule_self_runtime_system_queue_job(
+            system_inbound_tx,
+            chat_id,
+            SelfRuntimeJobPayload {
+                trigger: SelfRuntimeTrigger::IdleTick,
+                source_channel: source_channel.to_string(),
+                user_content: String::new(),
+                reply_content: String::new(),
+                tool_calls: 0,
+                external_content_used: false,
+                now_secs: current_unix_secs(),
+            },
+            SELF_RUNTIME_IDLE_TICK_DELAY_MS,
+        );
+    }
     schedule_self_runtime_job(
         detached_work_store,
         chat_id,
@@ -447,7 +471,7 @@ fn enqueue_self_runtime_job_now(
 }
 
 pub fn self_runtime_tick(
-    _system_inbound_tx: &SystemInboundTx,
+    system_inbound_tx: &SystemInboundTx,
     detached_work_store: &dyn DetachedWorkStore,
     session_store: &dyn SessionStore,
     self_continuity_store: &dyn SelfContinuityStore,
@@ -628,9 +652,11 @@ pub fn self_runtime_tick(
                 now_secs,
             );
             if enqueue_self_runtime_idle_tick_for_relation(
+                system_inbound_tx,
                 detached_work_store,
                 &target.chat_id,
                 &target.channel,
+                profile,
             ) {
                 enqueued += 1;
             }
@@ -673,9 +699,11 @@ pub fn self_runtime_tick(
             "self_runtime_idle"
         };
         if enqueue_self_runtime_idle_tick_for_relation(
+            system_inbound_tx,
             detached_work_store,
             &chat_id,
             fallback_channel,
+            profile,
         ) {
             enqueued += 1;
         }
@@ -1348,6 +1376,38 @@ mod tests {
         assert_eq!(
             audit.recent_records[0].workflow,
             crate::runtime::WorkflowKind::SelfRuntimePostReply
+        );
+    }
+
+    #[test]
+    fn embedded_self_runtime_idle_tick_uses_delayed_system_queue() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
+        reset_workflow_audit_for_tests();
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
+
+        let scheduled = enqueue_self_runtime_idle_tick_for_relation(
+            &system_inbound_tx,
+            &detached_work_store,
+            "chat-a",
+            "qq_channel",
+            MemoryProfile::Embedded,
+        );
+
+        assert!(scheduled);
+        let key =
+            DetachedWorkKey::new("qq_channel", "chat-a", DetachedJobKind::SelfRuntimeIdleTick);
+        assert!(
+            detached_work_store.get(&key).expect("load").is_none(),
+            "embedded idle self-runtime should not write detached-work SPIFFS state on bg_timer"
+        );
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.deferred, 1);
+        assert_eq!(
+            audit.recent_records[0].workflow,
+            crate::runtime::WorkflowKind::SelfRuntimeIdleTick
         );
     }
 

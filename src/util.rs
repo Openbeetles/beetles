@@ -1372,14 +1372,16 @@ mod thread_stack_budget_tests {
 
     #[test]
     fn esp_agent_loop_stack_keeps_prompt_spiffs_headroom() {
-        assert!(
-            ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,
-            "ESP agent_loop needs headroom for first real inbound prompt + SPIFFS reads"
-        );
-        assert!(
-            ESP_AGENT_LOOP_STACK_BUDGET <= 64 * 1024,
-            "ESP agent_loop must not copy the Linux 96KB budget without first freeing resident SRAM"
-        );
+        const {
+            assert!(
+                ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,
+                "ESP agent_loop needs headroom for first real inbound prompt + SPIFFS reads"
+            );
+            assert!(
+                ESP_AGENT_LOOP_STACK_BUDGET <= 64 * 1024,
+                "ESP agent_loop must not copy the Linux 96KB budget without first freeing resident SRAM"
+            );
+        }
     }
 
     #[test]
@@ -1393,20 +1395,24 @@ mod thread_stack_budget_tests {
 
     #[test]
     fn os_outbound_stack_accounts_for_active_sender_call_depth_without_linux_budget() {
-        assert!(
-            STACK_OS_OUTBOUND >= 16 * 1024,
-            "os_outbound runs dispatch admission plus active channel HTTP send on one stack"
-        );
+        const {
+            assert!(
+                STACK_OS_OUTBOUND >= 16 * 1024,
+                "os_outbound runs dispatch admission plus active channel HTTP send on one stack"
+            );
+        }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         {
-            assert!(
-                STACK_OS_OUTBOUND >= STACK_DISPATCH + STACK_CHANNEL_SENDER,
-                "merged ESP os_outbound must budget for the deepest legacy dispatch+sender call path"
-            );
-            assert!(
-                STACK_OS_OUTBOUND <= 20 * 1024,
-                "ESP os_outbound should stay a sender-class worker, not drift into route/agent budgets"
-            );
+            const {
+                assert!(
+                    STACK_OS_OUTBOUND >= STACK_DISPATCH + STACK_CHANNEL_SENDER,
+                    "merged ESP os_outbound must budget for the deepest legacy dispatch+sender call path"
+                );
+                assert!(
+                    STACK_OS_OUTBOUND <= 20 * 1024,
+                    "ESP os_outbound should stay a sender-class worker, not drift into route/agent budgets"
+                );
+            }
         }
     }
 }

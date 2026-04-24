@@ -202,16 +202,6 @@ pub fn run_with_bound_listener(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ESP_HTTPD_CALLBACK_STACK;
-
-    #[test]
-    fn esp_httpd_callback_stack_keeps_dispatch_headroom() {
-        assert!(ESP_HTTPD_CALLBACK_STACK >= 32 * 1024);
-    }
-}
-
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -245,4 +235,16 @@ pub fn run(
         inbound_tx,
         shared_config,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ESP_HTTPD_CALLBACK_STACK;
+
+    #[test]
+    fn esp_httpd_callback_stack_keeps_dispatch_headroom() {
+        const {
+            assert!(ESP_HTTPD_CALLBACK_STACK >= 32 * 1024);
+        }
+    }
 }

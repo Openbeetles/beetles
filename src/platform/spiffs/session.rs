@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 
-use super::{list_dir, read_file, with_fs_lock, write_file, MAX_WRITE_SIZE};
+use super::{list_dir, read_file, with_fs_lock, MAX_WRITE_SIZE};
 
 const TAG: &str = "platform::spiffs::session";
 
@@ -353,15 +353,12 @@ fn read_existing_file_unlocked(path: &Path) -> Result<PsramVec<u8>> {
 
 fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
     ensure_session_parent_dir(path, "session_write")?;
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| Error::config("session_write", "invalid path"))?;
-    let _ = std::fs::remove_file(path_str);
-    let mut file = std::fs::File::create(path_str).map_err(|e| Error::io("session_write", e))?;
-    file.write_all(data)
-        .map_err(|e| Error::io("session_write", e))?;
-    file.sync_all().map_err(|e| Error::io("session_write", e))?;
-    Ok(())
+    super::write_file_unlocked(
+        path,
+        data,
+        super::WriteTailPadding::Newlines,
+        "session_write",
+    )
 }
 
 fn append_session_lines_unlocked(
@@ -853,9 +850,9 @@ impl SessionStore for SpiffsSessionStore {
             let mut empty = String::from(CHAT_ID_HEADER_PREFIX);
             empty.push_str(chat_id);
             empty.push('\n');
-            write_file(&path, empty.as_bytes())?;
+            super::write_line_file(&path, empty.as_bytes())?;
         } else {
-            write_file(&path, b"")?;
+            super::write_line_file(&path, b"")?;
         }
         self.counts
             .lock()

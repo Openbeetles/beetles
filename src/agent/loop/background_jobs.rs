@@ -38,37 +38,6 @@ pub(super) fn enqueue_post_reply_maintenance_job(
     reuse_outcome_note: &str,
     memory_profile: crate::memory::MemoryProfile,
 ) -> bool {
-    match crate::agent::has_meaningful_foreground_work_for_chat(
-        active_work_store,
-        msg.chat_id.as_ref(),
-    ) {
-        Ok(true) => {
-            append_post_reply_workflow_audit(
-                crate::runtime::WorkflowDisposition::NoTrigger,
-                "foreground_work_active",
-                crate::runtime::WorkflowEffect::Noop,
-                msg.channel.as_ref(),
-                msg.chat_id.as_ref(),
-            );
-            return false;
-        }
-        Ok(false) => {}
-        Err(error) => {
-            log::warn!(
-                "[agent_memory] active work gate failed chat_id={}: {}",
-                msg.chat_id,
-                error
-            );
-            append_post_reply_workflow_audit(
-                crate::runtime::WorkflowDisposition::ExecuteFailed,
-                "foreground_work_gate_failed",
-                crate::runtime::WorkflowEffect::Noop,
-                msg.channel.as_ref(),
-                msg.chat_id.as_ref(),
-            );
-            return false;
-        }
-    }
     let payload = PostReplyMaintenanceJobPayload::from_turn(
         msg,
         reply_content,
@@ -144,6 +113,37 @@ pub(super) fn enqueue_post_reply_maintenance_job(
             msg.chat_id.as_ref(),
         );
         return false;
+    }
+    match crate::agent::has_meaningful_foreground_work_for_chat(
+        active_work_store,
+        msg.chat_id.as_ref(),
+    ) {
+        Ok(true) => {
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::NoTrigger,
+                "foreground_work_active",
+                crate::runtime::WorkflowEffect::Noop,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
+            return false;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            log::warn!(
+                "[agent_memory] active work gate failed chat_id={}: {}",
+                msg.chat_id,
+                error
+            );
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteFailed,
+                "foreground_work_gate_failed",
+                crate::runtime::WorkflowEffect::Noop,
+                msg.channel.as_ref(),
+                msg.chat_id.as_ref(),
+            );
+            return false;
+        }
     }
     let key = crate::agent::DetachedWorkKey::new(
         msg.channel.as_ref(),
@@ -1362,6 +1362,136 @@ fn run_detached_background_work_wake(
     metrics::record_system_message_done(false);
 }
 
+fn schedule_volatile_background_retry(
+    system_inbound_tx: &SystemInboundTx,
+    msg: PcMsg,
+    delay_ms: u64,
+    label: &'static str,
+) {
+    let due_at = std::time::Instant::now() + std::time::Duration::from_millis(delay_ms);
+    if !crate::runtime::schedule_system_inbound_msg(
+        due_at,
+        system_inbound_tx.clone(),
+        msg,
+        std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
+        label,
+    ) {
+        log::warn!(
+            "[agent] volatile background retry dropped because delayed queue is full label={}",
+            label
+        );
+    }
+}
+
+fn run_volatile_background_job(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    config: &AgentLoopConfig,
+    system_inbound_tx: &SystemInboundTx,
+    msg: PcMsg,
+) {
+    let Some(key) = super::detached_work_key_for_msg(&msg) else {
+        return;
+    };
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_periodic_maintenance {
+        let reason = runtime_mode
+            .mode_block_reason()
+            .unwrap_or("runtime_mode_blocked");
+        append_detached_work_defer_audit(&key, reason);
+        schedule_volatile_background_retry(
+            system_inbound_tx,
+            msg,
+            super::BACKGROUND_DEFER_DELAY_MS,
+            "volatile_background_mode_defer",
+        );
+        return;
+    }
+    match detached_work_defer_reason(config, &key) {
+        Ok(Some((reason, explicit_delay_ms))) => {
+            append_detached_work_defer_audit(&key, reason);
+            schedule_volatile_background_retry(
+                system_inbound_tx,
+                msg,
+                detached_work_defer_delay_ms(key.kind, reason, explicit_delay_ms),
+                "volatile_background_defer",
+            );
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log::warn!(
+                "[agent] volatile background foreground gate failed channel={} chat_id={} kind={:?}: {}",
+                key.owner_channel,
+                key.owner_chat_id,
+                key.kind,
+                error
+            );
+            schedule_volatile_background_retry(
+                system_inbound_tx,
+                msg,
+                super::BACKGROUND_DEFER_DELAY_MS,
+                "volatile_background_gate_retry",
+            );
+            return;
+        }
+    }
+    if key.kind.needs_llm() {
+        match crate::orchestrator::can_call_llm_for_channel_pub(&key.owner_channel) {
+            crate::orchestrator::admission::LlmDecision::Proceed => {}
+            crate::orchestrator::admission::LlmDecision::RetryLater { delay_ms } => {
+                schedule_volatile_background_retry(
+                    system_inbound_tx,
+                    msg,
+                    delay_ms,
+                    "volatile_background_llm_retry",
+                );
+                return;
+            }
+            crate::orchestrator::admission::LlmDecision::Degrade { reason } => {
+                log::debug!(
+                    "[agent] volatile background deferred channel={} chat_id={} kind={:?} reason={}",
+                    key.owner_channel,
+                    key.owner_chat_id,
+                    key.kind,
+                    reason
+                );
+                schedule_volatile_background_retry(
+                    system_inbound_tx,
+                    msg,
+                    super::BACKGROUND_DEFER_DELAY_MS,
+                    "volatile_background_llm_defer",
+                );
+                return;
+            }
+        }
+    }
+    let _agent_task_guard = crate::orchestrator::begin_agent_task();
+    let _maintenance_scope = crate::runtime::BackgroundMaintenanceGuard::enter();
+    match try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &msg) {
+        DetachedJobRunDisposition::Completed => {}
+        DetachedJobRunDisposition::RetryLater { reason, delay_ms } => {
+            append_detached_work_defer_audit(&key, reason);
+            schedule_volatile_background_retry(
+                system_inbound_tx,
+                msg,
+                delay_ms,
+                "volatile_background_retry",
+            );
+        }
+        DetachedJobRunDisposition::PermanentDrop { reason } => {
+            log::warn!(
+                "[agent] volatile background dropped channel={} chat_id={} kind={:?} reason={}",
+                key.owner_channel,
+                key.owner_chat_id,
+                key.kind,
+                reason
+            );
+        }
+    }
+    metrics::record_system_message_done(false);
+}
+
 #[cold]
 #[inline(never)]
 pub(super) fn run_background_job_with_accounting(
@@ -1376,6 +1506,13 @@ pub(super) fn run_background_job_with_accounting(
 ) {
     if super::is_detached_work_wake(&msg) {
         run_detached_background_work_wake(http, worker_llm, config, system_inbound_tx, &msg);
+        return;
+    }
+    if !super::should_persist_background_job_as_detached(
+        &msg,
+        config.runtime.memory_system_kind.memory_profile(),
+    ) {
+        run_volatile_background_job(http, worker_llm, config, system_inbound_tx, msg);
         return;
     }
     if let Ok(true) = super::adopt_background_job_as_detached(
@@ -1817,5 +1954,30 @@ mod tests {
             store.get(&key).expect("load").is_none(),
             "embedded post-reply scheduling should not write detached-work SPIFFS state on agent_loop"
         );
+    }
+
+    #[test]
+    fn embedded_background_jobs_do_not_adopt_into_detached_store() {
+        let payload = serde_json::json!({
+            "ingress": IngressKind::User,
+            "source_channel": "qq_channel",
+            "user_content": "查看系统状态",
+            "reply_content": "正在检查",
+            "tool_calls": 0,
+            "external_content_used": false,
+            "now_secs": 42
+        })
+        .to_string();
+        let msg = PcMsg::new_system(CHANNEL_POST_REPLY_MAINTENANCE, "chat-1", payload)
+            .expect("build maintenance message");
+
+        assert!(!super::should_persist_background_job_as_detached(
+            &msg,
+            crate::memory::MemoryProfile::Embedded,
+        ));
+        assert!(super::should_persist_background_job_as_detached(
+            &msg,
+            crate::memory::MemoryProfile::Standard,
+        ));
     }
 }
