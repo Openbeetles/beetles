@@ -122,7 +122,7 @@ export function WifiCredentialFields({
           value={ssid}
           onChange={(e) => onSsidChange(e.target.value)}
           fullWidth
-          helperText={t("config.wifiSsidHelp")}
+          placeholder={t("config.wifiSsidHelp")}
           slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
         />
       )}

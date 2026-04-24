@@ -411,13 +411,6 @@ export function AccountCreateForm({
 
       {localizedProviderInputFields.length > 0 ? (
         <FormCard>
-          <Typography
-            variant="subtitle2"
-            color="text.secondary"
-            sx={{ mb: 1.5, display: "block", fontWeight: 600 }}
-          >
-            {t("accounts.providerFields")}
-          </Typography>
           <FormGrid>
             {localizedProviderAccountFields.map((field) => (
               <ProviderFieldInput

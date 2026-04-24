@@ -213,7 +213,7 @@ export function SystemConfigPage() {
             placeholder={t("config.placeholderProxyUrl")}
             fullWidth
             error={!!proxyUrlError}
-            helperText={proxyUrlError || t("config.proxyUrlHint")}
+            helperText={proxyUrlError || undefined}
             slotProps={{
               htmlInput: {
                 maxLength: 256,

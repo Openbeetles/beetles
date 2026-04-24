@@ -95,11 +95,8 @@ function mergeSegment(
   };
 }
 
-const fieldRisk = "hardwareConfig.fieldRiskHint" as const;
-
 export function HardwareGpioPanel() {
   const { t } = useTranslation();
-  const riskHint = t(fieldRisk);
   const {
     hardwareSegment,
     hardwareLoading,
@@ -345,14 +342,12 @@ export function HardwareGpioPanel() {
                   disabled
                   label={t("hardwareConfig.id")}
                   value={dev.id}
-                  helperText={t("hardwareConfig.idReadonlyHint")}
                   slotProps={{ htmlInput: { readOnly: true } }}
                 />
                 <TextField
                   select
                   fullWidth
                   label={t("hardwareConfig.deviceType")}
-                  helperText={riskHint}
                   value={dev.device_type}
                   onChange={(e) => {
                     const nextType = e.target.value;
@@ -412,7 +407,6 @@ export function HardwareGpioPanel() {
                   type="number"
                   required
                   label={t("hardwareConfig.pin")}
-                  helperText={riskHint}
                   value={dev.pins.pin ?? ""}
                   onChange={(e) => {
                     const n = asNumber(e.target.value);
@@ -432,7 +426,7 @@ export function HardwareGpioPanel() {
                   <TextField
                     type="number"
                     label={t("hardwareConfig.pwmFreqHz")}
-                    helperText={`${t("hardwareConfig.pwmFreqHelp")} ${riskHint}`}
+                    helperText={t("hardwareConfig.pwmFreqHelp")}
                     value={
                       dev.options?.frequency_hz != null
                         ? String(dev.options.frequency_hz)
@@ -460,7 +454,6 @@ export function HardwareGpioPanel() {
                       select
                       fullWidth
                       label={t("hardwareConfig.dhtModel")}
-                      helperText={`${t("hardwareConfig.dhtModelHelp")} ${riskHint}`}
                       value={
                         typeof dev.options?.model === "string"
                           ? dev.options.model
@@ -483,7 +476,6 @@ export function HardwareGpioPanel() {
                       select
                       fullWidth
                       label={t("hardwareConfig.dhtWatchField")}
-                      helperText={`${t("hardwareConfig.dhtWatchFieldHelp")} ${riskHint}`}
                       value={
                         typeof dev.options?.watch_field === "string"
                           ? dev.options.watch_field
@@ -503,7 +495,6 @@ export function HardwareGpioPanel() {
                       select
                       fullWidth
                       label={t("hardwareConfig.dhtPull")}
-                      helperText={`${t("hardwareConfig.dhtPullHelp")} ${riskHint}`}
                       value={
                         typeof dev.options?.pull === "string"
                           ? dev.options.pull
@@ -525,7 +516,6 @@ export function HardwareGpioPanel() {
                 <TextField
                   fullWidth
                   label={t("hardwareConfig.what")}
-                  helperText={riskHint}
                   value={dev.what}
                   onChange={(e) =>
                     updateDevice(i, { ...dev, what: e.target.value })
@@ -538,7 +528,6 @@ export function HardwareGpioPanel() {
                   multiline
                   minRows={2}
                   label={t("hardwareConfig.how")}
-                  helperText={riskHint}
                   value={dev.how}
                   onChange={(e) =>
                     updateDevice(i, { ...dev, how: e.target.value })
@@ -606,7 +595,6 @@ export function HardwareGpioPanel() {
                     disabled
                     label={t("hardwareConfig.id")}
                     value={sens.id}
-                    helperText={t("hardwareConfig.idReadonlyHint")}
                     slotProps={{ htmlInput: { readOnly: true } }}
                   />
                   <TextField
@@ -682,7 +670,6 @@ export function HardwareGpioPanel() {
                     select
                     fullWidth
                     label={t("hardwareConfig.i2cSensorWatchField")}
-                    helperText={t("hardwareConfig.i2cSensorWatchFieldHelp")}
                     value={sens.watch_field}
                     onChange={(e) =>
                       updateI2cSensor(i, {
@@ -796,7 +783,6 @@ export function HardwareGpioPanel() {
                   <TextField
                     fullWidth
                     label={t("hardwareConfig.what")}
-                    helperText={riskHint}
                     value={sens.what}
                     onChange={(e) =>
                       updateI2cSensor(i, { ...sens, what: e.target.value })
@@ -809,7 +795,6 @@ export function HardwareGpioPanel() {
                     multiline
                     minRows={2}
                     label={t("hardwareConfig.how")}
-                    helperText={riskHint}
                     value={sens.how}
                     onChange={(e) =>
                       updateI2cSensor(i, { ...sens, how: e.target.value })

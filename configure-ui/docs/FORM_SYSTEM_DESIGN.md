@@ -48,6 +48,15 @@ pages with local `sx` rules.
   card in the detail dialog also starts directly with fields; avoid generic
   subheads such as "Connection & credentials" when the fields already provide
   the structure.
+- Field helper text is opt-in. Keep it for value ranges, required formats,
+  non-obvious defaults, destructive hardware risk, and sensitive save semantics;
+  remove it when it merely repeats the label or narrates the page workflow.
+- Ordinary account/provider fields should not carry helper copy. Configured
+  secrets may still show the explicit "leave blank to keep current value"
+  message because that changes what Save does.
+- Hardware risk belongs in the section description, not repeated under every
+  GPIO field. Per-field helpers should stay limited to ranges and raw data
+  formats.
 
 ## Scope
 
