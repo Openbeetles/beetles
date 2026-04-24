@@ -931,7 +931,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
-// | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + WakeNet NN
+// | audio_io_worker                       | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
 // | http_route_exec                       | STACK_HTTP_ROUTE_WORKER| 48 KB | 32 KB | ← on-demand config-plane worker; native task + extra ESP headroom to avoid callback-stack corruption under device page fan-out
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链

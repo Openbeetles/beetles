@@ -16,7 +16,7 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
 esp_idf_version = "v6.0"
 
 [[package.metadata.esp-idf-sys.extra_components]]
-# Keep local C components such as `beetle_wss`; WakeNet/json wrappers were removed.
+# Keep local C components such as `beetle_wss`.
 component_dirs = ["components"]
 
 [lints.rust.unexpected_cfgs]

@@ -148,6 +148,34 @@ assert_file_contains \
   "build.sh should generate app images through espflash save-image so build-only runs do not depend on Python esptool modules"
 assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
+  'third_party/espressif__esp'"-dsp" \
+  "build.sh should not sync the removed ESP DSP vendor tree"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'PARTITION_FOR_FLASH="$PARTITION_TABLE_BIN"' \
+  "build.sh should flash the compiled partition table artifact instead of the source CSV"
+assert_file_not_contains \
+  "$ROOT_DIR/build.sh" \
+  'PARTITION_FOR_FLASH="$PARTITION_CSV"' \
+  "build.sh update mode must not fall back to writing the source CSV as a partition image"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"' \
+  "build.sh should refresh the partition table during update flash"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'missing bootloader/partition-table bin required for update flash.' \
+  "build.sh should fail fast when update flash lacks the compiled partition table"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'spiffs  , data, spiffs  , 0xA20000, 0x5D0000' \
+  "default S3 partition table should give the removed wake resource area back to SPIFFS"
+assert_file_not_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'model' \
+  "default S3 partition table must not restore the removed wake resource partition"
+assert_file_not_contains \
+  "$ROOT_DIR/build.sh" \
   'python3 -m esptool --chip "$FLASH_CHIP" elf2image' \
   "build.sh should no longer depend on python3 -m esptool elf2image for app image generation"
 assert_file_contains \

@@ -93,8 +93,8 @@ fn check_esp(stage: &'static str, ret: i32) -> Result<()> {
 ///
 /// INMP441-style microphones deliver left-justified PCM inside 32-bit I2S
 /// frames on ESP32-S3. The xiaozhi reference path shifts by 12 bits before
-/// saturating into i16; matching that gain avoids starving WakeNet with a
-/// needlessly attenuated signal.
+/// saturating into i16; matching that gain keeps acoustic trigger input from
+/// becoming needlessly attenuated.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn mic_i2s_sample_to_pcm16(raw: i32) -> i16 {
     let value = raw >> 12;

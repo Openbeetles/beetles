@@ -15,24 +15,25 @@ pub(crate) fn bounded_watchdog_wait(requested: Option<Duration>) -> Duration {
         .unwrap_or(ESP_TASK_WDT_IDLE_POLL)
 }
 
-/// Temporarily remove the current task from TWDT while running opaque work that
-/// cannot cooperatively feed the watchdog.
+/// Keep a compatibility guard around opaque ESP control-plane work.
 ///
-/// The task is re-subscribed when the guard is dropped. Use this only around
-/// control-plane work whose caller already has an explicit timeout.
+/// Older versions temporarily removed and re-added the current task from the
+/// IDF task watchdog. That mutates IDF's global TWDT subscription list on the
+/// HTTP route hot path and can corrupt the list when config-ui fan-out overlaps
+/// other watchdog feeds. The guard now only feeds at the boundary; long waits
+/// must be split with [`bounded_watchdog_wait`] instead of changing
+/// subscription state.
 pub(crate) struct TaskWdtSubscriptionPause;
 
 impl TaskWdtSubscriptionPause {
     pub(crate) fn current_task() -> Self {
         crate::platform::task_wdt::feed_current_task();
-        crate::platform::task_wdt::unregister_current_task_from_task_wdt();
         Self
     }
 }
 
 impl Drop for TaskWdtSubscriptionPause {
     fn drop(&mut self) {
-        crate::platform::task_wdt::register_current_task_to_task_wdt();
         crate::platform::task_wdt::feed_current_task();
     }
 }

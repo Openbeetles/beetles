@@ -72,7 +72,7 @@ What matters most:
 
 - `--flash` goes straight into the flash flow after build
 - `--flash` keeps NVS by default; if you need a full erase, the script offers that choice
-- `--flash-update` skips the erase choice and uses update-style flashing directly
+- `--flash-update` skips the erase choice and uses update-style flashing directly; it refreshes bootloader, partition table, otadata, and app in place without a full-chip erase of NVS/SPIFFS
 - `--no-monitor` means do not open the serial monitor after flashing
 - if the serial port is obvious, the script usually picks it; otherwise it asks
 

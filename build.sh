@@ -2131,8 +2131,7 @@ linux_remote_sync_entries() {
     src \
     third_party/esp-idf-hal \
     third_party/esp-idf-svc \
-    third_party/esp-idf-sys \
-    third_party/espressif__esp-dsp
+    third_party/esp-idf-sys
   do
     if [ -e "$SCRIPT_ROOT/$path" ] || [ -L "$SCRIPT_ROOT/$path" ]; then
       printf '%s\n' "$path"
@@ -2811,12 +2810,13 @@ select_flash_mode() {
   ERASE_BEFORE_FLASH=0
   if [[ -n "$FLASH_NO_ERASE" ]]; then
     echo -e "${GREEN}✓ Flash mode: update only — entire flash will NOT be erased (NVS / config preserved).${NC}"
+    echo "  Bootloader, partition table, otadata, and app will be refreshed in place."
     echo ""
     return 0
   fi
   echo "========== Flash mode =========="
   echo ""
-  echo "  1) Update flash — keep NVS, WiFi credentials, SPIFFS (typical dev / OTA-style)"
+  echo "  1) Update flash — keep NVS, WiFi credentials, SPIFFS; refresh bootloader + partition table + app"
   echo "  2) Full chip erase then flash — wipes entire flash (factory reset / partition change)"
   echo "  3) Cancel"
   echo ""
@@ -2862,8 +2862,13 @@ collect_esp_component_graph_inputs() {
   for path in \
     Cargo.toml \
     build.rs \
+    board_presets.toml \
     components_esp32s3.lock \
     components_esp32p4.lock \
+    partitions.csv \
+    partitions_8mb.csv \
+    partitions_32mb.csv \
+    partitions_p4_16mb.csv \
     sdkconfig.defaults \
     sdkconfig.defaults.esp32s3 \
     sdkconfig.defaults.esp32s3.8mb.board \
@@ -3108,14 +3113,7 @@ run_esp_flash_workflow() {
     echo "Error: Cannot derive chip from target for flash: $BUILD_TARGET" >&2
     return 1
   fi
-  FLASH_EXTRA=()
-  PARTITION_FOR_FLASH="$PARTITION_CSV"
-  if [[ -f "$BOOTLOADER_BIN" ]]; then
-    [[ -f "$PARTITION_TABLE_BIN" ]] && PARTITION_FOR_FLASH="$PARTITION_TABLE_BIN"
-    if [[ -f "$PARTITION_FOR_FLASH" ]]; then
-      FLASH_EXTRA=(--bootloader "$BOOTLOADER_BIN" --partition-table "$PARTITION_FOR_FLASH")
-    fi
-  fi
+  PARTITION_FOR_FLASH="$PARTITION_TABLE_BIN"
 
   ensure_espflash
   if ! CHOSEN_PORT="$(get_flash_port)"; then
@@ -3205,10 +3203,10 @@ run_esp_flash_workflow() {
   fi
 
   if [[ "$ERASE_BEFORE_FLASH" -eq 1 ]]; then
-    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_FOR_FLASH" || ! -f "$OTADATA_BIN" ]]; then
+    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" || ! -f "$OTADATA_BIN" ]]; then
       echo "Error: missing bootloader/partition-table/otadata bin required after full erase." >&2
       echo "  bootloader: $BOOTLOADER_BIN" >&2
-      echo "  partition : $PARTITION_FOR_FLASH" >&2
+      echo "  partition : $PARTITION_TABLE_BIN" >&2
       echo "  otadata   : ${OTADATA_BIN:-<empty>}" >&2
       return 1
     fi
@@ -3216,7 +3214,7 @@ run_esp_flash_workflow() {
       print_flash_open_port_hints
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_FOR_FLASH"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
@@ -3229,6 +3227,20 @@ run_esp_flash_workflow() {
       return 1
     fi
   else
+    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" ]]; then
+      echo "Error: missing bootloader/partition-table bin required for update flash." >&2
+      echo "  bootloader: $BOOTLOADER_BIN" >&2
+      echo "  partition : $PARTITION_TABLE_BIN" >&2
+      return 1
+    fi
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"; then
+      print_flash_open_port_hints
+      return 1
+    fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"; then
       print_flash_open_port_hints
       return 1

@@ -1,5 +1,5 @@
-//! 轻量能量断句（不依赖 ESP-SR）。
-//! Lightweight energy endpointing without ESP-SR.
+//! 轻量能量断句（独立本地实现）。
+//! Lightweight standalone energy endpointing.
 
 /// 断句状态机参数（阈值取 0.0..=1.0）。
 #[derive(Debug, Clone)]

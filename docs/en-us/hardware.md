@@ -20,6 +20,8 @@ This page stays practical and avoids low-level configuration detail.
 | `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
 | `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
+The 16MB S3 default partition table `partitions.csv` keeps SPIFFS starting at `0xA20000`, with size `0x5D0000`; the old standalone wake resource area has been removed. `ota_0` is `0x540000` and `ota_1` is `0x4C0000`; this is an asymmetric OTA layout. If a new firmware image is larger than `ota_1`, flash it to `ota_0` over serial/factory flashing or reduce the firmware size before using A/B OTA.
+
 ## Common Hardware Work In Beetls OS
 
 - GPIO devices

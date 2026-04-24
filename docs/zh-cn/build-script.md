@@ -72,7 +72,7 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 
 - `--flash` 会在构建完成后直接进入烧录流程
 - `--flash` 默认保留 NVS；如果你需要全擦，脚本会给你选项
-- `--flash-update` 不进擦除选择，直接按更新方式烧录
+- `--flash-update` 不进擦除选择，直接按更新方式烧录；会原地刷新 bootloader、分区表、otadata 和 app，但不会整片擦除 NVS/SPIFFS
 - `--no-monitor` 表示烧录完成后不打开串口监视
 - 若串口可唯一识别，脚本自动选择该串口；否则进入选择流程
 
