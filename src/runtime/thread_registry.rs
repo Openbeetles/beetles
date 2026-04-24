@@ -602,14 +602,16 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: false,
             mode_sensitive: true,
         },
-        "bg_timer" | "heartbeat" | "restart_defer" | "cron" | "remind" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Runtime,
-            risk_class: ThreadRiskClass::Low,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
+        "bg_timer" | "heartbeat" | "restart_defer" | "runtime_guard" | "cron" | "remind" => {
+            ThreadProfile {
+                execution_class: ThreadExecutionClass::Runtime,
+                risk_class: ThreadRiskClass::Low,
+                tls_capable: false,
+                http_capable: false,
+                wss_capable: false,
+                mode_sensitive: false,
+            }
+        }
         "display" => ThreadProfile {
             execution_class: ThreadExecutionClass::Ui,
             risk_class: ThreadRiskClass::Low,

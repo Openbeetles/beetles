@@ -927,10 +927,11 @@ pub fn is_private_url(url: &str) -> bool {
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 96 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 32 KB | 96 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 40 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
+// | runtime_guard                         | STACK_ESP_RUNTIME_GUARD| 8 KB  | n/a   | ← ESP-only: long-lived watchdog after bootstrap exits
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
@@ -961,6 +962,10 @@ const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
 
+/// ESP runtime guard：启动完成后的长期监管线程，只负责 agent handle 监管、
+/// TWDT feed 与 restart 请求。不能继续占用 bootstrap 的 32KB 栈。
+pub const STACK_ESP_RUNTIME_GUARD: usize = 8 * 1024;
+
 /// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
 /// 2026-04-11 实机日志显示 `qq_ws` 在 16KB 预算下仍保留 ~11KB 余量，
 /// 而 `voice_realtime` 创建失败时 `heap_largest` 只有 31744 字节，刚好卡在 32KB 之下。
@@ -971,11 +976,17 @@ pub const STACK_CHANNEL_WS: usize = 12 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
+/// ESP `agent_loop` 栈预算。
+///
+/// 2026-04-24 实机符号化显示，QQ 入站首条真实消息在
+/// `execute_turn -> prompt_context -> SPIFFS cached-json read` 路径上使用接近
+/// 32KB 栈，并最终在 SPIFFS/heap 查询处表现为 LoadProhibited。40KB 先给出
+/// 可度量余量；更大的 SRAM 总账收口应通过线程/worker 预算治理单独推进。
+pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 40 * 1024;
+
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
-/// 2026-04-11 实机确认：24KB 仍不足以覆盖首条真实消息路径；
-/// 当前先恢复到 32KB 作为稳定基线，把 internal SRAM 回收转移到其他常驻面。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_AGENT_LOOP: usize = 32 * 1024;
+pub const STACK_AGENT_LOOP: usize = ESP_AGENT_LOOP_STACK_BUDGET;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_AGENT_LOOP: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -1344,6 +1355,23 @@ mod thread_stack_budget_tests {
         assert_eq!(STACK_VOICE_REALTIME, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_AUDIO_IO_STD_COMPAT, 8 * 1024);
         assert_eq!(LINUX_RUSTLS_THREAD_STACK, 96 * 1024);
+    }
+
+    #[test]
+    fn esp_agent_loop_stack_keeps_prompt_spiffs_headroom() {
+        assert!(
+            ESP_AGENT_LOOP_STACK_BUDGET >= 40 * 1024,
+            "ESP agent_loop needs headroom for first real inbound prompt + SPIFFS reads"
+        );
+    }
+
+    #[test]
+    fn esp_runtime_guard_stack_stays_small_after_bootstrap() {
+        assert_eq!(
+            STACK_ESP_RUNTIME_GUARD,
+            8 * 1024,
+            "runtime guard must not keep the bootstrap 32KB stack alive after startup"
+        );
     }
 }
 

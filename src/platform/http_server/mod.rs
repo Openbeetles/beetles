@@ -27,6 +27,13 @@ pub use listen_preflight::bind_tcp_listener;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CONFIG_PLANE_POLL_MS: u64 = 500;
+/// ESP-IDF HTTPD callback task stack.
+///
+/// Even immediate routes pass through the shared Rust route dispatch frame before
+/// returning a small response. Keep enough internal-stack headroom for that
+/// callback path; heavier route bodies still move to explicit route workers.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+const ESP_HTTPD_CALLBACK_STACK: usize = 32 * 1024;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[allow(clippy::too_many_arguments)]
@@ -52,7 +59,7 @@ pub fn run(
         max_uri_handlers: 96,
         // The IDF callback task now only performs route admission, lightweight responses,
         // body reads, and handoff into bounded route workers.
-        stack_size: 16 * 1024,
+        stack_size: ESP_HTTPD_CALLBACK_STACK,
         ..Default::default()
     };
 
@@ -193,6 +200,16 @@ pub fn run_with_bound_listener(
             );
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ESP_HTTPD_CALLBACK_STACK;
+
+    #[test]
+    fn esp_httpd_callback_stack_keeps_dispatch_headroom() {
+        assert!(ESP_HTTPD_CALLBACK_STACK >= 32 * 1024);
+    }
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

@@ -1,8 +1,8 @@
 //! CSRF token 生成与验证,防止跨站请求伪造攻击。
 
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
-static CSRF_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+static CSRF_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// 生成新的 CSRF token (16 字节随机数的 hex 字符串)。
 pub fn generate_token() -> crate::Result<String> {
@@ -31,25 +31,39 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// 初始化 CSRF token (启动时调用一次)。
 pub fn init() -> crate::Result<()> {
+    if CSRF_TOKEN.get().is_some() {
+        return Ok(());
+    }
     let token = generate_token()?;
-    *CSRF_TOKEN.lock().unwrap_or_else(|p| p.into_inner()) = Some(token);
-    log::info!("[csrf] token initialized");
+    if CSRF_TOKEN.set(token).is_ok() {
+        log::info!("[csrf] token initialized");
+    }
     Ok(())
 }
 
 /// 获取当前 CSRF token。
 pub fn get_token() -> Option<String> {
-    CSRF_TOKEN.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    CSRF_TOKEN.get().cloned()
 }
 
 /// 验证请求的 CSRF token 是否匹配。
 pub fn verify_token(token: &str) -> bool {
-    match CSRF_TOKEN
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_ref()
-    {
-        Some(expected) => crate::util::constant_time_eq(token, expected),
-        None => false,
+    CSRF_TOKEN
+        .get()
+        .is_some_and(|expected| crate::util::constant_time_eq(token, expected))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn init_is_write_once_after_token_exists() {
+        super::init().expect("first init");
+        let first = super::get_token().expect("first token");
+
+        super::init().expect("second init");
+        let second = super::get_token().expect("second token");
+
+        assert_eq!(second, first);
+        assert!(super::verify_token(&first));
     }
 }

@@ -2041,11 +2041,21 @@ fn run_linux_agent_entry(platform: Arc<dyn Platform>) {
     bootstrap_platform_runtime(platform);
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn bootstrap_platform_runtime(platform: Arc<dyn Platform>) {
+    if let Some((guard_platform, agent_handle)) = bootstrap_platform_runtime_until_guard(platform) {
+        run_runtime_guard_loop(guard_platform, agent_handle);
+    }
+}
+
+fn bootstrap_platform_runtime_until_guard(
+    platform: Arc<dyn Platform>,
+) -> Option<(Arc<dyn Platform>, Option<beetle::util::TaskHandle>)> {
     register_platform_memory_snapshot_provider(&platform);
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
-    run_app(platform, config, wifi_init_ok);
+    let guard_platform = Arc::clone(&platform);
+    start_runtime_planes(platform, config, wifi_init_ok).map(|handle| (guard_platform, handle))
 }
 
 fn register_process_memory_snapshot_provider(
@@ -2180,11 +2190,22 @@ fn spawn_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
 fn run_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
     let restart_platform = Arc::clone(&platform);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        bootstrap_platform_runtime(platform);
+        bootstrap_platform_runtime_until_guard(platform)
     }));
     match result {
-        Ok(()) => {
-            log::error!("[{}] runtime_bootstrap returned; restart requested", TAG);
+        Ok(Some((guard_platform, agent_handle))) => {
+            match spawn_esp_runtime_guard(guard_platform, agent_handle) {
+                Ok(()) => return,
+                Err(error) => {
+                    log::error!("[{}] runtime_guard spawn failed: {}", TAG, error);
+                }
+            }
+        }
+        Ok(None) => {
+            log::error!(
+                "[{}] runtime_bootstrap failed before guard handoff; restart requested",
+                TAG
+            );
         }
         Err(payload) => {
             log::error!(
@@ -2195,6 +2216,26 @@ fn run_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
         }
     }
     restart_platform.request_restart();
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn spawn_esp_runtime_guard(
+    platform: Arc<dyn Platform>,
+    agent_handle: Option<beetle::util::TaskHandle>,
+) -> std::io::Result<()> {
+    let plan = beetle::runtime::thread_util::thread_plan("runtime_guard");
+    let _guard_handle = beetle::util::spawn_guarded_with_profile_handle(
+        "runtime_guard",
+        beetle::util::STACK_ESP_RUNTIME_GUARD,
+        plan.core,
+        plan.role,
+        move || run_runtime_guard_loop(platform, agent_handle),
+    )?;
+    log::info!(
+        "[{}] runtime_guard spawned; runtime_bootstrap can exit and release startup stack",
+        TAG
+    );
+    Ok(())
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -3070,12 +3111,15 @@ fn run_runtime_guard_loop(
     }
 }
 
-/// 启动编排：存储与总线 → 自检 → 后台任务与通道 → agent 循环与 flush。与 main 解耦便于单文件内可读性。
-fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_init_ok: bool) {
+fn start_runtime_planes(
+    platform: std::sync::Arc<dyn Platform>,
+    config: Arc<AppConfig>,
+    wifi_init_ok: bool,
+) -> Option<Option<beetle::util::TaskHandle>> {
     beetle::state::set_boot_phase_active(true);
     let mut assembly = match prepare_runtime_assembly(platform, config, wifi_init_ok) {
         Some(assembly) => assembly,
-        None => return,
+        None => return None,
     };
 
     if let Err(error) = start_support_planes(&mut assembly) {
@@ -3085,7 +3129,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             &error,
             "support_plane_startup_failed",
         );
-        return;
+        return None;
     }
 
     if let Err(error) = start_communication_planes(&mut assembly) {
@@ -3095,7 +3139,7 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
             &error,
             "communication_plane_startup_failed",
         );
-        return;
+        return None;
     }
 
     let agent_handle = match start_agent_plane(&mut assembly) {
@@ -3107,9 +3151,9 @@ fn run_app(platform: std::sync::Arc<dyn Platform>, config: Arc<AppConfig>, wifi_
                 &error,
                 "agent_plane_startup_failed",
             );
-            return;
+            return None;
         }
     };
     beetle::state::set_boot_phase_active(false);
-    run_runtime_guard_loop(Arc::clone(&assembly.runtime.platform), agent_handle);
+    Some(agent_handle)
 }

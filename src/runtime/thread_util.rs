@@ -35,12 +35,11 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Background,
         },
-        "display" | "cron" | "heartbeat" | "heartbeat_tasks" | "remind" | "cli_repl" => {
-            ThreadPlan {
-                core: Some(SpawnCore::Core1),
-                role: HttpThreadRole::Background,
-            }
-        }
+        "display" | "cron" | "heartbeat" | "heartbeat_tasks" | "remind" | "runtime_guard"
+        | "cli_repl" => ThreadPlan {
+            core: Some(SpawnCore::Core1),
+            role: HttpThreadRole::Background,
+        },
         _ => ThreadPlan {
             core: None,
             role: HttpThreadRole::Background,
