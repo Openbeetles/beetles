@@ -40,6 +40,10 @@ pages with local `sx` rules.
   must use an owner/request guard before committing state. This applies to
   account filtering, account detail save/probe/delete, and provider catalog
   loading in dialogs.
+- Account detail status is part of the identity summary, not a standalone form
+  section. Keep readiness, next action, probe, and missing-field feedback inline
+  with the account header so the credential form remains the primary visual
+  path.
 
 ## Scope
 

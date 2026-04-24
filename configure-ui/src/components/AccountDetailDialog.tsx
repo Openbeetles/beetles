@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
@@ -43,11 +42,28 @@ import {
 } from "./AccountCreateForm";
 import { ProviderFieldInput } from "./ProviderFieldInput";
 import { formatProbeMessage } from "./accountDetailDialogHelpers";
+import {
+  buildAccountDetailSummaryModel,
+  type AccountSummaryStatusTone,
+} from "./accountDetailSummaryModel";
 import { translateApiError } from "../i18n/apiErrors";
 import { errorMessage, withTimeout } from "../util/withTimeout";
 import { createLatestRequestGuard } from "../util/latestRequest";
 
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
+
+function statusToneColor(tone: AccountSummaryStatusTone): string {
+  switch (tone) {
+    case "success":
+      return "success.main";
+    case "warning":
+      return "warning.main";
+    case "info":
+      return "info.main";
+    case "default":
+      return "text.secondary";
+  }
+}
 
 export interface AccountDetailDialogProps {
   open: boolean;
@@ -306,6 +322,14 @@ export function AccountDetailDialog({
 
   const a = detail?.account;
   const asmt = detail?.assessment;
+  const summaryModel = asmt
+    ? buildAccountDetailSummaryModel({
+        assessment: asmt,
+        fields: localizedDetailFields,
+        labelFor: (field) => localizeProviderFieldLabel(t, field),
+        probeMessage: probeMsg,
+      })
+    : null;
   const titleLabel = a?.account_label ?? accountKey ?? "";
 
   const titleId =
@@ -475,86 +499,124 @@ export function AccountDetailDialog({
               ) : (
                 <Stack spacing={2} sx={{ width: "100%" }}>
                   <FormCard>
-                    <Typography variant="subtitle2" color="text.secondary">
-                      {t("accounts.detailProvider")}
-                    </Typography>
-                    <Typography fontWeight={700}>
-                      {localizeAccountProviderName(t, {
-                        providerKind: a.provider_kind,
-                        displayNameKey: a.display_name_key,
-                      })}
-                    </Typography>
-                    <Typography
-                      variant="body2"
-                      sx={{ ...TEXT_BODY_TERTIARY_SX, mt: 0.5 }}
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      alignItems={{ xs: "stretch", sm: "flex-start" }}
+                      justifyContent="space-between"
+                      gap={2}
                     >
-                      {a.provider_kind} · {a.account_key}
-                    </Typography>
-                    {a.external_account_id ? (
-                      <Typography variant="body2" sx={{ mt: 1 }}>
-                        {a.external_account_id}
-                      </Typography>
-                    ) : null}
-                  </FormCard>
-
-                  {asmt ? (
-                    <FormCard>
-                      <Typography
-                        variant="subtitle2"
-                        color="text.secondary"
-                        gutterBottom
-                      >
-                        {t("accounts.detailAssessment")}
-                      </Typography>
-                      <Stack direction="row" flexWrap="wrap" gap={1}>
-                        <Chip
-                          size="small"
-                          label={t(`accounts.readiness.${asmt.readiness}`)}
-                        />
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          label={t(`accounts.nextAction.${asmt.next_action}`)}
-                        />
-                      </Stack>
-                      {asmt.missing_fields.length > 0 ? (
-                        <Typography variant="body2" sx={{ mt: 1.5 }}>
-                          {t("accounts.missingFields")}:{" "}
-                          {asmt.missing_fields
-                            .map((fieldKey) => {
-                              const matchingField = localizedDetailFields.find(
-                                (field) => field.key === fieldKey,
-                              );
-                              return matchingField
-                                ? localizeProviderFieldLabel(t, matchingField)
-                                : fieldKey;
-                            })
-                            .join(", ")}
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="subtitle2" color="text.secondary">
+                          {t("accounts.detailProvider")}
                         </Typography>
-                      ) : null}
-                      <Stack
-                        direction="row"
-                        alignItems="center"
-                        flexWrap="wrap"
-                        gap={1}
-                        sx={{ mt: 1.5 }}
-                      >
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          disabled={!canAccessProtectedApis || probeBusy}
-                          onClick={() => void handleProbe()}
+                        <Typography fontWeight={700}>
+                          {localizeAccountProviderName(t, {
+                            providerKind: a.provider_kind,
+                            displayNameKey: a.display_name_key,
+                          })}
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{ ...TEXT_BODY_TERTIARY_SX, mt: 0.5 }}
                         >
-                          {probeBusy ? t("accounts.probing") : t("accounts.probe")}
-                        </Button>
-                        {probeMsg ? (
-                          <Typography variant="body2" color="text.secondary">
-                            {probeMsg}
+                          {a.provider_kind} · {a.account_key}
+                        </Typography>
+                        {a.external_account_id ? (
+                          <Typography variant="body2" sx={{ mt: 1 }}>
+                            {a.external_account_id}
                           </Typography>
                         ) : null}
-                      </Stack>
-                    </FormCard>
-                  ) : null}
+                      </Box>
+                      {summaryModel ? (
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          justifyContent={{ xs: "flex-start", sm: "flex-end" }}
+                          flexWrap="wrap"
+                          gap={1}
+                          sx={{ flexShrink: 0 }}
+                        >
+                          {summaryModel.statusItems.map((item) => (
+                            <Stack
+                              key={item.key}
+                              direction="row"
+                              alignItems="center"
+                              gap={0.75}
+                              sx={{ color: statusToneColor(item.tone) }}
+                            >
+                              <Box
+                                aria-hidden
+                                sx={{
+                                  width: 7,
+                                  height: 7,
+                                  borderRadius: "50%",
+                                  bgcolor: "currentColor",
+                                  boxShadow:
+                                    item.tone === "success"
+                                      ? "0 0 0 3px color-mix(in srgb, currentColor 14%, transparent)"
+                                      : "none",
+                                }}
+                              />
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  color: "currentColor",
+                                  fontWeight: 700,
+                                  lineHeight: 1.2,
+                                }}
+                              >
+                                {t(item.labelKey)}
+                              </Typography>
+                            </Stack>
+                          ))}
+                          <Button
+                            variant="text"
+                            size="small"
+                            disabled={!canAccessProtectedApis || probeBusy}
+                            onClick={() => void handleProbe()}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              fontWeight: 700,
+                              color: "text.secondary",
+                              "&:hover": {
+                                bgcolor:
+                                  "color-mix(in srgb, var(--primary) 7%, transparent)",
+                                color: "primary.main",
+                              },
+                            }}
+                          >
+                            {probeBusy ? t("accounts.probing") : t("accounts.probe")}
+                          </Button>
+                        </Stack>
+                      ) : null}
+                    </Stack>
+                    {summaryModel?.missingFieldsText || summaryModel?.probeMessage ? (
+                      <Box
+                        sx={{
+                          mt: 1.5,
+                          pt: 1.25,
+                          borderTop:
+                            "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 0.75,
+                        }}
+                      >
+                        {summaryModel.missingFieldsText ? (
+                          <Typography variant="body2" color="warning.main">
+                            {t("accounts.missingFields")}:{" "}
+                            {summaryModel.missingFieldsText}
+                          </Typography>
+                        ) : null}
+                        {summaryModel.probeMessage ? (
+                          <Typography variant="body2" sx={TEXT_BODY_TERTIARY_SX}>
+                            {summaryModel.probeMessage}
+                          </Typography>
+                        ) : null}
+                      </Box>
+                    ) : null}
+                  </FormCard>
 
                   <FormCard>
                     <Typography
