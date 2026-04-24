@@ -14,10 +14,12 @@ import type {
   AccountProbeResult,
   AccountRevokeRequest,
   AccountRevokeResult,
+  AccountSummary,
   AccountSummaryListResponse,
   AccountUpsertRequest,
   CapabilityStatus,
   CapabilityStatusListResponse,
+  ProviderCatalogItem,
   ProviderCatalogResponse,
 } from '../../types/accountConfig'
 import type { ApiResult } from '../client.ts'
@@ -30,6 +32,44 @@ function buildConfigQuery(path: string, query: Record<string, string | undefined
   }
   const encoded = params.toString()
   return encoded ? `${path}?${encoded}` : path
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function normalizeListResponse<T>(
+  data: unknown,
+  legacyArrayKeys: string[] = [],
+): { count: number; items: T[] } {
+  const record = objectRecord(data)
+  let rawItems = record.items
+  if (!Array.isArray(rawItems)) {
+    for (const key of legacyArrayKeys) {
+      if (Array.isArray(record[key])) {
+        rawItems = record[key]
+        break
+      }
+    }
+  }
+  const items = Array.isArray(rawItems) ? (rawItems as T[]) : []
+  return {
+    count:
+      typeof record.count === 'number' && Number.isFinite(record.count)
+        ? record.count
+        : items.length,
+    items,
+  }
+}
+
+function normalizeOkData<T>(
+  result: ApiResult<unknown>,
+  normalize: (data: unknown) => T,
+): ApiResult<T> {
+  if (!result.ok) return result as ApiResult<T>
+  return { ...result, data: normalize(result.data) }
 }
 
 export async function getLlm(
@@ -110,7 +150,7 @@ export async function getProviders(
   filters?: { capability?: AccountCapability },
 ): Promise<ApiResult<ProviderCatalogResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<ProviderCatalogResponse>(
+  const result = await requestProtected<unknown>(
     baseUrl,
     buildConfigQuery('/api/config/providers', {
       capability: filters?.capability,
@@ -119,6 +159,9 @@ export async function getProviders(
       pairingCode: pairingCode?.trim(),
     },
   )
+  return normalizeOkData(result, (data) =>
+    normalizeListResponse<ProviderCatalogItem>(data, ['providers']),
+  )
 }
 
 export async function getCapabilities(
@@ -126,9 +169,12 @@ export async function getCapabilities(
   pairingCode?: string,
 ): Promise<ApiResult<CapabilityStatusListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<CapabilityStatusListResponse>(baseUrl, '/api/config/capabilities', {
+  const result = await requestProtected<unknown>(baseUrl, '/api/config/capabilities', {
     pairingCode: pairingCode?.trim(),
   })
+  return normalizeOkData(result, (data) =>
+    normalizeListResponse<CapabilityStatus>(data),
+  )
 }
 
 export async function getCapability(
@@ -152,7 +198,7 @@ export async function getAccounts(
   filters?: AccountListFilters,
 ): Promise<ApiResult<AccountSummaryListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return requestProtected<AccountSummaryListResponse>(
+  const result = await requestProtected<unknown>(
     baseUrl,
     buildConfigQuery('/api/config/accounts', {
       capability: filters?.capability,
@@ -161,6 +207,9 @@ export async function getAccounts(
     {
       pairingCode: pairingCode?.trim(),
     },
+  )
+  return normalizeOkData(result, (data) =>
+    normalizeListResponse<AccountSummary>(data, ['accounts']),
   )
 }
 

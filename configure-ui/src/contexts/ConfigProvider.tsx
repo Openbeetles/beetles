@@ -6,6 +6,7 @@ import type {
   ChannelsConfigSegment,
   SystemConfigSegment,
 } from "../types/appConfig";
+import { normalizeChannelsConfigFromDevice } from "../types/appConfig";
 import type { DisplayConfig } from "../types/displayConfig";
 import { normalizeDisplayConfig } from "../types/displayConfig";
 import type { HardwareSegment } from "../types/hardwareConfig";
@@ -173,7 +174,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       setError: setChannelsError,
       fetch: () =>
         api.config.getChannels() as Promise<ApiResult<ChannelsConfigView>>,
-      applySuccess: (data) => setChannelsConfig(data),
+      applySuccess: (data) => setChannelsConfig(normalizeChannelsConfigFromDevice(data)),
       clearData: () => setChannelsConfig(null),
       isCurrent: () => deviceSessionKeyRef.current === sessionKey,
     });

@@ -32,6 +32,10 @@ pages with local `sx` rules.
 - Mobile sub-navigation must size items by content, not by full row width, so
   the active configuration partition remains visible when switching between
   form-heavy device panels.
+- Device config and account catalog/list responses must be normalized at the
+  provider/type boundary before pages render. Form pages should not defend each
+  field or list with local `?? ""` / `?? []` fallbacks because that spreads
+  schema compatibility across the UI.
 
 ## Scope
 

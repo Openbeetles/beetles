@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getSystem } from "./config.ts";
+import { getAccounts, getProviders, getSystem } from "./config.ts";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -47,6 +47,36 @@ test("getSystem GETs the dedicated system segment endpoint", async () => {
         pairing: "123456",
       },
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getAccounts normalizes legacy account list wrappers", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    return jsonResponse({ accounts: [] });
+  }) as typeof fetch;
+
+  try {
+    const result = await getAccounts("http://device", "123456");
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data, { count: 0, items: [] });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getProviders normalizes legacy provider catalog wrappers", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    return jsonResponse({ providers: [] });
+  }) as typeof fetch;
+
+  try {
+    const result = await getProviders("http://device", "123456");
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data, { count: 0, items: [] });
   } finally {
     globalThis.fetch = originalFetch;
   }
