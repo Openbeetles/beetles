@@ -928,7 +928,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 96 KB |
 // | agent_loop                            | STACK_AGENT_LOOP       | 48 KB | 96 KB |
-// | os_outbound                           | STACK_OS_OUTBOUND      | 12 KB | 96 KB |
+// | os_outbound                           | STACK_OS_OUTBOUND      | 16 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
@@ -1000,8 +1000,13 @@ pub const STACK_CHANNEL_SENDER: usize = 8192;
 pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `os_outbound`：ESP 单 active-channel 出站 worker，合并 dispatch 与 HTTP sender。
+///
+/// 该 worker 少掉的是常驻线程数与二级队列边界，不是 sender 深调用栈本身。
+/// QQ/Feishu/Telegram active driver 会在同一栈上执行 admission、capability projection、
+/// token/cache、payload render 与 HTTP POST；2026-04-24 真机日志显示 12KB 在首条
+/// QQ 回复发送后触发 FreeRTOS stack overflow，因此 ESP 预算按真实发送路径抬到 16KB。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_OS_OUTBOUND: usize = 12 * 1024;
+pub const STACK_OS_OUTBOUND: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_OS_OUTBOUND: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -1387,16 +1392,22 @@ mod thread_stack_budget_tests {
     }
 
     #[test]
-    fn os_outbound_stack_accounts_for_dispatch_plus_sender_without_linux_budget() {
+    fn os_outbound_stack_accounts_for_active_sender_call_depth_without_linux_budget() {
         assert!(
-            STACK_OS_OUTBOUND >= 10 * 1024,
-            "os_outbound combines dispatch and channel HTTP sender state"
+            STACK_OS_OUTBOUND >= 16 * 1024,
+            "os_outbound runs dispatch admission plus active channel HTTP send on one stack"
         );
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        assert!(
-            STACK_OS_OUTBOUND < STACK_DISPATCH + STACK_CHANNEL_SENDER,
-            "ESP os_outbound should recover resident stack versus dispatch + sender"
-        );
+        {
+            assert!(
+                STACK_OS_OUTBOUND >= STACK_DISPATCH + STACK_CHANNEL_SENDER,
+                "merged ESP os_outbound must budget for the deepest legacy dispatch+sender call path"
+            );
+            assert!(
+                STACK_OS_OUTBOUND <= 20 * 1024,
+                "ESP os_outbound should stay a sender-class worker, not drift into route/agent budgets"
+            );
+        }
     }
 }
 
