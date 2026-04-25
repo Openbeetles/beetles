@@ -938,7 +938,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
 // | http_config/diag/ota/snapshot_exec    | STACK_HTTP_ROUTE_WORKER| 48 KB | 32 KB | ← lane-specific config-plane workers; std-compatible surface with extra ESP headroom to avoid callback-stack corruption under device page fan-out
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
+// | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS
@@ -1058,11 +1058,12 @@ pub const STACK_HTTP_ROUTE_WORKER: usize = 48 * 1024;
 pub const STACK_HTTP_ROUTE_WORKER: usize = 32 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
-/// ESP 侧仍需抠 internal SRAM，保留 16KB；非 ESP 目标虽然不走 TLS，
+/// ESP 侧仍需抠 internal SRAM，但它直接承接 delayed-task / write-back，
+/// 不能继续按纯 timer 的 16KB 预算运行；非 ESP 目标虽然不走 TLS，
 /// 但现在已直接承接 delayed-task / write-back / cron 自治链，Linux/host
 /// 不能继续沿用旧的 16KB 预算。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_BG_TIMER: usize = 16 * 1024;
+pub const STACK_BG_TIMER: usize = 24 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_BG_TIMER: usize = LINUX_RUSTLS_THREAD_STACK;
 

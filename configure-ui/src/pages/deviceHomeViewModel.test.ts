@@ -247,6 +247,19 @@ test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () =
   );
 });
 
+test("buildRuntimeTelemetryFields prefers explicit user inbound metric alias", () => {
+  const fields = buildRuntimeTelemetryFields(
+    "esp",
+    null,
+    {
+      messages_in: 99,
+      user_messages_in: 10,
+    },
+  );
+
+  assert.equal(fields.find((item) => item.id === "messages_in")?.value, 10);
+});
+
 test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", () => {
   const resource: ResourceSnapshotData = {
     active_http_count: 1,

@@ -375,7 +375,11 @@ export function buildRuntimeTelemetryFields(
   pushNumber("session_count", "device.systemStatusSessionCount", resource?.session_count, {
     color: "var(--primary)",
   });
-  pushNumber("messages_in", "device.systemStatusMessagesIn", metrics?.messages_in);
+  pushNumber(
+    "messages_in",
+    "device.systemStatusMessagesIn",
+    metrics?.user_messages_in ?? metrics?.messages_in,
+  );
   pushNumber(
     "agent_messages_in",
     "device.systemStatusAgentMessagesIn",

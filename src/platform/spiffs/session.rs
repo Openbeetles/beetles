@@ -3,8 +3,8 @@
 
 use crate::error::{Error, Result};
 use crate::memory::{
-    SessionMessage, SessionMessageRecord, SessionStore, MAX_SESSION_ENTRIES,
-    MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR,
+    synthesize_session_message_records, SessionMessage, SessionMessageRecord, SessionStore,
+    MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN, REL_PATH_SESSIONS_DIR,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -143,15 +143,7 @@ struct SessionAppendState {
 }
 
 impl SessionAppendState {
-    fn from_snapshot(snapshot: &SessionFileSnapshot, write_header: bool) -> Self {
-        if snapshot.needs_repair {
-            let has_data = write_header || snapshot.message_count > 0;
-            return Self {
-                message_count: snapshot.message_count,
-                has_data,
-                ends_with_newline: has_data,
-            };
-        }
+    fn from_observed_snapshot(snapshot: &SessionFileSnapshot) -> Self {
         Self {
             message_count: snapshot.message_count,
             has_data: snapshot.has_data,
@@ -159,8 +151,7 @@ impl SessionAppendState {
         }
     }
 
-    fn from_rewritten_body(message_count: usize, body: &str) -> Self {
-        let has_data = !body.is_empty();
+    fn from_written_messages(message_count: usize, has_data: bool) -> Self {
         Self {
             message_count,
             has_data,
@@ -171,7 +162,10 @@ impl SessionAppendState {
     fn after_appending(self, appended_messages: usize) -> Self {
         let has_data = self.has_data || appended_messages > 0;
         Self {
-            message_count: self.message_count.saturating_add(appended_messages),
+            message_count: self
+                .message_count
+                .saturating_add(appended_messages)
+                .min(MAX_SESSION_ENTRIES),
             has_data,
             ends_with_newline: has_data,
         }
@@ -361,6 +355,78 @@ fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
     )
 }
 
+fn write_session_messages_unlocked<'a>(
+    path: &Path,
+    chat_id: &str,
+    write_header: bool,
+    messages: impl IntoIterator<Item = &'a StoredSessionMessage>,
+) -> Result<SessionAppendState> {
+    ensure_session_parent_dir(path, "session_write")?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_write", "invalid path"))?;
+    let old_len = std::fs::metadata(path_str)
+        .ok()
+        .and_then(|meta| usize::try_from(meta.len()).ok())
+        .unwrap_or(0);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path_str)
+        .map_err(|e| Error::io("session_write", e))?;
+    let mut written = 0usize;
+    let mut message_count = 0usize;
+
+    if write_header {
+        file.write_all(CHAT_ID_HEADER_PREFIX.as_bytes())
+            .and_then(|_| file.write_all(chat_id.as_bytes()))
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|e| Error::io("session_write", e))?;
+        written = written
+            .saturating_add(CHAT_ID_HEADER_PREFIX.len())
+            .saturating_add(chat_id.len())
+            .saturating_add(1);
+    }
+
+    for message in messages {
+        let line = serde_json::to_string(message)
+            .map_err(|e| Error::config("session_write", e.to_string()))?;
+        if line.len() > MAX_SESSION_MESSAGE_LEN {
+            return Err(Error::config(
+                "session_write",
+                format!(
+                    "message serialized len {} exceeds {}",
+                    line.len(),
+                    MAX_SESSION_MESSAGE_LEN
+                ),
+            ));
+        }
+        file.write_all(line.as_bytes())
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|e| Error::io("session_write", e))?;
+        written = written.saturating_add(line.len()).saturating_add(1);
+        message_count = message_count.saturating_add(1);
+    }
+
+    if old_len > written {
+        let mut remaining = old_len - written;
+        const LINE_PAD: &[u8] =
+            b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+        while remaining > 0 {
+            let n = remaining.min(LINE_PAD.len());
+            file.write_all(&LINE_PAD[..n])
+                .map_err(|e| Error::io("session_write", e))?;
+            remaining -= n;
+        }
+    }
+    file.sync_all().map_err(|e| Error::io("session_write", e))?;
+    Ok(SessionAppendState::from_written_messages(
+        message_count,
+        written > 0,
+    ))
+}
+
 fn append_session_lines_unlocked(
     path: &Path,
     write_header: bool,
@@ -422,26 +488,6 @@ fn append_session_lines_unlocked(
     Ok(())
 }
 
-fn build_session_body<'a>(
-    chat_id: &str,
-    write_header: bool,
-    messages: impl IntoIterator<Item = &'a StoredSessionMessage>,
-) -> Result<String> {
-    let mut body = String::new();
-    if write_header {
-        body.push_str(CHAT_ID_HEADER_PREFIX);
-        body.push_str(chat_id);
-        body.push('\n');
-    }
-    for message in messages {
-        let line = serde_json::to_string(message)
-            .map_err(|e| Error::config("session_write", e.to_string()))?;
-        body.push_str(&line);
-        body.push('\n');
-    }
-    Ok(body)
-}
-
 fn load_session_snapshot_unlocked(
     path: &Path,
     chat_id: &str,
@@ -466,8 +512,12 @@ fn load_session_snapshot_unlocked(
                 );
             }
             SessionRepairMode::Immediate => {
-                let body = build_session_body(chat_id, write_header, snapshot.messages.iter())?;
-                write_session_body_unlocked(path, body.as_bytes())?;
+                write_session_messages_unlocked(
+                    path,
+                    chat_id,
+                    write_header,
+                    snapshot.messages.iter(),
+                )?;
                 log::warn!(
                     "[{}] repaired session chat_id={} bad_lines={} kept_messages={}",
                     TAG,
@@ -514,6 +564,7 @@ pub struct SpiffsSessionStore {
     counts: Mutex<HashMap<String, SessionAppendState>>,
     chat_ids: Mutex<Option<Vec<String>>>,
     recent: Mutex<HashMap<String, VecDeque<StoredSessionMessage>>>,
+    defer_compact_on_append: bool,
 }
 
 impl Default for SpiffsSessionStore {
@@ -528,6 +579,17 @@ impl SpiffsSessionStore {
             counts: Mutex::new(HashMap::new()),
             chat_ids: Mutex::new(None),
             recent: Mutex::new(HashMap::new()),
+            defer_compact_on_append: cfg!(any(target_arch = "xtensa", target_arch = "riscv32")),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_deferred_compact_for_test() -> Self {
+        Self {
+            counts: Mutex::new(HashMap::new()),
+            chat_ids: Mutex::new(None),
+            recent: Mutex::new(HashMap::new()),
+            defer_compact_on_append: true,
         }
     }
 
@@ -596,6 +658,10 @@ impl SpiffsSessionStore {
         }
         recent_cache.insert(chat_id.to_string(), recent);
     }
+
+    fn should_defer_compact_on_append(&self) -> bool {
+        self.defer_compact_on_append
+    }
 }
 
 impl SessionStore for SpiffsSessionStore {
@@ -651,9 +717,9 @@ impl SessionStore for SpiffsSessionStore {
                             &path,
                             chat_id,
                             write_header,
-                            SessionRepairMode::Immediate,
+                            SessionRepairMode::Deferred,
                         )?;
-                        let state = SessionAppendState::from_snapshot(&snapshot, write_header);
+                        let state = SessionAppendState::from_observed_snapshot(&snapshot);
                         let messages = snapshot.messages;
                         counts.insert(chat_id.to_string(), state);
                         (
@@ -696,6 +762,45 @@ impl SessionStore for SpiffsSessionStore {
                 return Ok(());
             }
 
+            if self.should_defer_compact_on_append() {
+                let prepend_newline = existing_has_data && !existing_ends_with_newline;
+                append_session_lines_unlocked(
+                    &path,
+                    write_header,
+                    chat_id,
+                    prepend_newline,
+                    &lines,
+                )?;
+                if let Some(recent) = recent_cache.get_mut(chat_id) {
+                    for message in &stored_messages {
+                        if recent.len() == MAX_SESSION_ENTRIES {
+                            recent.pop_front();
+                        }
+                        recent.push_back(message.clone());
+                    }
+                }
+                counts.insert(
+                    chat_id.to_string(),
+                    SessionAppendState {
+                        message_count: msg_count,
+                        has_data: existing_has_data,
+                        ends_with_newline: existing_ends_with_newline,
+                    }
+                    .after_appending(new_messages.len()),
+                );
+                log::warn!(
+                    "[{}] session compact deferred chat_id={} messages_cached={} appended={}",
+                    TAG,
+                    chat_id,
+                    msg_count,
+                    new_messages.len()
+                );
+                drop(recent_cache);
+                drop(counts);
+                self.note_chat_id_present(chat_id);
+                return Ok(());
+            }
+
             // Slow path: 触顶时优先走 recent-cache，避免每次都全文件解析。
             let mut messages = if let Some(recent) = recent_cache.get(chat_id) {
                 recent.clone()
@@ -721,13 +826,10 @@ impl SessionStore for SpiffsSessionStore {
                 messages.pop_front();
             }
 
-            let body = build_session_body(chat_id, write_header, messages.iter())?;
-            write_session_body_unlocked(&path, body.as_bytes())?;
+            let state =
+                write_session_messages_unlocked(&path, chat_id, write_header, messages.iter())?;
             Self::upsert_recent_cache(&mut recent_cache, chat_id, messages.clone());
-            counts.insert(
-                chat_id.to_string(),
-                SessionAppendState::from_rewritten_body(messages.len(), &body),
-            );
+            counts.insert(chat_id.to_string(), state);
             drop(recent_cache);
             drop(counts);
             self.note_chat_id_present(chat_id);
@@ -785,22 +887,35 @@ impl SessionStore for SpiffsSessionStore {
         if cap == 0 {
             return Ok(Vec::new());
         }
-        let recent = with_fs_lock(|| {
+        let (recent, needs_repair) = with_fs_lock(|| {
             let snapshot = load_session_snapshot_unlocked(
                 &path,
                 chat_id,
                 write_header,
-                SessionRepairMode::Immediate,
+                SessionRepairMode::Deferred,
             )?;
             let start = snapshot.messages.len().saturating_sub(cap);
-            Ok(snapshot
-                .messages
-                .into_iter()
-                .skip(start)
-                .collect::<VecDeque<_>>())
+            let needs_repair = snapshot.needs_repair;
+            Ok((
+                snapshot
+                    .messages
+                    .into_iter()
+                    .skip(start)
+                    .collect::<VecDeque<_>>(),
+                needs_repair,
+            ))
         })?;
         let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
         Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
+        if needs_repair {
+            return Ok(synthesize_session_message_records(
+                chat_id,
+                recent
+                    .into_iter()
+                    .map(|message| message.to_session_message())
+                    .collect(),
+            ));
+        }
         Ok(recent
             .into_iter()
             .map(|message| message.to_session_record())
@@ -838,7 +953,7 @@ impl SessionStore for SpiffsSessionStore {
             )?;
             counts.insert(
                 chat_id.to_string(),
-                SessionAppendState::from_snapshot(&snapshot, write_header),
+                SessionAppendState::from_observed_snapshot(&snapshot),
             );
             Ok(snapshot.message_count)
         })
@@ -959,7 +1074,7 @@ mod tests {
         write_session_body_unlocked, SessionAppendState, SessionRepairMode, SpiffsSessionStore,
         StoredSessionMessage, SESSION_MESSAGE_ID_PREFIX,
     };
-    use crate::memory::{SessionMessage, SessionStore};
+    use crate::memory::{SessionMessage, SessionStore, MAX_SESSION_ENTRIES};
 
     #[test]
     fn counts_only_message_lines() {
@@ -1076,7 +1191,149 @@ mod tests {
     }
 
     #[test]
-    fn load_recent_records_repairs_legacy_messages_with_stable_ids() {
+    fn append_batch_defers_cold_malformed_session_repair() {
+        let store = SpiffsSessionStore::new();
+        let chat_id = format!("append-deferred-repair-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let legacy =
+            b"{\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n{\"role\":\"assistant\",\"content\":\"still-ok\"}\n";
+        write_session_body_unlocked(&path, legacy).expect("seed legacy file");
+
+        let appended = SessionMessage {
+            role: "user".to_string(),
+            content: "new turn".to_string(),
+        };
+        store
+            .append_batch(&chat_id, std::slice::from_ref(&appended))
+            .expect("append");
+
+        let raw = std::fs::read(&path).expect("read after append");
+        let raw_text = String::from_utf8_lossy(&raw);
+        assert!(
+            raw_text.starts_with("{\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n"),
+            "cold append must not rewrite legacy lines on the agent hot path"
+        );
+        assert!(raw_text.contains("\nnot-json\n"));
+        let lines = raw_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 4);
+        let last: StoredSessionMessage =
+            serde_json::from_str(lines[3]).expect("appended session line");
+        assert_eq!(last.role, "user");
+        assert_eq!(last.content, "new turn");
+        assert!(last.message_id.starts_with(SESSION_MESSAGE_ID_PREFIX));
+
+        let snapshot = scan_session_file(&raw);
+        assert_eq!(snapshot.message_count, 3);
+        assert!(snapshot.needs_repair);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_batch_preserves_newline_after_deferred_count_cache_warmup() {
+        let store = SpiffsSessionStore::new();
+        let chat_id = format!("append-count-cache-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let legacy_without_newline = b"{\"role\":\"user\",\"content\":\"ok\"}";
+        write_session_body_unlocked(&path, legacy_without_newline).expect("seed legacy file");
+
+        assert_eq!(store.message_count(&chat_id).expect("message count"), 1);
+        store
+            .append_batch(
+                &chat_id,
+                &[SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "reply".to_string(),
+                }],
+            )
+            .expect("append");
+
+        let raw = std::fs::read(&path).expect("read after append");
+        let raw_text = String::from_utf8_lossy(&raw);
+        assert!(
+            raw_text.starts_with("{\"role\":\"user\",\"content\":\"ok\"}\n{"),
+            "deferred cache state must preserve the observed missing newline"
+        );
+        let snapshot = scan_session_file(&raw);
+        assert_eq!(snapshot.message_count, 2);
+        assert!(snapshot.needs_repair);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_batch_deferred_compact_keeps_overflow_append_only() {
+        let store = SpiffsSessionStore::new_with_deferred_compact_for_test();
+        let chat_id = format!("append-overflow-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let mut seeded = String::new();
+        for index in 0..MAX_SESSION_ENTRIES {
+            let message = StoredSessionMessage {
+                message_id: format!("msg_seed_{index:03}"),
+                role: "user".to_string(),
+                content: format!("seed {index}"),
+            };
+            seeded.push_str(&serde_json::to_string(&message).expect("seed line"));
+            seeded.push('\n');
+        }
+        write_session_body_unlocked(&path, seeded.as_bytes()).expect("seed full session");
+
+        store
+            .append_batch(
+                &chat_id,
+                &[SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "overflow reply".to_string(),
+                }],
+            )
+            .expect("append overflow");
+
+        let raw = std::fs::read_to_string(&path).expect("read after overflow append");
+        let lines = raw
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            MAX_SESSION_ENTRIES + 1,
+            "deferred compact mode must not rewrite the session during append"
+        );
+        let last: StoredSessionMessage =
+            serde_json::from_str(lines.last().expect("last line")).expect("appended line");
+        assert_eq!(last.content, "overflow reply");
+        assert_eq!(
+            store.message_count(&chat_id).expect("count"),
+            MAX_SESSION_ENTRIES
+        );
+        let recent = store
+            .load_recent(&chat_id, MAX_SESSION_ENTRIES)
+            .expect("recent");
+        assert_eq!(recent.len(), MAX_SESSION_ENTRIES);
+        assert_eq!(
+            recent.last().expect("last recent").content,
+            "overflow reply"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_recent_records_defers_repair_and_synthesizes_stable_ids() {
         let store = SpiffsSessionStore::new();
         let chat_id = format!("load-records-repair-{}", std::process::id());
         let (path, _) = session_path(&chat_id).expect("path");
@@ -1099,10 +1356,10 @@ mod tests {
         assert_eq!(first, second);
         assert!(first
             .iter()
-            .all(|record| record.message_id.starts_with(SESSION_MESSAGE_ID_PREFIX)));
+            .all(|record| record.message_id.starts_with("legacy_")));
 
-        let repaired = std::fs::read_to_string(&path).expect("read repaired session");
-        assert!(repaired.contains("\"message_id\":\"msg_"));
+        let raw = std::fs::read(&path).expect("read session");
+        assert_eq!(raw, legacy);
 
         let _ = std::fs::remove_file(&path);
     }

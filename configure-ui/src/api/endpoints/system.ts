@@ -4,6 +4,7 @@ import type { ApiResult } from '../client'
 /** 与固件 `metrics::MetricsSnapshot` serde 字段一致。 */
 export interface MetricsSnapshotData {
   messages_in?: number
+  user_messages_in?: number
   agent_messages_in?: number
   system_messages_in?: number
   messages_out?: number
