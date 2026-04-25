@@ -15,7 +15,8 @@ const STAGE_CHANNEL_DISPATCH: &str = "channel_dispatch";
 const STAGE_SESSION_APPEND: &str = "session_append";
 const STAGE_TLS_ADMISSION: &str = "tls_admission";
 
-static MESSAGES_IN: AtomicU32 = AtomicU32::new(0);
+static USER_MESSAGES_IN: AtomicU32 = AtomicU32::new(0);
+static SYSTEM_MESSAGES_IN: AtomicU32 = AtomicU32::new(0);
 static MESSAGES_OUT: AtomicU32 = AtomicU32::new(0);
 static LLM_CALLS: AtomicU32 = AtomicU32::new(0);
 static LLM_ERRORS: AtomicU32 = AtomicU32::new(0);
@@ -127,7 +128,17 @@ fn record_activity_now() {
 
 #[inline]
 pub fn record_message_in() {
-    MESSAGES_IN.fetch_add(1, Ordering::Relaxed);
+    record_user_message_in();
+}
+
+#[inline]
+pub fn record_user_message_in() {
+    USER_MESSAGES_IN.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_system_message_in() {
+    SYSTEM_MESSAGES_IN.fetch_add(1, Ordering::Relaxed);
 }
 
 #[inline]
@@ -585,8 +596,12 @@ pub fn record_stream_http_invalidate() {
 
 /// 快照：用于 health API 与结构化基线日志（无敏感信息）。内部用 u32 存储，以 u64 暴露。
 pub fn snapshot() -> MetricsSnapshot {
+    let user_messages_in = USER_MESSAGES_IN.load(Ordering::Relaxed) as u64;
+    let system_messages_in = SYSTEM_MESSAGES_IN.load(Ordering::Relaxed) as u64;
     MetricsSnapshot {
-        messages_in: MESSAGES_IN.load(Ordering::Relaxed) as u64,
+        messages_in: user_messages_in,
+        agent_messages_in: user_messages_in.saturating_add(system_messages_in),
+        system_messages_in,
         messages_out: MESSAGES_OUT.load(Ordering::Relaxed) as u64,
         llm_calls: LLM_CALLS.load(Ordering::Relaxed) as u64,
         llm_errors: LLM_ERRORS.load(Ordering::Relaxed) as u64,
@@ -726,11 +741,36 @@ mod tests {
         assert!(line.contains("http_route_handler_ms=456"));
         assert!(line.contains("http_route_timeout_total="));
     }
+
+    #[test]
+    fn user_visible_message_in_excludes_system_agent_work() {
+        let before = snapshot();
+
+        record_system_message_in();
+        let after_system = snapshot();
+        assert_eq!(after_system.messages_in, before.messages_in);
+        assert_eq!(
+            after_system.system_messages_in,
+            before.system_messages_in + 1
+        );
+        assert_eq!(after_system.agent_messages_in, before.agent_messages_in + 1);
+
+        record_user_message_in();
+        let after_user = snapshot();
+        assert_eq!(after_user.messages_in, before.messages_in + 1);
+        assert_eq!(after_user.system_messages_in, before.system_messages_in + 1);
+        assert_eq!(after_user.agent_messages_in, before.agent_messages_in + 2);
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct MetricsSnapshot {
+    /// User/external inbound messages. Internal agent-plane work is counted separately.
     pub messages_in: u64,
+    /// All messages consumed by the agent plane, including system maintenance work.
+    pub agent_messages_in: u64,
+    /// Internal system messages consumed by the agent plane.
+    pub system_messages_in: u64,
     pub messages_out: u64,
     pub llm_calls: u64,
     pub llm_errors: u64,
@@ -831,9 +871,11 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} msg_out={} llm_calls={} llm_err={} llm_last_ms={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.messages_out,
+            self.agent_messages_in,
+            self.system_messages_in,
             self.llm_calls,
             self.llm_errors,
             self.llm_last_ms,

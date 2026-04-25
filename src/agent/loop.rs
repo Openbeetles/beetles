@@ -1841,9 +1841,11 @@ fn run_agent_loop_main(
         } else {
             consecutive_user_msgs = consecutive_user_msgs.saturating_add(1);
         }
-        metrics::record_message_in();
         if msg.ingress == IngressKind::User {
+            metrics::record_user_message_in();
             metrics::record_user_activity();
+        } else {
+            metrics::record_system_message_in();
         }
         crate::platform::task_wdt::feed_current_task();
         let loc = (config.resolve_locale)();

@@ -1205,7 +1205,9 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 返回体是指标对象，常见字段包括：
 
-- `messages_in`
+- `messages_in`（仅外部用户入站消息）
+- `agent_messages_in`（agent 平面消费的全部消息，包含内部系统任务）
+- `system_messages_in`（agent 平面消费的内部系统任务）
 - `messages_out`
 - `llm_calls`
 - `llm_errors`

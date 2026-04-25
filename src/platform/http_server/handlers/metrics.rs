@@ -17,6 +17,14 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
     // Counters
     buf.push_str(&format!("beetle_messages_in_total {}\n", snap.messages_in));
     buf.push_str(&format!(
+        "beetle_agent_messages_in_total {}\n",
+        snap.agent_messages_in
+    ));
+    buf.push_str(&format!(
+        "beetle_system_messages_in_total {}\n",
+        snap.system_messages_in
+    ));
+    buf.push_str(&format!(
         "beetle_messages_out_total {}\n",
         snap.messages_out
     ));

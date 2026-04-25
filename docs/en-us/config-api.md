@@ -1200,7 +1200,9 @@ Success response: `200 application/json`
 
 The response is a metrics object. Common fields include:
 
-- `messages_in`
+- `messages_in` (user/external inbound messages only)
+- `agent_messages_in` (all agent-plane messages, including internal system work)
+- `system_messages_in` (internal system work consumed by the agent plane)
 - `messages_out`
 - `llm_calls`
 - `llm_errors`
