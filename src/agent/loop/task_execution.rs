@@ -477,10 +477,7 @@ pub(super) fn try_run_task_execution(
         step_msg.source_transport = crate::bus::MessageTransport::Internal;
         step_msg.enqueue_ts_ms = super::now_unix_ms();
         let mut step_repeat = HashMap::new();
-        let super::turn_execution::ExecutedTurn {
-            outcome: step_outcome,
-            telemetry: step_telemetry,
-        } = super::turn_execution::execute_turn(
+        let step_executed = super::turn_execution::execute_turn_boxed(
             tool_ctx,
             worker_llm,
             &step_msg,
@@ -491,6 +488,10 @@ pub(super) fn try_run_task_execution(
             &mut step_repeat,
             loc,
         )?;
+        let super::turn_execution::ExecutedTurn {
+            outcome: step_outcome,
+            telemetry: step_telemetry,
+        } = *step_executed;
         latency.context_ms = latency
             .context_ms
             .saturating_add(step_telemetry.latency.context_ms);

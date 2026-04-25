@@ -290,6 +290,7 @@ pub(super) fn render_programmatic_clarification_question(
 
 /// 完整 context + worker LLM + ReAct 循环，返回执行结果与 telemetry。
 /// telemetry.streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_turn(
     http: &mut dyn PlatformHttpClient,
@@ -302,6 +303,34 @@ pub(super) fn execute_turn(
     tool_call_repeat: &mut HashMap<u64, u8>,
     loc: UiLocale,
 ) -> Result<ExecutedTurn> {
+    execute_turn_boxed(
+        http,
+        worker_llm,
+        msg,
+        outbound_tx,
+        req_id,
+        registry,
+        config,
+        tool_call_repeat,
+        loc,
+    )
+    .map(|executed| *executed)
+}
+
+/// Same turn worker as `execute_turn`, but returns the heavy telemetry bundle on
+/// the heap so the ESP agent loop does not keep it resident on its caller stack.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_turn_boxed(
+    http: &mut dyn PlatformHttpClient,
+    worker_llm: &(dyn LlmClient + Send + Sync),
+    msg: &crate::bus::PcMsg,
+    outbound_tx: &OutboundTx,
+    req_id: &str,
+    registry: &crate::tools::ToolRegistry,
+    config: &AgentLoopConfig,
+    tool_call_repeat: &mut HashMap<u64, u8>,
+    loc: UiLocale,
+) -> Result<Box<ExecutedTurn>> {
     let mut latency = WorkerLatency::default();
     let worker_start = Instant::now();
     let mut tool_ctx = HttpClientToolContext {
@@ -499,7 +528,7 @@ pub(super) fn execute_turn(
         persona_priority_adjudication.as_deref().cloned(),
     )? {
         let (outcome, telemetry) = task_execution_outcome;
-        return Ok(ExecutedTurn { outcome, telemetry });
+        return Ok(Box::new(ExecutedTurn { outcome, telemetry }));
     }
     let initial_msg_count = messages.len();
     tool_call_repeat.clear();
@@ -781,7 +810,7 @@ pub(super) fn execute_turn(
     delivery.emit_fact(crate::agent::TurnVisibilityFact::Finalizing);
     let streamed = delivery.finalize(&final_content);
     let outcome = WorkerOutcome::Content(final_content);
-    Ok(ExecutedTurn {
+    Ok(Box::new(ExecutedTurn {
         outcome,
         telemetry: WorkerRunTelemetry {
             streamed,
@@ -809,5 +838,5 @@ pub(super) fn execute_turn(
             mental_privacy_adjudication: mental_privacy_adjudication.map(|value| *value),
             persona_priority_adjudication: persona_priority_adjudication.map(|value| *value),
         },
-    })
+    }))
 }

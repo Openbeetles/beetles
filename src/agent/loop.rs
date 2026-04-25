@@ -106,10 +106,10 @@ use self::background_jobs::run_background_job_with_accounting;
 use self::delivery_handoff::deliver_turn;
 use self::driver::{prepare_system_with_suffix, recv_next_agent_msg};
 use self::ingress_admission::admit_turn;
-use self::reply_finalize::{complete_turn, finalize_turn};
+use self::reply_finalize::{complete_turn_boxed, finalize_turn_boxed};
 use self::task_execution::try_run_task_execution;
 use self::tool_round::execute_tool_use_round;
-use self::turn_execution::execute_turn;
+use self::turn_execution::execute_turn_boxed;
 use self::turn_finalize::persist_turn_ledger;
 use self::worker_error::handle_worker_path_error;
 use super::deliberation::{
@@ -1656,15 +1656,13 @@ struct LaneTurnFinalizeContext<'a> {
     worker_lane_tag: &'a str,
     config: &'a AgentLoopConfig,
     system_inbound_tx: &'a SystemInboundTx,
-    outbound_tx: &'a OutboundTx,
-    msg: PcMsg,
-    loc: UiLocale,
+    msg: Box<PcMsg>,
     msg_start: Instant,
     queue_wait_ms: u128,
     admission_ms: u128,
     worker_prepare_ms: u128,
     msg_key: u64,
-    turn_ledger: TurnLedger,
+    turn_ledger: Box<TurnLedger>,
     latency_warn_ms: u128,
 }
 
@@ -1956,7 +1954,7 @@ fn run_agent_loop_main(
                 worker_prepare_ms
             );
         }
-        let executed = execute_turn(
+        let executed = execute_turn_boxed(
             http,
             worker_llm,
             &msg,
@@ -1968,7 +1966,7 @@ fn run_agent_loop_main(
             loc,
         );
 
-        let turn_execution::ExecutedTurn { outcome, telemetry } = match executed {
+        let executed = match executed {
             Ok(ok) => ok,
             Err(e) => {
                 handle_worker_path_error(
@@ -1991,48 +1989,45 @@ fn run_agent_loop_main(
                 continue;
             }
         };
-        let finalized = match finalize_turn(
-            http, worker_llm, config, &msg, loc, msg_start, outcome, telemetry,
-        ) {
-            Ok(finalized) => finalized,
-            Err(e) => {
-                handle_worker_path_error(
-                    e,
-                    AGENT_LOOP_TAG,
-                    &mut msg,
-                    loc,
-                    msg_start,
-                    queue_wait_ms,
-                    admission_ms,
-                    worker_prepare_ms,
-                    msg_key,
-                    &mut llm_failure_count,
-                    &user_inbound_tx,
-                    &system_inbound_tx,
-                    &outbound_tx,
-                    config,
-                    &mut turn_ledger,
-                );
-                continue;
-            }
-        };
-        let handoff = deliver_turn(&outbound_tx, &msg, &finalized);
-        complete_turn(
-            LaneTurnFinalizeContext {
+        let finalized =
+            match finalize_turn_boxed(http, worker_llm, config, &msg, loc, msg_start, executed) {
+                Ok(finalized) => finalized,
+                Err(e) => {
+                    handle_worker_path_error(
+                        e,
+                        AGENT_LOOP_TAG,
+                        &mut msg,
+                        loc,
+                        msg_start,
+                        queue_wait_ms,
+                        admission_ms,
+                        worker_prepare_ms,
+                        msg_key,
+                        &mut llm_failure_count,
+                        &user_inbound_tx,
+                        &system_inbound_tx,
+                        &outbound_tx,
+                        config,
+                        &mut turn_ledger,
+                    );
+                    continue;
+                }
+            };
+        let handoff = deliver_turn(&outbound_tx, &msg, finalized.as_ref());
+        complete_turn_boxed(
+            Box::new(LaneTurnFinalizeContext {
                 worker_lane_tag: AGENT_LOOP_TAG,
                 config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg,
-                loc,
+                msg: Box::new(msg),
                 msg_start,
                 queue_wait_ms,
                 admission_ms,
                 worker_prepare_ms,
                 msg_key,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: LATENCY_WARN_MS,
-            },
+            }),
             &mut llm_failure_count,
             &mut defer_tracker,
             finalized,
@@ -5380,7 +5375,7 @@ mod tests {
         config.runtime.turn_ledger_store =
             Arc::clone(&turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg =
             PcMsg::new_inbound("qq_channel", "chat-ledger", "继续", false).expect("message");
         msg.req_id = Some("req-ledger".to_string());
@@ -5450,15 +5445,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -5493,7 +5486,7 @@ mod tests {
         config.runtime.turn_ledger_store =
             Arc::clone(&turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-governance", "继续", false).expect("message");
         let turn_ledger = build_turn_ledger_start(&msg, 1);
@@ -5626,15 +5619,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -6699,7 +6690,7 @@ mod tests {
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
             "chat-execution-seed",
@@ -6771,15 +6762,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -6815,7 +6804,7 @@ mod tests {
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
             "chat-tool-free-blocker",
@@ -6887,15 +6876,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -6926,7 +6913,7 @@ mod tests {
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
             "chat-structured-tool-blocker",
@@ -7001,15 +6988,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -7049,7 +7034,7 @@ mod tests {
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
             "chat-cancel-execution-state",
@@ -7101,15 +7086,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -7214,15 +7197,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg1.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg1.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger: first_turn_ledger,
+                turn_ledger: Box::new(first_turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -7364,7 +7345,7 @@ mod tests {
             )
             .expect("seed active work");
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
             "chat-cancel-run",
@@ -7416,15 +7397,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),
@@ -7503,7 +7482,7 @@ mod tests {
             )
             .expect("seed active work");
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg =
             PcMsg::new_inbound("qq_channel", "chat-cancel-task-run", "算了，先停下", false)
                 .expect("message");
@@ -7551,15 +7530,13 @@ mod tests {
                 worker_lane_tag: "test",
                 config: &config,
                 system_inbound_tx: &system_inbound_tx,
-                outbound_tx: &outbound_tx,
-                msg: msg.clone(),
-                loc: UiLocale::Zh,
+                msg: Box::new(msg.clone()),
                 msg_start: Instant::now(),
                 queue_wait_ms: 0,
                 admission_ms: 0,
                 worker_prepare_ms: 0,
                 msg_key: 1,
-                turn_ledger,
+                turn_ledger: Box::new(turn_ledger),
                 latency_warn_ms: u128::MAX,
             },
             &mut HashMap::new(),

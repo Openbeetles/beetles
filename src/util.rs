@@ -927,7 +927,7 @@ pub fn is_private_url(url: &str) -> bool {
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 96 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 48 KB | 96 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 64 KB | 96 KB |
 // | os_outbound                           | STACK_OS_OUTBOUND      | 16 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
@@ -981,10 +981,11 @@ pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 ///
 /// 2026-04-24 实机符号化显示，QQ 入站首条真实消息在
 /// `execute_turn -> prompt_context -> turn-ledger SPIFFS read` 路径上已把
-/// 40KB 预算推到危险边缘，并在 SPIFFS/heap 查询处表现为 LoadProhibited。
-/// 48KB 是当前启动顺序下仍可创建、且不把 ESP 拉到 96KB Linux 档的止血预算；
-/// 更大的 SRAM 总账收口应通过线程/worker 预算治理单独推进。
-pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 48 * 1024;
+/// 40KB 预算推到危险边缘；2026-04-25 首条 QQ 回复完成后又触发 pthread
+/// stack overflow，说明回复收尾/ledger 结算峰值不能继续压在 48KB 内。
+/// 当前生产路径把 heavy turn state 改为 boxed handoff，64KB 是配套后的
+/// ESP steady-state 预算；仍不直接照搬 96KB Linux 档，以免反向压垮常驻 SRAM。
+pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 64 * 1024;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1374,8 +1375,8 @@ mod thread_stack_budget_tests {
     fn esp_agent_loop_stack_keeps_prompt_spiffs_headroom() {
         const {
             assert!(
-                ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,
-                "ESP agent_loop needs headroom for first real inbound prompt + SPIFFS reads"
+                ESP_AGENT_LOOP_STACK_BUDGET >= 64 * 1024,
+                "ESP agent_loop needs headroom for first real inbound prompt and reply settlement"
             );
             assert!(
                 ESP_AGENT_LOOP_STACK_BUDGET <= 64 * 1024,
