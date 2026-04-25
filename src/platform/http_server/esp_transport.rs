@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS: usize = 2;
+const ESP_ROUTE_EXEC_POLL_INTERVAL_MS: u64 = 20;
 
 struct EspRouteJob {
     incoming: IncomingRequest,
@@ -203,9 +204,10 @@ impl EspRouteExecutor {
             match inner.submit_tx.try_send(job) {
                 Ok(()) => {
                     drop(submit_guard);
-                    return match reply_rx
-                        .recv_timeout(Duration::from_secs(self.contract.timeout_secs))
-                    {
+                    return match route_recv_timeout(
+                        &reply_rx,
+                        Duration::from_secs(self.contract.timeout_secs),
+                    ) {
                         Ok(out) => out,
                         Err(RecvTimeoutError::Timeout) => {
                             crate::metrics::record_http_route_timeout();
@@ -487,6 +489,39 @@ fn execute_esp_route_job(
     crate::platform::task_wdt::feed_current_task();
 }
 
+fn route_recv_timeout<T>(
+    rx: &Receiver<T>,
+    timeout: Duration,
+) -> std::result::Result<T, RecvTimeoutError> {
+    // ESP-IDF's pthread timed-condvar path has crashed during lazy route-worker
+    // idle waits. Polling keeps workers evictable without entering that path.
+    let started = Instant::now();
+    let poll_interval = Duration::from_millis(ESP_ROUTE_EXEC_POLL_INTERVAL_MS);
+    loop {
+        match rx.try_recv() {
+            Ok(value) => return Ok(value),
+            Err(TryRecvError::Disconnected) => return Err(RecvTimeoutError::Disconnected),
+            Err(TryRecvError::Empty) => {}
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(RecvTimeoutError::Timeout);
+        }
+        let remaining = timeout.saturating_sub(elapsed);
+        let sleep_for = if remaining < poll_interval {
+            remaining
+        } else {
+            poll_interval
+        };
+        if sleep_for.is_zero() {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(sleep_for);
+        }
+    }
+}
+
 fn run_esp_route_executor(
     name: &'static str,
     contract: RouteWorkerContract,
@@ -496,7 +531,7 @@ fn run_esp_route_executor(
     submit_gate: Arc<RouteSubmitGate>,
 ) {
     loop {
-        match rx.recv_timeout(Duration::from_secs(contract.idle_timeout_secs)) {
+        match route_recv_timeout(&rx, Duration::from_secs(contract.idle_timeout_secs)) {
             Ok(job) => {
                 execute_esp_route_job(contract, &ctx, &store, job);
             }
