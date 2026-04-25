@@ -2,7 +2,7 @@
 
 **English** | [中文](../zh-cn/display.md) | [Doc index](../README.md)
 
-Display setup starts only after you have chosen a screen for Beetls OS.
+Display setup starts only after you have chosen a screen for Beetle OS.
 For normal use, the config UI is still the easiest place to set display options first.
 
 ## The Short Path
@@ -130,5 +130,5 @@ The screen mainly shows:
 
 ## Read Next
 
-- To get Beetls OS running first: [configuration.md](configuration.md)
+- To get Beetle OS running first: [configuration.md](configuration.md)
 - To connect hardware: [hardware-device-config.md](hardware-device-config.md)

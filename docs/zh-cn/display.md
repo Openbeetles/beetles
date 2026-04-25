@@ -2,7 +2,7 @@
 
 [English](../en-us/display.md) | **中文** | [文档索引](../README.md)
 
-本页说明 Beetls OS 的显示配置。
+本页说明 Beetle OS 的显示配置。
 仅在设备接入屏幕时需要使用该配置项。
 
 ## 基本流程

@@ -26,6 +26,19 @@ use std::time::Duration;
 
 const TAG: &str = "platform::sntp";
 
+#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn should_restart_sntp_after_sta_connect(
+    memory_system_kind: crate::memory::MemorySystemKind,
+    was_connected: bool,
+    sta_ip_ok: bool,
+    wall_clock_trustworthy: bool,
+) -> bool {
+    memory_system_kind == crate::memory::MemorySystemKind::EspCompact
+        && sta_ip_ok
+        && !was_connected
+        && !wall_clock_trustworthy
+}
+
 /// 启动 SNTP 后台同步（非阻塞）；ESP 在 WiFi 栈 ready 后调用一次即可。
 /// ESP-IDF 5.x 使用 esp_sntp_setoperatingmode + esp_sntp_setservername + esp_sntp_init。
 /// 同步成功后系统时钟自动更新，std::time::SystemTime 即为正确 UTC 时间。
@@ -233,4 +246,37 @@ fn set_system_time(epoch_secs: u64) -> crate::error::Result<()> {
 ))]
 pub fn init_sntp() {
     log::info!("[{}] SNTP no-op on non-Linux host", TAG);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::memory::MemorySystemKind;
+
+    #[test]
+    fn esp_restarts_sntp_when_sta_first_gets_ip_before_wall_clock_is_valid() {
+        assert!(super::should_restart_sntp_after_sta_connect(
+            MemorySystemKind::EspCompact,
+            false,
+            true,
+            false,
+        ));
+        assert!(!super::should_restart_sntp_after_sta_connect(
+            MemorySystemKind::EspCompact,
+            true,
+            true,
+            false,
+        ));
+        assert!(!super::should_restart_sntp_after_sta_connect(
+            MemorySystemKind::EspCompact,
+            false,
+            true,
+            true,
+        ));
+        assert!(!super::should_restart_sntp_after_sta_connect(
+            MemorySystemKind::LinuxFull,
+            false,
+            true,
+            false,
+        ));
+    }
 }

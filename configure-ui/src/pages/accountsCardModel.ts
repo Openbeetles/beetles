@@ -15,8 +15,6 @@ export interface AccountCardModel {
   capabilityLabels: string[];
   readinessLabel: string;
   readinessColor: AccountCardStatusColor;
-  providerMeta: string;
-  rawKeyMeta: string;
   showRuntimeFlag: boolean;
 }
 
@@ -59,8 +57,6 @@ export function buildAccountCardModel(
     ),
     readinessLabel: t(`accounts.readiness.${row.readiness}`),
     readinessColor: readinessColor(row.readiness),
-    providerMeta: row.provider_kind,
-    rawKeyMeta: title === row.account_key ? "" : row.account_key,
     showRuntimeFlag: row.has_runtime_error,
   };
 }

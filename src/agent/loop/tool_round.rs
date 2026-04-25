@@ -293,6 +293,40 @@ fn execute_error_tool_execution_result(
     }
 }
 
+#[cold]
+#[inline(never)]
+fn protocol_contract_tool_execution_result(
+    tool_name: &str,
+    input: &str,
+    error: &crate::error::Error,
+) -> ToolCallExecutionResult {
+    metrics::record_tool_protocol_forced_round();
+    log::warn!(
+        "[agent_tool] {} protocol repair requested: {} input={:?}",
+        tool_name,
+        error,
+        crate::util::truncate_content_to_max(input, 200).as_ref()
+    );
+    let payload = serde_json::json!({
+        "error": "tool_input_protocol_violation",
+        "failure_kind": "protocol",
+        "tool": tool_name,
+        "message": error.to_string(),
+        "required_format": "strict_json_object_with_quoted_keys",
+        "retry_guidance": "retry_this_tool_once_with_strict_json_object",
+        "received_preview": crate::util::truncate_content_to_max(input, 200).as_ref(),
+    });
+    ToolCallExecutionResult {
+        result_owned: crate::util::scrub_credentials(&payload.to_string()),
+        failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Retryable),
+        blocker: None,
+        call_succeeded: false,
+        had_mutating_effects: false,
+        had_visible_outbound_side_effects: false,
+        current_chat_primary_artifact: None,
+    }
+}
+
 #[inline(never)]
 fn execute_tool_call(
     tc: &crate::llm::ToolCall,
@@ -316,6 +350,9 @@ fn execute_tool_call(
             return denied_tool_execution_result(&tc.name, &reason);
         }
         Err(error) => {
+            if error.stage() == "tool_protocol_contract" {
+                return protocol_contract_tool_execution_result(&tc.name, &tc.input, &error);
+            }
             return execute_error_tool_execution_result(&tc.name, &tc.input, false, &error);
         }
     };
@@ -652,5 +689,45 @@ pub(super) fn log_tool_intent_result(
                 delivery_kind
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_contract_tool_execution_result_requests_repair_without_tool_body_error() {
+        let error = crate::error::Error::config(
+            "tool_protocol_contract",
+            "tool 'memory_search' declared structured_object but received invalid json args",
+        );
+
+        let result = protocol_contract_tool_execution_result(
+            "memory_search",
+            "{query: Beetle OS, limit: 6}",
+            &error,
+        );
+
+        assert!(!result.call_succeeded);
+        assert_eq!(
+            result.failure_kind,
+            Some(crate::agent::tool_outcome::ToolFailureKind::Retryable)
+        );
+        assert!(result.blocker.is_none());
+        assert!(!result.had_mutating_effects);
+        assert!(!result.had_visible_outbound_side_effects);
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&result.result_owned).expect("protocol repair payload");
+        assert_eq!(payload["failure_kind"], "protocol");
+        assert_eq!(
+            payload["retry_guidance"],
+            "retry_this_tool_once_with_strict_json_object"
+        );
+        assert_eq!(payload["tool"], "memory_search");
+        assert!(payload["received_preview"]
+            .as_str()
+            .is_some_and(|preview| preview.contains("{query: Beetle OS")));
     }
 }

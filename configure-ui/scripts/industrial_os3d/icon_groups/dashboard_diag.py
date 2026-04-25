@@ -150,18 +150,33 @@ def render_chip_with_lens(scene: Scene, palette, lens_cx: float, lens_cy: float,
     render_magnifier(scene, palette, lens_cx, lens_cy, lens_r, "accent")
 
 
-def render_package(scene: Scene, palette, role: str = "warm") -> None:
-    top, bottom, side = tone(palette, role)
-    left_face = scene.polygon([(25, 50), (42, 40), (42, 66), (25, 76)])
-    right_face = scene.polygon([(42, 40), (60, 50), (60, 76), (42, 66)])
-    top_face = scene.polygon([(25, 50), (42, 40), (60, 50), (42, 60)])
-    scene.render_extruded(union_masks(left_face, right_face, top_face), top, bottom, side, depth=7, shadow_blur=10)
-    flap = scene.line([(31, 49), (42, 55), (53, 49)], 3.6)
-    scene.render_flat(flap, lighten(palette.warm_top, 0.08), darken(palette.warm_bottom, 0.14))
-    route = scene.line([(56, 54), (69, 46), (82, 46)], 3.4)
-    scene.render_extruded(route, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.24), depth=4, shadow_blur=6)
-    target = scene.circle(82, 46, 4.6)
-    scene.render_extruded(target, palette.secondary_top, palette.secondary_bottom, darken(palette.secondary_bottom, 0.24), depth=4, shadow_blur=5)
+def render_delivery_report(scene: Scene, palette) -> None:
+    report = scene.rounded_rect(20, 24, 62, 78, 9)
+    scene.render_extruded(
+        report,
+        lighten(palette.panel_top, 0.06),
+        darken(palette.panel_bottom, 0.04),
+        darken(palette.panel_bottom, 0.2),
+        depth=8,
+        shadow_blur=10,
+        gloss=54,
+    )
+
+    clip = scene.rounded_rect(30, 18, 52, 29, 5)
+    scene.render_extruded(clip, palette.secondary_top, palette.secondary_bottom, darken(palette.secondary_bottom, 0.24), depth=5, shadow_blur=5)
+    header = scene.rounded_rect(26, 32, 56, 38, 3)
+    scene.render_flat(header, palette.primary_top, palette.primary_bottom)
+
+    pulse = scene.line([(27, 54), (34, 54), (38, 47), (43, 62), (49, 50), (57, 50)], 2.6)
+    scene.render_flat(pulse, palette.accent_top, palette.accent_bottom)
+    row_a = scene.rounded_rect(27, 43, 52, 46, 1.5)
+    row_b = scene.rounded_rect(27, 66, 46, 69, 1.5)
+    scene.render_flat(union_masks(row_a, row_b), darken(palette.shell_bottom, 0.02), darken(palette.shell_bottom, 0.14), alpha=118)
+
+    badge = scene.circle(54, 66, 6.0)
+    scene.render_extruded(badge, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.24), depth=4, shadow_blur=5, gloss=40)
+    check = scene.line([(50.5, 66), (53.5, 69), (59.5, 61.5)], 2.2)
+    scene.render_flat(check, palette.panel_top, palette.panel_bottom)
 
 
 def render_memory_card(scene: Scene, palette, role: str = "secondary") -> None:
@@ -321,12 +336,15 @@ def build_device_unreachable(scene: Scene, palette) -> None:
 
 
 def build_diag_delivery(scene: Scene, palette) -> None:
-    render_package(scene, palette, "warm")
-    route_ring = union_masks(scene.arc_band(72, 48, 12, 8.2, 215, 360), scene.arc_band(72, 48, 12, 8.2, 0, 35))
-    scene.render_flat(route_ring, palette.accent_top, palette.accent_bottom)
-    scan = scene.rounded_rect(22, 32, 42, 37, 3)
-    scene.render_flat(scan, palette.secondary_top, palette.secondary_bottom)
-    render_line(scene, palette, [(22, 37), (42, 37)], 2.2, "secondary")
+    render_delivery_report(scene, palette)
+
+    endpoint = scene.circle(82, 35, 8.0)
+    scene.render_extruded(endpoint, palette.secondary_top, palette.secondary_bottom, darken(palette.secondary_bottom, 0.24), depth=4, shadow_blur=5, gloss=36)
+
+    route = scene.line([(59, 56), (70, 48), (82, 36)], 5.2)
+    arrow_head = scene.polygon([(79, 27), (90, 34), (80, 44)])
+    top, bottom, side = tone(palette, "accent")
+    scene.render_extruded(union_masks(route, arrow_head), top, bottom, side, depth=5, shadow_blur=7, gloss=48)
 
 
 def build_diag_memory(scene: Scene, palette) -> None:

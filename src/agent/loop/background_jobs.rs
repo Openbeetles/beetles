@@ -1139,6 +1139,33 @@ fn append_detached_work_defer_audit(key: &crate::agent::DetachedWorkKey, reason:
     );
 }
 
+fn embedded_post_reply_pressure_defer_reason(
+    memory_profile: crate::memory::MemoryProfile,
+    kind: crate::agent::DetachedJobKind,
+    pressure: crate::orchestrator::PressureLevel,
+) -> Option<(&'static str, u64)> {
+    if !matches!(memory_profile, crate::memory::MemoryProfile::Embedded)
+        || !matches!(
+            kind,
+            crate::agent::DetachedJobKind::PostReplyMaintenance
+                | crate::agent::DetachedJobKind::SelfRuntimePostReply
+        )
+    {
+        return None;
+    }
+    match pressure {
+        crate::orchestrator::PressureLevel::Normal => None,
+        crate::orchestrator::PressureLevel::Cautious => Some((
+            "post_reply_pressure_cautious",
+            super::BACKGROUND_DEFER_DELAY_MS,
+        )),
+        crate::orchestrator::PressureLevel::Critical => Some((
+            "post_reply_pressure_critical",
+            super::BACKGROUND_DEFER_DELAY_MS,
+        )),
+    }
+}
+
 fn detached_work_defer_reason(
     config: &AgentLoopConfig,
     key: &crate::agent::DetachedWorkKey,
@@ -1151,6 +1178,13 @@ fn detached_work_defer_reason(
         if let Some(delay_ms) = super::post_reply_quiet_delay_ms() {
             return Ok(Some(("post_reply_quiet_window", Some(delay_ms))));
         }
+    }
+    if let Some((reason, delay_ms)) = embedded_post_reply_pressure_defer_reason(
+        config.runtime.memory_system_kind.memory_profile(),
+        key.kind,
+        crate::orchestrator::current_pressure(),
+    ) {
+        return Ok(Some((reason, Some(delay_ms))));
     }
     let live = crate::agent::live_foreground_state_for_chat(
         config.runtime.active_work_store.as_ref(),
@@ -1979,5 +2013,41 @@ mod tests {
             &msg,
             crate::memory::MemoryProfile::Standard,
         ));
+    }
+
+    #[test]
+    fn embedded_post_reply_jobs_wait_for_normal_pressure() {
+        assert_eq!(
+            embedded_post_reply_pressure_defer_reason(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::PostReplyMaintenance,
+                crate::orchestrator::PressureLevel::Cautious,
+            ),
+            Some(("post_reply_pressure_cautious", BACKGROUND_DEFER_DELAY_MS))
+        );
+        assert_eq!(
+            embedded_post_reply_pressure_defer_reason(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::SelfRuntimePostReply,
+                crate::orchestrator::PressureLevel::Critical,
+            ),
+            Some(("post_reply_pressure_critical", BACKGROUND_DEFER_DELAY_MS))
+        );
+        assert_eq!(
+            embedded_post_reply_pressure_defer_reason(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::SelfRuntimePostReply,
+                crate::orchestrator::PressureLevel::Normal,
+            ),
+            None
+        );
+        assert_eq!(
+            embedded_post_reply_pressure_defer_reason(
+                crate::memory::MemoryProfile::Standard,
+                DetachedJobKind::SelfRuntimePostReply,
+                crate::orchestrator::PressureLevel::Cautious,
+            ),
+            None
+        );
     }
 }

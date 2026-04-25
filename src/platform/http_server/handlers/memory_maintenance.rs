@@ -1,6 +1,7 @@
 //! POST /api/memory/maintenance: structured operator-requested maintenance execution.
 
 use super::HandlerContext;
+use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::ApiResponse;
 use serde::Deserialize;
 
@@ -17,10 +18,8 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
     let payload: MemoryMaintenancePostBody = match serde_json::from_str(body) {
         Ok(payload) => payload,
         Err(error) => {
-            return ApiResponse::err_400(&format!(
-                "invalid operator maintenance request: {}",
-                error
-            ));
+            log::warn!("memory_maintenance_invalid_request: {}", error);
+            return ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON);
         }
     };
     let request = crate::runtime::OperatorMaintenanceRequest::new(
@@ -44,10 +43,11 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
         }
         Err(error) => {
             let text = error.to_string();
+            log::warn!("memory_maintenance_submit: {}", text);
             if text.contains("queue unavailable") {
-                ApiResponse::err_503(&text)
+                ApiResponse::err_503_key(api_contract::COMMON_QUEUE_FULL)
             } else {
-                ApiResponse::err_500(&text)
+                ApiResponse::err_500_key(api_contract::COMMON_OPERATION_FAILED)
             }
         }
     }
@@ -57,6 +57,7 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
 mod tests {
     use super::post;
     use crate::bus::new_inbound_channel;
+    use crate::platform::http_server::api_contract;
     use crate::platform::http_server::handlers::build_default_test_handler_context;
     use serde_json::Value;
 
@@ -81,5 +82,18 @@ mod tests {
             queued.channel.as_ref(),
             crate::runtime::CHANNEL_OPERATOR_MAINTENANCE
         );
+    }
+
+    #[test]
+    fn invalid_request_uses_error_key_contract() {
+        let ctx = build_default_test_handler_context();
+
+        let response = post(&ctx, "{not json");
+
+        assert_eq!(response.status, 400);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], api_contract::COMMON_INVALID_JSON);
+        assert!(parsed.get("error").is_none(), "body={parsed}");
+        assert!(parsed.get("upstream_error").is_none(), "body={parsed}");
     }
 }

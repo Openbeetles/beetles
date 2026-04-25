@@ -17,7 +17,7 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
-        "http_config_exec" | "http_diag_exec" | "http_ota_exec" | "http_snapshot_exec" => {
+        "http_snapshot_exec" | "http_config_exec" | "http_diag_exec" | "http_ota_exec" => {
             ThreadPlan {
                 core: Some(SpawnCore::Core1),
                 role: HttpThreadRole::Io,
@@ -35,11 +35,12 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Background,
         },
-        "display" | "cron" | "heartbeat" | "heartbeat_tasks" | "remind" | "runtime_guard"
-        | "cli_repl" => ThreadPlan {
-            core: Some(SpawnCore::Core1),
-            role: HttpThreadRole::Background,
-        },
+        "display" | "cron" | "heartbeat" | "heartbeat_tasks" | "remind" | "cli_repl" => {
+            ThreadPlan {
+                core: Some(SpawnCore::Core1),
+                role: HttpThreadRole::Background,
+            }
+        }
         _ => ThreadPlan {
             core: None,
             role: HttpThreadRole::Background,
@@ -90,5 +91,13 @@ mod tests {
     #[test]
     fn esp_task_wdt_pause_guard_is_constructible_for_opaque_dispatch() {
         let _guard = crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task();
+    }
+
+    #[test]
+    fn snapshot_route_worker_has_explicit_core_and_io_role() {
+        let plan = super::thread_plan("http_snapshot_exec");
+
+        assert_eq!(plan.core, Some(crate::util::SpawnCore::Core1));
+        assert_eq!(plan.role, crate::util::HttpThreadRole::Io);
     }
 }

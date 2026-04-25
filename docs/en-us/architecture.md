@@ -2,14 +2,14 @@
 
 **English** | [中文](../zh-cn/architecture.md) | [Doc index](../README.md)
 
-Beetls OS is organized into the layers below.
+Beetle OS is organized into the layers below.
 If you only need setup or deployment, go back to [getting-started-esp.md](getting-started-esp.md), [getting-started-linux.md](getting-started-linux.md), or [build-script.md](build-script.md).
 
 ## Main Layers
 
 | Layer | Main job |
 |-------|----------|
-| `config` / `platform` | load settings and connect Beetls OS to system and hardware capabilities |
+| `config` / `platform` | load settings and connect Beetle OS to system and hardware capabilities |
 | `channels` | receive and send messages |
 | `agent` | understand input, decide what to do, and build replies |
 | `tools` / `memory` | call outside capabilities and store important information |

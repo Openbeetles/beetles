@@ -2,8 +2,8 @@
 name = "beetle"
 version = "0.1.0"
 edition = "2021"
-authors = ["Beetles OS Team"]
-description = "Beetles OS - AI agent os designed for edge hardware and embedded devices "
+authors = ["Beetle OS Team"]
+description = "Beetle OS - AI agent OS designed for edge hardware and embedded devices"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Openbeetles/beetles"
 

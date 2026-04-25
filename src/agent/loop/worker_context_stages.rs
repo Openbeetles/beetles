@@ -12,10 +12,45 @@ pub(super) struct PrepareRuntimeStage {
     pub has_tools: bool,
     pub prompt_memory_system_budget: usize,
     pub participation_plan: crate::memory::PromptParticipationPlan,
+    pub recent_messages_limit: usize,
     pub capability_package_text: Option<String>,
     pub relationship_id: String,
     pub active_governance_mode: Option<PreReplyGovernanceMode>,
     pub emotion_signal_suffix: Option<&'static str>,
+}
+
+fn resolve_recent_messages_limit(
+    memory_system_kind: crate::memory::MemorySystemKind,
+    ingress: IngressKind,
+    pressure: crate::orchestrator::PressureLevel,
+    runtime_mode: crate::runtime::RuntimeMode,
+) -> usize {
+    let grounding_floor = crate::memory::memory_policy(memory_system_kind)
+        .long_term_recall
+        .recent_grounding_message_count;
+    let crate::memory::MemorySystemKind::EspCompact = memory_system_kind else {
+        return crate::memory::MAX_SESSION_ENTRIES;
+    };
+    let base = match pressure {
+        crate::orchestrator::PressureLevel::Normal => 32,
+        crate::orchestrator::PressureLevel::Cautious => 16,
+        crate::orchestrator::PressureLevel::Critical => 6,
+    };
+    let mode_cap = match runtime_mode {
+        crate::runtime::RuntimeMode::Normal => base,
+        crate::runtime::RuntimeMode::VoiceExclusive => base.min(6),
+        crate::runtime::RuntimeMode::Maintenance
+        | crate::runtime::RuntimeMode::ConfigActive
+        | crate::runtime::RuntimeMode::RecoverySafeMode => base.min(8),
+        crate::runtime::RuntimeMode::Booting | crate::runtime::RuntimeMode::Pairing => base.min(4),
+    };
+    let ingress_cap = match ingress {
+        IngressKind::User => mode_cap,
+        IngressKind::System => mode_cap.min(8),
+    };
+    ingress_cap
+        .max(grounding_floor)
+        .clamp(1, crate::memory::MAX_SESSION_ENTRIES)
 }
 
 pub(super) struct PrepareGovernancePrimer {
@@ -172,6 +207,12 @@ pub(super) fn compute_prepare_runtime(
         prompt_memory_system_budget,
     );
     let participation_plan = assembly_plan.participation_plan;
+    let recent_messages_limit = resolve_recent_messages_limit(
+        config.runtime.memory_system_kind,
+        msg.ingress,
+        runtime.pressure,
+        runtime_mode.current_mode,
+    );
     log_prepare_stage(prepare_trace_enabled, msg, "post_memory_budget_ready");
     log_prepare_stage(prepare_trace_enabled, msg, "capability_package_start");
     let capability_package_text = assembly_plan
@@ -204,6 +245,7 @@ pub(super) fn compute_prepare_runtime(
         has_tools,
         prompt_memory_system_budget,
         participation_plan,
+        recent_messages_limit,
         capability_package_text,
         relationship_id: crate::memory::relationship_scope_id(&msg.channel, &msg.chat_id),
         active_governance_mode: PreReplyGovernanceMode::for_turn(
@@ -306,7 +348,7 @@ pub(super) fn load_prepare_prompt_memory(
         system_max_len: runtime_stage.prompt_memory_system_budget,
         now_secs: runtime_stage.runtime.now_secs,
         participation_plan: runtime_stage.participation_plan,
-        recent_messages_limit: config.session_max_messages,
+        recent_messages_limit: runtime_stage.recent_messages_limit,
         load_long_term_memory: true,
         include_private_garden_projection: msg.ingress != IngressKind::User,
         session_store: config.runtime.session_store.as_ref(),
@@ -808,7 +850,7 @@ pub(super) fn finalize_prepare_context(
         skill_descriptions: "",
         system_max_len: runtime_stage.budget.system_prompt_max,
         messages_max_len: runtime_stage.budget.messages_max,
-        session_max_messages: config.session_max_messages,
+        recent_messages_limit: runtime_stage.recent_messages_limit,
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix: runtime_stage.emotion_signal_suffix,
         memory_health_text: memory_health_text.as_deref(),
@@ -880,7 +922,8 @@ pub(super) fn finalize_prepare_context(
 
 #[cfg(test)]
 mod tests {
-    use super::should_load_pre_reply_recent_persona_evidence;
+    use super::{resolve_recent_messages_limit, should_load_pre_reply_recent_persona_evidence};
+    use crate::bus::IngressKind;
     use crate::memory::{MemorySystemKind, PromptParticipationPlan};
 
     #[test]
@@ -910,5 +953,47 @@ mod tests {
             MemorySystemKind::LinuxFull,
             PromptParticipationPlan::embedded_first_turn_default(),
         ));
+    }
+
+    #[test]
+    fn linux_full_recent_limit_ignores_config_maintenance_and_voice_mode_caps() {
+        for mode in [
+            crate::runtime::RuntimeMode::ConfigActive,
+            crate::runtime::RuntimeMode::Maintenance,
+            crate::runtime::RuntimeMode::VoiceExclusive,
+        ] {
+            assert_eq!(
+                resolve_recent_messages_limit(
+                    MemorySystemKind::LinuxFull,
+                    IngressKind::User,
+                    crate::orchestrator::PressureLevel::Critical,
+                    mode,
+                ),
+                crate::memory::MAX_SESSION_ENTRIES,
+                "LinuxFull should preserve the full recent ring in {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn esp_compact_recent_limit_keeps_mode_caps() {
+        assert_eq!(
+            resolve_recent_messages_limit(
+                MemorySystemKind::EspCompact,
+                IngressKind::User,
+                crate::orchestrator::PressureLevel::Normal,
+                crate::runtime::RuntimeMode::VoiceExclusive,
+            ),
+            6
+        );
+        assert_eq!(
+            resolve_recent_messages_limit(
+                MemorySystemKind::EspCompact,
+                IngressKind::User,
+                crate::orchestrator::PressureLevel::Normal,
+                crate::runtime::RuntimeMode::ConfigActive,
+            ),
+            8
+        );
     }
 }

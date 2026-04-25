@@ -192,6 +192,15 @@ export function AccountsPage() {
     setLoading(true);
     setError("");
     setUnsupportedEndpoint(false);
+    const probe = await api.device.probe();
+    if (!loadGuardRef.current.isCurrent(requestId)) return;
+    const inventory = probe.ok ? parseRootInventory(probe.data) : null;
+    if (inventory && !endpointSupportedByInventory(inventory, "GET /api/config/accounts")) {
+      setUnsupportedEndpoint(true);
+      setItems([]);
+      setLoading(false);
+      return;
+    }
     const res = await api.config.accounts.list(filters);
     if (!loadGuardRef.current.isCurrent(requestId)) return;
     if (res.ok && res.data) {
@@ -552,52 +561,11 @@ export function AccountsPage() {
                           "1px solid color-mix(in srgb, var(--border) 38%, transparent)",
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "space-between",
+                        justifyContent: "flex-end",
                         gap: 1.5,
                         minWidth: 0,
                       }}
                     >
-                      <Stack spacing={0.2} sx={{ minWidth: 0, flex: "1 1 auto" }}>
-                        <Typography
-                          variant="caption"
-                          component="span"
-                          sx={{
-                            fontFamily: "var(--font-mono)",
-                            fontSize: "0.65625rem",
-                            lineHeight: 1.4,
-                            color: "var(--text-tertiary)",
-                            fontWeight: 500,
-                            letterSpacing: "0.02em",
-                            display: "block",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                          title={model.providerMeta}
-                        >
-                          {model.providerMeta}
-                        </Typography>
-                        {model.rawKeyMeta ? (
-                          <Typography
-                            variant="caption"
-                            component="span"
-                            sx={{
-                              fontFamily: "var(--font-mono)",
-                              fontSize: "0.625rem",
-                              lineHeight: 1.4,
-                              color: "color-mix(in srgb, var(--text-tertiary) 75%, transparent)",
-                              fontWeight: 400,
-                              display: "block",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                            title={model.rawKeyMeta}
-                          >
-                            {model.rawKeyMeta}
-                          </Typography>
-                        ) : null}
-                      </Stack>
                       <Box
                         data-account-card-cta
                         sx={{

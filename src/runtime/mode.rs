@@ -170,9 +170,9 @@ fn action_budget_for_source(
     if mode == RuntimeMode::ConfigActive && config_phase.blocks_new_non_voice_network_work() {
         budget.allow_non_voice_outbound = false;
         // Persisting/stopping config work should not start a new external WSS/TLS
-        // session, but it also must not force-drop an already healthy user channel.
+        // session; config apply waits for the external WSS plane to suspend first.
         budget.allow_external_wss_connect = false;
-        budget.require_external_wss_suspended = false;
+        budget.require_external_wss_suspended = true;
     }
     budget
 }
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn config_persisting_pauses_new_non_voice_network_work_without_forcing_wss_suspend() {
+    fn config_persisting_pauses_new_non_voice_network_work_and_requires_wss_suspend() {
         let snapshot = snapshot_from_source(RuntimeModeSource {
             config_active: true,
             config_plane_alive: true,
@@ -328,7 +328,7 @@ mod tests {
         assert!(!snapshot.action_budget.allow_non_voice_outbound);
         assert!(!snapshot.action_budget.allow_realtime_voice_connect);
         assert!(!snapshot.action_budget.allow_external_wss_connect);
-        assert!(!snapshot.action_budget.require_external_wss_suspended);
+        assert!(snapshot.action_budget.require_external_wss_suspended);
     }
 
     #[test]

@@ -8,8 +8,10 @@ pub const COMMON_INVALID_JSON: &str = "common.invalid_json";
 pub const COMMON_INVALID_UTF8: &str = "common.invalid_utf8";
 pub const COMMON_BODY_READ_FAILED: &str = "common.body_read_failed";
 pub const COMMON_INVALID_URL: &str = "common.invalid_url";
+pub const COMMON_MISSING_QUERY_PARAM: &str = "common.missing_query_param";
 pub const COMMON_SAVE_FAILED: &str = "common.save_failed";
 pub const COMMON_OPERATION_FAILED: &str = "common.operation_failed";
+pub const COMMON_QUEUE_FULL: &str = "common.queue_full";
 pub const COMMON_UPSTREAM_HTTP_STATUS: &str = "common.upstream_http_status";
 pub const COMMON_STORAGE_ACCESS_FAILED: &str = "common.storage_access_failed";
 pub const COMMON_FILE_STORAGE_FAILED: &str = "common.file_storage_failed";
@@ -19,7 +21,11 @@ pub const NETWORK_PROXY_UNSUPPORTED: &str = "network.proxy_unsupported";
 
 pub const SYSTEM_DEVICE_ERROR: &str = "system.device_error";
 pub const SYSTEM_LOCALE_INVALID: &str = "system.locale_invalid";
-pub const SYSTEM_SESSION_RANGE_INVALID: &str = "system.session_range_invalid";
+
+pub const WEBHOOK_DISABLED: &str = "webhook.disabled";
+pub const WEBHOOK_INVALID_TOKEN: &str = "webhook.invalid_token";
+pub const WEBHOOK_CONTENT_TOO_LONG: &str = "webhook.content_too_long";
+pub const WEBHOOK_INGRESS_UNAVAILABLE: &str = "webhook.ingress_unavailable";
 
 pub const CONFIG_REJECTED: &str = "config.rejected";
 pub const CONFIG_FIELD_TOO_LONG: &str = "config.field_too_long";
@@ -117,9 +123,6 @@ fn config_body_error_key(message: &str) -> &'static str {
     if message == "tg_group_activation must be 'mention' or 'always'" {
         return CHANNEL_TG_GROUP_ACTIVATION_INVALID;
     }
-    if message.contains("session_max_messages must") {
-        return SYSTEM_SESSION_RANGE_INVALID;
-    }
     if message == "llm_sources must not be empty" {
         return LLM_SOURCES_EMPTY;
     }
@@ -167,13 +170,6 @@ mod tests {
                 "proxy_url must be empty or like http://host:port"
             )),
             COMMON_INVALID_URL
-        );
-        assert_eq!(
-            error_key(&Error::config(
-                "config",
-                "session_max_messages must be in 1..=128"
-            )),
-            SYSTEM_SESSION_RANGE_INVALID
         );
         assert_eq!(
             error_key(&Error::config(

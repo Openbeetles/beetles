@@ -113,7 +113,7 @@ TARGET=linux ./build.sh --package-linux
 - `--package-linux` 会直接从 `Cargo.toml package.version` 生成 bundle 版本，不再要求额外手工跑第二条打包命令
 - `BUILD_METHOD=auto` 现在不再弹构建方式菜单：macOS 下优先 Docker，其次已保存的远端 Linux 主机，最后才回落到本地交叉构建
 - `--deploy-linux` 不重新编译，只部署现有产物
-- `--deploy-linux` 还会把 `spiffs_data/skills/*.md` 里的官方运行时技能同步到远端 Beetls OS state root 的 `skills/` 目录
+- `--deploy-linux` 还会把 `spiffs_data/skills/*.md` 里的官方运行时技能同步到远端 Beetle OS state root 的 `skills/` 目录
 - `./build.sh` 是 Linux 构建和部署的主入口；Docker helper 脚本只是 `BUILD_METHOD=docker` 背后的内部帮手
 - `TARGET=linux BUILD_METHOD=docker` 在 amd64 Linux 容器内构建 GNU 目标，避免把 Linux 系统库依赖强行变成 musl 交叉 sysroot 问题
 - ARM Linux 目标在 `BUILD_METHOD=docker` 下会自动拉起对应的 GNU 构建容器

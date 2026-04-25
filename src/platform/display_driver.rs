@@ -12,6 +12,17 @@ use crate::display::{
 use crate::error::{Error, Result};
 use std::convert::Infallible;
 
+const ESP_DISPLAY_SPI_DMA_ROWS_PER_CHUNK: usize = 4;
+
+fn display_spi_max_transfer_size(width: u16, height: u16) -> usize {
+    let framebuf_len = width as usize * height as usize * 2;
+    if framebuf_len == 0 {
+        return 0;
+    }
+    let chunk_bytes = width as usize * ESP_DISPLAY_SPI_DMA_ROWS_PER_CHUNK * 2;
+    chunk_bytes.max(2).min(framebuf_len)
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  FlushRgb565 — 抽象刷屏接口，SPI 与 framebuffer 均实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -80,8 +91,8 @@ mod esp_backend {
             let width = config.width;
             let height = config.height;
             let framebuf_len = width as usize * height as usize * 2;
-            // SPI DMA 分块传输：20 行 ≈ 9.6KB，避免 112KB 大缓冲区分配失败
-            let max_transfer_sz = (width as usize * 20 * 2).min(framebuf_len);
+            // SPI DMA 分块传输：4 行 ≈ 2.5KB@320px，避免资源紧张时 IDF 临时 TX buffer 分配失败。
+            let max_transfer_sz = display_spi_max_transfer_size(width, height);
 
             let framebuf = heap::alloc_spiram_buffer(framebuf_len).ok_or_else(|| {
                 crate::error::Error::config(
@@ -2916,6 +2927,15 @@ mod tests {
         assert_eq!(
             linux_display_backend_kind(&config),
             LinuxDisplayBackendKind::Spi
+        );
+    }
+
+    #[test]
+    fn esp_spi_transfer_chunk_stays_small_enough_for_fragmented_internal_heap() {
+        assert_eq!(display_spi_max_transfer_size(320, 240), 320 * 4 * 2);
+        assert!(
+            display_spi_max_transfer_size(320, 240) < 4 * 1024,
+            "ESP SPI display chunks must not rely on a large internal DMA bounce allocation"
         );
     }
 }

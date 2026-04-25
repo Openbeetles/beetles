@@ -4,7 +4,7 @@
 
 ## 1. Scope
 
-This document defines the current Beetls OS packaging contract:
+This document defines the current Beetle OS packaging contract:
 
 - the grouping and meaning of `Cargo.toml` `[features]`
 - the package contract exposed by `build.sh --package-profile`
@@ -147,7 +147,7 @@ cargo check --bin beetle --no-default-features \
 
 ```bash
 cargo check --bin beetle --no-default-features \
-  --features default,capability_office,dingtalk
+  --features default,capability_office,dingtalk,websocket
 ```
 
 ### 7.3 Validate one optional channel

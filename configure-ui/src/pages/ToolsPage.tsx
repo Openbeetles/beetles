@@ -164,22 +164,12 @@ export function ToolsPage() {
                 </ListItemIcon>
                 <ListItemText
                   primary={t(tool.i18n_key, { defaultValue: tool.name })}
-                  secondary={tool.name}
                   slotProps={{
                     primary: {
                       sx: {
                         fontSize: "var(--font-size-body-sm)",
                         fontWeight: 600,
                         color: "var(--text-primary)",
-                      },
-                    },
-                    secondary: {
-                      sx: {
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "var(--font-size-caption)",
-                        color: "var(--text-tertiary)",
-                        mt: 0.25,
-                        wordBreak: "break-word",
                       },
                     },
                   }}

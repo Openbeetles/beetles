@@ -250,15 +250,6 @@ pub struct ApiResponse {
 }
 
 impl ApiResponse {
-    fn json_error_body(msg: &str) -> Vec<u8> {
-        let escaped = msg.replace('"', "\\\"");
-        let mut body = Vec::with_capacity(escaped.len().saturating_add(12));
-        body.extend_from_slice(br#"{"error":""#);
-        body.extend_from_slice(escaped.as_bytes());
-        body.extend_from_slice(br#""}"#);
-        body
-    }
-
     fn json_error_key_body(
         error_key: &str,
         error_params: Option<serde_json::Value>,
@@ -319,7 +310,8 @@ impl ApiResponse {
         }
     }
 
-    pub fn err_key_with_upstream(
+    #[cfg(test)]
+    fn err_key_with_upstream(
         status: u16,
         status_text: &'static str,
         error_key: &str,
@@ -374,13 +366,6 @@ impl ApiResponse {
             body: json.as_bytes().to_vec(),
         }
     }
-    pub fn err_400(msg: &str) -> Self {
-        Self {
-            status: 400,
-            status_text: "Bad Request",
-            body: Self::json_error_body(msg),
-        }
-    }
     pub fn err_400_key(error_key: &str) -> Self {
         Self::err_key(400, "Bad Request", error_key)
     }
@@ -398,83 +383,19 @@ impl ApiResponse {
             upstream_status,
         )
     }
-    #[allow(dead_code)]
-    pub fn err_401_pairing() -> Self {
-        Self {
-            status: 401,
-            status_text: "Unauthorized",
-            body: Self::json_error_body("pairing required"),
-        }
-    }
-    pub fn err_401(msg: &str) -> Self {
-        Self {
-            status: 401,
-            status_text: "Unauthorized",
-            body: Self::json_error_body(msg),
-        }
-    }
     pub fn err_401_key(error_key: &str) -> Self {
         Self::err_key(401, "Unauthorized", error_key)
-    }
-    pub fn err_403(msg: &str) -> Self {
-        Self {
-            status: 403,
-            status_text: "Forbidden",
-            body: Self::json_error_body(msg),
-        }
     }
     pub fn err_403_key(error_key: &str) -> Self {
         Self::err_key(403, "Forbidden", error_key)
     }
-    pub fn err_500(msg: &str) -> Self {
-        Self {
-            status: 500,
-            status_text: "Internal Server Error",
-            body: Self::json_error_body(msg),
-        }
-    }
     pub fn err_500_key(error_key: &str) -> Self {
         Self::err_key(500, "Internal Server Error", error_key)
-    }
-    pub fn err_500_key_with_upstream(
-        error_key: &str,
-        upstream_error: Option<&str>,
-        upstream_status: Option<u16>,
-    ) -> Self {
-        Self::err_key_with_upstream(
-            500,
-            "Internal Server Error",
-            error_key,
-            upstream_error,
-            upstream_status,
-        )
-    }
-    pub fn err_503(msg: &str) -> Self {
-        Self {
-            status: 503,
-            status_text: "Service Unavailable",
-            body: Self::json_error_body(msg),
-        }
     }
     pub fn err_503_key(error_key: &str) -> Self {
         Self::err_key(503, "Service Unavailable", error_key)
     }
-    pub fn err_413(msg: &str) -> Self {
-        Self {
-            status: 413,
-            status_text: "Payload Too Large",
-            body: Self::json_error_body(msg),
-        }
-    }
     pub fn err_404_key(error_key: &str) -> Self {
         Self::err_key(404, "Not Found", error_key)
-    }
-    #[allow(dead_code)]
-    pub fn err_502(msg: &str) -> Self {
-        Self {
-            status: 502,
-            status_text: "Bad Gateway",
-            body: Self::json_error_body(msg),
-        }
     }
 }

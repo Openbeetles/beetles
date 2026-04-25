@@ -66,7 +66,7 @@ impl ConfigActivityPhase {
     }
 
     pub fn blocks_new_non_voice_network_work(self) -> bool {
-        matches!(self, Self::Persisting | Self::Stopping | Self::Cleanup)
+        matches!(self, Self::Persisting | Self::Stopping)
     }
 }
 
@@ -141,6 +141,7 @@ pub(crate) fn config_activity_snapshot_at(now_secs: u64) -> ConfigActivitySnapsh
 pub struct ConfigActivityGuard {
     route: &'static str,
     finished: bool,
+    external_wss_suspend: Option<crate::network::ExternalWssSuspendGuard>,
 }
 
 impl ConfigActivityGuard {
@@ -150,9 +151,17 @@ impl ConfigActivityGuard {
 
     pub(crate) fn enter_at(phase: ConfigActivityPhase, route: &'static str, now_secs: u64) -> Self {
         extend_config_activity_at(phase, route, now_secs);
+        let external_wss_suspend = if phase.blocks_new_non_voice_network_work() {
+            let guard = crate::network::begin_external_wss_suspend_request();
+            crate::network::wait_for_external_wss_suspend(route);
+            Some(guard)
+        } else {
+            None
+        };
         Self {
             route,
             finished: false,
+            external_wss_suspend,
         }
     }
 
@@ -167,6 +176,7 @@ impl ConfigActivityGuard {
             ConfigActivityPhase::Success
         };
         extend_config_activity_at(phase, self.route, now_secs);
+        self.external_wss_suspend.take();
         self.finished = true;
     }
 }
@@ -175,7 +185,7 @@ impl Drop for ConfigActivityGuard {
     fn drop(&mut self) {
         if !self.finished {
             extend_config_activity_at(
-                ConfigActivityPhase::Cleanup,
+                ConfigActivityPhase::Fail,
                 self.route,
                 crate::util::current_unix_secs(),
             );
@@ -237,6 +247,7 @@ mod tests {
     fn config_activity_guard_extends_window_after_request_completion() {
         let _state_guard = crate::state::test_state_guard();
         reset_runtime_governance_state_for_tests();
+        crate::network::set_external_wss_managed_present(false);
 
         {
             let mut guard = ConfigActivityGuard::enter_at(
@@ -244,11 +255,13 @@ mod tests {
                 "/api/config/system",
                 100,
             );
+            assert!(crate::network::external_wss_suspend_requested());
             assert!(config_activity_active_at(100));
             let snapshot = config_activity_snapshot_at(100);
             assert_eq!(snapshot.phase, ConfigActivityPhase::Persisting);
             assert_eq!(snapshot.route.as_deref(), Some("/api/config/system"));
             guard.finish_status_at(200, 105);
+            assert!(!crate::network::external_wss_suspend_requested());
         }
 
         let snapshot = config_activity_snapshot_at(106);
@@ -260,5 +273,27 @@ mod tests {
             config_activity_snapshot_at(136).phase,
             ConfigActivityPhase::Idle
         );
+    }
+
+    #[test]
+    fn unfinished_config_activity_drops_to_fail_without_blocking_wss_resume() {
+        let _state_guard = crate::state::test_state_guard();
+        reset_runtime_governance_state_for_tests();
+        crate::network::set_external_wss_managed_present(false);
+
+        {
+            let _guard = ConfigActivityGuard::enter_at(
+                ConfigActivityPhase::Persisting,
+                "/api/config/system",
+                200,
+            );
+            assert!(crate::network::external_wss_suspend_requested());
+        }
+
+        assert!(!crate::network::external_wss_suspend_requested());
+        let snapshot = config_activity_snapshot_at(201);
+        assert!(snapshot.active);
+        assert_eq!(snapshot.phase, ConfigActivityPhase::Fail);
+        assert!(!snapshot.phase.blocks_new_non_voice_network_work());
     }
 }

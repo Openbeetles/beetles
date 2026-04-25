@@ -28,7 +28,6 @@ function createSystemConfig(): SystemConfigSegment {
     wifi_pass: "",
     proxy_url: "",
     tg_group_activation: "",
-    session_max_messages: 12,
     locale: "zh",
   };
 }

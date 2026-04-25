@@ -226,23 +226,77 @@ fn outbound_reject_reason(msg: &crate::bus::PcMsg) -> Option<&'static str> {
     }
 }
 
-fn push_buffered_msg(
+enum BufferPushResult {
+    Buffered,
+    Dropped,
+    Full(Box<crate::bus::PcMsg>),
+}
+
+fn try_push_buffered_msg(
     tag: &str,
     cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
     msg: crate::bus::PcMsg,
-) {
+) -> BufferPushResult {
     if cooldown_buffer.len() < COOLDOWN_BUFFER_MAX {
         cooldown_buffer.push_back(msg);
-        return;
+        return BufferPushResult::Buffered;
+    }
+    if msg.outbound_kind.is_supplemental() {
+        log::warn!(
+            "[{}] req_id={} channel={} supplemental deferred buffer full, dropping new message",
+            tag,
+            msg.req_id.as_deref().unwrap_or("-"),
+            msg.channel
+        );
+        return BufferPushResult::Dropped;
+    }
+    if let Some(pos) = cooldown_buffer
+        .iter()
+        .position(|buffered| buffered.outbound_kind.is_supplemental())
+    {
+        cooldown_buffer.remove(pos);
+        cooldown_buffer.push_back(msg);
+        log::warn!(
+            "[{}] deferred buffer full, evicted supplemental message to preserve primary reply",
+            tag
+        );
+        return BufferPushResult::Buffered;
     }
     log::warn!(
-        "[{}] req_id={} channel={} deferred buffer full, dropping oldest",
+        "[{}] req_id={} channel={} primary deferred buffer full, holding until replay frees space",
         tag,
         msg.req_id.as_deref().unwrap_or("-"),
         msg.channel
     );
-    cooldown_buffer.pop_front();
-    cooldown_buffer.push_back(msg);
+    BufferPushResult::Full(Box::new(msg))
+}
+
+fn buffer_deferred_msg_with_replay<F>(
+    tag: &str,
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    msg: crate::bus::PcMsg,
+    mut replay_ready: F,
+) where
+    F: FnMut(&mut VecDeque<crate::bus::PcMsg>),
+{
+    let pending = match try_push_buffered_msg(tag, cooldown_buffer, msg) {
+        BufferPushResult::Buffered | BufferPushResult::Dropped => return,
+        BufferPushResult::Full(msg) => msg,
+    };
+
+    replay_ready(cooldown_buffer);
+    match try_push_buffered_msg(tag, cooldown_buffer, *pending) {
+        BufferPushResult::Buffered | BufferPushResult::Dropped => {}
+        BufferPushResult::Full(msg) => {
+            metrics::record_error_by_stage("channel_deferred_buffer_full");
+            log::error!(
+                "[{}] req_id={} channel={} deferred primary buffer full after bounded replay; dropping newest primary to keep outbound worker live",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel
+            );
+        }
+    }
 }
 
 fn replay_cooldown_buffer_with<FH, FS>(
@@ -284,15 +338,49 @@ fn replay_ready_messages_for_tick<FH, FS>(
     replay_cooldown_buffer_with(cooldown_buffer, is_in_cooldown, send);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchOutcome {
+    Sent,
+    Deferred,
+    Failed,
+}
+
+impl DispatchOutcome {
+    fn sent(self) -> bool {
+        matches!(self, Self::Sent)
+    }
+}
+
+fn should_defer_primary_send_error(error: &crate::error::Error) -> bool {
+    should_defer_primary_send_error_immediately(error) || error.is_retryable_upstream()
+}
+
+fn should_defer_primary_send_error_immediately(error: &crate::error::Error) -> bool {
+    error.is_tls_admission()
+        || error.is_connect_error()
+        || is_local_sender_queue_backpressure(error)
+}
+
+fn is_local_sender_queue_backpressure(error: &crate::error::Error) -> bool {
+    matches!(
+        error.stage(),
+        "telegram_send_queue"
+            | "feishu_send_queue"
+            | "dingtalk_send_queue"
+            | "wecom_send_queue"
+            | "qq_channel_send_queue"
+    )
+}
+
 fn dispatch_via_sink(
     tag: &str,
     sinks: &ChannelSinks,
     capability_registry: &ChannelCapabilityRegistry,
     msg: &crate::bus::PcMsg,
-) -> bool {
+) -> DispatchOutcome {
     let Some(sink) = sinks.get(&msg.channel) else {
         log::warn!("[{}] no sink for channel={}", tag, msg.channel);
-        return false;
+        return DispatchOutcome::Failed;
     };
     let prepared = super::outbound_text::prepare_outbound_message_for_channel(
         msg,
@@ -310,7 +398,7 @@ fn dispatch_via_sink(
                     msg.req_id.as_deref().unwrap_or("-"),
                     msg.channel
                 );
-                return true;
+                return DispatchOutcome::Sent;
             }
             Err(error) => {
                 metrics::record_dispatch_send(false);
@@ -321,7 +409,7 @@ fn dispatch_via_sink(
                     msg.channel,
                     error
                 );
-                return false;
+                return DispatchOutcome::Failed;
             }
         }
     }
@@ -341,7 +429,7 @@ fn dispatch_via_sink(
                 msg.channel,
                 reason
             );
-            return false;
+            return DispatchOutcome::Deferred;
         }
     }
     let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
@@ -366,14 +454,29 @@ fn dispatch_via_sink(
                 );
                 record_channel_ok(&msg.channel);
                 metrics::record_dispatch_send(true);
-                return true;
+                return DispatchOutcome::Sent;
             }
             Err(e) => {
+                if should_defer_primary_send_error_immediately(&e) {
+                    last_err = Some(e);
+                    break;
+                }
                 last_err = Some(e);
             }
         }
     }
     if let Some(e) = last_err {
+        if should_defer_primary_send_error(&e) {
+            metrics::record_dispatch_send(false);
+            log::warn!(
+                "[{}] req_id={} channel={} deferred after retryable send failure: {}",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel,
+                e
+            );
+            return DispatchOutcome::Deferred;
+        }
         record_channel_fail(&msg.channel);
         metrics::record_dispatch_send(false);
         metrics::record_error_by_stage("channel_dispatch");
@@ -385,7 +488,7 @@ fn dispatch_via_sink(
             e
         );
     }
-    false
+    DispatchOutcome::Failed
 }
 
 fn dispatch_or_buffer_via_sink(
@@ -412,7 +515,11 @@ fn dispatch_or_buffer_via_sink(
                 msg.channel,
                 reason
             );
-            push_buffered_msg(tag, cooldown_buffer, msg);
+            buffer_deferred_msg_with_replay(tag, cooldown_buffer, msg, |buffer| {
+                replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
+                    dispatch_via_sink(tag, sinks, capability_registry, buffered).sent()
+                });
+            });
         }
         return;
     }
@@ -426,12 +533,26 @@ fn dispatch_or_buffer_via_sink(
                 msg.channel
             );
         } else {
-            push_buffered_msg(tag, cooldown_buffer, msg);
+            buffer_deferred_msg_with_replay(tag, cooldown_buffer, msg, |buffer| {
+                replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
+                    dispatch_via_sink(tag, sinks, capability_registry, buffered).sent()
+                });
+            });
         }
         return;
     }
 
-    let _ = dispatch_via_sink(tag, sinks, capability_registry, &msg);
+    if dispatch_via_sink(tag, sinks, capability_registry, &msg) == DispatchOutcome::Deferred {
+        buffer_deferred_msg_with_replay(tag, cooldown_buffer, msg, |buffer| {
+            replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
+                dispatch_via_sink(tag, sinks, capability_registry, buffered).sent()
+            });
+        });
+        std::thread::sleep(Duration::from_millis(
+            crate::constants::OUTBOUND_DEFER_DELAY_MS,
+        ));
+        crate::platform::task_wdt::feed_current_task();
+    }
 }
 
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
@@ -462,7 +583,7 @@ fn dispatch_via_active_driver(
     capability_registry: &ChannelCapabilityRegistry,
     driver: &mut dyn super::send::ActiveChannelSender,
     msg: &crate::bus::PcMsg,
-) -> bool {
+) -> DispatchOutcome {
     let prepared = super::outbound_text::prepare_outbound_message_for_channel(
         msg,
         capability_registry.get(msg.channel.as_ref()),
@@ -480,7 +601,7 @@ fn dispatch_via_active_driver(
                     queued.req_id.as_deref().unwrap_or("-"),
                     msg.channel
                 );
-                return true;
+                return DispatchOutcome::Sent;
             }
             Err(error) => {
                 metrics::record_dispatch_send(false);
@@ -491,7 +612,7 @@ fn dispatch_via_active_driver(
                     msg.channel,
                     error
                 );
-                return false;
+                return DispatchOutcome::Failed;
             }
         }
     }
@@ -511,7 +632,7 @@ fn dispatch_via_active_driver(
                 msg.channel,
                 reason
             );
-            return false;
+            return DispatchOutcome::Deferred;
         }
     }
     let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
@@ -539,16 +660,35 @@ fn dispatch_via_active_driver(
                 );
                 record_channel_ok(&msg.channel);
                 metrics::record_dispatch_send(true);
-                return true;
+                return DispatchOutcome::Sent;
             }
             Err(error) => {
-                if matches!(error, crate::error::Error::Config { .. }) {
+                if should_defer_primary_send_error_immediately(&error)
+                    || matches!(error, crate::error::Error::Config { .. })
+                {
                     last_err = Some(error);
                     break;
                 }
                 last_err = Some(error);
             }
         }
+    }
+    if last_err
+        .as_ref()
+        .is_some_and(should_defer_primary_send_error)
+    {
+        metrics::record_dispatch_send(false);
+        if let Some(error) = last_err {
+            log::warn!(
+                "[{}] req_id={} channel={} driver={} deferred after retryable send failure: {}",
+                tag,
+                queued.req_id.as_deref().unwrap_or("-"),
+                msg.channel,
+                driver.tag(),
+                error
+            );
+        }
+        return DispatchOutcome::Deferred;
     }
     record_channel_fail(&msg.channel);
     metrics::record_dispatch_send(false);
@@ -568,7 +708,7 @@ fn dispatch_via_active_driver(
             error
         );
     }
-    false
+    DispatchOutcome::Failed
 }
 
 /// 熔断冷却期暂存的消息上限，防止无限积累。
@@ -594,7 +734,7 @@ pub fn run_dispatch(
             if outbound_reject_reason(buffered).is_some() {
                 return false;
             }
-            dispatch_via_sink(TAG, sinks.as_ref(), capability_registry.as_ref(), buffered)
+            dispatch_via_sink(TAG, sinks.as_ref(), capability_registry.as_ref(), buffered).sent()
         });
         let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
             Ok(m) => m,
@@ -645,7 +785,8 @@ pub fn run_os_outbound_worker(
                     local_sinks.as_ref(),
                     capability_registry.as_ref(),
                     buffered,
-                );
+                )
+                .sent();
             }
             if outbound_reject_reason(buffered).is_some() {
                 return false;
@@ -656,6 +797,7 @@ pub fn run_os_outbound_worker(
                 active_driver.as_mut(),
                 buffered,
             )
+            .sent()
         });
 
         let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
@@ -704,7 +846,32 @@ pub fn run_os_outbound_worker(
                     msg.channel,
                     reason
                 );
-                push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+                buffer_deferred_msg_with_replay(TAG, &mut cooldown_buffer, msg, |buffer| {
+                    replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
+                        if buffered.channel != active_channel {
+                            if outbound_reject_reason(buffered).is_some() {
+                                return false;
+                            }
+                            return dispatch_via_sink(
+                                TAG,
+                                local_sinks.as_ref(),
+                                capability_registry.as_ref(),
+                                buffered,
+                            )
+                            .sent();
+                        }
+                        if outbound_reject_reason(buffered).is_some() {
+                            return false;
+                        }
+                        dispatch_via_active_driver(
+                            TAG,
+                            capability_registry.as_ref(),
+                            active_driver.as_mut(),
+                            buffered,
+                        )
+                        .sent()
+                    });
+                });
             }
             continue;
         }
@@ -718,17 +885,76 @@ pub fn run_os_outbound_worker(
                     msg.channel
                 );
             } else {
-                push_buffered_msg(TAG, &mut cooldown_buffer, msg);
+                buffer_deferred_msg_with_replay(TAG, &mut cooldown_buffer, msg, |buffer| {
+                    replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
+                        if buffered.channel != active_channel {
+                            if outbound_reject_reason(buffered).is_some() {
+                                return false;
+                            }
+                            return dispatch_via_sink(
+                                TAG,
+                                local_sinks.as_ref(),
+                                capability_registry.as_ref(),
+                                buffered,
+                            )
+                            .sent();
+                        }
+                        if outbound_reject_reason(buffered).is_some() {
+                            return false;
+                        }
+                        dispatch_via_active_driver(
+                            TAG,
+                            capability_registry.as_ref(),
+                            active_driver.as_mut(),
+                            buffered,
+                        )
+                        .sent()
+                    });
+                });
             }
             continue;
         }
 
-        let _ = dispatch_via_active_driver(
+        match dispatch_via_active_driver(
             TAG,
             capability_registry.as_ref(),
             active_driver.as_mut(),
             &msg,
-        );
+        ) {
+            DispatchOutcome::Sent | DispatchOutcome::Failed => {}
+            DispatchOutcome::Deferred => {
+                buffer_deferred_msg_with_replay(TAG, &mut cooldown_buffer, msg, |buffer| {
+                    replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
+                        if buffered.channel != active_channel {
+                            if outbound_reject_reason(buffered).is_some() {
+                                return false;
+                            }
+                            return dispatch_via_sink(
+                                TAG,
+                                local_sinks.as_ref(),
+                                capability_registry.as_ref(),
+                                buffered,
+                            )
+                            .sent();
+                        }
+                        if outbound_reject_reason(buffered).is_some() {
+                            return false;
+                        }
+                        dispatch_via_active_driver(
+                            TAG,
+                            capability_registry.as_ref(),
+                            active_driver.as_mut(),
+                            buffered,
+                        )
+                        .sent()
+                    });
+                });
+                std::thread::sleep(Duration::from_millis(
+                    crate::constants::OUTBOUND_DEFER_DELAY_MS,
+                ));
+                crate::platform::task_wdt::feed_current_task();
+            }
+        }
     }
 }
 
@@ -1230,6 +1456,35 @@ mod tests {
     }
 
     #[test]
+    fn sender_queue_backpressure_defers_without_channel_failure() {
+        let error = Error::Other {
+            source: Box::new(std::io::Error::other("full")),
+            stage: "qq_channel_send_queue",
+        };
+
+        assert!(super::should_defer_primary_send_error_immediately(&error));
+    }
+
+    struct TlsAdmissionFailingActiveDriver {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl crate::channels::send::ActiveChannelSender for TlsAdmissionFailingActiveDriver {
+        fn tag(&self) -> &'static str {
+            "tls_admission_active_driver"
+        }
+
+        fn send_attempt(
+            &mut self,
+            _message: &crate::channels::send::QueuedOutboundMessage,
+            _attempt: u8,
+        ) -> Result<()> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            Err(Error::config("tls_admission", "synthetic fragmentation"))
+        }
+    }
+
+    #[test]
     fn replay_cooldown_buffer_preserves_fifo_for_ready_messages() {
         let mut buffer = VecDeque::from(vec![
             build_msg("blocked", "chat-1", "first-blocked"),
@@ -1273,6 +1528,81 @@ mod tests {
         assert_eq!(buffer.len(), 2);
         assert_eq!(buffer[0].content, "first-ready");
         assert_eq!(buffer[1].content, "second-ready");
+    }
+
+    #[test]
+    fn deferred_buffer_evicts_supplemental_before_primary_reply() {
+        let mut buffer = VecDeque::new();
+        for index in 0..super::COOLDOWN_BUFFER_MAX {
+            let mut msg = build_msg("ready", "chat-1", format!("primary-{index}").as_str());
+            if index == 0 {
+                msg.outbound_kind = OutboundKind::Supplemental;
+                msg.content = "supplemental-0".to_string();
+            }
+            buffer.push_back(msg);
+        }
+        let new_primary = build_msg("ready", "chat-1", "new-primary");
+
+        assert!(matches!(
+            super::try_push_buffered_msg("test", &mut buffer, new_primary),
+            super::BufferPushResult::Buffered
+        ));
+
+        assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
+        assert!(!buffer.iter().any(|msg| msg.content == "supplemental-0"));
+        assert_eq!(
+            buffer.back().map(|msg| msg.content.as_str()),
+            Some("new-primary")
+        );
+    }
+
+    #[test]
+    fn deferred_buffer_preserves_existing_primary_replies_when_full() {
+        let mut buffer = VecDeque::new();
+        for index in 0..super::COOLDOWN_BUFFER_MAX {
+            buffer.push_back(build_msg(
+                "ready",
+                "chat-1",
+                format!("primary-{index}").as_str(),
+            ));
+        }
+        let original: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
+        let new_primary = build_msg("ready", "chat-1", "new-primary");
+
+        match super::try_push_buffered_msg("test", &mut buffer, new_primary) {
+            super::BufferPushResult::Full(msg) => assert_eq!(msg.content, "new-primary"),
+            _ => panic!("full primary buffer should hold the new primary instead of evicting one"),
+        }
+
+        let after: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
+        assert_eq!(after, original);
+    }
+
+    #[test]
+    fn deferred_buffer_full_uses_bounded_replay_without_blocking_outbound_worker() {
+        let mut buffer = VecDeque::new();
+        for index in 0..super::COOLDOWN_BUFFER_MAX {
+            buffer.push_back(build_msg(
+                "blocked",
+                "chat-1",
+                format!("primary-{index}").as_str(),
+            ));
+        }
+        let original: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
+        let mut replay_attempts = 0usize;
+
+        super::buffer_deferred_msg_with_replay(
+            "test",
+            &mut buffer,
+            build_msg("blocked", "chat-1", "new-primary"),
+            |_buffer| {
+                replay_attempts += 1;
+            },
+        );
+
+        assert_eq!(replay_attempts, 1);
+        let after: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
+        assert_eq!(after, original);
     }
 
     #[test]
@@ -1323,12 +1653,10 @@ mod tests {
             }),
         );
 
-        assert!(!super::dispatch_via_sink(
-            "channel_dispatch",
-            &sinks,
-            &capability_registry,
-            &msg,
-        ));
+        assert_eq!(
+            super::dispatch_via_sink("channel_dispatch", &sinks, &capability_registry, &msg),
+            super::DispatchOutcome::Failed
+        );
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 
@@ -1342,12 +1670,40 @@ mod tests {
         msg.outbound_kind = OutboundKind::Supplemental;
         let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
 
-        assert!(!super::dispatch_via_active_driver(
-            "os_outbound",
-            &capability_registry,
-            &mut driver,
-            &msg,
-        ));
+        assert_eq!(
+            super::dispatch_via_active_driver(
+                "os_outbound",
+                &capability_registry,
+                &mut driver,
+                &msg,
+            ),
+            super::DispatchOutcome::Failed
+        );
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn primary_active_outbound_defers_tls_admission_failures() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut driver = TlsAdmissionFailingActiveDriver {
+            attempts: Arc::clone(&attempts),
+        };
+        let msg = build_msg("ready", "chat-1", "primary");
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
+
+        assert_eq!(
+            super::dispatch_via_active_driver(
+                "os_outbound",
+                &capability_registry,
+                &mut driver,
+                &msg,
+            ),
+            super::DispatchOutcome::Deferred
+        );
+        assert_eq!(
+            attempts.load(Ordering::Relaxed),
+            1,
+            "resource-pressure TLS failures should defer immediately instead of hammering retries"
+        );
     }
 }

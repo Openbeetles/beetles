@@ -78,7 +78,6 @@ const NVS_KEY_WIFI_PASS: &str = "wifi_pass";
 const NVS_KEY_PROXY_URL: &str = "proxy_url";
 /// ≤15 字符以符合 ESP-IDF NVS 键名上限。
 const NVS_KEY_TG_GROUP_ACTIVATION: &str = "tg_grp_act";
-const NVS_KEY_SESSION_MAX_MESSAGES: &str = "sess_max_msg";
 /// 界面语言，单独 NVS 键；zh / en，默认 zh。
 pub const NVS_KEY_LOCALE: &str = "locale";
 
@@ -107,9 +106,6 @@ fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
     }
 }
 
-/// 会话条数合法范围。
-pub const CONFIG_SESSION_MAX_MESSAGES_MIN: u32 = 1;
-pub const CONFIG_SESSION_MAX_MESSAGES_MAX: u32 = 128;
 /// LLM 源 api_url 长度上界。
 pub const CONFIG_LLM_API_URL_MAX: usize = 256;
 
@@ -125,12 +121,11 @@ pub struct LlmSource {
     pub max_tokens: Option<u32>,
 }
 
-/// NVS 仅存 6 个小键；LLM/通道存 SPIFFS config/llm.json、config/channels.json，减少 4361。
+/// NVS 仅存 5 个小键；LLM/通道存 SPIFFS config/llm.json、config/channels.json，减少 4361。
 pub(crate) const NVS_ALL_KEYS: &[&str] = &[
     NVS_KEY_WIFI_SSID,
     NVS_KEY_WIFI_PASS,
     NVS_KEY_PROXY_URL,
-    NVS_KEY_SESSION_MAX_MESSAGES,
     NVS_KEY_TG_GROUP_ACTIVATION,
     NVS_KEY_LOCALE,
 ];
@@ -195,9 +190,6 @@ pub struct AppConfig {
     /// 群组触发：mention = 仅被 @ 时回复；always = 每条都处理，无需回复时输出 SILENT。默认 mention。
     #[serde(default = "default_tg_group_activation")]
     pub tg_group_activation: String,
-    /// 会话加载最近条数，1..=128，默认 32。
-    #[serde(default = "default_session_max_messages")]
-    pub session_max_messages: u32,
 
     /// Webhook 是否启用；与 webhook_token 配合，空 token 或 false 时拒绝 POST /api/webhook。
     #[serde(default)]
@@ -258,16 +250,6 @@ pub struct AppConfig {
 fn default_tg_group_activation() -> String {
     "mention".into()
 }
-fn default_session_max_messages() -> u32 {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        32
-    }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        128
-    }
-}
 
 impl AppConfig {
     /// 从编译时环境变量加载。构建前可设置 e.g. BEETLE_WIFI_SSID。
@@ -309,11 +291,6 @@ impl AppConfig {
                 Some("always") => "always".into(),
                 _ => "mention".into(),
             },
-            session_max_messages: option_env!("BEETLE_SESSION_MAX_MESSAGES")
-                .unwrap_or("32")
-                .parse()
-                .unwrap_or(32)
-                .clamp(1, 128),
             webhook_enabled: option_env!("BEETLE_WEBHOOK_ENABLED")
                 .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
@@ -357,7 +334,7 @@ impl AppConfig {
             }
         };
         let opt = |i: usize| values.get(i).and_then(|v| v.as_ref());
-        // NVS 6 键：wifi_ssid, wifi_pass, proxy_url, session_max_messages, tg_group_activation, locale
+        // NVS 5 键：wifi_ssid, wifi_pass, proxy_url, tg_group_activation, locale
         if let Some(s) = opt(0) {
             if !s.is_empty() {
                 c.wifi_ssid = s.clone();
@@ -374,18 +351,11 @@ impl AppConfig {
             }
         }
         if let Some(s) = opt(3) {
-            if let Ok(n) = s.parse::<u32>() {
-                if (1..=128).contains(&n) {
-                    c.session_max_messages = n;
-                }
-            }
-        }
-        if let Some(s) = opt(4) {
             if s == "mention" || s == "always" {
                 c.tg_group_activation = s.clone();
             }
         }
-        if let Some(s) = opt(5) {
+        if let Some(s) = opt(4) {
             if s == "zh" || s == "en" {
                 c.locale = Some(s.clone());
             }
@@ -841,7 +811,7 @@ impl AppConfig {
         serde_json::to_string_pretty(self).map_err(|e| Error::config("serialize", e.to_string()))
     }
 
-    /// 从 JSON 反序列化并校验（validate_for_wifi、validate_proxy、tg_group_activation、session_max_messages、llm_sources）。
+    /// 从 JSON 反序列化并校验（validate_for_wifi、validate_proxy、tg_group_activation、llm_sources）。
     #[cfg(any(test, feature = "cli"))]
     pub fn from_json_and_validate(body: &[u8]) -> Result<Self> {
         let mut c: AppConfig = serde_json::from_slice(body)
@@ -899,17 +869,6 @@ impl AppConfig {
                 "tg_group_activation must be 'mention' or 'always'",
             ));
         }
-        if !(CONFIG_SESSION_MAX_MESSAGES_MIN..=CONFIG_SESSION_MAX_MESSAGES_MAX)
-            .contains(&c.session_max_messages)
-        {
-            return Err(Error::config(
-                "config",
-                format!(
-                    "session_max_messages must be {}..={}",
-                    CONFIG_SESSION_MAX_MESSAGES_MIN, CONFIG_SESSION_MAX_MESSAGES_MAX
-                ),
-            ));
-        }
         if !c.wifi_ssid.is_empty() {
             c.validate_for_wifi()?;
         }
@@ -919,15 +878,13 @@ impl AppConfig {
 }
 
 /// 将配置按键名逐字段写入 store；单条 value 超 NVS_MAX_VALUE_LEN 返回错误。
-/// 仅写入 NVS 保留的 6 个键；LLM/通道由 save_llm_segment / save_channels_segment 写 SPIFFS。
+/// 仅写入 NVS 保留的 5 个键；LLM/通道由 save_llm_segment / save_channels_segment 写 SPIFFS。
 pub fn save_to_nvs(store: &dyn ConfigStore, config: &AppConfig) -> Result<()> {
-    let session_str = config.session_max_messages.to_string();
     let locale = config.locale.as_deref().unwrap_or("zh");
     store.write_strings(&[
         (NVS_KEY_WIFI_SSID, &config.wifi_ssid),
         (NVS_KEY_WIFI_PASS, &config.wifi_pass),
         (NVS_KEY_PROXY_URL, &config.proxy_url),
-        (NVS_KEY_SESSION_MAX_MESSAGES, &session_str),
         (NVS_KEY_TG_GROUP_ACTIVATION, &config.tg_group_activation),
         (NVS_KEY_LOCALE, locale),
     ])?;
@@ -1066,8 +1023,6 @@ pub struct SystemSegment {
     #[serde(default)]
     pub proxy_url: String,
     #[serde(default)]
-    pub session_max_messages: u32,
-    #[serde(default)]
     pub tg_group_activation: String,
     #[serde(default)]
     pub locale: Option<String>,
@@ -1080,7 +1035,6 @@ impl SystemSegment {
             wifi_ssid: config.wifi_ssid.clone(),
             wifi_pass: config.wifi_pass.clone(),
             proxy_url: config.proxy_url.clone(),
-            session_max_messages: config.session_max_messages,
             tg_group_activation: config.tg_group_activation.clone(),
             locale: config.locale.clone(),
         }
@@ -1748,7 +1702,7 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
     Ok(())
 }
 
-/// 私有：校验 SystemSegment 的 wifi 长度、session 范围、tg_group_activation、proxy。供 save_system_segment_to_nvs 复用。
+/// 私有：校验 SystemSegment 的 wifi 长度、tg_group_activation、proxy。供 save_system_segment_to_nvs 复用。
 fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
     if seg.wifi_ssid.len() > CONFIG_FIELD_MAX_LEN || seg.wifi_pass.len() > CONFIG_FIELD_MAX_LEN {
         return Err(Error::config(
@@ -1763,17 +1717,6 @@ fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
         return Err(Error::config(
             "config",
             "tg_group_activation must be 'mention' or 'always'",
-        ));
-    }
-    if !(CONFIG_SESSION_MAX_MESSAGES_MIN..=CONFIG_SESSION_MAX_MESSAGES_MAX)
-        .contains(&seg.session_max_messages)
-    {
-        return Err(Error::config(
-            "config",
-            format!(
-                "session_max_messages must be {}..={}",
-                CONFIG_SESSION_MAX_MESSAGES_MIN, CONFIG_SESSION_MAX_MESSAGES_MAX
-            ),
         ));
     }
     validate_proxy_url_for_target(seg.proxy_url.trim(), proxy_supported_on_current_target())?;
@@ -2814,12 +2757,10 @@ pub(crate) fn save_system_segment_value_to_nvs(
     seg: &SystemSegment,
 ) -> Result<()> {
     validate_system_segment_fields(seg)?;
-    let session_str = seg.session_max_messages.to_string();
     let mut pairs: Vec<(&str, &str)> = vec![
         (NVS_KEY_WIFI_SSID, &seg.wifi_ssid),
         (NVS_KEY_WIFI_PASS, &seg.wifi_pass),
         (NVS_KEY_PROXY_URL, &seg.proxy_url),
-        (NVS_KEY_SESSION_MAX_MESSAGES, &session_str),
         (NVS_KEY_TG_GROUP_ACTIVATION, &seg.tg_group_activation),
     ];
     if let Some(locale) = normalize_optional_locale(seg.locale.as_deref())? {
@@ -2839,7 +2780,6 @@ pub(crate) fn apply_wifi_to_config(config: &mut AppConfig, wifi_ssid: &str, wifi
 pub(crate) fn apply_system_segment_to_config(config: &mut AppConfig, seg: &SystemSegment) {
     apply_wifi_to_config(config, &seg.wifi_ssid, &seg.wifi_pass);
     config.proxy_url = seg.proxy_url.clone();
-    config.session_max_messages = seg.session_max_messages;
     config.tg_group_activation = seg.tg_group_activation.clone();
     if let Some(locale) = seg.locale.as_deref().map(str::trim) {
         config.locale = Some(locale.to_string());
@@ -3488,7 +3428,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"",
-                "session_max_messages":32,
                 "tg_group_activation":"mention",
                 "locale":"ja"
             }"#,

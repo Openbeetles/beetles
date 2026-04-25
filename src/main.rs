@@ -867,6 +867,67 @@ mod tests {
     }
 
     #[test]
+    fn esp_display_refresh_yields_under_tls_fragmentation_pressure() {
+        use beetle::memory::MemorySystemKind;
+        use beetle::orchestrator::{PressureLevel, TlsFragmentationRisk};
+
+        assert!(super::should_suppress_display_refresh(
+            MemorySystemKind::EspCompact,
+            PressureLevel::Normal,
+            TlsFragmentationRisk::Critical,
+            (beetle::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1),
+        ));
+        assert!(super::should_suppress_display_refresh(
+            MemorySystemKind::EspCompact,
+            PressureLevel::Critical,
+            TlsFragmentationRisk::Healthy,
+            beetle::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32,
+        ));
+        assert!(!super::should_suppress_display_refresh(
+            MemorySystemKind::LinuxFull,
+            PressureLevel::Critical,
+            TlsFragmentationRisk::Critical,
+            0,
+        ));
+    }
+
+    #[test]
+    fn display_refresh_recovery_invalidates_dashboard_cache_once() {
+        use beetle::{DisplayPressureLevel, DisplaySystemState};
+
+        let mut state = DisplayLoopState {
+            display_refresh_suppressed: true,
+            last_state: Some(DisplaySystemState::Busy),
+            last_presence_subtitle: Some("busy".to_string()),
+            last_ip: "192.168.4.1".to_string(),
+            last_channels: [(true, false, 2); DISPLAY_CHANNEL_CAPACITY],
+            last_pressure: Some(DisplayPressureLevel::Critical),
+            last_heap: 91,
+            last_msg_in: 5,
+            last_msg_out: 7,
+            last_llm_ms: 1234,
+            ..DisplayLoopState::default()
+        };
+
+        assert!(super::resume_display_refresh_after_suppression(&mut state));
+        assert!(!state.display_refresh_suppressed);
+        assert_eq!(state.last_state, None);
+        assert_eq!(state.last_presence_subtitle, None);
+        assert!(state.last_ip.is_empty());
+        assert_eq!(
+            state.last_channels,
+            [(false, false, 0); DISPLAY_CHANNEL_CAPACITY]
+        );
+        assert_eq!(state.last_pressure, None);
+        assert_eq!(state.last_heap, 255);
+        assert_eq!(state.last_msg_in, u32::MAX);
+        assert_eq!(state.last_msg_out, u32::MAX);
+        assert_eq!(state.last_llm_ms, 0);
+
+        assert!(!super::resume_display_refresh_after_suppression(&mut state));
+    }
+
+    #[test]
     fn display_thread_stack_budget_is_large_enough_for_dashboard_render_path() {
         let stack_budget = std::hint::black_box(beetle::util::STACK_DISPLAY);
         assert!(
@@ -1039,6 +1100,7 @@ struct DisplayLoopState {
     flash_active: bool,
     last_activity_at: Instant,
     backlight_off: bool,
+    display_refresh_suppressed: bool,
 }
 
 #[cfg(any(
@@ -1077,6 +1139,7 @@ impl Default for DisplayLoopState {
             flash_active: false,
             last_activity_at: Instant::now(),
             backlight_off: false,
+            display_refresh_suppressed: false,
         }
     }
 }
@@ -1189,6 +1252,45 @@ fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopSta
     loop_state.last_msg_in = u32::MAX;
     loop_state.last_msg_out = u32::MAX;
     loop_state.last_llm_ms = 0;
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn should_suppress_display_refresh(
+    memory_system_kind: beetle::memory::MemorySystemKind,
+    pressure: beetle::orchestrator::PressureLevel,
+    tls_fragmentation_risk: beetle::orchestrator::TlsFragmentationRisk,
+    heap_largest_block_internal: u32,
+) -> bool {
+    if memory_system_kind != beetle::memory::MemorySystemKind::EspCompact {
+        return false;
+    }
+    pressure == beetle::orchestrator::PressureLevel::Critical
+        || tls_fragmentation_risk == beetle::orchestrator::TlsFragmentationRisk::Critical
+        || (heap_largest_block_internal > 0
+            && heap_largest_block_internal
+                < beetle::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32)
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn resume_display_refresh_after_suppression(loop_state: &mut DisplayLoopState) -> bool {
+    if !loop_state.display_refresh_suppressed {
+        return false;
+    }
+    loop_state.display_refresh_suppressed = false;
+    invalidate_display_cache_after_backlight_wake(loop_state);
+    true
 }
 
 #[cfg(any(
@@ -1380,6 +1482,28 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         beetle::platform::task_wdt::feed_current_task();
         let snapshot = beetle::orchestrator::snapshot();
+        if should_suppress_display_refresh(
+            platform.memory_system_kind(),
+            snapshot.pressure,
+            snapshot.tls_fragmentation_risk,
+            snapshot.heap_largest_block_internal,
+        ) {
+            if !loop_state.display_refresh_suppressed {
+                log::warn!(
+                    "[{}] display refresh suppressed under ESP resource pressure: pressure={:?} tls_fragmentation={:?} largest_block={}",
+                    TAG,
+                    snapshot.pressure,
+                    snapshot.tls_fragmentation_risk,
+                    snapshot.heap_largest_block_internal
+                );
+            }
+            loop_state.display_refresh_suppressed = true;
+            loop_state.refresh_secs = beetle::constants::DISPLAY_REFRESH_IDLE_SECS;
+            continue;
+        }
+        if resume_display_refresh_after_suppression(&mut loop_state) {
+            log::info!("[{}] display refresh resumed after resource pressure", TAG);
+        }
         let now_secs = beetle::util::current_unix_secs();
         let pressure = match snapshot.pressure {
             beetle::orchestrator::PressureLevel::Normal => DisplayPressureLevel::Normal,
@@ -2196,12 +2320,8 @@ fn run_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
     }));
     match result {
         Ok(Some((guard_platform, agent_handle))) => {
-            match spawn_esp_runtime_guard(guard_platform, agent_handle) {
-                Ok(()) => return,
-                Err(error) => {
-                    log::error!("[{}] runtime_guard spawn failed: {}", TAG, error);
-                }
-            }
+            register_esp_runtime_guard(guard_platform, agent_handle);
+            return;
         }
         Ok(None) => {
             log::error!(
@@ -2221,23 +2341,15 @@ fn run_esp_runtime_bootstrap(platform: Arc<dyn Platform>) {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn spawn_esp_runtime_guard(
+fn register_esp_runtime_guard(
     platform: Arc<dyn Platform>,
     agent_handle: Option<beetle::util::TaskHandle>,
-) -> std::io::Result<()> {
-    let plan = beetle::runtime::thread_util::thread_plan("runtime_guard");
-    let _guard_handle = beetle::util::spawn_guarded_with_profile_handle(
-        "runtime_guard",
-        beetle::util::STACK_ESP_RUNTIME_GUARD,
-        plan.core,
-        plan.role,
-        move || run_runtime_guard_loop(platform, agent_handle),
-    )?;
+) {
+    beetle::runtime::register_agent_loop_guard(platform, agent_handle);
     log::info!(
-        "[{}] runtime_guard spawned; runtime_bootstrap can exit and release startup stack",
+        "[{}] runtime_guard registered on bg_timer; runtime_bootstrap can exit and release startup stack",
         TAG
     );
-    Ok(())
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -2985,7 +3097,6 @@ fn start_agent_plane(
             }
         }
     });
-    let session_max = assembly.config.session_max_messages.clamp(1, 128) as usize;
     let enabled_channel =
         beetle::normalize_compiled_enabled_channel(assembly.config.enabled_channel.as_str());
     let typing_notifier: Option<Box<dyn beetle::TypingNotifier>> = assembly
@@ -3039,7 +3150,6 @@ fn start_agent_plane(
         runtime: assembly.runtime.clone(),
         get_skill_descriptions,
         get_capability_package_text,
-        session_max_messages: session_max,
         tg_group_activation: Arc::<str>::from(assembly.config.tg_group_activation.as_str()),
         channel_capability_registry: Arc::clone(&assembly.channel_capability_registry),
         strategy: agent_strategy,
@@ -3138,6 +3248,7 @@ fn start_agent_plane(
     Ok(Some(handle))
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn run_runtime_guard_loop(
     platform: Arc<dyn Platform>,
     mut agent_handle: Option<beetle::util::TaskHandle>,

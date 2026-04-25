@@ -512,4 +512,21 @@ mod tests {
         assert_eq!(next.status, RuntimeCapabilityStatus::Offline);
         assert_eq!(next.reason, RuntimeCapabilityReason::UpstreamUnavailable);
     }
+
+    #[test]
+    fn outbound_http_platform_refresh_clears_local_recovery_failure() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reset_runtime_capabilities_for_tests();
+        update_runtime_capability(RuntimeCapabilityUpdate {
+            id: RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            status: RuntimeCapabilityStatus::Offline,
+            reason: RuntimeCapabilityReason::RecoveryStabilizing,
+            observed_at_secs: 10,
+            recovery_hint: None,
+        });
+
+        let next = resolve_outbound_http_capability_update(true);
+        assert_eq!(next.status, RuntimeCapabilityStatus::Online);
+        assert_eq!(next.reason, RuntimeCapabilityReason::Nominal);
+    }
 }

@@ -44,6 +44,9 @@ pub const TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES: usize = 24 * 1024;
 pub const TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES: usize = 4 * 1024;
 /// TLS 准入：无 PSRAM 时 internal 堆空闲下限（字节），mbedTLS 全部走 internal 需更多空间。
 pub const TLS_ADMISSION_NO_PSRAM_MIN_BYTES: usize = 72 * 1024;
+/// ESP 稳态传输余量：低于该 internal 空闲值时不再视作 Normal，即便 TLS 硬门槛尚未触发。
+pub const ESP_TRANSPORT_STEADY_INTERNAL_CAUTION_BYTES: usize =
+    TLS_ADMISSION_MIN_INTERNAL_BYTES + 16 * 1024;
 
 /// 低内存且非 cron 时，重入队后休眠毫秒数，避免忙等、给 internal 恢复时间。
 pub const LOW_MEM_DEFER_SLEEP_MS: u64 = 1800;

@@ -932,13 +932,17 @@ pub fn is_private_url(url: &str) -> bool {
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
-// | runtime_guard                         | STACK_ESP_RUNTIME_GUARD| 8 KB  | n/a   | ← ESP-only: long-lived watchdog after bootstrap exits
+// | agent guard (bg_timer)                | n/a                    | 0 KB  | n/a   | ← ESP-only: supervised by bg_timer, no dedicated long-lived stack
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
-// | http_config/diag/ota/snapshot_exec    | STACK_HTTP_ROUTE_WORKER| 48 KB | 32 KB | ← lane-specific config-plane workers; std-compatible surface with extra ESP headroom to avoid callback-stack corruption under device page fan-out
+// | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 20 KB | 20 KB | ← local read-only SPIFFS/config snapshots without TLS reserve
+// | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
+// | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
+// | http_ota_exec                          | STACK_HTTP_OTA_WORKER    | 32 KB | 32 KB | ← OTA remains isolated from normal config workers
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + delayed-task/write-back + cron/self-runtime
+// | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; write-back flushes moved to `write_back`
+// | write_back                            | runtime local          | 24 KB | 8 KB  | ← SPIFFS/serde flush worker, lazy-started, idle-stopped, separate from agent_loop
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS
@@ -962,10 +966,6 @@ const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
 /// 与后续 guard loop。不能继续跑在 ESP-IDF `main_task` 的窄栈上。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
-
-/// ESP runtime guard：启动完成后的长期监管线程，只负责 agent handle 监管、
-/// TWDT feed 与 restart 请求。不能继续占用 bootstrap 的 32KB 栈。
-pub const STACK_ESP_RUNTIME_GUARD: usize = 8 * 1024;
 
 /// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
 /// 2026-04-11 实机日志显示 `qq_ws` 在 16KB 预算下仍保留 ~11KB 余量，
@@ -1047,15 +1047,31 @@ pub const STACK_VOICE_REALTIME: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// ESP HTTP route workers：`http_config_exec` / `http_diag_exec` / `http_ota_exec`
-/// / `http_snapshot_exec`。这些 lane 承接 SPIFFS/NVS/serde、operator surface、
-/// diagnostics 与 channel connectivity refresh 等重活，避免压在 IDF HTTPD 回调线程上。
-/// 2026-04-23 实机日志显示旧 32KB 预算只剩约 2KB 高水位余量，已落到回溯损坏/非法取指的
-/// 危险边缘；当前回收旧风险后提升到 48KB。
+/// HTTP snapshot route worker：承接本地只读 SPIFFS/config 快照，避免压在
+/// IDF HTTPD 回调线程上，同时不为这类非 TLS 路由预留诊断/TLS worker 余量。
+pub const STACK_HTTP_SNAPSHOT_WORKER: usize = 20 * 1024;
+
+/// ESP HTTP config route worker：承接 NVS/SPIFFS/serde 配置写入，避免压在
+/// IDF HTTPD 回调线程上。配置面必须能在 post-startup 约 31-32KB largest block
+/// 下按需启动；不能再沿用一个 48KB 通用 worker 把产品配置入口永久 admission 掉。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_HTTP_ROUTE_WORKER: usize = 48 * 1024;
+pub const STACK_HTTP_CONFIG_WORKER: usize = 28 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub const STACK_HTTP_ROUTE_WORKER: usize = 32 * 1024;
+pub const STACK_HTTP_CONFIG_WORKER: usize = 32 * 1024;
+
+/// ESP HTTP diagnostic route worker：Wi-Fi scan、hardware discovery、diagnose 与
+/// channel refresh。首屏 metrics/resource/system_info 已移回轻量 immediate 路径，
+/// 因此这里按可启动性重新收口，而不是保留旧通用 worker 峰值。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_HTTP_DIAG_WORKER: usize = 28 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_HTTP_DIAG_WORKER: usize = 32 * 1024;
+
+/// ESP OTA route worker：OTA 写入独立预算，不反向抬高普通配置/诊断入口。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_HTTP_OTA_WORKER: usize = 32 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_HTTP_OTA_WORKER: usize = 32 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
 /// ESP 侧仍需抠 internal SRAM，但它直接承接 delayed-task / write-back，
@@ -1386,13 +1402,15 @@ mod thread_stack_budget_tests {
         }
     }
 
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     #[test]
-    fn esp_runtime_guard_stack_stays_small_after_bootstrap() {
-        assert_eq!(
-            STACK_ESP_RUNTIME_GUARD,
-            8 * 1024,
-            "runtime guard must not keep the bootstrap 32KB stack alive after startup"
-        );
+    fn esp_agent_guard_does_not_allocate_a_dedicated_stack_after_bootstrap() {
+        const {
+            assert!(
+                STACK_BG_TIMER <= 24 * 1024,
+                "agent guard is serviced by bg_timer and must not restore a dedicated ESP stack"
+            );
+        }
     }
 
     #[test]

@@ -2,12 +2,12 @@
 
 [Back to documentation index](../README.md)
 
-Product-facing docs use the name Beetls OS. Commands, service names, and filesystem paths still use `beetle`.
+Product-facing docs use the name Beetle OS. Commands, service names, and filesystem paths still use `beetle`.
 
 ## Start
 
-- [getting-started-esp.md](getting-started-esp.md): first-time Beetls OS setup on ESP32
-- [getting-started-linux.md](getting-started-linux.md): first-time Beetls OS setup on Linux
+- [getting-started-esp.md](getting-started-esp.md): first-time Beetle OS setup on ESP32
+- [getting-started-linux.md](getting-started-linux.md): first-time Beetle OS setup on Linux
 
 ## Capabilities
 

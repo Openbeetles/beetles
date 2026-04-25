@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 const TAG: &str = "bg_timer";
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const CRON_INTERVAL_SECS: u64 = 60;
+const AGENT_GUARD_INTERVAL_SECS: u64 = 10;
 const WAIT_WDT_FEED_SLICE_SECS: u64 = 5;
 
 fn wake_state() -> &'static (Mutex<u64>, Condvar) {
@@ -131,10 +132,12 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
             let mut reminder_calendar_http: Option<Box<dyn crate::PlatformHttpClient>> = None;
             let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
             let cron_interval = Duration::from_secs(CRON_INTERVAL_SECS);
+            let agent_guard_interval = Duration::from_secs(AGENT_GUARD_INTERVAL_SECS);
             let mut heartbeat_state = HeartbeatTickState::new();
             let mut cron_state = CronTickState::new();
             let mut next_heartbeat_at = Instant::now() + heartbeat_interval;
             let mut next_cron_at = Instant::now() + cron_interval;
+            let mut next_agent_guard_at = Instant::now() + agent_guard_interval;
 
             loop {
                 crate::platform::task_wdt::feed_current_task();
@@ -167,6 +170,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                     next_remind_at,
                     next_task_at,
                     Some(next_delayed_task_at),
+                    Some(next_agent_guard_at),
                 ]
                 .into_iter()
                 .flatten()
@@ -179,6 +183,11 @@ pub fn run_bg_timer(ctx: BgTimerContext) {
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();
                 let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+
+                if now >= next_agent_guard_at {
+                    crate::runtime::service_agent_loop_guard(TAG);
+                    advance_periodic_deadline(&mut next_agent_guard_at, agent_guard_interval, now);
+                }
 
                 if now >= next_heartbeat_at {
                     crate::heartbeat::heartbeat_tick(

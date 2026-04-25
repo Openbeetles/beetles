@@ -21,7 +21,7 @@ const baseAccount: AccountSummary = {
   has_runtime_error: true,
 };
 
-test("buildAccountCardModel demotes provider/raw ids while keeping the readable title primary", () => {
+test("buildAccountCardModel keeps the readable title primary", () => {
   const model = buildAccountCardModel(baseAccount, {
     t,
     providerLabel: "通用邮箱",
@@ -31,12 +31,10 @@ test("buildAccountCardModel demotes provider/raw ids while keeping the readable 
   assert.equal(model.title, "657778650@qq.com");
   assert.equal(model.identityLabel, "accounts.identity.other");
   assert.deepEqual(model.capabilityLabels, ["accounts.capabilityShort.mail"]);
-  assert.equal(model.providerMeta, "imap_smtp");
-  assert.equal(model.rawKeyMeta, "imap-smtp-other-657778650-qq-com");
   assert.equal(model.showRuntimeFlag, true);
 });
 
-test("buildAccountCardModel avoids duplicating the raw key in the footer when it is already the title", () => {
+test("buildAccountCardModel keeps status fields when the raw key is the title", () => {
   const model = buildAccountCardModel(
     {
       ...baseAccount,
@@ -57,7 +55,5 @@ test("buildAccountCardModel avoids duplicating the raw key in the footer when it
   );
 
   assert.equal(model.title, "plain-key");
-  assert.equal(model.providerMeta, "google_calendar");
-  assert.equal(model.rawKeyMeta, "");
   assert.equal(model.showRuntimeFlag, false);
 });

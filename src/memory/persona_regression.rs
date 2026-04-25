@@ -253,7 +253,7 @@ fn assemble_persona_regression_system(
         skill_descriptions: "",
         system_max_len: 4096,
         messages_max_len: 256,
-        session_max_messages: 8,
+        recent_messages_limit: 8,
         group_activation: "always",
         emotion_signal_suffix: None,
         memory_health_text: None,

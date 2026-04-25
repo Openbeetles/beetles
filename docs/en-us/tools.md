@@ -2,7 +2,7 @@
 
 [中文](../zh-cn/tools.md) | **English** | [Doc index](../README.md)
 
-This page lists the individual tool surface behind the product capabilities of Beetls OS.
+This page lists the individual tool surface behind the product capabilities of Beetle OS.
 For the product-level view, read [capabilities.md](capabilities.md) first.
 
 ## Core Tools

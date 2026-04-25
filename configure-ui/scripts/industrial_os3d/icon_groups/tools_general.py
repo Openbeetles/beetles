@@ -190,37 +190,68 @@ def build_doc_search(scene: Scene, palette) -> None:
 
 
 def build_documents(scene: Scene, palette) -> None:
-    briefcase = scene.rounded_rect(18, 34, 82, 72, 8)
-    _extrude_role(scene, palette, briefcase, "warm", depth=8, shadow_offset=(0, 8), shadow_blur=11, gloss=52)
+    back, back_fold, _ = _folded_page(scene, 31, 20, 75, 72, 9, 9)
+    mid, mid_fold, _ = _folded_page(scene, 24, 27, 72, 79, 10, 10)
+    front, front_fold, front_seam = _folded_page(scene, 17, 34, 67, 85, 10, 10)
+    _extrude_role(scene, palette, back, "neutral", depth=5, shadow_offset=(0, 5), shadow_blur=7, gloss=38)
+    _extrude_role(scene, palette, mid, "secondary", depth=6, shadow_offset=(0, 6), shadow_blur=8, gloss=46)
+    _extrude_role(scene, palette, front, "warm", depth=8, shadow_offset=(0, 8), shadow_blur=10, gloss=52)
+    _flat_role(scene, palette, back_fold, "primary")
+    _flat_role(scene, palette, mid_fold, "accent")
+    _flat_role(scene, palette, front_fold, "danger")
+    _solid(scene, front_seam, with_alpha((255, 255, 255, 255), 130))
 
-    flap = scene.line([(19, 47), (50, 47), (81, 47)], 2.3)
-    clasp = scene.rounded_rect(46, 49, 54, 57, 2)
-    handle = union_masks(scene.circle(50, 29, 6), scene.rounded_rect(44, 27, 56, 34, 3))
-    _solid(scene, flap, with_alpha((105, 70, 80, 255), 140))
-    _extrude_role(scene, palette, clasp, "accent", depth=4, shadow_offset=(0, 4), shadow_blur=6, gloss=40)
-    _extrude_role(scene, palette, handle, "neutral", depth=4, shadow_offset=(0, 4), shadow_blur=6, gloss=36)
+    for y, right in ((47, 52), (55, 58), (63, 49), (71, 55)):
+        _solid(scene, scene.line([(27, y), (right, y)], 2.0), with_alpha((101, 80, 88, 255), 135))
 
-    back_tab = scene.rounded_rect(26, 28, 44, 38, 4)
-    _flat_role(scene, palette, back_tab, "neutral")
+    tab_a = scene.rounded_rect(24, 29, 38, 36, 3)
+    tab_b = scene.rounded_rect(42, 24, 58, 32, 3)
+    _flat_role(scene, palette, tab_a, "secondary", alpha=230)
+    _flat_role(scene, palette, tab_b, "accent", alpha=230)
+
+    badge = scene.circle(72, 66, 9.0)
+    _extrude_role(scene, palette, badge, "accent", depth=5, shadow_offset=(0, 5), shadow_blur=6, gloss=42)
+    link = union_masks(
+        scene.circle(68, 66, 2.2),
+        scene.circle(76, 66, 2.2),
+        scene.line([(68, 66), (76, 66)], 2.0),
+    )
+    _solid(scene, link, with_alpha((255, 248, 238, 255), 230))
 
 
 def build_edit(scene: Scene, palette) -> None:
-    body = union_masks(
-        scene.line([(27, 73), (71, 29)], 16),
-        scene.circle(27, 73, 7),
-        scene.circle(71, 29, 7),
-    )
-    _extrude_role(scene, palette, body, "warm", depth=8, shadow_offset=(1, 8), shadow_blur=11, gloss=60)
+    page, fold, seam = _folded_page(scene, 22, 20, 76, 82, 11, 12)
+    _extrude_role(scene, palette, page, "neutral", depth=8, shadow_offset=(0, 9), shadow_blur=11, gloss=56)
+    _flat_role(scene, palette, fold, "warm")
+    _solid(scene, seam, with_alpha((255, 255, 255, 255), 140))
 
-    ferrule = scene.rounded_rect(67, 25, 75, 33, 2)
+    line_a = scene.line([(32, 38), (58, 38)], 2.1)
+    line_b = scene.line([(32, 47), (64, 47)], 2.1)
+    _solid(scene, union_masks(line_a, line_b), with_alpha((110, 122, 142, 255), 150))
+
+    highlight = scene.rounded_rect(31, 54, 63, 62, 3)
+    _flat_role(scene, palette, highlight, "secondary", alpha=150)
+    revision = scene.line([(34, 58), (60, 58)], 2.2)
+    _flat_role(scene, palette, revision, "danger", alpha=230)
+    caret = union_masks(scene.line([(65, 50), (65, 66)], 2.1), scene.line([(61, 54), (65, 50), (69, 54)], 1.8))
+    _flat_role(scene, palette, caret, "danger", alpha=225)
+
+    body = union_masks(
+        scene.line([(43, 77), (74, 46)], 11),
+        scene.circle(43, 77, 5.0),
+        scene.circle(74, 46, 5.0),
+    )
+    _extrude_role(scene, palette, body, "warm", depth=7, shadow_offset=(1, 7), shadow_blur=9, gloss=55)
+
+    ferrule = scene.rounded_rect(70, 41, 79, 50, 2.5)
     _extrude_role(scene, palette, ferrule, "neutral", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=35)
 
-    eraser = scene.rounded_rect(70, 18, 81, 29, 4)
+    eraser = scene.rounded_rect(73, 35, 84, 46, 4)
     _extrude_role(scene, palette, eraser, "danger", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=40)
 
-    tip = scene.polygon([(20, 80), (29, 71), (38, 80), (29, 89)])
-    _flat_role(scene, palette, tip, "neutral")
-    lead = scene.polygon([(26, 78), (29, 75), (32, 78), (29, 81)])
+    tip = scene.polygon([(32, 88), (43, 76), (51, 84), (39, 94)])
+    _extrude_role(scene, palette, tip, "neutral", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=36)
+    lead = scene.polygon([(39, 86), (43, 81), (47, 85), (42, 90)])
     _solid(scene, lead, with_alpha((72, 46, 92, 255), 255))
 
 
@@ -257,18 +288,34 @@ def build_message(scene: Scene, palette) -> None:
 
 
 def build_pdf(scene: Scene, palette) -> None:
-    page, fold, seam = _folded_page(scene, 24, 22, 76, 79, 11, 11)
-    _extrude_role(scene, palette, page, "neutral", depth=7, shadow_offset=(0, 8), shadow_blur=10, gloss=60)
+    page, fold, seam = _folded_page(scene, 21, 18, 79, 84, 12, 14)
+    _extrude_role(scene, palette, page, "neutral", depth=8, shadow_offset=(0, 9), shadow_blur=11, gloss=58)
     _flat_role(scene, palette, fold, "danger")
     _solid(scene, seam, with_alpha((255, 255, 255, 255), 150))
 
-    badge = scene.rounded_rect(43, 31, 70, 61, 6)
-    _extrude_role(scene, palette, badge, "danger", depth=4, shadow_offset=(0, 4), shadow_blur=6, gloss=52)
-    badge_bar = scene.line([(48, 39), (63, 39)], 2.7)
-    badge_bar2 = scene.line([(48, 45), (62, 45)], 2.7)
-    badge_bar3 = scene.line([(48, 51), (60, 51)], 2.7)
-    for bar in (badge_bar, badge_bar2, badge_bar3):
-        _solid(scene, bar, with_alpha((255, 255, 255, 255), 180))
+    for y, right in ((34, 59), (42, 63), (50, 54)):
+        _solid(scene, scene.line([(31, y), (right, y)], 2.0), with_alpha((113, 126, 146, 255), 150))
+
+    badge = scene.rounded_rect(27, 57, 74, 76, 6)
+    _extrude_role(scene, palette, badge, "danger", depth=5, shadow_offset=(0, 5), shadow_blur=7, gloss=48)
+
+    letters = union_masks(
+        scene.line([(35, 62), (35, 71)], 2.3),
+        scene.line([(35, 62), (42, 62)], 2.3),
+        scene.line([(42, 62), (42, 66)], 2.3),
+        scene.line([(35, 66), (42, 66)], 2.3),
+        scene.line([(48, 62), (48, 71)], 2.3),
+        scene.line([(48, 62), (54, 63)], 2.3),
+        scene.line([(55, 63), (55, 70)], 2.3),
+        scene.line([(48, 71), (54, 70)], 2.3),
+        scene.line([(61, 62), (61, 71)], 2.3),
+        scene.line([(61, 62), (69, 62)], 2.3),
+        scene.line([(61, 66), (68, 66)], 2.3),
+    )
+    _solid(scene, letters, with_alpha((255, 247, 244, 255), 230))
+
+    red_spine = scene.rounded_rect(21, 25, 26, 72, 3)
+    _flat_role(scene, palette, red_spine, "danger", alpha=230)
 
 
 def build_remind_list(scene: Scene, palette) -> None:
@@ -363,26 +410,40 @@ def build_file_write(scene: Scene, palette) -> None:
 
 
 def build_write(scene: Scene, palette) -> None:
+    pad = scene.rounded_rect(22, 48, 78, 81, 9)
+    _extrude_role(scene, palette, pad, "neutral", depth=6, shadow_offset=(0, 7), shadow_blur=9, gloss=42)
+
+    ink = union_masks(
+        scene.line([(30, 70), (39, 74), (50, 69), (62, 73), (72, 68)], 3.2),
+        scene.circle(72, 68, 1.7),
+    )
+    _flat_role(scene, palette, ink, "primary", alpha=225)
+
     body = union_masks(
-        scene.line([(25, 72), (70, 27)], 15),
-        scene.circle(25, 72, 6.5),
-        scene.circle(70, 27, 6.5),
+        scene.line([(34, 68), (71, 31)], 13),
+        scene.circle(34, 68, 5.8),
+        scene.circle(71, 31, 5.8),
     )
     _extrude_role(scene, palette, body, "secondary", depth=8, shadow_offset=(1, 8), shadow_blur=11, gloss=58)
 
-    nib = scene.polygon([(17, 81), (29, 69), (39, 79), (27, 91)])
+    ferrule = scene.polygon([(29, 65), (36, 58), (47, 69), (40, 76)])
+    _extrude_role(scene, palette, ferrule, "warm", depth=5, shadow_offset=(0, 5), shadow_blur=6, gloss=45)
+
+    nib = scene.polygon([(21, 84), (31, 68), (43, 80), (28, 91)])
     _extrude_role(scene, palette, nib, "warm", depth=5, shadow_offset=(0, 5), shadow_blur=6, gloss=48)
-    nib_cut = scene.polygon([(25, 80), (30, 75), (35, 80), (30, 85)])
+    nib_cut = scene.polygon([(29, 81), (34, 75), (39, 80), (33, 86)])
     _solid(scene, nib_cut, with_alpha((68, 40, 90, 255), 255))
+    nib_slit = scene.line([(32, 84), (38, 78)], 1.5)
+    _solid(scene, nib_slit, with_alpha((68, 40, 90, 255), 210))
 
-    ferrule = scene.rounded_rect(65, 22, 75, 33, 2)
-    _extrude_role(scene, palette, ferrule, "neutral", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=35)
+    collar = scene.rounded_rect(66, 25, 78, 37, 3)
+    _extrude_role(scene, palette, collar, "neutral", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=35)
 
-    cap = scene.rounded_rect(68, 17, 81, 29, 4)
+    cap = scene.rounded_rect(70, 18, 84, 31, 4)
     _extrude_role(scene, palette, cap, "danger", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=42)
 
-    baseline = scene.rounded_rect(20, 82, 55, 87, 2.5)
-    _flat_role(scene, palette, baseline, "primary", alpha=210)
+    highlight = scene.line([(43, 59), (66, 36)], 1.5)
+    _solid(scene, highlight, with_alpha((255, 255, 255, 255), 105))
 
 
 ICON_DEFINITIONS: list[IconSpec] = [

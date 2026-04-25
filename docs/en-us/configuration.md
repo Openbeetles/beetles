@@ -2,7 +2,7 @@
 
 [中文](../zh-cn/configuration.md) | **English** | [Doc index](../README.md)
 
-After Beetls OS is reachable, most day-to-day setup happens in the browser.
+After Beetle OS is reachable, most day-to-day setup happens in the browser.
 This page explains the setup areas and the order that usually works best.
 
 ## Setup Areas
@@ -33,21 +33,23 @@ If you need the exact first-time flow, go back to [getting-started-esp.md](getti
 
 ## Opening the Setup Page
 
-There are two common entry points:
+Use the Configure UI from the hosted page, desktop shell, or a locally served build, then set its **Device URL** to one of these addresses:
 
-- on first use, connect to the default hotspot named **Beetle** and open `http://192.168.4.1`
-- if the device is already on your local network, open its current local IP
+- on first use, connect to the default hotspot named **Beetle** and use `http://192.168.4.1`
+- if the device is already on your local network, use its current local IP
+
+The device root (`/`) currently returns API inventory JSON. Do not depend on it as an embedded setup page or redirect.
 
 ## Pairing Code
 
-The pairing code protects actions such as saving configuration, restarting Beetls OS, resetting settings, and starting online updates.
+The pairing code protects actions such as saving configuration, restarting Beetle OS, resetting settings, and starting online updates.
 
 Set it once and keep it somewhere you can retrieve later.
 
 ## Common Problems
 
 - Cannot open the setup page: make sure you are on the default **Beetle** hotspot or on the same local network
-- The page opens but Beetls OS never replies: make sure both an LLM source and a chat channel are configured
+- The page opens but Beetle OS never replies: make sure both an LLM source and a chat channel are configured
 - Saving fails: the pairing code is often wrong, or the page is stale, so reopen it and try again
 - Office features do not appear: connect the related account first
 - Hardware does not respond: check both wiring and saved hardware configuration
@@ -56,6 +58,6 @@ Set it once and keep it somewhere you can retrieve later.
 
 - To get the first setup working on ESP32: [getting-started-esp.md](getting-started-esp.md)
 - To get the first setup working on Linux: [getting-started-linux.md](getting-started-linux.md)
-- To see what Beetls OS can do after setup: [capabilities.md](capabilities.md)
+- To see what Beetle OS can do after setup: [capabilities.md](capabilities.md)
 - To configure model providers: [llm-providers.md](llm-providers.md)
 - To configure hardware or a display: [hardware.md](hardware.md), [hardware-device-config.md](hardware-device-config.md), [display.md](display.md)

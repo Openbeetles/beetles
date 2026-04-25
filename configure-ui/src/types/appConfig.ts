@@ -42,8 +42,6 @@ export interface ChannelsConfigView extends ChannelsConfigSegment {
   unavailable_enabled_channel?: string
 }
 
-const DEFAULT_SESSION_MAX_MESSAGES = 32
-
 const LEGACY_AVAILABLE_CHANNELS = [
   '',
   'telegram',
@@ -61,10 +59,6 @@ function objectRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback
-}
-
-function finiteNumberValue(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
 function nullableStringValue(value: unknown): string | null {
@@ -168,10 +162,6 @@ export function normalizeSystemConfigFromDevice(
     wifi_ssid: stringValue(record.wifi_ssid),
     wifi_pass: stringValue(record.wifi_pass),
     proxy_url: stringValue(record.proxy_url),
-    session_max_messages: finiteNumberValue(
-      record.session_max_messages,
-      DEFAULT_SESSION_MAX_MESSAGES,
-    ),
     tg_group_activation:
       record.tg_group_activation === 'always' ? 'always' : 'mention',
     locale: nullableStringValue(record.locale),
@@ -201,7 +191,6 @@ export interface SystemConfigSegment {
   wifi_ssid: string
   wifi_pass: string
   proxy_url: string
-  session_max_messages: number
   tg_group_activation: string
   locale?: string | null
 }

@@ -56,10 +56,16 @@ impl StateFs for Esp32StateFs {
                 format!("write size {} exceeds limit {}", data.len(), MAX_WRITE_SIZE),
             ));
         }
-        let path = abs_path(rel_path)?;
+        let rel = crate::util::normalize_state_rel_path(rel_path)?;
+        let rel_path = Path::new(&rel);
+        let path = state_mount_path().join(spiffs::esp_storage_rel_path(rel_path));
         // SPIFFS 无真实目录：`mkdir`/`create_dir_all` 会返回 Not supported（如 raw_os_error 134）。
         // 带 `/` 的路径由 VFS 直接 `File::create` 即可（见 `spiffs::write_file`）。
-        spiffs::write_file(&path, data)
+        match spiffs::state_write_tail_padding(rel_path) {
+            spiffs::WriteTailPadding::JsonWhitespace => spiffs::write_json_file(&path, data),
+            spiffs::WriteTailPadding::Newlines => spiffs::write_line_file(&path, data),
+            spiffs::WriteTailPadding::None => spiffs::write_file(&path, data),
+        }
     }
 
     fn remove(&self, rel_path: &str) -> Result<()> {

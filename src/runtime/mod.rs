@@ -2,6 +2,7 @@
 //! 运行时工具模块。
 
 pub mod acceptance;
+pub mod agent_supervision;
 pub mod continuity_flush;
 pub mod delayed_task;
 pub mod governance;
@@ -30,6 +31,7 @@ pub use acceptance::{
     inspect_beetle_os_closure, inspect_platform_beetle_os_closure, BeetleOsClosureReport,
     BeetleOsPlane, BeetleOsPlaneReport,
 };
+pub use agent_supervision::{register_agent_loop_guard, service_agent_loop_guard};
 pub use continuity_flush::{flush_reboot_continuity_bundle, request_restart_with_continuity_flush};
 pub use delayed_task::{
     next_delayed_task_wait, schedule_critical_delayed_task, schedule_delayed_task,
@@ -77,3 +79,4 @@ pub use workflow::{
     WorkflowAdmissionSnapshot, WorkflowAuditRecord, WorkflowAuditSnapshot, WorkflowAuditSummary,
     WorkflowDisposition, WorkflowEffect, WorkflowKind, WorkflowRecoveryPolicy, WorkflowTrigger,
 };
+pub use write_back::service_write_back_tasks;

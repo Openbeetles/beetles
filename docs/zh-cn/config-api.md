@@ -40,7 +40,7 @@
 - `202`：任务已接收，异步继续处理。
 - `400`：参数或请求体不对。
 - `401`：设备未激活，或配对码不对。
-- `403`：CSRF 不通过、Webhook token 不通过，或当前操作需要先打开运维窗口。
+- `403`：CSRF 不通过、Webhook token 不通过，或当前操作需要先打开临时维护窗口。
 - `404`：资源不存在。
 - `500`：服务端处理失败。
 - `503`：当前不可用，例如扫描器未就绪、队列不可用。
@@ -72,6 +72,11 @@
 - `error_key` 是稳定语义合同，供前端或其他调用方翻译。
 - `upstream_error` 是原始排障文本，不做翻译，也不保证语言统一。
 - 只有第三方协议兼容接口和 debug/operator 接口不受这条合同约束。
+
+当前仍会出现的基础设施 / 运行态 key 包括：
+
+- `http.route_worker_busy`：设备正在处理配置或诊断任务，请稍后重试。
+- `runtime.config_blocked_by_voice`：实时语音会话活跃时拒绝配置操作，请按返回的等待时间重试。
 
 ## 激活与安全
 
@@ -153,7 +158,6 @@
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `session_max_messages`
 - `tg_group_activation`
 - `locale`
   仅接受 `zh` 或 `en`；非法值会直接返回 `400 application/json`，不会被静默忽略。
@@ -187,7 +191,6 @@
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `session_max_messages`
 - `tg_group_activation`
 - `locale`
 
@@ -931,6 +934,8 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 鉴权：`已激活`
 
+ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备已配对，但不要求开启临时诊断会话。
+
 成功响应：`200 application/json`
 
 ```json
@@ -1294,7 +1299,7 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 **POST /api/operator/window**
 
-用途：打开临时运维窗口，让受保护的运维接口可访问。
+用途：打开临时维护窗口，让受保护的维护接口可访问。
 
 鉴权：`配对码 + CSRF`
 

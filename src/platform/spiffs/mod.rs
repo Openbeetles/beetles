@@ -32,11 +32,23 @@ pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WriteTailPadding {
     None,
     JsonWhitespace,
     Newlines,
+}
+
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
+pub(crate) fn state_write_tail_padding(rel: &Path) -> WriteTailPadding {
+    match rel.extension().and_then(|ext| ext.to_str()) {
+        Some("json") => WriteTailPadding::JsonWhitespace,
+        Some("jsonl") => WriteTailPadding::Newlines,
+        _ => WriteTailPadding::None,
+    }
 }
 
 #[cfg_attr(
@@ -328,6 +340,10 @@ pub fn read_file_to_vec(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     })
 }
 
+pub(crate) fn truncate_on_open_for_write(tail_padding: WriteTailPadding, old_len: usize) -> bool {
+    tail_padding == WriteTailPadding::None || old_len == 0
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn esp_write_file_no_unlink(
     path_str: &str,
@@ -343,12 +359,28 @@ fn esp_write_file_no_unlink(
     } else {
         0
     };
-    let mut file = OpenOptions::new()
+    let truncate_on_open = truncate_on_open_for_write(tail_padding, old_len);
+    let file = OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(tail_padding == WriteTailPadding::None)
+        .truncate(truncate_on_open)
         .open(path_str)
+        .or_else(|error| {
+            if tail_padding != WriteTailPadding::None
+                && !truncate_on_open
+                && error.kind() == std::io::ErrorKind::NotFound
+            {
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(path_str)
+            } else {
+                Err(error)
+            }
+        })
         .map_err(|e| Error::io(stage, e))?;
+    let mut file = file;
     file.write_all(data).map_err(|e| Error::io(stage, e))?;
     if tail_padding != WriteTailPadding::None && old_len > data.len() {
         let mut remaining = old_len - data.len();
@@ -590,7 +622,10 @@ pub use world_sense::SpiffsWorldSenseStore;
 
 #[cfg(test)]
 mod tests {
-    use super::{append_line_file, esp_storage_rel_path, write_json_file};
+    use super::{
+        append_line_file, esp_storage_rel_path, state_write_tail_padding,
+        truncate_on_open_for_write, write_json_file, WriteTailPadding,
+    };
     use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
         REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES, REL_PATH_CORE_REVISION_LEDGERS,
@@ -641,6 +676,36 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed["short"], true);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn new_json_state_writes_use_truncate_create_mode() {
+        assert!(truncate_on_open_for_write(
+            WriteTailPadding::JsonWhitespace,
+            0
+        ));
+        assert!(truncate_on_open_for_write(WriteTailPadding::Newlines, 0));
+        assert!(!truncate_on_open_for_write(
+            WriteTailPadding::JsonWhitespace,
+            16
+        ));
+        assert!(truncate_on_open_for_write(WriteTailPadding::None, 16));
+    }
+
+    #[test]
+    fn state_write_padding_uses_json_semantics_for_json_state() {
+        assert_eq!(
+            state_write_tail_padding(Path::new("memory/tool_execution_governance.json")),
+            WriteTailPadding::JsonWhitespace
+        );
+        assert_eq!(
+            state_write_tail_padding(Path::new("memory/session.jsonl")),
+            WriteTailPadding::Newlines
+        );
+        assert_eq!(
+            state_write_tail_padding(Path::new("runtime/blob.bin")),
+            WriteTailPadding::None
+        );
     }
 
     #[test]

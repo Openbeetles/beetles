@@ -83,7 +83,7 @@ If it fails quickly and repeatedly during the validation window, the runtime pre
 
 ## Read Next
 
-- To get Beetls OS running on Linux the first time: [getting-started-linux.md](getting-started-linux.md)
+- To get Beetle OS running on Linux the first time: [getting-started-linux.md](getting-started-linux.md)
 - To build or deploy Linux artifacts: [build-script.md](build-script.md)
 - To complete browser setup after deployment: [configuration.md](configuration.md)
 - To configure hardware on Linux-capable installs: [hardware-device-config.md](hardware-device-config.md)

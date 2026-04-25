@@ -1,4 +1,4 @@
-# Beetls OS Docs
+# Beetle OS Docs
 
 **中文** | [English below](#english)
 
@@ -61,14 +61,14 @@ Commands, service names, and filesystem paths still use `beetle`.
 
 | Task | English | 中文 |
 |------|---------|------|
-| Get Beetls OS running on ESP32 for the first time | [en-us/getting-started-esp.md](en-us/getting-started-esp.md) | [zh-cn/getting-started-esp.md](zh-cn/getting-started-esp.md) |
-| Get Beetls OS running on Linux for the first time | [en-us/getting-started-linux.md](en-us/getting-started-linux.md) | [zh-cn/getting-started-linux.md](zh-cn/getting-started-linux.md) |
+| Get Beetle OS running on ESP32 for the first time | [en-us/getting-started-esp.md](en-us/getting-started-esp.md) | [zh-cn/getting-started-esp.md](zh-cn/getting-started-esp.md) |
+| Get Beetle OS running on Linux for the first time | [en-us/getting-started-linux.md](en-us/getting-started-linux.md) | [zh-cn/getting-started-linux.md](zh-cn/getting-started-linux.md) |
 
 ### Capabilities
 
 | Task | English | 中文 |
 |------|---------|------|
-| See what Beetls OS can do and what it fits | [en-us/capabilities.md](en-us/capabilities.md) | [zh-cn/capabilities.md](zh-cn/capabilities.md) |
+| See what Beetle OS can do and what it fits | [en-us/capabilities.md](en-us/capabilities.md) | [zh-cn/capabilities.md](zh-cn/capabilities.md) |
 
 ### Configure
 

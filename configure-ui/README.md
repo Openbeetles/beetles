@@ -44,21 +44,22 @@ You must have both of the following:
 
 ---
 
-### Option A – Open the config page from the device (direct)
+### Option A – Use the device address with the config page
 
-You use the device’s own address in the browser; the device serves the UI (or redirects to it).
+Use the device’s own address as the **Device URL** inside this Configure UI.
+The device root currently returns API inventory JSON; it is not a guaranteed embedded UI or redirect entry.
 
 **When the device is not yet on your WiFi (first use):**
 
 1. Power on the device → it opens hotspot **Beetle** (no password).
 2. On your phone or PC, **connect to the WiFi “Beetle”**.
-3. In the browser open **http://192.168.4.1** (usually this address, in some cases may be a different address).
+3. Open this Configure UI and enter **http://192.168.4.1** as the **Device URL** (usually this address, in some cases may be a different address).
 
 Only the device is on that hotspot.
 
 **When the device is already on your WiFi:**
 
-- From any device on the **same LAN**, use the router-assigned device IP.
+- From any browser on the **same LAN**, enter the router-assigned device IP as the **Device URL**.
 
 **First time on the config page:** Set a **6-digit pairing code**. It protects all write operations; secrets stay on the device. If you forget it, use **Factory reset** from the config page (you must still be able to open the page).
 

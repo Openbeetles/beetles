@@ -4,21 +4,15 @@
 use super::auth;
 use super::catalog::{
     self, OperatorRouteAccess, RouteBodyMode, RouteExecutionClass, ROUTE_CAPABILITY_PACKAGES,
-    ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CHANNEL_CONNECTIVITY_REFRESH, ROUTE_CONFIG_AUDIO,
-    ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY, ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM,
-    ROUTE_CONFIG_RESET, ROUTE_CONFIG_SYSTEM, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE,
-    ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH, ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS,
-    ROUTE_METRICS, ROUTE_OPERATOR_STATUS, ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE,
-    ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT, ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT,
-    ROUTE_SYSTEM_INFO, ROUTE_TOOLS, ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
-};
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
-use super::catalog::{
-    ROUTE_CONFIG_ACCOUNTS, ROUTE_CONFIG_ACCOUNTS_PREFIX, ROUTE_CONFIG_CAPABILITIES,
-    ROUTE_CONFIG_CAPABILITIES_PREFIX, ROUTE_CONFIG_PROVIDERS,
+    ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CHANNEL_CONNECTIVITY_REFRESH, ROUTE_CONFIG_ACCOUNTS,
+    ROUTE_CONFIG_ACCOUNTS_PREFIX, ROUTE_CONFIG_AUDIO, ROUTE_CONFIG_CAPABILITIES,
+    ROUTE_CONFIG_CAPABILITIES_PREFIX, ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY,
+    ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM, ROUTE_CONFIG_PROVIDERS, ROUTE_CONFIG_RESET,
+    ROUTE_CONFIG_SYSTEM, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE, ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH,
+    ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS, ROUTE_METRICS, ROUTE_OPERATOR_STATUS,
+    ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE, ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT,
+    ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT, ROUTE_SYSTEM_INFO, ROUTE_TOOLS,
+    ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
 };
 #[cfg(feature = "ota")]
 use super::catalog::{ROUTE_OTA, ROUTE_OTA_CHECK};
@@ -222,16 +216,64 @@ fn rejected_route_response(path: &str) -> OutgoingResponse {
         "path".to_string(),
         serde_json::Value::String(path.to_string()),
     );
+    if is_office_config_route(path) {
+        return api_to_out(ApiResponse::err_key_with_meta(
+            501,
+            "Not Implemented",
+            "capability.unsupported",
+            Some("http_router_dispatch"),
+            None,
+            None,
+            None,
+            extra,
+        ));
+    }
     api_to_out(ApiResponse::err_key_with_meta(
         410,
         "Gone",
         "http.route_removed",
         Some("http_router_dispatch"),
-        Some("route is not available in this runtime"),
+        None,
         None,
         None,
         extra,
     ))
+}
+
+fn is_office_config_route(path: &str) -> bool {
+    path == ROUTE_CONFIG_ACCOUNTS
+        || path.starts_with(ROUTE_CONFIG_ACCOUNTS_PREFIX)
+        || path == ROUTE_CONFIG_CAPABILITIES
+        || path.starts_with(ROUTE_CONFIG_CAPABILITIES_PREFIX)
+        || path == ROUTE_CONFIG_PROVIDERS
+}
+
+fn internal_error_key_response(
+    status: u16,
+    status_text: &'static str,
+    error_key: &str,
+    stage: &'static str,
+) -> OutgoingResponse {
+    api_to_out(ApiResponse::err_key_with_meta(
+        status,
+        status_text,
+        error_key,
+        Some(stage),
+        None,
+        None,
+        None,
+        serde_json::Map::new(),
+    ))
+}
+
+fn channel_connectivity_error_response(stage: &'static str, detail: &str) -> OutgoingResponse {
+    log::warn!("{}: {}", stage, detail);
+    internal_error_key_response(
+        500,
+        "Internal Server Error",
+        "channel.snapshot_failed",
+        stage,
+    )
 }
 
 fn apply_restart_action(
@@ -473,22 +515,7 @@ fn office_config_error_response(error: &Error) -> ApiResponse {
 }
 
 fn operator_window_required_response(path: &str) -> OutgoingResponse {
-    let mut extra = serde_json::Map::new();
-    extra.insert("path".to_string(), serde_json::json!(path));
-    extra.insert(
-        "open_endpoint".to_string(),
-        serde_json::json!("POST /api/operator/window"),
-    );
-    let body = ApiResponse::err_key_with_meta(
-        403,
-        "Forbidden",
-        "system.operator_window_required",
-        None,
-        None,
-        None,
-        None,
-        extra,
-    );
+    let body = auth::operator_window_required_response(path);
     OutgoingResponse::json(body.status, body.status_text, CORS_HEADERS, body.body)
 }
 
@@ -724,11 +751,13 @@ fn dispatch_impl(
                 ApiResponse::err_503_key("network.wifi_scan_unavailable"),
             )),
             Err(handlers::wifi_scan::WifiScanError::Other(error)) => {
-                Ok(api_to_out(ApiResponse::err_500_key_with_upstream(
-                    api_contract::COMMON_OPERATION_FAILED,
-                    Some(&error.to_string()),
-                    error.http_status_code(),
-                )))
+                log::warn!("wifi_scan: {}", error);
+                Ok(internal_error_key_response(
+                    500,
+                    "Internal Server Error",
+                    api_contract::error_key(&error),
+                    error.stage(),
+                ))
             }
         },
         ("GET", ROUTE_HARDWARE_DISCOVERY) => {
@@ -756,11 +785,13 @@ fn dispatch_impl(
                     api_to_out(ApiResponse::err_503_key("hardware.discovery_unavailable")),
                 ),
                 Err(handlers::hardware_discovery::HardwareDiscoveryError::Other(error)) => {
-                    Ok(api_to_out(ApiResponse::err_500_key_with_upstream(
-                        api_contract::COMMON_OPERATION_FAILED,
-                        Some(&error.to_string()),
-                        error.http_status_code(),
-                    )))
+                    log::warn!("hardware_discovery: {}", error);
+                    Ok(internal_error_key_response(
+                        500,
+                        "Internal Server Error",
+                        api_contract::error_key(&error),
+                        error.stage(),
+                    ))
                 }
             }
         }
@@ -907,16 +938,10 @@ fn dispatch_impl(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(msg) => Ok(api_to_out(ApiResponse::err_key_with_meta(
-                    500,
-                    "Internal Server Error",
-                    "channel.snapshot_failed",
-                    Some("channel_connectivity"),
-                    Some(msg.as_str()),
-                    None,
-                    None,
-                    serde_json::Map::new(),
-                ))),
+                Err(msg) => Ok(channel_connectivity_error_response(
+                    "channel_connectivity",
+                    &msg,
+                )),
             }
         }
         ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH) => {
@@ -933,16 +958,10 @@ fn dispatch_impl(
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(msg) => Ok(api_to_out(ApiResponse::err_key_with_meta(
-                    500,
-                    "Internal Server Error",
-                    "channel.snapshot_failed",
-                    Some("channel_connectivity"),
-                    Some(msg.as_str()),
-                    None,
-                    None,
-                    serde_json::Map::new(),
-                ))),
+                Err(msg) => Ok(channel_connectivity_error_response(
+                    "channel_connectivity",
+                    &msg,
+                )),
             }
         }
         ("GET", ROUTE_SESSIONS) => {
@@ -989,10 +1008,32 @@ fn dispatch_impl(
                         CORS_HEADERS,
                         body.into_bytes(),
                     )),
-                    Err(msg) => Ok(api_to_out(ApiResponse::err_500(&msg))),
+                    Err(msg) => {
+                        log::warn!("sessions_delete: {}", msg);
+                        Ok(internal_error_key_response(
+                            500,
+                            "Internal Server Error",
+                            api_contract::COMMON_OPERATION_FAILED,
+                            "sessions_delete",
+                        ))
+                    }
                 },
-                None => Ok(api_to_out(ApiResponse::err_400(
-                    "missing chat_id query param",
+                None => Ok(api_to_out(ApiResponse::err_key_with_meta(
+                    400,
+                    "Bad Request",
+                    api_contract::COMMON_MISSING_QUERY_PARAM,
+                    Some("sessions_delete"),
+                    None,
+                    None,
+                    None,
+                    {
+                        let mut extra = serde_json::Map::new();
+                        extra.insert(
+                            "query_param".to_string(),
+                            serde_json::Value::String("chat_id".to_string()),
+                        );
+                        extra
+                    },
                 ))),
             }
         }
@@ -1116,13 +1157,9 @@ fn dispatch_impl(
                 return Ok(o);
             }
             let Some(env) = env else {
-                return Ok(OutgoingResponse::json(
-                    404,
-                    "Not Found",
-                    CORS_HEADERS,
-                    br#"{"ok":false,"error":"webhook ingress is not available on this route lane"}"#
-                        .to_vec(),
-                ));
+                return Ok(api_to_out(ApiResponse::err_404_key(
+                    api_contract::WEBHOOK_INGRESS_UNAVAILABLE,
+                )));
             };
             let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let token = incoming
@@ -1606,6 +1643,50 @@ mod tests {
             parsed.get("error").is_none(),
             "body={}",
             String::from_utf8_lossy(&response.body)
+        );
+    }
+
+    #[test]
+    fn internal_route_errors_do_not_expose_message_text() {
+        for response in [
+            super::rejected_route_response("/api/device_snapshot"),
+            super::channel_connectivity_error_response("channel_connectivity", "serde failed"),
+            super::internal_error_key_response(
+                500,
+                "Internal Server Error",
+                crate::platform::http_server::api_contract::COMMON_OPERATION_FAILED,
+                "sessions_delete",
+            ),
+        ] {
+            let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+            assert!(parsed.get("error_key").is_some(), "body={parsed}");
+            assert!(
+                parsed.get("error").is_none(),
+                "internal errors must not expose localized/free-form error: {parsed}"
+            );
+            assert!(
+                parsed.get("upstream_error").is_none(),
+                "internal errors must keep details in logs only: {parsed}"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "capability_office"))]
+    #[test]
+    fn unsupported_office_config_route_returns_english_key_without_message_text() {
+        let response = super::rejected_route_response(super::ROUTE_CONFIG_ACCOUNTS);
+        assert_eq!(response.status, 501);
+
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], "capability.unsupported");
+        assert_eq!(parsed["path"], super::ROUTE_CONFIG_ACCOUNTS);
+        assert!(
+            parsed.get("error").is_none(),
+            "unsupported route must use key-only contract: {parsed}"
+        );
+        assert!(
+            parsed.get("message").is_none(),
+            "unsupported route must not grow localized/free-form message fields: {parsed}"
         );
     }
 

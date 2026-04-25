@@ -4,7 +4,7 @@
 
 ## 1. 范围
 
-本文说明 Beetls OS 当前的打包裁剪合同：
+本文说明 Beetle OS 当前的打包裁剪合同：
 
 - `Cargo.toml` `[features]` 的分组与语义
 - `build.sh --package-profile` 的包型合同
@@ -147,7 +147,7 @@ cargo check --bin beetle --no-default-features \
 
 ```bash
 cargo check --bin beetle --no-default-features \
-  --features default,capability_office,dingtalk
+  --features default,capability_office,dingtalk,websocket
 ```
 
 ### 7.3 单独验证可选通道

@@ -2,7 +2,7 @@
 
 **English** | [中文](../zh-cn/hardware-device-config.md) | [Doc index](../README.md)
 
-This page explains the saved hardware configuration Beetls OS reads after you connect devices.
+This page explains the saved hardware configuration Beetle OS reads after you connect devices.
 It is a field guide, not a wiring tutorial.
 
 ## The Short Path
@@ -13,7 +13,7 @@ Most hardware setups follow this pattern:
 2. define `i2c_bus` only if you actually use I2C
 3. add `i2c_devices` or `i2c_sensors` only when needed
 4. save the config
-5. verify the capability appears in Beetls OS
+5. verify the capability appears in Beetle OS
 
 Saved data ends up in `config/hardware.json`.
 
@@ -30,7 +30,7 @@ You do not need to use every section.
 
 ## What `hardware_devices` Is For
 
-This section defines devices Beetls OS can use directly.
+This section defines devices Beetle OS can use directly.
 You describe the device name, purpose, and wiring here.
 
 Current `device_type` values:
@@ -50,7 +50,7 @@ Each device uses these core fields:
 | `device_type` | device type |
 | `pins` | wiring info |
 | `what` | what the device is |
-| `how` | how Beetls OS should use it |
+| `how` | how Beetle OS should use it |
 | `options` | extra options, depending on the device |
 
 ## `i2c_bus`, `i2c_devices`, And `i2c_sensors`
@@ -119,9 +119,9 @@ If you use `dht`, common `options.model` values are `dht11`, `dht22`, or `dht21`
 
 ## What Happens After Save
 
-- `hardware_devices` tells Beetls OS which devices it can use directly
-- `i2c_devices` tells Beetls OS which I2C devices it can access
-- `i2c_sensors` tells Beetls OS which I2C sensors it can read and monitor
+- `hardware_devices` tells Beetle OS which devices it can use directly
+- `i2c_devices` tells Beetle OS which I2C devices it can access
+- `i2c_sensors` tells Beetle OS which I2C sensors it can read and monitor
 
 If the config is invalid, those abilities do not appear normally.
 

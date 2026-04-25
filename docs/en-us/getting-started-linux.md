@@ -2,7 +2,7 @@
 
 [中文](../zh-cn/getting-started-linux.md) | **English** | [Doc index](../README.md)
 
-This page gets Beetls OS from a Linux build to a first successful chat reply.
+This page gets Beetle OS from a Linux build to a first successful chat reply.
 
 ## Before You Begin
 
@@ -25,7 +25,7 @@ TARGET=linux ./build.sh --package-linux
 If you already have a built artifact, you can skip ahead to deployment.
 For the simplest release path, prefer `TARGET=linux ./build.sh --package-linux`; `BUILD_METHOD=auto` will try Docker first on macOS, then a saved remote Linux host, and only then a local cross-build.
 
-## 2. Deploy Beetls OS
+## 2. Deploy Beetle OS
 
 The standard deployment entry is:
 
@@ -37,7 +37,8 @@ If you need the full Linux release layout, restart behavior, or rollback flow, r
 
 ## 3. Open the Setup Page
 
-After deployment, open Beetls OS through the host address you deployed to.
+After deployment, open the Configure UI from the hosted page, desktop shell, or a locally served build, then enter the deployed host address as the **Device URL**.
+The service root returns API inventory JSON and should not be treated as an embedded setup page.
 
 The normal next step is the browser-based setup flow, where you save:
 
@@ -79,5 +80,5 @@ If you need to manage the runtime directly later, the common commands are:
 
 - For Linux deploy, restart, stop, and rollback: [linux-release-rollback.md](linux-release-rollback.md)
 - For the browser setup areas: [configuration.md](configuration.md)
-- To understand Beetls OS capability surface: [capabilities.md](capabilities.md)
+- To understand Beetle OS capability surface: [capabilities.md](capabilities.md)
 - To build your own integration: [config-api.md](config-api.md)

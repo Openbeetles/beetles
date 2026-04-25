@@ -2,13 +2,13 @@
 
 [中文](../zh-cn/build-script.md) | **English** | [Doc index](../README.md)
 
-`build.sh` is the terminal-first path for building, flashing, and deploying Beetls OS.
+`build.sh` is the terminal-first path for building, flashing, and deploying Beetle OS.
 
 ## Common Tasks
 
 | What you want to do | Starting command |
 |---------------------|-----------------|
-| Flash Beetls OS to an ESP board | `./build.sh --flash` |
+| Flash Beetle OS to an ESP board | `./build.sh --flash` |
 | Build Linux x86_64 | `TARGET=linux ./build.sh` |
 | Build Linux armv7 | `TARGET=linux-armv7 ./build.sh` |
 | Build Linux aarch64 | `TARGET=linux-aarch64 ./build.sh` |
@@ -113,7 +113,7 @@ What matters most:
 - `--package-linux` derives the bundle version from `Cargo.toml package.version`, so the public release path no longer needs a second manual packaging command
 - `BUILD_METHOD=auto` is now non-interactive: on macOS it prefers Docker, then a saved remote Linux host, and only then falls back to local cross-build
 - `--deploy-linux` does not compile; it deploys an existing artifact
-- `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetls OS state root `skills/` directory
+- `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetle OS state root `skills/` directory
 - `./build.sh` is the main Linux build and deploy entry; Docker helper scripts are internal helpers behind `BUILD_METHOD=docker`
 - `TARGET=linux BUILD_METHOD=docker` builds the GNU target inside an amd64 Linux container, avoiding a fake musl cross sysroot for normal Linux system-library dependencies
 - for ARM Linux targets, `BUILD_METHOD=docker` automatically boots the matching host-architecture GNU build container

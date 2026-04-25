@@ -367,12 +367,7 @@ mod tests {
             .map(|policy| policy.reason.len())
             .sum();
         assert_eq!(reason_bytes, 0);
-        for name in [
-            "http_config_exec",
-            "http_diag_exec",
-            "http_ota_exec",
-            "http_snapshot_exec",
-        ] {
+        for name in ["http_config_exec", "http_diag_exec", "http_ota_exec"] {
             assert!(!native_task_name_policy(name));
         }
     }

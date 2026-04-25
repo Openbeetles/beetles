@@ -2,7 +2,7 @@
 
 [English](../en-us/getting-started-linux.md) | **中文** | [文档索引](../README.md)
 
-本文说明 Beetls OS 在 Linux 上从构建、部署到完成首次消息联通的最小流程。
+本文说明 Beetle OS 在 Linux 上从构建、部署到完成首次消息联通的最小流程。
 
 ## 前置条件
 
@@ -25,7 +25,7 @@ TARGET=linux ./build.sh --package-linux
 如已有构建产物，可直接进入部署步骤。
 如果你想走最省事的发布路径，优先用 `TARGET=linux ./build.sh --package-linux`；`BUILD_METHOD=auto` 会在 macOS 上先尝试 Docker，再尝试已保存的远端 Linux 主机，最后才回落到本地交叉构建。
 
-## 2. 部署 Beetls OS
+## 2. 部署 Beetle OS
 
 标准部署入口是：
 
@@ -37,7 +37,8 @@ Linux 发布目录、重启方式和回滚流程参见 [linux-release-rollback.m
 
 ## 3. 打开配置页
 
-部署完成后，通过目标主机地址打开 Beetls OS。
+部署完成后，打开在线配置页、桌面壳或本地构建出的 Configure UI，并把目标主机地址填为 **「设备地址」**。
+服务根路径返回 API 清单 JSON，不应被当作内置配置页。
 
 浏览器配置阶段建议完成以下项目：
 

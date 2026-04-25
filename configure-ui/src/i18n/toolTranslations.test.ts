@@ -106,8 +106,8 @@ test('critical office-related tool labels stay aligned with backend semantics', 
   assert.equal(zhCN.translation.tools.contacts_directory, '统一联系人与目录（邮件/日历）')
   assert.equal(enUS.translation.tools.contacts_directory, 'Unified people directory (mail/calendar)')
 
-  assert.equal(zhCN.translation.tools.office_status, '办公账户与运行状态')
-  assert.equal(enUS.translation.tools.office_status, 'Office accounts & runtime status')
+  assert.equal(zhCN.translation.tools.office_status, '办公账户与状态')
+  assert.equal(enUS.translation.tools.office_status, 'Office accounts & status')
 })
 
 test('account provider labels are localized by provider kind with safe fallback', () => {

@@ -40,7 +40,7 @@ Each endpoint is described in terms of purpose, request, and response.
 - `202`: request accepted and continues asynchronously.
 - `400`: invalid parameter or request body.
 - `401`: device is not activated, or pairing code is wrong.
-- `403`: CSRF failed, webhook token failed, or the route currently requires an operator window.
+- `403`: CSRF failed, webhook token failed, or the route currently requires a temporary maintenance window.
 - `404`: resource not found.
 - `500`: server-side failure.
 - `503`: temporarily unavailable, such as scanner not ready or queue unavailable.
@@ -72,6 +72,11 @@ Notes:
 - `error_key` is the stable semantic contract that frontends and other clients translate.
 - `upstream_error` is raw troubleshooting text and is not translated.
 - Only debug/operator routes and protocol-compatibility routes are outside this contract.
+
+Currently emitted infrastructure/runtime keys include:
+
+- `http.route_worker_busy`: the device is temporarily busy processing configuration or diagnostic work; retry later.
+- `runtime.config_blocked_by_voice`: configuration activity is rejected while realtime voice is active; retry after the reported delay.
 
 ## Activation and security
 
@@ -153,7 +158,6 @@ Fields:
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `session_max_messages`
 - `tg_group_activation`
 - `locale`
   Only `zh` and `en` are accepted. Invalid values now return `400 application/json` instead of being silently ignored.
@@ -187,7 +191,6 @@ Fields:
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `session_max_messages`
 - `tg_group_activation`
 - `locale`
 
@@ -926,6 +929,8 @@ Purpose: read the currently available tool list.
 
 Auth: `Activated`
 
+Embedded ESP note: `/api/tools` remains available after activation. It still requires the device to be paired, but it does not require a temporary diagnostic session.
+
 Success response: `200 application/json`
 
 ```json
@@ -1289,7 +1294,7 @@ Top-level field:
 
 **POST /api/operator/window**
 
-Purpose: open a temporary operator window so protected operator routes can be accessed.
+Purpose: open a temporary maintenance window so protected maintenance routes can be accessed.
 
 Auth: `Pairing code + CSRF`
 

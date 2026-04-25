@@ -1,6 +1,8 @@
 //! ESP operator surface budgeting and window policy.
 
 use crate::memory::MemorySystemKind;
+#[cfg(not(any(test, target_arch = "xtensa", target_arch = "riscv32")))]
+use crate::platform::http_server::router::catalog::operator_route_endpoints;
 #[cfg(all(
     feature = "ota",
     any(test, target_arch = "xtensa", target_arch = "riscv32")
@@ -8,8 +10,9 @@ use crate::memory::MemorySystemKind;
 use crate::platform::http_server::router::catalog::OTA_ROUTE_SPECS;
 #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::http_server::router::catalog::{
-    HttpRouteSpec, OperatorRouteAccess, ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS,
-    OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
+    operator_route_endpoints, HttpRouteSpec, OperatorRouteAccess, ACTION_ROUTE_SPECS,
+    MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS,
+    ROOT_ROUTE_SPECS,
 };
 use serde::Serialize;
 
@@ -174,46 +177,8 @@ fn host_control_plane_inventory(
     ota_supported: bool,
     inbound_webhooks_enabled: bool,
 ) -> ControlPlaneInventory {
-    let mut endpoints = vec![
-        "GET /api/pairing_code".to_string(),
-        "POST /api/pairing_code".to_string(),
-        "GET /api/config/system".to_string(),
-        "POST /api/config/llm".to_string(),
-        "POST /api/config/channels".to_string(),
-        "POST /api/config/system".to_string(),
-        "GET /api/config/hardware".to_string(),
-        "POST /api/config/hardware".to_string(),
-        "GET /api/config/audio".to_string(),
-        "POST /api/config/audio".to_string(),
-        "GET /api/hardware/discovery".to_string(),
-        "GET /api/wifi/scan".to_string(),
-        "GET /api/health".to_string(),
-        "GET /api/operator/status".to_string(),
-        "GET /api/diagnose".to_string(),
-        "GET /api/system_info".to_string(),
-        "GET /api/channel_connectivity".to_string(),
-        "GET /api/tools".to_string(),
-        "GET /api/sessions".to_string(),
-        "GET /api/memory/status".to_string(),
-        "POST /api/memory/maintenance".to_string(),
-        "GET /api/capability_packages".to_string(),
-        "POST /api/capability_packages".to_string(),
-        "GET /api/skills".to_string(),
-        "POST /api/skills".to_string(),
-        "DELETE /api/skills".to_string(),
-        "POST /api/skills/import".to_string(),
-        "POST /api/restart".to_string(),
-        "POST /api/config_reset".to_string(),
-    ];
-    if inbound_webhooks_enabled {
-        endpoints.push("POST /api/webhook".to_string());
-    }
-    if ota_supported {
-        endpoints.push("GET /api/ota/check".to_string());
-        endpoints.push("POST /api/ota".to_string());
-    }
     ControlPlaneInventory {
-        endpoints,
+        endpoints: operator_route_endpoints(None, ota_supported, inbound_webhooks_enabled),
         windowed_endpoints: Vec::new(),
         operator_window: None,
     }
@@ -307,6 +272,14 @@ mod tests {
             .endpoints
             .iter()
             .any(|item| item == "POST /api/operator/window"));
+        assert!(inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "GET /api/tools"));
+        assert!(!inventory
+            .windowed_endpoints
+            .iter()
+            .any(|item| item == "GET /api/tools"));
         assert!(!inventory
             .windowed_endpoints
             .iter()
@@ -329,5 +302,30 @@ mod tests {
             MemorySystemKind::EspCompact,
             "/api/ota"
         ));
+    }
+
+    #[test]
+    fn host_inventory_tracks_current_route_catalog() {
+        let inventory = control_plane_inventory(MemorySystemKind::LinuxFull, false, true, true);
+
+        for endpoint in [
+            "GET /api/config/display",
+            "GET /api/csrf_token",
+            "GET /api/metrics",
+            "GET /api/resource",
+            "POST /api/channel_connectivity/refresh",
+        ] {
+            assert!(
+                inventory.endpoints.iter().any(|item| item == endpoint),
+                "host inventory missing {endpoint}"
+            );
+        }
+        assert!(
+            !inventory
+                .endpoints
+                .iter()
+                .any(|item| item.starts_with("OPTIONS ")),
+            "operator inventory must not advertise CORS preflight routes"
+        );
     }
 }

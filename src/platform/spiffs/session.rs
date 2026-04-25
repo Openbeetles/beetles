@@ -28,6 +28,8 @@ const MAX_CHAT_ID_FILENAME_LEN: usize = 20;
 const SESSION_FILE_EXT: &str = ".jsonl";
 const CHAT_ID_HEADER_PREFIX: &str = "# chat_id: ";
 const SESSION_MESSAGE_ID_PREFIX: &str = "msg_";
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const SESSION_TAIL_READ_MAX_BYTES: usize = 16 * 1024;
 // xtensa/riscv32 targets do not expose AtomicU64; the counter only needs to
 // disambiguate same-timestamp writes within one process, so AtomicU32 is enough.
 static SESSION_MESSAGE_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -282,6 +284,78 @@ fn scan_session_file(buf: &[u8]) -> SessionFileSnapshot {
     }
 }
 
+fn scan_session_tail(buf: &[u8], limit: usize, tail_truncated: bool) -> SessionFileSnapshot {
+    let cap = limit.clamp(1, MAX_SESSION_ENTRIES);
+    let mut messages = VecDeque::with_capacity(cap);
+    let mut malformed_lines = 0usize;
+    let mut first = !tail_truncated;
+    let mut first_tail_line = tail_truncated;
+    let mut needs_repair = !buf.is_empty() && !buf.ends_with(b"\n");
+
+    for raw_line in buf.split(|&b| b == b'\n') {
+        if first_tail_line {
+            first_tail_line = false;
+            if !raw_line.is_empty() {
+                continue;
+            }
+        }
+        if raw_line.is_empty() {
+            continue;
+        }
+        let Ok(line) = std::str::from_utf8(raw_line) else {
+            malformed_lines = malformed_lines.saturating_add(1);
+            needs_repair = true;
+            first = false;
+            continue;
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if first && parse_chat_id_header(trimmed).is_some() {
+            first = false;
+            continue;
+        }
+        first = false;
+        let parsed = parse_jsonl_line(trimmed);
+        let message = match parsed {
+            ParsedJsonlLine::Ignored => None,
+            ParsedJsonlLine::Message(message) => Some(message),
+            ParsedJsonlLine::RepairedMessage(message) => {
+                malformed_lines = malformed_lines.saturating_add(1);
+                needs_repair = true;
+                Some(message)
+            }
+            ParsedJsonlLine::Invalid => {
+                malformed_lines = malformed_lines.saturating_add(1);
+                needs_repair = true;
+                None
+            }
+        };
+        let Some(message) = message else {
+            continue;
+        };
+        if messages.len() == cap {
+            messages.pop_front();
+        }
+        messages.push_back(message);
+    }
+
+    let message_count = if tail_truncated && !messages.is_empty() {
+        MAX_SESSION_ENTRIES
+    } else {
+        messages.len()
+    };
+    SessionFileSnapshot {
+        messages,
+        message_count,
+        malformed_lines,
+        has_data: !buf.is_empty(),
+        ends_with_newline: buf.ends_with(b"\n"),
+        needs_repair,
+    }
+}
+
 fn cleanup_legacy_count_sidecar(path: &Path) {
     let mut legacy_path = path.as_os_str().to_os_string();
     legacy_path.push(".c");
@@ -345,6 +419,78 @@ fn read_existing_file_unlocked(path: &Path) -> Result<PsramVec<u8>> {
     Ok(buf)
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn read_file_tail_unlocked(path: &Path, max_bytes: usize) -> Result<(PsramVec<u8>, bool)> {
+    use std::io::Seek as _;
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_read", "invalid path"))?;
+    let mut file = std::fs::File::open(path_str).map_err(|e| Error::io("session_read", e))?;
+    let len = file
+        .metadata()
+        .ok()
+        .and_then(|meta| usize::try_from(meta.len()).ok())
+        .unwrap_or(0);
+    if len == 0 {
+        return Ok((PsramVec::from(Vec::new()), false));
+    }
+    let read_len = len.min(max_bytes.max(1));
+    let offset = len.saturating_sub(read_len);
+    file.seek(std::io::SeekFrom::Start(offset as u64))
+        .map_err(|e| Error::io("session_read", e))?;
+    let mut buf = if read_len >= super::PSRAM_FILE_THRESHOLD {
+        super::psram_vec_with_capacity(read_len)
+    } else {
+        PsramVec::from(Vec::with_capacity(read_len))
+    };
+    let mut remaining = read_len;
+    let mut chunk = [0u8; 1024];
+    while remaining > 0 {
+        let want = remaining.min(chunk.len());
+        let n = file
+            .read(&mut chunk[..want])
+            .map_err(|e| Error::io("session_read", e))?;
+        if n == 0 {
+            break;
+        }
+        buf.write_all(&chunk[..n])
+            .map_err(|e| Error::io("session_read", e))?;
+        remaining -= n;
+    }
+    Ok((buf, offset > 0))
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn read_session_recent_bytes_unlocked(path: &Path) -> Result<(PsramVec<u8>, bool)> {
+    read_file_tail_unlocked(path, SESSION_TAIL_READ_MAX_BYTES)
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn read_session_recent_bytes_unlocked(path: &Path) -> Result<(PsramVec<u8>, bool)> {
+    read_existing_file_unlocked(path).map(|buf| (buf, false))
+}
+
+fn observe_session_append_state_unlocked(path: &Path) -> Result<SessionAppendState> {
+    let len = match std::fs::metadata(path) {
+        Ok(meta) => usize::try_from(meta.len()).unwrap_or(usize::MAX),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SessionAppendState::default());
+        }
+        Err(error) => return Err(Error::io("session_read", error)),
+    };
+    if len == 0 {
+        return Ok(SessionAppendState::default());
+    }
+    let (buf, tail_truncated) = read_session_recent_bytes_unlocked(path)?;
+    let snapshot = scan_session_tail(&buf, MAX_SESSION_ENTRIES, tail_truncated);
+    Ok(SessionAppendState {
+        message_count: snapshot.message_count,
+        has_data: snapshot.has_data,
+        ends_with_newline: snapshot.ends_with_newline,
+    })
+}
+
 fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
     ensure_session_parent_dir(path, "session_write")?;
     super::write_file_unlocked(
@@ -369,12 +515,26 @@ fn write_session_messages_unlocked<'a>(
         .ok()
         .and_then(|meta| usize::try_from(meta.len()).ok())
         .unwrap_or(0);
-    let mut file = OpenOptions::new()
+    let truncate_on_open =
+        super::truncate_on_open_for_write(super::WriteTailPadding::Newlines, old_len);
+    let file = OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(false)
+        .truncate(truncate_on_open)
         .open(path_str)
+        .or_else(|error| {
+            if !truncate_on_open && error.kind() == std::io::ErrorKind::NotFound {
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(path_str)
+            } else {
+                Err(error)
+            }
+        })
         .map_err(|e| Error::io("session_write", e))?;
+    let mut file = file;
     let mut written = 0usize;
     let mut message_count = 0usize;
 
@@ -527,6 +687,29 @@ fn load_session_snapshot_unlocked(
                 );
             }
         }
+    }
+    Ok(snapshot)
+}
+
+fn load_session_tail_snapshot_unlocked(
+    path: &Path,
+    chat_id: &str,
+    limit: usize,
+) -> Result<SessionFileSnapshot> {
+    let (existing_buf, tail_truncated) = if path.exists() {
+        read_session_recent_bytes_unlocked(path)?
+    } else {
+        (PsramVec::from(Vec::new()), false)
+    };
+    let snapshot = scan_session_tail(&existing_buf, limit, tail_truncated);
+    if snapshot.needs_repair {
+        log::warn!(
+            "[{}] session needs repair chat_id={} bad_lines={} kept_messages={} repair=deferred",
+            TAG,
+            chat_id,
+            snapshot.malformed_lines,
+            snapshot.messages.len()
+        );
     }
     Ok(snapshot)
 }
@@ -712,6 +895,16 @@ impl SessionStore for SpiffsSessionStore {
                         state.ends_with_newline,
                         None,
                     ),
+                    None if self.should_defer_compact_on_append() => {
+                        let state = observe_session_append_state_unlocked(&path)?;
+                        counts.insert(chat_id.to_string(), state);
+                        (
+                            state.message_count,
+                            state.has_data,
+                            state.ends_with_newline,
+                            None,
+                        )
+                    }
                     None => {
                         let snapshot = load_session_snapshot_unlocked(
                             &path,
@@ -858,12 +1051,8 @@ impl SessionStore for SpiffsSessionStore {
                 .collect());
         }
         let recent = with_fs_lock(|| {
-            let snapshot = load_session_snapshot_unlocked(
-                &path,
-                chat_id,
-                write_header,
-                SessionRepairMode::Deferred,
-            )?;
+            let _ = write_header;
+            let snapshot = load_session_tail_snapshot_unlocked(&path, chat_id, cap)?;
             let start = snapshot.messages.len().saturating_sub(cap);
             Ok(snapshot
                 .messages
@@ -871,7 +1060,7 @@ impl SessionStore for SpiffsSessionStore {
                 .skip(start)
                 .collect::<VecDeque<_>>())
         })?;
-        if cap == MAX_SESSION_ENTRIES {
+        if cap == MAX_SESSION_ENTRIES || self.should_defer_compact_on_append() {
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
         }
@@ -888,12 +1077,8 @@ impl SessionStore for SpiffsSessionStore {
             return Ok(Vec::new());
         }
         let (recent, needs_repair) = with_fs_lock(|| {
-            let snapshot = load_session_snapshot_unlocked(
-                &path,
-                chat_id,
-                write_header,
-                SessionRepairMode::Deferred,
-            )?;
+            let _ = write_header;
+            let snapshot = load_session_tail_snapshot_unlocked(&path, chat_id, cap)?;
             let start = snapshot.messages.len().saturating_sub(cap);
             let needs_repair = snapshot.needs_repair;
             Ok((
@@ -945,17 +1130,20 @@ impl SessionStore for SpiffsSessionStore {
         }
         with_fs_lock(|| {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            let snapshot = load_session_snapshot_unlocked(
-                &path,
-                chat_id,
-                write_header,
-                SessionRepairMode::Deferred,
-            )?;
-            counts.insert(
-                chat_id.to_string(),
-                SessionAppendState::from_observed_snapshot(&snapshot),
-            );
-            Ok(snapshot.message_count)
+            let state = if self.should_defer_compact_on_append() {
+                let _ = write_header;
+                observe_session_append_state_unlocked(&path)?
+            } else {
+                let snapshot = load_session_snapshot_unlocked(
+                    &path,
+                    chat_id,
+                    write_header,
+                    SessionRepairMode::Deferred,
+                )?;
+                SessionAppendState::from_observed_snapshot(&snapshot)
+            };
+            counts.insert(chat_id.to_string(), state);
+            Ok(state.message_count)
         })
     }
 
@@ -1237,8 +1425,8 @@ mod tests {
     }
 
     #[test]
-    fn append_batch_preserves_newline_after_deferred_count_cache_warmup() {
-        let store = SpiffsSessionStore::new();
+    fn append_batch_preserves_newline_after_cold_append_state_observation() {
+        let store = SpiffsSessionStore::new_with_deferred_compact_for_test();
         let chat_id = format!("append-count-cache-{}", std::process::id());
         let (path, _) = session_path(&chat_id).expect("path");
         let _ = std::fs::remove_file(&path);
@@ -1248,7 +1436,11 @@ mod tests {
         let legacy_without_newline = b"{\"role\":\"user\",\"content\":\"ok\"}";
         write_session_body_unlocked(&path, legacy_without_newline).expect("seed legacy file");
 
-        assert_eq!(store.message_count(&chat_id).expect("message count"), 1);
+        assert_eq!(
+            store.message_count(&chat_id).expect("message count"),
+            1,
+            "cold append state must preserve the actual count while observing newline status"
+        );
         store
             .append_batch(
                 &chat_id,
@@ -1328,6 +1520,51 @@ mod tests {
             recent.last().expect("last recent").content,
             "overflow reply"
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn linux_load_recent_reads_full_recent_ring_beyond_legacy_tail_window() {
+        let store = SpiffsSessionStore::new();
+        let chat_id = format!("linux-full-recent-ring-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+
+        let mut seeded = String::new();
+        for index in 0..MAX_SESSION_ENTRIES {
+            let message = StoredSessionMessage {
+                message_id: format!("msg_seed_{index:03}"),
+                role: "user".to_string(),
+                content: format!("seed {index:03} {}", "x".repeat(900)),
+            };
+            seeded.push_str(&serde_json::to_string(&message).expect("seed line"));
+            seeded.push('\n');
+        }
+        assert!(
+            seeded.len() > 64 * 1024,
+            "fixture must exceed the legacy non-ESP tail read window"
+        );
+        write_session_body_unlocked(&path, seeded.as_bytes()).expect("seed full session");
+
+        let recent = store
+            .load_recent(&chat_id, MAX_SESSION_ENTRIES)
+            .expect("recent");
+        assert_eq!(recent.len(), MAX_SESSION_ENTRIES);
+        assert!(recent
+            .first()
+            .expect("first recent")
+            .content
+            .starts_with("seed 000 "));
+        assert!(recent
+            .last()
+            .expect("last recent")
+            .content
+            .starts_with("seed 127 "));
 
         let _ = std::fs::remove_file(&path);
     }

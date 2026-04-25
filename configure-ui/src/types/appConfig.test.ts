@@ -72,14 +72,12 @@ test("normalizeLlmConfigFromDevice keeps partial source rows renderable", () => 
 test("normalizeSystemConfigFromDevice fills missing scalar fields", () => {
   const config = normalizeSystemConfigFromDevice({
     wifi_ssid: "Office",
-    session_max_messages: Number.NaN,
   });
 
   assert.deepEqual(config, {
     wifi_ssid: "Office",
     wifi_pass: "",
     proxy_url: "",
-    session_max_messages: 32,
     tg_group_activation: "mention",
     locale: null,
   });

@@ -2,7 +2,7 @@
 
 [返回文档总索引](../README.md)
 
-公开文档使用产品名 Beetls OS；命令、服务名和文件路径仍使用 `beetle`。
+公开文档使用产品名 Beetle OS；命令、服务名和文件路径仍使用 `beetle`。
 
 ## Start
 

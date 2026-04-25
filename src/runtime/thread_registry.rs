@@ -308,7 +308,7 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
         mode.current_mode.as_str(),
         mode.wifi_sta_connected,
         mode.boot_phase_active,
@@ -323,6 +323,7 @@ pub fn format_runtime_mode_log_line() -> String {
         mode.channel_plane_alive,
         mode.voice_plane_alive,
         mode.agent_plane_alive,
+        crate::network::external_wss_connecting_count(),
         mode.action_budget.allow_due_user_timers,
         mode.action_budget.allow_periodic_maintenance,
         mode.action_budget.allow_non_voice_outbound,
@@ -559,16 +560,22 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: false,
             mode_sensitive: true,
         },
-        "http_config_exec" | "http_diag_exec" | "http_ota_exec" | "http_snapshot_exec" => {
-            ThreadProfile {
-                execution_class: ThreadExecutionClass::Config,
-                risk_class: ThreadRiskClass::High,
-                tls_capable: true,
-                http_capable: true,
-                wss_capable: false,
-                mode_sensitive: true,
-            }
-        }
+        "http_snapshot_exec" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Config,
+            risk_class: ThreadRiskClass::Medium,
+            tls_capable: false,
+            http_capable: true,
+            wss_capable: false,
+            mode_sensitive: true,
+        },
+        "http_config_exec" | "http_diag_exec" | "http_ota_exec" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Config,
+            risk_class: ThreadRiskClass::High,
+            tls_capable: true,
+            http_capable: true,
+            wss_capable: false,
+            mode_sensitive: true,
+        },
         "config_plane_watch" => ThreadProfile {
             execution_class: ThreadExecutionClass::Runtime,
             risk_class: ThreadRiskClass::Low,
@@ -601,16 +608,14 @@ fn thread_profile(name: &str) -> ThreadProfile {
             wss_capable: false,
             mode_sensitive: true,
         },
-        "bg_timer" | "heartbeat" | "restart_defer" | "runtime_guard" | "cron" | "remind" => {
-            ThreadProfile {
-                execution_class: ThreadExecutionClass::Runtime,
-                risk_class: ThreadRiskClass::Low,
-                tls_capable: false,
-                http_capable: false,
-                wss_capable: false,
-                mode_sensitive: false,
-            }
-        }
+        "bg_timer" | "heartbeat" | "restart_defer" | "cron" | "remind" => ThreadProfile {
+            execution_class: ThreadExecutionClass::Runtime,
+            risk_class: ThreadRiskClass::Low,
+            tls_capable: false,
+            http_capable: false,
+            wss_capable: false,
+            mode_sensitive: false,
+        },
         "display" => ThreadProfile {
             execution_class: ThreadExecutionClass::Ui,
             risk_class: ThreadRiskClass::Low,
@@ -778,6 +783,34 @@ mod tests {
         assert!(line.contains("twdt_owner=1"));
         assert!(line.contains("twdt_feed_only=1"));
         assert!(line.contains("twdt_unmanaged=1"));
+
+        reset_for_tests();
+    }
+
+    #[test]
+    fn snapshot_route_worker_is_tracked_as_non_tls_config_plane() {
+        let _guard = registry_test_guard();
+        register_thread(
+            "http_snapshot_exec",
+            crate::util::STACK_HTTP_SNAPSHOT_WORKER,
+            Some(SpawnCore::Core1),
+            HttpThreadRole::Io,
+            TaskSpawnSurface::StdThreadCompat,
+        );
+
+        let snapshot = snapshot();
+        assert_eq!(snapshot.alive_threads, 1);
+        assert_eq!(snapshot.http_capable_threads, 1);
+        assert_eq!(snapshot.tls_capable_threads, 0);
+        assert_eq!(snapshot.mode_sensitive_threads, 1);
+        assert_eq!(snapshot.high_risk_threads, 0);
+        assert_eq!(snapshot.task_wdt_feed_only_threads, 1);
+        let detail = &snapshot.details[0];
+        assert_eq!(detail.execution_class, ThreadExecutionClass::Config);
+        assert_eq!(detail.risk_class, ThreadRiskClass::Medium);
+        assert!(detail.http_capable);
+        assert!(!detail.tls_capable);
+        assert!(detail.mode_sensitive);
 
         reset_for_tests();
     }

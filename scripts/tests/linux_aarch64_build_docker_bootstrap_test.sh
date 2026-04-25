@@ -57,8 +57,8 @@ assert_contains "$SCRIPT_PATH" 'retry_in_container "rustup target add \$BUILD_TA
   "aarch64 helper must retry rustup target downloads for transient network failures"
 assert_contains "$SCRIPT_PATH" 'rustup target add \$BUILD_TARGET' \
   "aarch64 helper must install the Rust aarch64 GNU target"
-assert_contains "$SCRIPT_PATH" 'cargo build --release --target aarch64-unknown-linux-gnu --no-default-features --features default,capability_office,dingtalk' \
-  "aarch64 helper must advertise the Cargo-rooted GNU container build command"
+assert_contains "$SCRIPT_PATH" 'TARGET=linux-aarch64 ./build.sh --no-deploy' \
+  "aarch64 helper must advertise the Cargo-metadata-rooted GNU container build command"
 
 assert_contains "$BUILD_SH" 'bash "\$SCRIPT_ROOT/scripts/docker/linux_aarch64_build_docker\.sh"' \
   "build.sh must invoke the internal aarch64 helper from the public Docker build path"

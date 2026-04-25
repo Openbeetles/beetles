@@ -51,6 +51,12 @@ fn should_pause_external_wss_connect_for_pressure(
     pressure == crate::orchestrator::PressureLevel::Critical
 }
 
+fn should_save_plain_dispatch_to_pending_retry_on_pressure(
+    pressure: crate::orchestrator::PressureLevel,
+) -> bool {
+    pressure == crate::orchestrator::PressureLevel::Critical
+}
+
 fn should_defer_external_wss_for_wall_clock(wall_clock_valid: bool) -> bool {
     !wall_clock_valid
 }
@@ -320,14 +326,15 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     match driver.on_recv(data.as_slice()) {
                         Ok(WssRecvAction::Dispatch(Some(msg))) => {
                             let chat_id = msg.chat_id.clone();
-                            if crate::orchestrator::current_pressure()
-                                == crate::orchestrator::PressureLevel::Critical
-                            {
+                            if should_save_plain_dispatch_to_pending_retry_on_pressure(
+                                crate::orchestrator::current_pressure(),
+                            ) {
                                 log::warn!(
-                                    "[{}] pressure critical, dropping msg chat_id={}",
+                                    "[{}] pressure critical, saving msg to pending retry chat_id={}",
                                     tag,
                                     chat_id
                                 );
+                                let _ = pending_retry.save_pending_retry(&msg);
                             } else {
                                 let mut enqueued = false;
                                 let mut pending_msg = Some(msg);
@@ -493,6 +500,7 @@ fn sleep_with_wdt(secs: u64) {
 mod tests {
     use super::{
         should_defer_external_wss_for_wall_clock, should_pause_external_wss_connect_for_pressure,
+        should_save_plain_dispatch_to_pending_retry_on_pressure,
         tls_admission_retry_sleep_secs_for_pressure,
     };
     use crate::orchestrator::PressureLevel;
@@ -506,6 +514,19 @@ mod tests {
             PressureLevel::Cautious
         ));
         assert!(!should_pause_external_wss_connect_for_pressure(
+            PressureLevel::Normal
+        ));
+    }
+
+    #[test]
+    fn critical_pressure_persists_plain_wss_dispatch_for_retry() {
+        assert!(should_save_plain_dispatch_to_pending_retry_on_pressure(
+            PressureLevel::Critical
+        ));
+        assert!(!should_save_plain_dispatch_to_pending_retry_on_pressure(
+            PressureLevel::Cautious
+        ));
+        assert!(!should_save_plain_dispatch_to_pending_retry_on_pressure(
             PressureLevel::Normal
         ));
     }

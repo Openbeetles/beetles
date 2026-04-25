@@ -501,7 +501,15 @@ fn load_state(fs: &dyn StateFs) -> ToolExecutionGovernanceState {
                         REL_PATH_TOOL_EXECUTION_GOVERNANCE,
                         error
                     );
-                    ToolExecutionGovernanceState::default()
+                    let default_state = ToolExecutionGovernanceState::default();
+                    if let Err(repair_error) = persist_state(fs, &default_state) {
+                        log::warn!(
+                            "[tool_governance] failed to repair {}: {}",
+                            REL_PATH_TOOL_EXECUTION_GOVERNANCE,
+                            repair_error
+                        );
+                    }
+                    default_state
                 }
             }
         }
@@ -677,6 +685,27 @@ mod tests {
         fn list_dir(&self, _rel_path: &str) -> Result<Vec<String>> {
             Ok(Vec::new())
         }
+    }
+
+    #[test]
+    fn corrupt_governance_json_is_repaired_to_default_state() {
+        let fs = Arc::new(MemoryStateFs::default());
+        fs.write(
+            REL_PATH_TOOL_EXECUTION_GOVERNANCE,
+            br#"{"updated_at":1}trailing"#,
+        )
+        .unwrap();
+        let governance =
+            ToolExecutionGovernance::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let state = governance.inspect().unwrap();
+
+        assert_eq!(state, ToolExecutionGovernanceState::default());
+        let repaired = fs
+            .read(REL_PATH_TOOL_EXECUTION_GOVERNANCE)
+            .unwrap()
+            .expect("corrupt state should be repaired");
+        assert!(serde_json::from_slice::<ToolExecutionGovernanceState>(&repaired).is_ok());
     }
 
     #[test]

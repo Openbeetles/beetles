@@ -18,10 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::Mutex;
-use std::time::Duration;
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const TRY_INTERVAL_MS: u64 = 50;
@@ -35,9 +32,10 @@ const BACKGROUND_PRE_ADMISSION_YIELD_MS: u64 = 120;
 const REALTIME_WSS_DRAIN_WAIT_MS: u64 = 2_500;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const REALTIME_WSS_DRAIN_POLL_MS: u64 = 50;
+const EXTERNAL_WSS_SUSPEND_WAIT_WARN_MS: u64 = 2_500;
+const EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS: u64 = 50;
 const REALTIME_TLS_ADMISSION_RETRY_MAX: usize = 12;
 const REALTIME_TLS_ADMISSION_RETRY_MS: u64 = 150;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const VOICE_EXCLUSIVE_WAIT_MS: u64 = 500;
 const STREAM_HTTP_STATS_LOG_EVERY: u32 = 50;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -45,8 +43,9 @@ const ROLE_SLOTS_MAX: usize = 16;
 
 static ACTIVE_HTTP_COUNT: AtomicU32 = AtomicU32::new(0);
 static ACTIVE_WSS_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_CONNECTING_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_MANAGED_PRESENT: AtomicBool = AtomicBool::new(false);
-static EXTERNAL_WSS_SUSPEND_REQUESTED: AtomicBool = AtomicBool::new(false);
+static EXTERNAL_WSS_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 static TLS_PERMIT: Mutex<()> = Mutex::new(());
@@ -92,6 +91,7 @@ pub type HttpFactory = dyn Fn() -> Result<Box<dyn PlatformHttpClient>> + Send + 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExternalWssRuntimeSnapshot {
     pub managed_present: bool,
+    pub connecting_count: u32,
     pub suspend_requested: bool,
     pub suspended: bool,
 }
@@ -179,6 +179,33 @@ impl Drop for TransportWssSessionGuard {
     }
 }
 
+/// Scoped marker for an external WSS TCP/TLS/WebSocket handshake in progress.
+pub struct ExternalWssConnectAttemptGuard;
+
+impl Drop for ExternalWssConnectAttemptGuard {
+    fn drop(&mut self) {
+        let _ = EXTERNAL_WSS_CONNECTING_COUNT.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |count| count.checked_sub(1),
+        );
+    }
+}
+
+/// Scoped external WSS suspend request. Multiple owners may hold this concurrently.
+pub struct ExternalWssSuspendGuard {
+    active: bool,
+}
+
+impl Drop for ExternalWssSuspendGuard {
+    fn drop(&mut self) {
+        if self.active {
+            release_external_wss_suspend_request();
+            self.active = false;
+        }
+    }
+}
+
 pub fn set_current_http_thread_role(role: crate::orchestrator::HttpThreadRole) {
     thread_role_store::set_current_http_thread_role(role);
 }
@@ -193,6 +220,10 @@ pub fn active_http_count() -> u32 {
 
 pub fn active_wss_count() -> u32 {
     ACTIVE_WSS_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn external_wss_connecting_count() -> u32 {
+    EXTERNAL_WSS_CONNECTING_COUNT.load(Ordering::Relaxed)
 }
 
 pub fn request_http_permit(
@@ -291,6 +322,11 @@ pub fn begin_wss_session() -> TransportWssSessionGuard {
     TransportWssSessionGuard
 }
 
+pub fn begin_external_wss_connect_attempt() -> ExternalWssConnectAttemptGuard {
+    EXTERNAL_WSS_CONNECTING_COUNT.fetch_add(1, Ordering::Relaxed);
+    ExternalWssConnectAttemptGuard
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn check_internal_heap_for_tls() -> Result<()> {
     let snap = crate::orchestrator::memory_snapshot_live();
@@ -353,29 +389,33 @@ pub fn create_http_client_with_config(
 /// RAII guard for entering voice-exclusive transport ownership.
 pub struct VoiceExclusiveTransportGuard {
     log_tag: &'static str,
+    suspend_guard: Option<ExternalWssSuspendGuard>,
 }
 
 impl VoiceExclusiveTransportGuard {
     pub fn enter(platform: &dyn Platform, log_tag: &'static str) -> Self {
-        request_external_wss_suspend();
+        let suspend_guard = begin_external_wss_suspend_request();
+        crate::state::set_voice_exclusive_active(true);
         log::info!(
             "[{}] realtime session switching runtime mode (external WSS suspended)",
             log_tag
         );
         wait_for_external_wss_to_suspend_and_drain(platform, log_tag);
-        crate::state::set_voice_exclusive_active(true);
         log::info!(
             "[{}] realtime session entering voice-exclusive mode",
             log_tag
         );
-        Self { log_tag }
+        Self {
+            log_tag,
+            suspend_guard: Some(suspend_guard),
+        }
     }
 }
 
 impl Drop for VoiceExclusiveTransportGuard {
     fn drop(&mut self) {
         crate::state::set_voice_exclusive_active(false);
-        request_external_wss_resume();
+        self.suspend_guard.take();
         log::info!(
             "[{}] realtime session left voice-exclusive mode",
             self.log_tag
@@ -386,6 +426,7 @@ impl Drop for VoiceExclusiveTransportGuard {
 pub fn external_wss_runtime_snapshot() -> ExternalWssRuntimeSnapshot {
     ExternalWssRuntimeSnapshot {
         managed_present: external_wss_managed_present(),
+        connecting_count: external_wss_connecting_count(),
         suspend_requested: external_wss_suspend_requested(),
         suspended: external_wss_suspended(),
     }
@@ -394,7 +435,8 @@ pub fn external_wss_runtime_snapshot() -> ExternalWssRuntimeSnapshot {
 pub fn set_external_wss_managed_present(active: bool) {
     EXTERNAL_WSS_MANAGED_PRESENT.store(active, Ordering::Relaxed);
     if !active {
-        EXTERNAL_WSS_SUSPEND_REQUESTED.store(false, Ordering::Relaxed);
+        EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_CONNECTING_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
     }
 }
@@ -404,16 +446,31 @@ pub fn external_wss_managed_present() -> bool {
 }
 
 pub fn request_external_wss_suspend() {
-    EXTERNAL_WSS_SUSPEND_REQUESTED.store(true, Ordering::Relaxed);
+    EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn request_external_wss_resume() {
-    EXTERNAL_WSS_SUSPEND_REQUESTED.store(false, Ordering::Relaxed);
-    EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+    release_external_wss_suspend_request();
+}
+
+pub fn begin_external_wss_suspend_request() -> ExternalWssSuspendGuard {
+    request_external_wss_suspend();
+    ExternalWssSuspendGuard { active: true }
+}
+
+fn release_external_wss_suspend_request() {
+    let _ = EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.fetch_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |count| count.checked_sub(1),
+    );
+    if !external_wss_suspend_requested() {
+        EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+    }
 }
 
 pub fn external_wss_suspend_requested() -> bool {
-    EXTERNAL_WSS_SUSPEND_REQUESTED.load(Ordering::Relaxed)
+    EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.load(Ordering::Relaxed) > 0
 }
 
 pub fn set_external_wss_suspended(active: bool) {
@@ -424,8 +481,42 @@ pub fn external_wss_suspended() -> bool {
     EXTERNAL_WSS_SUSPENDED.load(Ordering::Relaxed)
 }
 
+fn external_wss_suspend_target_drained() -> bool {
+    active_wss_count() == 0
+        && external_wss_connecting_count() == 0
+        && (!external_wss_managed_present()
+            || external_wss_suspended()
+            || external_wss_suspend_requested())
+}
+
+/// Wait until the external WSS plane is not established or handshaking.
+pub fn wait_for_external_wss_suspend(tag: &str) {
+    if !external_wss_suspend_requested() {
+        return;
+    }
+    let mut next_warn_at =
+        Instant::now() + Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_WARN_MS);
+    loop {
+        if external_wss_suspend_target_drained() {
+            return;
+        }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        crate::platform::task_wdt::feed_current_task();
+        if Instant::now() >= next_warn_at {
+            log::warn!(
+                "[{}] waiting for external WSS suspend active_wss={} connecting_wss={}",
+                tag,
+                active_wss_count(),
+                external_wss_connecting_count()
+            );
+            next_warn_at =
+                Instant::now() + Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_WARN_MS);
+        }
+        std::thread::sleep(Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS));
+    }
+}
+
 /// Wait until the external WSS plane is allowed to resume.
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn wait_for_external_wss_resume(tag: &str) {
     let mut logged = false;
     while external_wss_suspend_requested() {
@@ -437,6 +528,7 @@ pub fn wait_for_external_wss_resume(tag: &str) {
             logged = true;
         }
         set_external_wss_suspended(true);
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         crate::platform::task_wdt::feed_current_task();
         std::thread::sleep(Duration::from_millis(VOICE_EXCLUSIVE_WAIT_MS));
     }
@@ -446,18 +538,14 @@ pub fn wait_for_external_wss_resume(tag: &str) {
     }
 }
 
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub fn wait_for_external_wss_resume(_tag: &str) {}
-
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform, log_tag: &str) {
-    let deadline = Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
-    while Instant::now() < deadline {
+    let mut next_warn_at = Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
+    loop {
         crate::platform::task_wdt::feed_current_task();
         let active_wss = active_wss_count();
-        let mode_switched = !external_wss_managed_present()
-            || external_wss_suspended()
-            || (external_wss_suspend_requested() && active_wss == 0);
+        let connecting_wss = external_wss_connecting_count();
+        let mode_switched = external_wss_suspend_target_drained();
         let snap = platform.memory_snapshot();
         let min_free = if snap.heap_free_spiram > 0 {
             TLS_ADMISSION_MIN_INTERNAL_BYTES as u32
@@ -467,15 +555,24 @@ fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform, log_tag: 
         let enough_free = snap.heap_free_internal >= min_free;
         let enough_largest = snap.heap_free_spiram == 0
             || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        if mode_switched && active_wss == 0 && enough_free && enough_largest {
+        if mode_switched && active_wss == 0 && connecting_wss == 0 && enough_free && enough_largest
+        {
             return;
+        }
+        if Instant::now() >= next_warn_at {
+            log::warn!(
+                "[{}] waiting for external WSS suspend/resources before realtime connect active_wss={} connecting_wss={} free={} largest={} spiram={}",
+                log_tag,
+                active_wss,
+                connecting_wss,
+                snap.heap_free_internal,
+                snap.heap_largest_block,
+                snap.heap_free_spiram
+            );
+            next_warn_at = Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
         }
         std::thread::sleep(Duration::from_millis(REALTIME_WSS_DRAIN_POLL_MS));
     }
-    log::warn!(
-        "[{}] timed out waiting for external WSS suspend/resources before realtime connect",
-        log_tag,
-    );
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -588,7 +685,14 @@ where
 
 /// Connect an external gateway WSS through the unified transport governor.
 pub fn connect_external_wss(url: &str) -> Result<Box<dyn WssConnection>> {
-    Ok(Box::new(connect_wss(url)?))
+    loop {
+        wait_for_external_wss_resume("external_wss_connect");
+        let _connect_guard = begin_external_wss_connect_attempt();
+        if external_wss_suspend_requested() {
+            continue;
+        }
+        return Ok(Box::new(connect_wss(url)?));
+    }
 }
 
 fn connect_realtime_wss(url: &str, headers: &[(&str, &str)]) -> Result<Box<dyn WssConnection>> {
@@ -651,7 +755,7 @@ fn wait_for_realtime_admission_window(platform: &dyn Platform) {
         let enough_free = snap.heap_free_internal >= min_free;
         let enough_largest = snap.heap_free_spiram == 0
             || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        let no_external_wss = active_wss_count() == 0;
+        let no_external_wss = active_wss_count() == 0 && external_wss_connecting_count() == 0;
         if enough_free && enough_largest && no_external_wss {
             return;
         }
@@ -676,10 +780,17 @@ mod tests {
     fn external_wss_runtime_round_trips() {
         let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         set_external_wss_managed_present(true);
+        {
+            let _connect = begin_external_wss_connect_attempt();
+            let snap = external_wss_runtime_snapshot();
+            assert_eq!(snap.connecting_count, 1);
+            assert_eq!(external_wss_connecting_count(), 1);
+        }
         request_external_wss_suspend();
         set_external_wss_suspended(true);
         let snap = external_wss_runtime_snapshot();
         assert!(snap.managed_present);
+        assert_eq!(snap.connecting_count, 0);
         assert!(snap.suspend_requested);
         assert!(snap.suspended);
         request_external_wss_resume();

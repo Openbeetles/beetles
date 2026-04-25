@@ -18,14 +18,6 @@ use crate::bus::{CanonicalMessageBody, OutboundKind};
     test
 ))]
 use crate::error::{Error, Result};
-#[cfg(any(
-    feature = "telegram",
-    feature = "dingtalk",
-    feature = "feishu",
-    feature = "qq_channel",
-    test
-))]
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(any(
     feature = "telegram",
@@ -74,13 +66,7 @@ pub(crate) const CHANNEL_SENDER_MAX_RETRIES: u8 = 3;
 ))]
 const CHANNEL_SENDER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[cfg(any(
-    feature = "telegram",
-    feature = "dingtalk",
-    feature = "feishu",
-    feature = "qq_channel",
-    test
-))]
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
 pub(crate) trait ActiveChannelSender {
     fn tag(&self) -> &'static str;
     fn send_attempt(
@@ -103,6 +89,28 @@ pub(crate) fn max_retries_for_message(message: &QueuedOutboundMessage) -> u8 {
     } else {
         CHANNEL_SENDER_MAX_RETRIES
     }
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
+fn should_defer_primary_send_error(error: &Error) -> bool {
+    should_defer_primary_send_error_immediately(error) || error.is_retryable_upstream()
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
+fn should_defer_primary_send_error_immediately(error: &Error) -> bool {
+    error.is_tls_admission() || error.is_connect_error()
 }
 
 #[cfg(any(
@@ -174,11 +182,23 @@ pub(crate) fn record_outbound_http_success() {
 pub(crate) fn record_outbound_http_failure(error: &crate::error::Error) {
     crate::metrics::record_channel_http_result(false);
     crate::metrics::record_error_by_stage(error.metrics_stage());
-    if error.is_tls_admission() || error.is_connect_error() || error.is_retryable_upstream() {
+    if let Some(reason) = outbound_http_failure_capability_reason(error) {
         crate::orchestrator::observe_runtime_capability_failure(
             crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
-            crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable,
+            reason,
         );
+    }
+}
+
+fn outbound_http_failure_capability_reason(
+    error: &crate::error::Error,
+) -> Option<crate::orchestrator::RuntimeCapabilityReason> {
+    if error.is_tls_admission() {
+        Some(crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing)
+    } else if error.is_connect_error() || error.is_retryable_upstream() {
+        Some(crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable)
+    } else {
+        None
     }
 }
 
@@ -247,22 +267,6 @@ pub(crate) fn sleep_sender_retry_delay() {
     feature = "qq_channel",
     test
 ))]
-fn drain_sender_pending(
-    rx: &Receiver<QueuedOutboundMessage>,
-    pending: &mut VecDeque<QueuedOutboundMessage>,
-) {
-    while let Ok(message) = rx.try_recv() {
-        pending.push_back(message);
-    }
-}
-
-#[cfg(any(
-    feature = "telegram",
-    feature = "dingtalk",
-    feature = "feishu",
-    feature = "qq_channel",
-    test
-))]
 pub(crate) fn run_buffered_sender_loop<SendOne>(
     rx: Receiver<QueuedOutboundMessage>,
     tag: &'static str,
@@ -272,24 +276,22 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
 {
     start_sender_loop(tag);
 
-    let mut pending = VecDeque::with_capacity(4);
+    let mut pending: Option<QueuedOutboundMessage> = None;
     loop {
-        if pending.is_empty() {
+        let message = if let Some(message) = pending.take() {
+            message
+        } else {
             match recv_sender_loop_event(&rx, tag) {
-                SenderLoopEvent::Message(message) => pending.push_back(*message),
+                SenderLoopEvent::Message(message) => *message,
                 SenderLoopEvent::Timeout => continue,
                 SenderLoopEvent::Disconnected => break,
             }
-        }
-
-        drain_sender_pending(&rx, &mut pending);
-        let Some(message) = pending.pop_front() else {
-            continue;
         };
         feed_sender_loop_wdt();
 
         let max_retries = max_retries_for_message(&message);
         let mut sent = false;
+        let mut last_err = None;
         for retry in 0..max_retries {
             let attempt = retry + 1;
             if retry > 0 {
@@ -301,7 +303,9 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
                     break;
                 }
                 Err(error) => {
-                    if matches!(error, Error::Config { .. }) {
+                    let should_defer = should_defer_primary_send_error_immediately(&error);
+                    last_err = Some(error);
+                    if should_defer || matches!(last_err.as_ref(), Some(Error::Config { .. })) {
                         break;
                     }
                 }
@@ -315,6 +319,18 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
                     message.req_id.as_deref().unwrap_or("-"),
                     message.chat_id
                 );
+            } else if last_err
+                .as_ref()
+                .is_some_and(should_defer_primary_send_error)
+            {
+                log::warn!(
+                    "[{}] primary deferred after retryable send failure req_id={} chat_id={}",
+                    tag,
+                    message.req_id.as_deref().unwrap_or("-"),
+                    message.chat_id
+                );
+                pending = Some(message);
+                sleep_sender_retry_delay();
             } else {
                 log_sender_drop(
                     tag,
@@ -404,7 +420,7 @@ mod tests {
     static TEST_GUARD: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn outbound_http_failure_records_tls_admission_and_marks_capability_offline() {
+    fn outbound_http_failure_records_tls_admission_as_local_recovery() {
         let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         let before = crate::metrics::snapshot();
@@ -425,7 +441,7 @@ mod tests {
         );
         assert_eq!(
             capability.reason,
-            crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable
+            crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing
         );
     }
 
@@ -558,6 +574,113 @@ mod tests {
 
         let attempts = attempts.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(attempts.as_slice(), &[1]);
+    }
+
+    #[test]
+    fn buffered_sender_loop_defers_primary_tls_admission_failure() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-a".to_string(),
+            content: "reply".to_string(),
+            body: CanonicalMessageBody::text("reply"),
+            platform_thread_id: String::new(),
+            req_id: Some("req-1".to_string()),
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("send reply");
+        drop(tx);
+
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_clone = std::sync::Arc::clone(&seen);
+
+        run_buffered_sender_loop(rx, "test_sender", move |message, attempt| {
+            let mut guard = seen_clone.lock().unwrap_or_else(|e| e.into_inner());
+            guard.push(format!("{}:{attempt}", message.content));
+            if guard.len() == 1 {
+                return Err(Error::config("tls_admission", "largest block too small"));
+            }
+            Ok(())
+        });
+
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(seen.as_slice(), ["reply:1", "reply:1"]);
+    }
+
+    #[test]
+    fn buffered_sender_loop_keeps_retryable_primary_bounded_in_sync_channel() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-a".to_string(),
+            content: "first".to_string(),
+            body: CanonicalMessageBody::text("first"),
+            platform_thread_id: String::new(),
+            req_id: Some("req-1".to_string()),
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("send first");
+
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let attempts_clone = std::sync::Arc::clone(&attempts);
+        let release_clone = std::sync::Arc::clone(&release);
+        let worker = std::thread::spawn(move || {
+            run_buffered_sender_loop(rx, "test_sender", move |_message, _attempt| {
+                attempts_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if release_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err(Error::config("test_sender", "release retry loop"))
+                } else {
+                    Err(Error::config("tls_admission", "largest block too small"))
+                }
+            });
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while attempts.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sender should attempt the first message"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-b".to_string(),
+            content: "second".to_string(),
+            body: CanonicalMessageBody::text("second"),
+            platform_thread_id: String::new(),
+            req_id: Some("req-2".to_string()),
+            outbound_kind: OutboundKind::Primary,
+        })
+        .expect("second should fit in the bounded sync channel");
+
+        std::thread::sleep(Duration::from_millis(100));
+        let third = QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-c".to_string(),
+            content: "third".to_string(),
+            body: CanonicalMessageBody::text("third"),
+            platform_thread_id: String::new(),
+            req_id: Some("req-3".to_string()),
+            outbound_kind: OutboundKind::Primary,
+        };
+        assert!(
+            matches!(
+                tx.try_send(third),
+                Err(std::sync::mpsc::TrySendError::Full(_))
+            ),
+            "retryable primary failure must not drain the bounded sender queue into heap"
+        );
+
+        release.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(tx);
+        worker
+            .join()
+            .expect("sender loop should exit after release");
     }
 
     #[test]

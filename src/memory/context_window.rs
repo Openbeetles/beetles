@@ -31,12 +31,12 @@ pub fn build_context_messages(
     session: &dyn SessionStore,
     important_message_store: &dyn ImportantMessageStore,
     msg: &PcMsg,
-    session_max_messages: usize,
+    recent_messages_limit: usize,
     messages_max_len: usize,
     summary_text: Option<&str>,
     recent_override: Option<&[super::SessionMessage]>,
 ) -> Vec<Message> {
-    let n = session_max_messages.clamp(1, 128);
+    let n = recent_messages_limit.clamp(1, 128);
     let owned_recent;
     let recent = if let Some(recent_override) = recent_override {
         recent_override

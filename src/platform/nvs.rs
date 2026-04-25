@@ -1,7 +1,7 @@
 //! NVS 初始化与读写：失败时 erase 再 init；按命名空间 pc_cfg 读写字符串。
 //! NVS init and read/write: erase then init on failure; read/write strings in namespace pc_cfg.
 //! 所有对 NVS 的读写均经本模块，ESP 下用 NVS_MUTEX 串行化；open/commit 返回 4361 时单次 recover+重试。
-//! 配置策略：NVS 仅存 6 个小键（wifi_ssid、wifi_pass、proxy_url、session_max_messages、tg_group_activation、locale）；
+//! 配置策略：NVS 仅存 5 个小键（wifi_ssid、wifi_pass、proxy_url、tg_group_activation、locale）；
 //! LLM 与通道存 SPIFFS（config/llm.json、config/channels.json），技能元数据存 config/skills_meta.json，以减少 NVS 写放大与 4361。
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

@@ -659,7 +659,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"http://proxy.local:8080",
-                "session_max_messages":48,
                 "tg_group_activation":"always",
                 "locale":"en"
             }"#,
@@ -673,7 +672,6 @@ mod tests {
         assert_eq!(parsed["wifi_ssid"], "BeetleNet");
         assert_eq!(parsed["wifi_pass"], "secret-pass");
         assert_eq!(parsed["proxy_url"], "http://proxy.local:8080");
-        assert_eq!(parsed["session_max_messages"], 48);
         assert_eq!(parsed["tg_group_activation"], "always");
         assert_eq!(parsed["locale"], "en");
         assert!(parsed.get("tg_token").is_none());
@@ -694,7 +692,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"",
-                "session_max_messages":32,
                 "tg_group_activation":"mention",
                 "locale":"ja"
             }"#,
@@ -732,7 +729,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"http://proxy.local:8080",
-                "session_max_messages":48,
                 "tg_group_activation":"always",
                 "locale":"en"
             }"#,
@@ -744,7 +740,6 @@ mod tests {
         assert_eq!(config.wifi_ssid, "BeetleNet");
         assert_eq!(config.wifi_pass, "secret-pass");
         assert_eq!(config.proxy_url, "http://proxy.local:8080");
-        assert_eq!(config.session_max_messages, 48);
         assert_eq!(config.tg_group_activation, "always");
         assert_eq!(config.locale.as_deref(), Some("en"));
     }

@@ -1,9 +1,7 @@
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Slider from "@mui/material/Slider";
 import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormLoadingSkeleton,
@@ -21,7 +19,6 @@ import { OS_ICON_NAV } from "../config/osIcons";
 import {
   PAGE_COLUMN_FILL_SX,
   PAGE_STACK_OUTER_SX,
-  TEXT_BODY_TERTIARY_SX,
 } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigEditorController } from "../hooks/useConfigEditorController";
@@ -33,8 +30,6 @@ import { WifiCredentialFields } from "../components/WifiCredentialFields";
 import { useWifiScanController } from "../hooks/useWifiScanController";
 import {
   isValidProxyUrl,
-  SYSTEM_SESSION_MAX,
-  SYSTEM_SESSION_MIN,
   validateSystemConfig,
 } from "./systemConfigValidation";
 
@@ -103,12 +98,6 @@ export function SystemConfigPage() {
   const proxyUrlError =
     form && !isValidProxyUrl(form.proxy_url ?? "")
       ? t("config.validation.proxyUrlInvalid")
-      : "";
-  const sessionError =
-    form &&
-    (form.session_max_messages < SYSTEM_SESSION_MIN ||
-      form.session_max_messages > SYSTEM_SESSION_MAX)
-      ? t("config.validation.sessionMaxMessages")
       : "";
   const showConnectionLoading =
     !form && !systemLoading && ready && connectionChecking && !deviceConnected;
@@ -223,38 +212,6 @@ export function SystemConfigPage() {
           />
         </FormSectionSub>
 
-        <FormSectionSub title={t("config.session")}>
-          <Typography variant="body2" sx={{ mb: 1, ...TEXT_BODY_TERTIARY_SX }}>
-            {t("config.sessionMaxMessages")}: {form.session_max_messages}
-          </Typography>
-          <Slider
-            value={form.session_max_messages}
-            min={SYSTEM_SESSION_MIN}
-            max={SYSTEM_SESSION_MAX}
-            valueLabelDisplay="auto"
-            onChange={(_, value) =>
-              update(
-                "session_max_messages",
-                Array.isArray(value) ? value[0] : value,
-              )
-            }
-            sx={{ maxWidth: 320, mt: 0.5 }}
-          />
-          {(sessionError || t("config.sessionMaxMessagesHelp")) && (
-            <Typography
-              variant="caption"
-              sx={{
-                display: "block",
-                mt: 0.5,
-                color: sessionError
-                  ? "var(--semantic-danger)"
-                  : "var(--text-tertiary)",
-              }}
-            >
-              {sessionError || t("config.sessionMaxMessagesHelp")}
-            </Typography>
-          )}
-        </FormSectionSub>
           </>
         )}
       </SettingsSection>

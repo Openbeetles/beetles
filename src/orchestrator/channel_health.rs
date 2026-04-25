@@ -66,38 +66,17 @@ pub fn is_channel_healthy(state: &OrchestratorState, channel: &str) -> bool {
     is_channel_healthy_by_index(state, idx)
 }
 
-#[cfg(feature = "qq_channel")]
-fn qq_channel_index() -> Option<usize> {
-    channel_to_index(crate::channel_capability::CHANNEL_QQ_CHANNEL)
-}
-
-fn channel_health_with_runtime_overlays(idx: usize, healthy: bool) -> bool {
-    #[cfg(not(feature = "qq_channel"))]
-    return {
-        let _ = idx;
-        healthy
-    };
-
-    #[cfg(feature = "qq_channel")]
-    if qq_channel_index() == Some(idx) {
-        healthy && crate::channels::is_ws_online()
-    } else {
-        healthy
-    }
-}
-
 /// 按索引查询通道健康状态。
 pub fn is_channel_healthy_by_index(state: &OrchestratorState, idx: usize) -> bool {
     let slot = &state.channel_health[idx];
     let failures = slot.consecutive_failures.load(Ordering::Relaxed);
-    let healthy = if failures < CHANNEL_FAIL_THRESHOLD {
+    if failures < CHANNEL_FAIL_THRESHOLD {
         true
     } else {
         // 冷却期已过则恢复
         let last = slot.last_failure_uptime_secs.load(Ordering::Relaxed);
         uptime_secs().saturating_sub(last) >= CHANNEL_FAIL_COOLDOWN_SECS as u32
-    };
-    channel_health_with_runtime_overlays(idx, healthy)
+    }
 }
 
 /// 构建单通道健康快照（用于 ResourceSnapshot 序列化）。
@@ -114,7 +93,6 @@ pub fn snapshot_by_index(
         let last = slot.last_failure_uptime_secs.load(Ordering::Relaxed);
         uptime_secs().saturating_sub(last) >= CHANNEL_FAIL_COOLDOWN_SECS as u32
     };
-    let healthy = channel_health_with_runtime_overlays(idx, healthy);
     super::state::ChannelHealthSnapshot {
         consecutive_failures,
         total_failures: slot.total_failures.load(Ordering::Relaxed),

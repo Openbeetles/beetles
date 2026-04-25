@@ -30,7 +30,6 @@ test("getSystem GETs the dedicated system segment endpoint", async () => {
       wifi_ssid: "BeetleNet",
       wifi_pass: "",
       proxy_url: "http://proxy.local:8080",
-      session_max_messages: 32,
       tg_group_activation: "mention",
       locale: "zh",
     });
@@ -43,7 +42,6 @@ test("getSystem GETs the dedicated system segment endpoint", async () => {
       wifi_ssid: "BeetleNet",
       wifi_pass: "",
       proxy_url: "http://proxy.local:8080",
-      session_max_messages: 32,
       tg_group_activation: "mention",
       locale: "zh",
     });

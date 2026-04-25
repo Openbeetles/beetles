@@ -153,6 +153,7 @@ export function SkillsPage() {
       order: [],
     }),
   );
+  const [unsupportedEndpoint, setUnsupportedEndpoint] = useState(false);
   const [editName, setEditName] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editContentInitial, setEditContentInitial] = useState("");
@@ -172,8 +173,10 @@ export function SkillsPage() {
   const loadList = useCallback(async () => {
     if (!ready) return;
     setListState((prev) => ({ ...prev, loading: true, error: "" }));
+    setUnsupportedEndpoint(false);
     const res = await api.skills.list();
     if (res.ok && res.data) {
+      setUnsupportedEndpoint(false);
       setListState({
         loading: false,
         error: "",
@@ -181,23 +184,37 @@ export function SkillsPage() {
       });
     } else {
       let nextError = res.error ?? "";
+      let nextUnsupported = false;
       if (res.errorKey === "common.not_found" || res.status === 404) {
         const probe = await api.device.probe();
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
         if (!endpointSupportedByInventory(inventory, "GET /api/skills")) {
-          nextError = t("skills.unsupportedEndpoint");
+          nextUnsupported = true;
+          nextError = "";
         }
       }
+      setUnsupportedEndpoint(nextUnsupported);
       setListState((prev) => ({
         ...prev,
         loading: false,
-        error: nextError,
+        error: nextUnsupported ? "" : nextError,
       }));
     }
-  }, [api.device, api.skills, ready, t]);
+  }, [api.device, api.skills, ready]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready) {
+      queueMicrotask(() => {
+        setUnsupportedEndpoint(false);
+        setListState(
+          createAsyncState<{ skills: SkillItem[]; order: string[] }>({
+            skills: [],
+            order: [],
+          }),
+        );
+      });
+      return;
+    }
     const id = window.setTimeout(() => {
       void loadList();
     }, 0);
@@ -366,6 +383,7 @@ export function SkillsPage() {
     hasData: listToShow.length > 0,
     loading: listState.loading,
     error: listState.error,
+    suppress: unsupportedEndpoint,
   });
 
   return (
@@ -411,6 +429,7 @@ export function SkillsPage() {
               setImportOpen(true);
               setImportError("");
             }}
+            disabled={unsupportedEndpoint}
             sx={{
               borderRadius: "var(--radius-control)",
               ...TEXT_SUBSECTION_TITLE_SX,
@@ -424,6 +443,13 @@ export function SkillsPage() {
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>
+        ) : unsupportedEndpoint ? (
+          <PanelStateBlock
+            tone="neutral"
+            icon={<Os3dIcon src={OS_ICON_NAV["/skills"]} variant="inline" />}
+            title={t("skills.unsupportedTitle")}
+            description={t("skills.unsupportedDesc")}
+          />
         ) : listErrorState.blockingError ? (
           <PageLoadErrorState
             message={listErrorState.blockingError}

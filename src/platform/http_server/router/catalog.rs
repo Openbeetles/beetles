@@ -9,7 +9,6 @@ pub(crate) enum RouteMethod {
 }
 
 impl RouteMethod {
-    #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
@@ -40,28 +39,31 @@ pub(crate) enum RouteBodyMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteExecutionClass {
     ImmediateRoute,
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    SnapshotRoute,
     AsyncConfigRoute,
     SlowDiagnosticRoute,
     #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
     OtaRoute,
-    StaleSnapshotRoute,
     RejectedRoute,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteWorkerLane {
+    Snapshot,
     Config,
     Diagnostic,
     #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
     Ota,
-    Snapshot,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RouteWorkerContract {
     pub(crate) lane: RouteWorkerLane,
+    pub(crate) stack_size: usize,
+    pub(crate) reserves_tls_headroom: bool,
     pub(crate) queue_capacity: usize,
     pub(crate) worker_threads: usize,
     pub(crate) timeout_secs: u64,
@@ -74,12 +76,53 @@ pub(crate) struct RouteWorkerContract {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RouteWorkerMemoryRequirements {
+    pub(crate) required_internal: usize,
+    pub(crate) required_largest: usize,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+pub(crate) const fn route_worker_memory_requirements(
+    contract: RouteWorkerContract,
+) -> RouteWorkerMemoryRequirements {
+    let (internal_headroom, largest_headroom) = if contract.reserves_tls_headroom {
+        (
+            crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES,
+            crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
+        )
+    } else {
+        (8 * 1024, 4 * 1024)
+    };
+    RouteWorkerMemoryRequirements {
+        required_internal: contract.stack_size.saturating_add(internal_headroom),
+        required_largest: contract.stack_size.saturating_add(largest_headroom),
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 impl RouteExecutionClass {
     pub(crate) const fn worker_contract(self) -> Option<RouteWorkerContract> {
         match self {
             Self::ImmediateRoute | Self::RejectedRoute => None,
+            Self::SnapshotRoute => Some(RouteWorkerContract {
+                lane: RouteWorkerLane::Snapshot,
+                stack_size: crate::util::STACK_HTTP_SNAPSHOT_WORKER,
+                reserves_tls_headroom: false,
+                queue_capacity: 2,
+                worker_threads: 1,
+                timeout_secs: 5,
+                idle_timeout_secs: 5,
+                reject_status: 503,
+                socket_reserve: 0,
+                counter_name: "http_snapshot_worker",
+                begin_stage: "http_snapshot_begin",
+                complete_stage: "http_snapshot_complete",
+            }),
             Self::AsyncConfigRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Config,
+                stack_size: crate::util::STACK_HTTP_CONFIG_WORKER,
+                reserves_tls_headroom: true,
                 queue_capacity: 2,
                 worker_threads: 1,
                 timeout_secs: 20,
@@ -92,6 +135,8 @@ impl RouteExecutionClass {
             }),
             Self::SlowDiagnosticRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Diagnostic,
+                stack_size: crate::util::STACK_HTTP_DIAG_WORKER,
+                reserves_tls_headroom: true,
                 queue_capacity: 2,
                 worker_threads: 1,
                 timeout_secs: 15,
@@ -105,6 +150,8 @@ impl RouteExecutionClass {
             #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
             Self::OtaRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Ota,
+                stack_size: crate::util::STACK_HTTP_OTA_WORKER,
+                reserves_tls_headroom: true,
                 queue_capacity: 1,
                 worker_threads: 1,
                 timeout_secs: 45,
@@ -114,18 +161,6 @@ impl RouteExecutionClass {
                 counter_name: "http_ota_worker",
                 begin_stage: "http_ota_begin",
                 complete_stage: "http_ota_complete",
-            }),
-            Self::StaleSnapshotRoute => Some(RouteWorkerContract {
-                lane: RouteWorkerLane::Snapshot,
-                queue_capacity: 1,
-                worker_threads: 1,
-                timeout_secs: 5,
-                idle_timeout_secs: 3,
-                reject_status: 503,
-                socket_reserve: 3,
-                counter_name: "http_snapshot_worker",
-                begin_stage: "http_snapshot_begin",
-                complete_stage: "http_snapshot_complete",
             }),
         }
     }
@@ -200,6 +235,24 @@ impl HttpRouteSpec {
         }
     }
 
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    pub(crate) const fn snapshot_operator(
+        path: &'static str,
+        method: RouteMethod,
+        body_mode: RouteBodyMode,
+        operator_access: OperatorRouteAccess,
+    ) -> Self {
+        Self {
+            path,
+            method,
+            body_mode,
+            execution_class: RouteExecutionClass::SnapshotRoute,
+            operator_access,
+            config_activity_phase: None,
+            reject_during_voice_exclusive: false,
+        }
+    }
+
     pub(crate) const fn slow_diagnostic_operator(
         path: &'static str,
         method: RouteMethod,
@@ -217,6 +270,19 @@ impl HttpRouteSpec {
         }
     }
 
+    #[cfg_attr(feature = "capability_office", allow(dead_code))]
+    pub(crate) const fn rejected(path: &'static str, method: RouteMethod) -> Self {
+        Self {
+            path,
+            method,
+            body_mode: RouteBodyMode::None,
+            execution_class: RouteExecutionClass::RejectedRoute,
+            operator_access: OperatorRouteAccess::Hidden,
+            config_activity_phase: None,
+            reject_during_voice_exclusive: false,
+        }
+    }
+
     #[cfg(feature = "ota")]
     pub(crate) const fn ota_operator(
         path: &'static str,
@@ -229,23 +295,6 @@ impl HttpRouteSpec {
             method,
             body_mode,
             execution_class: RouteExecutionClass::OtaRoute,
-            operator_access,
-            config_activity_phase: None,
-            reject_during_voice_exclusive: false,
-        }
-    }
-
-    pub(crate) const fn stale_snapshot_operator(
-        path: &'static str,
-        method: RouteMethod,
-        body_mode: RouteBodyMode,
-        operator_access: OperatorRouteAccess,
-    ) -> Self {
-        Self {
-            path,
-            method,
-            body_mode,
-            execution_class: RouteExecutionClass::StaleSnapshotRoute,
             operator_access,
             config_activity_phase: None,
             reject_during_voice_exclusive: false,
@@ -291,6 +340,82 @@ fn route_spec_groups() -> &'static [&'static [HttpRouteSpec]] {
     ]
 }
 
+pub(crate) fn operator_route_endpoints(
+    access: Option<OperatorRouteAccess>,
+    ota_supported: bool,
+    inbound_webhooks_enabled: bool,
+) -> Vec<String> {
+    #[cfg(not(feature = "ota"))]
+    let _ = ota_supported;
+
+    let mut endpoints = Vec::new();
+    push_operator_route_endpoints(&mut endpoints, ROOT_ROUTE_SPECS, access);
+    push_operator_route_endpoints(&mut endpoints, PAIRING_AND_CONFIG_ROUTE_SPECS, access);
+    push_operator_route_endpoints(&mut endpoints, OBSERVABILITY_ROUTE_SPECS, access);
+    push_operator_route_endpoints(&mut endpoints, MEMORY_AND_SKILL_ROUTE_SPECS, access);
+    push_operator_route_endpoints(&mut endpoints, ACTION_ROUTE_SPECS, access);
+    #[cfg(feature = "ota")]
+    if ota_supported {
+        push_operator_route_endpoints(&mut endpoints, OTA_ROUTE_SPECS, access);
+    }
+    if access.is_none() && inbound_webhooks_enabled {
+        endpoints.push(format!("{} {}", RouteMethod::Post.as_str(), ROUTE_WEBHOOK));
+    }
+    #[cfg(all(
+        feature = "capability_office",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    ))]
+    if access.is_none() {
+        push_host_dynamic_operator_route_endpoints(&mut endpoints);
+    }
+    endpoints
+}
+
+fn push_operator_route_endpoints(
+    endpoints: &mut Vec<String>,
+    specs: &[HttpRouteSpec],
+    access: Option<OperatorRouteAccess>,
+) {
+    for spec in specs {
+        if spec.method == RouteMethod::Options {
+            continue;
+        }
+        match access {
+            Some(required) if spec.operator_access != required => continue,
+            None if spec.operator_access == OperatorRouteAccess::Hidden => continue,
+            _ => {}
+        }
+        endpoints.push(format!("{} {}", spec.method.as_str(), spec.path));
+    }
+}
+
+#[cfg(all(
+    feature = "capability_office",
+    not(any(target_arch = "xtensa", target_arch = "riscv32"))
+))]
+fn push_host_dynamic_operator_route_endpoints(endpoints: &mut Vec<String>) {
+    for (method, path) in [
+        (RouteMethod::Get, ROUTE_CONFIG_ACCOUNTS),
+        (RouteMethod::Post, ROUTE_CONFIG_ACCOUNTS),
+        (RouteMethod::Get, "/api/config/accounts/:account_key"),
+        (RouteMethod::Delete, "/api/config/accounts/:account_key"),
+        (
+            RouteMethod::Post,
+            "/api/config/accounts/:account_key/config",
+        ),
+        (RouteMethod::Post, "/api/config/accounts/:account_key/probe"),
+        (
+            RouteMethod::Post,
+            "/api/config/accounts/:account_key/revoke",
+        ),
+        (RouteMethod::Get, ROUTE_CONFIG_CAPABILITIES),
+        (RouteMethod::Get, "/api/config/capabilities/:capability"),
+        (RouteMethod::Get, ROUTE_CONFIG_PROVIDERS),
+    ] {
+        endpoints.push(format!("{} {}", method.as_str(), path));
+    }
+}
+
 pub(crate) const ROUTE_ROOT: &str = "/";
 pub(crate) const ROUTE_PAIRING_CODE: &str = "/api/pairing_code";
 pub(crate) const ROUTE_CONFIG_LLM: &str = "/api/config/llm";
@@ -299,30 +424,10 @@ pub(crate) const ROUTE_CONFIG_SYSTEM: &str = "/api/config/system";
 pub(crate) const ROUTE_CONFIG_HARDWARE: &str = "/api/config/hardware";
 pub(crate) const ROUTE_CONFIG_AUDIO: &str = "/api/config/audio";
 pub(crate) const ROUTE_CONFIG_DISPLAY: &str = "/api/config/display";
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 pub(crate) const ROUTE_CONFIG_ACCOUNTS: &str = "/api/config/accounts";
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 pub(crate) const ROUTE_CONFIG_ACCOUNTS_PREFIX: &str = "/api/config/accounts/";
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 pub(crate) const ROUTE_CONFIG_CAPABILITIES: &str = "/api/config/capabilities";
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 pub(crate) const ROUTE_CONFIG_CAPABILITIES_PREFIX: &str = "/api/config/capabilities/";
-#[cfg(all(
-    feature = "capability_office",
-    not(any(target_arch = "xtensa", target_arch = "riscv32"))
-))]
 pub(crate) const ROUTE_CONFIG_PROVIDERS: &str = "/api/config/providers";
 pub(crate) const ROUTE_WIFI_SCAN: &str = "/api/wifi/scan";
 pub(crate) const ROUTE_HARDWARE_DISCOVERY: &str = "/api/hardware/discovery";
@@ -362,8 +467,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Starting, false),
+    ),
     HttpRouteSpec::immediate_operator(
         ROUTE_PAIRING_CODE,
         RouteMethod::Post,
@@ -381,8 +485,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(ROUTE_CONFIG_LLM, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::async_config_operator(
         ROUTE_CONFIG_LLM,
@@ -396,8 +499,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_CHANNELS,
         RouteMethod::Options,
@@ -415,8 +517,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_SYSTEM,
         RouteMethod::Options,
@@ -434,8 +535,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_HARDWARE,
         RouteMethod::Options,
@@ -453,8 +553,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_AUDIO,
         RouteMethod::Options,
@@ -472,8 +571,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_DISPLAY,
         RouteMethod::Options,
@@ -511,9 +609,34 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(ROUTE_CSRF_TOKEN, RouteMethod::Options, RouteBodyMode::None),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::rejected(ROUTE_CONFIG_ACCOUNTS, RouteMethod::Get),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::rejected(ROUTE_CONFIG_ACCOUNTS, RouteMethod::Post),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::immediate(
+        ROUTE_CONFIG_ACCOUNTS,
+        RouteMethod::Options,
+        RouteBodyMode::None,
+    ),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::rejected(ROUTE_CONFIG_CAPABILITIES, RouteMethod::Get),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::immediate(
+        ROUTE_CONFIG_CAPABILITIES,
+        RouteMethod::Options,
+        RouteBodyMode::None,
+    ),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::rejected(ROUTE_CONFIG_PROVIDERS, RouteMethod::Get),
+    #[cfg(not(feature = "capability_office"))]
+    HttpRouteSpec::immediate(
+        ROUTE_CONFIG_PROVIDERS,
+        RouteMethod::Options,
+        RouteBodyMode::None,
+    ),
 ];
 
 pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
@@ -537,13 +660,12 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Options,
         RouteBodyMode::None,
     ),
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_OPERATOR_WINDOW,
         RouteMethod::Post,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    )
-    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, false),
+    ),
     HttpRouteSpec::immediate(
         ROUTE_OPERATOR_WINDOW,
         RouteMethod::Options,
@@ -601,11 +723,11 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     ),
     HttpRouteSpec::immediate(ROUTE_SYSTEM_INFO, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::stale_snapshot_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_CHANNEL_CONNECTIVITY,
         RouteMethod::Get,
         RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
+        OperatorRouteAccess::AlwaysOn,
     ),
     HttpRouteSpec::immediate(
         ROUTE_CHANNEL_CONNECTIVITY,
@@ -626,11 +748,11 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
 ];
 
 pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
-    HttpRouteSpec::slow_diagnostic_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_TOOLS,
         RouteMethod::Get,
         RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
+        OperatorRouteAccess::AlwaysOn,
     ),
     HttpRouteSpec::immediate(ROUTE_TOOLS, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::slow_diagnostic_operator(
@@ -685,6 +807,14 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Options,
         RouteBodyMode::None,
     ),
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    HttpRouteSpec::snapshot_operator(
+        ROUTE_SKILLS,
+        RouteMethod::Get,
+        RouteBodyMode::None,
+        OperatorRouteAccess::AlwaysOn,
+    ),
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SKILLS,
         RouteMethod::Get,
@@ -826,6 +956,31 @@ mod tests {
     }
 
     #[test]
+    fn tools_route_is_lightweight_always_on_operator_surface() {
+        let spec = route_spec_for("GET", ROUTE_TOOLS).expect("route spec");
+        assert_eq!(spec.execution_class, RouteExecutionClass::ImmediateRoute);
+        assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
+    }
+
+    #[test]
+    fn skills_inventory_get_is_lightweight_for_embedded_catalog() {
+        let get = route_spec_for("GET", ROUTE_SKILLS).expect("skills get");
+        assert_eq!(get.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(get.operator_access, OperatorRouteAccess::AlwaysOn);
+
+        let post = route_spec_for("POST", ROUTE_SKILLS).expect("skills post");
+        assert_eq!(
+            post.execution_class,
+            RouteExecutionClass::SlowDiagnosticRoute
+        );
+        let delete = route_spec_for("DELETE", ROUTE_SKILLS).expect("skills delete");
+        assert_eq!(
+            delete.execution_class,
+            RouteExecutionClass::SlowDiagnosticRoute
+        );
+    }
+
+    #[test]
     fn route_lookup_keeps_memory_maintenance_body_contract() {
         let spec = route_spec_for("POST", ROUTE_MEMORY_MAINTENANCE).expect("route spec");
         assert_eq!(
@@ -834,6 +989,21 @@ mod tests {
         );
         assert_eq!(spec.operator_access, OperatorRouteAccess::Windowed);
         assert!(matches!(spec.body_mode, RouteBodyMode::Utf8(_)));
+    }
+
+    #[cfg(not(feature = "capability_office"))]
+    #[test]
+    fn office_config_collection_routes_are_structured_rejections_without_office_feature() {
+        for (method, path) in [
+            ("GET", ROUTE_CONFIG_ACCOUNTS),
+            ("POST", ROUTE_CONFIG_ACCOUNTS),
+            ("GET", ROUTE_CONFIG_CAPABILITIES),
+            ("GET", ROUTE_CONFIG_PROVIDERS),
+        ] {
+            let spec = route_spec_for(method, path).expect("unsupported office route spec");
+            assert_eq!(spec.execution_class, RouteExecutionClass::RejectedRoute);
+            assert_eq!(spec.operator_access, OperatorRouteAccess::Hidden);
+        }
     }
 
     #[test]
@@ -860,6 +1030,9 @@ mod tests {
                             | (RouteMethod::Get, ROUTE_CONFIG_AUDIO)
                             | (RouteMethod::Get, ROUTE_CONFIG_DISPLAY)
                             | (RouteMethod::Get, ROUTE_HEALTH)
+                            | (RouteMethod::Get, ROUTE_TOOLS)
+                            | (RouteMethod::Post, ROUTE_OPERATOR_WINDOW)
+                            | (RouteMethod::Get, ROUTE_CHANNEL_CONNECTIVITY)
                             | (RouteMethod::Post, ROUTE_WEBHOOK)
                     ),
                     "route {} {} must not run on HTTPD callback",
@@ -884,7 +1057,7 @@ mod tests {
             assert_eq!(
                 get.execution_class,
                 RouteExecutionClass::ImmediateRoute,
-                "cached {} GET must not require the 48KB ESP config worker",
+                "cached {} GET must not require an ESP config worker",
                 path
             );
             let post = route_spec_for_method(RouteMethod::Post, path).expect("config post");
@@ -898,22 +1071,13 @@ mod tests {
     }
 
     #[test]
-    fn config_ui_routes_extend_config_activity_for_light_reads_and_heavy_writes() {
+    fn config_ui_routes_extend_config_activity_for_heavy_or_persisting_work_only() {
         let pairing = route_spec_for("GET", ROUTE_PAIRING_CODE).expect("pairing");
-        assert_eq!(
-            pairing.config_activity_phase(),
-            Some(crate::runtime::ConfigActivityPhase::Starting)
-        );
+        assert_eq!(pairing.config_activity_phase(), None);
         let csrf = route_spec_for("GET", ROUTE_CSRF_TOKEN).expect("csrf");
-        assert_eq!(
-            csrf.config_activity_phase(),
-            Some(crate::runtime::ConfigActivityPhase::Active)
-        );
+        assert_eq!(csrf.config_activity_phase(), None);
         let read_config = route_spec_for("GET", ROUTE_CONFIG_SYSTEM).expect("config get");
-        assert_eq!(
-            read_config.config_activity_phase(),
-            Some(crate::runtime::ConfigActivityPhase::Active)
-        );
+        assert_eq!(read_config.config_activity_phase(), None);
         let write_config = route_spec_for("POST", ROUTE_CONFIG_SYSTEM).expect("config post");
         assert_eq!(
             write_config.config_activity_phase(),
@@ -925,10 +1089,7 @@ mod tests {
             Some(crate::runtime::ConfigActivityPhase::Active)
         );
         let operator_window = route_spec_for("POST", ROUTE_OPERATOR_WINDOW).expect("operator");
-        assert_eq!(
-            operator_window.config_activity_phase(),
-            Some(crate::runtime::ConfigActivityPhase::Active)
-        );
+        assert_eq!(operator_window.config_activity_phase(), None);
         let restart = route_spec_for("POST", ROUTE_RESTART).expect("restart");
         assert_eq!(
             restart.config_activity_phase(),
@@ -966,6 +1127,11 @@ mod tests {
         assert!(!csrf.rejects_during_voice_exclusive());
         let stale_snapshot = route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY).expect("snapshot");
         assert!(!stale_snapshot.rejects_during_voice_exclusive());
+        assert_eq!(
+            stale_snapshot.operator_access,
+            OperatorRouteAccess::AlwaysOn,
+            "passive channel snapshots must not auto-open the operator window"
+        );
         let health = route_spec_for("GET", ROUTE_HEALTH).expect("health");
         assert!(!health.rejects_during_voice_exclusive());
     }
@@ -988,7 +1154,7 @@ mod tests {
             route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY)
                 .expect("channel connectivity")
                 .execution_class,
-            RouteExecutionClass::StaleSnapshotRoute
+            RouteExecutionClass::ImmediateRoute
         );
         assert_eq!(
             route_spec_for("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH)
@@ -1022,20 +1188,23 @@ mod tests {
     #[test]
     fn worker_route_classes_have_complete_contracts() {
         for class in [
+            RouteExecutionClass::SnapshotRoute,
             RouteExecutionClass::AsyncConfigRoute,
             RouteExecutionClass::SlowDiagnosticRoute,
             RouteExecutionClass::OtaRoute,
-            RouteExecutionClass::StaleSnapshotRoute,
         ] {
             let contract = class.worker_contract().expect("worker contract");
             assert_eq!(contract.worker_threads, 1);
             assert!(contract.queue_capacity <= 2);
+            assert!(contract.stack_size > 0);
             assert!(contract.timeout_secs > 0);
             assert!(contract.timeout_secs <= 45);
             assert!(contract.idle_timeout_secs > 0);
             assert!(contract.idle_timeout_secs <= 30);
             assert!(matches!(contract.reject_status, 409 | 503));
-            assert!(contract.socket_reserve >= 3);
+            if contract.reserves_tls_headroom {
+                assert!(contract.socket_reserve >= 3);
+            }
             assert!(!contract.counter_name.is_empty());
             assert!(!contract.begin_stage.is_empty());
             assert!(!contract.complete_stage.is_empty());
@@ -1046,6 +1215,74 @@ mod tests {
         assert!(RouteExecutionClass::RejectedRoute
             .worker_contract()
             .is_none());
+        assert_eq!(
+            RouteExecutionClass::SnapshotRoute
+                .worker_contract()
+                .expect("snapshot worker")
+                .stack_size,
+            crate::util::STACK_HTTP_SNAPSHOT_WORKER
+        );
+        assert_eq!(
+            RouteExecutionClass::AsyncConfigRoute
+                .worker_contract()
+                .expect("config worker")
+                .stack_size,
+            crate::util::STACK_HTTP_CONFIG_WORKER
+        );
+        assert_eq!(
+            RouteExecutionClass::SlowDiagnosticRoute
+                .worker_contract()
+                .expect("diagnostic worker")
+                .stack_size,
+            crate::util::STACK_HTTP_DIAG_WORKER
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_budget_does_not_reserve_tls_headroom() {
+        let contract = RouteExecutionClass::SnapshotRoute
+            .worker_contract()
+            .expect("snapshot worker");
+        let requirements = route_worker_memory_requirements(contract);
+
+        assert!(!contract.reserves_tls_headroom);
+        assert_eq!(
+            requirements.required_internal,
+            contract.stack_size.saturating_add(8 * 1024)
+        );
+        assert_eq!(
+            requirements.required_largest,
+            contract.stack_size.saturating_add(4 * 1024)
+        );
+        assert!(
+            requirements.required_largest <= 24 * 1024,
+            "snapshot worker must fit the latest steady ESP largest-block floor"
+        );
+    }
+
+    #[test]
+    fn route_worker_spawn_budget_preserves_tls_reserve_after_stack_allocation() {
+        let contract = RouteExecutionClass::AsyncConfigRoute
+            .worker_contract()
+            .expect("config worker");
+        let requirements = route_worker_memory_requirements(contract);
+
+        assert_eq!(
+            requirements.required_internal,
+            contract
+                .stack_size
+                .saturating_add(crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES)
+        );
+        assert_eq!(
+            requirements.required_largest,
+            contract
+                .stack_size
+                .saturating_add(crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES)
+        );
+        assert!(
+            requirements.required_internal > 47 * 1024,
+            "latest steady ESP heap must reject lazy config-worker spawn instead of entering Critical"
+        );
     }
 
     #[test]

@@ -20,12 +20,13 @@ pub enum TaskWdtThreadPolicy {
 /// ownership signal: short-lived native workers must stay feed-only/unmanaged.
 pub fn thread_policy_for_name(name: &str) -> TaskWdtThreadPolicy {
     match name {
-        "agent_loop" | "wifi_worker" | "audio_io_worker" | "runtime_bootstrap"
-        | "runtime_guard" => TaskWdtThreadPolicy::Owner,
-        "http_config_exec"
+        "agent_loop" | "wifi_worker" | "audio_io_worker" | "runtime_bootstrap" => {
+            TaskWdtThreadPolicy::Owner
+        }
+        "http_snapshot_exec"
+        | "http_config_exec"
         | "http_diag_exec"
         | "http_ota_exec"
-        | "http_snapshot_exec"
         | "dispatch"
         | "os_outbound"
         | "bg_timer"
@@ -281,7 +282,11 @@ mod tests {
         );
         assert_eq!(
             thread_policy_for_name("runtime_guard"),
-            TaskWdtThreadPolicy::Owner
+            TaskWdtThreadPolicy::Unmanaged
+        );
+        assert_eq!(
+            thread_policy_for_name("http_snapshot_exec"),
+            TaskWdtThreadPolicy::FeedOnly
         );
         assert_eq!(
             thread_policy_for_name("http_config_exec"),

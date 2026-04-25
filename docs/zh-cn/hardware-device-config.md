@@ -2,7 +2,7 @@
 
 [English](../en-us/hardware-device-config.md) | **中文** | [文档索引](../README.md)
 
-本页说明 Beetls OS 读取的硬件配置文件结构。
+本页说明 Beetle OS 读取的硬件配置文件结构。
 内容聚焦字段定义与约束，不涉及接线教程。
 
 ## 基本流程

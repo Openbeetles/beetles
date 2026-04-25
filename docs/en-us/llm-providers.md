@@ -2,7 +2,7 @@
 
 [中文](../zh-cn/llm-providers.md) | **English** | [Doc index](../README.md)
 
-Connect Beetls OS to one model provider first.
+Connect Beetle OS to one model provider first.
 For a first working setup, keep it simple: one provider, one model, one valid API key.
 
 ## Fastest Working Path
@@ -50,9 +50,9 @@ Set `api_url` only when:
 
 For `openai_compatible`, you will usually want to set the actual compatible endpoint you use.
 
-## How Beetls OS Chooses Between Multiple Sources
+## How Beetle OS Chooses Between Multiple Sources
 
-Beetls OS can keep more than one LLM source at the same time.
+Beetle OS can keep more than one LLM source at the same time.
 
 By default, it tries sources in the order they appear in `llm_sources`.
 
@@ -61,7 +61,7 @@ If you set:
 - `llm_router_source_index`
 - `llm_worker_source_index`
 
-then Beetls OS prefers them in this order:
+then Beetle OS prefers them in this order:
 
 1. `llm_router_source_index`
 2. `llm_worker_source_index`
@@ -120,10 +120,10 @@ That means you do not need to switch providers manually during normal chat use.
 - `llm_sources` must not be empty
 - every source needs at least `provider`, `api_key`, and `model`
 - for local Ollama, a common endpoint is `http://<host>:11434/v1`
-- example model names are examples only; Beetls OS does not require those exact names
+- example model names are examples only; Beetle OS does not require those exact names
 
 ## Read Next
 
 - To complete browser setup: [configuration.md](configuration.md)
-- To see what Beetls OS can do after setup: [capabilities.md](capabilities.md)
+- To see what Beetle OS can do after setup: [capabilities.md](capabilities.md)
 - To write config through the API: [config-api.md](config-api.md)

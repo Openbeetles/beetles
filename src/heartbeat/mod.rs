@@ -72,6 +72,8 @@ pub(crate) fn heartbeat_tick(
         }
     }
 
+    let mut storage_state_fs_ready = None;
+
     // Session/storage metrics: collect every SESSION_METRICS_INTERVAL_ROUNDS rounds.
     if runtime_mode.action_budget.allow_periodic_maintenance
         && state
@@ -84,16 +86,19 @@ pub(crate) fn heartbeat_tick(
             .unwrap_or(0);
         let (s_used, s_total, state_fs_ready) = storage_usage_kb(platform);
         crate::orchestrator::update_session_storage(sess_count, s_used, s_total);
-        let outbound_transport_ready = match platform.memory_system_kind() {
-            crate::memory::MemorySystemKind::LinuxFull => true,
-            crate::memory::MemorySystemKind::EspCompact => crate::state::wifi_sta_connected(),
-        };
-        crate::orchestrator::observe_runtime_capabilities_from_platform(
-            platform,
-            outbound_transport_ready,
-            Some(state_fs_ready),
-        );
+        storage_state_fs_ready =
+            storage_state_fs_ready_for_runtime_capability_refresh(state.round, state_fs_ready);
     }
+
+    let outbound_transport_ready = match platform.memory_system_kind() {
+        crate::memory::MemorySystemKind::LinuxFull => true,
+        crate::memory::MemorySystemKind::EspCompact => crate::state::wifi_sta_connected(),
+    };
+    crate::orchestrator::observe_runtime_capabilities_from_platform(
+        platform,
+        outbound_transport_ready,
+        storage_state_fs_ready,
+    );
 
     // Update queue depth snapshot for pressure computation.
     let in_user = user_inbound_depth.load(std::sync::atomic::Ordering::Relaxed) as u32;
@@ -182,5 +187,32 @@ fn storage_usage_kb(platform: &dyn crate::Platform) -> (u32, u32, bool) {
             (used_kb, total_kb, true)
         }
         None => (0, 0, false),
+    }
+}
+
+fn storage_state_fs_ready_for_runtime_capability_refresh(
+    round: u32,
+    state_fs_ready: bool,
+) -> Option<bool> {
+    round
+        .is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
+        .then_some(state_fs_ready)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn runtime_capability_refreshes_every_round_but_storage_probe_stays_throttled() {
+        assert_eq!(
+            super::storage_state_fs_ready_for_runtime_capability_refresh(1, true),
+            None
+        );
+        assert_eq!(
+            super::storage_state_fs_ready_for_runtime_capability_refresh(
+                crate::constants::SESSION_METRICS_INTERVAL_ROUNDS,
+                false
+            ),
+            Some(false)
+        );
     }
 }

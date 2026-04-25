@@ -1,8 +1,5 @@
 import type { SystemConfigSegment } from "../types/appConfig.ts";
 
-export const SYSTEM_SESSION_MIN = 1;
-export const SYSTEM_SESSION_MAX = 128;
-
 /** 简单校验：非空时须含 :// 且 scheme 后为非空（后端会做完整校验）。 */
 export function isValidProxyUrl(value: string): boolean {
   const trimmed = value.trim();
@@ -21,12 +18,6 @@ export function validateSystemConfig(
   const wifiPassSet = form.wifi_pass.trim().length > 0;
   if (wifiPassSet && !form.wifi_ssid.trim()) {
     return t("config.validation.wifiSsidRequired");
-  }
-  if (
-    form.session_max_messages < SYSTEM_SESSION_MIN ||
-    form.session_max_messages > SYSTEM_SESSION_MAX
-  ) {
-    return t("config.validation.sessionMaxMessages");
   }
   return null;
 }

@@ -2,7 +2,7 @@
 
 [English](../en-us/llm-providers.md) | **中文** | [文档索引](../README.md)
 
-本页说明 Beetls OS 的大模型提供方配置。
+本页说明 Beetle OS 的大模型提供方配置。
 首次接入建议采用单一 provider、单一 model 和一组可用密钥完成验证。
 
 ## 基础配置流程
@@ -52,7 +52,7 @@
 
 ## 多来源选择规则
 
-Beetls OS 支持同时配置多个来源。
+Beetle OS 支持同时配置多个来源。
 
 默认情况下，会按 `llm_sources` 里的顺序依次尝试。
 
@@ -61,7 +61,7 @@ Beetls OS 支持同时配置多个来源。
 - `llm_router_source_index`
 - `llm_worker_source_index`
 
-Beetls OS 会优先按这个顺序尝试：
+Beetle OS 会优先按这个顺序尝试：
 
 1. `llm_router_source_index`
 2. `llm_worker_source_index`
@@ -120,7 +120,7 @@ Beetls OS 会优先按这个顺序尝试：
 - `llm_sources` 不能为空
 - 每个来源至少要有 `provider`、`api_key`、`model`
 - 如果你用的是本地 Ollama，常见地址是 `http://<主机>:11434/v1`
-- 示例里的模型名只是示例，不代表 Beetls OS 固定要求这些名字
+- 示例里的模型名只是示例，不代表 Beetle OS 固定要求这些名字
 
 ## 相关文档
 

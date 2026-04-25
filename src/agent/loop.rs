@@ -1453,6 +1453,9 @@ fn outbound_provenance_value(value: &str) -> &str {
     }
 }
 
+const PRIMARY_OUTBOUND_ENQUEUE_RETRY_DELAY_MS: u64 = 50;
+const PRIMARY_OUTBOUND_ENQUEUE_LOG_EVERY: u32 = 20;
+
 fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> bool {
     let req_id = msg.req_id.clone().unwrap_or_default();
     let channel = msg.channel.clone();
@@ -1461,37 +1464,63 @@ fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> 
     let platform_message_id = msg.platform_message_id.clone();
     let platform_event_id = msg.platform_event_id.clone();
     let inbound_dedup_key = msg.inbound_dedup_key.clone();
-    match outbound_tx.try_send(msg) {
-        Ok(()) => {
-            metrics::record_message_out();
-            log::info!(
-                "[agent] {} outbound enqueued req_id={} channel={} chat_id={} transport={} platform_message_id={} platform_event_id={} dedup_key={}",
-                log_prefix,
-                req_id,
-                channel,
-                chat_id,
-                source_transport.as_str(),
-                outbound_provenance_value(&platform_message_id),
-                outbound_provenance_value(&platform_event_id),
-                outbound_provenance_value(&inbound_dedup_key)
-            );
-            true
-        }
-        Err(e) => {
-            metrics::record_outbound_enqueue_fail();
-            log::error!(
-                "[agent] {} outbound enqueue failed req_id={} channel={} chat_id={} transport={} platform_message_id={} platform_event_id={} dedup_key={}: {}",
-                log_prefix,
-                req_id,
-                channel,
-                chat_id,
-                source_transport.as_str(),
-                outbound_provenance_value(&platform_message_id),
-                outbound_provenance_value(&platform_event_id),
-                outbound_provenance_value(&inbound_dedup_key),
-                e
-            );
-            false
+    let mut pending = msg;
+    let mut full_attempts = 0u32;
+    loop {
+        match outbound_tx.try_send(pending) {
+            Ok(()) => {
+                metrics::record_message_out();
+                log::info!(
+                    "[agent] {} outbound enqueued req_id={} channel={} chat_id={} transport={} platform_message_id={} platform_event_id={} dedup_key={}",
+                    log_prefix,
+                    req_id,
+                    channel,
+                    chat_id,
+                    source_transport.as_str(),
+                    outbound_provenance_value(&platform_message_id),
+                    outbound_provenance_value(&platform_event_id),
+                    outbound_provenance_value(&inbound_dedup_key)
+                );
+                return true;
+            }
+            Err(std::sync::mpsc::TrySendError::Full(msg))
+                if !msg.outbound_kind.is_supplemental() =>
+            {
+                full_attempts = full_attempts.saturating_add(1);
+                if full_attempts == 1
+                    || full_attempts.is_multiple_of(PRIMARY_OUTBOUND_ENQUEUE_LOG_EVERY)
+                {
+                    log::warn!(
+                        "[agent] {} outbound queue full for primary reply req_id={} channel={} chat_id={}, applying backpressure",
+                        log_prefix,
+                        req_id,
+                        channel,
+                        chat_id
+                    );
+                }
+                crate::platform::task_wdt::feed_current_task();
+                std::thread::sleep(std::time::Duration::from_millis(
+                    PRIMARY_OUTBOUND_ENQUEUE_RETRY_DELAY_MS,
+                ));
+                crate::platform::task_wdt::feed_current_task();
+                pending = msg;
+            }
+            Err(e) => {
+                metrics::record_outbound_enqueue_fail();
+                log::error!(
+                    "[agent] {} outbound enqueue failed req_id={} channel={} chat_id={} transport={} platform_message_id={} platform_event_id={} dedup_key={}: {}",
+                    log_prefix,
+                    req_id,
+                    channel,
+                    chat_id,
+                    source_transport.as_str(),
+                    outbound_provenance_value(&platform_message_id),
+                    outbound_provenance_value(&platform_event_id),
+                    outbound_provenance_value(&inbound_dedup_key),
+                    e
+                );
+                return false;
+            }
         }
     }
 }
@@ -1686,7 +1715,6 @@ pub struct AgentLoopConfig {
     pub runtime: crate::RuntimeServices,
     pub get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync>,
     pub get_capability_package_text: CapabilityPackageTextProvider,
-    pub session_max_messages: usize,
     pub tg_group_activation: Arc<str>,
     pub channel_capability_registry: Arc<crate::ChannelCapabilityRegistry>,
     pub strategy: AgentRunStrategy,
@@ -1783,6 +1811,7 @@ fn run_agent_loop_main(
         }
         let prefer_system_once = consecutive_user_msgs >= MAX_CONSECUTIVE_USER_MSGS;
         let mut before_poll = || {
+            crate::runtime::service_write_back_tasks();
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             {
                 if let Err(error) = crate::runtime::drain_persisted_operator_maintenance_requests(
@@ -2086,6 +2115,27 @@ mod tests {
         crate::tools::ToolRegistry::new()
             .with_llm_catalog_authority(synthetic_catalog(entries))
             .with_tool_protocol_authority(Arc::new(protocol_authority))
+    }
+
+    #[test]
+    fn try_send_outbound_waits_for_primary_reply_queue_space() {
+        let (bus, _inbound_rx, outbound_rx) = crate::bus::MessageBus::new(1);
+        bus.outbound_tx
+            .try_send(PcMsg::new("qq_channel", "chat-1", "queued").expect("queued"))
+            .expect("fill outbound queue");
+        let tx = bus.outbound_tx.clone();
+        let receiver = std::thread::spawn(move || {
+            let first = outbound_rx.recv().expect("first queued message");
+            let second = outbound_rx.recv().expect("primary reply");
+            (first.content, second.content)
+        });
+        let reply = PcMsg::new("qq_channel", "chat-1", "reply").expect("reply");
+
+        assert!(try_send_outbound(&tx, reply, "reply"));
+
+        let (first, second) = receiver.join().expect("receiver joins");
+        assert_eq!(first, "queued");
+        assert_eq!(second, "reply");
     }
 
     #[test]
@@ -3738,7 +3788,6 @@ mod tests {
             },
             get_skill_descriptions: Arc::new(String::new),
             get_capability_package_text: Arc::new(|_, _| None),
-            session_max_messages: 16,
             tg_group_activation: Arc::from(""),
             channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
                 &config, false,

@@ -2,11 +2,11 @@
 //! Pressure level computation: absorbs resource.rs PressureLevel + ResourceBudget.
 
 use crate::constants::{
-    DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, MAX_CONCURRENT_HTTP, MAX_RESPONSE_BODY_LEN,
-    PRESSURE_CAUTIOUS_INTERNAL_MIN_BYTES, PRESSURE_CAUTIOUS_PSRAM_MIN_BYTES,
-    PRESSURE_NORMAL_INTERNAL_MIN_BYTES, PRESSURE_NORMAL_PSRAM_MIN_BYTES,
-    PRESSURE_QUEUE_CONGESTION_THRESHOLD, TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
-    TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES,
+    DEFAULT_MESSAGES_MAX_LEN, DEFAULT_SYSTEM_MAX_LEN, ESP_TRANSPORT_STEADY_INTERNAL_CAUTION_BYTES,
+    MAX_CONCURRENT_HTTP, MAX_RESPONSE_BODY_LEN, PRESSURE_CAUTIOUS_INTERNAL_MIN_BYTES,
+    PRESSURE_CAUTIOUS_PSRAM_MIN_BYTES, PRESSURE_NORMAL_INTERNAL_MIN_BYTES,
+    PRESSURE_NORMAL_PSRAM_MIN_BYTES, PRESSURE_QUEUE_CONGESTION_THRESHOLD,
+    TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES, TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES,
 };
 use std::sync::atomic::Ordering;
 
@@ -129,6 +129,12 @@ pub fn compute_pressure(state: &OrchestratorState) -> PressureLevel {
         return PressureLevel::Critical;
     }
 
+    // ESP with PSRAM can still pass the TLS hard gate while having too little internal
+    // headroom for WSS, display DMA, and lazy route workers to coexist safely.
+    if spiram > 0 && internal < ESP_TRANSPORT_STEADY_INTERNAL_CAUTION_BYTES {
+        return PressureLevel::Cautious;
+    }
+
     // Critical: 队列拥塞 + 堆不足同时出现
     if queue_total >= PRESSURE_QUEUE_CONGESTION_THRESHOLD
         && internal < PRESSURE_NORMAL_INTERNAL_MIN_BYTES
@@ -219,5 +225,12 @@ mod tests {
             (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32) + 8 * 1024,
         );
         assert_eq!(compute_pressure(&state), PressureLevel::Normal);
+    }
+
+    #[test]
+    fn esp_steady_low_internal_heap_escalates_to_cautious_even_with_psram() {
+        let state = state_with_heap(41 * 1024, 8 * 1024 * 1024, 29 * 1024);
+
+        assert_eq!(compute_pressure(&state), PressureLevel::Cautious);
     }
 }

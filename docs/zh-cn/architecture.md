@@ -2,7 +2,7 @@
 
 [English](../en-us/architecture.md) | **中文** | [文档索引](../README.md)
 
-本页说明 Beetls OS 的主要模块分层与扩展入口。
+本页说明 Beetle OS 的主要模块分层与扩展入口。
 若当前工作仅涉及部署或配置，可直接参见 [getting-started-esp.md](getting-started-esp.md)、[getting-started-linux.md](getting-started-linux.md) 或 [build-script.md](build-script.md)。
 
 ## 整体分层

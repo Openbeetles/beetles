@@ -123,6 +123,8 @@ export function SystemLogsPage() {
     if (s === "warn") return "var(--semantic-warning)";
     return "var(--semantic-danger)";
   };
+  const severityLabel = (severity: string) =>
+    t(`systemLogs.severity.${severity}`, { defaultValue: severity });
   const showConnectionLoading = ready && connectionChecking && !deviceConnected;
   const showConnectState = !showConnectionLoading && (!ready || !deviceConnected);
   const hasLogData =
@@ -180,22 +182,23 @@ export function SystemLogsPage() {
                   variant="caption"
                   sx={{ ...TEXT_BODY_TERTIARY_SX, fontWeight: 700 }}
                 >
-                  GET /api/health
+                  {t("systemLogs.snapshotTitle")}
                 </Typography>
                 <Box sx={{ mt: 0.75 }}>
                   <Typography variant="caption" sx={TEXT_BODY_TERTIARY_SX}>
-                    health
+                    {t("systemLogs.snapshotHealth")}
                   </Typography>
                   <KvList
                     items={kvEntries({
-                      wifi: logsState.data.health.wifi,
-                      last_error: logsState.data.health.last_error ?? "none",
+                      [t("systemLogs.healthWifi")]: logsState.data.health.wifi,
+                      [t("systemLogs.healthLastError")]:
+                        logsState.data.health.last_error ?? t("common.na"),
                     })}
                   />
                 </Box>
                 <Box sx={{ mt: 0.75 }}>
                   <Typography variant="caption" sx={TEXT_BODY_TERTIARY_SX}>
-                    metrics
+                    {t("systemLogs.snapshotMetrics")}
                   </Typography>
                   <KvList items={kvEntries(logsState.data.metrics)} />
                 </Box>
@@ -207,7 +210,7 @@ export function SystemLogsPage() {
                   variant="caption"
                   sx={{ ...TEXT_BODY_TERTIARY_SX, fontWeight: 700 }}
                 >
-                  GET /api/diagnose
+                  {t("systemLogs.diagnoseTitle")}
                 </Typography>
                 <List dense disablePadding>
                   {logsState.data.diagnose.map((item, i) => (
@@ -227,13 +230,20 @@ export function SystemLogsPage() {
                         }}
                       />
                       <ListItemText
-                        primary={`[${item.severity}] ${item.category}: ${item.message}`}
+                        primary={item.message}
+                        secondary={`${severityLabel(item.severity)} · ${item.category}`}
                         slotProps={{
                           primary: {
                             variant: "body2",
                             sx: {
-                              fontFamily: "var(--font-mono)",
-                              fontSize: "var(--font-size-overline)",
+                              color: "var(--text-primary)",
+                            },
+                          },
+                          secondary: {
+                            variant: "caption",
+                            sx: {
+                              ...TEXT_BODY_TERTIARY_SX,
+                              mt: 0.35,
                             },
                           },
                         }}

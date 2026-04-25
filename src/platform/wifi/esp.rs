@@ -345,7 +345,20 @@ fn poll_sta_link(
         if !was_connected {
             log::info!("[{}] STA connected (detected in poll)", TAG);
         }
+        let should_restart_sntp = crate::platform::sntp::should_restart_sntp_after_sta_connect(
+            crate::memory::MemorySystemKind::EspCompact,
+            was_connected,
+            sta_ip_ok,
+            crate::platform::time::wall_clock_is_trustworthy(),
+        );
         crate::state::set_wifi_sta_state(true, Some(ip));
+        if should_restart_sntp {
+            crate::platform::sntp::init_sntp();
+            log::info!(
+                "[{}] STA has IP; SNTP restarted for wall-clock recovery",
+                TAG
+            );
+        }
         let stable_since = sta_ip_stable_since.get_or_insert_with(Instant::now);
         if *softap_enabled {
             let ready_to_disable =

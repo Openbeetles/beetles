@@ -147,7 +147,12 @@ impl Error {
         let local = match self {
             Error::Io { stage, .. } | Error::Other { stage, .. } => matches!(
                 *stage,
-                "http_post_request" | "http_get_request" | "http_client_replace" | "http_read"
+                "http_post_request"
+                    | "http_get_request"
+                    | "http_post_submit"
+                    | "http_get_submit"
+                    | "http_client_replace"
+                    | "http_read"
             ),
             _ => false,
         };
@@ -232,5 +237,17 @@ mod tests {
         };
         assert!(err.is_tls_admission());
         assert!(err.is_retryable_upstream());
+    }
+
+    #[test]
+    fn http_submit_stages_are_retryable_connect_errors() {
+        for stage in ["http_post_submit", "http_get_submit"] {
+            let err = Error::Io {
+                source: std::io::Error::other("socket submit failed"),
+                stage,
+            };
+            assert!(err.is_connect_error(), "{stage} should be a connect error");
+            assert!(err.is_retryable_upstream(), "{stage} should be retryable");
+        }
     }
 }

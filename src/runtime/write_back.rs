@@ -1,6 +1,6 @@
 //! Debounced write-back wrappers for hot runtime stores.
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
-//! 不新增常驻线程。
+//! 并由独立 write-back 执行面承接 SPIFFS/serde/session flush 重活。
 
 use crate::error::{Error, Result};
 use crate::memory::{
@@ -16,7 +16,7 @@ use crate::memory::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -26,17 +26,260 @@ const WRITE_BACK_DELAY_MS: u64 = 25;
 
 type WriteBackTask = Box<dyn FnOnce() + Send + 'static>;
 
+struct WriteBackJob {
+    due_at: Instant,
+    task: Option<WriteBackTask>,
+}
+
+struct WriteBackQueueState {
+    jobs: Vec<WriteBackJob>,
+    worker_started: bool,
+}
+
+struct WriteBackScheduler {
+    state: Mutex<WriteBackQueueState>,
+    wake: Condvar,
+}
+
+// Keep enough slots for one flush job from every buffered runtime store family.
+// This is a queue of small delayed closures, not a stack reservation.
+const WRITE_BACK_RUNTIME_DOMAIN_FLOOR: usize = 24;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 8;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 40;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+// SPIFFS + serde flushes need their own ESP stack budget, separate from agent_loop.
+// 24KB matches the old bg_timer write-back budget without adding an oversized SRAM reserve.
+const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+const WRITE_BACK_WORKER_STACK: usize = 8 * 1024;
+
+const WRITE_BACK_ADMISSION_DEFER_MS: u64 = 500;
+#[cfg(test)]
+const WRITE_BACK_IDLE_STOP_MS: u64 = 30;
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), not(test)))]
+const WRITE_BACK_IDLE_STOP_MS: u64 = 1_500;
+#[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), not(test)))]
+const WRITE_BACK_IDLE_STOP_MS: u64 = 1_000;
+
+#[cfg(test)]
+static WRITE_BACK_TEST_AUTO_SERVICE: AtomicBool = AtomicBool::new(false);
+
+fn write_back_scheduler() -> &'static WriteBackScheduler {
+    static SCHEDULER: OnceLock<WriteBackScheduler> = OnceLock::new();
+    SCHEDULER.get_or_init(|| WriteBackScheduler {
+        state: Mutex::new(WriteBackQueueState {
+            jobs: Vec::new(),
+            worker_started: false,
+        }),
+        wake: Condvar::new(),
+    })
+}
+
+fn should_auto_service_write_back_tasks() -> bool {
+    #[cfg(test)]
+    {
+        WRITE_BACK_TEST_AUTO_SERVICE.load(Ordering::Acquire)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
 fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBackTask) -> bool {
-    match crate::runtime::schedule_critical_delayed_task(due_at, task) {
-        Ok(()) => true,
-        Err(_) => {
+    let scheduler = write_back_scheduler();
+    {
+        let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.jobs.len() >= WRITE_BACK_QUEUE_MAX {
             log::warn!(
-                "[write_back:{}] critical delayed queue full, keeping pending writes queued",
+                "[write_back:{}] write-back queue full, keeping pending writes queued",
                 label
             );
+            return false;
+        }
+        state.jobs.push(WriteBackJob {
+            due_at,
+            task: Some(task),
+        });
+    }
+    if should_auto_service_write_back_tasks() && ensure_write_back_worker_started_for_pending_jobs()
+    {
+        scheduler.wake.notify_one();
+    }
+    true
+}
+
+fn ensure_write_back_worker_started_for_pending_jobs() -> bool {
+    ensure_write_back_worker_started_inner(true)
+}
+
+fn ensure_write_back_worker_started_inner(require_pending_job: bool) -> bool {
+    let scheduler = write_back_scheduler();
+    {
+        let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        if require_pending_job && state.jobs.is_empty() {
+            return false;
+        }
+        if require_pending_job && write_back_admission_delay().is_some() {
+            return false;
+        }
+        if state.worker_started {
+            return true;
+        }
+        state.worker_started = true;
+    }
+    match crate::util::spawn_guarded_with_profile_handle(
+        "write_back",
+        WRITE_BACK_WORKER_STACK,
+        Some(crate::util::SpawnCore::Core1),
+        crate::util::HttpThreadRole::Background,
+        write_back_worker_loop,
+    ) {
+        Ok(_) => true,
+        Err(error) => {
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.worker_started = false;
+            log::error!("[write_back] failed to start write-back worker: {}", error);
             false
         }
     }
+}
+
+fn take_due_write_back_jobs(state: &mut WriteBackQueueState, now: Instant) -> Vec<WriteBackJob> {
+    let mut due = Vec::new();
+    let mut index = 0usize;
+    while index < state.jobs.len() {
+        if state.jobs[index].due_at <= now {
+            due.push(state.jobs.swap_remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    due.sort_by_key(|job| job.due_at);
+    due
+}
+
+fn next_write_back_wait(jobs: &[WriteBackJob], now: Instant) -> Option<Duration> {
+    jobs.iter()
+        .map(|job| job.due_at.saturating_duration_since(now))
+        .min()
+}
+
+fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Duration) {
+    let scheduler = write_back_scheduler();
+    let due_at = Instant::now() + delay;
+    let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+    for job in &mut jobs {
+        job.due_at = due_at;
+    }
+    state.jobs.extend(jobs);
+    state.worker_started = false;
+}
+
+fn write_back_admission_delay() -> Option<Duration> {
+    if matches!(
+        crate::orchestrator::current_pressure(),
+        crate::orchestrator::PressureLevel::Critical
+    ) || matches!(
+        crate::orchestrator::current_storage_contention_risk(),
+        crate::orchestrator::StorageContentionRisk::Critical
+    ) {
+        return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
+    }
+    None
+}
+
+fn write_back_worker_loop() {
+    loop {
+        let due = {
+            let scheduler = write_back_scheduler();
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let now = Instant::now();
+                let due = take_due_write_back_jobs(&mut state, now);
+                if !due.is_empty() {
+                    break due;
+                }
+                state = if let Some(wait) = next_write_back_wait(&state.jobs, now) {
+                    scheduler
+                        .wake
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                } else {
+                    let (next_state, timeout) = scheduler
+                        .wake
+                        .wait_timeout(state, Duration::from_millis(WRITE_BACK_IDLE_STOP_MS))
+                        .unwrap_or_else(|e| e.into_inner());
+                    state = next_state;
+                    if timeout.timed_out() && state.jobs.is_empty() {
+                        state.worker_started = false;
+                        return;
+                    }
+                    state
+                };
+            }
+        };
+
+        if let Some(delay) = write_back_admission_delay() {
+            defer_write_back_jobs_and_stop_worker(due, delay);
+            return;
+        }
+
+        for mut job in due {
+            if let Some(task) = job.task.take() {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+                if result.is_err() {
+                    log::error!("[write_back] write-back task panicked");
+                }
+            }
+        }
+    }
+}
+
+/// Wake the background write-back execution plane.
+///
+/// This function is intentionally light enough for `agent_loop`: heavy
+/// SPIFFS/serde/session flush closures run only on the write-back worker stack.
+pub fn service_write_back_tasks() {
+    if ensure_write_back_worker_started_for_pending_jobs() {
+        write_back_scheduler().wake.notify_one();
+    }
+}
+
+#[cfg(test)]
+fn reset_write_back_queue_for_tests() {
+    let scheduler = write_back_scheduler();
+    {
+        let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.jobs.clear();
+    }
+    scheduler.wake.notify_one();
+
+    let deadline = Instant::now() + Duration::from_millis(1_000);
+    while Instant::now() < deadline {
+        let worker_started = scheduler
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .worker_started;
+        if !worker_started {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+fn write_back_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Clone)]
@@ -183,7 +426,7 @@ fn flush_map<T, V>(
 fn should_retry_write_back_error(error: &Error) -> bool {
     match error {
         Error::Config { .. } => false,
-        Error::Io { source, .. } => !matches!(source.raw_os_error(), Some(28 | 36 | 63 | 91)),
+        Error::Io { source, .. } => !matches!(source.raw_os_error(), Some(2 | 28 | 36 | 63 | 91)),
         _ => true,
     }
 }
@@ -834,7 +1077,7 @@ impl SessionStore for BufferedSessionStore {
             Vec::new()
         } else {
             self.inner
-                .load_recent(chat_id, crate::memory::MAX_SESSION_ENTRIES)?
+                .load_recent(chat_id, n.min(crate::memory::MAX_SESSION_ENTRIES))?
         };
         combined.extend(write.appended);
         if combined.len() > crate::memory::MAX_SESSION_ENTRIES {
@@ -1035,6 +1278,8 @@ mod tests {
 
     #[test]
     fn buffered_execution_state_reads_pending_before_flush() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let inner: Arc<dyn ExecutionStateStore + Send + Sync> =
@@ -1058,6 +1303,8 @@ mod tests {
 
     #[test]
     fn buffered_session_store_merges_pending_messages() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let inner: Arc<dyn SessionStore + Send + Sync> = Arc::new(StubSessionStore::default());
@@ -1074,6 +1321,8 @@ mod tests {
 
     #[test]
     fn buffered_turn_ledger_uses_pending_terminal_for_recent_persona_evidence() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let inner = Arc::new(CountingTurnLedgerStore::default());
@@ -1094,16 +1343,15 @@ mod tests {
 
     #[test]
     fn buffered_turn_ledger_keeps_pending_when_delayed_queue_is_full() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let due_at = Instant::now() + Duration::from_secs(60);
         let mut accepted = 0usize;
-        while crate::runtime::schedule_critical_delayed_task(due_at, Box::new(|| {})).is_ok() {
+        while schedule_write_back_task("test", due_at, Box::new(|| {})) {
             accepted += 1;
-            assert!(
-                accepted < 256,
-                "critical delayed queue cap should be finite"
-            );
+            assert!(accepted < 256, "write-back queue cap should be finite");
         }
         assert!(accepted > 0);
 
@@ -1118,13 +1366,155 @@ mod tests {
         assert_eq!(
             counter.set_calls.load(Ordering::Relaxed),
             0,
-            "full delayed queue must not flush SPIFFS-backed turn ledger inline on agent_loop"
+            "full write-back queue must not flush SPIFFS-backed turn ledger inline on agent_loop"
         );
+        reset_write_back_queue_for_tests();
+    }
+
+    #[test]
+    fn write_back_queue_covers_one_full_runtime_store_fanout() {
+        let queue_max = std::hint::black_box(WRITE_BACK_QUEUE_MAX);
+        assert!(
+            queue_max >= WRITE_BACK_RUNTIME_DOMAIN_FLOOR,
+            "write-back queue must cover one flush per buffered runtime store family"
+        );
+    }
+
+    #[test]
+    fn service_write_back_tasks_runs_due_work_off_caller_thread() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let caller_thread = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        assert!(schedule_write_back_task(
+            "thread_plane_test",
+            Instant::now(),
+            Box::new(move || {
+                tx.send(std::thread::current().id()).unwrap();
+            }),
+        ));
+
+        service_write_back_tasks();
+        let worker_thread = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("due write-back task should be serviced by the background plane");
+
+        assert_ne!(
+            worker_thread, caller_thread,
+            "service_write_back_tasks must not execute heavy storage work on the caller stack"
+        );
+    }
+
+    #[test]
+    fn service_write_back_tasks_does_not_start_idle_worker_without_pending_jobs() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+
+        service_write_back_tasks();
+
+        let worker_started = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .worker_started;
+        assert!(
+            !worker_started,
+            "agent idle polling must not reserve the write-back worker stack without pending jobs"
+        );
+    }
+
+    #[test]
+    fn write_back_worker_releases_stack_after_idle_timeout() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
+
+        assert!(ensure_write_back_worker_started_inner(false));
+
+        let deadline = Instant::now() + Duration::from_millis(1_000);
+        while Instant::now() < deadline {
+            let worker_started = write_back_scheduler()
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .worker_started;
+            if !worker_started {
+                WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        panic!("idle write-back worker must exit and release its stack budget");
+    }
+
+    #[test]
+    fn write_back_worker_releases_stack_when_pressure_turns_critical() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 256 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let scheduler = write_back_scheduler();
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.worker_started = true;
+            state.jobs.push(WriteBackJob {
+                due_at: Instant::now(),
+                task: Some(Box::new(move || {
+                    tx.send(()).unwrap();
+                })),
+            });
+        }
+
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 48 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 16 * 1024,
+        });
+        write_back_worker_loop();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "critical pressure must defer due write-back work instead of running it"
+        );
+        let state = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !state.worker_started,
+            "worker must release its ESP stack after deferring under Critical pressure"
+        );
+        assert_eq!(state.jobs.len(), 1, "deferred job should remain queued");
+        drop(state);
+
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 256 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
     }
 
     #[test]
     fn enospc_write_back_errors_are_not_retried() {
         let error = Error::io("spiffs_write", std::io::Error::from_raw_os_error(28));
+
+        assert!(!should_retry_write_back_error(&error));
+    }
+
+    #[test]
+    fn enoent_write_back_errors_are_not_retried_indefinitely() {
+        let error = Error::io("spiffs_write_json", std::io::Error::from_raw_os_error(2));
 
         assert!(!should_retry_write_back_error(&error));
     }

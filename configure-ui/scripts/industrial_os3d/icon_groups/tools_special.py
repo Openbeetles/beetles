@@ -229,27 +229,39 @@ def _builder_proxy(scene_obj, palette) -> None:
 
 
 def _builder_sensor_watch(scene_obj, palette) -> None:
-    dish_base = scene_obj.rounded_rect(24, 72, 58, 84, 5)
-    stand = scene_obj.rounded_rect(38, 56, 45, 74, 3)
-    hinge = scene_obj.circle(41.5, 57, 6)
-    _apply_extruded(scene_obj, dish_base, palette, "neutral", depth=6)
-    _apply_extruded(scene_obj, stand, palette, "neutral", depth=5)
-    _apply_extruded(scene_obj, hinge, palette, "secondary", depth=5)
+    module = scene_obj.rounded_rect(20, 27, 78, 77, 12)
+    _apply_extruded(scene_obj, module, palette, "neutral", depth=9, glow=True)
 
-    dish = scene_obj.polygon([(30, 33), (67, 57), (30, 66), (23, 50)])
-    lip = scene_obj.line([(31, 35), (63, 56), (31, 64)], 2.3)
-    _apply_extruded(scene_obj, dish, palette, "primary", depth=9, glow=True)
-    scene_obj.render_flat(lip, lighten(tone(palette, "accent")[0], 0.12), tone(palette, "accent")[1])
+    chip = scene_obj.rounded_rect(29, 34, 62, 67, 8)
+    _apply_extruded(scene_obj, chip, palette, "primary", depth=7)
 
-    receiver = scene_obj.circle(68, 56, 3.4)
-    _apply_extruded(scene_obj, receiver, palette, "warm", depth=4)
+    pins = []
+    for y in (40, 48, 56, 64):
+        pins.append(scene_obj.line([(24, y), (30, y)], 2.0))
+        pins.append(scene_obj.line([(61, y), (68, y)], 2.0))
+    scene_obj.render_flat(union_masks(*pins), lighten(tone(palette, "neutral")[0], 0.08), tone(palette, "neutral")[1])
+
+    eye = scene_obj.ellipse(45.5, 49.5, 15, 9)
+    scene_obj.render_extruded(eye, *tone(palette, "secondary"), depth=5)
+    pupil = scene_obj.circle(45.5, 49.5, 4.8)
+    _apply_extruded(scene_obj, pupil, palette, "accent", depth=3)
+    glint = scene_obj.circle(43, 47, 1.5)
+    scene_obj.render_flat(glint, lighten(tone(palette, "neutral")[0], 0.2), lighten(tone(palette, "neutral")[0], 0.2))
+
+    wave = scene_obj.line([(30, 70), (37, 70), (41, 63), (46, 75), (52, 66), (61, 66)], 2.4)
+    scene_obj.render_flat(wave, lighten(tone(palette, "accent")[0], 0.12), tone(palette, "accent")[1])
+
+    status = scene_obj.circle(69, 33, 6.0)
+    _apply_extruded(scene_obj, status, palette, "warm", depth=4)
+    live_dot = scene_obj.circle(69, 33, 2.2)
+    scene_obj.render_flat(live_dot, lighten(tone(palette, "accent")[0], 0.16), tone(palette, "accent")[0])
+
     arcs = [
-        scene_obj.arc_band(72, 38, 13, 10, 302, 35),
-        scene_obj.arc_band(72, 38, 20, 16, 302, 35),
-        scene_obj.arc_band(72, 38, 27, 22, 302, 35),
+        scene_obj.arc_band(70, 33, 14, 11, 300, 40),
+        scene_obj.arc_band(70, 33, 21, 18, 300, 40),
     ]
     for arc in arcs:
-        scene_obj.render_flat(arc, lighten(tone(palette, "accent")[0], 0.12), tone(palette, "accent")[1])
+        scene_obj.render_flat(arc, lighten(tone(palette, "warm")[0], 0.1), tone(palette, "warm")[1])
 
 
 def _builder_sys_ctrl(scene_obj, palette) -> None:
@@ -292,17 +304,30 @@ def _builder_lua_hook(scene_obj, palette) -> None:
 
 
 def _builder_lua_snake(scene_obj, palette) -> None:
-    body = scene_obj.line([(32, 72), (30, 60), (38, 50), (50, 52), (58, 44), (54, 32), (64, 24)], 8.0)
-    head = scene_obj.circle(66, 22, 9)
-    tail = scene_obj.circle(30, 74, 5)
-    snake = union_masks(body, head, tail)
-    _apply_extruded(scene_obj, snake, palette, "secondary", depth=8, glow=True)
-    for px, py in ((40, 54), (52, 47), (59, 37)):
-        spot = scene_obj.circle(px, py, 2.2)
-        scene_obj.render_flat(spot, lighten(tone(palette, "accent")[0], 0.12), tone(palette, "accent")[0])
-    eye = scene_obj.circle(68, 20, 1.2)
-    scene_obj.render_flat(eye, lighten(tone(palette, "danger")[0], 0.2), tone(palette, "danger")[1])
-    tongue = scene_obj.line([(72, 24), (79, 19), (82, 22)], 1.2)
+    path = [(28, 74), (24, 61), (36, 48), (50, 53), (62, 44), (58, 31), (70, 22)]
+    body = scene_obj.line(path, 17.0)
+    joints = [scene_obj.circle(x, y, 8.5) for x, y in path[1:-1]]
+    head = scene_obj.ellipse(70, 22, 15, 12)
+    tail = scene_obj.circle(27, 75, 8)
+    snake = union_masks(body, head, tail, *joints)
+    _apply_extruded(scene_obj, snake, palette, "secondary", depth=11, glow=True)
+
+    ridge = scene_obj.line([(29, 67), (37, 55), (49, 59), (58, 51), (63, 38), (72, 28)], 4.8)
+    scene_obj.render_flat(ridge, lighten(tone(palette, "primary")[0], 0.16), tone(palette, "primary")[0])
+
+    belly = scene_obj.line([(24, 61), (36, 48), (50, 53), (62, 44)], 3.0)
+    scene_obj.render_flat(belly, lighten(tone(palette, "secondary")[0], 0.14), tone(palette, "secondary")[0])
+
+    for px, py in ((36, 49), (50, 53), (61, 42)):
+        spot = scene_obj.circle(px, py, 4.0)
+        _apply_extruded(scene_obj, spot, palette, "accent", depth=4)
+        scene_obj.render_flat(scene_obj.circle(px - 1.2, py - 1.4, 1.1), lighten(tone(palette, "neutral")[0], 0.18), tone(palette, "neutral")[0])
+
+    eye = scene_obj.circle(73, 18, 2.1)
+    scene_obj.render_flat(eye, lighten(tone(palette, "danger")[0], 0.18), tone(palette, "danger")[1])
+    snout = scene_obj.circle(78, 25, 1.4)
+    scene_obj.render_flat(snout, lighten(tone(palette, "neutral")[0], 0.18), tone(palette, "neutral")[0])
+    tongue = scene_obj.line([(81, 24), (88, 19), (92, 23)], 2.2)
     scene_obj.render_flat(tongue, lighten(tone(palette, "warm")[0], 0.12), tone(palette, "warm")[1])
 
 

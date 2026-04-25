@@ -2,7 +2,7 @@
 
 [English](../en-us/linux-release-rollback.md) | **中文** | [文档索引](../README.md)
 
-本页说明 Beetls OS 在 Linux 环境中的部署、重启、停止与回滚机制。
+本页说明 Beetle OS 在 Linux 环境中的部署、重启、停止与回滚机制。
 
 ## 基础流程
 

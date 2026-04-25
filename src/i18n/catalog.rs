@@ -122,7 +122,6 @@ pub enum Message {
     ConfigLlmIndicesInvalid,
     ConfigLlmSourceFieldLen,
     ConfigChannelFieldLen,
-    ConfigSessionRangeInvalid,
     ConfigHardwareInvalid,
     ConfigDisplayInvalid,
 }
@@ -268,7 +267,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ConfigLlmIndicesInvalid => zh("llm_router / llm_worker 源下标无效"),
             Message::ConfigLlmSourceFieldLen => zh("某个 LLM 源字段过长"),
             Message::ConfigChannelFieldLen => zh("通道配置字段过长"),
-            Message::ConfigSessionRangeInvalid => zh("session_max_messages 超出允许范围"),
             Message::ConfigHardwareInvalid => zh("硬件配置无效"),
             Message::ConfigDisplayInvalid => zh("显示配置无效"),
         },
@@ -416,7 +414,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             }
             Message::ConfigLlmSourceFieldLen => en("An LLM source field exceeds the length limit"),
             Message::ConfigChannelFieldLen => en("A channel field exceeds the length limit"),
-            Message::ConfigSessionRangeInvalid => en("session_max_messages is out of range"),
             Message::ConfigHardwareInvalid => en("Invalid hardware configuration"),
             Message::ConfigDisplayInvalid => en("Invalid display configuration"),
         },

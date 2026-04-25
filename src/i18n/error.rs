@@ -72,9 +72,6 @@ fn map_config_body(m: &str) -> Message {
     if m == "tg_group_activation must be 'mention' or 'always'" {
         return Message::TgGroupActivationInvalid;
     }
-    if m.contains("session_max_messages must") {
-        return Message::ConfigSessionRangeInvalid;
-    }
     if m == "llm_sources must not be empty" {
         return Message::ConfigLlmSourcesEmpty;
     }

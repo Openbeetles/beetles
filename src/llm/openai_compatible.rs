@@ -659,7 +659,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(body.as_ref()).expect("json");
         assert_eq!(v["messages"][0]["role"], "user");
     }
-
     #[test]
     fn ollama_uses_prompt_guided_tools() {
         let client = OpenAiCompatibleClient::from_source(

@@ -1,14 +1,14 @@
-# Beetls OS
+# Beetle OS
 
 **面向 ESP32 与 Linux 的聊天式设备 Agent**<br/>
 Rust · 聊天通道 · 工作流 · 硬件控制
 
 [English](README.md) · **中文**
 
-Beetls OS 是面向 ESP32 与 Linux 的设备 Agent 运行时，集成浏览器配置、聊天交互、大模型接入、办公账号能力和硬件控制。
+Beetle OS 是面向 ESP32 与 Linux 的设备 Agent 运行时，集成浏览器配置、聊天交互、大模型接入、办公账号能力和硬件控制。
 仓库里的命令、服务名和文件路径仍使用 `beetle`。
 
-## Beetls OS 能做什么
+## Beetle OS 能做什么
 
 - 通过飞书、钉钉、企微、QQ 频道等聊天通道回复和协作
 - 处理提醒、任务和轻量日常流程
@@ -18,7 +18,7 @@ Beetls OS 是面向 ESP32 与 Linux 的设备 Agent 运行时，集成浏览器�
 
 ## 典型应用场景
 
-| 形态 | Beetls OS 在里面承担什么 |
+| 形态 | Beetle OS 在里面承担什么 |
 |------|-----------------------|
 | 桌面助手 | 聊天、提醒、文档、轻量流程协助 |
 | 前台终端 | 接待答疑、屏幕展示、访客分流、运营协助 |
@@ -59,4 +59,4 @@ Beetls OS 是面向 ESP32 与 Linux 的设备 Agent 运行时，集成浏览器�
 
 ## 许可
 
-Beetls OS 使用 **MIT OR Apache-2.0** 双许可证，详见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。
+Beetle OS 使用 **MIT OR Apache-2.0** 双许可证，详见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。

@@ -512,14 +512,11 @@ export function AccountDetailDialog({
                             displayNameKey: a.display_name_key,
                           })}
                         </Typography>
-                        <Typography
-                          variant="body2"
-                          sx={{ ...TEXT_BODY_TERTIARY_SX, mt: 0.5 }}
-                        >
-                          {a.provider_kind} · {a.account_key}
-                        </Typography>
                         {a.external_account_id ? (
-                          <Typography variant="body2" sx={{ mt: 1 }}>
+                          <Typography
+                            variant="body2"
+                            sx={{ ...TEXT_BODY_TERTIARY_SX, mt: 0.5 }}
+                          >
                             {a.external_account_id}
                           </Typography>
                         ) : null}

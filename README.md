@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="configure-ui/public/logo.png" alt="Beetls OS" width="132" height="132" />
+  <img src="configure-ui/public/logo.png" alt="Beetle OS" width="132" height="132" />
 </p>
 
-<h1 align="center">Beetls OS</h1>
+<h1 align="center">Beetle OS</h1>
 
 <p align="center">
   <strong>A chat-first device agent for ESP32 and Linux</strong><br/>
@@ -13,10 +13,10 @@
   <a href="README.zh-CN.md">中文</a> · <strong>English</strong>
 </p>
 
-Beetls OS is a chat-first device agent that combines browser setup, chat interaction, model access, work-account integrations, and hardware control in one runtime.
+Beetle OS is a chat-first device agent that combines browser setup, chat interaction, model access, work-account integrations, and hardware control in one runtime.
 CLI commands, service names, and filesystem paths in this repo still use `beetle`.
 
-## What Beetls OS Can Do
+## What Beetle OS Can Do
 
 - reply through chat channels such as Feishu, DingTalk, WeCom, and QQ Channel
 - handle reminders, tasks, and lightweight daily workflows
@@ -26,7 +26,7 @@ CLI commands, service names, and filesystem paths in this repo still use `beetle
 
 ## Common Product Shapes
 
-| Shape | What Beetls OS contributes |
+| Shape | What Beetle OS contributes |
 |-------|-------------------------|
 | Desk companion | chat, reminders, documents, lightweight workflow help |
 | Front-desk device | visitor Q&A, display, routing, operational assistance |
@@ -38,12 +38,12 @@ CLI commands, service names, and filesystem paths in this repo still use `beetle
 
 | If you want to... | Read this |
 |-------------------|-----------|
-| Get Beetls OS running on ESP32 | [docs/en-us/getting-started-esp.md](docs/en-us/getting-started-esp.md) |
-| Get Beetls OS running on Linux | [docs/en-us/getting-started-linux.md](docs/en-us/getting-started-linux.md) |
-| See what Beetls OS can do | [docs/en-us/capabilities.md](docs/en-us/capabilities.md) |
+| Get Beetle OS running on ESP32 | [docs/en-us/getting-started-esp.md](docs/en-us/getting-started-esp.md) |
+| Get Beetle OS running on Linux | [docs/en-us/getting-started-linux.md](docs/en-us/getting-started-linux.md) |
+| See what Beetle OS can do | [docs/en-us/capabilities.md](docs/en-us/capabilities.md) |
 | Build, flash, or deploy from a terminal | [docs/en-us/build-script.md](docs/en-us/build-script.md) |
-| Configure Beetls OS after it is reachable | [docs/en-us/configuration.md](docs/en-us/configuration.md) |
-| Operate Beetls OS on Linux | [docs/en-us/linux-release-rollback.md](docs/en-us/linux-release-rollback.md) |
+| Configure Beetle OS after it is reachable | [docs/en-us/configuration.md](docs/en-us/configuration.md) |
+| Operate Beetle OS on Linux | [docs/en-us/linux-release-rollback.md](docs/en-us/linux-release-rollback.md) |
 | Build your own frontend or integration | [docs/en-us/config-api.md](docs/en-us/config-api.md) |
 | Browse the full docs portal | [docs/README.md](docs/README.md) |
 
@@ -59,7 +59,7 @@ CLI commands, service names, and filesystem paths in this repo still use `beetle
 ## Docs Structure
 
 - `Start`: first-time setup on ESP32 or Linux
-- `Capabilities`: what Beetls OS can do in real product shapes
+- `Capabilities`: what Beetle OS can do in real product shapes
 - `Configure`: model, channels, hardware, display, and setup flow
 - `Operate`: build, flash, deploy, restart, stop, rollback
 - `Reference`: API details and tool surface
@@ -67,4 +67,4 @@ CLI commands, service names, and filesystem paths in this repo still use `beetle
 
 ## License
 
-Beetls OS is dual-licensed under **MIT OR Apache-2.0**. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+Beetle OS is dual-licensed under **MIT OR Apache-2.0**. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
