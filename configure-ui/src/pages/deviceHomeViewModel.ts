@@ -47,6 +47,8 @@ export interface RuntimeTelemetryField {
     | "active_agent_tasks"
     | "session_count"
     | "messages_in"
+    | "agent_messages_in"
+    | "system_messages_in"
     | "messages_out"
     | "llm_calls"
     | "llm_last_ms"
@@ -374,6 +376,16 @@ export function buildRuntimeTelemetryFields(
     color: "var(--primary)",
   });
   pushNumber("messages_in", "device.systemStatusMessagesIn", metrics?.messages_in);
+  pushNumber(
+    "agent_messages_in",
+    "device.systemStatusAgentMessagesIn",
+    metrics?.agent_messages_in,
+  );
+  pushNumber(
+    "system_messages_in",
+    "device.systemStatusSystemMessagesIn",
+    metrics?.system_messages_in,
+  );
   pushNumber("messages_out", "device.systemStatusMessagesOut", metrics?.messages_out);
   pushNumber("llm_calls", "device.systemStatusLlmCalls", metrics?.llm_calls);
   pushNumber("llm_last_ms", "device.systemStatusLlmLastMs", metrics?.llm_last_ms);

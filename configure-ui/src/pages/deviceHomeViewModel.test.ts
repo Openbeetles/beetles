@@ -213,6 +213,8 @@ test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () =
   };
   const metrics: MetricsSnapshotData = {
     messages_in: 10,
+    agent_messages_in: 16,
+    system_messages_in: 6,
     messages_out: 11,
     llm_calls: 12,
     llm_last_ms: 13,
@@ -231,6 +233,8 @@ test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () =
       "active_agent_tasks",
       "session_count",
       "messages_in",
+      "agent_messages_in",
+      "system_messages_in",
       "messages_out",
       "llm_calls",
       "llm_last_ms",
@@ -257,6 +261,8 @@ test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", ()
   };
   const metrics: MetricsSnapshotData = {
     messages_in: 10,
+    agent_messages_in: 16,
+    system_messages_in: 6,
     messages_out: 11,
     llm_calls: 12,
     llm_last_ms: 13,
@@ -275,6 +281,8 @@ test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", ()
       "active_agent_tasks",
       "session_count",
       "messages_in",
+      "agent_messages_in",
+      "system_messages_in",
       "messages_out",
       "llm_calls",
       "llm_last_ms",
