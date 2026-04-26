@@ -2263,14 +2263,12 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
             DIVIDER,
         );
 
-        let dot_color = if ch.enabled {
-            if ch.healthy {
-                STATUS_SUCCESS
-            } else {
-                STATUS_DANGER
-            }
-        } else {
-            STATUS_OFF
+        let dot_color = match ch.runtime_status {
+            crate::DisplayChannelRuntimeStatus::Disabled => STATUS_OFF,
+            crate::DisplayChannelRuntimeStatus::Configured
+            | crate::DisplayChannelRuntimeStatus::Online => STATUS_SUCCESS,
+            crate::DisplayChannelRuntimeStatus::Waiting => STATUS_WARNING,
+            crate::DisplayChannelRuntimeStatus::Failed => STATUS_DANGER,
         };
         let dot_y = py - (dot_d as i32 / 2);
 
@@ -2301,33 +2299,34 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
             Text::new(label, Point::new(px + 14, row_y + text_base_dy), name_style).draw(target);
 
         let mut token_buf = [0u8; 8];
-        let (token, token_color) = if !ch.enabled {
-            ("OFF", STATUS_OFF)
-        } else if ch.healthy {
-            ("OK", STATUS_SUCCESS)
-        } else if ch.consecutive_failures > 0 {
-            token_buf[0] = b'x';
-            let mut pos = 1;
-            let mut tmp = [0u8; 10];
-            let mut n = ch.consecutive_failures;
-            let mut i = 0usize;
-            while n > 0 && i < tmp.len() {
-                tmp[i] = b'0' + (n % 10) as u8;
-                n /= 10;
-                i += 1;
-            }
-            for j in (0..i).rev() {
-                if pos < token_buf.len() {
-                    token_buf[pos] = tmp[j];
-                    pos += 1;
+        let (token, token_color) = match ch.runtime_status {
+            crate::DisplayChannelRuntimeStatus::Disabled => ("OFF", STATUS_OFF),
+            crate::DisplayChannelRuntimeStatus::Configured => ("OK", STATUS_SUCCESS),
+            crate::DisplayChannelRuntimeStatus::Waiting => ("WAIT", STATUS_WARNING),
+            crate::DisplayChannelRuntimeStatus::Online => ("ON", STATUS_SUCCESS),
+            crate::DisplayChannelRuntimeStatus::Failed if ch.consecutive_failures > 0 => {
+                token_buf[0] = b'x';
+                let mut pos = 1;
+                let mut tmp = [0u8; 10];
+                let mut n = ch.consecutive_failures;
+                let mut i = 0usize;
+                while n > 0 && i < tmp.len() {
+                    tmp[i] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    i += 1;
                 }
+                for j in (0..i).rev() {
+                    if pos < token_buf.len() {
+                        token_buf[pos] = tmp[j];
+                        pos += 1;
+                    }
+                }
+                (
+                    core::str::from_utf8(&token_buf[..pos]).unwrap_or("DOWN"),
+                    STATUS_DANGER,
+                )
             }
-            (
-                core::str::from_utf8(&token_buf[..pos]).unwrap_or("DOWN"),
-                STATUS_DANGER,
-            )
-        } else {
-            ("DOWN", STATUS_DANGER)
+            crate::DisplayChannelRuntimeStatus::Failed => ("DOWN", STATUS_DANGER),
         };
         let token_style = MonoTextStyle::new(&FONT_6X13, token_color);
         let token_x = px + col_width - margin_x - (token.len() as i32 * 6);

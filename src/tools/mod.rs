@@ -265,8 +265,8 @@ pub use office_status::OfficeStatusTool;
 ))]
 pub use pdf_read::PdfReadTool;
 pub use policy::{
-    conservative_merge_execution_shapes, ToolApprovalMode, ToolEffectClass, ToolExecutionShape,
-    ToolRiskLevel, ToolRollbackKind,
+    conservative_merge_execution_shapes, tool_effect_visible_in_mode, ToolApprovalMode,
+    ToolEffectClass, ToolExecutionShape, ToolRiskLevel, ToolRollbackKind,
 };
 pub use policy::{ToolExposure, ToolMetadata, ToolPolicyContext};
 pub use private_garden::PrivateGardenTool;

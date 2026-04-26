@@ -61,7 +61,10 @@ impl<'a> AgentRequestPlan<'a> {
         semantics: RequestSemantics,
         reply_surface: ReplySurface,
     ) -> Self {
-        let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
+        let tool_policy = ToolPolicyContext::new(msg.ingress, msg.channel.as_ref())
+            .with_runtime_mode(
+                crate::runtime::thread_registry::runtime_mode_snapshot().current_mode,
+            );
         let tool_specs = registry.tool_specs_for_llm(&tool_policy);
         let tool_call_mode = if tool_specs.is_empty() {
             ToolCallMode::Disabled

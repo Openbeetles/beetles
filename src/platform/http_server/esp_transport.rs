@@ -77,6 +77,11 @@ impl EspRouteExecutor {
         let contract = class
             .worker_contract()
             .expect("route executor requires worker contract");
+        mark_route_worker_lifecycle(
+            contract.lane,
+            crate::runtime::PlaneLifecycleState::Registered,
+            "registered",
+        );
         let ctx = Arc::clone(ctx);
         let store = Arc::clone(config_store);
         Self {
@@ -88,13 +93,34 @@ impl EspRouteExecutor {
                 let store = Arc::clone(&store);
                 let worker_gate = Arc::clone(&submit_gate);
                 let thread_name = route_worker_thread_name(contract.lane);
-                let _task = crate::runtime::thread_util::spawn_planned_handle(
+                mark_route_worker_lifecycle(
+                    contract.lane,
+                    crate::runtime::PlaneLifecycleState::Starting,
+                    "spawn",
+                );
+                let spawn_result = crate::runtime::thread_util::spawn_planned_handle(
                     thread_name,
                     contract.stack_size,
                     move || {
                         run_esp_route_executor(thread_name, contract, ctx, store, rx, worker_gate)
                     },
-                )?;
+                );
+                let _task = match spawn_result {
+                    Ok(task) => task,
+                    Err(err) => {
+                        mark_route_worker_lifecycle(
+                            contract.lane,
+                            crate::runtime::PlaneLifecycleState::Failed,
+                            "spawn_error",
+                        );
+                        return Err(err);
+                    }
+                };
+                mark_route_worker_lifecycle(
+                    contract.lane,
+                    crate::runtime::PlaneLifecycleState::Active,
+                    "spawn_ok",
+                );
                 log::info!(
                     "[http_server] {} lazy-started class={:?} lane={:?} stack={} workers={} queue_cap={} timeout={}s idle_timeout={}s reject_status={} socket_reserve={} counter={}",
                     thread_name,
@@ -221,6 +247,11 @@ impl EspRouteExecutor {
                         }
                         Err(RecvTimeoutError::Disconnected) => {
                             let _ = self.inner.clear_if(&inner);
+                            mark_route_worker_lifecycle(
+                                self.contract.lane,
+                                crate::runtime::PlaneLifecycleState::Failed,
+                                "worker_disconnected",
+                            );
                             route_worker_reject_response(
                                 store,
                                 self.contract,
@@ -234,6 +265,11 @@ impl EspRouteExecutor {
                 Err(TrySendError::Disconnected(job)) => {
                     drop(submit_guard);
                     let _ = self.inner.clear_if(&inner);
+                    mark_route_worker_lifecycle(
+                        self.contract.lane,
+                        crate::runtime::PlaneLifecycleState::Failed,
+                        "worker_disconnected",
+                    );
                     pending_job = Some(job);
                     if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
                         return route_worker_reject_response(
@@ -355,6 +391,106 @@ fn route_worker_spawn_stage(lane: RouteWorkerLane) -> &'static str {
     }
 }
 
+fn route_worker_lifecycle_identity(
+    lane: RouteWorkerLane,
+) -> (crate::runtime::PlaneId, &'static str) {
+    match lane {
+        RouteWorkerLane::Snapshot => (crate::runtime::PlaneId::Diagnostic, "http_snapshot"),
+        RouteWorkerLane::Config => (crate::runtime::PlaneId::ConfigRecovery, "http_config"),
+        RouteWorkerLane::Diagnostic => (crate::runtime::PlaneId::Diagnostic, "http_diagnostic"),
+        RouteWorkerLane::Ota => (crate::runtime::PlaneId::Diagnostic, "http_ota"),
+    }
+}
+
+fn route_worker_lease_identity(
+    lane: RouteWorkerLane,
+) -> (
+    crate::runtime::lease::LeaseKind,
+    crate::runtime::lease::LeaseOwner,
+) {
+    let owner = match lane {
+        RouteWorkerLane::Snapshot => "http_snapshot",
+        RouteWorkerLane::Config => "http_config",
+        RouteWorkerLane::Diagnostic => "http_diagnostic",
+        RouteWorkerLane::Ota => "http_ota",
+    };
+    (
+        lane.lease_kind(),
+        crate::runtime::lease::LeaseOwner::new("http_route", owner),
+    )
+}
+
+#[derive(Debug)]
+struct RouteWorkerLeaseGuard {
+    kind: crate::runtime::lease::LeaseKind,
+    owner: crate::runtime::lease::LeaseOwner,
+    token: u64,
+}
+
+impl Drop for RouteWorkerLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(self.kind, self.owner, self.token);
+    }
+}
+
+fn acquire_route_worker_lease(
+    contract: RouteWorkerContract,
+) -> crate::error::Result<RouteWorkerLeaseGuard> {
+    acquire_route_worker_lease_inner(contract, None)
+}
+
+#[cfg(test)]
+fn acquire_route_worker_lease_at(
+    contract: RouteWorkerContract,
+    now_ms: u64,
+) -> crate::error::Result<RouteWorkerLeaseGuard> {
+    acquire_route_worker_lease_inner(contract, Some(now_ms))
+}
+
+fn acquire_route_worker_lease_inner(
+    contract: RouteWorkerContract,
+    now_ms: Option<u64>,
+) -> crate::error::Result<RouteWorkerLeaseGuard> {
+    let (kind, owner) = route_worker_lease_identity(contract.lane);
+    let decision = match now_ms {
+        Some(now_ms) => crate::runtime::lease::try_acquire_at(
+            kind,
+            owner,
+            contract.lane.lease_mode(),
+            None,
+            now_ms,
+        ),
+        None => crate::runtime::lease::try_acquire(kind, owner, contract.lane.lease_mode(), None),
+    };
+    match decision {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Ok(RouteWorkerLeaseGuard {
+            kind,
+            owner,
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => Err(crate::Error::config(
+            "http_route_worker_lease",
+            format!(
+                "lane={:?} owner={}:{} denied reason={} held_by={:?}",
+                contract.lane, owner.plane, owner.name, denial.reason, denial.held_by
+            ),
+        )),
+    }
+}
+
+fn mark_route_worker_lifecycle(
+    lane: RouteWorkerLane,
+    state: crate::runtime::PlaneLifecycleState,
+    reason: &'static str,
+) {
+    let (plane, owner) = route_worker_lifecycle_identity(lane);
+    let _record = crate::runtime::plane_lifecycle::mark(plane, owner, state, reason);
+}
+
 fn status_text(status: u16) -> &'static str {
     match status {
         409 => "Conflict",
@@ -370,6 +506,7 @@ fn route_worker_reject_response(
     stage: &'static str,
     detail: String,
 ) -> OutgoingResponse {
+    crate::metrics::record_http_route_reject();
     log::warn!(
         "{}: lane={:?} path={} {}",
         stage,
@@ -470,6 +607,23 @@ fn execute_esp_route_job(
     let out = {
         let _wdt_pause =
             crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task();
+        let route_path = job.incoming.uri.clone();
+        let _route_worker_lease = match acquire_route_worker_lease(contract) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let out = route_worker_reject_response(
+                    store.as_ref(),
+                    contract,
+                    route_path.as_str(),
+                    "http_route_worker_lease",
+                    error.to_string(),
+                );
+                finish_config_activity_guard(&mut job.config_activity_guard, out.status);
+                let _ = job.reply_tx.send(out);
+                crate::platform::task_wdt::feed_current_task();
+                return;
+            }
+        };
         let handler_start = Instant::now();
         let out = match router::dispatch_without_inbound(ctx.as_ref(), job.incoming) {
             Ok(out) => out,
@@ -530,6 +684,7 @@ fn run_esp_route_executor(
     rx: Receiver<EspRouteJob>,
     submit_gate: Arc<RouteSubmitGate>,
 ) {
+    let mut idle_stopped = false;
     loop {
         match route_recv_timeout(&rx, Duration::from_secs(contract.idle_timeout_secs)) {
             Ok(job) => {
@@ -547,12 +702,18 @@ fn run_esp_route_executor(
                     }
                     Err(TryRecvError::Empty) => {
                         submit_gate.accepting.store(false, Ordering::Release);
+                        mark_route_worker_lifecycle(
+                            contract.lane,
+                            crate::runtime::PlaneLifecycleState::Draining,
+                            "idle_timeout",
+                        );
                         log::info!(
                             "[http_server] {} idle-stopping lane={:?} after {}s",
                             name,
                             contract.lane,
                             contract.idle_timeout_secs
                         );
+                        idle_stopped = true;
                         break;
                     }
                     Err(TryRecvError::Disconnected) => break,
@@ -560,6 +721,13 @@ fn run_esp_route_executor(
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+    if idle_stopped {
+        mark_route_worker_lifecycle(
+            contract.lane,
+            crate::runtime::PlaneLifecycleState::Unloaded,
+            "idle_stop",
+        );
     }
     log::info!("[http_server] {} stopped", name);
 }
@@ -866,8 +1034,9 @@ mod tests {
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, default_test_handler_context_guard,
     };
-    use crate::platform::http_server::router::catalog::RouteExecutionClass;
+    use crate::platform::http_server::router::catalog::{RouteExecutionClass, RouteWorkerLane};
     use crate::platform::http_server::router::{IncomingBody, IncomingRequest};
+    use crate::runtime::PlaneId;
     use embedded_svc::http::Method;
     use serde_json::Value;
     use std::sync::Arc;
@@ -1061,5 +1230,100 @@ mod tests {
             execution_class_for("/api/ota/check", Method::Get),
             Some(RouteExecutionClass::OtaRoute)
         );
+    }
+
+    #[test]
+    fn http_route_worker_lifecycle_identity_matches_route_lanes() {
+        assert_eq!(
+            route_worker_lifecycle_identity(RouteWorkerLane::Snapshot),
+            (PlaneId::Diagnostic, "http_snapshot")
+        );
+        assert_eq!(
+            route_worker_lifecycle_identity(RouteWorkerLane::Config),
+            (PlaneId::ConfigRecovery, "http_config")
+        );
+        assert_eq!(
+            route_worker_lifecycle_identity(RouteWorkerLane::Diagnostic),
+            (PlaneId::Diagnostic, "http_diagnostic")
+        );
+        assert_eq!(
+            route_worker_lifecycle_identity(RouteWorkerLane::Ota),
+            (PlaneId::Diagnostic, "http_ota")
+        );
+    }
+
+    #[test]
+    fn http_route_worker_lease_identity_matches_route_lanes() {
+        assert_eq!(
+            route_worker_lease_identity(RouteWorkerLane::Snapshot),
+            (
+                crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
+                crate::runtime::lease::LeaseOwner::new("http_route", "http_snapshot")
+            )
+        );
+        assert_eq!(
+            route_worker_lease_identity(RouteWorkerLane::Config),
+            (
+                crate::runtime::lease::LeaseKind::ConfigHttpWorker,
+                crate::runtime::lease::LeaseOwner::new("http_route", "http_config")
+            )
+        );
+        assert_eq!(
+            route_worker_lease_identity(RouteWorkerLane::Diagnostic),
+            (
+                crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
+                crate::runtime::lease::LeaseOwner::new("http_route", "http_diagnostic")
+            )
+        );
+        assert_eq!(
+            route_worker_lease_identity(RouteWorkerLane::Ota),
+            (
+                crate::runtime::lease::LeaseKind::OtaHttpWorker,
+                crate::runtime::lease::LeaseOwner::new("http_route", "http_ota")
+            )
+        );
+    }
+
+    #[test]
+    fn route_worker_lease_guard_holds_and_releases_lane_resource() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+        let contract = RouteExecutionClass::AsyncConfigRoute
+            .worker_contract()
+            .expect("config worker contract");
+
+        let lease = acquire_route_worker_lease_at(contract, 100).expect("config worker lease");
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind_at(
+                crate::runtime::lease::LeaseKind::ConfigHttpWorker,
+                101
+            ),
+            1
+        );
+
+        drop(lease);
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind_at(
+                crate::runtime::lease::LeaseKind::ConfigHttpWorker,
+                102
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn route_worker_lease_denies_same_lane_second_owner() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+        let contract = RouteExecutionClass::SlowDiagnosticRoute
+            .worker_contract()
+            .expect("diagnostic worker contract");
+
+        let _first = acquire_route_worker_lease_at(contract, 100).expect("first diag lease");
+        let error = match acquire_route_worker_lease_at(contract, 101) {
+            Ok(_) => panic!("second diagnostic lease should conflict"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.stage(), "http_route_worker_lease");
+        assert!(error.to_string().contains("exclusive_conflict"));
     }
 }

@@ -10,7 +10,9 @@
 //! - Non-realtime STT/TTS fallback still uses `voice_session_worker`
 
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::pipeline::{capture_and_transcribe, speak_text};
+use crate::audio::pipeline::{
+    acquire_audio_lease, capture_and_transcribe, speak_text, AudioLeaseOwner,
+};
 use crate::audio::realtime::{
     connect_realtime_session, run_connected_realtime_session, ConnectedRealtimeSession,
 };
@@ -24,7 +26,7 @@ use crate::util::{
     STACK_VOICE_REALTIME, STACK_VOICE_SESSION,
 };
 use crate::Platform;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -126,10 +128,13 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
             }
         }
 
-        let next_event = match rx.recv_timeout(Duration::from_millis(WORKER_IDLE_POLL_MS)) {
+        let next_event = match rx.try_recv() {
             Ok(event) => Some(event),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(WORKER_IDLE_POLL_MS));
+                None
+            }
+            Err(TryRecvError::Disconnected) => break,
         };
 
         let Some(event) = next_event else {
@@ -275,7 +280,41 @@ fn handle_wake_interaction<F>(
             );
             return;
         }
-        let _voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG);
+        let _audio_input_lease = match acquire_audio_lease(
+            crate::runtime::lease::LeaseKind::AudioInput,
+            AudioLeaseOwner::VoiceRealtime,
+        ) {
+            Ok(lease) => lease,
+            Err(error) => {
+                log::warn!("[{}] realtime audio input lease denied: {}", TAG, error);
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                return;
+            }
+        };
+        let _audio_output_lease = match acquire_audio_lease(
+            crate::runtime::lease::LeaseKind::AudioOutput,
+            AudioLeaseOwner::VoiceRealtime,
+        ) {
+            Ok(lease) => lease,
+            Err(error) => {
+                log::warn!("[{}] realtime audio output lease denied: {}", TAG, error);
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                return;
+            }
+        };
+        let _voice_transport = match VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                log::warn!(
+                    "[{}] realtime voice transport admission failed: {}",
+                    TAG,
+                    error
+                );
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                return;
+            }
+        };
         match connect_realtime_session_via_worker(cfg).and_then(|connected| {
             run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected)
         }) {
@@ -322,6 +361,7 @@ fn handle_wake_interaction<F>(
             return;
         };
         let tts_result = speak_text(
+            AudioLeaseOwner::VoiceSession,
             cfg.platform.as_ref(),
             &cfg.audio_cfg,
             baidu_token,
@@ -359,6 +399,7 @@ fn handle_wake_interaction<F>(
     };
 
     let text = match capture_and_transcribe(
+        AudioLeaseOwner::VoiceSession,
         cfg.platform.as_ref(),
         &cfg.audio_cfg,
         baidu_token,
@@ -424,6 +465,7 @@ fn handle_speak<F>(
     };
 
     let tts_result = speak_text(
+        AudioLeaseOwner::VoiceSession,
         cfg.platform.as_ref(),
         &cfg.audio_cfg,
         baidu_token,

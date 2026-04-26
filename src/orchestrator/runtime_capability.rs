@@ -428,9 +428,13 @@ pub fn observe_runtime_capability_failure(id: &'static str, reason: RuntimeCapab
         return;
     }
     let now_secs = crate::util::current_unix_secs().min(u32::MAX as u64) as u32;
+    let status = match reason {
+        RuntimeCapabilityReason::RecoveryStabilizing => RuntimeCapabilityStatus::Degraded,
+        _ => RuntimeCapabilityStatus::Offline,
+    };
     update_runtime_capability(RuntimeCapabilityUpdate {
         id,
-        status: RuntimeCapabilityStatus::Offline,
+        status,
         reason,
         observed_at_secs: now_secs,
         recovery_hint: None,

@@ -2,8 +2,8 @@
 
 [中文](../zh-cn/capabilities.md) | **English** | [Doc index](../README.md)
 
-Beetle OS is not just a chat bot and not just a hardware runtime.
-It sits in the middle of chat, browser setup, model access, work accounts, and device control.
+Beetle OS is not just a chat bot and not just a hardware controller.
+It brings chat, browser setup, model access, work accounts, and device control together as one device agent system.
 
 ## Typical Product Shapes
 

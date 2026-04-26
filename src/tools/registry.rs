@@ -6,12 +6,12 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
 use crate::tools::{
-    Tool, ToolApprovalMode, ToolCapabilityContract, ToolCatalogAuthority, ToolEffectClass,
-    ToolExecutionGateDecision, ToolExecutionGovernance, ToolExecutionGovernanceState,
-    ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord, ToolExecutionRequest,
-    ToolExecutionShape, ToolInputProtocolKind, ToolMetadata, ToolOutputProtocolKind,
-    ToolPolicyContext, ToolProtocolAuthority, ToolRiskLevel, ToolRollbackKind, MAX_TOOL_ARGS_LEN,
-    MAX_TOOL_RESULT_LEN,
+    tool_effect_visible_in_mode, Tool, ToolApprovalMode, ToolCapabilityContract,
+    ToolCatalogAuthority, ToolEffectClass, ToolExecutionGateDecision, ToolExecutionGovernance,
+    ToolExecutionGovernanceState, ToolExecutionOutcome, ToolExecutionPermit, ToolExecutionRecord,
+    ToolExecutionRequest, ToolExecutionShape, ToolInputProtocolKind, ToolMetadata,
+    ToolOutputProtocolKind, ToolPolicyContext, ToolProtocolAuthority, ToolRiskLevel,
+    ToolRollbackKind, MAX_TOOL_ARGS_LEN, MAX_TOOL_RESULT_LEN,
 };
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
@@ -33,6 +33,7 @@ struct RegisteredTool {
     tool: Box<dyn Tool>,
     llm_spec: LlmToolSpec,
     metadata: ToolMetadata,
+    catalog_shape: ToolExecutionShape,
     requires_network: bool,
     capability_contract: ToolCapabilityContract,
 }
@@ -168,6 +169,7 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name();
         let metadata = tool.metadata();
+        let catalog_shape = tool.catalog_execution_shape();
         let requires_network = tool.requires_network();
         let capability_contract = tool.capability_contract();
         let llm_spec = LlmToolSpec {
@@ -181,6 +183,7 @@ impl ToolRegistry {
                 tool,
                 llm_spec,
                 metadata,
+                catalog_shape,
                 requires_network,
                 capability_contract,
             },
@@ -305,6 +308,14 @@ impl ToolRegistry {
         validate_tool_input_protocol(name, args, self.tool_protocol_contract(name))?;
         let shape = entry.tool.execution_shape(args)?;
         let requires_network = entry.tool.requires_network_for(args)?;
+        if !tool_effect_visible_in_mode(shape.effect_class, policy) {
+            return Ok(ToolExecutionGateDecision::Deny {
+                reason: format!(
+                    "tool '{name}' effect '{}' is hidden in the current runtime mode",
+                    shape.effect_class.label()
+                ),
+            });
+        }
         let Some(governance) = self.execution_governance.as_ref() else {
             return Ok(ToolExecutionGateDecision::Allow(ToolExecutionPermit {
                 tool_name: name.to_string(),
@@ -344,6 +355,31 @@ impl ToolRegistry {
             ToolExecutionInputCheckOrder::BlockerThenValidate,
         )?;
         let entry = preparation.entry;
+        let actual_shape = entry.tool.execution_shape(args)?;
+        let actual_requires_network = entry.tool.requires_network_for(args)?;
+        if actual_shape != permit.shape || actual_requires_network != permit.requires_network {
+            return Err(Error::config(
+                "tool_execute",
+                format!(
+                    "tool '{}' permit does not match execution args",
+                    permit.tool_name
+                ),
+            ));
+        }
+        let runtime_policy = ToolPolicyContext::new(permit.ingress, permit.channel.as_str())
+            .with_runtime_mode(
+                crate::runtime::thread_registry::runtime_mode_snapshot().current_mode,
+            );
+        if !tool_effect_visible_in_mode(actual_shape.effect_class, &runtime_policy) {
+            return Err(Error::config(
+                "tool_execute",
+                format!(
+                    "tool '{}' effect '{}' is hidden in the current runtime mode",
+                    permit.tool_name,
+                    actual_shape.effect_class.label()
+                ),
+            ));
+        }
         self.execute_tool_outcome(
             permit.tool_name(),
             entry,
@@ -390,7 +426,7 @@ impl ToolRegistry {
         let mut out = Vec::with_capacity(self.tools.len());
         for (name, entry) in &self.tools {
             let metadata = entry.metadata;
-            let shape = entry.tool.catalog_execution_shape();
+            let shape = &entry.catalog_shape;
             let protocol = self.tool_protocol_contract(name);
             let breaker_tripped = governance
                 .as_ref()
@@ -454,7 +490,7 @@ impl ToolRegistry {
             if !self.is_entry_llm_visible(entry, name, policy, overlay_set.as_ref()) {
                 continue;
             }
-            let shape = entry.tool.catalog_execution_shape();
+            let shape = &entry.catalog_shape;
             let protocol = self.tool_protocol_contract(name);
             out.push(ToolBridgeCatalogEntry {
                 name: (*name).to_string(),
@@ -489,13 +525,13 @@ impl ToolRegistry {
         let Some(entry) = self.tools.get(name) else {
             return Self::unknown_tool_bridge_proposal_assessment(name);
         };
-        let default_shape = entry.tool.catalog_execution_shape();
+        let default_shape = &entry.catalog_shape;
         if !self.is_llm_tool_visible(name, policy) {
             return Self::tool_bridge_proposal_assessment(
                 name,
                 ToolBridgeProposalDecision::Denied,
                 format!("tool '{name}' is not visible in the current policy"),
-                &default_shape,
+                default_shape,
                 entry.requires_network,
                 &entry.capability_contract,
             );
@@ -515,7 +551,7 @@ impl ToolRegistry {
                     name,
                     ToolBridgeProposalDecision::Denied,
                     reason,
-                    &default_shape,
+                    default_shape,
                     entry.requires_network,
                     &entry.capability_contract,
                 )
@@ -524,7 +560,7 @@ impl ToolRegistry {
                 name,
                 ToolBridgeProposalDecision::Denied,
                 error.to_string(),
-                &default_shape,
+                default_shape,
                 entry.requires_network,
                 &entry.capability_contract,
             ),
@@ -685,7 +721,7 @@ impl ToolRegistry {
 
     fn is_entry_llm_visible(
         &self,
-        _entry: &RegisteredTool,
+        entry: &RegisteredTool,
         tool_name: &str,
         policy: &ToolPolicyContext<'_>,
         overlay_set: Option<&crate::capability_package::CapabilityPackageToolPolicySet>,
@@ -703,7 +739,9 @@ impl ToolRegistry {
         let policy_visible = overlay_set.map_or(base_visible, |overlays| {
             overlays.llm_visibility_for(tool_name, policy, base_visible)
         });
-        policy_visible && self.runtime_capability_blocker(tool_name).is_none()
+        policy_visible
+            && tool_effect_visible_in_mode(entry.catalog_shape.effect_class, policy)
+            && self.runtime_capability_blocker(tool_name).is_none()
     }
 
     pub(crate) fn runtime_capability_blocker(
@@ -733,9 +771,12 @@ impl ToolRegistry {
                     Some(crate::orchestrator::RuntimeCapabilityReason::DeviceDisconnected)
                 }
                 (crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP, err)
-                    if err.is_tls_admission()
-                        || err.is_connect_error()
-                        || err.is_retryable_upstream() =>
+                    if err.is_tls_admission() =>
+                {
+                    Some(crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing)
+                }
+                (crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP, err)
+                    if err.is_connect_error() || err.is_retryable_upstream() =>
                 {
                     Some(crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable)
                 }
@@ -1401,7 +1442,11 @@ mod tests {
     struct RichBlockerTool;
     struct OutboundRichBlockerTool;
     struct CapabilityBoundTool;
+    struct NetworkBoundTool;
     struct ConditionalNetworkTool;
+    struct NetworkSearchPolicyTool;
+    struct DiagnosticPolicyTool;
+    struct VisibleOutboundPolicyTool;
     struct CountingOutcomeTool {
         executions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -1519,6 +1564,60 @@ mod tests {
         }
         fn metadata(&self) -> ToolMetadata {
             ToolMetadata::task()
+        }
+    }
+
+    impl Tool for NetworkSearchPolicyTool {
+        fn name(&self) -> &'static str {
+            "network_search_policy"
+        }
+        fn description(&self) -> &str {
+            "network search policy tool"
+        }
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_effect_class(ToolEffectClass::NetworkSearch)
+        }
+    }
+
+    impl Tool for DiagnosticPolicyTool {
+        fn name(&self) -> &'static str {
+            "diagnostic_policy"
+        }
+        fn description(&self) -> &str {
+            "diagnostic policy tool"
+        }
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_effect_class(ToolEffectClass::Diagnostic)
+        }
+    }
+
+    impl Tool for VisibleOutboundPolicyTool {
+        fn name(&self) -> &'static str {
+            "visible_outbound_policy"
+        }
+        fn description(&self) -> &str {
+            "visible outbound policy tool"
+        }
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_effect_class(ToolEffectClass::VisibleOutbound)
         }
     }
 
@@ -1724,6 +1823,34 @@ mod tests {
         }
         fn capability_contract(&self) -> crate::tools::ToolCapabilityContract {
             crate::tools::ToolCapabilityContract::required(&["audio_output"])
+        }
+    }
+
+    impl Tool for NetworkBoundTool {
+        fn name(&self) -> &'static str {
+            "network_bound"
+        }
+
+        fn description(&self) -> &str {
+            "tool guarded by outbound network capability"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok("ok".to_string())
+        }
+
+        fn requires_network(&self) -> bool {
+            true
+        }
+
+        fn capability_contract(&self) -> crate::tools::ToolCapabilityContract {
+            crate::tools::ToolCapabilityContract::required(&[
+                crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+            ])
         }
     }
 
@@ -2112,6 +2239,100 @@ mod tests {
         let specs = registry.tool_specs_for_llm_with_max(&cron, 4096);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "internal_only");
+    }
+
+    #[test]
+    fn llm_tool_specs_filter_embedded_voice_exclusive_by_effect_class() {
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("visible", ToolLlmVisibility::user_and_system()),
+            (
+                "network_search_policy",
+                ToolLlmVisibility::user_and_system(),
+            ),
+            ("stateful", ToolLlmVisibility::user_and_system()),
+        ]));
+        registry.register(Box::new(VisibleTool));
+        registry.register(Box::new(NetworkSearchPolicyTool));
+        registry.register(Box::new(StatefulTool));
+
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "voice")
+            .with_embedded_profile(true)
+            .with_runtime_mode(crate::runtime::RuntimeMode::VoiceExclusive);
+        let names: Vec<_> = registry
+            .tool_specs_for_llm_with_max(&policy, 4096)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+
+        assert_eq!(names, vec!["visible"]);
+    }
+
+    #[test]
+    fn llm_tool_specs_filter_dynamic_catalog_effect_class() {
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "dynamic_governance",
+            ToolLlmVisibility::user_and_system(),
+        )]));
+        registry.register(Box::new(DynamicGovernanceTool));
+
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "voice")
+            .with_embedded_profile(true)
+            .with_runtime_mode(crate::runtime::RuntimeMode::VoiceExclusive);
+
+        assert!(
+            registry
+                .tool_specs_for_llm_with_max(&policy, 4096)
+                .is_empty(),
+            "dynamic mutating tools must be hidden by their conservative catalog effect"
+        );
+    }
+
+    #[test]
+    fn llm_tool_specs_filter_embedded_recovery_safe_mode_by_effect_class() {
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[
+            ("diagnostic_policy", ToolLlmVisibility::user_and_system()),
+            (
+                "visible_outbound_policy",
+                ToolLlmVisibility::user_and_system(),
+            ),
+        ]));
+        registry.register(Box::new(DiagnosticPolicyTool));
+        registry.register(Box::new(VisibleOutboundPolicyTool));
+
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram")
+            .with_embedded_profile(true)
+            .with_runtime_mode(crate::runtime::RuntimeMode::RecoverySafeMode);
+        let names: Vec<_> = registry
+            .tool_specs_for_llm_with_max(&policy, 4096)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+
+        assert_eq!(names, vec!["diagnostic_policy"]);
+    }
+
+    #[test]
+    fn llm_execution_denies_runtime_mode_hidden_tool() {
+        let mut registry = ToolRegistry::new().with_llm_catalog_authority(synthetic_catalog(&[(
+            "network_search_policy",
+            ToolLlmVisibility::user_and_system(),
+        )]));
+        registry.register(Box::new(NetworkSearchPolicyTool));
+
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "voice")
+            .with_embedded_profile(true)
+            .with_runtime_mode(crate::runtime::RuntimeMode::VoiceExclusive);
+
+        assert!(!registry.is_llm_tool_visible("network_search_policy", &policy));
+        let decision = registry
+            .assess_llm_execution("network_search_policy", "{}", &policy)
+            .expect("assessment");
+        match decision {
+            ToolExecutionGateDecision::Deny { reason } => {
+                assert!(reason.contains("hidden in the current runtime mode"));
+            }
+            other => panic!("expected mode-hidden denial, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3297,6 +3518,58 @@ mod tests {
             }
             other => panic!("expected config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn execute_permitted_rejects_args_that_change_dynamic_execution_shape() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DynamicGovernanceTool));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let permit = match registry
+            .assess_llm_execution("dynamic_governance", r#"{"op":"inspect"}"#, &policy)
+            .expect("assess")
+        {
+            crate::tools::ToolExecutionGateDecision::Allow(permit) => permit,
+            other => panic!("expected allow, got {:?}", other),
+        };
+
+        let mut ctx = StubToolContext;
+        let err = registry
+            .execute_permitted(&permit, r#"{"op":"write"}"#, &mut ctx)
+            .expect_err("shape-changing args must not reuse a permit");
+
+        match err {
+            crate::Error::Config { message, stage } => {
+                assert_eq!(stage, "tool_execute");
+                assert!(message.contains("permit does not match execution args"));
+            }
+            other => panic!("expected config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tls_admission_failure_marks_outbound_http_as_local_recovery() {
+        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NetworkBoundTool));
+        let err = Error::config("tls_admission", "largest block too small");
+
+        registry.observe_runtime_capability_failure("network_bound", &err);
+
+        let state =
+            crate::orchestrator::get_runtime_capability("network.outbound_http").expect("state");
+        assert_eq!(
+            state.status,
+            crate::orchestrator::RuntimeCapabilityStatus::Degraded
+        );
+        assert_eq!(
+            state.reason,
+            crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing
+        );
     }
 
     #[test]

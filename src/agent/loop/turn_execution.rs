@@ -362,7 +362,8 @@ pub(super) fn execute_turn_boxed(
     .ok()
     .flatten();
     let foreground_work_context_present = active_work.is_some() || active_run.is_some();
-    let tool_policy = crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref());
+    let tool_policy = crate::tools::ToolPolicyContext::new(msg.ingress, msg.channel.as_ref())
+        .with_runtime_mode(crate::runtime::thread_registry::runtime_mode_snapshot().current_mode);
     let has_tools = !registry.tool_specs_for_llm(&tool_policy).is_empty();
     let request_semantics = super::super::request_semantics::RequestSemantics::compile_for_turn(
         super::super::request_semantics::RequestSemanticsCompileInput {

@@ -5,7 +5,7 @@
 
 use crate::config::LlmSource;
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext};
+use crate::tools::{parse_tool_args, Tool, ToolContext, ToolEffectClass, ToolMetadata};
 use serde_json::json;
 
 const TAG: &str = "tools::analyze_image";
@@ -206,6 +206,10 @@ impl Tool for AnalyzeImageTool {
         r#"{"type":"object","properties":{"image_url":{"type":"string","description":"The HTTP/HTTPS URL of the image to analyze"},"question":{"type":"string","description":"A specific question about the image (default: describe the image in detail)"}},"required":["image_url"]}"#
     }
 
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task().with_effect_class(ToolEffectClass::NetworkSearch)
+    }
+
     fn requires_network(&self) -> bool {
         true
     }
@@ -262,5 +266,21 @@ impl Tool for AnalyzeImageTool {
         }
 
         Err(last_err.unwrap_or_else(|| Error::config(STAGE, "all sources failed")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AnalyzeImageTool;
+    use crate::tools::{Tool, ToolEffectClass};
+
+    #[test]
+    fn analyze_image_metadata_marks_url_vision_as_network_search() {
+        let tool = AnalyzeImageTool {
+            sources: Vec::new(),
+        };
+
+        assert_eq!(tool.metadata().effect_class, ToolEffectClass::NetworkSearch);
+        assert!(tool.requires_network());
     }
 }

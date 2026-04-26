@@ -15,6 +15,114 @@ use std::time::{Duration, Instant};
 
 const VOICE_LOCAL_INTERRUPT_STAGE: &str = "voice_local_interrupt";
 
+/// Logical owner for audio input/output leases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioLeaseOwner {
+    VoiceSession,
+    VoiceRealtime,
+    VoiceInputTool,
+    VoiceOutputTool,
+}
+
+impl AudioLeaseOwner {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::VoiceSession => "voice_session",
+            Self::VoiceRealtime => "voice_realtime",
+            Self::VoiceInputTool => "voice_input_tool",
+            Self::VoiceOutputTool => "voice_output_tool",
+        }
+    }
+
+    const fn lease_owner(self) -> crate::runtime::lease::LeaseOwner {
+        crate::runtime::lease::LeaseOwner::new("voice", self.as_str())
+    }
+}
+
+#[derive(Debug)]
+pub struct AudioLeaseGuard {
+    kind: crate::runtime::lease::LeaseKind,
+    owner: AudioLeaseOwner,
+    token: u64,
+}
+
+impl Drop for AudioLeaseGuard {
+    fn drop(&mut self) {
+        let _ =
+            crate::runtime::lease::release_token(self.kind, self.owner.lease_owner(), self.token);
+    }
+}
+
+pub fn acquire_audio_lease(
+    kind: crate::runtime::lease::LeaseKind,
+    owner: AudioLeaseOwner,
+) -> Result<AudioLeaseGuard> {
+    acquire_audio_lease_inner(kind, owner, None)
+}
+
+#[cfg(test)]
+pub(crate) fn acquire_audio_lease_at(
+    kind: crate::runtime::lease::LeaseKind,
+    owner: AudioLeaseOwner,
+    now_ms: u64,
+) -> Result<AudioLeaseGuard> {
+    acquire_audio_lease_inner(kind, owner, Some(now_ms))
+}
+
+fn acquire_audio_lease_inner(
+    kind: crate::runtime::lease::LeaseKind,
+    owner: AudioLeaseOwner,
+    now_ms: Option<u64>,
+) -> Result<AudioLeaseGuard> {
+    if !matches!(
+        kind,
+        crate::runtime::lease::LeaseKind::AudioInput
+            | crate::runtime::lease::LeaseKind::AudioOutput
+    ) {
+        return Err(Error::config(
+            "audio_lease",
+            format!("unsupported audio lease kind={}", kind.as_str()),
+        ));
+    }
+
+    let decision = match now_ms {
+        Some(now_ms) => crate::runtime::lease::try_acquire_at(
+            kind,
+            owner.lease_owner(),
+            crate::runtime::lease::LeaseMode::Exclusive,
+            None,
+            now_ms,
+        ),
+        None => crate::runtime::lease::try_acquire(
+            kind,
+            owner.lease_owner(),
+            crate::runtime::lease::LeaseMode::Exclusive,
+            None,
+        ),
+    };
+    match decision {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Ok(AudioLeaseGuard {
+            kind,
+            owner,
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => Err(Error::config(
+            "audio_lease",
+            format!(
+                "{} owner={} denied reason={} held_by={:?}",
+                kind.as_str(),
+                owner.as_str(),
+                denial.reason,
+                denial.held_by
+            ),
+        )),
+    }
+}
+
 pub struct VoicePlaybackStats {
     pub played_samples: usize,
     pub tts_http_ms: u128,
@@ -23,6 +131,7 @@ pub struct VoicePlaybackStats {
 }
 
 pub fn capture_and_transcribe(
+    owner: AudioLeaseOwner,
     platform: &dyn Platform,
     audio_cfg: &AudioSegment,
     baidu_token: &BaiduTokenCache,
@@ -31,6 +140,8 @@ pub fn capture_and_transcribe(
     log_tag: &'static str,
 ) -> Result<String> {
     let captured = {
+        let _audio_input_lease =
+            acquire_audio_lease(crate::runtime::lease::LeaseKind::AudioInput, owner)?;
         let _recording_guard = AudioRecordingGuard::new();
         capture_speech(platform, audio_cfg, max_ms, log_tag)?
     };
@@ -48,12 +159,15 @@ pub fn capture_and_transcribe(
 }
 
 pub fn speak_text(
+    owner: AudioLeaseOwner,
     platform: &dyn Platform,
     audio_cfg: &AudioSegment,
     baidu_token: &BaiduTokenCache,
     http: &mut dyn PlatformHttpClient,
     text: &str,
 ) -> Result<VoicePlaybackStats> {
+    let _audio_output_lease =
+        acquire_audio_lease(crate::runtime::lease::LeaseKind::AudioOutput, owner)?;
     let tts_start = Instant::now();
     let mut first_pcm_at: Option<Instant> = None;
     let playback_state = PlaybackStateGuard::new(platform);
@@ -282,7 +396,57 @@ mod tests {
 
     use crate::error::Result;
 
-    use super::{abort_playback_on_stream_error, wait_for_playback_drain};
+    use super::{
+        abort_playback_on_stream_error, acquire_audio_lease_at, wait_for_playback_drain,
+        AudioLeaseOwner,
+    };
+
+    #[test]
+    fn audio_lease_allows_distinct_input_and_output_for_same_owner() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+
+        let input = acquire_audio_lease_at(
+            crate::runtime::lease::LeaseKind::AudioInput,
+            AudioLeaseOwner::VoiceSession,
+            100,
+        )
+        .expect("input lease");
+        let output = acquire_audio_lease_at(
+            crate::runtime::lease::LeaseKind::AudioOutput,
+            AudioLeaseOwner::VoiceSession,
+            101,
+        )
+        .expect("output lease");
+
+        let snapshot = crate::runtime::lease::snapshot_at(102);
+        assert_eq!(snapshot.active_count, 2);
+
+        drop(output);
+        drop(input);
+        assert_eq!(crate::runtime::lease::snapshot_at(103).active_count, 0);
+    }
+
+    #[test]
+    fn audio_lease_denies_second_output_owner() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+
+        let _session = acquire_audio_lease_at(
+            crate::runtime::lease::LeaseKind::AudioOutput,
+            AudioLeaseOwner::VoiceSession,
+            100,
+        )
+        .expect("session output lease");
+
+        let error = acquire_audio_lease_at(
+            crate::runtime::lease::LeaseKind::AudioOutput,
+            AudioLeaseOwner::VoiceOutputTool,
+            101,
+        )
+        .expect_err("voice output tool should be denied");
+
+        assert_eq!(error.stage(), "audio_lease");
+        assert!(error.to_string().contains("exclusive_conflict"));
+    }
 
     #[test]
     fn playback_drain_fails_when_speaker_drops_before_queue_drains() {

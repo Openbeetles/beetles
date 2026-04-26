@@ -34,6 +34,8 @@ const REALTIME_WSS_DRAIN_WAIT_MS: u64 = 2_500;
 const REALTIME_WSS_DRAIN_POLL_MS: u64 = 50;
 const EXTERNAL_WSS_SUSPEND_WAIT_WARN_MS: u64 = 2_500;
 const EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS: u64 = 50;
+const EXTERNAL_WSS_SUSPEND_WAIT_TIMEOUT_MS: u64 = 30_000;
+const REALTIME_WSS_DRAIN_TIMEOUT_MS: u64 = 15_000;
 const REALTIME_TLS_ADMISSION_RETRY_MAX: usize = 12;
 const REALTIME_TLS_ADMISSION_RETRY_MS: u64 = 150;
 const VOICE_EXCLUSIVE_WAIT_MS: u64 = 500;
@@ -192,6 +194,60 @@ impl Drop for ExternalWssConnectAttemptGuard {
     }
 }
 
+#[derive(Debug)]
+pub struct ExternalWssLeaseGuard {
+    owner: crate::runtime::lease::LeaseOwner,
+    token: u64,
+}
+
+impl Drop for ExternalWssLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(
+            crate::runtime::lease::LeaseKind::ExternalWss,
+            self.owner,
+            self.token,
+        );
+    }
+}
+
+struct TlsHandshakeLeaseGuard {
+    owner: crate::runtime::lease::LeaseOwner,
+    token: u64,
+}
+
+impl Drop for TlsHandshakeLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(
+            crate::runtime::lease::LeaseKind::TlsHandshake,
+            self.owner,
+            self.token,
+        );
+    }
+}
+
+struct LeasedExternalWssConnection {
+    inner: Box<dyn WssConnection>,
+    _external_wss_lease: ExternalWssLeaseGuard,
+}
+
+impl WssConnection for LeasedExternalWssConnection {
+    fn send_binary(&mut self, data: &[u8]) -> Result<()> {
+        self.inner.send_binary(data)
+    }
+
+    fn send_text(&mut self, text: &str) -> Result<()> {
+        self.inner.send_text(text)
+    }
+
+    fn send_binary_owned(&mut self, data: Vec<u8>) -> Result<()> {
+        self.inner.send_binary_owned(data)
+    }
+
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<crate::channels::WssEvent>> {
+        self.inner.recv_timeout(timeout)
+    }
+}
+
 /// Scoped external WSS suspend request. Multiple owners may hold this concurrently.
 pub struct ExternalWssSuspendGuard {
     active: bool,
@@ -222,8 +278,93 @@ pub fn active_wss_count() -> u32 {
     ACTIVE_WSS_COUNT.load(Ordering::Relaxed)
 }
 
+pub fn active_external_wss_lease_count() -> usize {
+    crate::runtime::lease::active_count_for_kind(crate::runtime::lease::LeaseKind::ExternalWss)
+}
+
 pub fn external_wss_connecting_count() -> u32 {
     EXTERNAL_WSS_CONNECTING_COUNT.load(Ordering::Relaxed)
+}
+
+fn channel_wss_lease_owner(owner: &'static str) -> crate::runtime::lease::LeaseOwner {
+    crate::runtime::lease::LeaseOwner::new("channel_wss", owner)
+}
+
+pub fn acquire_external_wss_lease(owner: &'static str) -> Result<ExternalWssLeaseGuard> {
+    acquire_external_wss_lease_inner(owner, None)
+}
+
+#[cfg(test)]
+fn acquire_external_wss_lease_at(
+    owner: &'static str,
+    now_ms: u64,
+) -> Result<ExternalWssLeaseGuard> {
+    acquire_external_wss_lease_inner(owner, Some(now_ms))
+}
+
+fn acquire_external_wss_lease_inner(
+    owner: &'static str,
+    now_ms: Option<u64>,
+) -> Result<ExternalWssLeaseGuard> {
+    let owner = channel_wss_lease_owner(owner);
+    let decision = match now_ms {
+        Some(now_ms) => crate::runtime::lease::try_acquire_at(
+            crate::runtime::lease::LeaseKind::ExternalWss,
+            owner,
+            crate::runtime::lease::LeaseMode::Exclusive,
+            None,
+            now_ms,
+        ),
+        None => crate::runtime::lease::try_acquire(
+            crate::runtime::lease::LeaseKind::ExternalWss,
+            owner,
+            crate::runtime::lease::LeaseMode::Exclusive,
+            None,
+        ),
+    };
+    match decision {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Ok(ExternalWssLeaseGuard {
+            owner,
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => Err(Error::config(
+            "external_wss_lease",
+            format!(
+                "owner={}:{} denied reason={} held_by={:?}",
+                owner.plane, owner.name, denial.reason, denial.held_by
+            ),
+        )),
+    }
+}
+
+fn acquire_tls_handshake_lease(owner: &'static str) -> Result<TlsHandshakeLeaseGuard> {
+    let owner = channel_wss_lease_owner(owner);
+    match crate::runtime::lease::try_acquire(
+        crate::runtime::lease::LeaseKind::TlsHandshake,
+        owner,
+        crate::runtime::lease::LeaseMode::Exclusive,
+        None,
+    ) {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Ok(TlsHandshakeLeaseGuard {
+            owner,
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => Err(Error::config(
+            "tls_handshake_lease",
+            format!(
+                "owner={}:{} denied reason={} held_by={:?}",
+                owner.plane, owner.name, denial.reason, denial.held_by
+            ),
+        )),
+    }
 }
 
 pub fn request_http_permit(
@@ -393,22 +534,26 @@ pub struct VoiceExclusiveTransportGuard {
 }
 
 impl VoiceExclusiveTransportGuard {
-    pub fn enter(platform: &dyn Platform, log_tag: &'static str) -> Self {
+    pub fn enter(platform: &dyn Platform, log_tag: &'static str) -> Result<Self> {
         let suspend_guard = begin_external_wss_suspend_request();
         crate::state::set_voice_exclusive_active(true);
         log::info!(
             "[{}] realtime session switching runtime mode (external WSS suspended)",
             log_tag
         );
-        wait_for_external_wss_to_suspend_and_drain(platform, log_tag);
+        if let Err(error) = wait_for_external_wss_to_suspend_and_drain(platform, log_tag) {
+            crate::state::set_voice_exclusive_active(false);
+            drop(suspend_guard);
+            return Err(error);
+        }
         log::info!(
             "[{}] realtime session entering voice-exclusive mode",
             log_tag
         );
-        Self {
+        Ok(Self {
             log_tag,
             suspend_guard: Some(suspend_guard),
-        }
+        })
     }
 }
 
@@ -438,6 +583,8 @@ pub fn set_external_wss_managed_present(active: bool) {
         EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_CONNECTING_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+        let _ = crate::runtime::lease::release_kind(crate::runtime::lease::LeaseKind::ExternalWss);
+        let _ = crate::runtime::lease::release_kind(crate::runtime::lease::LeaseKind::TlsHandshake);
     }
 }
 
@@ -483,6 +630,7 @@ pub fn external_wss_suspended() -> bool {
 
 fn external_wss_suspend_target_drained() -> bool {
     active_wss_count() == 0
+        && active_external_wss_lease_count() == 0
         && external_wss_connecting_count() == 0
         && (!external_wss_managed_present()
             || external_wss_suspended()
@@ -494,25 +642,54 @@ pub fn wait_for_external_wss_suspend(tag: &str) {
     if !external_wss_suspend_requested() {
         return;
     }
+    if let Err(error) = wait_for_external_wss_suspend_with_timeout(
+        tag,
+        Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_TIMEOUT_MS),
+        Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS),
+    ) {
+        log::warn!("[{}] external WSS suspend wait failed: {}", tag, error);
+    }
+}
+
+fn wait_for_external_wss_suspend_with_timeout(
+    tag: &str,
+    timeout: Duration,
+    poll: Duration,
+) -> Result<()> {
     let mut next_warn_at =
         Instant::now() + Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_WARN_MS);
+    let deadline = Instant::now() + timeout;
     loop {
         if external_wss_suspend_target_drained() {
-            return;
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            crate::metrics::record_plane_drain_timeout();
+            return Err(Error::config(
+                "external_wss_suspend_timeout",
+                format!(
+                    "external WSS suspend timed out tag={} active_wss={} active_wss_leases={} connecting_wss={}",
+                    tag,
+                    active_wss_count(),
+                    active_external_wss_lease_count(),
+                    external_wss_connecting_count()
+                ),
+            ));
         }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         crate::platform::task_wdt::feed_current_task();
         if Instant::now() >= next_warn_at {
             log::warn!(
-                "[{}] waiting for external WSS suspend active_wss={} connecting_wss={}",
+                "[{}] waiting for external WSS suspend active_wss={} active_wss_leases={} connecting_wss={}",
                 tag,
                 active_wss_count(),
+                active_external_wss_lease_count(),
                 external_wss_connecting_count()
             );
             next_warn_at =
                 Instant::now() + Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_WARN_MS);
         }
-        std::thread::sleep(Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS));
+        std::thread::sleep(poll);
     }
 }
 
@@ -539,11 +716,16 @@ pub fn wait_for_external_wss_resume(tag: &str) {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform, log_tag: &str) {
+fn wait_for_external_wss_to_suspend_and_drain(
+    platform: &dyn Platform,
+    log_tag: &str,
+) -> Result<()> {
     let mut next_warn_at = Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
+    let deadline = Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_TIMEOUT_MS);
     loop {
         crate::platform::task_wdt::feed_current_task();
         let active_wss = active_wss_count();
+        let active_wss_leases = active_external_wss_lease_count();
         let connecting_wss = external_wss_connecting_count();
         let mode_switched = external_wss_suspend_target_drained();
         let snap = platform.memory_snapshot();
@@ -555,15 +737,36 @@ fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform, log_tag: 
         let enough_free = snap.heap_free_internal >= min_free;
         let enough_largest = snap.heap_free_spiram == 0
             || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        if mode_switched && active_wss == 0 && connecting_wss == 0 && enough_free && enough_largest
+        if mode_switched
+            && active_wss == 0
+            && active_wss_leases == 0
+            && connecting_wss == 0
+            && enough_free
+            && enough_largest
         {
-            return;
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            crate::metrics::record_plane_drain_timeout();
+            return Err(Error::config(
+                "voice_exclusive_wss_drain_timeout",
+                format!(
+                    "external WSS did not drain before realtime connect active_wss={} active_wss_leases={} connecting_wss={} free={} largest={} spiram={}",
+                    active_wss,
+                    active_wss_leases,
+                    connecting_wss,
+                    snap.heap_free_internal,
+                    snap.heap_largest_block,
+                    snap.heap_free_spiram
+                ),
+            ));
         }
         if Instant::now() >= next_warn_at {
             log::warn!(
-                "[{}] waiting for external WSS suspend/resources before realtime connect active_wss={} connecting_wss={} free={} largest={} spiram={}",
+                "[{}] waiting for external WSS suspend/resources before realtime connect active_wss={} active_wss_leases={} connecting_wss={} free={} largest={} spiram={}",
                 log_tag,
                 active_wss,
+                active_wss_leases,
                 connecting_wss,
                 snap.heap_free_internal,
                 snap.heap_largest_block,
@@ -576,7 +779,16 @@ fn wait_for_external_wss_to_suspend_and_drain(platform: &dyn Platform, log_tag: 
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn wait_for_external_wss_to_suspend_and_drain(_platform: &dyn Platform, _log_tag: &str) {}
+fn wait_for_external_wss_to_suspend_and_drain(
+    _platform: &dyn Platform,
+    log_tag: &str,
+) -> Result<()> {
+    wait_for_external_wss_suspend_with_timeout(
+        log_tag,
+        Duration::from_millis(REALTIME_WSS_DRAIN_TIMEOUT_MS),
+        Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS),
+    )
+}
 
 fn maybe_log_stream_http_stats(trigger: &str) {
     let ops = STREAM_HTTP_SLOT_OPS.load(Ordering::Relaxed);
@@ -683,16 +895,40 @@ where
     }
 }
 
-/// Connect an external gateway WSS through the unified transport governor.
-pub fn connect_external_wss(url: &str) -> Result<Box<dyn WssConnection>> {
+fn connect_external_wss_with_connector<C, Conn>(
+    url: &str,
+    owner: &'static str,
+    mut connect: Conn,
+) -> Result<Box<dyn WssConnection>>
+where
+    C: WssConnection + 'static,
+    Conn: FnMut(&str) -> Result<C>,
+{
     loop {
         wait_for_external_wss_resume("external_wss_connect");
         let _connect_guard = begin_external_wss_connect_attempt();
         if external_wss_suspend_requested() {
             continue;
         }
-        return Ok(Box::new(connect_wss(url)?));
+        let external_wss_lease = acquire_external_wss_lease(owner)?;
+        if external_wss_suspend_requested() {
+            drop(external_wss_lease);
+            continue;
+        }
+        let conn = {
+            let _tls_handshake_lease = acquire_tls_handshake_lease(owner)?;
+            connect(url)?
+        };
+        return Ok(Box::new(LeasedExternalWssConnection {
+            inner: Box::new(conn),
+            _external_wss_lease: external_wss_lease,
+        }));
     }
+}
+
+/// Connect an external gateway WSS through the unified transport governor.
+pub fn connect_external_wss(url: &str, owner: &'static str) -> Result<Box<dyn WssConnection>> {
+    connect_external_wss_with_connector(url, owner, connect_wss)
 }
 
 fn connect_realtime_wss(url: &str, headers: &[(&str, &str)]) -> Result<Box<dyn WssConnection>> {
@@ -771,6 +1007,21 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
+    struct FakeWssConnection;
+
+    impl WssConnection for FakeWssConnection {
+        fn send_binary(&mut self, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn recv_timeout(
+            &mut self,
+            _timeout: Duration,
+        ) -> Result<Option<crate::channels::WssEvent>> {
+            Ok(None)
+        }
+    }
+
     fn test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -799,5 +1050,112 @@ mod tests {
         assert!(!snap.managed_present);
         assert!(!snap.suspend_requested);
         assert!(!snap.suspended);
+    }
+
+    #[test]
+    fn external_wss_lease_blocks_other_channel_until_drop() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+
+        let qq = acquire_external_wss_lease_at("qq_ws", 100).expect("qq external wss lease");
+        assert_eq!(active_external_wss_lease_count(), 1);
+
+        let denied =
+            acquire_external_wss_lease_at("feishu_ws", 101).expect_err("feishu should conflict");
+        assert_eq!(denied.stage(), "external_wss_lease");
+        assert!(denied.to_string().contains("exclusive_conflict"));
+
+        drop(qq);
+        assert_eq!(active_external_wss_lease_count(), 0);
+        let _feishu =
+            acquire_external_wss_lease_at("feishu_ws", 102).expect("feishu external wss lease");
+        assert_eq!(active_external_wss_lease_count(), 1);
+    }
+
+    #[test]
+    fn external_wss_connect_wrapper_holds_session_lease_and_releases_handshake() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        set_external_wss_managed_present(true);
+
+        let conn = connect_external_wss_with_connector("wss://example.test", "qq_ws", |_url| {
+            assert_eq!(
+                crate::runtime::lease::active_count_for_kind(
+                    crate::runtime::lease::LeaseKind::ExternalWss
+                ),
+                1
+            );
+            assert_eq!(
+                crate::runtime::lease::active_count_for_kind(
+                    crate::runtime::lease::LeaseKind::TlsHandshake
+                ),
+                1
+            );
+            Ok(FakeWssConnection)
+        })
+        .expect("external wss connect");
+
+        assert_eq!(active_external_wss_lease_count(), 1);
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind(
+                crate::runtime::lease::LeaseKind::TlsHandshake
+            ),
+            0
+        );
+
+        drop(conn);
+        assert_eq!(active_external_wss_lease_count(), 0);
+        set_external_wss_managed_present(false);
+    }
+
+    #[test]
+    fn external_wss_connect_failure_releases_session_and_handshake_leases() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        set_external_wss_managed_present(true);
+
+        let error = match connect_external_wss_with_connector(
+            "wss://example.test",
+            "qq_ws",
+            |_url| -> Result<FakeWssConnection> { Err(Error::config("fake_wss", "boom")) },
+        ) {
+            Ok(_) => panic!("connect should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.stage(), "fake_wss");
+        assert_eq!(active_external_wss_lease_count(), 0);
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind(
+                crate::runtime::lease::LeaseKind::TlsHandshake
+            ),
+            0
+        );
+        set_external_wss_managed_present(false);
+    }
+
+    #[test]
+    fn external_wss_suspend_timeout_records_drain_failure() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        set_external_wss_managed_present(true);
+        request_external_wss_suspend();
+        let _wss_lease =
+            acquire_external_wss_lease_at("qq_ws", 200).expect("held external wss lease");
+        let before = crate::metrics::snapshot().plane_drain_timeout_total;
+
+        let error = match wait_for_external_wss_suspend_with_timeout(
+            "test",
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        ) {
+            Ok(()) => panic!("held external WSS lease should prevent suspend drain"),
+            Err(error) => error,
+        };
+
+        let after = crate::metrics::snapshot().plane_drain_timeout_total;
+        assert_eq!(error.stage(), "external_wss_suspend_timeout");
+        assert!(after > before);
+        set_external_wss_managed_present(false);
     }
 }

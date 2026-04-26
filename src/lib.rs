@@ -163,8 +163,8 @@ pub use config::{
 };
 pub use display::{
     default_disabled_display_config, validate_display_config_core, DisplayBus,
-    DisplayChannelStatus, DisplayColorOrder, DisplayCommand, DisplayConfig, DisplayDriver,
-    DisplayPressureLevel, DisplaySystemState,
+    DisplayChannelRuntimeStatus, DisplayChannelStatus, DisplayColorOrder, DisplayCommand,
+    DisplayConfig, DisplayDriver, DisplayOwner, DisplayPressureLevel, DisplaySystemState,
 };
 pub use error::{Error, Result};
 pub use llm::{

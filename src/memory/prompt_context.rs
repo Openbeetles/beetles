@@ -4,6 +4,7 @@
 use crate::platform::SkillStorage;
 use crate::task::TaskStore;
 use crate::task_execution::{TaskArtifactStore, TaskLearningStore, TaskRunStore};
+use crate::util::truncate_content_to_max;
 use std::collections::BTreeSet;
 
 use super::{
@@ -166,6 +167,51 @@ impl PromptMemoryContext {
         self.governed_memory_evidence_text = None;
         self.background_governance_text = None;
         self.inward_growth_text = None;
+    }
+
+    pub(crate) fn normalize_for_prompt(
+        &mut self,
+        memory_system_kind: MemorySystemKind,
+        system_budget: usize,
+    ) {
+        let budget = super::prompt_context_normalization_budget(memory_system_kind, system_budget);
+        cap_prompt_text(&mut self.summary_text, budget.summary_max_len);
+        cap_prompt_text(&mut self.message_summary_text, budget.summary_max_len);
+        self.refresh_reply_projection_groups();
+        cap_prompt_text(
+            &mut self.constitutional_stack_text,
+            budget.constitutional_stack_max_len,
+        );
+        cap_prompt_text(
+            &mut self.active_task_context_text,
+            budget.active_task_context_max_len,
+        );
+        cap_prompt_text(
+            &mut self.governed_memory_evidence_text,
+            budget.governed_memory_evidence_max_len,
+        );
+        cap_prompt_text(
+            &mut self.background_governance_text,
+            budget.background_governance_max_len,
+        );
+        cap_prompt_text(&mut self.inward_growth_text, budget.inward_growth_max_len);
+    }
+}
+
+fn cap_prompt_text(value: &mut Option<String>, max_len: usize) {
+    let Some(text) = value.as_mut() else {
+        return;
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() || max_len == 0 {
+        *value = None;
+        return;
+    }
+    let capped = truncate_content_to_max(trimmed, max_len).into_owned();
+    if capped.is_empty() {
+        *value = None;
+    } else {
+        *text = capped;
     }
 }
 
@@ -562,6 +608,119 @@ mod tests {
         assert_eq!(
             projection.constitutional_stack_text().as_deref(),
             Some("gate\n\ncore\n\nconstitution\n\npriority\n\nprivacy")
+        );
+    }
+
+    #[test]
+    fn esp_compact_normalization_caps_prompt_memory_projection_groups() {
+        let repeated = "runtime memory evidence ".repeat(256);
+        let mut context = PromptMemoryContext {
+            memory_health_issues: Vec::new(),
+            constitutional_stack_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            inward_growth_text: None,
+            personality_governance_gate_text: Some(repeated.clone()),
+            summary_text: Some(repeated.clone()),
+            message_summary_text: Some(repeated.clone()),
+            long_term_memory_text: Some(repeated.clone()),
+            continuity_capsule_text: Some(repeated.clone()),
+            archive_evidence_text: Some(repeated.clone()),
+            runtime_skill_text: Some(repeated.clone()),
+            recent_turn_observation_text: Some(repeated.clone()),
+            work_continuity_text: Some(repeated.clone()),
+            execution_state_text: Some(repeated.clone()),
+            task_workspace_text: Some(repeated.clone()),
+            task_recall_text: Some(repeated.clone()),
+            shared_factual_recall_report: crate::memory::RecallSelectionReport::default(),
+            continuity_capsule_report: crate::memory::RecallSelectionReport::default(),
+            archive_recall_report: crate::memory::RecallSelectionReport::default(),
+            runtime_skill_recall_report: crate::memory::RecallSelectionReport::default(),
+            task_recall_report: None,
+            world_snapshot_text: Some(repeated.clone()),
+            world_sense_text: Some(repeated.clone()),
+            self_state_text: Some(repeated.clone()),
+            self_authored_core: None,
+            self_authored_core_text: Some(repeated.clone()),
+            relationship_portfolio_text: Some(repeated.clone()),
+            relationship_constitution: None,
+            relationship_constitution_text: Some(repeated.clone()),
+            persona_priority_text: Some(repeated.clone()),
+            self_continuity: None,
+            autonomy_strategy: None,
+            outer_voice: None,
+            self_model_text: Some(repeated.clone()),
+            autonomy_strategy_text: Some(repeated.clone()),
+            outer_voice_text: Some(repeated.clone()),
+            inner_life_text: Some(repeated.clone()),
+            self_continuity_text: Some(repeated.clone()),
+            private_workspace_text: Some(repeated.clone()),
+            private_garden_text: Some(repeated.clone()),
+            mental_privacy_adjudication_text: Some(repeated.clone()),
+            mental_privacy_text: Some(repeated),
+            recent_messages: Vec::new(),
+            recall_router: PromptRecallRouterDecision {
+                intent: PromptRecallIntent::Factual,
+            },
+        };
+
+        context.normalize_for_prompt(crate::memory::MemorySystemKind::EspCompact, 2048);
+        let budget = crate::memory::prompt_context_normalization_budget(
+            crate::memory::MemorySystemKind::EspCompact,
+            2048,
+        );
+
+        assert!(
+            context.summary_text.as_deref().unwrap_or_default().len() <= budget.summary_max_len
+        );
+        assert!(
+            context
+                .message_summary_text
+                .as_deref()
+                .unwrap_or_default()
+                .len()
+                <= budget.summary_max_len
+        );
+        assert!(
+            context
+                .constitutional_stack_text
+                .as_deref()
+                .unwrap_or_default()
+                .len()
+                <= budget.constitutional_stack_max_len
+        );
+        assert!(
+            context
+                .active_task_context_text
+                .as_deref()
+                .unwrap_or_default()
+                .len()
+                <= budget.active_task_context_max_len
+        );
+        assert!(
+            context
+                .governed_memory_evidence_text
+                .as_deref()
+                .unwrap_or_default()
+                .len()
+                <= budget.governed_memory_evidence_max_len
+        );
+        assert!(
+            context
+                .background_governance_text
+                .as_deref()
+                .unwrap_or_default()
+                .len()
+                <= budget.background_governance_max_len
+        );
+        assert!(
+            context
+                .inward_growth_text
+                .as_deref()
+                .unwrap_or_default()
+                .len()
+                <= budget.inward_growth_max_len
         );
     }
 

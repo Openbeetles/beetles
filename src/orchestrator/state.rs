@@ -245,6 +245,7 @@ pub struct ResourceSnapshot {
     pub outbound_depth: u32,
     pub budget: super::pressure::ResourceBudget,
     pub channels: ChannelsHealthSnapshot,
+    pub leases: crate::runtime::LeaseSnapshot,
     pub session_count: u32,
     pub storage_used_kb: u32,
     pub storage_total_kb: u32,
@@ -265,6 +266,47 @@ pub struct ResourceSnapshot {
     /// Linux 特有：进程内存使用（KB）
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     pub process_memory_kb: u32,
+}
+
+/// Admission counters and last-latency facts folded into the resource diagnostic snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ResourceAdmissionSnapshot {
+    pub active_http_count: u32,
+    pub active_wss_count: u32,
+    pub active_agent_tasks: u32,
+    pub inbound_depth: u32,
+    pub outbound_depth: u32,
+    pub http_permit_wait_last_ms: u64,
+    pub http_route_queue_wait_last_ms: u64,
+    pub http_route_handler_last_ms: u64,
+    pub http_route_timeout_total: u64,
+}
+
+/// Runtime governance counters exposed through `/api/resource`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ResourceGovernanceMetricsSnapshot {
+    pub runtime_spawn_failure_total: u64,
+    pub http_route_reject_total: u64,
+    pub lease_conflict_total: u64,
+    pub lease_expired_replacement_total: u64,
+    pub plane_drain_timeout_total: u64,
+    pub inbound_queue_full_total: u64,
+    pub inbound_defer_total: u64,
+    pub inbound_drop_total: u64,
+}
+
+/// Deep resource diagnostic snapshot. This is the single aggregation point for `/api/resource`.
+#[derive(serde::Serialize)]
+pub struct ResourceDiagnosticSnapshot {
+    pub resource: ResourceSnapshot,
+    pub admission: ResourceAdmissionSnapshot,
+    pub governance_metrics: ResourceGovernanceMetricsSnapshot,
+    pub planes: crate::runtime::PlaneRegistrySnapshot,
+    pub plane_lifecycle: crate::runtime::PlaneLifecycleSnapshot,
+    pub leases: crate::runtime::LeaseSnapshot,
+    pub threads: crate::runtime::thread_registry::ThreadRegistrySnapshot,
+    pub display_lease_denied_total: u64,
+    pub write_back: crate::runtime::write_back::WriteBackSnapshot,
 }
 
 impl ResourceSnapshot {
@@ -316,6 +358,7 @@ impl ResourceSnapshot {
             outbound_depth: state.outbound_depth.load(Ordering::Relaxed),
             budget: super::pressure::budget_for_level(pressure),
             channels,
+            leases: crate::runtime::lease::snapshot(),
             session_count: state.session_count.load(Ordering::Relaxed),
             storage_used_kb: state.storage_used_kb.load(Ordering::Relaxed),
             storage_total_kb: state.storage_total_kb.load(Ordering::Relaxed),
@@ -329,6 +372,44 @@ impl ResourceSnapshot {
             load_average: get_load_average(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             process_memory_kb: get_process_memory_kb(),
+        }
+    }
+}
+
+impl ResourceDiagnosticSnapshot {
+    pub fn from_state(state: &OrchestratorState) -> Self {
+        let resource = ResourceSnapshot::from_state(state);
+        let metrics = crate::metrics::snapshot();
+        let leases = resource.leases.clone();
+        Self {
+            admission: ResourceAdmissionSnapshot {
+                active_http_count: resource.active_http_count,
+                active_wss_count: resource.active_wss_count,
+                active_agent_tasks: resource.active_agent_tasks,
+                inbound_depth: resource.inbound_depth,
+                outbound_depth: resource.outbound_depth,
+                http_permit_wait_last_ms: metrics.http_permit_wait_last_ms,
+                http_route_queue_wait_last_ms: metrics.http_route_queue_wait_last_ms,
+                http_route_handler_last_ms: metrics.http_route_handler_last_ms,
+                http_route_timeout_total: metrics.http_route_timeout_total,
+            },
+            governance_metrics: ResourceGovernanceMetricsSnapshot {
+                runtime_spawn_failure_total: metrics.runtime_spawn_failure_total,
+                http_route_reject_total: metrics.http_route_reject_total,
+                lease_conflict_total: metrics.lease_conflict_total,
+                lease_expired_replacement_total: metrics.lease_expired_replacement_total,
+                plane_drain_timeout_total: metrics.plane_drain_timeout_total,
+                inbound_queue_full_total: metrics.inbound_queue_full_total,
+                inbound_defer_total: metrics.inbound_defer_total,
+                inbound_drop_total: metrics.inbound_drop_total,
+            },
+            planes: crate::runtime::plane::snapshot(),
+            plane_lifecycle: crate::runtime::plane_lifecycle::snapshot(),
+            leases,
+            threads: crate::runtime::thread_registry::snapshot(),
+            display_lease_denied_total: crate::display::display_lease_denied_total(),
+            write_back: crate::runtime::write_back::snapshot(),
+            resource,
         }
     }
 }

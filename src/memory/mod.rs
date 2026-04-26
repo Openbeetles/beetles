@@ -265,11 +265,11 @@ pub use private_garden_governance::{
 };
 pub(crate) use profile::{
     decide_prompt_assembly, decide_self_runtime_authority, memory_capability_profile,
-    memory_policy, prompt_participation_policy, shared_long_term_governance_policy,
-    AutonomyStrategyPolicy, ExecutionStatePolicy, InnerLifePolicy, LongTermExtractionPolicy,
-    LongTermRecallPolicy, OuterVoicePolicy, PrivateDocsPolicy, PrivateGardenGovernancePolicy,
-    SelfContinuityPolicy, SelfModelPolicy, SelfRuntimeAuthorityPlan, SessionSummaryPolicy,
-    WorldSensePolicy,
+    memory_policy, prompt_context_normalization_budget, prompt_participation_policy,
+    shared_long_term_governance_policy, AutonomyStrategyPolicy, ExecutionStatePolicy,
+    InnerLifePolicy, LongTermExtractionPolicy, LongTermRecallPolicy, OuterVoicePolicy,
+    PrivateDocsPolicy, PrivateGardenGovernancePolicy, SelfContinuityPolicy, SelfModelPolicy,
+    SelfRuntimeAuthorityPlan, SessionSummaryPolicy, WorldSensePolicy,
 };
 pub use profile::{
     MemoryCapabilityClass, MemoryHygieneLevel, MemoryProfile, MemorySystemKind,

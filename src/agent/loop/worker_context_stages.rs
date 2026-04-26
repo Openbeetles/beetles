@@ -811,26 +811,24 @@ pub(super) fn finalize_prepare_context(
         allow_tool_round_recall_refill,
         ..
     } = prompt_stage;
-    if matches!(
+    prompt_memory.normalize_for_prompt(
         config.runtime.memory_system_kind,
-        crate::memory::MemorySystemKind::EspCompact
-    ) {
-        // ESP compact path should not keep pre-joined projection caches alive and then
-        // clone them again inside `build_context`; build the final joined sections once.
-        prompt_memory.drop_projection_group_caches();
-    }
+        runtime_stage.prompt_memory_system_budget,
+    );
+    let constitutional_stack_text = prompt_memory.constitutional_stack_text.take();
+    let active_task_context_text = prompt_memory.active_task_context_text.take();
+    let governed_memory_evidence_text = prompt_memory.governed_memory_evidence_text.take();
+    let background_governance_text = prompt_memory.background_governance_text.take();
     let subject_state_text = governance_stage
         .subject_state
         .as_ref()
         .and_then(|state| render_subject_state_block(state, 360));
     let deliberation_gate_text =
         render_turn_deliberation_gate_block(&governance_stage.deliberation_gate, 360);
-    let active_task_context_present = prompt_memory
-        .active_task_context_text
+    let active_task_context_present = active_task_context_text
         .as_ref()
         .is_some_and(|text| !text.trim().is_empty());
-    let governed_memory_evidence_present = prompt_memory
-        .governed_memory_evidence_text
+    let governed_memory_evidence_present = governed_memory_evidence_text
         .as_ref()
         .is_some_and(|text| !text.trim().is_empty());
     let memory_health_text = prompt_memory.render_memory_health_block(360);
@@ -854,14 +852,14 @@ pub(super) fn finalize_prepare_context(
         group_activation: config.tg_group_activation.as_ref(),
         emotion_signal_suffix: runtime_stage.emotion_signal_suffix,
         memory_health_text: memory_health_text.as_deref(),
-        constitutional_stack_text: prompt_memory.constitutional_stack_text.as_deref(),
+        constitutional_stack_text: constitutional_stack_text.as_deref(),
         subject_state_text: subject_state_text.as_deref(),
         deliberation_gate_text: deliberation_gate_text.as_deref(),
         programmable_reasoning_intent_text: None,
         soul_feedback_projection_text: soul_feedback_projection_text.as_deref(),
-        active_task_context_text: prompt_memory.active_task_context_text.as_deref(),
-        governed_memory_evidence_text: prompt_memory.governed_memory_evidence_text.as_deref(),
-        background_governance_text: prompt_memory.background_governance_text.as_deref(),
+        active_task_context_text: active_task_context_text.as_deref(),
+        governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
+        background_governance_text: background_governance_text.as_deref(),
         execution_state_text: prompt_memory.execution_state_text.as_deref(),
         task_workspace_text: prompt_memory.task_workspace_text.as_deref(),
         task_recall_text: prompt_memory.task_recall_text.as_deref(),

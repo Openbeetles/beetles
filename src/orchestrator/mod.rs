@@ -33,7 +33,10 @@ pub use runtime_capability::{
     RUNTIME_CAPABILITY_AUDIO_OUTPUT, RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
     RUNTIME_CAPABILITY_STORAGE_STATE_FS,
 };
-pub use state::{ResourceSnapshot, StorageContentionRisk};
+pub use state::{
+    ResourceAdmissionSnapshot, ResourceDiagnosticSnapshot, ResourceGovernanceMetricsSnapshot,
+    ResourceSnapshot, StorageContentionRisk,
+};
 
 /// 全局单例 orchestrator 状态。
 /// Global singleton orchestrator state.
@@ -153,6 +156,11 @@ pub fn current_storage_contention_risk() -> StorageContentionRisk {
 /// Return global resource snapshot (lock-free atomic reads).
 pub fn snapshot() -> ResourceSnapshot {
     state::ResourceSnapshot::from_state(&STATE)
+}
+
+/// Deep diagnostic resource snapshot for `/api/resource`.
+pub fn resource_diagnostic_snapshot() -> ResourceDiagnosticSnapshot {
+    state::ResourceDiagnosticSnapshot::from_state(&STATE)
 }
 
 /// 单行资源基线字符串，与 [`snapshot`] 及 `GET /api/resource` 字段一致，供心跳与串口对齐观测。

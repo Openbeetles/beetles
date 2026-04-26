@@ -6,8 +6,8 @@ use crate::memory::MemorySystemKind;
 use crate::Platform;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 use crate::{
-    constants::SOFTAP_DEFAULT_IPV4, DisplayChannelStatus, DisplayCommand, DisplayPressureLevel,
-    DisplaySystemState,
+    constants::SOFTAP_DEFAULT_IPV4, DisplayChannelRuntimeStatus, DisplayChannelStatus,
+    DisplayCommand, DisplayOwner, DisplayPressureLevel, DisplaySystemState,
 };
 use std::sync::Arc;
 
@@ -86,7 +86,9 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
     }
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if platform.display_available() {
-        let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 1 });
+        let _ = crate::display::with_display_lease(DisplayOwner::DefaultDashboard, || {
+            platform.display_command(DisplayCommand::UpdateBootProgress { stage: 1 })
+        });
     }
     let wifi_init_ok = match platform.connect_wifi(config.as_ref()) {
         Ok(()) => {
@@ -102,7 +104,9 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
             );
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             if platform.display_available() {
-                let _ = platform.display_command(DisplayCommand::UpdateBootProgress { stage: 2 });
+                let _ = crate::display::with_display_lease(DisplayOwner::DefaultDashboard, || {
+                    platform.display_command(DisplayCommand::UpdateBootProgress { stage: 2 })
+                });
             }
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             crate::orchestrator::log_startup_memory_checkpoint("wifi_stack_ready");
@@ -149,9 +153,11 @@ fn post_wifi_display_bootstrap(
 ) {
     if let Some(display_cfg) = config.display.as_ref() {
         if display_cfg.enabled {
-            if let Err(e) = platform.init_display(display_cfg) {
-                log::warn!("[{}] display init failed (degraded): {}", TAG, e);
-            } else {
+            let init_result =
+                crate::display::with_display_lease(DisplayOwner::DefaultDashboard, || {
+                    platform.init_display(display_cfg)
+                });
+            if matches!(init_result, Some(Ok(()))) {
                 log::info!("[{}] display initialized", TAG);
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 crate::orchestrator::log_startup_memory_checkpoint("display_initialized");
@@ -167,6 +173,11 @@ fn post_wifi_display_bootstrap(
                         visible: true,
                         enabled: normalized_enabled == entry.id,
                         healthy: false,
+                        runtime_status: if normalized_enabled == entry.id {
+                            DisplayChannelRuntimeStatus::Waiting
+                        } else {
+                            DisplayChannelRuntimeStatus::Disabled
+                        },
                         consecutive_failures: 0,
                     };
                 }
@@ -179,24 +190,30 @@ fn post_wifi_display_bootstrap(
                 } else {
                     None
                 };
-                let _ = platform.display_command(DisplayCommand::RefreshDashboard {
-                    state: DisplaySystemState::Booting,
-                    presence_subtitle: Some("restoring runtime shell".to_string()),
-                    ip_address,
-                    channels,
-                    pressure: DisplayPressureLevel::Normal,
-                    heap_percent: 0,
-                    messages_in: 0,
-                    messages_out: 0,
-                    last_active_epoch_secs: 0,
-                    uptime_secs: 0,
-                    busy_phase: false,
-                    llm_last_ms: 0,
-                    error_flash: false,
+                let _ = crate::display::with_display_lease(DisplayOwner::DefaultDashboard, || {
+                    platform.display_command(DisplayCommand::RefreshDashboard {
+                        state: DisplaySystemState::Booting,
+                        presence_subtitle: Some("restoring runtime shell".to_string()),
+                        ip_address,
+                        channels,
+                        pressure: DisplayPressureLevel::Normal,
+                        heap_percent: 0,
+                        messages_in: 0,
+                        messages_out: 0,
+                        last_active_epoch_secs: 0,
+                        uptime_secs: 0,
+                        busy_phase: false,
+                        llm_last_ms: 0,
+                        error_flash: false,
+                    })
                 });
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
                 crate::orchestrator::log_startup_memory_checkpoint("display_boot_dashboard");
                 observe_heap_checkpoint(TAG, "heap_after_display_boot_dashboard");
+            } else if let Some(Err(e)) = init_result {
+                log::warn!("[{}] display init failed (degraded): {}", TAG, e);
+            } else {
+                log::warn!("[{}] display init skipped: lease unavailable", TAG);
             }
         }
     }

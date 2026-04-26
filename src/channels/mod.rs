@@ -16,6 +16,7 @@ mod dispatch;
 #[cfg(feature = "feishu")]
 pub(crate) mod feishu;
 mod http_client;
+mod inbound_backpressure;
 mod outbound_text;
 #[cfg(feature = "qq_channel")]
 mod qq;

@@ -1081,17 +1081,7 @@ pub struct QqChannelRxConfig {
     feature = "wecom",
     feature = "qq_channel"
 ))]
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const SENDER_QUEUE_DEPTH: usize = 8;
-#[cfg(any(
-    feature = "telegram",
-    feature = "feishu",
-    feature = "dingtalk",
-    feature = "wecom",
-    feature = "qq_channel"
-))]
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-const SENDER_QUEUE_DEPTH: usize = 32;
+const SENDER_QUEUE_DEPTH: usize = crate::constants::CHANNEL_SENDER_QUEUE_DEPTH;
 
 /// 根据 config.enabled_channel 与凭证创建 ChannelSinks 并注册，返回 sinks 与各通道 rx 集合。
 pub fn build_channel_sinks(

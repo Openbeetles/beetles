@@ -13,8 +13,7 @@
   <a href="README.zh-CN.md">中文</a> · <strong>English</strong>
 </p>
 
-Beetle OS is a chat-first device agent that combines browser setup, chat interaction, model access, work-account integrations, and hardware control in one runtime.
-CLI commands, service names, and filesystem paths in this repo still use `beetle`.
+Beetle OS is a chat-first agent system for ESP32 and Linux devices, combining browser setup, chat interaction, model access, work-account integrations, and hardware control.
 
 ## What Beetle OS Can Do
 

@@ -211,7 +211,7 @@ impl Tool for FilesTool {
             "delete" => self
                 .metadata()
                 .default_execution_shape("files_delete")
-                .with_effect_class(ToolEffectClass::PersistentStateWrite)
+                .with_effect_class(ToolEffectClass::StorageWrite)
                 .with_risk_level(ToolRiskLevel::High)
                 .with_approval_mode(ToolApprovalMode::ExplicitIntent)
                 .with_approval_granted(true)

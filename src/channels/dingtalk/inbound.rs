@@ -236,10 +236,14 @@ fn handle_with_transport(
         Ok(()) => Ok(true),
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             log::warn!("[{}] inbound queue full, skip stream ack", TAG);
+            crate::channels::inbound_backpressure::record_queue_full(
+                crate::channels::inbound_backpressure::InboundBackpressureOutcome::RedeliveryRequested,
+            );
             Ok(false)
         }
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             log::warn!("[{}] inbound_tx disconnected, skip stream ack", TAG);
+            crate::channels::inbound_backpressure::record_disconnected_drop();
             Ok(false)
         }
     }

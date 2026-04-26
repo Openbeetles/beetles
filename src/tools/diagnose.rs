@@ -112,7 +112,7 @@ impl Tool for DiagnoseTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
-            .with_effect_class(ToolEffectClass::HostInspection)
+            .with_effect_class(ToolEffectClass::Diagnostic)
             .with_risk_level(ToolRiskLevel::Medium)
     }
 }

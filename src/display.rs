@@ -4,6 +4,7 @@
 use crate::channel_catalog::DISPLAY_CHANNEL_CAPACITY;
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const DISPLAY_CONFIG_VERSION: u32 = 1;
 pub const DISPLAY_DIM_MIN: u16 = 1;
@@ -17,6 +18,149 @@ pub const DISPLAY_SPI_FREQ_MAX: u32 = 80_000_000;
 pub const DISPLAY_LAYOUT_REF_PX: u32 = 240;
 const DISPLAY_SECTION_DIVIDER_GAP_PX: u16 = 6;
 const DISPLAY_HEADER_ICON_BOTTOM_BREATHING_PX: u16 = 8;
+pub const DISPLAY_LEASE_TTL_MS: u64 = 3_000;
+
+static DISPLAY_LEASE_DENIED_TOTAL: AtomicU32 = AtomicU32::new(0);
+
+/// Logical owner for the display hardware lease.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayOwner {
+    DefaultDashboard,
+    ConfigUi,
+    Voice,
+    Diagnostic,
+    Script,
+}
+
+impl DisplayOwner {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DefaultDashboard => "default_dashboard",
+            Self::ConfigUi => "config_ui",
+            Self::Voice => "voice",
+            Self::Diagnostic => "diagnostic",
+            Self::Script => "script",
+        }
+    }
+
+    pub const fn lease_owner(self) -> crate::runtime::lease::LeaseOwner {
+        crate::runtime::lease::LeaseOwner::new("display", self.as_str())
+    }
+}
+
+/// RAII guard for a held Display lease.
+#[must_use]
+pub struct DisplayLeaseGuard {
+    owner: DisplayOwner,
+    token: u64,
+}
+
+impl DisplayLeaseGuard {
+    pub fn owner(&self) -> DisplayOwner {
+        self.owner
+    }
+}
+
+impl Drop for DisplayLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(
+            crate::runtime::lease::LeaseKind::Display,
+            self.owner.lease_owner(),
+            self.token,
+        );
+    }
+}
+
+/// Try to acquire the display lease for the default display deadline.
+pub fn try_acquire_display_lease(owner: DisplayOwner) -> Option<DisplayLeaseGuard> {
+    try_acquire_display_lease_with_ttl(owner, Some(DISPLAY_LEASE_TTL_MS))
+}
+
+/// Try to acquire the display lease with a custom deadline.
+pub fn try_acquire_display_lease_with_ttl(
+    owner: DisplayOwner,
+    ttl_ms: Option<u64>,
+) -> Option<DisplayLeaseGuard> {
+    try_acquire_display_lease_inner(owner, ttl_ms, None)
+}
+
+#[cfg(test)]
+pub(crate) fn try_acquire_display_lease_at(
+    owner: DisplayOwner,
+    ttl_ms: Option<u64>,
+    now_ms: u64,
+) -> Option<DisplayLeaseGuard> {
+    try_acquire_display_lease_inner(owner, ttl_ms, Some(now_ms))
+}
+
+fn try_acquire_display_lease_inner(
+    owner: DisplayOwner,
+    ttl_ms: Option<u64>,
+    now_ms: Option<u64>,
+) -> Option<DisplayLeaseGuard> {
+    let decision = match now_ms {
+        Some(now_ms) => crate::runtime::lease::try_acquire_at(
+            crate::runtime::lease::LeaseKind::Display,
+            owner.lease_owner(),
+            crate::runtime::lease::LeaseMode::Exclusive,
+            ttl_ms,
+            now_ms,
+        ),
+        None => crate::runtime::lease::try_acquire(
+            crate::runtime::lease::LeaseKind::Display,
+            owner.lease_owner(),
+            crate::runtime::lease::LeaseMode::Exclusive,
+            ttl_ms,
+        ),
+    };
+
+    match decision {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Some(DisplayLeaseGuard {
+            owner,
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => {
+            DISPLAY_LEASE_DENIED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            log::debug!(
+                "[display] display lease denied owner={} reason={} held_by={:?}",
+                owner.as_str(),
+                denial.reason,
+                denial.held_by
+            );
+            None
+        }
+    }
+}
+
+/// Run a display operation only while the caller owns the Display lease.
+pub fn with_display_lease<T, F>(owner: DisplayOwner, operation: F) -> Option<T>
+where
+    F: FnOnce() -> T,
+{
+    let _lease = try_acquire_display_lease(owner)?;
+    Some(operation())
+}
+
+pub fn display_lease_denied_total() -> u64 {
+    DISPLAY_LEASE_DENIED_TOTAL.load(Ordering::Relaxed) as u64
+}
+
+pub fn format_display_lease_baseline_log_line() -> String {
+    format!(
+        "display_lease denied_total={}",
+        display_lease_denied_total()
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_display_lease_denied_total_for_tests() {
+    DISPLAY_LEASE_DENIED_TOTAL.store(0, Ordering::Relaxed);
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -109,12 +253,23 @@ pub struct DisplayConfig {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayChannelRuntimeStatus {
+    Disabled,
+    Configured,
+    Waiting,
+    Online,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct DisplayChannelStatus {
     pub name: &'static str,
     pub display_label: &'static str,
     pub visible: bool,
     pub enabled: bool,
     pub healthy: bool,
+    pub runtime_status: DisplayChannelRuntimeStatus,
     /// 连续失败次数（F5: 通道失败计数）。
     pub consecutive_failures: u32,
 }
@@ -127,6 +282,7 @@ impl DisplayChannelStatus {
             visible: false,
             enabled: false,
             healthy: false,
+            runtime_status: DisplayChannelRuntimeStatus::Disabled,
             consecutive_failures: 0,
         }
     }
@@ -439,6 +595,64 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_lease_allows_same_owner_reentry_and_releases_by_token() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+        reset_display_lease_denied_total_for_tests();
+
+        let first = try_acquire_display_lease_at(DisplayOwner::DefaultDashboard, Some(1_000), 100)
+            .expect("first display lease");
+        let second = try_acquire_display_lease_at(DisplayOwner::DefaultDashboard, Some(1_000), 101)
+            .expect("reentrant display lease");
+
+        let snapshot = crate::runtime::lease::snapshot_at(102);
+        assert_eq!(snapshot.active_count, 1);
+        assert_eq!(snapshot.records[0].hold_count, 2);
+
+        drop(second);
+        assert_eq!(crate::runtime::lease::snapshot_at(103).active_count, 1);
+        drop(first);
+        assert_eq!(crate::runtime::lease::snapshot_at(104).active_count, 0);
+    }
+
+    #[test]
+    fn display_lease_denies_different_active_owner_and_counts_skip() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+        reset_display_lease_denied_total_for_tests();
+
+        let _default =
+            try_acquire_display_lease_at(DisplayOwner::DefaultDashboard, Some(1_000), 100)
+                .expect("default dashboard display lease");
+
+        let denied = try_acquire_display_lease_at(DisplayOwner::ConfigUi, Some(1_000), 101);
+
+        assert!(denied.is_none());
+        assert_eq!(display_lease_denied_total(), 1);
+    }
+
+    #[test]
+    fn display_lease_replaces_expired_script_owner() {
+        let _guard = crate::runtime::lease::lease_test_guard();
+        reset_display_lease_denied_total_for_tests();
+
+        let script = try_acquire_display_lease_at(DisplayOwner::Script, Some(10), 100)
+            .expect("script display lease");
+        let default =
+            try_acquire_display_lease_at(DisplayOwner::DefaultDashboard, Some(1_000), 111)
+                .expect("default dashboard replaces expired lease");
+
+        let snapshot = crate::runtime::lease::snapshot_at(112);
+        assert_eq!(snapshot.active_count, 1);
+        assert_eq!(
+            snapshot.records[0].owner,
+            DisplayOwner::DefaultDashboard.lease_owner()
+        );
+
+        drop(default);
+        drop(script);
+        assert_eq!(crate::runtime::lease::snapshot_at(113).active_count, 0);
+    }
 
     #[test]
     fn default_display_config_keeps_linux_spi_swap_disabled() {

@@ -155,7 +155,7 @@ impl Tool for ProxyConfigTool {
             _ => self
                 .metadata()
                 .default_execution_shape("get")
-                .with_effect_class(ToolEffectClass::ReadOnly)
+                .with_effect_class(ToolEffectClass::ConfigRead)
                 .with_risk_level(ToolRiskLevel::Low)
                 .with_approval_mode(ToolApprovalMode::Automatic)
                 .with_rollback_kind(ToolRollbackKind::None),

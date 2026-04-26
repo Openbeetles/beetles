@@ -62,7 +62,10 @@ use beetle::{run_agent_loop, run_dispatch, AppConfig, MessageBus, DEFAULT_CAPACI
     target_os = "linux"
 ))]
 #[cfg_attr(test, allow(unused_imports))]
-use beetle::{DisplayChannelStatus, DisplayCommand, DisplayPressureLevel, DisplaySystemState};
+use beetle::{
+    DisplayChannelRuntimeStatus, DisplayChannelStatus, DisplayCommand, DisplayOwner,
+    DisplayPressureLevel, DisplaySystemState,
+};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use clap::Parser;
 
@@ -84,6 +87,13 @@ use std::time::{Duration, Instant};
 
 const TAG: &str = "beetle";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+const DISPLAY_LIFECYCLE_OWNER: &str = "display";
 
 type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
 
@@ -486,7 +496,7 @@ mod tests {
     use super::{
         compute_voice_runtime_capabilities, finalize_required_thread_start,
         register_process_memory_snapshot_provider, startup_banner_lines, voice_sink_sender,
-        DisplayLoopState, StartedVoiceSession, VERSION,
+        DisplayChannelRuntimeStatus, DisplayLoopState, StartedVoiceSession, VERSION,
     };
     use beetle::{
         config::default_disabled_audio_segment, DisplaySystemState, LinuxPlatform, Platform,
@@ -698,6 +708,7 @@ mod tests {
                 visible: true,
                 enabled: true,
                 healthy: true,
+                runtime_status: DisplayChannelRuntimeStatus::Configured,
                 consecutive_failures: 0,
             },
             DisplayChannelStatus {
@@ -706,6 +717,7 @@ mod tests {
                 visible: true,
                 enabled: false,
                 healthy: false,
+                runtime_status: DisplayChannelRuntimeStatus::Disabled,
                 consecutive_failures: 2,
             },
             DisplayChannelStatus {
@@ -714,6 +726,7 @@ mod tests {
                 visible: true,
                 enabled: false,
                 healthy: true,
+                runtime_status: DisplayChannelRuntimeStatus::Disabled,
                 consecutive_failures: 0,
             },
             DisplayChannelStatus {
@@ -722,6 +735,7 @@ mod tests {
                 visible: true,
                 enabled: false,
                 healthy: true,
+                runtime_status: DisplayChannelRuntimeStatus::Disabled,
                 consecutive_failures: 0,
             },
             DisplayChannelStatus {
@@ -730,6 +744,7 @@ mod tests {
                 visible: true,
                 enabled: false,
                 healthy: true,
+                runtime_status: DisplayChannelRuntimeStatus::Disabled,
                 consecutive_failures: 0,
             },
         ];
@@ -750,8 +765,14 @@ mod tests {
 
         assert_eq!(state.last_presence_subtitle, subtitle);
         assert_eq!(state.last_ip, ip);
-        assert_eq!(state.last_channels[0], (true, true, 0));
-        assert_eq!(state.last_channels[1], (false, false, 2));
+        assert_eq!(
+            state.last_channels[0],
+            (true, true, DisplayChannelRuntimeStatus::Configured, 0)
+        );
+        assert_eq!(
+            state.last_channels[1],
+            (false, false, DisplayChannelRuntimeStatus::Disabled, 2)
+        );
         assert_eq!(state.last_pressure, Some(DisplayPressureLevel::Cautious));
         assert_eq!(state.last_heap, 42);
         assert_eq!(state.last_msg_in, 7);
@@ -803,6 +824,25 @@ mod tests {
         assert_eq!(state.last_llm_ms, 4);
     }
 
+    #[cfg(feature = "qq_channel")]
+    #[test]
+    fn build_display_channels_marks_enabled_qq_waiting_until_wss_online() {
+        let state = beetle::orchestrator::state::OrchestratorState::new();
+        let snapshot = beetle::orchestrator::ResourceSnapshot::from_state(&state);
+        let channels = super::build_display_channels(beetle::CHANNEL_QQ_CHANNEL, &snapshot);
+        let qq = channels
+            .iter()
+            .find(|channel| channel.name == beetle::CHANNEL_QQ_CHANNEL)
+            .expect("qq channel display status");
+
+        assert!(qq.enabled);
+        assert!(qq.healthy);
+        assert_eq!(
+            qq.runtime_status,
+            beetle::DisplayChannelRuntimeStatus::Waiting
+        );
+    }
+
     #[test]
     fn invalidate_display_cache_after_backlight_wake_resets_all_dashboard_cache_fields() {
         use super::{invalidate_display_cache_after_backlight_wake, DisplayLoopState};
@@ -812,7 +852,8 @@ mod tests {
             last_state: Some(DisplaySystemState::Busy),
             last_presence_subtitle: Some("busy".to_string()),
             last_ip: "192.168.4.1".to_string(),
-            last_channels: [(true, false, 3); DISPLAY_CHANNEL_CAPACITY],
+            last_channels: [(true, false, DisplayChannelRuntimeStatus::Failed, 3);
+                DISPLAY_CHANNEL_CAPACITY],
             last_pressure: Some(DisplayPressureLevel::Critical),
             last_heap: 77,
             last_msg_in: 11,
@@ -828,7 +869,7 @@ mod tests {
         assert!(state.last_ip.is_empty());
         assert_eq!(
             state.last_channels,
-            [(false, false, 0); DISPLAY_CHANNEL_CAPACITY]
+            [(false, false, DisplayChannelRuntimeStatus::Disabled, 0,); DISPLAY_CHANNEL_CAPACITY]
         );
         assert_eq!(state.last_pressure, None);
         assert_eq!(state.last_heap, 255);
@@ -900,7 +941,8 @@ mod tests {
             last_state: Some(DisplaySystemState::Busy),
             last_presence_subtitle: Some("busy".to_string()),
             last_ip: "192.168.4.1".to_string(),
-            last_channels: [(true, false, 2); DISPLAY_CHANNEL_CAPACITY],
+            last_channels: [(true, false, DisplayChannelRuntimeStatus::Failed, 2);
+                DISPLAY_CHANNEL_CAPACITY],
             last_pressure: Some(DisplayPressureLevel::Critical),
             last_heap: 91,
             last_msg_in: 5,
@@ -916,7 +958,7 @@ mod tests {
         assert!(state.last_ip.is_empty());
         assert_eq!(
             state.last_channels,
-            [(false, false, 0); DISPLAY_CHANNEL_CAPACITY]
+            [(false, false, DisplayChannelRuntimeStatus::Disabled, 0,); DISPLAY_CHANNEL_CAPACITY]
         );
         assert_eq!(state.last_pressure, None);
         assert_eq!(state.last_heap, 255);
@@ -1068,7 +1110,7 @@ fn build_voice_event_channel(
         return None;
     }
 
-    let (vtx, vrx) = std::sync::mpsc::sync_channel(4);
+    let (vtx, vrx) = std::sync::mpsc::sync_channel(beetle::constants::VOICE_EVENT_QUEUE_CAPACITY);
     Some(VoiceEventChannel {
         speak_capable: capabilities.speak_capable,
         tx: vtx,
@@ -1088,7 +1130,7 @@ struct DisplayLoopState {
     last_state: Option<DisplaySystemState>,
     last_presence_subtitle: Option<String>,
     last_ip: String,
-    last_channels: [(bool, bool, u32); DISPLAY_CHANNEL_CAPACITY],
+    last_channels: [(bool, bool, DisplayChannelRuntimeStatus, u32); DISPLAY_CHANNEL_CAPACITY],
     last_pressure: Option<DisplayPressureLevel>,
     last_heap: u8,
     last_msg_in: u32,
@@ -1127,7 +1169,8 @@ impl Default for DisplayLoopState {
             last_state: None,
             last_presence_subtitle: None,
             last_ip: String::new(),
-            last_channels: [(false, false, 0); DISPLAY_CHANNEL_CAPACITY],
+            last_channels: [(false, false, DisplayChannelRuntimeStatus::Disabled, 0);
+                DISPLAY_CHANNEL_CAPACITY],
             last_pressure: None,
             last_heap: 255,
             last_msg_in: u32::MAX,
@@ -1246,7 +1289,8 @@ fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopSta
     loop_state.last_state = None;
     loop_state.last_presence_subtitle = None;
     loop_state.last_ip.clear();
-    loop_state.last_channels = [(false, false, 0); DISPLAY_CHANNEL_CAPACITY];
+    loop_state.last_channels =
+        [(false, false, DisplayChannelRuntimeStatus::Disabled, 0); DISPLAY_CHANNEL_CAPACITY];
     loop_state.last_pressure = None;
     loop_state.last_heap = 255;
     loop_state.last_msg_in = u32::MAX;
@@ -1342,7 +1386,12 @@ fn update_display_loop_cache(
         loop_state.last_ip.push_str(ip);
     }
     for (i, ch) in channels.iter().enumerate() {
-        loop_state.last_channels[i] = (ch.enabled, ch.healthy, ch.consecutive_failures);
+        loop_state.last_channels[i] = (
+            ch.enabled,
+            ch.healthy,
+            ch.runtime_status,
+            ch.consecutive_failures,
+        );
     }
     if let Some(pressure) = pressure {
         loop_state.last_pressure = Some(pressure);
@@ -1380,16 +1429,51 @@ fn build_display_channels(
             .get(entry.id)
             .map(|channel| (channel.healthy, channel.consecutive_failures))
             .unwrap_or((false, 0));
+        let enabled = normalized_enabled == entry.id;
+        let runtime_status =
+            display_channel_runtime_status(entry.id, enabled, healthy, consecutive_failures);
         channels[index] = DisplayChannelStatus {
             name: entry.id,
             display_label: entry.display_label,
             visible: true,
-            enabled: normalized_enabled == entry.id,
+            enabled,
             healthy,
+            runtime_status,
             consecutive_failures,
         };
     }
     channels
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_channel_runtime_status(
+    channel: &str,
+    enabled: bool,
+    healthy: bool,
+    consecutive_failures: u32,
+) -> DisplayChannelRuntimeStatus {
+    if !enabled {
+        return DisplayChannelRuntimeStatus::Disabled;
+    }
+    if !healthy || consecutive_failures > 0 {
+        return DisplayChannelRuntimeStatus::Failed;
+    }
+    #[cfg(feature = "qq_channel")]
+    if channel == beetle::CHANNEL_QQ_CHANNEL {
+        return if beetle::channels::is_ws_online() {
+            DisplayChannelRuntimeStatus::Online
+        } else {
+            DisplayChannelRuntimeStatus::Waiting
+        };
+    }
+    let _ = channel;
+    DisplayChannelRuntimeStatus::Configured
 }
 
 #[cfg(any(
@@ -1436,6 +1520,55 @@ fn update_display_error_flash(
     target_arch = "riscv32",
     target_os = "linux"
 ))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_command_with_owner(
+    platform: &Arc<dyn Platform>,
+    owner: DisplayOwner,
+    cmd: DisplayCommand,
+) -> Option<beetle::Result<()>> {
+    beetle::display::with_display_lease(owner, || platform.display_command(cmd))
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn mark_display_lifecycle(state: beetle::runtime::PlaneLifecycleState, reason: &'static str) {
+    beetle::runtime::plane_lifecycle::mark(
+        beetle::runtime::PlaneId::Display,
+        DISPLAY_LIFECYCLE_OWNER,
+        state,
+        reason,
+    );
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+fn fade_display_backlight_with_owner(
+    platform: &Arc<dyn Platform>,
+    owner: DisplayOwner,
+    from: u8,
+    to: u8,
+    duration_ms: u32,
+) -> Option<beetle::Result<()>> {
+    beetle::display::with_display_lease(owner, || {
+        platform.fade_display_backlight(from, to, duration_ms)
+    })
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
 fn update_display_backlight(
     platform: &Arc<dyn Platform>,
     loop_state: &mut DisplayLoopState,
@@ -1447,19 +1580,26 @@ fn update_display_backlight(
         return false;
     }
     if any_change && loop_state.backlight_off {
-        let _ = platform.fade_display_backlight(0, 100, 500);
-        loop_state.backlight_off = false;
-        invalidate_display_cache_after_backlight_wake(loop_state);
-        log::info!("[{}] display backlight woke up", TAG);
-        return false;
+        if fade_display_backlight_with_owner(platform, DisplayOwner::DefaultDashboard, 0, 100, 500)
+            .is_some()
+        {
+            loop_state.backlight_off = false;
+            invalidate_display_cache_after_backlight_wake(loop_state);
+            log::info!("[{}] display backlight woke up", TAG);
+            return false;
+        }
+        return true;
     }
     if !loop_state.backlight_off
         && !any_change
         && loop_state.last_activity_at.elapsed() >= sleep_duration
     {
-        let _ = platform.fade_display_backlight(100, 0, 500);
-        loop_state.backlight_off = true;
-        log::info!("[{}] display backlight auto-sleep", TAG);
+        if fade_display_backlight_with_owner(platform, DisplayOwner::DefaultDashboard, 100, 0, 500)
+            .is_some()
+        {
+            loop_state.backlight_off = true;
+            log::info!("[{}] display backlight auto-sleep", TAG);
+        }
         return true;
     }
     loop_state.backlight_off && !any_change
@@ -1467,6 +1607,10 @@ fn update_display_backlight(
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
 fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
+    mark_display_lifecycle(
+        beetle::runtime::PlaneLifecycleState::Active,
+        "display_loop_started",
+    );
     let enabled = config.enabled_channel.as_str();
     let sleep_timeout = config
         .display
@@ -1541,7 +1685,13 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             loop_state.last_presence_subtitle != display_projection.subtitle_override;
         let ip_changed = loop_state.last_ip.as_str() != ip_hint;
         let channels_changed = channels.iter().enumerate().any(|(i, ch)| {
-            loop_state.last_channels[i] != (ch.enabled, ch.healthy, ch.consecutive_failures)
+            loop_state.last_channels[i]
+                != (
+                    ch.enabled,
+                    ch.healthy,
+                    ch.runtime_status,
+                    ch.consecutive_failures,
+                )
         });
         let pressure_changed = loop_state.last_pressure.as_ref() != Some(&pressure);
         let heap_changed = loop_state.last_heap.abs_diff(heap_percent) >= 2;
@@ -1618,8 +1768,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                     }
                 }
             };
-            match platform.display_command(cmd) {
-                Ok(()) => {
+            match display_command_with_owner(&platform, DisplayOwner::DefaultDashboard, cmd) {
+                Some(Ok(())) => {
                     loop_state.last_state = Some(state);
                     loop_state
                         .last_presence_subtitle
@@ -1647,21 +1797,26 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         continue;
                     }
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     log::warn!("[{}] display refresh failed: {}", TAG, e);
                 }
+                None => {}
             }
         }
 
         if refresh_plan.ip {
             let presence_subtitle = display_projection.subtitle_override.clone();
             let ip_owned = ip_hint.to_string();
-            match platform.display_command(DisplayCommand::UpdateIp {
-                ip: ip_owned.clone(),
-                presence_subtitle,
-                uptime_secs,
-            }) {
-                Ok(()) => {
+            match display_command_with_owner(
+                &platform,
+                DisplayOwner::DefaultDashboard,
+                DisplayCommand::UpdateIp {
+                    ip: ip_owned.clone(),
+                    presence_subtitle,
+                    uptime_secs,
+                },
+            ) {
+                Some(Ok(())) => {
                     update_display_loop_cache(
                         &mut loop_state,
                         DisplayLoopCacheUpdate {
@@ -1676,12 +1831,17 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         },
                     );
                 }
-                Err(e) => log::warn!("[{}] display ip refresh failed: {}", TAG, e),
+                Some(Err(e)) => log::warn!("[{}] display ip refresh failed: {}", TAG, e),
+                None => {}
             }
         }
         if refresh_plan.channels {
-            match platform.display_command(DisplayCommand::UpdateChannels { channels }) {
-                Ok(()) => {
+            match display_command_with_owner(
+                &platform,
+                DisplayOwner::DefaultDashboard,
+                DisplayCommand::UpdateChannels { channels },
+            ) {
+                Some(Ok(())) => {
                     update_display_loop_cache(
                         &mut loop_state,
                         DisplayLoopCacheUpdate {
@@ -1696,20 +1856,25 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         },
                     );
                 }
-                Err(e) => log::warn!("[{}] display channels refresh failed: {}", TAG, e),
+                Some(Err(e)) => log::warn!("[{}] display channels refresh failed: {}", TAG, e),
+                None => {}
             }
         }
         if refresh_plan.footer {
-            match platform.display_command(DisplayCommand::UpdatePressure {
-                level: pressure,
-                heap_percent,
-                messages_in: msg_in,
-                messages_out: msg_out,
-                last_active_epoch_secs: last_active,
-                llm_last_ms: llm_ms,
-                error_flash: show_flash,
-            }) {
-                Ok(()) => {
+            match display_command_with_owner(
+                &platform,
+                DisplayOwner::DefaultDashboard,
+                DisplayCommand::UpdatePressure {
+                    level: pressure,
+                    heap_percent,
+                    messages_in: msg_in,
+                    messages_out: msg_out,
+                    last_active_epoch_secs: last_active,
+                    llm_last_ms: llm_ms,
+                    error_flash: show_flash,
+                },
+            ) {
+                Some(Ok(())) => {
                     update_display_loop_cache(
                         &mut loop_state,
                         DisplayLoopCacheUpdate {
@@ -1724,7 +1889,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         },
                     );
                 }
-                Err(e) => log::warn!("[{}] display footer refresh failed: {}", TAG, e),
+                Some(Err(e)) => log::warn!("[{}] display footer refresh failed: {}", TAG, e),
+                None => {}
             }
         }
         loop_state.refresh_secs = compute_refresh_secs(
@@ -2453,7 +2619,7 @@ fn prepare_runtime_assembly(
     let skill_prompt_cache = Arc::new(beetle::skills::SkillPromptCache::new(
         Arc::clone(&skill_meta_store),
         Arc::clone(&skill_storage),
-        8192,
+        beetle::skills::DEFAULT_PROMPT_SKILL_MAX_CHARS,
     ));
     let _ = skill_prompt_cache.refresh();
 
@@ -2695,15 +2861,34 @@ fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Resul
         let display_platform = Arc::clone(&assembly.runtime.platform);
         let display_config = Arc::clone(&assembly.config);
         let plan = thread_plan("display");
-        let _ = beetle::util::spawn_guarded_with_profile_handle(
+        mark_display_lifecycle(
+            beetle::runtime::PlaneLifecycleState::Starting,
+            "display_thread_spawn",
+        );
+        match beetle::util::spawn_guarded_with_profile_handle(
             "display",
             beetle::util::STACK_DISPLAY,
             plan.core,
             plan.role,
             move || run_display_loop(display_platform, display_config),
+        ) {
+            Ok(_handle) => {
+                #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+                beetle::orchestrator::log_startup_memory_checkpoint("display_thread_spawned");
+            }
+            Err(error) => {
+                mark_display_lifecycle(
+                    beetle::runtime::PlaneLifecycleState::Failed,
+                    "display_thread_spawn_failed",
+                );
+                log::warn!("[{}] display thread spawn failed: {}", TAG, error);
+            }
+        }
+    } else {
+        mark_display_lifecycle(
+            beetle::runtime::PlaneLifecycleState::Disabled,
+            "display_unavailable",
         );
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        beetle::orchestrator::log_startup_memory_checkpoint("display_thread_spawned");
     }
 
     Ok(())
@@ -2727,10 +2912,11 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     );
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if assembly.runtime.platform.display_available() {
-        let _ = assembly
-            .runtime
-            .platform
-            .display_command(DisplayCommand::UpdateBootProgress { stage: 3 });
+        let _ = display_command_with_owner(
+            &assembly.runtime.platform,
+            DisplayOwner::DefaultDashboard,
+            DisplayCommand::UpdateBootProgress { stage: 3 },
+        );
     }
 
     let enabled_channel =
@@ -2790,7 +2976,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                         tx,
                         pending.as_ref(),
                         move || http_factory(),
-                        beetle::network::connect_external_wss,
+                        |url| beetle::network::connect_external_wss(url, "feishu_ws"),
                     )
                 },
             )?;
@@ -2836,7 +3022,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                             qq_tx,
                             qq_pending.as_ref(),
                             move || http_factory(),
-                            beetle::network::connect_external_wss,
+                            |url| beetle::network::connect_external_wss(url, "qq_ws"),
                         )
                     },
                 )?;
@@ -2877,7 +3063,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                         dt_inbound_tx,
                         dt_session_store,
                         move || http_factory(),
-                        beetle::network::connect_external_wss,
+                        |url| beetle::network::connect_external_wss(url, "dingtalk_stream"),
                     )
                 },
             )?;
@@ -2907,7 +3093,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                         wc_inbound_tx,
                         wc_rx,
                         wc_route_store,
-                        beetle::network::connect_external_wss,
+                        |url| beetle::network::connect_external_wss(url, "wecom_aibot"),
                     )
                 },
             )?;
@@ -3057,10 +3243,11 @@ fn start_agent_plane(
 ) -> beetle::Result<Option<beetle::util::TaskHandle>> {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
     if assembly.runtime.platform.display_available() {
-        let _ = assembly
-            .runtime
-            .platform
-            .display_command(DisplayCommand::UpdateBootProgress { stage: 4 });
+        let _ = display_command_with_owner(
+            &assembly.runtime.platform,
+            DisplayOwner::DefaultDashboard,
+            DisplayCommand::UpdateBootProgress { stage: 4 },
+        );
     }
 
     let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
@@ -3069,7 +3256,30 @@ fn start_agent_plane(
 
     let get_skill_descriptions: Arc<dyn Fn() -> String + Send + Sync> = Arc::new({
         let skill_prompt_cache = Arc::clone(&assembly.skill_prompt_cache);
-        move || skill_prompt_cache.get()
+        move || {
+            let runtime_mode =
+                beetle::runtime::thread_registry::runtime_mode_snapshot().current_mode;
+            let pressure = beetle::orchestrator::snapshot().pressure;
+            let max_chars = beetle::skills::prompt_skill_budget_for_runtime_mode(
+                runtime_mode,
+                pressure,
+                beetle::skills::DEFAULT_PROMPT_SKILL_MAX_CHARS,
+                cfg!(any(
+                    target_arch = "xtensa",
+                    target_arch = "riscv32",
+                    target_os = "linux"
+                )),
+            );
+            if max_chars == 0 {
+                return String::new();
+            }
+            let rendered = skill_prompt_cache.get();
+            if rendered.len() <= max_chars {
+                rendered
+            } else {
+                beetle::util::truncate_to_byte_len(&rendered, max_chars)
+            }
+        }
     });
     let get_capability_package_text: CapabilityPackageTextProvider = Arc::new({
         let state_fs = assembly.runtime.platform.state_fs();

@@ -7,6 +7,15 @@ pub const DEFAULT_CAPACITY: usize = 16;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const DEFAULT_CAPACITY: usize = 64;
 
+/// Per-channel outbound sender queue capacity.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const CHANNEL_SENDER_QUEUE_DEPTH: usize = 8;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const CHANNEL_SENDER_QUEUE_DEPTH: usize = 32;
+
+/// Voice event queue capacity between wake/sink producers and the voice session scheduler.
+pub const VOICE_EVENT_QUEUE_CAPACITY: usize = 4;
+
 /// 单条消息 content 最大长度（字节）。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const MAX_CONTENT_LEN: usize = 64 * 1024;

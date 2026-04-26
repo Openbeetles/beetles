@@ -59,6 +59,16 @@ const SPEAKER_DEVICE_I2S_MAX98357A: &str = "i2s_max98357a";
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const I2S_IO_TIMEOUT_MS: u32 = 1000;
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn mark_audio_io_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
+    crate::runtime::plane_lifecycle::mark(
+        crate::runtime::PlaneId::PlatformAudio,
+        "audio_io_worker",
+        state,
+        reason,
+    );
+}
+
 /// FreeRTOS tick period (ms). ESP32 default configTICK_RATE_HZ = 100 → 10ms/tick.
 /// portTICK_PERIOD_MS is a C macro not exported by bindgen, so we hardcode.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1061,6 +1071,11 @@ impl AudioPipelineState {
         let worker_surface =
             crate::platform::task_affinity::planned_spawn_surface("audio_io_worker");
         let capacities = shared.capacities();
+        mark_audio_io_lifecycle(
+            crate::runtime::PlaneLifecycleState::Registered,
+            "audio_pipeline_configured",
+        );
+        mark_audio_io_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "spawn");
         log::info!(
             "[audio] worker starting name=audio_io_worker surface={:?} stack={} mic={} speaker={} reference={} cap_mic={} cap_speaker={} cap_staging={} cap_reference={}",
             worker_surface,
@@ -1079,6 +1094,7 @@ impl AudioPipelineState {
             worker_plan.core,
             worker_plan.role,
             move || {
+                mark_audio_io_lifecycle(crate::runtime::PlaneLifecycleState::Active, "worker_loop");
                 let mut mic_frame = vec![0i16; AUDIO_MIC_FRAME_SAMPLES];
                 let mut reference_frame = vec![0i16; AUDIO_MIC_FRAME_SAMPLES];
                 let mut speaker_frame = vec![0i16; AUDIO_SPEAKER_FRAME_SAMPLES];
@@ -1258,10 +1274,17 @@ impl AudioPipelineState {
                     crate::metrics::record_audio_loop_us(loop_start.elapsed().as_micros());
                     crate::platform::task_wdt::feed_current_task();
                 }
+                mark_audio_io_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Stopping,
+                    "stop_requested",
+                );
                 log::info!("[audio] worker stopped name=audio_io_worker");
             },
         )
-        .map_err(|e| Error::config("audio_init", format!("spawn audio worker failed: {}", e)))?;
+        .map_err(|e| {
+            mark_audio_io_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "spawn_failed");
+            Error::config("audio_init", format!("spawn audio worker failed: {}", e))
+        })?;
 
         Ok(Self {
             mic_enabled,
@@ -1464,9 +1487,27 @@ impl AudioPipelineState {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl Drop for AudioPipelineState {
     fn drop(&mut self) {
+        mark_audio_io_lifecycle(
+            crate::runtime::PlaneLifecycleState::Draining,
+            "drop_request_stop",
+        );
         self.shared.request_stop();
         if let Some(handle) = self.worker.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(()) => mark_audio_io_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Unloaded,
+                    "worker_joined",
+                ),
+                Err(_) => mark_audio_io_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Failed,
+                    "worker_join_failed",
+                ),
+            };
+        } else {
+            mark_audio_io_lifecycle(
+                crate::runtime::PlaneLifecycleState::Unloaded,
+                "worker_absent",
+            );
         }
     }
 }

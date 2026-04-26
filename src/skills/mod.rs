@@ -46,6 +46,12 @@ fn is_skill_name_valid(name: &str) -> bool {
 const TAG: &str = "skills";
 /// 单条 skill 内容最大字节数。
 pub const MAX_SKILL_CONTENT_LEN: usize = 32 * 1024;
+/// Default prompt budget for manually enabled skill docs on non-embedded profiles.
+pub const DEFAULT_PROMPT_SKILL_MAX_CHARS: usize = 8192;
+/// ESP steady-state prompt budget for manually enabled skill docs.
+pub const ESP_PROMPT_SKILL_MAX_CHARS: usize = 2048;
+/// ESP prompt budget for skill docs when resource pressure is already cautious.
+pub const ESP_PROMPT_SKILL_CAUTION_MAX_CHARS: usize = 1024;
 const RUNTIME_SKILL_PREFIX: &str = "runtime_skill__";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,6 +285,41 @@ pub fn build_skill_descriptions_for_system_prompt(
     }
 }
 
+/// Resolve active skill-doc prompt budget for the current runtime state.
+///
+/// This gates manually enabled prompt skills only; runtime skills and capability atoms
+/// keep using the governed recall paths.
+pub fn prompt_skill_budget_for_runtime_mode(
+    runtime_mode: crate::runtime::RuntimeMode,
+    pressure: crate::orchestrator::PressureLevel,
+    configured_max_chars: usize,
+    embedded_profile: bool,
+) -> usize {
+    if configured_max_chars == 0 {
+        return 0;
+    }
+    if !embedded_profile {
+        return configured_max_chars;
+    }
+    match runtime_mode {
+        crate::runtime::RuntimeMode::Normal => match pressure {
+            crate::orchestrator::PressureLevel::Normal => {
+                configured_max_chars.min(ESP_PROMPT_SKILL_MAX_CHARS)
+            }
+            crate::orchestrator::PressureLevel::Cautious => {
+                configured_max_chars.min(ESP_PROMPT_SKILL_CAUTION_MAX_CHARS)
+            }
+            crate::orchestrator::PressureLevel::Critical => 0,
+        },
+        crate::runtime::RuntimeMode::Booting
+        | crate::runtime::RuntimeMode::Pairing
+        | crate::runtime::RuntimeMode::ConfigActive
+        | crate::runtime::RuntimeMode::VoiceExclusive
+        | crate::runtime::RuntimeMode::Maintenance
+        | crate::runtime::RuntimeMode::RecoverySafeMode => 0,
+    }
+}
+
 /// 写入或覆盖指定 skill 文件。name 校验同 get_skill_content；content 长度 ≤ MAX_SKILL_CONTENT_LEN。
 pub fn write_skill(storage: &dyn SkillStorage, name: &str, content: &str) -> Result<()> {
     if !is_skill_name_valid(name) {
@@ -455,6 +496,46 @@ mod tests {
 
         assert!(rendered.is_empty());
         assert!(get_ordered_enabled_skill_names(&FailingMetaStore, &storage).is_empty());
+    }
+
+    #[test]
+    fn embedded_prompt_skill_budget_follows_runtime_mode_and_pressure() {
+        assert_eq!(
+            prompt_skill_budget_for_runtime_mode(
+                crate::runtime::RuntimeMode::Normal,
+                crate::orchestrator::PressureLevel::Normal,
+                DEFAULT_PROMPT_SKILL_MAX_CHARS,
+                true,
+            ),
+            ESP_PROMPT_SKILL_MAX_CHARS
+        );
+        assert_eq!(
+            prompt_skill_budget_for_runtime_mode(
+                crate::runtime::RuntimeMode::Normal,
+                crate::orchestrator::PressureLevel::Cautious,
+                DEFAULT_PROMPT_SKILL_MAX_CHARS,
+                true,
+            ),
+            ESP_PROMPT_SKILL_CAUTION_MAX_CHARS
+        );
+        assert_eq!(
+            prompt_skill_budget_for_runtime_mode(
+                crate::runtime::RuntimeMode::VoiceExclusive,
+                crate::orchestrator::PressureLevel::Normal,
+                DEFAULT_PROMPT_SKILL_MAX_CHARS,
+                true,
+            ),
+            0
+        );
+        assert_eq!(
+            prompt_skill_budget_for_runtime_mode(
+                crate::runtime::RuntimeMode::Normal,
+                crate::orchestrator::PressureLevel::Normal,
+                DEFAULT_PROMPT_SKILL_MAX_CHARS,
+                false,
+            ),
+            DEFAULT_PROMPT_SKILL_MAX_CHARS
+        );
     }
 
     #[test]

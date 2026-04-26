@@ -61,6 +61,47 @@ fn should_defer_external_wss_for_wall_clock(wall_clock_valid: bool) -> bool {
     !wall_clock_valid
 }
 
+fn wss_lifecycle_owner(tag: &str) -> &'static str {
+    match tag {
+        "qq_ws" => "qq_ws",
+        "feishu_ws" => "feishu_ws",
+        "dingtalk_stream" => "dingtalk_stream",
+        "wecom_aibot" => "wecom_aibot",
+        _ => "external_wss",
+    }
+}
+
+fn mark_wss_lifecycle(
+    owner: &'static str,
+    state: crate::runtime::PlaneLifecycleState,
+    reason: &'static str,
+) {
+    let _ = crate::runtime::plane_lifecycle::mark(
+        crate::runtime::PlaneId::ChannelWss,
+        owner,
+        state,
+        reason,
+    );
+}
+
+fn wss_runtime_gate_suspend_reason(mode: crate::runtime::RuntimeModeSnapshot) -> &'static str {
+    if mode.current_mode == crate::runtime::RuntimeMode::VoiceExclusive {
+        "voice_exclusive_suspend"
+    } else if mode.current_mode == crate::runtime::RuntimeMode::ConfigActive
+        && mode.action_budget.require_external_wss_suspended
+    {
+        "config_persisting_suspend"
+    } else {
+        "runtime_mode_gate"
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WssSessionEndLifecycle {
+    Stopping(&'static str),
+    Failed(&'static str),
+}
+
 /// 阻塞等待 WiFi STA 就绪，每 2s 轮询，最多 `WIFI_WAIT_MAX_SECS`。返回 true 表示已就绪，false 表示超时仍继续尝试。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_wifi(tag: &str) -> bool {
@@ -114,11 +155,17 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
     {
         crate::network::set_external_wss_managed_present(true);
     }
+    let lifecycle_owner = wss_lifecycle_owner(tag);
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     let mut waiting_for_wall_clock = false;
     loop {
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
         if !runtime_mode.action_budget.allow_external_wss_connect {
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                wss_runtime_gate_suspend_reason(runtime_mode),
+            );
             if runtime_mode.action_budget.require_external_wss_suspended {
                 crate::network::wait_for_external_wss_resume(tag);
             } else {
@@ -135,6 +182,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 pressure,
                 sleep_secs
             );
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "critical_pressure",
+            );
             sleep_with_wdt(sleep_secs);
             continue;
         }
@@ -147,6 +199,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 );
                 waiting_for_wall_clock = true;
             }
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "wall_clock_untrusted",
+            );
             sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
             continue;
         }
@@ -157,21 +214,81 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             );
             waiting_for_wall_clock = false;
         }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        if crate::network::external_wss_suspend_requested() {
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "voice_exclusive_suspend",
+            );
+        }
         crate::network::wait_for_external_wss_resume(tag);
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        if !crate::state::wifi_sta_settled_for_outbound(WIFI_OUTBOUND_SETTLE_SECS) {
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "wifi_not_ready",
+            );
+        }
         wait_for_wifi(tag);
 
+        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+        if !runtime_mode.action_budget.allow_external_wss_connect {
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                wss_runtime_gate_suspend_reason(runtime_mode),
+            );
+            if runtime_mode.action_budget.require_external_wss_suspended {
+                crate::network::wait_for_external_wss_resume(tag);
+            } else {
+                sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+            }
+            continue;
+        }
+
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Starting,
+            "connect_attempt",
+        );
         let mut http = match create_http() {
             Ok(h) => h,
             Err(e) => {
+                mark_wss_lifecycle(
+                    lifecycle_owner,
+                    crate::runtime::PlaneLifecycleState::Failed,
+                    "create_http_failed",
+                );
                 log::warn!("[{}] create_http failed: {}", tag, e);
                 sleep_with_wdt(backoff_secs);
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
                 continue;
             }
         };
+        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+        if !runtime_mode.action_budget.allow_external_wss_connect {
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                wss_runtime_gate_suspend_reason(runtime_mode),
+            );
+            if runtime_mode.action_budget.require_external_wss_suspended {
+                crate::network::wait_for_external_wss_resume(tag);
+            } else {
+                sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+            }
+            continue;
+        }
         let url = match driver.get_url(&mut http) {
             Ok(u) => u,
             Err(e) => {
+                mark_wss_lifecycle(
+                    lifecycle_owner,
+                    crate::runtime::PlaneLifecycleState::Failed,
+                    "get_url_failed",
+                );
                 crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] get_url failed: {}", tag, e);
                 if e.is_tls_admission() {
@@ -192,6 +309,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         let mut conn = match connect(&url) {
             Ok(c) => c,
             Err(e) => {
+                mark_wss_lifecycle(
+                    lifecycle_owner,
+                    crate::runtime::PlaneLifecycleState::Failed,
+                    "connect_failed",
+                );
                 crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] connect failed: {}", tag, e);
                 sleep_with_wdt(backoff_secs);
@@ -205,6 +327,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 Ok(Some(WssEvent::Binary(data))) => match driver.on_hello(data.as_slice()) {
                     Ok(s) => s,
                     Err(e) => {
+                        mark_wss_lifecycle(
+                            lifecycle_owner,
+                            crate::runtime::PlaneLifecycleState::Failed,
+                            "hello_failed",
+                        );
                         log::warn!("[{}] on_hello parse failed, reconnecting: {}", tag, e);
                         drop(conn);
                         sleep_with_wdt(backoff_secs);
@@ -219,6 +346,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         tag,
                         format_wss_close_event(&event)
                     );
+                    mark_wss_lifecycle(
+                        lifecycle_owner,
+                        crate::runtime::PlaneLifecycleState::Failed,
+                        "hello_closed",
+                    );
                     drop(conn);
                     sleep_with_wdt(backoff_secs);
                     backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -229,6 +361,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     identify_payload: None,
                 },
                 Err(e) => {
+                    mark_wss_lifecycle(
+                        lifecycle_owner,
+                        crate::runtime::PlaneLifecycleState::Failed,
+                        "hello_failed",
+                    );
                     crate::metrics::record_error_by_stage(e.metrics_stage());
                     log::warn!("[{}] recv hello failed: {}", tag, e);
                     drop(conn);
@@ -252,6 +389,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         if let Some(payload) = identify_payload {
             log::debug!("[{}] send identify len={}", tag, payload.len());
             if let Err(e) = conn.send_binary_owned(payload) {
+                mark_wss_lifecycle(
+                    lifecycle_owner,
+                    crate::runtime::PlaneLifecycleState::Failed,
+                    "identify_failed",
+                );
                 log::warn!("[{}] send identify failed: {}", tag, e);
                 drop(conn);
                 sleep_with_wdt(backoff_secs);
@@ -259,6 +401,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 continue;
             }
         }
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Active,
+            "session_started",
+        );
         driver.on_session_started();
 
         let interval_ms =
@@ -268,6 +415,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         let mut last_seq: Option<u64> = None;
         let mut last_heartbeat = Instant::now();
         let mut session_ended = false;
+        let mut session_end_lifecycle = WssSessionEndLifecycle::Stopping("session_ended");
 
         while !session_ended {
             crate::platform::task_wdt::feed_current_task();
@@ -285,6 +433,12 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         tag,
                         runtime_mode.current_mode.as_str()
                     );
+                    mark_wss_lifecycle(
+                        lifecycle_owner,
+                        crate::runtime::PlaneLifecycleState::Draining,
+                        "runtime_mode_gate",
+                    );
+                    session_end_lifecycle = WssSessionEndLifecycle::Stopping("runtime_mode_gate");
                     session_ended = true;
                     continue;
                 }
@@ -313,6 +467,8 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     log::debug!("[{}] send heartbeat len={}", tag, payload.len());
                     if conn.send_binary_owned(payload).is_err() {
                         log::warn!("[{}] send heartbeat failed", tag);
+                        session_end_lifecycle =
+                            WssSessionEndLifecycle::Failed("heartbeat_send_failed");
                         session_ended = true;
                         continue;
                     }
@@ -334,9 +490,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                     tag,
                                     chat_id
                                 );
+                                crate::channels::inbound_backpressure::record_deferred_without_queue_full();
                                 let _ = pending_retry.save_pending_retry(&msg);
                             } else {
                                 let mut enqueued = false;
+                                let mut disconnected = false;
                                 let mut pending_msg = Some(msg);
                                 for _ in 0..3 {
                                     let Some(try_msg) = pending_msg.take() else {
@@ -354,6 +512,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                         }
                                         Err(std::sync::mpsc::TrySendError::Disconnected(m)) => {
                                             pending_msg = Some(m);
+                                            disconnected = true;
                                             log::warn!(
                                                 "[{}] inbound disconnected, dropping msg chat_id={}",
                                                 tag,
@@ -365,11 +524,17 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                 }
                                 if enqueued {
                                     log::info!("[{}] message enqueued, chat_id={}", tag, chat_id);
+                                } else if disconnected {
+                                    crate::channels::inbound_backpressure::record_disconnected_drop(
+                                    );
                                 } else {
                                     log::warn!(
-                                        "[{}] inbound queue full, dropping msg chat_id={}",
+                                        "[{}] inbound queue full, saved pending retry chat_id={}",
                                         tag,
                                         chat_id
+                                    );
+                                    crate::channels::inbound_backpressure::record_queue_full(
+                                        crate::channels::inbound_backpressure::InboundBackpressureOutcome::DeferredToPendingRetry,
                                     );
                                     if let Some(m) = pending_msg.as_ref() {
                                         let _ = pending_retry.save_pending_retry(m);
@@ -392,6 +557,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                         tag,
                                         chat_id
                                     );
+                                    crate::channels::inbound_backpressure::record_deferred_without_queue_full();
                                     false
                                 } else {
                                     match inbound_tx.try_send(msg) {
@@ -409,10 +575,14 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                                 tag,
                                                 chat_id
                                             );
+                                            crate::channels::inbound_backpressure::record_queue_full(
+                                                crate::channels::inbound_backpressure::InboundBackpressureOutcome::RedeliveryRequested,
+                                            );
                                             false
                                         }
                                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                                             log::error!("[{}] inbound_tx disconnected", tag);
+                                            crate::channels::inbound_backpressure::record_disconnected_drop();
                                             false
                                         }
                                     }
@@ -435,6 +605,8 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         Ok(WssRecvAction::Ignore) => {}
                         Ok(WssRecvAction::Disconnect) => {
                             log::info!("[{}] driver requested disconnect", tag);
+                            session_end_lifecycle =
+                                WssSessionEndLifecycle::Stopping("driver_disconnect");
                             session_ended = true;
                         }
                         Err(e) => {
@@ -450,15 +622,30 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         tag,
                         format_wss_close_event(&event)
                     );
+                    session_end_lifecycle = WssSessionEndLifecycle::Failed("recv_closed");
                     session_ended = true;
                 }
                 Ok(None) => {}
                 Err(e) => {
+                    session_end_lifecycle = WssSessionEndLifecycle::Failed("recv_failed");
                     crate::metrics::record_error_by_stage(e.metrics_stage());
                     log::warn!("[{}] recv failed: {}", tag, e);
                     session_ended = true;
                 }
             }
+        }
+
+        match session_end_lifecycle {
+            WssSessionEndLifecycle::Stopping(reason) => mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Stopping,
+                reason,
+            ),
+            WssSessionEndLifecycle::Failed(reason) => mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Failed,
+                reason,
+            ),
         }
 
         log::info!(
@@ -470,6 +657,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         if crate::network::external_wss_suspend_requested() {
             crate::network::set_external_wss_suspended(true);
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "voice_exclusive_suspend",
+            );
             continue;
         }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -501,9 +693,14 @@ mod tests {
     use super::{
         should_defer_external_wss_for_wall_clock, should_pause_external_wss_connect_for_pressure,
         should_save_plain_dispatch_to_pending_retry_on_pressure,
-        tls_admission_retry_sleep_secs_for_pressure,
+        tls_admission_retry_sleep_secs_for_pressure, wss_lifecycle_owner,
+        wss_runtime_gate_suspend_reason,
     };
-    use crate::orchestrator::PressureLevel;
+    use crate::{
+        orchestrator::PressureLevel,
+        runtime::mode::{snapshot_from_source, RuntimeModeSource},
+        runtime::ConfigActivityPhase,
+    };
 
     #[test]
     fn critical_pressure_pauses_external_wss_connect_attempts() {
@@ -551,5 +748,44 @@ mod tests {
     fn untrusted_wall_clock_defers_external_wss_connect() {
         assert!(should_defer_external_wss_for_wall_clock(false));
         assert!(!should_defer_external_wss_for_wall_clock(true));
+    }
+
+    #[test]
+    fn known_wss_tags_are_lifecycle_owners() {
+        assert_eq!(wss_lifecycle_owner("qq_ws"), "qq_ws");
+        assert_eq!(wss_lifecycle_owner("feishu_ws"), "feishu_ws");
+        assert_eq!(wss_lifecycle_owner("dingtalk_stream"), "dingtalk_stream");
+        assert_eq!(wss_lifecycle_owner("wecom_aibot"), "wecom_aibot");
+    }
+
+    #[test]
+    fn unknown_wss_tag_uses_shared_lifecycle_owner() {
+        assert_eq!(wss_lifecycle_owner("custom_ws"), "external_wss");
+    }
+
+    #[test]
+    fn runtime_gate_suspend_reason_distinguishes_voice_exclusive() {
+        assert_eq!(
+            wss_runtime_gate_suspend_reason(snapshot_from_source(RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..RuntimeModeSource::default()
+            })),
+            "voice_exclusive_suspend"
+        );
+        assert_eq!(
+            wss_runtime_gate_suspend_reason(snapshot_from_source(RuntimeModeSource {
+                recovery_safe_mode_active: true,
+                ..RuntimeModeSource::default()
+            })),
+            "runtime_mode_gate"
+        );
+        assert_eq!(
+            wss_runtime_gate_suspend_reason(snapshot_from_source(RuntimeModeSource {
+                config_active: true,
+                config_activity_phase: ConfigActivityPhase::Persisting,
+                ..RuntimeModeSource::default()
+            })),
+            "config_persisting_suspend"
+        );
     }
 }

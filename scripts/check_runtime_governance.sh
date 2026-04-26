@@ -128,5 +128,219 @@ if [[ -n "$native_allowlist" ]]; then
   done <<< "$native_allowlist"
 fi
 
+check_no_prod_timed_wait_before_tests() {
+  local file="$1"
+  local pattern="$2"
+  local label="$3"
+  local matches
+  matches="$(sed '/^#\[cfg(test)\]/,$d' "$file" | rg -n "$pattern" || true)"
+  if [[ -n "$matches" ]]; then
+    echo "FAIL: ESP lazy/scheduler timed wait escaped P0.3 cleanup in $label" >&2
+    printf '%s\n' "$matches" >&2
+    exit 1
+  fi
+}
+
+check_no_prod_timed_wait_before_tests \
+  src/runtime/write_back.rs \
+  '\.wait_timeout\s*\(|recv_timeout\s*\(' \
+  "write_back"
+check_no_prod_timed_wait_before_tests \
+  src/audio/voice_session.rs \
+  'recv_timeout\s*\(' \
+  "voice_session"
+
+if ! rg -n 'let _route_worker_lease = match acquire_route_worker_lease\s*\(' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route workers no longer acquire runtime route-worker leases at the execution-window call site" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub\(crate\) const fn lease_kind\s*\(' src/platform/http_server/router/catalog.rs >/dev/null; then
+  echo "FAIL: route worker lane lease mapping escaped router catalog truth source" >&2
+  exit 1
+fi
+
+if ! rg -n 'worker_route_lanes_map_to_runtime_lease_kinds' src/platform/http_server/router/catalog.rs >/dev/null; then
+  echo "FAIL: route worker lane lease mapping no longer has a catalog contract test" >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime::lease::format_baseline_log_line' src/heartbeat/mod.rs >/dev/null; then
+  echo "FAIL: heartbeat no longer emits compact lease baseline" >&2
+  exit 1
+fi
+
+if ! rg -n 'threads:\s*runtime::thread_registry::ThreadRegistrySnapshot' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: /api/resource no longer exposes thread registry summary" >&2
+  exit 1
+fi
+
+if ! rg -n 'admission:\s*orchestrator::ResourceAdmissionSnapshot' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: /api/resource no longer exposes admission summary" >&2
+  exit 1
+fi
+
+if ! rg -n 'governance_metrics:\s*orchestrator::ResourceGovernanceMetricsSnapshot' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: /api/resource no longer exposes governance metrics summary" >&2
+  exit 1
+fi
+
+if ! rg -n 'resource_diagnostic_snapshot\s*\(' src/platform/http_server/handlers/resource.rs src/orchestrator/mod.rs >/dev/null; then
+  echo "FAIL: /api/resource no longer uses orchestrator diagnostic resource aggregation" >&2
+  exit 1
+fi
+
+for metric in \
+  record_runtime_spawn_failure \
+  record_http_route_reject \
+  record_lease_conflict \
+  record_lease_expired_replacement \
+  record_plane_drain_timeout; do
+  if ! rg -n "$metric" src/metrics.rs >/dev/null; then
+    echo "FAIL: runtime governance metric missing from metrics.rs: $metric" >&2
+    exit 1
+  fi
+done
+
+if ! rg -n 'external_wss_suspend_timeout|voice_exclusive_wss_drain_timeout' src/network/mod.rs >/dev/null ||
+   ! rg -n 'record_plane_drain_timeout\(\)' src/network/mod.rs >/dev/null; then
+  echo "FAIL: external WSS drain timeout no longer records runtime governance failure metrics" >&2
+  exit 1
+fi
+
+if ! rg -n 'VoiceExclusiveTransportGuard::enter\(cfg\.platform\.as_ref\(\),\s*TAG\)' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'realtime voice transport admission failed' src/audio/voice_session.rs >/dev/null; then
+  echo "FAIL: realtime voice no longer treats external WSS drain failure as transport admission failure" >&2
+  exit 1
+fi
+
+if ! rg -n 'mark_audio_io_lifecycle' src/platform/audio_drivers.rs >/dev/null ||
+   ! rg -n 'PlaneId::PlatformAudio' src/platform/audio_drivers.rs >/dev/null ||
+   ! rg -n 'PlaneLifecycleState::Draining' src/platform/audio_drivers.rs >/dev/null ||
+   ! rg -n 'PlaneLifecycleState::Unloaded' src/platform/audio_drivers.rs >/dev/null; then
+  echo "FAIL: ESP audio IO worker no longer records stop/join lifecycle" >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime_mode:\s*Option<crate::runtime::RuntimeMode>' src/tools/policy.rs >/dev/null; then
+  echo "FAIL: tool policy context no longer carries runtime mode" >&2
+  exit 1
+fi
+
+if ! rg -n 'DEFAULT_EMBEDDED_TOOL_PROFILE' src/tools/policy.rs >/dev/null ||
+   ! rg -n 'target_os = "linux"' src/tools/policy.rs >/dev/null; then
+  echo "FAIL: Linux embedded target family is no longer covered by default tool runtime policy" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub fn tool_effect_visible_in_mode' src/tools/policy.rs >/dev/null; then
+  echo "FAIL: tool effect/runtime-mode visibility truth source is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'tool_effect_visible_in_mode\(shape\.effect_class,\s*policy\)' src/tools/registry.rs >/dev/null; then
+  echo "FAIL: LLM tool execution assessment no longer checks runtime-mode effect visibility" >&2
+  exit 1
+fi
+
+if ! rg -n 'tool_effect_visible_in_mode\(entry\.catalog_shape\.effect_class,\s*policy\)' src/tools/registry.rs >/dev/null; then
+  echo "FAIL: LLM tool specs no longer check runtime-mode visibility from conservative catalog effect" >&2
+  exit 1
+fi
+
+if ! rg -n 'ToolPolicyContext::new\(msg\.ingress,\s*msg\.channel\.as_ref\(\)\)\s*$' src/agent/request_plan.rs src/agent/loop/turn_execution.rs >/dev/null; then
+  echo "FAIL: agent request path no longer builds request-scoped tool policy" >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime_mode_snapshot\(\)\.current_mode' src/agent/request_plan.rs src/agent/loop/turn_execution.rs >/dev/null; then
+  echo "FAIL: agent request path no longer feeds runtime mode into tool policy" >&2
+  exit 1
+fi
+
+if ! rg -n 'embedded_runtime_mode_filters_effect_classes_without_user_text' src/tools/policy.rs >/dev/null; then
+  echo "FAIL: runtime-mode tool effect policy contract test is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'llm_tool_specs_filter_embedded_voice_exclusive_by_effect_class|llm_tool_specs_filter_dynamic_catalog_effect_class|llm_execution_denies_runtime_mode_hidden_tool' src/tools/registry.rs >/dev/null; then
+  echo "FAIL: runtime-mode LLM tool visibility/execution contract tests are missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'actual_shape != permit\.shape \|\| actual_requires_network != permit\.requires_network' src/tools/registry.rs >/dev/null; then
+  echo "FAIL: execute_permitted no longer binds permits to the actual dynamic execution shape" >&2
+  exit 1
+fi
+
+if ! rg -n 'execute_permitted_rejects_args_that_change_dynamic_execution_shape' src/tools/registry.rs >/dev/null; then
+  echo "FAIL: dynamic execution-shape permit binding contract test is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_llm_request_body_bytes' src/metrics.rs src/llm/openai_compatible.rs src/llm/anthropic.rs >/dev/null; then
+  echo "FAIL: LLM request body size metric is no longer recorded at request-body construction" >&2
+  exit 1
+fi
+
+if ! rg -n 'llm_req_body_last_b=.*llm_req_body_max_b=' src/metrics.rs >/dev/null; then
+  echo "FAIL: heartbeat metrics baseline no longer exposes LLM request body byte budget" >&2
+  exit 1
+fi
+
+if ! rg -n 'prompt_skill_budget_for_runtime_mode' src/skills/mod.rs src/main.rs >/dev/null; then
+  echo "FAIL: active prompt skill docs no longer pass through runtime-mode budget policy" >&2
+  exit 1
+fi
+
+if ! rg -n 'DEFAULT_PROMPT_SKILL_MAX_CHARS' src/skills/mod.rs src/main.rs >/dev/null; then
+  echo "FAIL: prompt skill docs no longer have a centralized default budget" >&2
+  exit 1
+fi
+
+if ! rg -n 'prompt_context_normalization_budget' src/memory/profile.rs src/memory/prompt_context.rs src/memory/mod.rs >/dev/null; then
+  echo "FAIL: prompt memory context normalization budget no longer has a centralized memory-profile truth source" >&2
+  exit 1
+fi
+
+if ! rg -n 'normalize_for_prompt\(' src/memory/prompt_context.rs src/agent/loop/worker_context_stages.rs >/dev/null; then
+  echo "FAIL: worker prompt memory no longer passes through normalized projection assembly" >&2
+  exit 1
+fi
+
+if ! rg -n 'constitutional_stack_text\s*=\s*prompt_memory\.constitutional_stack_text\.take\(\)' src/agent/loop/worker_context_stages.rs >/dev/null; then
+  echo "FAIL: worker finalize no longer consumes normalized projection groups before releasing prompt memory caches" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub struct FrameLeaseAdmission' src/runtime/frame_lease.rs >/dev/null; then
+  echo "FAIL: camera frame lease no longer exposes explicit mode/pressure admission" >&2
+  exit 1
+fi
+
+if ! rg -n 'admit_current_camera_frame_capture' src/runtime/frame_lease.rs src/runtime/mod.rs >/dev/null ||
+   ! rg -n 'FrameLeaseAdmission::current\(\)' src/runtime/frame_lease.rs >/dev/null ||
+   ! rg -n 'admission\.ensure_allowed\(\)\?' src/runtime/frame_lease.rs >/dev/null; then
+  echo "FAIL: camera frame borrow no longer passes through mode/pressure admission before lease acquisition" >&2
+  exit 1
+fi
+
+if ! rg -n 'frame_lease_admission_denies_critical_pressure_before_borrow|frame_lease_admission_denies_voice_exclusive_before_borrow' src/runtime/frame_lease.rs >/dev/null; then
+  echo "FAIL: camera frame admission no longer has critical-pressure and voice-exclusive contract tests" >&2
+  exit 1
+fi
+
+if ! rg -n 'fn metadata\(&self\) -> ToolMetadata' src/tools/analyze_image.rs >/dev/null ||
+   ! rg -n 'ToolEffectClass::NetworkSearch' src/tools/analyze_image.rs >/dev/null; then
+  echo "FAIL: analyze_image URL vision tool no longer declares network-search metadata" >&2
+  exit 1
+fi
+
+# P0.3 timed-wait allowlist:
+# - platform/audio_drivers.rs keeps std-compatible audio ring waits; this worker
+#   must not be moved to ESP native tasks without a separate audio-ring rewrite.
+# - bg_timer, channel send/dispatch are steady scheduler loops, not lazy
+#   spawn/idle-stop workers; they remain classified for later P1/P2 cleanup.
+
 echo "OK: runtime governance checks passed"
 exit 0

@@ -1,7 +1,7 @@
 //! voice_output：调用百度 TTS 并播放到喇叭。
 
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::pipeline::speak_text;
+use crate::audio::pipeline::{acquire_audio_lease, speak_text, AudioLeaseOwner};
 use crate::config::AudioSegment;
 use crate::constants::AUDIO_TTS_MAX_TEXT_LEN;
 use crate::error::{Error, Result};
@@ -71,8 +71,13 @@ impl Tool for VoiceOutputTool {
             let mut tts_http_ms = 0u128;
             let mut play_ms = 0u128;
             let mut interrupted = false;
+            let _audio_output_lease = acquire_audio_lease(
+                crate::runtime::lease::LeaseKind::AudioOutput,
+                AudioLeaseOwner::VoiceOutputTool,
+            )?;
             for segment in &segments {
                 let playback = speak_text(
+                    AudioLeaseOwner::VoiceOutputTool,
                     self.platform.as_ref(),
                     &self.audio_cfg,
                     self.baidu_token.as_ref(),

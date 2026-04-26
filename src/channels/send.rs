@@ -437,7 +437,7 @@ mod tests {
         assert!(after.errors_tls_admission > before.errors_tls_admission);
         assert_eq!(
             capability.status,
-            crate::orchestrator::RuntimeCapabilityStatus::Offline
+            crate::orchestrator::RuntimeCapabilityStatus::Degraded
         );
         assert_eq!(
             capability.reason,

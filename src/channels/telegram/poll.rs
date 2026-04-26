@@ -508,6 +508,7 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                     .unwrap_or_default(),
             );
             let mut enqueued = false;
+            let mut disconnected = false;
             for _ in 0..3 {
                 match inbound_tx.try_send(pc.clone()) {
                     Ok(()) => {
@@ -519,6 +520,7 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                         continue;
                     }
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        disconnected = true;
                         log::warn!(
                             "[{}] inbound_tx closed while enqueueing telegram msg",
                             TAG_POLL
@@ -527,11 +529,16 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                     }
                 }
             }
-            if !enqueued {
+            if disconnected {
+                crate::channels::inbound_backpressure::record_disconnected_drop();
+            } else if !enqueued {
                 log::warn!(
-                    "[{}] inbound queue full, drop telegram msg chat_id={}",
+                    "[{}] inbound queue full, saved telegram msg to pending retry chat_id={}",
                     TAG_POLL,
                     chat_id
+                );
+                crate::channels::inbound_backpressure::record_queue_full(
+                    crate::channels::inbound_backpressure::InboundBackpressureOutcome::DeferredToPendingRetry,
                 );
                 let _ = pending_retry.save_pending_retry(&pc);
             }

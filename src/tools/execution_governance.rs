@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 const REL_PATH_TOOL_EXECUTION_GOVERNANCE: &str = "memory/tool_execution_governance.json";
+const REL_PATH_TOOL_EXECUTION_GOVERNANCE_CORRUPT_BACKUP: &str =
+    "memory/tool_execution_governance.corrupt.json";
 const TOOL_GOVERNANCE_MAX_RECORDS: usize = 48;
 const TOOL_GOVERNANCE_MAX_BREAKERS: usize = 32;
 const TOOL_GOVERNANCE_REASON_MAX_CHARS: usize = 180;
@@ -103,6 +105,18 @@ pub struct ToolExecutionRecord {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolGovernanceFileState {
+    #[serde(default)]
+    pub repair_count: u32,
+    #[serde(default)]
+    pub last_repair_at: u64,
+    #[serde(default)]
+    pub last_repair_reason: String,
+    #[serde(default)]
+    pub last_backup_path: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolExecutionGovernanceState {
     #[serde(default)]
     pub emergency_stop: ToolEmergencyStopState,
@@ -110,6 +124,8 @@ pub struct ToolExecutionGovernanceState {
     pub breakers: Vec<ToolCircuitBreakerState>,
     #[serde(default)]
     pub recent_records: Vec<ToolExecutionRecord>,
+    #[serde(default)]
+    pub file_state: ToolGovernanceFileState,
     #[serde(default)]
     pub updated_at: u64,
 }
@@ -417,7 +433,7 @@ impl ToolExecutionGovernance {
 pub fn render_tool_execution_governance_markdown(state: &ToolExecutionGovernanceState) -> String {
     let mut out = String::from("# Tool Execution Governance\n\n");
     out.push_str(&format!(
-        "- emergency_stop_active: {}\n- emergency_stop_reason: {}\n- breaker_count: {}\n- recent_records: {}\n",
+        "- emergency_stop_active: {}\n- emergency_stop_reason: {}\n- breaker_count: {}\n- recent_records: {}\n- file_repair_count: {}\n- last_file_repair: {}\n- last_file_repair_reason: {}\n- last_file_backup: {}\n",
         state.emergency_stop.active,
         if state.emergency_stop.reason.trim().is_empty() {
             "<none>"
@@ -425,7 +441,19 @@ pub fn render_tool_execution_governance_markdown(state: &ToolExecutionGovernance
             state.emergency_stop.reason.as_str()
         },
         state.breakers.len(),
-        state.recent_records.len()
+        state.recent_records.len(),
+        state.file_state.repair_count,
+        state.file_state.last_repair_at,
+        if state.file_state.last_repair_reason.trim().is_empty() {
+            "<none>"
+        } else {
+            state.file_state.last_repair_reason.as_str()
+        },
+        if state.file_state.last_backup_path.trim().is_empty() {
+            "<none>"
+        } else {
+            state.file_state.last_backup_path.as_str()
+        }
     ));
     out.push_str("\n## Active Breakers\n");
     let active_breakers = state
@@ -492,28 +520,91 @@ pub fn render_tool_execution_governance_markdown(state: &ToolExecutionGovernance
 
 fn load_state(fs: &dyn StateFs) -> ToolExecutionGovernanceState {
     match fs.read(REL_PATH_TOOL_EXECUTION_GOVERNANCE) {
-        Ok(Some(raw)) if !raw.is_empty() => {
-            match serde_json::from_slice::<ToolExecutionGovernanceState>(&raw) {
-                Ok(state) => state,
-                Err(error) => {
+        Ok(Some(raw)) if !raw.is_empty() => match parse_state_with_repair_hint(&raw) {
+            Ok((state, None)) => state,
+            Ok((mut state, Some(reason))) => {
+                log::warn!(
+                    "[tool_governance] repairing {}: {}",
+                    REL_PATH_TOOL_EXECUTION_GOVERNANCE,
+                    reason
+                );
+                backup_corrupt_state(fs, &raw);
+                mark_file_repair(&mut state, reason);
+                if let Err(repair_error) = persist_state(fs, &state) {
                     log::warn!(
-                        "[tool_governance] failed to parse {}: {}",
+                        "[tool_governance] failed to repair {}: {}",
                         REL_PATH_TOOL_EXECUTION_GOVERNANCE,
-                        error
+                        repair_error
                     );
-                    let default_state = ToolExecutionGovernanceState::default();
-                    if let Err(repair_error) = persist_state(fs, &default_state) {
-                        log::warn!(
-                            "[tool_governance] failed to repair {}: {}",
-                            REL_PATH_TOOL_EXECUTION_GOVERNANCE,
-                            repair_error
-                        );
-                    }
-                    default_state
                 }
+                state
+            }
+            Err(error) => {
+                log::warn!(
+                    "[tool_governance] failed to parse {}: {}",
+                    REL_PATH_TOOL_EXECUTION_GOVERNANCE,
+                    error
+                );
+                backup_corrupt_state(fs, &raw);
+                let mut default_state = ToolExecutionGovernanceState::default();
+                mark_file_repair(&mut default_state, "corrupt_json");
+                if let Err(repair_error) = persist_state(fs, &default_state) {
+                    log::warn!(
+                        "[tool_governance] failed to repair {}: {}",
+                        REL_PATH_TOOL_EXECUTION_GOVERNANCE,
+                        repair_error
+                    );
+                }
+                default_state
+            }
+        },
+        _ => ToolExecutionGovernanceState::default(),
+    }
+}
+
+fn parse_state_with_repair_hint(
+    raw: &[u8],
+) -> std::result::Result<(ToolExecutionGovernanceState, Option<&'static str>), serde_json::Error> {
+    match serde_json::from_slice::<ToolExecutionGovernanceState>(raw) {
+        Ok(state) => Ok((state, None)),
+        Err(strict_error) => {
+            let mut stream = serde_json::Deserializer::from_slice(raw)
+                .into_iter::<ToolExecutionGovernanceState>();
+            match stream.next() {
+                Some(Ok(state)) => {
+                    let trailing = &raw[stream.byte_offset()..];
+                    if trailing
+                        .iter()
+                        .any(|b| !matches!(b, b' ' | b'\n' | b'\r' | b'\t'))
+                    {
+                        Ok((state, Some("trailing_characters")))
+                    } else {
+                        Err(strict_error)
+                    }
+                }
+                _ => Err(strict_error),
             }
         }
-        _ => ToolExecutionGovernanceState::default(),
+    }
+}
+
+fn mark_file_repair(state: &mut ToolExecutionGovernanceState, reason: &'static str) {
+    state.file_state.repair_count = state.file_state.repair_count.saturating_add(1);
+    state.file_state.last_repair_at = current_unix_secs();
+    state.file_state.last_repair_reason = reason.to_string();
+    state.file_state.last_backup_path =
+        REL_PATH_TOOL_EXECUTION_GOVERNANCE_CORRUPT_BACKUP.to_string();
+    state.updated_at = state.updated_at.max(state.file_state.last_repair_at);
+}
+
+fn backup_corrupt_state(fs: &dyn StateFs, raw: &[u8]) {
+    if let Err(error) = fs.write(REL_PATH_TOOL_EXECUTION_GOVERNANCE_CORRUPT_BACKUP, raw) {
+        log::warn!(
+            "[tool_governance] failed to back up corrupt {} to {}: {}",
+            REL_PATH_TOOL_EXECUTION_GOVERNANCE,
+            REL_PATH_TOOL_EXECUTION_GOVERNANCE_CORRUPT_BACKUP,
+            error
+        );
     }
 }
 
@@ -690,22 +781,69 @@ mod tests {
     #[test]
     fn corrupt_governance_json_is_repaired_to_default_state() {
         let fs = Arc::new(MemoryStateFs::default());
-        fs.write(
-            REL_PATH_TOOL_EXECUTION_GOVERNANCE,
-            br#"{"updated_at":1}trailing"#,
-        )
-        .unwrap();
+        fs.write(REL_PATH_TOOL_EXECUTION_GOVERNANCE, br#"{"updated_at":"#)
+            .unwrap();
         let governance =
             ToolExecutionGovernance::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
 
         let state = governance.inspect().unwrap();
 
-        assert_eq!(state, ToolExecutionGovernanceState::default());
+        assert!(state.recent_records.is_empty());
+        assert_eq!(state.file_state.repair_count, 1);
         let repaired = fs
             .read(REL_PATH_TOOL_EXECUTION_GOVERNANCE)
             .unwrap()
             .expect("corrupt state should be repaired");
         assert!(serde_json::from_slice::<ToolExecutionGovernanceState>(&repaired).is_ok());
+    }
+
+    #[test]
+    fn trailing_governance_json_repair_preserves_valid_prefix_and_backup() {
+        let fs = Arc::new(MemoryStateFs::default());
+        let valid_prefix = br#"{"recent_records":[{"tool_name":"web_search","status":"succeeded","effect_class":"network_search"}],"updated_at":7}"#;
+        let mut raw = valid_prefix.to_vec();
+        raw.extend_from_slice(b"false");
+        fs.write(REL_PATH_TOOL_EXECUTION_GOVERNANCE, &raw).unwrap();
+        let governance =
+            ToolExecutionGovernance::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let state = governance.inspect().unwrap();
+
+        assert_eq!(state.recent_records.len(), 1);
+        assert_eq!(state.recent_records[0].tool_name, "web_search");
+        assert_eq!(state.file_state.repair_count, 1);
+        assert_eq!(state.file_state.last_repair_reason, "trailing_characters");
+        let repaired = fs
+            .read(REL_PATH_TOOL_EXECUTION_GOVERNANCE)
+            .unwrap()
+            .expect("primary state should be rewritten");
+        assert!(serde_json::from_slice::<ToolExecutionGovernanceState>(&repaired).is_ok());
+        assert!(!String::from_utf8_lossy(&repaired).contains("}false"));
+        let backup = fs
+            .read(REL_PATH_TOOL_EXECUTION_GOVERNANCE_CORRUPT_BACKUP)
+            .unwrap()
+            .expect("corrupt raw state should be backed up");
+        assert_eq!(backup, raw);
+    }
+
+    #[test]
+    fn unrecoverable_governance_json_repair_records_file_state() {
+        let fs = Arc::new(MemoryStateFs::default());
+        let raw = br#"{"recent_records":[{"tool_name":"web_search""#.to_vec();
+        fs.write(REL_PATH_TOOL_EXECUTION_GOVERNANCE, &raw).unwrap();
+        let governance =
+            ToolExecutionGovernance::new(Arc::clone(&fs) as Arc<dyn StateFs + Send + Sync>);
+
+        let state = governance.inspect().unwrap();
+
+        assert!(state.recent_records.is_empty());
+        assert_eq!(state.file_state.repair_count, 1);
+        assert_eq!(state.file_state.last_repair_reason, "corrupt_json");
+        let backup = fs
+            .read(REL_PATH_TOOL_EXECUTION_GOVERNANCE_CORRUPT_BACKUP)
+            .unwrap()
+            .expect("unrecoverable raw state should be backed up");
+        assert_eq!(backup, raw);
     }
 
     #[test]

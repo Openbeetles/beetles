@@ -4,8 +4,8 @@
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::tools::{
-    parse_tool_args, Tool, ToolClarificationField, ToolContext, ToolExecutionBlocker,
-    ToolExecutionOutcome,
+    parse_tool_args, Tool, ToolClarificationField, ToolContext, ToolEffectClass,
+    ToolExecutionBlocker, ToolExecutionOutcome, ToolMetadata, ToolRiskLevel,
 };
 use crate::util::percent_encode_query;
 use serde::Serialize;
@@ -53,6 +53,12 @@ impl Tool for WebSearchTool {
 
     fn requires_network(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::task()
+            .with_effect_class(ToolEffectClass::NetworkSearch)
+            .with_risk_level(ToolRiskLevel::Medium)
     }
 
     fn execute(&self, args: &str, ctx: &mut dyn ToolContext) -> Result<String> {

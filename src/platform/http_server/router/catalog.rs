@@ -59,6 +59,24 @@ pub(crate) enum RouteWorkerLane {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+impl RouteWorkerLane {
+    pub(crate) const fn lease_kind(self) -> crate::runtime::lease::LeaseKind {
+        match self {
+            Self::Snapshot => crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
+            Self::Config => crate::runtime::lease::LeaseKind::ConfigHttpWorker,
+            Self::Diagnostic => crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
+            #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
+            Self::Ota => crate::runtime::lease::LeaseKind::OtaHttpWorker,
+        }
+    }
+
+    pub(crate) const fn lease_mode(self) -> crate::runtime::lease::LeaseMode {
+        let _ = self;
+        crate::runtime::lease::LeaseMode::Exclusive
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RouteWorkerContract {
     pub(crate) lane: RouteWorkerLane,
@@ -1236,6 +1254,42 @@ mod tests {
                 .stack_size,
             crate::util::STACK_HTTP_DIAG_WORKER
         );
+    }
+
+    #[test]
+    fn worker_route_lanes_map_to_runtime_lease_kinds() {
+        let cases = [
+            (
+                RouteExecutionClass::SnapshotRoute,
+                RouteWorkerLane::Snapshot,
+                crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
+            ),
+            (
+                RouteExecutionClass::AsyncConfigRoute,
+                RouteWorkerLane::Config,
+                crate::runtime::lease::LeaseKind::ConfigHttpWorker,
+            ),
+            (
+                RouteExecutionClass::SlowDiagnosticRoute,
+                RouteWorkerLane::Diagnostic,
+                crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
+            ),
+            (
+                RouteExecutionClass::OtaRoute,
+                RouteWorkerLane::Ota,
+                crate::runtime::lease::LeaseKind::OtaHttpWorker,
+            ),
+        ];
+
+        for (class, lane, lease_kind) in cases {
+            let contract = class.worker_contract().expect("worker contract");
+            assert_eq!(contract.lane, lane);
+            assert_eq!(lane.lease_kind(), lease_kind);
+            assert_eq!(
+                lane.lease_mode(),
+                crate::runtime::lease::LeaseMode::Exclusive
+            );
+        }
     }
 
     #[test]

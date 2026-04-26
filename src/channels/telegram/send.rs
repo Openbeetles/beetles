@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn send_chat_action_failure_marks_outbound_http_offline() {
+    fn send_chat_action_tls_admission_failure_marks_outbound_http_recovering() {
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         let before = crate::metrics::snapshot();
         let mut http = StubHttp {
@@ -780,7 +780,11 @@ mod tests {
         assert!(after.channel_http_fail > before.channel_http_fail);
         assert_eq!(
             capability.status,
-            crate::orchestrator::RuntimeCapabilityStatus::Offline
+            crate::orchestrator::RuntimeCapabilityStatus::Degraded
+        );
+        assert_eq!(
+            capability.reason,
+            crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing
         );
     }
 

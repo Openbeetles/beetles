@@ -2,6 +2,7 @@
 
 use super::HandlerContext;
 use crate::orchestrator;
+use crate::runtime;
 
 #[derive(serde::Serialize)]
 struct ResourceBody {
@@ -17,6 +18,14 @@ struct ResourceBody {
     inbound_depth: u32,
     outbound_depth: u32,
     budget: ResourceBudgetBody,
+    admission: orchestrator::ResourceAdmissionSnapshot,
+    governance_metrics: orchestrator::ResourceGovernanceMetricsSnapshot,
+    planes: runtime::PlaneRegistrySnapshot,
+    plane_lifecycle: runtime::PlaneLifecycleSnapshot,
+    leases: runtime::LeaseSnapshot,
+    threads: runtime::thread_registry::ThreadRegistrySnapshot,
+    display_lease_denied_total: u64,
+    write_back: runtime::write_back::WriteBackSnapshot,
     session_count: u32,
     storage_used_kb: u32,
     storage_total_kb: u32,
@@ -39,7 +48,8 @@ struct ResourceBudgetBody {
 
 /// 生成 resource JSON body。
 pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
-    let snap = orchestrator::snapshot();
+    let diag = orchestrator::resource_diagnostic_snapshot();
+    let snap = diag.resource;
     let payload = ResourceBody {
         pressure: snap.pressure,
         tls_fragmentation_risk: snap.tls_fragmentation_risk,
@@ -59,6 +69,14 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
             response_body_max: snap.budget.response_body_max,
             reconnect_backoff_secs: snap.budget.reconnect_backoff_secs,
         },
+        admission: diag.admission,
+        governance_metrics: diag.governance_metrics,
+        planes: diag.planes,
+        plane_lifecycle: diag.plane_lifecycle,
+        leases: diag.leases,
+        threads: diag.threads,
+        display_lease_denied_total: diag.display_lease_denied_total,
+        write_back: diag.write_back,
         session_count: snap.session_count,
         storage_used_kb: snap.storage_used_kb,
         storage_total_kb: snap.storage_total_kb,
@@ -98,6 +116,14 @@ mod tests {
             "inbound_depth",
             "outbound_depth",
             "budget",
+            "admission",
+            "governance_metrics",
+            "planes",
+            "plane_lifecycle",
+            "leases",
+            "threads",
+            "display_lease_denied_total",
+            "write_back",
             "session_count",
             "storage_used_kb",
             "storage_total_kb",
@@ -110,5 +136,27 @@ mod tests {
         assert!(parsed["budget"]["messages_max"].is_number());
         assert!(parsed["budget"]["response_body_max"].is_number());
         assert!(parsed["budget"]["reconnect_backoff_secs"].is_number());
+        assert!(parsed["admission"]["active_http_count"].is_number());
+        assert!(parsed["admission"]["http_permit_wait_last_ms"].is_number());
+        assert!(parsed["admission"]["http_route_queue_wait_last_ms"].is_number());
+        assert!(parsed["admission"]["http_route_handler_last_ms"].is_number());
+        assert!(parsed["admission"]["http_route_timeout_total"].is_number());
+        assert!(parsed["governance_metrics"]["runtime_spawn_failure_total"].is_number());
+        assert!(parsed["governance_metrics"]["http_route_reject_total"].is_number());
+        assert!(parsed["governance_metrics"]["lease_conflict_total"].is_number());
+        assert!(parsed["governance_metrics"]["lease_expired_replacement_total"].is_number());
+        assert!(parsed["governance_metrics"]["plane_drain_timeout_total"].is_number());
+        assert!(parsed["planes"]["profile_count"].is_number());
+        assert!(parsed["planes"]["lease_reference_count"].is_number());
+        assert!(parsed["planes"].get("profiles").is_none());
+        assert!(parsed["plane_lifecycle"]["total_records"].is_number());
+        assert!(parsed["plane_lifecycle"]["records"].is_array());
+        assert!(parsed["leases"]["active_count"].is_number());
+        assert!(parsed["leases"]["records"].is_array());
+        assert!(parsed["threads"]["alive_threads"].is_number());
+        assert!(parsed["threads"]["details"].is_array());
+        assert!(parsed["display_lease_denied_total"].is_number());
+        assert!(parsed["write_back"]["queued"].is_number());
+        assert!(parsed["write_back"]["deferred_total"].is_number());
     }
 }

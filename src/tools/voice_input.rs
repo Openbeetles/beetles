@@ -1,7 +1,7 @@
 //! voice_input：采集麦克风 PCM，能量断句后调用百度 STT。
 
 use crate::audio::baidu_token::BaiduTokenCache;
-use crate::audio::pipeline::capture_and_transcribe;
+use crate::audio::pipeline::{capture_and_transcribe, AudioLeaseOwner};
 use crate::config::AudioSegment;
 use crate::constants::AUDIO_CAPTURE_MAX_MS;
 use crate::error::{Error, Result};
@@ -69,6 +69,7 @@ impl Tool for VoiceInputTool {
 
             let mut http = ToolContextHttpClient::new(ctx);
             let text = capture_and_transcribe(
+                AudioLeaseOwner::VoiceInputTool,
                 self.platform.as_ref(),
                 &self.audio_cfg,
                 self.baidu_token.as_ref(),

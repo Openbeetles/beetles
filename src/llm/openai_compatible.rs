@@ -222,7 +222,9 @@ fn build_request_body(
     }
     body.push_byte(b'}')?;
 
-    body.finish(MAX_REQUEST_BODY_LEN)
+    let body = body.finish(MAX_REQUEST_BODY_LEN)?;
+    crate::metrics::record_llm_request_body_bytes(body.len());
+    Ok(body)
 }
 
 impl LlmClient for OpenAiCompatibleClient {

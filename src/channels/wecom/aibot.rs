@@ -333,9 +333,13 @@ pub fn handle_aibot_frame(
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     log::warn!("[{}] inbound queue full, dropping callback", TAG);
+                    crate::channels::inbound_backpressure::record_queue_full(
+                        crate::channels::inbound_backpressure::InboundBackpressureOutcome::Dropped,
+                    );
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     log::warn!("[{}] inbound_tx disconnected, dropping callback", TAG);
+                    crate::channels::inbound_backpressure::record_disconnected_drop();
                 }
             }
             Ok(())

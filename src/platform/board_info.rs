@@ -252,6 +252,7 @@ mod tests {
             channels: crate::orchestrator::state::ChannelsHealthSnapshot::all(
                 empty_channel_health(),
             ),
+            leases: crate::runtime::lease::snapshot(),
             session_count: 0,
             storage_used_kb: 0,
             storage_total_kb: 0,

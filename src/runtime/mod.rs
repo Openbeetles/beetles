@@ -5,8 +5,10 @@ pub mod acceptance;
 pub mod agent_supervision;
 pub mod continuity_flush;
 pub mod delayed_task;
+pub mod frame_lease;
 pub mod governance;
 pub mod initiative;
+pub mod lease;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod linux_release;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -19,6 +21,8 @@ pub mod linux_stop;
 pub mod linux_systemd;
 pub mod mode;
 pub mod operator_maintenance;
+pub mod plane;
+pub mod plane_lifecycle;
 pub mod presence;
 pub mod soul_kernel;
 pub mod system_work;
@@ -37,6 +41,10 @@ pub use delayed_task::{
     next_delayed_task_wait, schedule_critical_delayed_task, schedule_delayed_task,
     schedule_system_inbound_msg, service_delayed_tasks,
 };
+pub use frame_lease::{
+    admit_current_camera_frame_capture, try_borrow_frame, try_borrow_frame_with_admission,
+    FrameLease, FrameLeaseAdmission,
+};
 pub use governance::{
     config_activity_active, config_activity_snapshot, set_recovery_safe_mode_active,
     sync_pairing_state_from_store, BackgroundMaintenanceGuard, ConfigActivityGuard,
@@ -46,6 +54,7 @@ pub use initiative::{
     initiative_tick, inspect_platform_initiative, InitiativeAction, InitiativeSignalSnapshot,
     InitiativeSnapshot, InitiativeSuppressionReason, InitiativeTarget,
 };
+pub use lease::{LeaseKind, LeaseOwner, LeaseSnapshot};
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub use linux_release::{
     ensure_state_schema, inspect_platform_linux_release, mark_current_release_steady,
@@ -62,6 +71,8 @@ pub use operator_maintenance::{
     OperatorMaintenanceAction, OperatorMaintenanceRequest, OperatorMaintenanceSubmission,
     CHANNEL_OPERATOR_MAINTENANCE,
 };
+pub use plane::{PlaneId, PlaneProfile, PlaneRegistrySnapshot};
+pub use plane_lifecycle::{PlaneLifecycleSnapshot, PlaneLifecycleState};
 pub use presence::{
     inspect_platform_display_projection, inspect_platform_display_projection_with_resource,
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,

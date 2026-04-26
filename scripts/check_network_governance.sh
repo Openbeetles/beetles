@@ -64,6 +64,21 @@ if rg -n 'orchestrator::permit::current_http_thread_role' src >/dev/null; then
   exit 1
 fi
 
+if ! rg -n 'config_persisting_suspend' src/channels/wss_gateway/loop.rs >/dev/null; then
+  echo "FAIL: external WSS loop no longer distinguishes config-persisting suspend from generic mode gates" >&2
+  exit 1
+fi
+
+if ! rg -n 'dingtalk_stream|wecom_aibot' src/channels/wss_gateway/loop.rs >/dev/null; then
+  echo "FAIL: WSS lifecycle owners no longer cover all external WSS channel owners" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_queue_full|record_deferred_without_queue_full|record_disconnected_drop' src/channels >/dev/null; then
+  echo "FAIL: channel inbound backpressure outcomes are no longer recorded" >&2
+  exit 1
+fi
+
 TRANSPORT_FACADE='crate::orchestrator::(request_http_permit|current_http_thread_role|set_current_http_thread_role|begin_wss_session)\s*\('
 if rg -n "$TRANSPORT_FACADE" src \
   --glob '!src/platform/http_client/**' \

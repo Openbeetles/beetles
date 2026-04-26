@@ -1243,6 +1243,7 @@ where
         wrapped,
     );
     if let Err(e) = &spawn_res {
+        crate::metrics::record_runtime_spawn_failure();
         log::error!(
             "[thread] spawn failed name={} core_target={:?} role={:?} surface={:?} err={}",
             name,

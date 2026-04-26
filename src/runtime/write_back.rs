@@ -15,8 +15,8 @@ use crate::memory::{
     WorldSenseStore, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -27,6 +27,7 @@ const WRITE_BACK_DELAY_MS: u64 = 25;
 type WriteBackTask = Box<dyn FnOnce() + Send + 'static>;
 
 struct WriteBackJob {
+    label: &'static str,
     due_at: Instant,
     task: Option<WriteBackTask>,
 }
@@ -38,7 +39,6 @@ struct WriteBackQueueState {
 
 struct WriteBackScheduler {
     state: Mutex<WriteBackQueueState>,
-    wake: Condvar,
 }
 
 // Keep enough slots for one flush job from every buffered runtime store family.
@@ -46,9 +46,9 @@ struct WriteBackScheduler {
 const WRITE_BACK_RUNTIME_DOMAIN_FLOOR: usize = 24;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 8;
+pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 8;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 40;
+pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 40;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 // SPIFFS + serde flushes need their own ESP stack budget, separate from agent_loop.
@@ -64,9 +64,32 @@ const WRITE_BACK_IDLE_STOP_MS: u64 = 30;
 const WRITE_BACK_IDLE_STOP_MS: u64 = 1_500;
 #[cfg(all(not(any(target_arch = "xtensa", target_arch = "riscv32")), not(test)))]
 const WRITE_BACK_IDLE_STOP_MS: u64 = 1_000;
+#[cfg(test)]
+const WRITE_BACK_POLL_MS: u64 = 5;
+#[cfg(not(test))]
+const WRITE_BACK_POLL_MS: u64 = 25;
+
+const WRITE_BACK_LEASE_OWNER: crate::runtime::lease::LeaseOwner =
+    crate::runtime::lease::LeaseOwner::new("storage", "write_back");
+const WRITE_BACK_LIFECYCLE_OWNER: &str = "write_back";
+
+static WRITE_BACK_DEFERRED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static WRITE_BACK_DROPPED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static WRITE_BACK_COALESCED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static WRITE_BACK_WORKER_STARTS_TOTAL: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(test)]
 static WRITE_BACK_TEST_AUTO_SERVICE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct WriteBackSnapshot {
+    pub queued: usize,
+    pub worker_started: bool,
+    pub deferred_total: u64,
+    pub dropped_total: u64,
+    pub coalesced_total: u64,
+    pub worker_starts_total: u64,
+}
 
 fn write_back_scheduler() -> &'static WriteBackScheduler {
     static SCHEDULER: OnceLock<WriteBackScheduler> = OnceLock::new();
@@ -75,7 +98,6 @@ fn write_back_scheduler() -> &'static WriteBackScheduler {
             jobs: Vec::new(),
             worker_started: false,
         }),
-        wake: Condvar::new(),
     })
 }
 
@@ -90,11 +112,38 @@ fn should_auto_service_write_back_tasks() -> bool {
     }
 }
 
+fn is_coalescible_write_back_label(label: &str) -> bool {
+    label.ends_with("_write_back") || label == "session_store"
+}
+
+fn record_write_back_deferred(count: usize) {
+    WRITE_BACK_DEFERRED_TOTAL.fetch_add(count.min(u32::MAX as usize) as u32, Ordering::Relaxed);
+}
+
+fn mark_write_back_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
+    crate::runtime::plane_lifecycle::mark(
+        crate::runtime::PlaneId::StorageWriteBack,
+        WRITE_BACK_LIFECYCLE_OWNER,
+        state,
+        reason,
+    );
+}
+
 fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBackTask) -> bool {
     let scheduler = write_back_scheduler();
     {
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        if is_coalescible_write_back_label(label) {
+            if let Some(existing) = state.jobs.iter_mut().find(|job| job.label == label) {
+                if due_at < existing.due_at {
+                    existing.due_at = due_at;
+                }
+                WRITE_BACK_COALESCED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                return true;
+            }
+        }
         if state.jobs.len() >= WRITE_BACK_QUEUE_MAX {
+            WRITE_BACK_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
             log::warn!(
                 "[write_back:{}] write-back queue full, keeping pending writes queued",
                 label
@@ -102,13 +151,20 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
             return false;
         }
         state.jobs.push(WriteBackJob {
+            label,
             due_at,
             task: Some(task),
         });
     }
-    if should_auto_service_write_back_tasks() && ensure_write_back_worker_started_for_pending_jobs()
-    {
-        scheduler.wake.notify_one();
+    if should_auto_service_write_back_tasks() {
+        if write_back_admission_delay().is_some() {
+            record_write_back_deferred(1);
+            return true;
+        }
+        if ensure_write_back_worker_started_for_pending_jobs() {
+            // The worker polls with a short sleep on ESP to avoid std timed-condvar
+            // paths in lazy worker idle waits.
+        }
     }
     true
 }
@@ -132,6 +188,7 @@ fn ensure_write_back_worker_started_inner(require_pending_job: bool) -> bool {
         }
         state.worker_started = true;
     }
+    mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "spawn");
     match crate::util::spawn_guarded_with_profile_handle(
         "write_back",
         WRITE_BACK_WORKER_STACK,
@@ -139,10 +196,14 @@ fn ensure_write_back_worker_started_inner(require_pending_job: bool) -> bool {
         crate::util::HttpThreadRole::Background,
         write_back_worker_loop,
     ) {
-        Ok(_) => true,
+        Ok(_) => {
+            WRITE_BACK_WORKER_STARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+            true
+        }
         Err(error) => {
             let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
             state.worker_started = false;
+            mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "spawn_failed");
             log::error!("[write_back] failed to start write-back worker: {}", error);
             false
         }
@@ -172,6 +233,7 @@ fn next_write_back_wait(jobs: &[WriteBackJob], now: Instant) -> Option<Duration>
 fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Duration) {
     let scheduler = write_back_scheduler();
     let due_at = Instant::now() + delay;
+    record_write_back_deferred(jobs.len());
     let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
     for job in &mut jobs {
         job.due_at = due_at;
@@ -193,43 +255,97 @@ fn write_back_admission_delay() -> Option<Duration> {
     None
 }
 
+struct WriteBackLeaseGuard {
+    token: u64,
+}
+
+impl Drop for WriteBackLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(
+            crate::runtime::lease::LeaseKind::StorageSessionWrite,
+            WRITE_BACK_LEASE_OWNER,
+            self.token,
+        );
+    }
+}
+
+fn try_acquire_write_back_lease() -> Option<WriteBackLeaseGuard> {
+    match crate::runtime::lease::try_acquire(
+        crate::runtime::lease::LeaseKind::StorageSessionWrite,
+        WRITE_BACK_LEASE_OWNER,
+        crate::runtime::lease::LeaseMode::Exclusive,
+        None,
+    ) {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Some(WriteBackLeaseGuard {
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => {
+            log::warn!(
+                "[write_back] storage write lease denied reason={} held_by={:?}",
+                denial.reason,
+                denial.held_by
+            );
+            None
+        }
+    }
+}
+
 fn write_back_worker_loop() {
+    let mut idle_started = Instant::now();
     loop {
-        let due = {
-            let scheduler = write_back_scheduler();
-            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
-            loop {
-                let now = Instant::now();
-                let due = take_due_write_back_jobs(&mut state, now);
-                if !due.is_empty() {
-                    break due;
-                }
-                state = if let Some(wait) = next_write_back_wait(&state.jobs, now) {
-                    scheduler
-                        .wake
-                        .wait_timeout(state, wait)
-                        .unwrap_or_else(|e| e.into_inner())
-                        .0
-                } else {
-                    let (next_state, timeout) = scheduler
-                        .wake
-                        .wait_timeout(state, Duration::from_millis(WRITE_BACK_IDLE_STOP_MS))
-                        .unwrap_or_else(|e| e.into_inner());
-                    state = next_state;
-                    if timeout.timed_out() && state.jobs.is_empty() {
-                        state.worker_started = false;
-                        return;
-                    }
-                    state
-                };
+        let due = match next_write_back_worker_step(&mut idle_started) {
+            WriteBackWorkerStep::Run(due) => due,
+            WriteBackWorkerStep::Sleep(wait) => {
+                std::thread::sleep(wait);
+                continue;
+            }
+            WriteBackWorkerStep::Stop => {
+                mark_write_back_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Draining,
+                    "idle_timeout",
+                );
+                mark_write_back_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Unloaded,
+                    "idle_stop",
+                );
+                return;
             }
         };
 
         if let Some(delay) = write_back_admission_delay() {
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Draining,
+                "pressure_defer",
+            );
             defer_write_back_jobs_and_stop_worker(due, delay);
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Unloaded,
+                "pressure_defer",
+            );
             return;
         }
 
+        let Some(_lease) = try_acquire_write_back_lease() else {
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Draining,
+                "lease_denied_defer",
+            );
+            defer_write_back_jobs_and_stop_worker(
+                due,
+                Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS),
+            );
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Unloaded,
+                "lease_denied_defer",
+            );
+            return;
+        };
+
+        mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Active, "run_due_jobs");
         for mut job in due {
             if let Some(task) = job.task.take() {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
@@ -238,7 +354,39 @@ fn write_back_worker_loop() {
                 }
             }
         }
+        mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "idle_poll");
     }
+}
+
+enum WriteBackWorkerStep {
+    Run(Vec<WriteBackJob>),
+    Sleep(Duration),
+    Stop,
+}
+
+fn next_write_back_worker_step(idle_started: &mut Instant) -> WriteBackWorkerStep {
+    let scheduler = write_back_scheduler();
+    let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let due = take_due_write_back_jobs(&mut state, now);
+    if !due.is_empty() {
+        *idle_started = now;
+        return WriteBackWorkerStep::Run(due);
+    }
+
+    if let Some(wait) = next_write_back_wait(&state.jobs, now) {
+        *idle_started = now;
+        return WriteBackWorkerStep::Sleep(wait.min(Duration::from_millis(WRITE_BACK_POLL_MS)));
+    }
+
+    let idle_for = now.saturating_duration_since(*idle_started);
+    if idle_for >= Duration::from_millis(WRITE_BACK_IDLE_STOP_MS) {
+        state.worker_started = false;
+        return WriteBackWorkerStep::Stop;
+    }
+
+    let remaining = Duration::from_millis(WRITE_BACK_IDLE_STOP_MS).saturating_sub(idle_for);
+    WriteBackWorkerStep::Sleep(remaining.min(Duration::from_millis(WRITE_BACK_POLL_MS)))
 }
 
 /// Wake the background write-back execution plane.
@@ -246,9 +394,33 @@ fn write_back_worker_loop() {
 /// This function is intentionally light enough for `agent_loop`: heavy
 /// SPIFFS/serde/session flush closures run only on the write-back worker stack.
 pub fn service_write_back_tasks() {
-    if ensure_write_back_worker_started_for_pending_jobs() {
-        write_back_scheduler().wake.notify_one();
+    let _ = ensure_write_back_worker_started_for_pending_jobs();
+}
+
+pub fn snapshot() -> WriteBackSnapshot {
+    let scheduler = write_back_scheduler();
+    let state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+    WriteBackSnapshot {
+        queued: state.jobs.len(),
+        worker_started: state.worker_started,
+        deferred_total: WRITE_BACK_DEFERRED_TOTAL.load(Ordering::Relaxed) as u64,
+        dropped_total: WRITE_BACK_DROPPED_TOTAL.load(Ordering::Relaxed) as u64,
+        coalesced_total: WRITE_BACK_COALESCED_TOTAL.load(Ordering::Relaxed) as u64,
+        worker_starts_total: WRITE_BACK_WORKER_STARTS_TOTAL.load(Ordering::Relaxed) as u64,
     }
+}
+
+pub fn format_baseline_log_line() -> String {
+    let snap = snapshot();
+    format!(
+        "write_back queued={} worker_started={} deferred_total={} dropped_total={} coalesced_total={} worker_starts_total={}",
+        snap.queued,
+        snap.worker_started,
+        snap.deferred_total,
+        snap.dropped_total,
+        snap.coalesced_total,
+        snap.worker_starts_total
+    )
 }
 
 #[cfg(test)]
@@ -258,8 +430,6 @@ fn reset_write_back_queue_for_tests() {
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
         state.jobs.clear();
     }
-    scheduler.wake.notify_one();
-
     let deadline = Instant::now() + Duration::from_millis(1_000);
     while Instant::now() < deadline {
         let worker_started = scheduler
@@ -1348,12 +1518,14 @@ mod tests {
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let due_at = Instant::now() + Duration::from_secs(60);
+        let before = snapshot();
         let mut accepted = 0usize;
         while schedule_write_back_task("test", due_at, Box::new(|| {})) {
             accepted += 1;
             assert!(accepted < 256, "write-back queue cap should be finite");
         }
         assert!(accepted > 0);
+        assert_eq!(snapshot().dropped_total, before.dropped_total + 1);
 
         let inner = Arc::new(CountingTurnLedgerStore::default());
         let counter = Arc::clone(&inner);
@@ -1369,6 +1541,32 @@ mod tests {
             "full write-back queue must not flush SPIFFS-backed turn ledger inline on agent_loop"
         );
         reset_write_back_queue_for_tests();
+    }
+
+    #[test]
+    fn write_back_scheduler_coalesces_same_production_label() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        let before = snapshot();
+        let due_at = Instant::now() + Duration::from_secs(60);
+
+        assert!(schedule_write_back_task(
+            "session_store",
+            due_at,
+            Box::new(|| {})
+        ));
+        assert!(schedule_write_back_task(
+            "session_store",
+            due_at + Duration::from_secs(1),
+            Box::new(|| {})
+        ));
+
+        let after = snapshot();
+        assert_eq!(after.queued, 1);
+        assert_eq!(after.coalesced_total, before.coalesced_total + 1);
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
     }
 
     #[test]
@@ -1406,6 +1604,70 @@ mod tests {
         );
     }
 
+    fn write_back_storage_lease_is_active() -> bool {
+        crate::runtime::lease::snapshot()
+            .records
+            .iter()
+            .any(|record| {
+                !record.expired
+                    && record.kind == crate::runtime::lease::LeaseKind::StorageSessionWrite
+                    && record.owner == WRITE_BACK_LEASE_OWNER
+            })
+    }
+
+    #[test]
+    fn write_back_worker_holds_storage_session_write_lease_while_running() {
+        let _write_back_guard = write_back_test_guard();
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        let _ = crate::runtime::lease::release_owner(WRITE_BACK_LEASE_OWNER);
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 256 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        assert!(schedule_write_back_task(
+            "lease_test",
+            Instant::now(),
+            Box::new(move || {
+                tx.send((
+                    write_back_storage_lease_is_active(),
+                    write_back_lifecycle_state(),
+                ))
+                .unwrap();
+            }),
+        ));
+
+        service_write_back_tasks();
+        let (lease_active, lifecycle_state) = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("write-back task should run");
+        assert!(
+            lease_active,
+            "write-back tasks must run under StorageSessionWrite lease"
+        );
+        assert_eq!(
+            lifecycle_state,
+            Some(crate::runtime::PlaneLifecycleState::Active),
+            "write-back lifecycle must only become active for due work under the storage lease"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if !write_back_storage_lease_is_active() {
+                WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        let _ = crate::runtime::lease::release_owner(WRITE_BACK_LEASE_OWNER);
+        panic!("write-back worker must release StorageSessionWrite lease after due work");
+    }
+
     #[test]
     fn service_write_back_tasks_does_not_start_idle_worker_without_pending_jobs() {
         let _write_back_guard = write_back_test_guard();
@@ -1428,6 +1690,7 @@ mod tests {
     #[test]
     fn write_back_worker_releases_stack_after_idle_timeout() {
         let _write_back_guard = write_back_test_guard();
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
         reset_write_back_queue_for_tests();
         WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
 
@@ -1442,6 +1705,11 @@ mod tests {
                 .worker_started;
             if !worker_started {
                 WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+                assert_eq!(
+                    write_back_lifecycle_state(),
+                    Some(crate::runtime::PlaneLifecycleState::Unloaded),
+                    "idle timeout must unload the write-back plane lifecycle"
+                );
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1454,6 +1722,7 @@ mod tests {
     #[test]
     fn write_back_worker_releases_stack_when_pressure_turns_critical() {
         let _write_back_guard = write_back_test_guard();
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
         reset_write_back_queue_for_tests();
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
@@ -1468,6 +1737,7 @@ mod tests {
             let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
             state.worker_started = true;
             state.jobs.push(WriteBackJob {
+                label: "critical_defer_test",
                 due_at: Instant::now(),
                 task: Some(Box::new(move || {
                     tx.send(()).unwrap();
@@ -1475,6 +1745,7 @@ mod tests {
             });
         }
 
+        let before_defer = snapshot();
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 48 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
@@ -1496,6 +1767,17 @@ mod tests {
         );
         assert_eq!(state.jobs.len(), 1, "deferred job should remain queued");
         drop(state);
+        assert_eq!(snapshot().deferred_total, before_defer.deferred_total + 1);
+        assert_eq!(
+            write_back_lifecycle_state(),
+            Some(crate::runtime::PlaneLifecycleState::Unloaded),
+            "Critical pressure deferral should release the write-back lifecycle without Failed"
+        );
+        assert_eq!(
+            write_back_lifecycle_failed_count(),
+            0,
+            "Critical pressure deferral is controlled backpressure, not a lifecycle failure"
+        );
 
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 256 * 1024,
@@ -1503,6 +1785,29 @@ mod tests {
             heap_largest_block: 128 * 1024,
         });
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+    }
+
+    fn write_back_lifecycle_state() -> Option<crate::runtime::PlaneLifecycleState> {
+        crate::runtime::plane_lifecycle::snapshot()
+            .records
+            .iter()
+            .find(|record| {
+                record.plane == crate::runtime::PlaneId::StorageWriteBack
+                    && record.owner == WRITE_BACK_LIFECYCLE_OWNER
+            })
+            .map(|record| record.state)
+    }
+
+    fn write_back_lifecycle_failed_count() -> u32 {
+        crate::runtime::plane_lifecycle::snapshot()
+            .records
+            .iter()
+            .find(|record| {
+                record.plane == crate::runtime::PlaneId::StorageWriteBack
+                    && record.owner == WRITE_BACK_LIFECYCLE_OWNER
+            })
+            .map(|record| record.failure_count)
+            .unwrap_or(0)
     }
 
     #[test]

@@ -90,6 +90,7 @@ pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
         crate::memory::REL_PATH_PRIVATE_DOC_WORKSPACES => PathBuf::from("m/pdw.json"),
         crate::memory::REL_PATH_PRIVATE_GARDEN_INDEX => PathBuf::from("m/pgi.json"),
         "memory/tool_execution_governance.json" => PathBuf::from("m/teg.json"),
+        "memory/tool_execution_governance.corrupt.json" => PathBuf::from("m/teg_bad.json"),
         _ => {
             if rel_str.starts_with(crate::memory::REL_PATH_PRIVATE_GARDEN_DIR) {
                 PathBuf::from(format!("g/{:016x}.md", fnv1a64_hash(rel_str.as_ref())))
@@ -699,6 +700,10 @@ mod tests {
             WriteTailPadding::JsonWhitespace
         );
         assert_eq!(
+            state_write_tail_padding(Path::new("memory/tool_execution_governance.corrupt.json")),
+            WriteTailPadding::JsonWhitespace
+        );
+        assert_eq!(
             state_write_tail_padding(Path::new("memory/session.jsonl")),
             WriteTailPadding::Newlines
         );
@@ -755,6 +760,10 @@ mod tests {
             (REL_PATH_SELF_AUTHORED_CORES, "m/sac.json"),
             (REL_PATH_SESSION_SUMMARIES, "m/ss.json"),
             ("memory/tool_execution_governance.json", "m/teg.json"),
+            (
+                "memory/tool_execution_governance.corrupt.json",
+                "m/teg_bad.json",
+            ),
         ];
         for (rel, expected) in cases {
             assert_eq!(

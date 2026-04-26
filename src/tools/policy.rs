@@ -28,30 +28,42 @@ impl ToolExposure {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolEffectClass {
+    LocalPure,
     #[default]
     ReadOnly,
+    ConfigRead,
+    NetworkSearch,
     PersistentStateWrite,
+    StorageWrite,
     ConfigWrite,
     VisibleOutbound,
     HardwareRead,
     HardwareActuation,
+    Diagnostic,
     HostInspection,
     HostExecution,
     SystemControl,
+    Admin,
 }
 
 impl ToolEffectClass {
     pub fn label(self) -> &'static str {
         match self {
+            Self::LocalPure => "local_pure",
             Self::ReadOnly => "read_only",
+            Self::ConfigRead => "config_read",
+            Self::NetworkSearch => "network_search",
             Self::PersistentStateWrite => "persistent_state_write",
+            Self::StorageWrite => "storage_write",
             Self::ConfigWrite => "config_write",
             Self::VisibleOutbound => "visible_outbound",
             Self::HardwareRead => "hardware_read",
             Self::HardwareActuation => "hardware_actuation",
+            Self::Diagnostic => "diagnostic",
             Self::HostInspection => "host_inspection",
             Self::HostExecution => "host_execution",
             Self::SystemControl => "system_control",
+            Self::Admin => "admin",
         }
     }
 
@@ -59,25 +71,29 @@ impl ToolEffectClass {
         matches!(
             self,
             Self::PersistentStateWrite
+                | Self::StorageWrite
                 | Self::ConfigWrite
                 | Self::VisibleOutbound
                 | Self::HardwareActuation
                 | Self::HostExecution
                 | Self::SystemControl
+                | Self::Admin
         )
     }
 
     pub fn conservative_rank(self) -> u8 {
         match self {
-            Self::ReadOnly => 0,
-            Self::HardwareRead => 1,
-            Self::HostInspection => 2,
-            Self::PersistentStateWrite => 3,
-            Self::VisibleOutbound => 4,
-            Self::ConfigWrite => 5,
-            Self::HardwareActuation => 6,
-            Self::HostExecution => 7,
-            Self::SystemControl => 8,
+            Self::LocalPure | Self::ReadOnly => 0,
+            Self::ConfigRead => 1,
+            Self::HardwareRead => 2,
+            Self::Diagnostic | Self::HostInspection => 3,
+            Self::NetworkSearch => 4,
+            Self::PersistentStateWrite | Self::StorageWrite => 5,
+            Self::VisibleOutbound => 6,
+            Self::ConfigWrite => 7,
+            Self::HardwareActuation => 8,
+            Self::HostExecution => 9,
+            Self::SystemControl | Self::Admin => 10,
         }
     }
 }
@@ -315,18 +331,151 @@ pub fn conservative_merge_execution_shapes(
 }
 
 /// 单次 LLM 请求的 tool policy 上下文。
+pub const DEFAULT_EMBEDDED_TOOL_PROFILE: bool = cfg!(any(
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+));
+
 #[derive(Clone, Copy, Debug)]
 pub struct ToolPolicyContext<'a> {
     pub ingress: IngressKind,
     pub channel: &'a str,
+    pub runtime_mode: Option<crate::runtime::RuntimeMode>,
+    pub embedded_profile: bool,
 }
 
 impl<'a> ToolPolicyContext<'a> {
     pub fn new(ingress: IngressKind, channel: &'a str) -> Self {
-        Self { ingress, channel }
+        Self {
+            ingress,
+            channel,
+            runtime_mode: None,
+            embedded_profile: DEFAULT_EMBEDDED_TOOL_PROFILE,
+        }
+    }
+
+    pub fn with_runtime_mode(mut self, runtime_mode: crate::runtime::RuntimeMode) -> Self {
+        self.runtime_mode = Some(runtime_mode);
+        self
+    }
+
+    pub fn with_embedded_profile(mut self, embedded_profile: bool) -> Self {
+        self.embedded_profile = embedded_profile;
+        self
     }
 
     pub fn is_internal_system_channel(&self) -> bool {
         matches!(self.channel, "cron" | "heartbeat")
+    }
+}
+
+/// Returns whether a tool effect class may be exposed/executed for the current runtime policy.
+///
+/// This is based only on system state and tool metadata. It must not inspect user text.
+pub fn tool_effect_visible_in_mode(
+    effect_class: ToolEffectClass,
+    policy: &ToolPolicyContext<'_>,
+) -> bool {
+    if !policy.embedded_profile {
+        return true;
+    }
+    let Some(runtime_mode) = policy.runtime_mode else {
+        return true;
+    };
+    match runtime_mode {
+        crate::runtime::RuntimeMode::Normal => true,
+        crate::runtime::RuntimeMode::VoiceExclusive => matches!(
+            effect_class,
+            ToolEffectClass::LocalPure | ToolEffectClass::ReadOnly | ToolEffectClass::HardwareRead
+        ),
+        crate::runtime::RuntimeMode::Booting
+        | crate::runtime::RuntimeMode::Pairing
+        | crate::runtime::RuntimeMode::ConfigActive
+        | crate::runtime::RuntimeMode::Maintenance
+        | crate::runtime::RuntimeMode::RecoverySafeMode => matches!(
+            effect_class,
+            ToolEffectClass::LocalPure
+                | ToolEffectClass::ReadOnly
+                | ToolEffectClass::ConfigRead
+                | ToolEffectClass::Diagnostic
+                | ToolEffectClass::HardwareRead
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolEffectClass, ToolMetadata, ToolPolicyContext};
+
+    #[test]
+    fn p0_effect_classes_have_stable_labels_and_mutation_semantics() {
+        assert_eq!(ToolEffectClass::LocalPure.label(), "local_pure");
+        assert_eq!(ToolEffectClass::NetworkSearch.label(), "network_search");
+        assert_eq!(ToolEffectClass::ConfigRead.label(), "config_read");
+        assert_eq!(ToolEffectClass::StorageWrite.label(), "storage_write");
+        assert_eq!(ToolEffectClass::Diagnostic.label(), "diagnostic");
+        assert_eq!(ToolEffectClass::Admin.label(), "admin");
+
+        assert!(!ToolEffectClass::LocalPure.is_mutating());
+        assert!(!ToolEffectClass::ConfigRead.is_mutating());
+        assert!(!ToolEffectClass::NetworkSearch.is_mutating());
+        assert!(!ToolEffectClass::Diagnostic.is_mutating());
+        assert!(ToolEffectClass::StorageWrite.is_mutating());
+        assert!(ToolEffectClass::Admin.is_mutating());
+    }
+
+    #[test]
+    fn p0_effect_classes_merge_by_conservative_rank() {
+        let local = ToolMetadata::task()
+            .with_effect_class(ToolEffectClass::LocalPure)
+            .default_execution_shape("local");
+        let network = ToolMetadata::task()
+            .with_effect_class(ToolEffectClass::NetworkSearch)
+            .default_execution_shape("search");
+        let merged = super::conservative_merge_execution_shapes(local, network);
+
+        assert_eq!(merged.effect_class, ToolEffectClass::NetworkSearch);
+        assert_eq!(merged.operation, "local");
+    }
+
+    #[test]
+    fn embedded_runtime_mode_filters_effect_classes_without_user_text() {
+        let voice_policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "voice")
+            .with_embedded_profile(true)
+            .with_runtime_mode(crate::runtime::RuntimeMode::VoiceExclusive);
+        assert!(super::tool_effect_visible_in_mode(
+            ToolEffectClass::ReadOnly,
+            &voice_policy
+        ));
+        assert!(!super::tool_effect_visible_in_mode(
+            ToolEffectClass::NetworkSearch,
+            &voice_policy
+        ));
+        assert!(!super::tool_effect_visible_in_mode(
+            ToolEffectClass::VisibleOutbound,
+            &voice_policy
+        ));
+
+        let recovery_policy = ToolPolicyContext::new(crate::bus::IngressKind::System, "cron")
+            .with_embedded_profile(true)
+            .with_runtime_mode(crate::runtime::RuntimeMode::RecoverySafeMode);
+        assert!(super::tool_effect_visible_in_mode(
+            ToolEffectClass::Diagnostic,
+            &recovery_policy
+        ));
+        assert!(!super::tool_effect_visible_in_mode(
+            ToolEffectClass::SystemControl,
+            &recovery_policy
+        ));
+    }
+
+    #[test]
+    fn default_embedded_profile_tracks_embedded_target_family() {
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        assert_eq!(
+            policy.embedded_profile,
+            super::DEFAULT_EMBEDDED_TOOL_PROFILE
+        );
     }
 }

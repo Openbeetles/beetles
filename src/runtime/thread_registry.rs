@@ -31,6 +31,30 @@ struct ThreadProfile {
     mode_sensitive: bool,
 }
 
+impl ThreadProfile {
+    fn from_plane(profile: &crate::runtime::plane::PlaneProfile) -> Self {
+        Self {
+            execution_class: profile.execution_class,
+            risk_class: profile.risk_class,
+            tls_capable: profile.tls_capable,
+            http_capable: profile.http_capable,
+            wss_capable: profile.wss_capable,
+            mode_sensitive: profile.mode_sensitive,
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            execution_class: ThreadExecutionClass::Unknown,
+            risk_class: ThreadRiskClass::Medium,
+            tls_capable: false,
+            http_capable: false,
+            wss_capable: false,
+            mode_sensitive: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 /// 线程执行面分类，用于识别当前运行态到底在常驻哪些平面。
@@ -524,115 +548,9 @@ fn role_snapshot(role: HttpThreadRole) -> ThreadRoleSnapshot {
 }
 
 fn thread_profile(name: &str) -> ThreadProfile {
-    match name {
-        "agent_loop" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Agent,
-            risk_class: ThreadRiskClass::Critical,
-            tls_capable: true,
-            http_capable: true,
-            wss_capable: false,
-            mode_sensitive: true,
-        },
-        "voice_session" | "voice_session_worker" | "voice_realtime" | "voice_realtime_connect" => {
-            ThreadProfile {
-                execution_class: ThreadExecutionClass::Voice,
-                risk_class: ThreadRiskClass::Critical,
-                tls_capable: true,
-                http_capable: true,
-                wss_capable: true,
-                mode_sensitive: true,
-            }
-        }
-        "qq_ws" | "feishu_ws" | "wecom_aibot" | "dingtalk_stream" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Channel,
-            risk_class: ThreadRiskClass::Critical,
-            tls_capable: true,
-            http_capable: true,
-            wss_capable: true,
-            mode_sensitive: true,
-        },
-        "qq_sender" | "tg_sender" | "fs_sender" | "dt_sender" | "wc_sender" | "tg_poll"
-        | "os_outbound" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Channel,
-            risk_class: ThreadRiskClass::High,
-            tls_capable: true,
-            http_capable: true,
-            wss_capable: false,
-            mode_sensitive: true,
-        },
-        "http_snapshot_exec" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Config,
-            risk_class: ThreadRiskClass::Medium,
-            tls_capable: false,
-            http_capable: true,
-            wss_capable: false,
-            mode_sensitive: true,
-        },
-        "http_config_exec" | "http_diag_exec" | "http_ota_exec" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Config,
-            risk_class: ThreadRiskClass::High,
-            tls_capable: true,
-            http_capable: true,
-            wss_capable: false,
-            mode_sensitive: true,
-        },
-        "config_plane_watch" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Runtime,
-            risk_class: ThreadRiskClass::Low,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
-        "wifi_worker" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Platform,
-            risk_class: ThreadRiskClass::High,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
-        "audio_io_worker" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Platform,
-            risk_class: ThreadRiskClass::Medium,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
-        "dispatch" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Runtime,
-            risk_class: ThreadRiskClass::High,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: true,
-        },
-        "bg_timer" | "heartbeat" | "restart_defer" | "cron" | "remind" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Runtime,
-            risk_class: ThreadRiskClass::Low,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
-        "display" => ThreadProfile {
-            execution_class: ThreadExecutionClass::Ui,
-            risk_class: ThreadRiskClass::Low,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
-        _ => ThreadProfile {
-            execution_class: ThreadExecutionClass::Unknown,
-            risk_class: ThreadRiskClass::Medium,
-            tls_capable: false,
-            http_capable: false,
-            wss_capable: false,
-            mode_sensitive: false,
-        },
-    }
+    crate::runtime::plane::profile_for_thread(name)
+        .map(ThreadProfile::from_plane)
+        .unwrap_or_else(ThreadProfile::unknown)
 }
 
 fn normalize_stack_high_water_free_bytes(
@@ -810,6 +728,37 @@ mod tests {
         assert_eq!(detail.risk_class, ThreadRiskClass::Medium);
         assert!(detail.http_capable);
         assert!(!detail.tls_capable);
+        assert!(detail.mode_sensitive);
+
+        reset_for_tests();
+    }
+
+    #[test]
+    fn thread_profile_uses_static_plane_registry_for_display_and_write_back() {
+        let display = crate::runtime::plane::profile_for_thread("display").expect("display plane");
+        assert_eq!(display.id, crate::runtime::plane::PlaneId::Display);
+        assert!(display.mode_sensitive);
+
+        let write_back =
+            crate::runtime::plane::profile_for_thread("write_back").expect("write_back plane");
+        assert_eq!(
+            write_back.id,
+            crate::runtime::plane::PlaneId::StorageWriteBack
+        );
+
+        let _guard = registry_test_guard();
+        register_thread(
+            "write_back",
+            24 * 1024,
+            Some(SpawnCore::Core1),
+            HttpThreadRole::Background,
+            TaskSpawnSurface::StdThreadCompat,
+        );
+
+        let snapshot = snapshot();
+        let detail = &snapshot.details[0];
+        assert_eq!(detail.execution_class, ThreadExecutionClass::Runtime);
+        assert_eq!(detail.risk_class, ThreadRiskClass::High);
         assert!(detail.mode_sensitive);
 
         reset_for_tests();

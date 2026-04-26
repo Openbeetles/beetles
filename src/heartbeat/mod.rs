@@ -130,6 +130,31 @@ pub(crate) fn heartbeat_tick(
     log::info!(
         "[{}] {}",
         TAG,
+        crate::runtime::plane::format_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::plane_lifecycle::format_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::lease::format_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::display::format_display_lease_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::write_back::format_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
         crate::runtime::thread_registry::format_stack_risk_log_line()
     );
     log::info!(

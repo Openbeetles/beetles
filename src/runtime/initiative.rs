@@ -793,6 +793,7 @@ mod tests {
             outbound_depth: 0,
             budget: crate::orchestrator::current_budget(),
             channels: crate::orchestrator::state::ChannelsHealthSnapshot::all(healthy_channel()),
+            leases: crate::runtime::lease::snapshot(),
             session_count: 0,
             storage_used_kb: 0,
             storage_total_kb: 0,

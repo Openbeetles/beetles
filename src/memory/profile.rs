@@ -155,6 +155,16 @@ pub(crate) struct PromptParticipationPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PromptContextNormalizationBudget {
+    pub summary_max_len: usize,
+    pub constitutional_stack_max_len: usize,
+    pub active_task_context_max_len: usize,
+    pub governed_memory_evidence_max_len: usize,
+    pub background_governance_max_len: usize,
+    pub inward_growth_max_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemoryCapabilityProfile {
     pub class: MemoryCapabilityClass,
     pub archive_prompt_max_items: usize,
@@ -746,6 +756,63 @@ pub(crate) fn prompt_participation_policy(
     }
 }
 
+fn scaled_prompt_budget(
+    system_budget: usize,
+    numerator: usize,
+    denominator: usize,
+    floor: usize,
+    cap: usize,
+) -> usize {
+    if system_budget == 0 || denominator == 0 {
+        return 0;
+    }
+    let cap = cap.min(system_budget);
+    let floor = floor.min(cap);
+    system_budget
+        .saturating_mul(numerator)
+        .checked_div(denominator)
+        .unwrap_or(0)
+        .max(floor)
+        .min(cap)
+}
+
+pub(crate) fn prompt_context_normalization_budget(
+    memory_system_kind: MemorySystemKind,
+    system_budget: usize,
+) -> PromptContextNormalizationBudget {
+    let policy = memory_policy(memory_system_kind);
+    match memory_system_kind {
+        MemorySystemKind::EspCompact => PromptContextNormalizationBudget {
+            summary_max_len: policy
+                .long_term_recall
+                .summary_grounding_max_len
+                .min(system_budget),
+            constitutional_stack_max_len: scaled_prompt_budget(system_budget, 1, 4, 160, 640),
+            active_task_context_max_len: scaled_prompt_budget(system_budget, 1, 4, 160, 640),
+            governed_memory_evidence_max_len: scaled_prompt_budget(
+                system_budget,
+                3,
+                8,
+                policy.long_term_recall.block_min_len,
+                policy.long_term_recall.block_max_len_cap,
+            ),
+            background_governance_max_len: scaled_prompt_budget(system_budget, 1, 5, 64, 512),
+            inward_growth_max_len: scaled_prompt_budget(system_budget, 1, 5, 64, 512),
+        },
+        MemorySystemKind::LinuxFull => PromptContextNormalizationBudget {
+            summary_max_len: policy
+                .long_term_recall
+                .summary_grounding_max_len
+                .min(system_budget),
+            constitutional_stack_max_len: scaled_prompt_budget(system_budget, 1, 3, 240, 1024),
+            active_task_context_max_len: scaled_prompt_budget(system_budget, 1, 3, 240, 1280),
+            governed_memory_evidence_max_len: scaled_prompt_budget(system_budget, 1, 2, 240, 2048),
+            background_governance_max_len: scaled_prompt_budget(system_budget, 1, 3, 240, 1536),
+            inward_growth_max_len: scaled_prompt_budget(system_budget, 1, 3, 240, 1536),
+        },
+    }
+}
+
 pub(crate) fn decide_self_runtime_authority(
     memory_system_kind: MemorySystemKind,
 ) -> SelfRuntimeAuthorityPlan {
@@ -978,6 +1045,28 @@ mod tests {
         assert!(standard.first_user_turn_background_enabled);
         assert!(standard.non_user_turn_private_projection_enabled);
         assert!(standard.tool_round_recall_enabled);
+    }
+
+    #[test]
+    fn embedded_prompt_context_normalization_budget_stays_inside_prompt_budget() {
+        let budget = prompt_context_normalization_budget(MemorySystemKind::EspCompact, 2048);
+
+        assert_eq!(
+            budget.summary_max_len,
+            memory_policy(MemorySystemKind::EspCompact)
+                .long_term_recall
+                .summary_grounding_max_len
+        );
+        assert!(budget.constitutional_stack_max_len <= 640);
+        assert!(budget.active_task_context_max_len <= 640);
+        assert!(
+            budget.governed_memory_evidence_max_len
+                <= memory_policy(MemorySystemKind::EspCompact)
+                    .long_term_recall
+                    .block_max_len_cap
+        );
+        assert!(budget.background_governance_max_len <= 512);
+        assert!(budget.inward_growth_max_len <= 512);
     }
 
     #[test]

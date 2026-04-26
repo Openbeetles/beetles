@@ -21,6 +21,8 @@ static MESSAGES_OUT: AtomicU32 = AtomicU32::new(0);
 static LLM_CALLS: AtomicU32 = AtomicU32::new(0);
 static LLM_ERRORS: AtomicU32 = AtomicU32::new(0);
 static LLM_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static LLM_REQUEST_BODY_LAST_BYTES: AtomicU32 = AtomicU32::new(0);
+static LLM_REQUEST_BODY_MAX_BYTES: AtomicU32 = AtomicU32::new(0);
 static REQUEST_SEMANTICS_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static TOOL_EXEC_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static MENTAL_PRIVACY_REVIEW_LAST_MS: AtomicU32 = AtomicU32::new(0);
@@ -43,6 +45,14 @@ static FINAL_ANSWER_CALLS: AtomicU32 = AtomicU32::new(0);
 static DISPATCH_SEND_OK: AtomicU32 = AtomicU32::new(0);
 static DISPATCH_SEND_FAIL: AtomicU32 = AtomicU32::new(0);
 static OUTBOUND_ENQUEUE_FAIL: AtomicU32 = AtomicU32::new(0);
+static INBOUND_QUEUE_FULL_TOTAL: AtomicU32 = AtomicU32::new(0);
+static INBOUND_DEFER_TOTAL: AtomicU32 = AtomicU32::new(0);
+static INBOUND_DROP_TOTAL: AtomicU32 = AtomicU32::new(0);
+static RUNTIME_SPAWN_FAILURE_TOTAL: AtomicU32 = AtomicU32::new(0);
+static HTTP_ROUTE_REJECT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static LEASE_CONFLICT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static LEASE_EXPIRED_REPLACEMENT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static PLANE_DRAIN_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static TOOL_SUCCEEDED_FINAL_DRIFT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static EMPTY_FINAL_BLOCKED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static INTERNAL_ERROR_COPY_SUPPRESSED_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -165,6 +175,24 @@ pub fn record_llm_call_end(start: std::time::Instant) {
 }
 
 #[inline]
+pub fn record_llm_request_body_bytes(len: usize) {
+    let len = len.min(u32::MAX as usize) as u32;
+    LLM_REQUEST_BODY_LAST_BYTES.store(len, Ordering::Relaxed);
+    let mut observed = LLM_REQUEST_BODY_MAX_BYTES.load(Ordering::Relaxed);
+    while len > observed {
+        match LLM_REQUEST_BODY_MAX_BYTES.compare_exchange_weak(
+            observed,
+            len,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next) => observed = next,
+        }
+    }
+}
+
+#[inline]
 pub fn record_request_semantics_ms(ms: u128) {
     REQUEST_SEMANTICS_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
 }
@@ -272,6 +300,50 @@ pub fn record_dispatch_send(ok: bool) {
 #[inline]
 pub fn record_outbound_enqueue_fail() {
     OUTBOUND_ENQUEUE_FAIL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Channel/event-source inbound queue full. Outcome is recorded separately as
+/// defer or drop because several platforms deliberately avoid acking.
+#[inline]
+pub fn record_inbound_queue_full() {
+    INBOUND_QUEUE_FULL_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Inbound event intentionally deferred via pending retry or upstream redelivery.
+#[inline]
+pub fn record_inbound_defer() {
+    INBOUND_DEFER_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Inbound event was dropped and is not expected to be replayed.
+#[inline]
+pub fn record_inbound_drop() {
+    INBOUND_DROP_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_runtime_spawn_failure() {
+    RUNTIME_SPAWN_FAILURE_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_http_route_reject() {
+    HTTP_ROUTE_REJECT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_lease_conflict() {
+    LEASE_CONFLICT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_lease_expired_replacement() {
+    LEASE_EXPIRED_REPLACEMENT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_plane_drain_timeout() {
+    PLANE_DRAIN_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 #[inline]
@@ -607,6 +679,8 @@ pub fn snapshot() -> MetricsSnapshot {
         llm_calls: LLM_CALLS.load(Ordering::Relaxed) as u64,
         llm_errors: LLM_ERRORS.load(Ordering::Relaxed) as u64,
         llm_last_ms: LLM_LAST_MS.load(Ordering::Relaxed) as u64,
+        llm_request_body_last_bytes: LLM_REQUEST_BODY_LAST_BYTES.load(Ordering::Relaxed) as u64,
+        llm_request_body_max_bytes: LLM_REQUEST_BODY_MAX_BYTES.load(Ordering::Relaxed) as u64,
         request_semantics_last_ms: REQUEST_SEMANTICS_LAST_MS.load(Ordering::Relaxed) as u64,
         tool_exec_last_ms: TOOL_EXEC_LAST_MS.load(Ordering::Relaxed) as u64,
         mental_privacy_review_last_ms: MENTAL_PRIVACY_REVIEW_LAST_MS.load(Ordering::Relaxed) as u64,
@@ -629,6 +703,15 @@ pub fn snapshot() -> MetricsSnapshot {
         dispatch_send_ok: DISPATCH_SEND_OK.load(Ordering::Relaxed) as u64,
         dispatch_send_fail: DISPATCH_SEND_FAIL.load(Ordering::Relaxed) as u64,
         outbound_enqueue_fail: OUTBOUND_ENQUEUE_FAIL.load(Ordering::Relaxed) as u64,
+        inbound_queue_full_total: INBOUND_QUEUE_FULL_TOTAL.load(Ordering::Relaxed) as u64,
+        inbound_defer_total: INBOUND_DEFER_TOTAL.load(Ordering::Relaxed) as u64,
+        inbound_drop_total: INBOUND_DROP_TOTAL.load(Ordering::Relaxed) as u64,
+        runtime_spawn_failure_total: RUNTIME_SPAWN_FAILURE_TOTAL.load(Ordering::Relaxed) as u64,
+        http_route_reject_total: HTTP_ROUTE_REJECT_TOTAL.load(Ordering::Relaxed) as u64,
+        lease_conflict_total: LEASE_CONFLICT_TOTAL.load(Ordering::Relaxed) as u64,
+        lease_expired_replacement_total: LEASE_EXPIRED_REPLACEMENT_TOTAL.load(Ordering::Relaxed)
+            as u64,
+        plane_drain_timeout_total: PLANE_DRAIN_TIMEOUT_TOTAL.load(Ordering::Relaxed) as u64,
         tool_succeeded_final_drift_total: TOOL_SUCCEEDED_FINAL_DRIFT_TOTAL.load(Ordering::Relaxed)
             as u64,
         empty_final_blocked_total: EMPTY_FINAL_BLOCKED_TOTAL.load(Ordering::Relaxed) as u64,
@@ -744,6 +827,70 @@ mod tests {
     }
 
     #[test]
+    fn inbound_backpressure_metrics_are_recorded_and_logged() {
+        let before = snapshot();
+
+        record_inbound_queue_full();
+        record_inbound_defer();
+        record_inbound_drop();
+
+        let after = snapshot();
+        assert!(after.inbound_queue_full_total > before.inbound_queue_full_total);
+        assert!(after.inbound_defer_total > before.inbound_defer_total);
+        assert!(after.inbound_drop_total > before.inbound_drop_total);
+
+        let line = after.to_baseline_log_line();
+        assert!(line.contains("inbound_q_full="));
+        assert!(line.contains("inbound_defer="));
+        assert!(line.contains("inbound_drop="));
+    }
+
+    #[test]
+    fn runtime_governance_metrics_are_recorded_and_logged() {
+        let before = snapshot();
+
+        record_runtime_spawn_failure();
+        record_http_route_reject();
+        record_lease_conflict();
+        record_lease_expired_replacement();
+        record_plane_drain_timeout();
+
+        let after = snapshot();
+        assert!(after.runtime_spawn_failure_total > before.runtime_spawn_failure_total);
+        assert!(after.http_route_reject_total > before.http_route_reject_total);
+        assert!(after.lease_conflict_total > before.lease_conflict_total);
+        assert!(after.lease_expired_replacement_total > before.lease_expired_replacement_total);
+        assert!(after.plane_drain_timeout_total > before.plane_drain_timeout_total);
+
+        let line = after.to_baseline_log_line();
+        assert!(line.contains("spawn_fail="));
+        assert!(line.contains("http_route_reject="));
+        assert!(line.contains("lease_conflict="));
+        assert!(line.contains("lease_expired_replace="));
+        assert!(line.contains("plane_drain_timeout="));
+    }
+
+    #[test]
+    fn llm_request_body_size_is_recorded_and_logged() {
+        let before = snapshot();
+
+        record_llm_request_body_bytes(1234);
+        let after_first = snapshot();
+        assert_eq!(after_first.llm_request_body_last_bytes, 1234);
+        assert!(after_first.llm_request_body_max_bytes >= 1234);
+
+        record_llm_request_body_bytes(777);
+        let after_second = snapshot();
+        assert_eq!(after_second.llm_request_body_last_bytes, 777);
+        assert!(after_second.llm_request_body_max_bytes >= after_first.llm_request_body_max_bytes);
+        assert!(after_second.llm_request_body_max_bytes >= before.llm_request_body_max_bytes);
+
+        let line = after_second.to_baseline_log_line();
+        assert!(line.contains("llm_req_body_last_b=777"));
+        assert!(line.contains("llm_req_body_max_b="));
+    }
+
+    #[test]
     fn user_visible_message_in_excludes_system_agent_work() {
         let before = snapshot();
 
@@ -781,6 +928,8 @@ pub struct MetricsSnapshot {
     pub llm_calls: u64,
     pub llm_errors: u64,
     pub llm_last_ms: u64,
+    pub llm_request_body_last_bytes: u64,
+    pub llm_request_body_max_bytes: u64,
     pub request_semantics_last_ms: u64,
     pub tool_exec_last_ms: u64,
     pub mental_privacy_review_last_ms: u64,
@@ -803,6 +952,14 @@ pub struct MetricsSnapshot {
     pub dispatch_send_ok: u64,
     pub dispatch_send_fail: u64,
     pub outbound_enqueue_fail: u64,
+    pub inbound_queue_full_total: u64,
+    pub inbound_defer_total: u64,
+    pub inbound_drop_total: u64,
+    pub runtime_spawn_failure_total: u64,
+    pub http_route_reject_total: u64,
+    pub lease_conflict_total: u64,
+    pub lease_expired_replacement_total: u64,
+    pub plane_drain_timeout_total: u64,
     pub tool_succeeded_final_drift_total: u64,
     pub empty_final_blocked_total: u64,
     pub internal_error_copy_suppressed_total: u64,
@@ -877,7 +1034,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} spawn_fail={} http_route_reject={} lease_conflict={} lease_expired_replace={} plane_drain_timeout={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.user_messages_in,
             self.messages_out,
@@ -886,6 +1043,8 @@ impl MetricsSnapshot {
             self.llm_calls,
             self.llm_errors,
             self.llm_last_ms,
+            self.llm_request_body_last_bytes,
+            self.llm_request_body_max_bytes,
             self.request_semantics_last_ms,
             self.tool_exec_last_ms,
             self.mental_privacy_review_last_ms,
@@ -908,6 +1067,14 @@ impl MetricsSnapshot {
             self.dispatch_send_ok,
             self.dispatch_send_fail,
             self.outbound_enqueue_fail,
+            self.inbound_queue_full_total,
+            self.inbound_defer_total,
+            self.inbound_drop_total,
+            self.runtime_spawn_failure_total,
+            self.http_route_reject_total,
+            self.lease_conflict_total,
+            self.lease_expired_replacement_total,
+            self.plane_drain_timeout_total,
             self.tool_succeeded_final_drift_total,
             self.empty_final_blocked_total,
             self.internal_error_copy_suppressed_total,
