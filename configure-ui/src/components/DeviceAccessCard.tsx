@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import UsbRounded from "@mui/icons-material/UsbRounded";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { BeetleIcon } from "./BeetleIcon";
+import { FirmwareFlashDialog } from "./FirmwareFlashDialog";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
@@ -149,6 +152,7 @@ export function DeviceAccessCard() {
   const [pairingSubmitting, setPairingSubmitting] = useState<
     null | "init_pairing" | "unlock"
   >(null);
+  const [flashDialogOpen, setFlashDialogOpen] = useState(false);
   const accessRequestVersionRef = useRef(0);
 
   const beginAccessRequest = useCallback(() => {
@@ -442,6 +446,75 @@ export function DeviceAccessCard() {
             gap: 4,
           }}
         >
+          <Tooltip title={t("device.flashTriggerHint")} arrow>
+            <Button
+              onClick={() => setFlashDialogOpen(true)}
+              size="small"
+              variant="text"
+              aria-label={t("device.flashTriggerLabel")}
+              sx={{
+                position: "absolute",
+                right: -4,
+                bottom: -4,
+                width: 62,
+                height: 62,
+                minWidth: 62,
+                borderRadius: 0,
+                px: 0,
+                py: 0,
+                border: "none",
+                color: "var(--foreground)",
+                zIndex: 2,
+                overflow: "visible",
+                display: "flex",
+                alignItems: "flex-end",
+                justifyContent: "flex-end",
+                "&:hover": {
+                  backgroundColor: "transparent",
+                  boxShadow: "none",
+                },
+                "&:before, &:after": {
+                  content: '""',
+                  position: "absolute",
+                  right: 0,
+                  bottom: 0,
+                  width: 62,
+                  height: 62,
+                  pointerEvents: "none",
+                },
+                "&:before": {
+                  backgroundColor: "color-mix(in srgb, var(--surface) 84%, var(--card) 16%)",
+                  clipPath: "polygon(100% 0, 0 100%, 100% 100%)",
+                  boxShadow:
+                    "inset 0 1px 0 color-mix(in srgb, var(--border) 42%, transparent)",
+                },
+                "&:after": {
+                  right: 8,
+                  bottom: 8,
+                  width: 48,
+                  height: 48,
+                  backgroundColor: "color-mix(in srgb, var(--card) 88%, var(--primary) 12%)",
+                  clipPath: "polygon(100% 0, 0 100%, 100% 100%)",
+                  filter: "brightness(1.06)",
+                },
+              }}
+            >
+              <UsbRounded
+                sx={{
+                  position: "absolute",
+                  right: 12,
+                  bottom: 10,
+                  width: 24,
+                  height: 24,
+                  transform: "rotate(-18deg)",
+                  filter:
+                    "drop-shadow(0 4px 8px color-mix(in srgb, var(--foreground) 16%, transparent))",
+                  pointerEvents: "none",
+                }}
+              />
+            </Button>
+          </Tooltip>
+
           <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
             <Box
               sx={{
@@ -537,6 +610,10 @@ export function DeviceAccessCard() {
         onConfirm={() => handleInitializePairing()}
         confirmDisabled={pairingSubmitting === "init_pairing"}
         requireExplicitAction
+      />
+      <FirmwareFlashDialog
+        open={flashDialogOpen}
+        onClose={() => setFlashDialogOpen(false)}
       />
     </>
   );
