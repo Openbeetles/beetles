@@ -455,7 +455,7 @@ export function DeviceAccessCard() {
               sx={{
                 position: "absolute",
                 right: -4,
-                bottom: -4,
+                top: -4,
                 width: 62,
                 height: 62,
                 minWidth: 62,
@@ -467,7 +467,7 @@ export function DeviceAccessCard() {
                 zIndex: 2,
                 overflow: "visible",
                 display: "flex",
-                alignItems: "flex-end",
+                alignItems: "flex-start",
                 justifyContent: "flex-end",
                 "&:hover": {
                   backgroundColor: "transparent",
@@ -477,24 +477,24 @@ export function DeviceAccessCard() {
                   content: '""',
                   position: "absolute",
                   right: 0,
-                  bottom: 0,
+                  top: 0,
                   width: 62,
                   height: 62,
                   pointerEvents: "none",
                 },
                 "&:before": {
                   backgroundColor: "color-mix(in srgb, var(--surface) 84%, var(--card) 16%)",
-                  clipPath: "polygon(100% 0, 0 100%, 100% 100%)",
+                  clipPath: "polygon(100% 0, 0 0, 100% 100%)",
                   boxShadow:
                     "inset 0 1px 0 color-mix(in srgb, var(--border) 42%, transparent)",
                 },
                 "&:after": {
                   right: 8,
-                  bottom: 8,
+                  top: 8,
                   width: 48,
                   height: 48,
                   backgroundColor: "color-mix(in srgb, var(--card) 88%, var(--primary) 12%)",
-                  clipPath: "polygon(100% 0, 0 100%, 100% 100%)",
+                  clipPath: "polygon(100% 0, 0 0, 100% 100%)",
                   filter: "brightness(1.06)",
                 },
               }}
@@ -502,11 +502,11 @@ export function DeviceAccessCard() {
               <UsbRounded
                 sx={{
                   position: "absolute",
-                  right: 12,
-                  bottom: 10,
+                  right: 10,
+                  top: 10,
                   width: 24,
                   height: 24,
-                  transform: "rotate(-18deg)",
+                  transform: "rotate(18deg)",
                   filter:
                     "drop-shadow(0 4px 8px color-mix(in srgb, var(--foreground) 16%, transparent))",
                   pointerEvents: "none",
