@@ -188,18 +188,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         visible_in_help: true,
         handler: cmd_help,
     },
-    CommandSpec {
-        name: "ota",
-        aliases: &[],
-        usage: "ota <url>",
-        summary: if cfg!(feature = "ota") {
-            "OTA update from URL, then restart"
-        } else {
-            "OTA not enabled (build with --features ota)."
-        },
-        visible_in_help: cfg!(feature = "ota"),
-        handler: cmd_ota,
-    },
 ];
 
 fn command_specs() -> &'static [CommandSpec] {
@@ -711,31 +699,6 @@ fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
 
 fn cmd_help(_ctx: &CliContext, _args: Vec<&str>) -> String {
     render_command_help()
-}
-
-#[cfg(feature = "ota")]
-fn cmd_ota(ctx: &CliContext, args: Vec<&str>) -> String {
-    let url = match args.first().copied() {
-        Some(u) => u,
-        None => return "Usage: ota <url>\n".into(),
-    };
-    match ctx.platform.ota_from_url(url) {
-        Ok(()) => {
-            log::info!("[{}] OTA done, restarting", TAG);
-            crate::runtime::request_restart_with_continuity_flush(
-                Arc::clone(&ctx.platform),
-                None,
-                "cli_ota_restart",
-            );
-            "OTA successful. Restarting...\n".into()
-        }
-        Err(e) => format!("OTA failed: {}\n", state::sanitize_error_for_log(&e)),
-    }
-}
-
-#[cfg(not(feature = "ota"))]
-fn cmd_ota(_ctx: &CliContext, _args: Vec<&str>) -> String {
-    "OTA not enabled (build with --features ota).\n".into()
 }
 
 /// 审计日志：仅命令名、时间、chat_id/无敏感信息；不打印密钥。

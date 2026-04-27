@@ -16,7 +16,6 @@ pub fn post(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "operator_window": window,
         "windowed_endpoints": crate::platform::operator_surface::windowed_control_plane_endpoints(
             ctx.platform.memory_system_kind(),
-            cfg!(feature = "ota"),
         ),
     });
     serde_json::to_string(&payload).map_err(std::io::Error::other)

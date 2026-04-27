@@ -752,14 +752,6 @@ pub trait Platform: Send + Sync {
         log::info!("init_sntp: no-op on this platform");
     }
 
-    /// OTA 固件升级。ESP 实现调用 ota_update_from_url；非 ESP 返回错误。
-    fn ota_from_url(&self, _url: &str) -> Result<()> {
-        Err(crate::error::Error::config(
-            "ota",
-            "OTA not supported on this platform",
-        ))
-    }
-
     /// 初始化显示器硬件。默认 no-op（非显示平台）。
     fn init_display(&self, _config: &DisplayConfig) -> Result<()> {
         Ok(())

@@ -43,6 +43,12 @@
 - 默认 ESP 官方包当前是 `voice+vision+sensor`
 - 默认 Linux 官方包当前是 `linux-full`
 
+固件更新说明：
+
+当前 Beetle 主线功能较多，系统包体较大，无法在同时保留现有功能与体验的前提下继续提供官方 OTA 升级能力。如果你需要 OTA，可以自行裁剪功能、重新规划分区表，或联系我们做定制方案。
+
+主线 package profile 当前面向浏览器 USB 烧录、串口烧录和工厂重刷，不再宣称官方 OTA 包型。
+
 ## 4. Feature 分组
 
 ### 4.1 Runtime bundle
@@ -86,7 +92,6 @@
 | Feature | 含义 | 默认状态 |
 |---------|------|----------|
 | `cli` | CLI 能力 | 默认关闭 |
-| `ota` | OTA 能力 | 默认关闭 |
 
 ## 5. `build.sh` package profile 映射
 

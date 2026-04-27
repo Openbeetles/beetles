@@ -90,7 +90,7 @@ native_thread_source_files() {
     display)
       printf '%s\n' src/platform/display_driver.rs
       ;;
-    http_snapshot_exec|http_config_exec|http_diag_exec|http_ota_exec)
+    http_snapshot_exec|http_config_exec|http_diag_exec)
       printf '%s\n' src/platform/http_server/esp_transport.rs src/platform/http_server/router src/platform/http_server/handlers
       ;;
     qq_ws|feishu_ws)

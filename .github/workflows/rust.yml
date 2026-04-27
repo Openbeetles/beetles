@@ -88,8 +88,6 @@ jobs:
         include:
           - name: default
             features: ""
-          - name: cli-ota
-            features: "cli,ota"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

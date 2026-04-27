@@ -1279,7 +1279,6 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `current_time`
 - `firmware_version`
 - `board_id`
-- `ota_available`
 - `locale`
 - `lan_ip`
 - `programmable_reasoning`
@@ -1339,49 +1338,11 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 }
 ```
 
-**GET /api/ota/check**
+固件更新说明：
 
-用途：检查是否有更新。
+当前 Beetle 主线功能较多，系统包体较大，无法在同时保留现有功能与体验的前提下继续提供官方 OTA 升级能力。如果你需要 OTA，可以自行裁剪功能、重新规划分区表，或联系我们做定制方案。
 
-鉴权：`已激活`
-
-可选查询参数：`channel`
-不传时默认用 `stable`。
-
-成功响应：`200 application/json`
-
-返回体字段：
-
-- `current_version`
-- `update_available`
-- `latest_version`
-- `url`
-- `release_notes`
-- `error`
-
-不同情况下，不一定会同时出现所有字段。
-
-**POST /api/ota**
-
-用途：开始更新。
-
-鉴权：`配对码 + CSRF`
-
-请求体：`application/json`
-
-```json
-{
-  "url": "https://example.com/beetle.bin"
-}
-```
-
-成功响应：`200 application/json`
-
-```json
-{
-  "ok": true
-}
-```
+主线现行换固件方式是浏览器 USB 烧录、串口烧录或工厂重刷。
 
 ## 回调接口
 

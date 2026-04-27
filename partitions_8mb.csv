@@ -1,8 +1,6 @@
 # Name,    Type, SubType, Offset,   Size   (8MB Flash)
 nvs,       data, nvs,     0x9000,   0x10000
-otadata,   data, ota,     0x19000,  0x2000
-phy_init,  data, phy,     0x1B000,  0x1000
-ota_0,     app,  ota_0,   0x20000,  0x180000
-ota_1,     app,  ota_1,   0x1A0000, 0x180000
-spiffs,    data, spiffs,  0x320000, 0x4D0000
+phy_init,  data, phy,     0x19000,  0x1000
+factory,   app,  factory, 0x20000,  0x600000
+spiffs,    data, spiffs,  0x620000, 0x1D0000
 coredump,  data, coredump,0x7F0000, 0x10000

@@ -2784,13 +2784,11 @@ PARTITION_TABLE_BIN="$RELEASE_DIR/partition-table.bin"
 PARTITION_CSV="$SCRIPT_ROOT/$PARTITION_TABLE"
 ESP_IDF_BUILD_DIR="$(find "$RELEASE_DIR/build" -path '*/out/build' -type d 2>/dev/null | head -n 1)"
 APP_BIN="$RELEASE_DIR/beetle.bin"
-OTADATA_BIN=""
 FLASHER_ARGS_JSON=""
 APP_FLASH_MODE=""
 APP_FLASH_SIZE=""
 APP_FLASH_FREQ=""
 if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
-  OTADATA_BIN="$ESP_IDF_BUILD_DIR/ota_data_initial.bin"
   FLASHER_ARGS_JSON="$ESP_IDF_BUILD_DIR/flasher_args.json"
   if [[ -f "$FLASHER_ARGS_JSON" ]]; then
     APP_FLASH_MODE="$(sed -n 's/.*"flash_mode":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
@@ -2855,13 +2853,11 @@ refresh_esp_idf_build_outputs() {
     [[ -z "$ESP_IDF_BUILD_DIR" ]] && ESP_IDF_BUILD_DIR="$candidate"
   done < <(find "$RELEASE_DIR/build" -path '*/out/build' -type d 2>/dev/null | sort)
 
-  OTADATA_BIN=""
   FLASHER_ARGS_JSON=""
   APP_FLASH_MODE=""
   APP_FLASH_SIZE=""
   APP_FLASH_FREQ=""
   if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
-    OTADATA_BIN="$ESP_IDF_BUILD_DIR/ota_data_initial.bin"
     FLASHER_ARGS_JSON="$ESP_IDF_BUILD_DIR/flasher_args.json"
     if [[ -f "$FLASHER_ARGS_JSON" ]]; then
       APP_FLASH_MODE="$(sed -n 's/.*"flash_mode":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
@@ -2887,13 +2883,12 @@ collect_esp_build_artifacts() {
     return 1
   fi
 
-  local elf_sha idf_elf_sha partition_sha app_sha="missing" bootloader_sha="missing" otadata_sha="missing"
+  local elf_sha idf_elf_sha partition_sha app_sha="missing" bootloader_sha="missing"
   elf_sha="$(sha256_file "$elf_src")" || return 1
   idf_elf_sha="$(sha256_file "$idf_elf_src")" || return 1
   partition_sha="$(sha256_file "$PARTITION_TABLE_BIN")" || return 1
   [[ -f "$APP_BIN" ]] && app_sha="$(sha256_file "$APP_BIN")"
   [[ -f "$BOOTLOADER_BIN" ]] && bootloader_sha="$(sha256_file "$BOOTLOADER_BIN")"
-  [[ -f "$OTADATA_BIN" ]] && otadata_sha="$(sha256_file "$OTADATA_BIN")"
 
   local git_sha="${BEETLE_BUILD_GIT_SHA:-unknown}"
   local artifact_id="${git_sha}-${elf_sha}"
@@ -2905,7 +2900,6 @@ collect_esp_build_artifacts() {
   cp "$PARTITION_TABLE_BIN" "$artifact_dir/partition-table.bin"
   [[ -f "$APP_BIN" ]] && cp "$APP_BIN" "$artifact_dir/beetle.bin"
   [[ -f "$BOOTLOADER_BIN" ]] && cp "$BOOTLOADER_BIN" "$artifact_dir/bootloader.bin"
-  [[ -f "$OTADATA_BIN" ]] && cp "$OTADATA_BIN" "$artifact_dir/ota_data_initial.bin"
 
   cat > "$artifact_dir/artifact.env" <<EOF
 artifact_id=$artifact_id
@@ -2921,7 +2915,6 @@ partition_table_sha256=$partition_sha
 partition_csv_sha256=${BEETLE_PARTITION_CSV_SHA256:-unknown}
 app_bin_sha256=$app_sha
 bootloader_sha256=$bootloader_sha
-otadata_sha256=$otadata_sha
 symbol_elf=beetle.elf
 idf_elf=libespidf.elf
 map=libespidf.map
@@ -2946,7 +2939,7 @@ select_flash_mode() {
   ERASE_BEFORE_FLASH=0
   if [[ -n "$FLASH_NO_ERASE" ]]; then
     echo -e "${YELLOW}! Flash mode: update only — no full-chip erase, but partition-table changes can still make SPIFFS reformat.${NC}"
-    echo "  Bootloader, partition table, otadata, and app will be refreshed in place."
+    echo "  Bootloader, partition table, and app will be refreshed in place."
     echo "  NVS is kept; config files are kept only when the SPIFFS partition offset and size are unchanged."
     echo ""
     return 0
@@ -3334,11 +3327,10 @@ run_esp_flash_workflow() {
   echo "  Partition table: $PARTITION_FOR_FLASH"
 
   if [[ "$ERASE_BEFORE_FLASH" -eq 1 ]]; then
-    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" || ! -f "$OTADATA_BIN" ]]; then
-      echo "Error: missing bootloader/partition-table/otadata bin required after full erase." >&2
+    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" ]]; then
+      echo "Error: missing bootloader/partition-table bin required after full erase." >&2
       echo "  bootloader: $BOOTLOADER_BIN" >&2
       echo "  partition : $PARTITION_TABLE_BIN" >&2
-      echo "  otadata   : ${OTADATA_BIN:-<empty>}" >&2
       return 1
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
@@ -3346,10 +3338,6 @@ run_esp_flash_workflow() {
       return 1
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"; then
-      print_flash_open_port_hints
-      return 1
-    fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
@@ -3358,11 +3346,10 @@ run_esp_flash_workflow() {
       return 1
     fi
   else
-    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" || ! -f "$OTADATA_BIN" ]]; then
-      echo "Error: missing bootloader/partition-table/otadata bin required for update flash." >&2
+    if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" ]]; then
+      echo "Error: missing bootloader/partition-table bin required for update flash." >&2
       echo "  bootloader: $BOOTLOADER_BIN" >&2
       echo "  partition : $PARTITION_TABLE_BIN" >&2
-      echo "  otadata   : ${OTADATA_BIN:-<empty>}" >&2
       return 1
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
@@ -3370,10 +3357,6 @@ run_esp_flash_workflow() {
       return 1
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"; then
-      print_flash_open_port_hints
-      return 1
-    fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"; then
       print_flash_open_port_hints
       return 1
     fi

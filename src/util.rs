@@ -939,7 +939,6 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 20 KB | 20 KB | ← local read-only SPIFFS/config snapshots without TLS reserve
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
-// | http_ota_exec                          | STACK_HTTP_OTA_WORKER    | 32 KB | 32 KB | ← OTA remains isolated from normal config workers
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; write-back flushes moved to `write_back`
 // | write_back                            | runtime local          | 24 KB | 8 KB  | ← SPIFFS/serde flush worker, lazy-started, idle-stopped, separate from agent_loop
@@ -1066,12 +1065,6 @@ pub const STACK_HTTP_CONFIG_WORKER: usize = 32 * 1024;
 pub const STACK_HTTP_DIAG_WORKER: usize = 28 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_HTTP_DIAG_WORKER: usize = 32 * 1024;
-
-/// ESP OTA route worker：OTA 写入独立预算，不反向抬高普通配置/诊断入口。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_HTTP_OTA_WORKER: usize = 32 * 1024;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub const STACK_HTTP_OTA_WORKER: usize = 32 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
 /// ESP 侧仍需抠 internal SRAM，但它直接承接 delayed-task / write-back，

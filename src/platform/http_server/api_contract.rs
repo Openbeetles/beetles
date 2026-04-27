@@ -56,17 +56,6 @@ pub const SKILL_URL_BODY_NOT_UTF8: &str = "skill.url_body_not_utf8";
 pub const SKILL_IMPORT_FETCH_FAILED: &str = "skill.import_fetch_failed";
 pub const SKILL_WRITE_FAILED: &str = "skill.write_failed";
 
-#[cfg(feature = "ota")]
-pub const OTA_CHANNEL_NOT_CONFIGURED: &str = "ota.channel_not_configured";
-#[cfg(feature = "ota")]
-pub const OTA_CHECK_FAILED: &str = "ota.check_failed";
-#[cfg(feature = "ota")]
-pub const OTA_DOWNLOAD_FAILED: &str = "ota.download_failed";
-#[cfg(feature = "ota")]
-pub const OTA_VALIDATE_FAILED: &str = "ota.validate_failed";
-#[cfg(feature = "ota")]
-pub const OTA_WRITE_FAILED: &str = "ota.write_failed";
-
 pub const PACKAGE_INVALID_REQUEST: &str = "package.invalid_request";
 pub const PACKAGE_INSTALL_PAYLOAD_REQUIRED: &str = "package.install_payload_required";
 

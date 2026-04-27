@@ -176,7 +176,6 @@ websocket = []
 
 # Misc build toggles
 cli = []
-ota = []
 
 [profile.release]
 opt-level = 2

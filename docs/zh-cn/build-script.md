@@ -13,6 +13,7 @@
 | Linux armv7 构建 | `TARGET=linux-armv7 ./build.sh` |
 | Linux aarch64 构建 | `TARGET=linux-aarch64 ./build.sh` |
 | Linux 发布包构建 | `TARGET=linux ./build.sh --package-linux` |
+| 生成全部支持版型的 ESP 单 bin 发布包 | `./esp-bin-build.sh` |
 | 已构建 Linux 产物部署 | `./build.sh --deploy-linux` |
 | 板载 C6 辅助固件烧录 | `./build.sh flash-c6` |
 | C6 与 P4 固件顺序烧录 | `./build.sh flash-all` |
@@ -72,9 +73,72 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 
 - `--flash` 会在构建完成后直接进入烧录流程
 - `--flash` 默认保留 NVS；如果你需要全擦，脚本会给你选项
-- `--flash-update` 不进擦除选择，直接按更新方式烧录；会原地刷新 bootloader、分区表、otadata 和 app，但不会整片擦除。NVS 会保留；只有 SPIFFS 分区 offset 和 size 都不变时，SPIFFS 配置才可认为安全保留。
+- `--flash-update` 不进擦除选择，直接按保留数据前提下的串口重刷方式烧录；会原地刷新 bootloader、分区表和 app，但不会整片擦除。NVS 会保留；只有 SPIFFS 分区 offset 和 size 都不变时，SPIFFS 配置才可认为安全保留。
 - `--no-monitor` 表示烧录完成后不打开串口监视
 - 若串口可唯一识别，脚本自动选择该串口；否则进入选择流程
+
+## ESP 单 bin 发布包
+
+如果你要给浏览器 USB 在线烧录页面准备“每个版型一个单 bin”，使用：
+
+```bash
+./esp-bin-build.sh
+```
+
+默认行为：
+
+- 自动从 `board_presets.toml` 枚举当前支持的全部 ESP 版型
+- 每个版型都走一次现有 `build.sh --no-deploy`
+- 从 `Cargo.toml package.version` 推导版本号，并以原子目录方式发布到 `dist/esp/v<version>/`
+- 每个版型生成一个 `dist/esp/v<version>/<board>.bin`
+- 每个版型同时生成一个 `dist/esp/v<version>/<board>.manifest.json`
+- 同目录生成 `release-catalog.json`、`release-report.json` 和 `SHA256SUMS`
+
+当前输出示例：
+
+```text
+dist/esp/v0.1.0/esp32-s3-8mb.bin
+dist/esp/v0.1.0/esp32-s3-8mb.manifest.json
+dist/esp/v0.1.0/esp32-s3-16mb.bin
+dist/esp/v0.1.0/esp32-s3-32mb.bin
+dist/esp/v0.1.0/esp32-p4-nano-16mb.bin
+dist/esp/v0.1.0/release-catalog.json
+dist/esp/v0.1.0/release-report.json
+dist/esp/v0.1.0/SHA256SUMS
+```
+
+实现约束：
+
+- 新脚本不是重新发明刷写布局；它复用 `build.sh` 产出的 `bootloader.bin`、`partition-table.bin`、`beetle.bin`
+- 合并产物服务浏览器 USB 烧录、串口烧录和工厂重刷，不再把官方 OTA 当主线发布合同
+- 版型浏览器烧录 manifest 走单 part + `offset: 0`，让安装器直接刷对应的单 bin
+- 发布目录先在临时 stage 下构建，全部成功后再整体替换最终版本目录，避免残留半成品产物
+
+可选参数：
+
+```bash
+./esp-bin-build.sh --version v0.1.0-beta.1
+./esp-bin-build.sh --output-dir /tmp/beetle-esp-release
+./esp-bin-build.sh --package-profile voice
+```
+
+说明：
+
+- `--version` 只影响输出目录名；默认仍取 `Cargo.toml package.version`
+- 其余未识别参数会透传给每一轮 `build.sh`
+- 当前单 bin 合并依赖 `python3 -m esptool`
+
+固件更新说明：
+
+当前 Beetle 主线功能较多，系统包体较大，无法在同时保留现有功能与体验的前提下继续提供官方 OTA 升级能力。如果你需要 OTA，可以自行裁剪功能、重新规划分区表，或联系我们做定制方案。
+
+GitHub release 会复用同一套产物目录，再额外打包出：
+
+- `beetle-v<version>-esp-release-bundle.tar.gz`
+- `beetle-v<version>-esp-release-catalog.json`
+- `beetle-v<version>-esp-release-report.json`
+- `beetle-v<version>-esp-SHA256SUMS.txt`
+- `beetle-v<version>-<board>.bin`
 
 ## ESP panic 定责与产物身份
 
@@ -94,7 +158,7 @@ scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
 
 禁止用其他构建轮次的 ELF/map 猜地址；ESP panic 定责必须以匹配的 artifact id 为准。
 
-`--flash-update` 会刷新 bootloader、编译后的分区表、otadata 和 app；只有当 NVS/SPIFFS 的 offset 与 size 不变时，数据区才可被保留，避免新 app 搭配旧分区表污染排查结论；如果改变 SPIFFS extent，ESP-IDF 可能会格式化文件系统。默认 16MB S3 分区表删除旧 `model` 分区，并保持当前迁移后的 SPIFFS extent 为 `0xA20000/0x5D0000`；除非明确要迁移或格式化用户配置，否则不要再次改变这个 extent。
+`--flash-update` 会刷新 bootloader、编译后的分区表和 app；只有当 NVS/SPIFFS 的 offset 与 size 不变时，数据区才可被保留，避免新 app 搭配旧分区表污染排查结论；如果改变 SPIFFS extent，ESP-IDF 可能会格式化文件系统。当前 16MB S3 主线分区使用单 `factory` app 槽位 `0x20000/0x600000`，并保持 SPIFFS extent 为 `0x620000/0x9D0000`；除非明确要迁移或格式化用户配置，否则不要再次改变这个 extent。
 
 ## Linux 示例
 

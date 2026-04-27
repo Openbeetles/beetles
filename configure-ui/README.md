@@ -16,7 +16,7 @@ After you connect to a Beetle device, this page lets you:
 - Configure **channels**: Telegram, Feishu, DingTalk, WeCom, QQ Channel, Webhook (tokens, keys, toggles).
 - Configure **LLM**: API key, model, provider, compatible API URL (e.g. Ollama).
 - Set **proxy**, **search keys**, and related options.
-- View **system info**, **restart**, **OTA** (if enabled), **factory reset**.
+- View **system info**, **restart**, and **factory reset**.
 
 All write operations require the correct pairing code; the UI sends it for you.
 
@@ -99,7 +99,11 @@ You open the same setup page from the internet (for example **https://openbeetle
 
 ### First-time setup and pairing code
 
-- **First access:** Set a **6-digit pairing code** on the config page. It protects save/restart/OTA/factory reset; secrets are stored on the device only.
+Firmware update note:
+
+Current Beetle mainline no longer provides official OTA upgrade support. Mainline firmware replacement uses browser USB flashing, serial flashing, and factory reflash. If you need OTA, slim the feature set, redesign the partition table, or contact us for a custom build.
+
+- **First access:** Set a **6-digit pairing code** on the config page. It protects save/restart/factory reset; secrets are stored on the device only.
 - **Forgot the code:** Use **Factory reset** from the config page (you must still be able to open the page and run the action).
 
 More detail: see the parent repo’s docs, especially `docs/en-us/configuration.md` and `docs/en-us/config-api.md`.

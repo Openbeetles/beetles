@@ -14,8 +14,6 @@ use super::catalog::{
     ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT, ROUTE_SYSTEM_INFO, ROUTE_TOOLS,
     ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
 };
-#[cfg(feature = "ota")]
-use super::catalog::{ROUTE_OTA, ROUTE_OTA_CHECK};
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
 use crate::platform::http_server::api_contract;
@@ -1170,65 +1168,12 @@ fn dispatch_impl(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        _ => {
-            #[cfg(feature = "ota")]
-            {
-                if let Some(o) = dispatch_ota(ctx, store, method, path, uri, &incoming)? {
-                    return Ok(o);
-                }
-            }
-            Ok(OutgoingResponse::json(
-                404,
-                "Not Found",
-                CORS_HEADERS,
-                br#"{"error_key":"common.not_found"}"#.to_vec(),
-            ))
-        }
-    }
-}
-
-#[cfg(feature = "ota")]
-fn dispatch_ota(
-    ctx: &HandlerContext,
-    store: &dyn crate::platform::ConfigStore,
-    method: &str,
-    path: &str,
-    uri: &str,
-    incoming: &IncomingRequest,
-) -> Result<Option<OutgoingResponse>> {
-    use crate::platform::http_server::common::channel_from_uri;
-    match (method, path) {
-        ("GET", ROUTE_OTA_CHECK) => {
-            if let Some(r) = auth::require_activated(store) {
-                return Ok(Some(api_to_out(r)));
-            }
-            let channel = channel_from_uri(uri);
-            let body = crate::platform::http_server::handlers::ota::get_check(ctx, &channel)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            Ok(Some(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            )))
-        }
-        ("POST", ROUTE_OTA) => {
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(Some(o));
-            }
-            let body_str = read_route_body(
-                &incoming.body,
-                RouteBodyMode::Utf8(common::POST_BODY_MAX_LEN),
-            )?;
-            let (r, do_restart) = crate::platform::http_server::handlers::ota::post(ctx, body_str)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
-            let mut out = api_to_out(r);
-            if do_restart {
-                out.restart = RestartAction::After300Ms;
-            }
-            Ok(Some(out))
-        }
-        _ => Ok(None),
+        _ => Ok(OutgoingResponse::json(
+            404,
+            "Not Found",
+            CORS_HEADERS,
+            br#"{"error_key":"common.not_found"}"#.to_vec(),
+        )),
     }
 }
 

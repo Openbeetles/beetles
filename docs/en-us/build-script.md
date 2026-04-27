@@ -13,6 +13,7 @@
 | Build Linux armv7 | `TARGET=linux-armv7 ./build.sh` |
 | Build Linux aarch64 | `TARGET=linux-aarch64 ./build.sh` |
 | Build and package a Linux bundle | `TARGET=linux ./build.sh --package-linux` |
+| Generate merged single-bin ESP release images for every supported board | `./esp-bin-build.sh` |
 | Deploy an existing Linux artifact | `./build.sh --deploy-linux` |
 | Flash the on-board C6 helper firmware | `./build.sh flash-c6` |
 | Flash C6 and then the P4 main firmware | `./build.sh flash-all` |
@@ -72,9 +73,72 @@ What matters most:
 
 - `--flash` goes straight into the flash flow after build
 - `--flash` keeps NVS by default; if you need a full erase, the script offers that choice
-- `--flash-update` skips the erase choice and uses update-style flashing directly; it refreshes bootloader, partition table, otadata, and app in place without a full-chip erase. NVS is kept, but SPIFFS config is safe only when the SPIFFS partition offset and size are unchanged.
+- `--flash-update` skips the erase choice and uses an in-place serial reflash path that preserves data only when the layout stays compatible; it refreshes bootloader, partition table, and app without a full-chip erase. NVS is kept, but SPIFFS config is safe only when the SPIFFS partition offset and size are unchanged.
 - `--no-monitor` means do not open the serial monitor after flashing
 - if the serial port is obvious, the script usually picks it; otherwise it asks
+
+## ESP Single-Bin Release Images
+
+If you need “one merged bin per supported board” for browser USB install flows, run:
+
+```bash
+./esp-bin-build.sh
+```
+
+Default behavior:
+
+- enumerate every supported ESP board from `board_presets.toml`
+- build each board once through the existing `build.sh --no-deploy` path
+- derive the public version from `Cargo.toml package.version` and publish atomically under `dist/esp/v<version>/`
+- emit one merged file per board as `dist/esp/v<version>/<board>.bin`
+- emit one ESP Web Tools manifest per board as `dist/esp/v<version>/<board>.manifest.json`
+- emit `release-catalog.json`, `release-report.json`, and `SHA256SUMS` in the same bundle directory
+
+Current output shape:
+
+```text
+dist/esp/v0.1.0/esp32-s3-8mb.bin
+dist/esp/v0.1.0/esp32-s3-8mb.manifest.json
+dist/esp/v0.1.0/esp32-s3-16mb.bin
+dist/esp/v0.1.0/esp32-s3-32mb.bin
+dist/esp/v0.1.0/esp32-p4-nano-16mb.bin
+dist/esp/v0.1.0/release-catalog.json
+dist/esp/v0.1.0/release-report.json
+dist/esp/v0.1.0/SHA256SUMS
+```
+
+Implementation contract:
+
+- the script does not invent a second flash layout; it reuses `build.sh` outputs: `bootloader.bin`, `partition-table.bin`, and `beetle.bin`
+- merged images are for browser USB flashing, serial flashing, and factory reflash flows; official OTA is no longer part of the mainline release contract
+- board manifests use a single part at `offset: 0`, so browser installers can flash the merged image directly
+- the bundle is assembled under a staging directory and only replaces the final version directory after every board and metadata file succeeds
+
+Optional arguments:
+
+```bash
+./esp-bin-build.sh --version v0.1.0-beta.1
+./esp-bin-build.sh --output-dir /tmp/beetle-esp-release
+./esp-bin-build.sh --package-profile voice
+```
+
+Notes:
+
+- `--version` only changes the output directory name; by default the script still uses `Cargo.toml package.version`
+- unknown arguments are forwarded to each `build.sh` invocation
+- merged single-bin generation currently depends on `python3 -m esptool`
+
+Firmware update note:
+
+Current Beetle mainline carries a large feature set and firmware package. We cannot keep the current functionality and user experience while also providing official OTA upgrade support. If you need OTA, you can slim the feature set, redesign the partition table, or contact us for a custom solution.
+
+GitHub releases reuse the same bundle directory and additionally package:
+
+- `beetle-v<version>-esp-release-bundle.tar.gz`
+- `beetle-v<version>-esp-release-catalog.json`
+- `beetle-v<version>-esp-release-report.json`
+- `beetle-v<version>-esp-SHA256SUMS.txt`
+- `beetle-v<version>-<board>.bin`
 
 ## ESP Panic Attribution And Artifact Identity
 
@@ -94,7 +158,7 @@ scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
 
 Do not guess final addresses with an ELF/map from another build. ESP panic attribution must start from the matching artifact id.
 
-`--flash-update` refreshes bootloader, the compiled partition table, otadata, and the app while preserving data partitions such as NVS/SPIFFS only when their offset and size stay unchanged. This prevents a new app from running against an old partition table during bring-up, but changing the SPIFFS extent can make ESP-IDF format the filesystem. The default 16MB S3 layout removes the old `model` partition and keeps the current post-migration SPIFFS extent at `0xA20000/0x5D0000`; do not change that extent again unless you are intentionally migrating or reformatting user configuration.
+`--flash-update` refreshes bootloader, the compiled partition table, and the app while preserving data partitions such as NVS/SPIFFS only when their offset and size stay unchanged. This prevents a new app from running against an old partition table during bring-up, but changing the SPIFFS extent can make ESP-IDF format the filesystem. The current 16MB S3 mainline layout uses a single `factory` app slot at `0x20000/0x600000` and keeps SPIFFS at `0x620000/0x9D0000`; do not change that extent again unless you are intentionally migrating or reformatting user configuration.
 
 ## Common Linux Workflows
 

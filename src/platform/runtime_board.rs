@@ -1,4 +1,4 @@
-//! 运行期拼装的板型标识与硬件摘要，供 HTTP `board_id`、OTA manifest 键、`system_info` 使用。
+//! 运行期拼装的板型标识与硬件摘要，供 HTTP `board_id` 与 `system_info` 使用。
 //! ESP 产品侧仅识别 **ESP32-S3**（model id 9）与 **ESP32-P4**（18）；其它片型仅生成 `unsupported-soc-*` 便于排障。
 //! 不依赖编译期 `BOARD` / `TARGET` 推断机型（构建仍用 `BOARD` 选分区表，与运行时上报独立）。
 //! Runtime board id / hardware summary. Product SoCs: **ESP32-S3** (id 9) and **ESP32-P4** (18) only; others use `unsupported-soc-*` for diagnostics.
@@ -62,17 +62,17 @@ mod esp {
         fn esp_chip_info(out_info: *mut EspChipInfoRaw);
     }
 
-    /// OTA manifest `boards` 键与 `board_presets.toml` Flash 档位一致。
-    const FLASH_MANIFEST_BUCKETS_MB: &[u32] = &[8, 16, 32];
+    /// `board_presets.toml` 使用的 Flash 档位。
+    const FLASH_BOARD_BUCKETS_MB: &[u32] = &[8, 16, 32];
 
-    fn flash_mb_nearest_manifest_bucket(flash_bytes: u32) -> u32 {
+    fn flash_mb_nearest_board_bucket(flash_bytes: u32) -> u32 {
         let mb = flash_bytes / (1024 * 1024);
         if mb == 0 {
             return 16;
         }
-        let mut best = FLASH_MANIFEST_BUCKETS_MB[0];
+        let mut best = FLASH_BOARD_BUCKETS_MB[0];
         let mut best_dist = mb.abs_diff(best);
-        for &c in &FLASH_MANIFEST_BUCKETS_MB[1..] {
+        for &c in &FLASH_BOARD_BUCKETS_MB[1..] {
             let d = mb.abs_diff(c);
             if d < best_dist {
                 best = c;
@@ -121,7 +121,7 @@ mod esp {
         let model = info.model as u32;
         let slug = model_id_slug(model);
         let flash = read_flash_bytes();
-        let bucket = flash_mb_nearest_manifest_bucket(flash);
+        let bucket = flash_mb_nearest_board_bucket(flash);
         format!("{}-{}mb", slug, bucket)
     }
 
@@ -146,7 +146,7 @@ mod esp {
     }
 }
 
-/// HTTP / OTA 使用的板型键：ESP 为「片型 + Flash 桶」；Linux 为 `linux`；其它宿主为 `host`。
+/// HTTP 使用的板型键：ESP 为「片型 + Flash 桶」；Linux 为 `linux`；其它宿主为 `host`。
 pub fn resolved_board_id() -> String {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {

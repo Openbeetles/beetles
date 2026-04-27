@@ -227,26 +227,6 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         mode_sensitive: true,
     },
     PlaneProfile {
-        id: PlaneId::Diagnostic,
-        owner: "http_ota",
-        startup_phase: PlaneStartupPhase::OnDemand,
-        residency: PlaneResidency::Lazy,
-        allowed_modes: MODES_DIAGNOSTIC,
-        required_leases: &[LeaseKind::OtaHttpWorker],
-        thread_names: &["http_ota_exec"],
-        queue_budget: Some(PlaneQueueBudget {
-            name: "http_ota_exec",
-            capacity: 1,
-        }),
-        drain_timeout_secs: Some(30),
-        execution_class: ThreadExecutionClass::Config,
-        risk_class: ThreadRiskClass::High,
-        tls_capable: true,
-        http_capable: true,
-        wss_capable: false,
-        mode_sensitive: true,
-    },
-    PlaneProfile {
         id: PlaneId::ChannelWss,
         owner: "external_wss",
         startup_phase: PlaneStartupPhase::Runtime,
@@ -627,10 +607,6 @@ mod tests {
                 "http_diag_exec",
                 crate::platform::http_server::router::catalog::RouteExecutionClass::SlowDiagnosticRoute,
             ),
-            (
-                "http_ota_exec",
-                crate::platform::http_server::router::catalog::RouteExecutionClass::OtaRoute,
-            ),
         ];
 
         for (thread_name, class) in cases {
@@ -647,7 +623,7 @@ mod tests {
 
     #[test]
     fn http_worker_profiles_do_not_claim_precise_tls_handshake_lease_yet() {
-        for thread_name in ["http_config_exec", "http_diag_exec", "http_ota_exec"] {
+        for thread_name in ["http_config_exec", "http_diag_exec"] {
             let profile = profile_for_thread(thread_name).expect("http worker profile");
 
             assert!(profile.tls_capable);

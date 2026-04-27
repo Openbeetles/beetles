@@ -23,7 +23,6 @@ export interface HomeSummaryField {
     | "system_status"
     | "audio_duplex_profile"
     | "locale"
-    | "ota_available"
     | "current_time";
   labelKey: string;
   value: string | boolean;
@@ -263,14 +262,6 @@ export function buildDeviceSummaryFields(
       labelKey: "device.deviceInfoLocale",
       value: systemInfo.locale,
       valueKind: "text",
-    });
-  }
-  if (typeof systemInfo?.ota_available === "boolean") {
-    items.push({
-      id: "ota_available",
-      labelKey: "device.deviceInfoOtaAvailable",
-      value: systemInfo.ota_available,
-      valueKind: "boolean",
     });
   }
   if (systemInfo?.current_time) {

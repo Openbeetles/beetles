@@ -1,4 +1,4 @@
-# Step 8: tagged release — ESP32 + Linux musl binaries, SBOM, SHA256SUMS, build provenance.
+# Step 8: tagged release — ESP release bundle + Linux musl binaries, desktop bundles, SBOM, SHA256SUMS, build provenance.
 name: Release
 
 on:
@@ -133,44 +133,36 @@ jobs:
           path: _desktop_release
           if-no-files-found: error
 
-  build-esp:
-    name: Build ESP32-S3 (${{ matrix.name }})
+  build-esp-release-bundle:
+    name: Build ESP release bundle
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: default
-            features: ""
-          - name: cli-ota
-            features: "cli,ota"
+    needs: read-version
     steps:
       - uses: actions/checkout@v4
-      - name: Install Xtensa Rust toolchain
-        uses: esp-rs/xtensa-toolchain@v1.5.2
-        with:
-          default: true
-          targets: xtensa-esp32s3-espidf
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Python esptool
+        run: python3 -m pip install --user esptool
       - name: Cache esp-idf and cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.espressif
+            ~/.espup
+            ~/.local/share/esp-rs
+            ~/.rustup/toolchains/esp
+            ~/.cargo/bin
             ~/.cargo/registry
+            ~/.cargo/git
             target
-          key: esp-release-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-      - name: Build release
-        run: |
-          if [ -z "${{ matrix.features }}" ]; then
-            cargo build --release --target xtensa-esp32s3-espidf
-          else
-            cargo build --release --target xtensa-esp32s3-espidf --features "${{ matrix.features }}"
-          fi
-      - name: Upload firmware binary
+          key: esp-release-bundle-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'board_presets.toml', 'partitions*.csv', 'sdkconfig.defaults*') }}
+      - name: Build ESP release bundle
+        run: ./esp-bin-build.sh
+      - name: Upload ESP release bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: esp32s3-${{ matrix.name }}
-          path: target/xtensa-esp32s3-espidf/release/beetle
+          name: esp-release-bundle
+          path: dist/esp
           if-no-files-found: error
 
   build-linux-musl:
@@ -207,7 +199,7 @@ jobs:
 
   release:
     name: Package and publish
-    needs: [read-version, build-configure-ui-desktop, build-esp, build-linux-musl]
+    needs: [read-version, build-configure-ui-desktop, build-esp-release-bundle, build-linux-musl]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -230,17 +222,11 @@ jobs:
             exit 1
           fi
 
-      - name: Download ESP artifacts
+      - name: Download ESP release bundle
         uses: actions/download-artifact@v4
         with:
-          name: esp32s3-default
-          path: _artifacts/esp-default
-
-      - name: Download ESP cli-ota artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: esp32s3-cli-ota
-          path: _artifacts/esp-cli-ota
+          name: esp-release-bundle
+          path: _artifacts/esp-release
 
       - name: Download Linux armv7
         uses: actions/download-artifact@v4
@@ -273,14 +259,16 @@ jobs:
           path: _artifacts/configure-ui-desktop-linux
 
       - name: chmod +x downloaded binaries
-        run: chmod +x _artifacts/esp-default/beetle _artifacts/esp-cli-ota/beetle _artifacts/linux-armv7/beetle _artifacts/linux-riscv64/beetle
+        run: chmod +x _artifacts/linux-armv7/beetle _artifacts/linux-riscv64/beetle
 
-      - name: Rename ESP binaries
+      - name: Package ESP release assets
         run: |
           LABEL="${{ steps.ver.outputs.label }}"
           mkdir -p _release
-          cp _artifacts/esp-default/beetle "_release/beetle-${LABEL}-esp32s3.bin"
-          cp _artifacts/esp-cli-ota/beetle "_release/beetle-${LABEL}-esp32s3-cli-ota.bin"
+          scripts/package_esp_release_bundle.sh \
+            --input-dir _artifacts/esp-release/v${{ needs.read-version.outputs.version }} \
+            --version "$LABEL" \
+            --output-dir _release
 
       - name: Package Linux tarballs
         run: |

@@ -192,7 +192,6 @@ export const zhCN = {
       runtimeSummaryWifiDisconnected: '网络未连接',
       deviceInfoAudio: '音频模式',
       deviceInfoLocale: '语言',
-      deviceInfoOtaAvailable: '支持在线更新',
       deviceInfoCurrentTime: '设备时间',
       audioProfileUnavailable: '不可用',
       audioProfileSpeakerOnly: '仅扬声器',
@@ -550,13 +549,6 @@ export const zhCN = {
       import_fetch_failed: '拉取技能内容失败',
       write_failed: '写入技能失败',
       name_query_required: '缺少技能名称查询参数',
-    },
-    ota: {
-      channel_not_configured: 'OTA 渠道未配置',
-      check_failed: '检查更新失败',
-      download_failed: 'OTA 下载失败',
-      validate_failed: 'OTA 校验失败',
-      write_failed: 'OTA 写入失败',
     },
     package: {
       invalid_request: '能力包请求无效',

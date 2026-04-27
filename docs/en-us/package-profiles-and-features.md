@@ -43,6 +43,12 @@ Notes:
 - the current default official ESP package is `voice+vision+sensor`
 - the current default official Linux package is `linux-full`
 
+Firmware update note:
+
+Current Beetle mainline carries a large feature set and firmware package. We cannot keep the current functionality and user experience while also providing official OTA upgrade support. If you need OTA, you can slim the feature set, redesign the partition table, or contact us for a custom solution.
+
+Current package profiles target browser USB flashing, serial flashing, and factory reflash workflows; the mainline no longer advertises an official OTA package shape.
+
 ## 4. Feature Groups
 
 ### 4.1 Runtime bundle
@@ -86,7 +92,6 @@ Notes:
 | Feature | Meaning | Default status |
 |---------|---------|----------------|
 | `cli` | CLI surface | off by default |
-| `ota` | OTA surface | off by default |
 
 ## 5. `build.sh` Package Profile Mapping
 

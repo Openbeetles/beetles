@@ -8,8 +8,6 @@ use crate::platform::http_server::common::{
 };
 use crate::platform::http_server::handlers::HandlerContext;
 use crate::platform::http_server::lazy_executor::LazyExecutor;
-#[cfg(feature = "ota")]
-use crate::platform::http_server::router::catalog::OTA_ROUTE_SPECS;
 use crate::platform::http_server::router::{
     self,
     catalog::{
@@ -345,7 +343,6 @@ struct EspRouteExecutors {
     snapshot: EspRouteExecutor,
     config: EspRouteExecutor,
     diagnostic: EspRouteExecutor,
-    ota: EspRouteExecutor,
 }
 
 impl EspRouteExecutors {
@@ -358,7 +355,6 @@ impl EspRouteExecutors {
                 ctx,
                 config_store,
             ),
-            ota: EspRouteExecutor::new(RouteExecutionClass::OtaRoute, ctx, config_store),
         }
     }
 
@@ -368,7 +364,6 @@ impl EspRouteExecutors {
             RouteExecutionClass::SnapshotRoute => Some(&self.snapshot),
             RouteExecutionClass::AsyncConfigRoute => Some(&self.config),
             RouteExecutionClass::SlowDiagnosticRoute => Some(&self.diagnostic),
-            RouteExecutionClass::OtaRoute => Some(&self.ota),
         }
     }
 }
@@ -378,7 +373,6 @@ fn route_worker_thread_name(lane: RouteWorkerLane) -> &'static str {
         RouteWorkerLane::Snapshot => "http_snapshot_exec",
         RouteWorkerLane::Config => "http_config_exec",
         RouteWorkerLane::Diagnostic => "http_diag_exec",
-        RouteWorkerLane::Ota => "http_ota_exec",
     }
 }
 
@@ -387,7 +381,6 @@ fn route_worker_spawn_stage(lane: RouteWorkerLane) -> &'static str {
         RouteWorkerLane::Snapshot => "http_snapshot_exec_spawn",
         RouteWorkerLane::Config => "http_config_exec_spawn",
         RouteWorkerLane::Diagnostic => "http_diag_exec_spawn",
-        RouteWorkerLane::Ota => "http_ota_exec_spawn",
     }
 }
 
@@ -398,7 +391,6 @@ fn route_worker_lifecycle_identity(
         RouteWorkerLane::Snapshot => (crate::runtime::PlaneId::Diagnostic, "http_snapshot"),
         RouteWorkerLane::Config => (crate::runtime::PlaneId::ConfigRecovery, "http_config"),
         RouteWorkerLane::Diagnostic => (crate::runtime::PlaneId::Diagnostic, "http_diagnostic"),
-        RouteWorkerLane::Ota => (crate::runtime::PlaneId::Diagnostic, "http_ota"),
     }
 }
 
@@ -412,7 +404,6 @@ fn route_worker_lease_identity(
         RouteWorkerLane::Snapshot => "http_snapshot",
         RouteWorkerLane::Config => "http_config",
         RouteWorkerLane::Diagnostic => "http_diagnostic",
-        RouteWorkerLane::Ota => "http_ota",
     };
     (
         lane.lease_kind(),
@@ -981,8 +972,6 @@ const PAIRING_AND_CONFIG_ROUTES: &[HttpRouteSpec] = PAIRING_AND_CONFIG_ROUTE_SPE
 const OBSERVABILITY_ROUTES: &[HttpRouteSpec] = OBSERVABILITY_ROUTE_SPECS;
 const MEMORY_AND_SKILL_ROUTES: &[HttpRouteSpec] = MEMORY_AND_SKILL_ROUTE_SPECS;
 const ACTION_ROUTES: &[HttpRouteSpec] = ACTION_ROUTE_SPECS;
-#[cfg(feature = "ota")]
-const OTA_ROUTES: &[HttpRouteSpec] = OTA_ROUTE_SPECS;
 
 /// 注册与历史 `register!` 等价的全量 URI handler。
 pub(super) fn register_all_esp_routes(
@@ -1018,15 +1007,11 @@ pub(super) fn register_all_esp_routes(
         MEMORY_AND_SKILL_ROUTES,
     )?;
     register_esp_route_specs(server, ctx, env, config_store, &executors, ACTION_ROUTES)?;
-    #[cfg(feature = "ota")]
-    register_esp_route_specs(server, ctx, env, config_store, &executors, OTA_ROUTES)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "ota")]
-    use super::OTA_ROUTES;
     use super::{
         EspRouteExecutor, ACTION_ROUTES, MEMORY_AND_SKILL_ROUTES, OBSERVABILITY_ROUTES,
         PAIRING_AND_CONFIG_ROUTES, ROOT_ROUTES,
@@ -1055,13 +1040,6 @@ mod tests {
             {
                 return Some(spec.execution_class);
             }
-        }
-        #[cfg(feature = "ota")]
-        if let Some(spec) = OTA_ROUTES
-            .iter()
-            .find(|spec| spec.path == path && esp_method(spec.method) == method)
-        {
-            return Some(spec.execution_class);
         }
         None
     }
@@ -1225,11 +1203,6 @@ mod tests {
             execution_class_for("/api/skills/import", Method::Post),
             Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
-        #[cfg(feature = "ota")]
-        assert_eq!(
-            execution_class_for("/api/ota/check", Method::Get),
-            Some(RouteExecutionClass::OtaRoute)
-        );
     }
 
     #[test]
@@ -1245,10 +1218,6 @@ mod tests {
         assert_eq!(
             route_worker_lifecycle_identity(RouteWorkerLane::Diagnostic),
             (PlaneId::Diagnostic, "http_diagnostic")
-        );
-        assert_eq!(
-            route_worker_lifecycle_identity(RouteWorkerLane::Ota),
-            (PlaneId::Diagnostic, "http_ota")
         );
     }
 
@@ -1273,13 +1242,6 @@ mod tests {
             (
                 crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
                 crate::runtime::lease::LeaseOwner::new("http_route", "http_diagnostic")
-            )
-        );
-        assert_eq!(
-            route_worker_lease_identity(RouteWorkerLane::Ota),
-            (
-                crate::runtime::lease::LeaseKind::OtaHttpWorker,
-                crate::runtime::lease::LeaseOwner::new("http_route", "http_ota")
             )
         );
     }

@@ -55,7 +55,6 @@ mod tests {
         assert_nonempty_both(Message::PairingRequired);
         assert_nonempty_both(Message::OperationFailed);
         assert_nonempty_both(Message::InvalidJson);
-        assert_nonempty_both(Message::OtaDownload);
         assert_nonempty_both(Message::ErrorProxyUnsupported);
     }
 

@@ -222,16 +222,6 @@ pub fn name_from_uri(uri: &str) -> Option<String> {
     query_param_from_uri(uri, "name").map(crate::util::percent_decode_query)
 }
 
-/// 从 URI 中解析 query 参数 channel 的值；无或空返回 "stable"。仅 OTA 检查更新时使用。
-#[cfg(feature = "ota")]
-pub fn channel_from_uri(uri: &str) -> String {
-    query_param_from_uri(uri, "channel")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("stable")
-        .to_string()
-}
-
 /// 将任意错误转为 std::io::Error，供 handler 闭包统一返回 HandlerResult。
 pub fn to_io<E: Debug>(e: E) -> std::io::Error {
     std::io::Error::other(format!("{:?}", e))

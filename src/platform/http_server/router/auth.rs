@@ -15,11 +15,6 @@ use crate::platform::http_server::router::catalog::{
     ROUTE_OPERATOR_WINDOW, ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_SESSIONS, ROUTE_SKILLS,
     ROUTE_SKILLS_IMPORT, ROUTE_SYSTEM_INFO, ROUTE_TOOLS,
 };
-#[cfg(all(
-    feature = "ota",
-    any(test, target_arch = "xtensa", target_arch = "riscv32")
-))]
-use crate::platform::http_server::router::catalog::{ROUTE_OTA, ROUTE_OTA_CHECK};
 use crate::platform::pairing;
 use crate::platform::ConfigStore;
 
@@ -100,10 +95,6 @@ fn route_auth_response(
         (RouteMethod::Post, ROUTE_OPERATOR_WINDOW) => {
             require_activated(store).or_else(|| require_pairing_csrf(store, uri, headers))
         }
-        #[cfg(feature = "ota")]
-        (RouteMethod::Get, ROUTE_OTA_CHECK) => require_activated(store),
-        #[cfg(feature = "ota")]
-        (RouteMethod::Post, ROUTE_OTA) => require_pairing_csrf(store, uri, headers),
         _ => None,
     }
 }

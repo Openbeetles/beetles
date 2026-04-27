@@ -3,11 +3,6 @@
 use crate::memory::MemorySystemKind;
 #[cfg(not(any(test, target_arch = "xtensa", target_arch = "riscv32")))]
 use crate::platform::http_server::router::catalog::operator_route_endpoints;
-#[cfg(all(
-    feature = "ota",
-    any(test, target_arch = "xtensa", target_arch = "riscv32")
-))]
-use crate::platform::http_server::router::catalog::OTA_ROUTE_SPECS;
 #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::http_server::router::catalog::{
     operator_route_endpoints, HttpRouteSpec, OperatorRouteAccess, ACTION_ROUTE_SPECS,
@@ -73,24 +68,17 @@ pub fn current_operator_surface_budget(
 pub fn control_plane_inventory(
     memory_system_kind: MemorySystemKind,
     _window_active: bool,
-    _ota_supported: bool,
     inbound_webhooks_enabled: bool,
 ) -> ControlPlaneInventory {
     if !is_embedded_surface(memory_system_kind) {
-        return host_control_plane_inventory(_ota_supported, inbound_webhooks_enabled);
+        return host_control_plane_inventory(inbound_webhooks_enabled);
     }
 
     #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
     {
         ControlPlaneInventory {
-            endpoints: embedded_control_plane_endpoints(
-                OperatorRouteAccess::AlwaysOn,
-                _ota_supported,
-            ),
-            windowed_endpoints: embedded_control_plane_endpoints(
-                OperatorRouteAccess::Windowed,
-                _ota_supported,
-            ),
+            endpoints: embedded_control_plane_endpoints(OperatorRouteAccess::AlwaysOn),
+            windowed_endpoints: embedded_control_plane_endpoints(OperatorRouteAccess::Windowed),
             operator_window: Some(operator_window_snapshot_from_active(_window_active)),
         }
     }
@@ -101,17 +89,14 @@ pub fn control_plane_inventory(
     }
 }
 
-pub fn windowed_control_plane_endpoints(
-    memory_system_kind: MemorySystemKind,
-    _ota_supported: bool,
-) -> Vec<String> {
+pub fn windowed_control_plane_endpoints(memory_system_kind: MemorySystemKind) -> Vec<String> {
     if !is_embedded_surface(memory_system_kind) {
         return Vec::new();
     }
 
     #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        embedded_control_plane_endpoints(OperatorRouteAccess::Windowed, _ota_supported)
+        embedded_control_plane_endpoints(OperatorRouteAccess::Windowed)
     }
 
     #[cfg(not(any(test, target_arch = "xtensa", target_arch = "riscv32")))]
@@ -173,35 +158,22 @@ fn operator_window_snapshot_from_active(active: bool) -> OperatorWindowSnapshot 
     }
 }
 
-fn host_control_plane_inventory(
-    ota_supported: bool,
-    inbound_webhooks_enabled: bool,
-) -> ControlPlaneInventory {
+fn host_control_plane_inventory(inbound_webhooks_enabled: bool) -> ControlPlaneInventory {
     ControlPlaneInventory {
-        endpoints: operator_route_endpoints(None, ota_supported, inbound_webhooks_enabled),
+        endpoints: operator_route_endpoints(None, inbound_webhooks_enabled),
         windowed_endpoints: Vec::new(),
         operator_window: None,
     }
 }
 
 #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
-fn embedded_control_plane_endpoints(
-    access: OperatorRouteAccess,
-    ota_supported: bool,
-) -> Vec<String> {
-    #[cfg(not(feature = "ota"))]
-    let _ = ota_supported;
-
+fn embedded_control_plane_endpoints(access: OperatorRouteAccess) -> Vec<String> {
     let mut endpoints = Vec::new();
     push_embedded_control_plane_endpoints(&mut endpoints, ROOT_ROUTE_SPECS, access);
     push_embedded_control_plane_endpoints(&mut endpoints, PAIRING_AND_CONFIG_ROUTE_SPECS, access);
     push_embedded_control_plane_endpoints(&mut endpoints, OBSERVABILITY_ROUTE_SPECS, access);
     push_embedded_control_plane_endpoints(&mut endpoints, MEMORY_AND_SKILL_ROUTE_SPECS, access);
     push_embedded_control_plane_endpoints(&mut endpoints, ACTION_ROUTE_SPECS, access);
-    #[cfg(feature = "ota")]
-    if ota_supported {
-        push_embedded_control_plane_endpoints(&mut endpoints, OTA_ROUTE_SPECS, access);
-    }
     endpoints
 }
 
@@ -226,16 +198,6 @@ fn embedded_route_requires_access(path: &str, access: OperatorRouteAccess) -> bo
         || route_group_requires_access(OBSERVABILITY_ROUTE_SPECS, path, access)
         || route_group_requires_access(MEMORY_AND_SKILL_ROUTE_SPECS, path, access)
         || route_group_requires_access(ACTION_ROUTE_SPECS, path, access)
-        || {
-            #[cfg(feature = "ota")]
-            {
-                route_group_requires_access(OTA_ROUTE_SPECS, path, access)
-            }
-            #[cfg(not(feature = "ota"))]
-            {
-                false
-            }
-        }
 }
 
 #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
@@ -258,7 +220,7 @@ mod tests {
 
     #[test]
     fn embedded_inventory_separates_always_on_and_windowed_routes_from_catalog() {
-        let inventory = control_plane_inventory(MemorySystemKind::EspCompact, false, true, true);
+        let inventory = control_plane_inventory(MemorySystemKind::EspCompact, false, true);
 
         assert!(inventory
             .endpoints
@@ -280,15 +242,11 @@ mod tests {
             .windowed_endpoints
             .iter()
             .any(|item| item == "GET /api/tools"));
-        assert!(!inventory
-            .windowed_endpoints
-            .iter()
-            .any(|item| item == "GET /api/ota/check"));
     }
 
     #[test]
     fn embedded_window_policy_matches_windowed_inventory_paths() {
-        for endpoint in windowed_control_plane_endpoints(MemorySystemKind::EspCompact, true) {
+        for endpoint in windowed_control_plane_endpoints(MemorySystemKind::EspCompact) {
             let path = endpoint
                 .split_once(' ')
                 .map(|(_, path)| path)
@@ -300,13 +258,13 @@ mod tests {
         }
         assert!(!route_requires_operator_window(
             MemorySystemKind::EspCompact,
-            "/api/ota"
+            "/api/health"
         ));
     }
 
     #[test]
     fn host_inventory_tracks_current_route_catalog() {
-        let inventory = control_plane_inventory(MemorySystemKind::LinuxFull, false, true, true);
+        let inventory = control_plane_inventory(MemorySystemKind::LinuxFull, false, true);
 
         for endpoint in [
             "GET /api/config/display",

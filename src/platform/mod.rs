@@ -31,8 +31,6 @@ pub mod memory_operator_surface;
 pub mod nvs;
 pub mod operator_status;
 pub mod operator_surface;
-#[cfg(all(feature = "ota", any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub mod ota;
 pub mod pairing;
 pub(crate) mod psram_vec;
 pub mod response;

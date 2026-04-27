@@ -43,8 +43,6 @@ pub(crate) enum RouteExecutionClass {
     SnapshotRoute,
     AsyncConfigRoute,
     SlowDiagnosticRoute,
-    #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
-    OtaRoute,
     RejectedRoute,
 }
 
@@ -54,8 +52,6 @@ pub(crate) enum RouteWorkerLane {
     Snapshot,
     Config,
     Diagnostic,
-    #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
-    Ota,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
@@ -65,8 +61,6 @@ impl RouteWorkerLane {
             Self::Snapshot => crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
             Self::Config => crate::runtime::lease::LeaseKind::ConfigHttpWorker,
             Self::Diagnostic => crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
-            #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
-            Self::Ota => crate::runtime::lease::LeaseKind::OtaHttpWorker,
         }
     }
 
@@ -164,21 +158,6 @@ impl RouteExecutionClass {
                 counter_name: "http_diagnostic_worker",
                 begin_stage: "http_diagnostic_begin",
                 complete_stage: "http_diagnostic_complete",
-            }),
-            #[cfg(any(feature = "ota", target_arch = "xtensa", target_arch = "riscv32", test))]
-            Self::OtaRoute => Some(RouteWorkerContract {
-                lane: RouteWorkerLane::Ota,
-                stack_size: crate::util::STACK_HTTP_OTA_WORKER,
-                reserves_tls_headroom: true,
-                queue_capacity: 1,
-                worker_threads: 1,
-                timeout_secs: 45,
-                idle_timeout_secs: 30,
-                reject_status: 409,
-                socket_reserve: 3,
-                counter_name: "http_ota_worker",
-                begin_stage: "http_ota_begin",
-                complete_stage: "http_ota_complete",
             }),
         }
     }
@@ -301,24 +280,6 @@ impl HttpRouteSpec {
         }
     }
 
-    #[cfg(feature = "ota")]
-    pub(crate) const fn ota_operator(
-        path: &'static str,
-        method: RouteMethod,
-        body_mode: RouteBodyMode,
-        operator_access: OperatorRouteAccess,
-    ) -> Self {
-        Self {
-            path,
-            method,
-            body_mode,
-            execution_class: RouteExecutionClass::OtaRoute,
-            operator_access,
-            config_activity_phase: None,
-            reject_during_voice_exclusive: false,
-        }
-    }
-
     #[cfg_attr(
         not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
         allow(dead_code)
@@ -353,29 +314,19 @@ fn route_spec_groups() -> &'static [&'static [HttpRouteSpec]] {
         OBSERVABILITY_ROUTE_SPECS,
         MEMORY_AND_SKILL_ROUTE_SPECS,
         ACTION_ROUTE_SPECS,
-        #[cfg(feature = "ota")]
-        OTA_ROUTE_SPECS,
     ]
 }
 
 pub(crate) fn operator_route_endpoints(
     access: Option<OperatorRouteAccess>,
-    ota_supported: bool,
     inbound_webhooks_enabled: bool,
 ) -> Vec<String> {
-    #[cfg(not(feature = "ota"))]
-    let _ = ota_supported;
-
     let mut endpoints = Vec::new();
     push_operator_route_endpoints(&mut endpoints, ROOT_ROUTE_SPECS, access);
     push_operator_route_endpoints(&mut endpoints, PAIRING_AND_CONFIG_ROUTE_SPECS, access);
     push_operator_route_endpoints(&mut endpoints, OBSERVABILITY_ROUTE_SPECS, access);
     push_operator_route_endpoints(&mut endpoints, MEMORY_AND_SKILL_ROUTE_SPECS, access);
     push_operator_route_endpoints(&mut endpoints, ACTION_ROUTE_SPECS, access);
-    #[cfg(feature = "ota")]
-    if ota_supported {
-        push_operator_route_endpoints(&mut endpoints, OTA_ROUTE_SPECS, access);
-    }
     if access.is_none() && inbound_webhooks_enabled {
         endpoints.push(format!("{} {}", RouteMethod::Post.as_str(), ROUTE_WEBHOOK));
     }
@@ -469,10 +420,6 @@ pub(crate) const ROUTE_SKILLS_IMPORT: &str = "/api/skills/import";
 pub(crate) const ROUTE_RESTART: &str = "/api/restart";
 pub(crate) const ROUTE_CONFIG_RESET: &str = "/api/config_reset";
 pub(crate) const ROUTE_WEBHOOK: &str = "/api/webhook";
-#[cfg(feature = "ota")]
-pub(crate) const ROUTE_OTA_CHECK: &str = "/api/ota/check";
-#[cfg(feature = "ota")]
-pub(crate) const ROUTE_OTA: &str = "/api/ota";
 
 pub(crate) const ROOT_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::immediate(ROUTE_ROOT, RouteMethod::Get, RouteBodyMode::None),
@@ -894,24 +841,6 @@ pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
     HttpRouteSpec::immediate(ROUTE_WEBHOOK, RouteMethod::Options, RouteBodyMode::None),
 ];
 
-#[cfg(feature = "ota")]
-pub(crate) const OTA_ROUTE_SPECS: &[HttpRouteSpec] = &[
-    HttpRouteSpec::ota_operator(
-        ROUTE_OTA_CHECK,
-        RouteMethod::Get,
-        RouteBodyMode::None,
-        OperatorRouteAccess::AlwaysOn,
-    ),
-    HttpRouteSpec::immediate(ROUTE_OTA_CHECK, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::ota_operator(
-        ROUTE_OTA,
-        RouteMethod::Post,
-        RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
-        OperatorRouteAccess::AlwaysOn,
-    ),
-    HttpRouteSpec::immediate(ROUTE_OTA, RouteMethod::Options, RouteBodyMode::None),
-];
-
 pub(crate) fn route_spec_for(method: &str, path: &str) -> Option<HttpRouteSpec> {
     let method = RouteMethod::parse(method)?;
     route_spec_for_method(method, path)
@@ -1155,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_snapshots_ota_and_rejected_routes_are_explicit() {
+    fn diagnostics_snapshots_and_rejected_routes_are_explicit() {
         assert_eq!(
             route_spec_for("GET", ROUTE_WIFI_SCAN)
                 .expect("wifi scan")
@@ -1186,21 +1115,6 @@ mod tests {
             RouteExecutionClass::ImmediateRoute
         );
         assert!(matches!(custom_webhook.body_mode, RouteBodyMode::Utf8(_)));
-        #[cfg(feature = "ota")]
-        {
-            assert_eq!(
-                route_spec_for("GET", ROUTE_OTA_CHECK)
-                    .expect("ota check")
-                    .execution_class,
-                RouteExecutionClass::OtaRoute
-            );
-            assert_eq!(
-                route_spec_for("POST", ROUTE_OTA)
-                    .expect("ota post")
-                    .execution_class,
-                RouteExecutionClass::OtaRoute
-            );
-        }
     }
 
     #[test]
@@ -1209,17 +1123,16 @@ mod tests {
             RouteExecutionClass::SnapshotRoute,
             RouteExecutionClass::AsyncConfigRoute,
             RouteExecutionClass::SlowDiagnosticRoute,
-            RouteExecutionClass::OtaRoute,
         ] {
             let contract = class.worker_contract().expect("worker contract");
             assert_eq!(contract.worker_threads, 1);
             assert!(contract.queue_capacity <= 2);
             assert!(contract.stack_size > 0);
             assert!(contract.timeout_secs > 0);
-            assert!(contract.timeout_secs <= 45);
+            assert!(contract.timeout_secs <= 20);
             assert!(contract.idle_timeout_secs > 0);
-            assert!(contract.idle_timeout_secs <= 30);
-            assert!(matches!(contract.reject_status, 409 | 503));
+            assert!(contract.idle_timeout_secs <= 10);
+            assert_eq!(contract.reject_status, 503);
             if contract.reserves_tls_headroom {
                 assert!(contract.socket_reserve >= 3);
             }
@@ -1273,11 +1186,6 @@ mod tests {
                 RouteExecutionClass::SlowDiagnosticRoute,
                 RouteWorkerLane::Diagnostic,
                 crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
-            ),
-            (
-                RouteExecutionClass::OtaRoute,
-                RouteWorkerLane::Ota,
-                crate::runtime::lease::LeaseKind::OtaHttpWorker,
             ),
         ];
 

@@ -551,11 +551,6 @@ impl Platform for Esp32Platform {
         crate::platform::sntp::init_sntp();
     }
 
-    #[cfg(feature = "ota")]
-    fn ota_from_url(&self, url: &str) -> crate::error::Result<()> {
-        crate::platform::ota::ota_update_from_url(url)
-    }
-
     fn init_display(&self, config: &DisplayConfig) -> crate::error::Result<()> {
         let mut guard = self.display_state.lock().unwrap_or_else(|e| e.into_inner());
         install_display_state(&mut guard, config)

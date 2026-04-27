@@ -17,12 +17,10 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
-        "http_snapshot_exec" | "http_config_exec" | "http_diag_exec" | "http_ota_exec" => {
-            ThreadPlan {
-                core: Some(SpawnCore::Core1),
-                role: HttpThreadRole::Io,
-            }
-        }
+        "http_snapshot_exec" | "http_config_exec" | "http_diag_exec" => ThreadPlan {
+            core: Some(SpawnCore::Core1),
+            role: HttpThreadRole::Io,
+        },
         "agent_loop" => ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Interactive,

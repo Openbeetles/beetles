@@ -192,7 +192,6 @@ export const enUS = {
       runtimeSummaryWifiDisconnected: 'Network disconnected',
       deviceInfoAudio: 'Audio mode',
       deviceInfoLocale: 'Locale',
-      deviceInfoOtaAvailable: 'Online update available',
       deviceInfoCurrentTime: 'Device time',
       audioProfileUnavailable: 'Unavailable',
       audioProfileSpeakerOnly: 'Speaker only',
@@ -550,13 +549,6 @@ export const enUS = {
       import_fetch_failed: 'Could not fetch skill content',
       write_failed: 'Could not write the skill',
       name_query_required: 'Skill name query parameter is required',
-    },
-    ota: {
-      channel_not_configured: 'OTA channel is not configured',
-      check_failed: 'Could not check for updates',
-      download_failed: 'OTA download failed',
-      validate_failed: 'OTA package validation failed',
-      write_failed: 'OTA write failed',
     },
     package: {
       invalid_request: 'Capability package request is invalid',

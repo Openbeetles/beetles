@@ -296,7 +296,7 @@ mod tests {
         );
         mark(
             PlaneId::Diagnostic,
-            "http_ota",
+            "http_diagnostic",
             PlaneLifecycleState::Active,
             "spawn_ok",
         );
@@ -311,6 +311,6 @@ mod tests {
         assert!(snapshot
             .records
             .iter()
-            .any(|record| record.owner == "http_ota"));
+            .any(|record| record.owner == "http_diagnostic"));
     }
 }

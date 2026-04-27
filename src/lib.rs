@@ -14,7 +14,6 @@ pub mod network;
 pub mod util;
 pub mod wake;
 
-pub use build_info::ota_manifest_url;
 pub use build_package::{
     compiled_build_package_capabilities, compiled_sensor_capability, compiled_vision_capability,
     compiled_voice_capability, current_build_package, BuildPackageCapabilities,

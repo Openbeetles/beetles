@@ -242,6 +242,3 @@ pub mod system_info;
 pub mod tools;
 pub mod webhook;
 pub mod wifi_scan;
-
-#[cfg(feature = "ota")]
-pub mod ota;

@@ -168,15 +168,11 @@ assert_file_contains \
   "build.sh should refresh the bootloader during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x19000 "$OTADATA_BIN"' \
-  "build.sh should refresh otadata during update flash"
-assert_file_contains \
-  "$ROOT_DIR/build.sh" \
   'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"' \
   "build.sh should refresh the app image during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'missing bootloader/partition-table/otadata bin required for update flash.' \
+  'missing bootloader/partition-table bin required for update flash.' \
   "build.sh should fail fast when update flash lacks any compiled boot artifact"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
@@ -204,20 +200,20 @@ if [[ ! -x "$ROOT_DIR/scripts/esp_symbolize_panic.sh" ]]; then
 fi
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
-  'spiffs  , data, spiffs  , 0xA20000, 0x5D0000' \
-  "default S3 partition table should keep the current post-migration SPIFFS extent while removing the wake resource partition"
+  'spiffs,    data, spiffs,  0x620000, 0x9D0000' \
+  "default S3 partition table should move SPIFFS behind the single 6MiB factory app slot"
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
-  'ota_0   , app , ota_0   , 0x20000 , 0x540000' \
-  "default S3 partition table should keep ota_0 expanded for current app size"
-assert_file_contains \
-  "$ROOT_DIR/partitions.csv" \
-  'ota_1   , app , ota_1   , 0x560000, 0x4C0000' \
-  "default S3 partition table should keep ota_1 compressed to preserve SPIFFS start"
+  'factory,   app,  factory, 0x20000,  0x600000' \
+  "default S3 partition table should publish a single 6MiB factory app slot"
 assert_file_not_contains \
   "$ROOT_DIR/partitions.csv" \
   'model' \
   "default S3 partition table must not restore the removed wake resource partition"
+assert_file_not_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'ota_' \
+  "default S3 partition table should no longer publish OTA app slots"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
   'SPIFFS config is preserved only if partition offset/size are unchanged' \

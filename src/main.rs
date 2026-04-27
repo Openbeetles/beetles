@@ -1,5 +1,5 @@
 //! 甲壳虫 (beetle) - ESP32-S3 firmware entry.
-//! Firmware version is embedded for OTA and ops.
+//! Firmware version is embedded for operator surfaces and diagnostics.
 //! Startup order: ESP app_main initializes platform/logging, then hands off
 //! Rust-heavy boot/runtime work to runtime_bootstrap with an explicit stack.
 //! ESP32: no graceful shutdown; process runs until power off.

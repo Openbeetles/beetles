@@ -1,7 +1,7 @@
 //! GET /api/system_info：供系统信息页展示用，返回设备摘要字段。
 //! `current_time`：仅在墙钟可信时返回 UTC 字符串；未同步时返回 "—"。
 //! `lan_ip`：ESP 为 STA IPv4；Linux 为当前默认上行接口的 IPv4（点分十进制）；不可用时为 "—"。
-//! `board_id`：运行期拼装（ESP：`esp_chip_info`+Flash 与 manifest 档位对齐；Linux：`linux`）。`hardware_model`：ESP 为摘要句；Linux 为设备树/DMI 等（若有）。
+//! `board_id`：运行期拼装（ESP：`esp_chip_info` + Flash 档位；Linux：`linux`）。`hardware_model`：ESP 为摘要句；Linux 为设备树/DMI 等（若有）。
 
 use super::HandlerContext;
 use crate::config;
@@ -97,7 +97,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let product_name = "beetle";
     let current_time = current_time_str();
     let firmware_version = ctx.version.as_ref();
-    let ota_available = cfg!(feature = "ota");
     let locale = config::get_locale(ctx.config_store.as_ref());
     let lan_ip = ctx.platform.lan_ipv4().unwrap_or_else(|| "—".to_string());
     let programmable_reasoning = programmable_reasoning_system_info_summary(ctx)?;
@@ -107,7 +106,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         "current_time": current_time,
         "firmware_version": firmware_version,
         "board_id": ctx.board_id.as_ref(),
-        "ota_available": ota_available,
         "locale": locale,
         "lan_ip": lan_ip,
         "programmable_reasoning": programmable_reasoning,

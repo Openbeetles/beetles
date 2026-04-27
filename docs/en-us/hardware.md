@@ -20,7 +20,11 @@ This page stays practical and avoids low-level configuration detail.
 | `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
 | `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
-The 16MB S3 default partition table `partitions.csv` keeps SPIFFS starting at `0xA20000`, with the current post-migration size `0x5D0000`; the old standalone wake resource area has been removed and its space is now part of SPIFFS. `ota_0` is `0x540000` and `ota_1` is `0x4C0000`; this is an asymmetric OTA layout. If a new firmware image is larger than `ota_1`, flash it to `ota_0` over serial/factory flashing or reduce the firmware size before using A/B OTA. Do not change the SPIFFS extent again without an explicit migration or format decision, because ESP-IDF may format existing user configuration when the filesystem extent changes.
+The 16MB S3 default partition table `partitions.csv` now uses one `factory` app slot at `0x20000/0x600000` and keeps SPIFFS at `0x620000/0x9D0000`. Do not change the SPIFFS extent again without an explicit migration or format decision, because ESP-IDF may format existing user configuration when the filesystem extent changes.
+
+Current Beetle mainline carries a large feature set and firmware package. We cannot keep the current functionality and user experience while also providing official OTA upgrade support. If you need OTA, you can slim the feature set, redesign the partition table, or contact us for a custom solution.
+
+The supported mainline update paths are browser USB flashing, serial flashing, and factory reflash.
 
 ## Common Hardware Work In Beetle OS
 

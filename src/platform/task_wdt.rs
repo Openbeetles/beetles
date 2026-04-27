@@ -26,7 +26,6 @@ pub fn thread_policy_for_name(name: &str) -> TaskWdtThreadPolicy {
         "http_snapshot_exec"
         | "http_config_exec"
         | "http_diag_exec"
-        | "http_ota_exec"
         | "dispatch"
         | "os_outbound"
         | "bg_timer"

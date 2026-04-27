@@ -1274,7 +1274,6 @@ Common fields:
 - `current_time`
 - `firmware_version`
 - `board_id`
-- `ota_available`
 - `locale`
 - `lan_ip`
 - `programmable_reasoning`
@@ -1337,49 +1336,11 @@ Success response: `200 application/json`
 }
 ```
 
-**GET /api/ota/check**
+Firmware update note:
 
-Purpose: check whether an update is available.
+Current Beetle mainline carries a large feature set and firmware package. We cannot keep the current functionality and user experience while also providing official OTA upgrade support. If you need OTA, you can slim the feature set, redesign the partition table, or contact us for a custom solution.
 
-Auth: `Activated`
-
-Optional query parameter: `channel`
-If omitted, the default is `stable`.
-
-Success response: `200 application/json`
-
-Response fields:
-
-- `current_version`
-- `update_available`
-- `latest_version`
-- `url`
-- `release_notes`
-- `error`
-
-Different situations return different subsets of these fields.
-
-**POST /api/ota**
-
-Purpose: start an update.
-
-Auth: `Pairing code + CSRF`
-
-Request body: `application/json`
-
-```json
-{
-  "url": "https://example.com/beetle.bin"
-}
-```
-
-Success response: `200 application/json`
-
-```json
-{
-  "ok": true
-}
-```
+The supported mainline update paths are browser USB flashing, serial flashing, and factory reflash.
 
 ## Callback routes
 

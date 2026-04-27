@@ -17,12 +17,7 @@ fn map_error(err: &Error) -> Message {
         Error::Nvs { .. } => Message::ErrorNvs,
         Error::Spiffs { .. } => Message::ErrorSpiffs,
         Error::Io { .. } => Message::ErrorIo,
-        Error::Esp { stage: s, code: _ } => match *s {
-            "ota_download" => Message::OtaDownload,
-            "ota_validate" => Message::OtaValidate,
-            "ota_write" => Message::OtaWrite,
-            _ => Message::ErrorEsp,
-        },
+        Error::Esp { .. } => Message::ErrorEsp,
         Error::Http { status_code: c, .. } => Message::ErrorHttpStatus { code: *c },
         Error::Other {
             stage: s, source, ..

@@ -39,7 +39,6 @@ test("buildDeviceSummaryFields includes the full homepage device summary fields"
     board_id: "linux",
     hardware_model: "Orange Pi Zero LTS",
     lan_ip: "192.168.1.37",
-    ota_available: false,
     locale: "zh-CN",
     os_type: "Linux",
     kernel_version: "5.4.27-sunxi",
@@ -88,7 +87,6 @@ test("buildDeviceSummaryFields includes the full homepage device summary fields"
       "system_status",
       "audio_duplex_profile",
       "locale",
-      "ota_available",
       "current_time",
     ],
   );
