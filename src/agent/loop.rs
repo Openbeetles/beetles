@@ -2075,13 +2075,14 @@ mod tests {
     use crate::error::Result;
     use crate::llm::{LlmHttpClient, LlmModelCompat, LlmResponse, StopReason, ToolChoicePolicy};
     use crate::memory::{
-        AutonomyStrategyStore, ExecutionState, ExecutionStateStore, ImportantMessageStore,
-        InnerLifeStore, LongTermMemoryDraft, LongTermMemoryEntry, LongTermMemoryExtractionState,
-        LongTermMemoryExtractionStateStore, LongTermMemorySlot, LongTermMemoryStore, MemoryStore,
-        MentalPrivacyState, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore,
-        PrivateDocStore, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
-        RelationshipTopologyStore, SelfContinuityStore, SelfModelStore, SessionMessage,
-        SessionStore, SessionSummaryStore, TurnBlockerLedger, TurnDeliberationClass, TurnLedger,
+        AutonomyStrategyStore, ExecutionState, ExecutionStateStore, FeltSignificanceStore,
+        ImportantMessageStore, InnerConflictStore, InnerLifeStore, LongTermMemoryDraft,
+        LongTermMemoryEntry, LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
+        LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
+        MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenDoc,
+        PrivateGardenDocRecord, PrivateGardenStore, RelationshipTopologyStore, SelfContinuityStore,
+        SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
+        TemperamentContinuityStore, TurnBlockerLedger, TurnDeliberationClass, TurnLedger,
         TurnLedgerStore, TurnPersonaPressureLevel, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
@@ -2760,6 +2761,65 @@ mod tests {
         }
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubFeltSignificanceStore;
+
+    impl FeltSignificanceStore for StubFeltSignificanceStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::FeltSignificance>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            _significance: &crate::memory::FeltSignificance,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTemperamentContinuityStore;
+
+    impl TemperamentContinuityStore for StubTemperamentContinuityStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::TemperamentContinuity>> {
+            Ok(None)
+        }
+
+        fn set(
+            &self,
+            _scope_id: &str,
+            _continuity: &crate::memory::TemperamentContinuity,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubInnerConflictStore;
+
+    impl InnerConflictStore for StubInnerConflictStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<crate::memory::InnerConflict>> {
+            Ok(None)
+        }
+
+        fn set(&self, _scope_id: &str, _conflict: &crate::memory::InnerConflict) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
             Ok(())
         }
     }
@@ -3775,6 +3835,9 @@ mod tests {
                 outer_voice_store: Arc::new(StubOuterVoiceStore),
                 inner_life_store: Arc::new(StubInnerLifeStore),
                 self_continuity_store: Arc::new(StubSelfContinuityStore),
+                felt_significance_store: Arc::new(StubFeltSignificanceStore),
+                temperament_continuity_store: Arc::new(StubTemperamentContinuityStore),
+                inner_conflict_store: Arc::new(StubInnerConflictStore),
                 relationship_topology_store: Arc::new(StubRelationshipTopologyStore),
                 private_doc_store: Arc::new(StubPrivateDocStore),
                 private_garden_store: Arc::new(StubPrivateGardenStore),
@@ -5551,6 +5614,7 @@ mod tests {
             relationship_posture: "warm".to_string(),
             resource_posture: "normal_budget".to_string(),
             boundary_mode: "explain_without_quote".to_string(),
+            ..SubjectState::default()
         };
         let soul_feedback_projection = SoulFeedbackProjection {
             reply: crate::agent::soul_feedback::SoulReplyFeedback {

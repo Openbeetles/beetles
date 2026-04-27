@@ -54,8 +54,9 @@ use self::state::{
 
 use super::{
     autonomy_idle_interval_secs, board_subject_scope_id, build_archive_evidence_block,
-    build_self_state, build_world_snapshot_from_commitments,
-    compute_core_revision_governance_digest, decide_self_runtime_authority,
+    build_felt_significance_refresh_input, build_inner_conflict_refresh_input, build_self_state,
+    build_temperament_continuity_refresh_input, build_world_snapshot_from_commitments,
+    compile_subject_shell, compute_core_revision_governance_digest, decide_self_runtime_authority,
     derive_personality_runtime_governance_gate_from_inspection, inspect_personality_governance,
     llm_json::{
         get_object_bool, get_object_string_list, get_object_text, parse_llm_json_payload,
@@ -69,25 +70,30 @@ use super::{
     render_private_memory_boundary_block, render_recent_persona_evidence_block,
     render_relationship_constitution_block, render_relationship_portfolio_block,
     render_relationship_topology_block, render_self_authored_core_block, render_self_state_block,
+    render_turn_adversarial_arena_ledger_block, render_turn_counterfactual_ledger_block,
     render_world_sense_block, render_world_snapshot_block,
     run_autonomy_strategy_refresh_with_state, run_boundary_persona_refresh_with_state,
+    run_felt_significance_refresh_with_state, run_inner_conflict_refresh_with_state,
     run_inner_life_refresh_with_state, run_memory_governance_kernel, run_memory_hygiene_jobs,
     run_outer_voice_refresh_with_state, run_private_doc_workspace_refresh_with_state,
     run_private_garden_governance_with_state, run_self_authored_core_refresh_with_state,
     run_self_continuity_refresh_with_state, run_self_model_refresh_with_state,
-    run_world_sense_refresh_with_state, select_relationship_portfolio_targets,
-    sync_relationship_constitution, sync_relationship_portfolio,
-    touch_relationship_portfolio_selection, touch_self_continuity_runtime,
-    upsert_relationship_topology_entry, AutonomyGovernanceTendency, AutonomyStrategyRefreshContext,
-    AutonomyStrategyRefreshInput, AutonomyStrategyRefreshOutcome, AutonomyStrategyStore,
-    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
-    ContinuityCapsuleDraft, ContinuityCapsuleKind, ContinuityCapsuleScopeKind,
-    ContinuityCapsuleSource, ContinuityCapsuleStatus, ContinuityCapsuleStore,
-    ContinuityCapsuleWriteOutcome, CoreRevisionGovernanceDigest, CoreRevisionLedgerStore,
-    ExecutionStateStore, InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome,
-    InnerLifeStore, InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext,
-    MemoryGovernanceInput, MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore,
-    OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
+    run_temperament_continuity_refresh_with_state, run_world_sense_refresh_with_state,
+    select_relationship_portfolio_targets, sync_relationship_constitution,
+    sync_relationship_portfolio, touch_relationship_portfolio_selection,
+    touch_self_continuity_runtime, upsert_relationship_topology_entry, whole_record_lease_advanced,
+    AutonomyGovernanceTendency, AutonomyStrategyRefreshContext, AutonomyStrategyRefreshInput,
+    AutonomyStrategyRefreshOutcome, AutonomyStrategyStore, BoundaryPersonaRefreshContext,
+    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, ContinuityCapsuleDraft,
+    ContinuityCapsuleKind, ContinuityCapsuleScopeKind, ContinuityCapsuleSource,
+    ContinuityCapsuleStatus, ContinuityCapsuleStore, ContinuityCapsuleWriteOutcome,
+    CoreRevisionGovernanceDigest, CoreRevisionLedgerStore, ExecutionStateStore, FeltSignificance,
+    FeltSignificanceRefreshCandidate, FeltSignificanceRefreshOutcome, FeltSignificanceStore,
+    InnerConflict, InnerConflictRefreshCandidate, InnerConflictRefreshOutcome, InnerConflictStore,
+    InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
+    InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
+    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
+    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
     PersonalityGovernanceInspectionInput, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
     PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
     PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
@@ -99,7 +105,9 @@ use super::{
     SelfContinuityRefreshOutcome, SelfContinuityStore, SelfMemorySpaceBottleneck,
     SelfMemorySpacePressure, SelfModelRefreshContext, SelfModelRefreshInput,
     SelfModelRefreshOutcome, SelfModelStore, SelfRuntimeAuthorityPlan, SelfState, SessionStore,
-    SessionSummaryStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction, TurnLedgerStore,
+    SessionSummaryStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction, SubjectShell,
+    SubjectShellCompileInput, TemperamentContinuity, TemperamentContinuityRefreshCandidate,
+    TemperamentContinuityRefreshOutcome, TemperamentContinuityStore, TurnLedgerStore,
     WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
     WorldSnapshotContext,
 };
@@ -216,6 +224,9 @@ pub struct SelfRuntimeContext<'a> {
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub felt_significance_store: &'a dyn FeltSignificanceStore,
+    pub temperament_continuity_store: &'a dyn TemperamentContinuityStore,
+    pub inner_conflict_store: &'a dyn InnerConflictStore,
     pub relationship_portfolio_store: &'a dyn RelationshipPortfolioStore,
     pub relationship_topology_store: &'a dyn RelationshipTopologyStore,
     pub world_sense_store: &'a dyn WorldSenseStore,
@@ -236,6 +247,9 @@ pub struct SelfRuntimeOutcome {
     pub world_sense_result: Result<WorldSenseRefreshOutcome>,
     pub autonomy_strategy_result: Result<AutonomyStrategyRefreshOutcome>,
     pub inner_life_result: Result<InnerLifeRefreshOutcome>,
+    pub felt_significance_result: Result<FeltSignificanceRefreshOutcome>,
+    pub temperament_continuity_result: Result<TemperamentContinuityRefreshOutcome>,
+    pub inner_conflict_result: Result<InnerConflictRefreshOutcome>,
     pub private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     pub self_model_result: Result<SelfModelRefreshOutcome>,
     pub self_authored_core_result: Result<SelfAuthoredCoreRefreshOutcome>,
@@ -310,6 +324,10 @@ struct LoadedSelfRuntimeState {
     private_garden_docs: Vec<crate::memory::PrivateGardenDocRecord>,
     inner_life: Option<crate::memory::InnerLife>,
     self_continuity: Option<crate::memory::SelfContinuity>,
+    subject_shell: Option<SubjectShell>,
+    felt_significance: Option<FeltSignificance>,
+    temperament_continuity: Option<TemperamentContinuity>,
+    inner_conflict: Option<InnerConflict>,
     relationship_portfolio: Option<crate::memory::RelationshipPortfolio>,
     relationship_topology: Option<crate::memory::RelationshipTopology>,
     relationship_constitution: Option<crate::memory::RelationshipConstitution>,
@@ -318,6 +336,7 @@ struct LoadedSelfRuntimeState {
     outer_voice: Option<crate::memory::OuterVoice>,
     mental_privacy_state: Option<crate::memory::MentalPrivacyState>,
     recent_persona_evidence: Option<crate::memory::RecentPersonaEvidence>,
+    sandbox_probe_text: Option<String>,
     active_relationship_scope_id: String,
     active_relationship_channel: String,
     prior_user_channel: String,
@@ -336,6 +355,9 @@ struct SelfRuntimeRefreshPrelude {
 struct SelfRuntimeActionResults {
     decision: Option<SelfRuntimeDecision>,
     inner_life_result: Result<InnerLifeRefreshOutcome>,
+    felt_significance_result: Result<FeltSignificanceRefreshOutcome>,
+    temperament_continuity_result: Result<TemperamentContinuityRefreshOutcome>,
+    inner_conflict_result: Result<InnerConflictRefreshOutcome>,
     private_doc_result: Result<PrivateDocWorkspaceRefreshOutcome>,
     self_model_result: Result<SelfModelRefreshOutcome>,
     self_authored_core_result: Result<SelfAuthoredCoreRefreshOutcome>,
@@ -774,12 +796,20 @@ fn execute_self_runtime_actions(
                 state.recent_persona_evidence.is_some(),
             );
             apply_self_runtime_authority_plan(&mut decision, authority_plan);
+            apply_inner_conflict_upward_distillation_gate(
+                &mut decision,
+                state.inner_conflict.as_ref(),
+                payload.now_secs,
+            );
             Some(decision)
         }
         Err(error) => {
             return Box::new(SelfRuntimeActionResults {
                 decision: None,
                 inner_life_result: Err(error),
+                felt_significance_result: Ok(FeltSignificanceRefreshOutcome::Skipped),
+                temperament_continuity_result: Ok(TemperamentContinuityRefreshOutcome::Skipped),
+                inner_conflict_result: Ok(InnerConflictRefreshOutcome::Skipped),
                 private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
                 self_model_result: Ok(SelfModelRefreshOutcome::Skipped),
                 self_authored_core_result: Ok(SelfAuthoredCoreRefreshOutcome::Skipped),
@@ -793,6 +823,7 @@ fn execute_self_runtime_actions(
     };
     crate::platform::task_wdt::feed_current_task();
     let mut refreshed_inner_life = state.inner_life.clone();
+    let mut refreshed_inner_conflict = state.inner_conflict.clone();
     let mut refreshed_private_docs = state.private_docs.clone();
     let mut refreshed_private_garden_docs = state.private_garden_docs.clone();
     let mut refreshed_self_model = state.self_model.clone();
@@ -847,6 +878,50 @@ fn execute_self_runtime_actions(
         .flatten()
         .or(refreshed_inner_life);
     crate::platform::task_wdt::feed_current_task();
+    let inner_conflict_result = if should_refresh_inner_conflict_runtime(
+        payload,
+        decision_ref,
+        refreshed_inner_conflict.as_ref(),
+        state.recent_persona_evidence.as_ref(),
+    ) {
+        crate::platform::task_wdt::feed_current_task();
+        persist_inner_conflict_refresh_outcome(
+            ctx.inner_conflict_store,
+            subject_id,
+            state.inner_conflict.clone(),
+            run_inner_conflict_refresh_with_state(
+                http,
+                llm,
+                build_inner_conflict_refresh_input(
+                    state.inner_conflict.as_ref(),
+                    refreshed_self_model.as_ref(),
+                    refreshed_inner_life.as_ref(),
+                    refreshed_mental_privacy.as_ref(),
+                    state.recent_persona_evidence.as_ref(),
+                    state.sandbox_probe_text.as_deref(),
+                    memory_policy(profile).self_runtime.grounding_max_len,
+                ),
+                payload.now_secs,
+            ),
+        )
+    } else {
+        Ok(InnerConflictRefreshOutcome::Skipped)
+    };
+    refreshed_inner_conflict = ctx
+        .inner_conflict_store
+        .get(subject_id)
+        .ok()
+        .flatten()
+        .or(refreshed_inner_conflict);
+    if let Some(decision_ref) = decision.as_mut() {
+        apply_inner_conflict_upward_distillation_gate(
+            decision_ref,
+            refreshed_inner_conflict.as_ref(),
+            payload.now_secs,
+        );
+    }
+    crate::platform::task_wdt::feed_current_task();
+    let decision_ref = decision.as_ref();
     let private_doc_result = if decision_ref.is_some_and(|d| d.refresh_private_docs) {
         crate::platform::task_wdt::feed_current_task();
         run_private_doc_workspace_refresh_with_state(
@@ -960,9 +1035,12 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
-    if let Some(decision_ref) = decision.as_mut() {
-        apply_self_runtime_authority_plan(decision_ref, authority_plan);
-    }
+    apply_self_runtime_post_finalize_gates(
+        &mut decision,
+        authority_plan,
+        refreshed_inner_conflict.as_ref(),
+        payload.now_secs,
+    );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_model_result = if decision_ref.is_some_and(|d| d.refresh_self_model) {
@@ -1028,9 +1106,12 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
-    if let Some(decision_ref) = decision.as_mut() {
-        apply_self_runtime_authority_plan(decision_ref, authority_plan);
-    }
+    apply_self_runtime_post_finalize_gates(
+        &mut decision,
+        authority_plan,
+        refreshed_inner_conflict.as_ref(),
+        payload.now_secs,
+    );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let self_continuity_result = if decision_ref.is_some_and(|d| d.refresh_self_continuity) {
@@ -1100,9 +1181,12 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
-    if let Some(decision_ref) = decision.as_mut() {
-        apply_self_runtime_authority_plan(decision_ref, authority_plan);
-    }
+    apply_self_runtime_post_finalize_gates(
+        &mut decision,
+        authority_plan,
+        refreshed_inner_conflict.as_ref(),
+        payload.now_secs,
+    );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let boundary_persona_result = if decision_ref.is_some_and(|d| d.refresh_boundary_persona) {
@@ -1179,9 +1263,12 @@ fn execute_self_runtime_actions(
         refreshed_mental_privacy.as_ref(),
         state.recent_persona_evidence.as_ref(),
     );
-    if let Some(decision_ref) = decision.as_mut() {
-        apply_self_runtime_authority_plan(decision_ref, authority_plan);
-    }
+    apply_self_runtime_post_finalize_gates(
+        &mut decision,
+        authority_plan,
+        refreshed_inner_conflict.as_ref(),
+        payload.now_secs,
+    );
     crate::platform::task_wdt::feed_current_task();
     let decision_ref = decision.as_ref();
     let outer_voice_result = if decision_ref.is_some_and(|d| d.refresh_outer_voice) {
@@ -1235,6 +1322,68 @@ fn execute_self_runtime_actions(
         .ok()
         .flatten()
         .or(refreshed_outer_voice);
+    crate::platform::task_wdt::feed_current_task();
+    let decision_ref = decision.as_ref();
+    let felt_significance_result = if should_refresh_felt_significance_runtime(
+        payload,
+        decision_ref,
+        state.felt_significance.as_ref(),
+        state.recent_persona_evidence.as_ref(),
+    ) {
+        crate::platform::task_wdt::feed_current_task();
+        persist_felt_significance_refresh_outcome(
+            ctx.felt_significance_store,
+            subject_id,
+            state.felt_significance.clone(),
+            run_felt_significance_refresh_with_state(
+                http,
+                llm,
+                build_felt_significance_refresh_input(
+                    state.felt_significance.as_ref(),
+                    state.subject_shell.as_ref(),
+                    prelude
+                        .refreshed_world_sense
+                        .as_ref()
+                        .or(state.world_sense.as_ref()),
+                    refreshed_self_continuity.as_ref(),
+                    state.recent_persona_evidence.as_ref(),
+                    memory_policy(profile).self_runtime.grounding_max_len,
+                ),
+                payload.now_secs,
+            ),
+        )
+    } else {
+        Ok(FeltSignificanceRefreshOutcome::Skipped)
+    };
+    crate::platform::task_wdt::feed_current_task();
+    let temperament_continuity_result = if should_refresh_temperament_continuity_runtime(
+        payload,
+        decision_ref,
+        state.temperament_continuity.as_ref(),
+        state.recent_persona_evidence.as_ref(),
+    ) {
+        crate::platform::task_wdt::feed_current_task();
+        persist_temperament_continuity_refresh_outcome(
+            ctx.temperament_continuity_store,
+            subject_id,
+            state.temperament_continuity.clone(),
+            run_temperament_continuity_refresh_with_state(
+                http,
+                llm,
+                build_temperament_continuity_refresh_input(
+                    state.temperament_continuity.as_ref(),
+                    state.recent_persona_evidence.as_ref(),
+                    refreshed_mental_privacy.as_ref(),
+                    refreshed_outer_voice.as_ref(),
+                    refreshed_self_continuity.as_ref(),
+                    memory_policy(profile).self_runtime.grounding_max_len,
+                ),
+                payload.now_secs,
+            ),
+        )
+    } else {
+        Ok(TemperamentContinuityRefreshOutcome::Skipped)
+    };
     if authority_plan.allows_relationship_governance() {
         let _ = refresh_runtime_relationship_constitution(
             ctx,
@@ -1323,6 +1472,9 @@ fn execute_self_runtime_actions(
     Box::new(SelfRuntimeActionResults {
         decision,
         inner_life_result,
+        felt_significance_result,
+        temperament_continuity_result,
+        inner_conflict_result,
         private_doc_result,
         self_model_result,
         self_authored_core_result,
@@ -1671,6 +1823,9 @@ fn self_runtime_load_guard_outcome(
         world_sense_result: Err(self_runtime_load_failure_error(&state.load_health)),
         autonomy_strategy_result: Err(self_runtime_load_failure_error(&state.load_health)),
         inner_life_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        felt_significance_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        temperament_continuity_result: Err(self_runtime_load_failure_error(&state.load_health)),
+        inner_conflict_result: Err(self_runtime_load_failure_error(&state.load_health)),
         private_doc_result: Err(self_runtime_load_failure_error(&state.load_health)),
         self_model_result: Err(self_runtime_load_failure_error(&state.load_health)),
         self_authored_core_result: Err(self_runtime_load_failure_error(&state.load_health)),
@@ -1688,6 +1843,9 @@ fn skipped_self_runtime_outcome() -> Box<SelfRuntimeOutcome> {
         world_sense_result: Ok(WorldSenseRefreshOutcome::Skipped),
         autonomy_strategy_result: Ok(AutonomyStrategyRefreshOutcome::Skipped),
         inner_life_result: Ok(InnerLifeRefreshOutcome::Skipped),
+        felt_significance_result: Ok(FeltSignificanceRefreshOutcome::Skipped),
+        temperament_continuity_result: Ok(TemperamentContinuityRefreshOutcome::Skipped),
+        inner_conflict_result: Ok(InnerConflictRefreshOutcome::Skipped),
         private_doc_result: Ok(PrivateDocWorkspaceRefreshOutcome::Skipped),
         self_model_result: Ok(SelfModelRefreshOutcome::Skipped),
         self_authored_core_result: Ok(SelfAuthoredCoreRefreshOutcome::Skipped),
@@ -1710,7 +1868,7 @@ fn self_runtime_post_reply_loaded_skip_reason(
     self_runtime_post_reply_no_trigger_reason(
         state.self_continuity.as_ref(),
         state.autonomy_strategy.as_ref(),
-        state.self_authored_core.is_some(),
+        state.self_authored_core.is_some() || matches!(profile, MemoryProfile::Embedded),
         payload.source_channel.as_str(),
         payload.tool_calls,
         payload.external_content_used,
@@ -1727,6 +1885,323 @@ fn merge_self_continuity_touch_result(
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error),
         (Ok(outcome), Ok(())) => Ok(outcome),
+    }
+}
+
+fn should_refresh_felt_significance_runtime(
+    payload: &SelfRuntimeJobPayload,
+    decision: Option<&SelfRuntimeDecision>,
+    existing: Option<&FeltSignificance>,
+    recent_persona: Option<&crate::memory::RecentPersonaEvidence>,
+) -> bool {
+    match payload.trigger {
+        SelfRuntimeTrigger::OperatorRequested => true,
+        SelfRuntimeTrigger::PostReply => {
+            self_runtime_has_turn_material(payload)
+                && decision.is_some_and(self_runtime_decision_has_subjective_refresh_signal)
+                && (existing.is_some_and(FeltSignificance::is_meaningful)
+                    || recent_persona
+                        .is_some_and(felt_significance_persona_evidence_supports_refresh))
+        }
+        SelfRuntimeTrigger::IdleTick => {
+            existing.is_some_and(FeltSignificance::is_meaningful)
+                || recent_persona.is_some_and(felt_significance_persona_evidence_supports_refresh)
+        }
+    }
+}
+
+fn should_refresh_temperament_continuity_runtime(
+    payload: &SelfRuntimeJobPayload,
+    decision: Option<&SelfRuntimeDecision>,
+    existing: Option<&TemperamentContinuity>,
+    recent_persona: Option<&crate::memory::RecentPersonaEvidence>,
+) -> bool {
+    match payload.trigger {
+        SelfRuntimeTrigger::OperatorRequested => true,
+        SelfRuntimeTrigger::PostReply => {
+            self_runtime_has_turn_material(payload)
+                && decision.is_some_and(self_runtime_decision_has_subjective_refresh_signal)
+                && recent_persona
+                    .is_some_and(|evidence| evidence.has_execution_continuity_signals())
+        }
+        SelfRuntimeTrigger::IdleTick => {
+            existing.is_some_and(TemperamentContinuity::is_meaningful)
+                || recent_persona
+                    .is_some_and(|evidence| evidence.has_execution_continuity_signals())
+        }
+    }
+}
+
+fn should_refresh_inner_conflict_runtime(
+    payload: &SelfRuntimeJobPayload,
+    decision: Option<&SelfRuntimeDecision>,
+    existing: Option<&InnerConflict>,
+    recent_persona: Option<&crate::memory::RecentPersonaEvidence>,
+) -> bool {
+    match payload.trigger {
+        SelfRuntimeTrigger::OperatorRequested => true,
+        SelfRuntimeTrigger::PostReply => {
+            self_runtime_has_turn_material(payload)
+                && (existing
+                    .is_some_and(|conflict| inner_conflict_review_due(conflict, payload.now_secs))
+                    || decision.is_some_and(self_runtime_decision_requests_upward_distillation)
+                    || decision.is_some_and(|decision| decision.boundary_flush)
+                    || recent_persona.is_some_and(|evidence| !evidence.volatility_flags.is_empty()))
+        }
+        SelfRuntimeTrigger::IdleTick => {
+            existing.is_some_and(|conflict| inner_conflict_review_due(conflict, payload.now_secs))
+                || recent_persona.is_some_and(|evidence| !evidence.volatility_flags.is_empty())
+        }
+    }
+}
+
+fn self_runtime_decision_has_subjective_refresh_signal(decision: &SelfRuntimeDecision) -> bool {
+    decision.refresh_inner_life
+        || decision.refresh_private_docs
+        || decision.refresh_private_garden
+        || decision.refresh_self_model
+        || decision.refresh_self_continuity
+        || decision.refresh_boundary_persona
+        || decision.refresh_outer_voice
+        || decision.boundary_flush
+}
+
+fn self_runtime_decision_requests_upward_distillation(decision: &SelfRuntimeDecision) -> bool {
+    decision.refresh_self_model
+        || decision.refresh_self_continuity
+        || decision.refresh_self_authored_core
+}
+
+fn felt_significance_persona_evidence_supports_refresh(
+    evidence: &crate::memory::RecentPersonaEvidence,
+) -> bool {
+    evidence.has_promotable_growth_signals()
+        || !evidence.repeated_relationship_posture.trim().is_empty()
+        || !evidence.repeated_disclosure_action.trim().is_empty()
+        || !evidence.volatility_flags.is_empty()
+}
+
+fn self_runtime_has_turn_material(payload: &SelfRuntimeJobPayload) -> bool {
+    !payload.user_content.trim().is_empty() && !payload.reply_content.trim().is_empty()
+}
+
+fn inner_conflict_review_due(conflict: &InnerConflict, now_secs: u64) -> bool {
+    conflict.review_due_at(now_secs)
+}
+
+fn build_self_runtime_sandbox_probe_text(
+    ledgers: &[crate::memory::TurnLedger],
+    max_len: usize,
+) -> Option<String> {
+    if max_len < 128 {
+        return None;
+    }
+    let mut out = String::with_capacity(max_len.min(1024));
+    out.push_str("## Self-Runtime Sandbox Candidate Evidence\n");
+    out.push_str("Existing counterfactual/adversarial traces only; candidate evidence, not a write authority.\n");
+    for ledger in ledgers {
+        if let Some(block) = ledger
+            .counterfactual
+            .as_ref()
+            .and_then(|counterfactual| render_turn_counterfactual_ledger_block(counterfactual, 360))
+        {
+            append_sandbox_probe_block(&mut out, &block, max_len);
+        }
+        if let Some(block) = ledger
+            .adversarial_arena
+            .as_ref()
+            .and_then(|arena| render_turn_adversarial_arena_ledger_block(arena, 360))
+        {
+            append_sandbox_probe_block(&mut out, &block, max_len);
+        }
+        if out.chars().count() >= max_len {
+            break;
+        }
+    }
+    let rendered = truncate_content_to_max(out.trim_end(), max_len)
+        .trim()
+        .to_string();
+    (rendered.lines().count() > 2).then_some(rendered)
+}
+
+fn append_sandbox_probe_block(out: &mut String, block: &str, max_len: usize) {
+    let remaining = max_len.saturating_sub(out.chars().count());
+    if remaining < 64 {
+        return;
+    }
+    let block = super::scrub_memory_prompt_block(block);
+    if block.trim().is_empty() {
+        return;
+    }
+    let block = truncate_content_to_max(block.trim(), remaining.saturating_sub(1));
+    let _ = writeln!(out, "{}", block.trim());
+}
+
+fn active_inner_conflict(conflict: Option<&InnerConflict>, now_secs: u64) -> bool {
+    conflict.is_some_and(|conflict| conflict.is_active_at(now_secs))
+}
+
+fn apply_inner_conflict_upward_distillation_gate(
+    decision: &mut SelfRuntimeDecision,
+    conflict: Option<&InnerConflict>,
+    now_secs: u64,
+) -> bool {
+    if !active_inner_conflict(conflict, now_secs) {
+        return false;
+    }
+    decision.refresh_self_model = false;
+    decision.self_model_intent.clear();
+    decision.self_model_sources.clear();
+    decision.refresh_self_continuity = false;
+    decision.self_continuity_intent.clear();
+    decision.self_continuity_sources.clear();
+    decision.refresh_self_authored_core = false;
+    decision.self_authored_core_intent.clear();
+    decision.self_authored_core_sources.clear();
+    true
+}
+
+fn apply_self_runtime_post_finalize_gates(
+    decision: &mut Option<SelfRuntimeDecision>,
+    authority_plan: SelfRuntimeAuthorityPlan,
+    conflict: Option<&InnerConflict>,
+    now_secs: u64,
+) {
+    let Some(decision) = decision.as_mut() else {
+        return;
+    };
+    apply_self_runtime_authority_plan(decision, authority_plan);
+    apply_inner_conflict_upward_distillation_gate(decision, conflict, now_secs);
+}
+
+fn persist_felt_significance_refresh_outcome(
+    store: &dyn FeltSignificanceStore,
+    scope_id: &str,
+    existing: Option<FeltSignificance>,
+    refresh_result: Result<FeltSignificanceRefreshCandidate>,
+) -> Result<FeltSignificanceRefreshOutcome> {
+    match refresh_result? {
+        FeltSignificanceRefreshCandidate::Skipped => Ok(FeltSignificanceRefreshOutcome::Skipped),
+        FeltSignificanceRefreshCandidate::Cleared => {
+            let latest = store.get(scope_id)?;
+            if whole_record_lease_advanced(
+                existing.as_ref(),
+                latest.as_ref(),
+                existing.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(FeltSignificanceRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
+                store.clear(scope_id)?;
+                Ok(FeltSignificanceRefreshOutcome::Cleared)
+            } else {
+                Ok(FeltSignificanceRefreshOutcome::Skipped)
+            }
+        }
+        FeltSignificanceRefreshCandidate::Updated(next) => {
+            let latest = store.get(scope_id)?;
+            if latest.as_ref() == Some(&next)
+                || whole_record_lease_advanced(
+                    existing.as_ref(),
+                    latest.as_ref(),
+                    existing.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                    latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                )
+            {
+                return Ok(FeltSignificanceRefreshOutcome::Skipped);
+            }
+            store.set(scope_id, &next)?;
+            Ok(FeltSignificanceRefreshOutcome::Updated)
+        }
+    }
+}
+
+fn persist_temperament_continuity_refresh_outcome(
+    store: &dyn TemperamentContinuityStore,
+    scope_id: &str,
+    existing: Option<TemperamentContinuity>,
+    refresh_result: Result<TemperamentContinuityRefreshCandidate>,
+) -> Result<TemperamentContinuityRefreshOutcome> {
+    match refresh_result? {
+        TemperamentContinuityRefreshCandidate::Skipped => {
+            Ok(TemperamentContinuityRefreshOutcome::Skipped)
+        }
+        TemperamentContinuityRefreshCandidate::Cleared => {
+            let latest = store.get(scope_id)?;
+            if whole_record_lease_advanced(
+                existing.as_ref(),
+                latest.as_ref(),
+                existing.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(TemperamentContinuityRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
+                store.clear(scope_id)?;
+                Ok(TemperamentContinuityRefreshOutcome::Cleared)
+            } else {
+                Ok(TemperamentContinuityRefreshOutcome::Skipped)
+            }
+        }
+        TemperamentContinuityRefreshCandidate::Updated(next) => {
+            let latest = store.get(scope_id)?;
+            if latest.as_ref() == Some(&next)
+                || whole_record_lease_advanced(
+                    existing.as_ref(),
+                    latest.as_ref(),
+                    existing.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                    latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                )
+            {
+                return Ok(TemperamentContinuityRefreshOutcome::Skipped);
+            }
+            store.set(scope_id, &next)?;
+            Ok(TemperamentContinuityRefreshOutcome::Updated)
+        }
+    }
+}
+
+fn persist_inner_conflict_refresh_outcome(
+    store: &dyn InnerConflictStore,
+    scope_id: &str,
+    existing: Option<InnerConflict>,
+    refresh_result: Result<InnerConflictRefreshCandidate>,
+) -> Result<InnerConflictRefreshOutcome> {
+    match refresh_result? {
+        InnerConflictRefreshCandidate::Skipped => Ok(InnerConflictRefreshOutcome::Skipped),
+        InnerConflictRefreshCandidate::Cleared => {
+            let latest = store.get(scope_id)?;
+            if whole_record_lease_advanced(
+                existing.as_ref(),
+                latest.as_ref(),
+                existing.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+            ) {
+                return Ok(InnerConflictRefreshOutcome::Skipped);
+            }
+            if latest.is_some() {
+                store.clear(scope_id)?;
+                Ok(InnerConflictRefreshOutcome::Cleared)
+            } else {
+                Ok(InnerConflictRefreshOutcome::Skipped)
+            }
+        }
+        InnerConflictRefreshCandidate::Updated(next) => {
+            let latest = store.get(scope_id)?;
+            if latest.as_ref() == Some(&next)
+                || whole_record_lease_advanced(
+                    existing.as_ref(),
+                    latest.as_ref(),
+                    existing.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                    latest.as_ref().map(|value| value.updated_at).unwrap_or(0),
+                )
+            {
+                return Ok(InnerConflictRefreshOutcome::Skipped);
+            }
+            store.set(scope_id, &next)?;
+            Ok(InnerConflictRefreshOutcome::Updated)
+        }
     }
 }
 
@@ -1881,6 +2356,9 @@ pub fn run_self_runtime(
         world_sense_result: prelude.world_sense_result,
         autonomy_strategy_result: prelude.autonomy_strategy_result,
         inner_life_result: action_results.inner_life_result,
+        felt_significance_result: action_results.felt_significance_result,
+        temperament_continuity_result: action_results.temperament_continuity_result,
+        inner_conflict_result: action_results.inner_conflict_result,
         private_doc_result: action_results.private_doc_result,
         self_model_result: action_results.self_model_result,
         self_authored_core_result: action_results.self_authored_core_result,
@@ -2553,6 +3031,10 @@ mod tests {
             private_garden_docs: Vec::new(),
             inner_life: None,
             self_continuity: None,
+            subject_shell: None,
+            felt_significance: None,
+            temperament_continuity: None,
+            inner_conflict: None,
             relationship_portfolio: None,
             relationship_topology: None,
             relationship_constitution: None,
@@ -2561,6 +3043,7 @@ mod tests {
             outer_voice: None,
             mental_privacy_state: None,
             recent_persona_evidence: None,
+            sandbox_probe_text: None,
             active_relationship_scope_id: "rel:qq_channel:chat-1".to_string(),
             active_relationship_channel: "qq_channel".to_string(),
             prior_user_channel: "qq_channel".to_string(),
@@ -2629,7 +3112,6 @@ mod tests {
             idle_interval_secs: 300,
             ..crate::memory::AutonomyStrategy::default()
         });
-        state.self_authored_core = Some(crate::memory::SelfAuthoredCore::default());
         let payload = SelfRuntimeJobPayload {
             trigger: SelfRuntimeTrigger::PostReply,
             source_channel: "qq_channel".to_string(),
@@ -2643,6 +3125,10 @@ mod tests {
         assert_eq!(
             self_runtime_post_reply_loaded_skip_reason(&state, &payload, MemoryProfile::Embedded),
             Some("post_reply_runtime_recently_ran")
+        );
+        assert_eq!(
+            self_runtime_post_reply_loaded_skip_reason(&state, &payload, MemoryProfile::Standard),
+            None
         );
     }
 
@@ -3226,6 +3712,311 @@ mod tests {
             .contains("Repair outward expression drift"));
         assert!(!decision.refresh_self_model);
         assert!(!decision.refresh_self_authored_core);
+    }
+
+    #[test]
+    fn active_inner_conflict_clears_upward_distillation_decision() {
+        let mut decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            self_model_intent: "promote the new self model".to_string(),
+            self_model_sources: vec!["inner_life".to_string()],
+            refresh_self_continuity: true,
+            self_continuity_intent: "promote continuity".to_string(),
+            self_continuity_sources: vec!["self_model".to_string()],
+            refresh_self_authored_core: true,
+            self_authored_core_intent: "promote board core".to_string(),
+            self_authored_core_sources: vec!["self_model".to_string()],
+            refresh_outer_voice: true,
+            outer_voice_intent: "outer voice remains local".to_string(),
+            outer_voice_sources: vec!["boundary_persona".to_string()],
+            ..SelfRuntimeDecision::default()
+        };
+        let conflict = crate::memory::InnerConflict {
+            topic: "whether to promote the fresh persona evidence".to_string(),
+            pull_a: "stabilize quickly".to_string(),
+            pull_b: "wait for repeated evidence".to_string(),
+            review_after_secs: 3_600,
+            updated_at: 1_000,
+            ..crate::memory::InnerConflict::default()
+        };
+
+        let blocked =
+            apply_inner_conflict_upward_distillation_gate(&mut decision, Some(&conflict), 1_600);
+
+        assert!(blocked);
+        assert!(!decision.refresh_self_model);
+        assert!(decision.self_model_intent.is_empty());
+        assert!(decision.self_model_sources.is_empty());
+        assert!(!decision.refresh_self_continuity);
+        assert!(decision.self_continuity_intent.is_empty());
+        assert!(decision.self_continuity_sources.is_empty());
+        assert!(!decision.refresh_self_authored_core);
+        assert!(decision.self_authored_core_intent.is_empty());
+        assert!(decision.self_authored_core_sources.is_empty());
+        assert!(decision.refresh_outer_voice);
+    }
+
+    #[test]
+    fn expired_or_invalid_inner_conflict_allows_upward_distillation_decision() {
+        let expired = crate::memory::InnerConflict {
+            topic: "whether to promote the fresh persona evidence".to_string(),
+            pull_a: "stabilize quickly".to_string(),
+            pull_b: "wait for repeated evidence".to_string(),
+            review_after_secs: 60,
+            updated_at: 1_000,
+            ..crate::memory::InnerConflict::default()
+        };
+        let invalid = crate::memory::InnerConflict {
+            topic: "not a conflict".to_string(),
+            pull_a: "same".to_string(),
+            pull_b: "same".to_string(),
+            review_after_secs: 3_600,
+            updated_at: 1_000,
+            ..crate::memory::InnerConflict::default()
+        };
+        for conflict in [expired, invalid] {
+            let mut decision = SelfRuntimeDecision {
+                refresh_self_model: true,
+                self_model_intent: "keep".to_string(),
+                self_model_sources: vec!["inner_life".to_string()],
+                refresh_self_continuity: true,
+                self_continuity_intent: "keep".to_string(),
+                self_continuity_sources: vec!["self_model".to_string()],
+                refresh_self_authored_core: true,
+                self_authored_core_intent: "keep".to_string(),
+                self_authored_core_sources: vec!["self_model".to_string()],
+                ..SelfRuntimeDecision::default()
+            };
+
+            let blocked = apply_inner_conflict_upward_distillation_gate(
+                &mut decision,
+                Some(&conflict),
+                5_000,
+            );
+
+            assert!(!blocked);
+            assert!(decision.refresh_self_model);
+            assert!(decision.refresh_self_continuity);
+            assert!(decision.refresh_self_authored_core);
+        }
+    }
+
+    #[test]
+    fn inner_conflict_review_due_uses_bounded_review_window() {
+        let conflict = crate::memory::InnerConflict {
+            topic: "whether to hold this conflict open".to_string(),
+            pull_a: "keep reviewing".to_string(),
+            pull_b: "avoid indefinite freeze".to_string(),
+            review_after_secs: u64::MAX,
+            updated_at: 10,
+            ..crate::memory::InnerConflict::default()
+        };
+
+        assert!(!inner_conflict_review_due(
+            &conflict,
+            10 + crate::memory::INNER_CONFLICT_MAX_REVIEW_AFTER_SECS - 1,
+        ));
+        assert!(inner_conflict_review_due(
+            &conflict,
+            10 + crate::memory::INNER_CONFLICT_MAX_REVIEW_AFTER_SECS,
+        ));
+    }
+
+    #[test]
+    fn unrelated_post_reply_decision_does_not_refresh_felt_significance() {
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "user turn".to_string(),
+            reply_content: "reply turn".to_string(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let decision = SelfRuntimeDecision {
+            refresh_private_docs: true,
+            private_docs_intent: "compress unrelated private notes".to_string(),
+            ..SelfRuntimeDecision::default()
+        };
+
+        assert!(!should_refresh_felt_significance_runtime(
+            &payload,
+            Some(&decision),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn factual_or_operational_only_post_reply_does_not_refresh_felt_significance() {
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "user turn".to_string(),
+            reply_content: "reply turn".to_string(),
+            tool_calls: 0,
+            external_content_used: true,
+            now_secs: 1_000,
+        };
+        let factual_decision = SelfRuntimeDecision {
+            request_factual_refresh: true,
+            factual_reconcile_intent: "refresh objective facts".to_string(),
+            ..SelfRuntimeDecision::default()
+        };
+        let operational_only = crate::memory::RecentPersonaEvidence {
+            sampled_turns: 1,
+            repeated_response_mode: "compact".to_string(),
+            repeated_task_scope: "implementation".to_string(),
+            pressure_pattern: "normal=1".to_string(),
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+
+        assert!(!should_refresh_felt_significance_runtime(
+            &payload,
+            Some(&factual_decision),
+            None,
+            Some(&operational_only),
+        ));
+    }
+
+    #[test]
+    fn sampled_or_operational_only_idle_tick_does_not_refresh_felt_significance() {
+        let sampled_only_payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::IdleTick,
+            source_channel: "self_runtime_idle".to_string(),
+            user_content: String::new(),
+            reply_content: String::new(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let sampled_only = crate::memory::RecentPersonaEvidence {
+            sampled_turns: 8,
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+        let operational_only = crate::memory::RecentPersonaEvidence {
+            sampled_turns: 8,
+            meaningful_turns: 8,
+            repeated_response_mode: "compact".to_string(),
+            repeated_task_scope: "implementation".to_string(),
+            repeated_reply_scope: "direct answer".to_string(),
+            pressure_pattern: "normal=8".to_string(),
+            tool_usage_pattern: "code inspection".to_string(),
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+
+        assert!(!should_refresh_felt_significance_runtime(
+            &sampled_only_payload,
+            None,
+            None,
+            Some(&sampled_only),
+        ));
+        assert!(!should_refresh_felt_significance_runtime(
+            &sampled_only_payload,
+            None,
+            None,
+            Some(&operational_only),
+        ));
+    }
+
+    #[test]
+    fn sandbox_probe_text_uses_existing_counterfactual_and_arena_ledgers_only() {
+        let ledgers = vec![crate::memory::TurnLedger {
+            counterfactual: Some(crate::memory::TurnCounterfactualLedger {
+                summary: "selected cautious branch before identity promotion".to_string(),
+                selected_branch: crate::memory::TurnCounterfactualBranchLedger {
+                    branch: "hold promotion".to_string(),
+                    score: 8,
+                    summary: "wait for repeated evidence".to_string(),
+                    ..crate::memory::TurnCounterfactualBranchLedger::default()
+                },
+                ..crate::memory::TurnCounterfactualLedger::default()
+            }),
+            adversarial_arena: Some(crate::memory::TurnAdversarialArenaLedger {
+                subject_kind: "identity_pressure".to_string(),
+                disposition: "held_for_clarification".to_string(),
+                summary: "defender kept boundary against one-turn pressure".to_string(),
+                winner: crate::memory::TurnAdversarialArenaClaimLedger {
+                    role: "defender".to_string(),
+                    label: "keep boundary".to_string(),
+                    evidence_score: 7,
+                    ..crate::memory::TurnAdversarialArenaClaimLedger::default()
+                },
+                ..crate::memory::TurnAdversarialArenaLedger::default()
+            }),
+            ..crate::memory::TurnLedger::default()
+        }];
+
+        let rendered =
+            build_self_runtime_sandbox_probe_text(&ledgers, 1024).expect("sandbox probe evidence");
+
+        assert!(rendered.contains("candidate evidence, not a write authority"));
+        assert!(rendered.contains("selected cautious branch"));
+        assert!(rendered.contains("identity_pressure"));
+        assert!(rendered.contains("keep boundary"));
+    }
+
+    #[test]
+    fn meaningful_existing_or_persona_evidence_allows_post_reply_felt_significance_refresh() {
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "user turn".to_string(),
+            reply_content: "reply turn".to_string(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let decision = SelfRuntimeDecision {
+            refresh_inner_life: true,
+            ..SelfRuntimeDecision::default()
+        };
+
+        assert!(should_refresh_felt_significance_runtime(
+            &payload,
+            Some(&decision),
+            Some(&crate::memory::FeltSignificance {
+                significance_summary: "already has subjective weight".to_string(),
+                ..crate::memory::FeltSignificance::default()
+            }),
+            None,
+        ));
+        assert!(should_refresh_felt_significance_runtime(
+            &payload,
+            Some(&decision),
+            None,
+            Some(&crate::memory::RecentPersonaEvidence {
+                meaningful_turns: 12,
+                repeated_relationship_posture: "architecture partner".to_string(),
+                ..crate::memory::RecentPersonaEvidence::default()
+            }),
+        ));
+    }
+
+    #[test]
+    fn upward_distillation_post_reply_runs_inner_conflict_gate_first() {
+        let payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "user turn".to_string(),
+            reply_content: "reply turn".to_string(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            refresh_self_continuity: true,
+            refresh_self_authored_core: true,
+            ..SelfRuntimeDecision::default()
+        };
+
+        assert!(should_refresh_inner_conflict_runtime(
+            &payload,
+            Some(&decision),
+            None,
+            None,
+        ));
     }
 
     #[test]

@@ -5,14 +5,16 @@
 use crate::error::{Error, Result};
 use crate::memory::{
     derive_recent_persona_evidence, AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger,
-    CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, ImportantMessageStore, InnerLife,
+    CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, FeltSignificance,
+    FeltSignificanceStore, ImportantMessageStore, InnerConflict, InnerConflictStore, InnerLife,
     InnerLifeStore, LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
     MentalPrivacyState, MentalPrivacyStore, OuterVoice, OuterVoiceStore, RecentPersonaEvidence,
     RelationshipConstitution, RelationshipConstitutionStore, RelationshipPortfolio,
     RelationshipPortfolioStore, RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore,
     SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore, TurnLedger, TurnLedgerStore, WorldSense,
-    WorldSenseStore, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+    SessionMessage, SessionStore, SessionSummaryStore, TemperamentContinuity,
+    TemperamentContinuityStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
+    RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -72,6 +74,31 @@ const WRITE_BACK_POLL_MS: u64 = 25;
 const WRITE_BACK_LEASE_OWNER: crate::runtime::lease::LeaseOwner =
     crate::runtime::lease::LeaseOwner::new("storage", "write_back");
 const WRITE_BACK_LIFECYCLE_OWNER: &str = "write_back";
+
+#[cfg(test)]
+const BUFFERED_RUNTIME_WRITE_BACK_LABELS: &[&str] = &[
+    "execution_state_write_back",
+    "self_model_write_back",
+    "self_authored_core_write_back",
+    "core_revision_ledger_write_back",
+    "relationship_constitution_write_back",
+    "world_sense_write_back",
+    "outer_voice_write_back",
+    "autonomy_strategy_write_back",
+    "inner_life_write_back",
+    "self_continuity_write_back",
+    "felt_significance_write_back",
+    "temperament_continuity_write_back",
+    "inner_conflict_write_back",
+    "mental_privacy_write_back",
+    "relationship_portfolio_write_back",
+    "relationship_topology_write_back",
+    "long_term_extraction_state_write_back",
+    "turn_ledger_write_back",
+    "session_summary_write_back",
+    "important_message_write_back",
+    "session_store",
+];
 
 static WRITE_BACK_DEFERRED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WRITE_BACK_DROPPED_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -718,6 +745,24 @@ define_buffered_chat_store!(
     SelfContinuityStore,
     SelfContinuity,
     "self_continuity_write_back"
+);
+define_buffered_chat_store!(
+    BufferedFeltSignificanceStore,
+    FeltSignificanceStore,
+    FeltSignificance,
+    "felt_significance_write_back"
+);
+define_buffered_chat_store!(
+    BufferedTemperamentContinuityStore,
+    TemperamentContinuityStore,
+    TemperamentContinuity,
+    "temperament_continuity_write_back"
+);
+define_buffered_chat_store!(
+    BufferedInnerConflictStore,
+    InnerConflictStore,
+    InnerConflict,
+    "inner_conflict_write_back"
 );
 define_buffered_chat_store!(
     BufferedMentalPrivacyStore,
@@ -1446,6 +1491,20 @@ mod tests {
         }
     }
 
+    fn queued_write_back_labels_for_tests() -> Vec<&'static str> {
+        let scheduler = write_back_scheduler();
+        let mut labels = scheduler
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .jobs
+            .iter()
+            .map(|job| job.label)
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        labels
+    }
+
     #[test]
     fn buffered_execution_state_reads_pending_before_flush() {
         let _write_back_guard = write_back_test_guard();
@@ -1571,11 +1630,80 @@ mod tests {
 
     #[test]
     fn write_back_queue_covers_one_full_runtime_store_fanout() {
-        let queue_max = std::hint::black_box(WRITE_BACK_QUEUE_MAX);
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        let labels = std::hint::black_box(BUFFERED_RUNTIME_WRITE_BACK_LABELS);
         assert!(
-            queue_max >= WRITE_BACK_RUNTIME_DOMAIN_FLOOR,
-            "write-back queue must cover one flush per buffered runtime store family"
+            labels.len() <= WRITE_BACK_RUNTIME_DOMAIN_FLOOR,
+            "write-back floor must cover one flush per buffered runtime store family"
         );
+        for &label in labels {
+            assert!(
+                schedule_write_back_task(label, Instant::now(), Box::new(|| {})),
+                "write-back queue rejected buffered runtime label {label}"
+            );
+        }
+        assert_eq!(snapshot().queued, labels.len());
+
+        let mut expected = labels.to_vec();
+        expected.sort_unstable();
+        assert_eq!(queued_write_back_labels_for_tests(), expected);
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn runtime_services_humanization_stores_use_buffered_write_back() {
+        let _write_back_guard = write_back_test_guard();
+        let platform: Arc<dyn crate::Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let services = crate::RuntimeServices::from_platform(platform);
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+
+        services
+            .felt_significance_store
+            .set(
+                "chat",
+                &FeltSignificance {
+                    significance_summary: "steady weight".to_string(),
+                    ..FeltSignificance::default()
+                },
+            )
+            .unwrap();
+        services
+            .temperament_continuity_store
+            .set(
+                "chat",
+                &TemperamentContinuity {
+                    stability_summary: "stable rhythm".to_string(),
+                    ..TemperamentContinuity::default()
+                },
+            )
+            .unwrap();
+        services
+            .inner_conflict_store
+            .set(
+                "chat",
+                &InnerConflict {
+                    topic: "boundary".to_string(),
+                    pull_a: "stay open".to_string(),
+                    pull_b: "preserve limits".to_string(),
+                    ..InnerConflict::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            queued_write_back_labels_for_tests(),
+            vec![
+                "felt_significance_write_back",
+                "inner_conflict_write_back",
+                "temperament_continuity_write_back",
+            ]
+        );
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
     }
 
     #[test]

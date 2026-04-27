@@ -117,14 +117,6 @@ pub fn enqueue_self_runtime_post_reply(
         external_content_used,
         now_secs,
     };
-    if matches!(profile, MemoryProfile::Embedded) {
-        return schedule_self_runtime_system_queue_job(
-            system_inbound_tx,
-            chat_id,
-            payload,
-            SELF_RUNTIME_POST_REPLY_DELAY_MS,
-        );
-    }
     match crate::agent::has_meaningful_foreground_work_for_chat(active_work_store, chat_id) {
         Ok(true) => {
             append_self_runtime_workflow_audit(
@@ -183,12 +175,21 @@ pub fn enqueue_self_runtime_post_reply(
         );
         return false;
     }
-    schedule_self_runtime_job(
-        detached_work_store,
-        chat_id,
-        payload,
-        SELF_RUNTIME_POST_REPLY_DELAY_MS,
-    )
+    if matches!(profile, MemoryProfile::Embedded) {
+        schedule_self_runtime_system_queue_job(
+            system_inbound_tx,
+            chat_id,
+            payload,
+            SELF_RUNTIME_POST_REPLY_DELAY_MS,
+        )
+    } else {
+        schedule_self_runtime_job(
+            detached_work_store,
+            chat_id,
+            payload,
+            SELF_RUNTIME_POST_REPLY_DELAY_MS,
+        )
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1149,6 +1150,23 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct PresentSelfAuthoredCoreStore;
+
+    impl SelfAuthoredCoreStore for PresentSelfAuthoredCoreStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<SelfAuthoredCore>> {
+            Ok(Some(SelfAuthoredCore::default()))
+        }
+
+        fn set(&self, _scope_id: &str, _core: &SelfAuthoredCore) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct StubRelationshipPortfolioStore;
 
     impl RelationshipPortfolioStore for StubRelationshipPortfolioStore {
@@ -1376,6 +1394,59 @@ mod tests {
         assert_eq!(
             audit.recent_records[0].workflow,
             crate::runtime::WorkflowKind::SelfRuntimePostReply
+        );
+    }
+
+    #[test]
+    fn embedded_self_runtime_post_reply_uses_scheduler_cadence_gate() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _delayed_task_guard = delayed_task_runtime_guard();
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
+        reset_workflow_audit_for_tests();
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let detached_work_store = MemoryDetachedWorkStore::default();
+        let now_secs = current_unix_secs();
+        let continuity = SelfContinuity {
+            last_user_channel: "qq_channel".to_string(),
+            last_autonomy_run_at: now_secs.saturating_sub(10),
+            ..SelfContinuity::default()
+        };
+        let strategy = AutonomyStrategy {
+            idle_enabled: true,
+            idle_interval_secs: 300,
+            ..AutonomyStrategy::default()
+        };
+        let continuity_store = StubSelfContinuityStore::with_value(continuity);
+        let strategy_store = StubAutonomyStrategyStore::with_value(strategy);
+
+        let scheduled = enqueue_self_runtime_post_reply(
+            &system_inbound_tx,
+            &detached_work_store,
+            &StubActiveWorkStore::default(),
+            &continuity_store,
+            &strategy_store,
+            &PresentSelfAuthoredCoreStore,
+            MemoryProfile::Embedded,
+            "chat-a",
+            "qq_channel",
+            "user",
+            "reply",
+            0,
+            false,
+        );
+
+        assert!(!scheduled);
+        let key = DetachedWorkKey::new(
+            "qq_channel",
+            "chat-a",
+            DetachedJobKind::SelfRuntimePostReply,
+        );
+        assert!(detached_work_store.get(&key).expect("load").is_none());
+        let audit = workflow_audit_snapshot(4);
+        assert_eq!(audit.summary.no_trigger, 1);
+        assert_eq!(
+            audit.recent_records[0].rationale,
+            "post_reply_runtime_recently_ran"
         );
     }
 

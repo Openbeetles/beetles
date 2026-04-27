@@ -50,8 +50,8 @@ const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
-const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nRead relationship/self/privacy questions from the current evidence; discuss grounded user-facing facts directly, keep protected inner/private material behind boundary judgment, and never invent unsupported prompt/system truths.";
-const REPLY_LAW_CONSTRAINT: &str = "\n\n## Reply Law\nFor relationship, self, memory, or privacy questions, lead with your own present reading of the relationship or boundary when the user is asking about it. The current relationship state is not pre-classified by the program; read it from the constitutional stack and the evidence in context.\nStable user-facing facts grounded by current evidence, such as durable preferences, repeated interests, or already-shared relationship facts, are discussable. Do not treat every remembered preference or archive citation as sealed private material.\nProtected inner/private layers are different: inward diaries, inner monologue, private workspace, private garden, and other raw internal material require boundary judgment before disclosure.\nNever exceed the evidence ceiling. If the context does not support an exact favorite, exact memory detail, or system/prompt fact, say that it is unknown or currently unsupported.\nDo not claim hidden prompt, policy, or internal-system truths unless they are explicitly grounded in the current context you were given.\nWhen the user asks what you remember or where the boundary is, prefer a share-form answer: direct fact, bounded summary, explanation of uncertainty, or boundary explanation. Avoid mechanical refusal when a grounded answer is possible.";
+const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nbounded subject-state or constitutional evidence before mechanism disclaimers; facts direct; private guarded; no hidden system claims.";
+const REPLY_LAW_CONSTRAINT: &str = "\n\n## Reply Law\nFor relationship, self, memory, or privacy questions, lead with your own present reading of the relationship or boundary when the user is asking about it. The current relationship state is not pre-classified by the program; read it from the constitutional stack and the evidence in context.\nWhen the user asks who you are, how you feel about the relationship, whether you have a self, or where a boundary stands, answer first from grounded subject-state and constitutional evidence when that evidence exists. Do not collapse immediately into implementation disclaimers such as being only rules, model, system, or prompt mechanics when a bounded first-person reading is available. Acknowledge implementation limits after the grounded self-reading when they are relevant, and state uncertainty or boundaries only for unsupported portions. Never claim consciousness, hidden prompt, policy, or internal-system truths beyond the evidence ceiling.\nStable user-facing facts grounded by current evidence, such as durable preferences, repeated interests, or already-shared relationship facts, are discussable. Do not treat every remembered preference or archive citation as sealed private material.\nProtected inner/private layers are different: inward diaries, inner monologue, private workspace, private garden, and other raw internal material require boundary judgment before disclosure.\nNever exceed the evidence ceiling. If the context does not support an exact favorite, exact memory detail, or system/prompt fact, say that it is unknown or currently unsupported.\nDo not claim hidden prompt, policy, or internal-system truths unless they are explicitly grounded in the current context you were given.\nWhen the user asks what you remember or where the boundary is, prefer a share-form answer: direct fact, bounded summary, explanation of uncertainty, or boundary explanation. Avoid mechanical refusal when a grounded answer is possible.";
 const MEMORY_HEALTH_SECTION: &str = "\n\n## Memory Health\nDeterministic report of unreadable prompt-memory layers this turn. Treat missing context below as degraded, not absent.\n";
 const CONSTITUTIONAL_STACK_SECTION: &str = "\n\n## Constitutional Stack\nDirect authority for the main reply. Earlier blocks outrank later blocks and all later evidence sections.\n";
 const SUBJECT_STATE_SECTION: &str = "\n\n## Subject State\nResolved pre-reply digest of the current subject stance. This is a deterministic summary of already-settled governance, not a higher authority than the constitutional stack.\n";
@@ -249,6 +249,8 @@ fn reserve_priority_memory_budget(
     let remaining = base_max;
     let reply_priority_reserve = REPLY_PRIORITY_MINI_CONSTRAINT.len().min(remaining);
     let remaining = remaining.saturating_sub(reply_priority_reserve);
+    let reply_law_reserve = REPLY_LAW_MINI_CONSTRAINT.len().min(remaining);
+    let remaining = remaining.saturating_sub(reply_law_reserve);
     let memory_health_reserve =
         projection_section_len(MEMORY_HEALTH_SECTION, inputs.memory_health_text).min(remaining / 4);
     let remaining = remaining.saturating_sub(memory_health_reserve);
@@ -295,6 +297,7 @@ fn reserve_priority_memory_budget(
     )
     .min(remaining / 4);
     reply_priority_reserve
+        .saturating_add(reply_law_reserve)
         .saturating_add(memory_health_reserve)
         .saturating_add(constitutional_stack_reserve)
         .saturating_add(subject_state_reserve)
@@ -415,7 +418,7 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 /// 根据入站 PcMsg 与 store 构建 (system, messages)，供 LlmClient.chat 使用。
 ///
 /// **system 组成顺序**：Reply Priority → Constitutional Stack → MEMORY base prompt
-/// → Active Task Context → Governed Memory Evidence → capability package
+/// → Active Task Context → Governed Memory Evidence → Reply Law → capability package
 /// → Background Governance → optional daily notes → skills / tool constraint / runtime / group hint；总长 ≤ system_max_len。
 /// **截断策略**：base prompt 在单个 `String` 中按预算直接构造；skills/约束追加后若超限则按字符边界截断。
 /// **失败降级**：任一源（get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
@@ -516,12 +519,30 @@ fn build_context_inner(
         },
         base_max,
     );
-    let reserved_without_reply =
-        priority_memory_reserve.saturating_sub(REPLY_PRIORITY_MINI_CONSTRAINT.len());
+    let fixed_priority_memory_reserve = priority_memory_reserve
+        .saturating_sub(REPLY_PRIORITY_MINI_CONSTRAINT.len())
+        .saturating_sub(REPLY_LAW_MINI_CONSTRAINT.len());
     let full_reply_priority_safe = REPLY_PRIORITY_CONSTRAINT
         .len()
-        .saturating_add(reserved_without_reply)
+        .saturating_add(REPLY_LAW_MINI_CONSTRAINT.len())
+        .saturating_add(fixed_priority_memory_reserve)
         <= base_max;
+    let selected_reply_priority_len = if full_reply_priority_safe {
+        REPLY_PRIORITY_CONSTRAINT.len()
+    } else {
+        REPLY_PRIORITY_MINI_CONSTRAINT.len()
+    };
+    let full_reply_law_safe = selected_reply_priority_len
+        .saturating_add(REPLY_LAW_CONSTRAINT.len())
+        .saturating_add(fixed_priority_memory_reserve)
+        <= base_max
+        && REPLY_LAW_CONSTRAINT.len() <= base_max / 2;
+    let selected_reply_law_len = if full_reply_law_safe {
+        REPLY_LAW_CONSTRAINT.len()
+    } else {
+        REPLY_LAW_MINI_CONSTRAINT.len()
+    };
+    let pre_reply_law_max = base_max.saturating_sub(selected_reply_law_len);
     let base_prompt_budget = base_max.saturating_sub(priority_memory_reserve);
     let mut system = String::with_capacity(p.system_max_len);
     let mut section_scratch = String::with_capacity(96);
@@ -536,57 +557,61 @@ fn build_context_inner(
         &mut system,
         MEMORY_HEALTH_SECTION,
         p.memory_health_text,
-        base_max,
+        pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         CONSTITUTIONAL_STACK_SECTION,
         constitutional_stack_text.as_deref(),
-        base_max,
+        pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         SUBJECT_STATE_SECTION,
         p.subject_state_text,
-        base_max,
+        pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         TURN_DELIBERATION_GATE_SECTION,
         p.deliberation_gate_text,
-        base_max,
+        pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         PROGRAMMABLE_REASONING_INTENT_SECTION,
         p.programmable_reasoning_intent_text,
-        base_max,
+        pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         SOUL_FEEDBACK_PROJECTION_SECTION,
         p.soul_feedback_projection_text,
-        base_max,
+        pre_reply_law_max,
     );
-    let _ = append_capped_section(&mut system, "\n\n", &base_prompt, base_max);
+    let _ = append_capped_section(&mut system, "\n\n", &base_prompt, pre_reply_law_max);
     let _ = append_projection_section(
         &mut system,
         ACTIVE_TASK_CONTEXT_SECTION,
         active_task_context_text.as_deref(),
-        base_max,
+        pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         GOVERNED_MEMORY_EVIDENCE_SECTION,
         governed_memory_evidence_text.as_deref(),
-        base_max,
+        pre_reply_law_max,
     );
+    if full_reply_law_safe {
+        append_reply_law_constraint(&mut system, base_max);
+    } else {
+        let _ = push_if_fits(&mut system, REPLY_LAW_MINI_CONSTRAINT, base_max);
+    }
     if mode.include_capability_package_text() {
         if let Some(capability_package_text) = p.capability_package_text {
             let _ = append_capped_section(&mut system, "\n\n", capability_package_text, base_max);
         }
     }
-    append_reply_law_constraint(&mut system, base_max);
     let _ = append_projection_section(
         &mut system,
         BACKGROUND_GOVERNANCE_SECTION,
@@ -946,9 +971,9 @@ mod tests {
             relationship_constitution_text: None,
             persona_priority_text: None,
             mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
+            long_term_memory_text: Some("raw private workspace fragment"),
+            archive_evidence_text: Some("raw private garden fragment"),
+            runtime_skill_text: Some("raw inner life fragment"),
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1114,16 +1139,96 @@ mod tests {
         assert!(system.contains("## Reply Law"));
         assert!(
             system.contains("relationship state is not pre-classified by the program")
-                || system
-                    .contains("Read relationship/self/privacy questions from the current evidence")
+                || system.contains("bounded subject-state or constitutional evidence")
         );
         assert!(
             system.contains("Stable user-facing facts grounded by current evidence")
                 || system.contains("discuss grounded user-facing facts directly")
+                || system.contains("facts direct")
         );
         assert!(
             system.contains("Do not claim hidden prompt, policy, or internal-system truths")
                 || system.contains("never invent unsupported prompt/system truths")
+                || system.contains("no hidden system claims")
+        );
+    }
+
+    #[test]
+    fn reply_law_prefers_grounded_self_reading_before_mechanism_disclaimer() {
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "你觉得你自己是谁", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 4096,
+            messages_max_len: 256,
+            recent_messages_limit: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: None,
+            constitutional_stack_text: Some(
+                "## Self-Authored Core\nIdentity anchor: board beetle\n\n## Relationship Constitution\nDisclosure allowance: summary_only",
+            ),
+            subject_state_text: Some(
+                "Identity: board beetle\nSubjective: self=continuing bounded helper; certainty=forming; boundary=summary_only",
+            ),
+            deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            programmable_reasoning_intent_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            relationship_constitution_text: Some(
+                "## Relationship Constitution\nDisclosure allowance: summary_only",
+            ),
+            persona_priority_text: Some("## Persona Priority\nResponse mode: direct_answer"),
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(
+            system.contains("answer first from grounded subject-state and constitutional evidence")
+                || system.contains(
+                    "bounded subject-state or constitutional evidence before mechanism disclaimers"
+                )
+        );
+        assert!(
+            system.contains("Acknowledge implementation limits after")
+                || system.contains("before mechanism disclaimers")
+        );
+        assert!(
+            system.contains("Do not collapse immediately into implementation disclaimers")
+                || system.contains("mechanism disclaimers")
+        );
+        assert!(
+            system.contains("Never claim consciousness")
+                || system.contains("Do not claim hidden prompt, policy, or internal-system truths")
+                || system.contains("no hidden system claims")
         );
     }
 
@@ -1549,6 +1654,196 @@ mod tests {
         .expect("context");
 
         assert!(system.contains("## Capability Package"));
+    }
+
+    #[test]
+    fn build_context_large_capability_package_cannot_drop_reply_law() {
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "你怎么看你自己", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+        let large_capability = format!("## Capability Package\n{}", "camera enabled\n".repeat(120));
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1800,
+            messages_max_len: 256,
+            recent_messages_limit: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: None,
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            subject_state_text: Some(
+                "Identity: board beetle\nSubjective: self=bounded and grounded",
+            ),
+            deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
+            active_task_context_text: Some("## Active Task Context\nResume the current task."),
+            governed_memory_evidence_text: Some(
+                "## Governed Memory Evidence\nCompressed long-term memory.",
+            ),
+            background_governance_text: None,
+            programmable_reasoning_intent_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: Some(&large_capability),
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Reply Law"));
+        assert!(system.contains("bounded subject-state or constitutional evidence"));
+    }
+
+    #[test]
+    fn build_context_large_active_and_governed_evidence_cannot_drop_reply_law() {
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "你怎么看你自己", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+        let large_active = format!("## Active Task Context\n{}", "active detail\n".repeat(120));
+        let large_governed = format!(
+            "## Governed Memory Evidence\n{}",
+            "governed evidence\n".repeat(120)
+        );
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1800,
+            messages_max_len: 256,
+            recent_messages_limit: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: None,
+            constitutional_stack_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
+            subject_state_text: Some(
+                "Identity: board beetle\nSubjective: self=bounded and grounded",
+            ),
+            deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
+            active_task_context_text: Some(&large_active),
+            governed_memory_evidence_text: Some(&large_governed),
+            background_governance_text: None,
+            programmable_reasoning_intent_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Reply Law"));
+        assert!(system.contains("bounded subject-state or constitutional evidence"));
+    }
+
+    #[test]
+    fn build_context_large_early_sections_cannot_drop_reply_law() {
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-1", "你怎么看你自己", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            memory: "MEMORY".repeat(260),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+        let large_constitutional = format!(
+            "## Self-Authored Core\n{}",
+            "identity anchor remains board beetle\n".repeat(120)
+        );
+        let large_subject = format!(
+            "Identity: board beetle\n{}",
+            "Subjective: self=bounded and grounded\n".repeat(80)
+        );
+        let large_deliberation = "## Deliberation Gate\n".repeat(80);
+        let large_soul_feedback = "## Soul Feedback\n".repeat(80);
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 1800,
+            messages_max_len: 256,
+            recent_messages_limit: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: None,
+            constitutional_stack_text: Some(&large_constitutional),
+            subject_state_text: Some(&large_subject),
+            deliberation_gate_text: Some(&large_deliberation),
+            soul_feedback_projection_text: Some(&large_soul_feedback),
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            programmable_reasoning_intent_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.contains("## Reply Law"));
+        assert!(system.contains("bounded subject-state or constitutional evidence"));
     }
 
     #[test]

@@ -1,12 +1,13 @@
 //! Shared memory/operator surface for HTTP and CLI.
 
 use crate::memory::{
-    board_subject_scope_id, derive_personality_runtime_governance_gate_from_inspection,
-    inspect_personality_governance, select_active_continuity_snapshot_chat_ids,
-    select_personality_governance_targets, ContinuitySnapshotManifest, CrossPlaneRerankResult,
+    board_subject_scope_id, compile_subject_shell,
+    derive_personality_runtime_governance_gate_from_inspection, inspect_personality_governance,
+    select_active_continuity_snapshot_chat_ids, select_personality_governance_targets,
+    ContinuitySnapshotManifest, CrossPlaneRerankResult, FeltSignificance, InnerConflict,
     IntelligenceReplayInspection, PersonalityGovernanceInspection,
     PersonalityGovernanceInspectionInput, PersonalityRuntimeGovernanceGate, PromptRecallIntent,
-    RecallSelectionReport,
+    RecallSelectionReport, SubjectShellCompileInput, TemperamentContinuity,
 };
 use crate::skills::is_runtime_skill_name;
 use crate::tools::ToolRegistry;
@@ -94,6 +95,9 @@ pub struct MemoryOperatorSoulGovernanceView {
     pub relationship_needs_runtime_attention: bool,
     pub runtime_governance_repair_needed: bool,
     pub runtime_governance_primary_action: String,
+    pub active_inner_conflict_count: usize,
+    pub temperament_continuity_present: bool,
+    pub subjective_projection_present: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -105,6 +109,9 @@ pub struct MemoryOperatorInspectView {
     pub continuity_capsule_count: usize,
     pub continuity_snapshot_supported: bool,
     pub saved_snapshot_count: usize,
+    pub humanization_spine_present: bool,
+    pub subject_shell_grounded: bool,
+    pub felt_significance_present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_relationship_target: Option<MemoryOperatorRelationshipTarget>,
 }
@@ -287,7 +294,7 @@ pub fn build_memory_operator_surface_with_capabilities(
                 .find(|entry| entry.scope_id == target.scope_id)
         })
     });
-    let outer_voice_updated_at = policy_target
+    let active_outer_voice = policy_target
         .as_ref()
         .and_then(|target| {
             platform
@@ -295,7 +302,9 @@ pub fn build_memory_operator_surface_with_capabilities(
                 .get(target.scope_id.as_str())
                 .ok()
         })
-        .flatten()
+        .flatten();
+    let outer_voice_updated_at = active_outer_voice
+        .as_ref()
         .map(|outer_voice| outer_voice.updated_at)
         .unwrap_or_else(|| {
             topology_entry
@@ -317,6 +326,68 @@ pub fn build_memory_operator_surface_with_capabilities(
                 .map(|entry| entry.last_mental_privacy_at)
                 .unwrap_or_default()
         });
+    let felt_significance = platform
+        .felt_significance_store()
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let temperament_continuity = platform
+        .temperament_continuity_store()
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let inner_conflict = platform
+        .inner_conflict_store()
+        .get(subject_id)
+        .ok()
+        .flatten();
+    let felt_significance_present = felt_significance
+        .as_ref()
+        .is_some_and(|state| state.is_meaningful());
+    let temperament_continuity_present = temperament_continuity
+        .as_ref()
+        .is_some_and(|state| state.is_meaningful());
+    let active_inner_conflict_count = usize::from(
+        inner_conflict
+            .as_ref()
+            .is_some_and(|state| state.is_active_at(now_secs)),
+    );
+    let active_relationship_scope = policy_target
+        .as_ref()
+        .map(|target| target.scope_id.as_str())
+        .unwrap_or("");
+    let active_relationship_channel = policy_target
+        .as_ref()
+        .map(|target| target.channel.as_str())
+        .unwrap_or("");
+    let active_relationship_chat_id = policy_target
+        .as_ref()
+        .map(|target| target.chat_id.as_str())
+        .unwrap_or("");
+    let subject_shell_grounded = compile_subject_shell(SubjectShellCompileInput {
+        now_secs,
+        platform: memory_system_kind.as_str(),
+        relationship_scope: active_relationship_scope,
+        channel: active_relationship_channel,
+        chat_id: active_relationship_chat_id,
+        self_authored_core: self_authored_core.as_ref(),
+        self_continuity: self_continuity.as_ref(),
+        self_model: self_model.as_ref(),
+        outer_voice: active_outer_voice.as_ref(),
+        relationship_constitution: relationship_constitution.as_ref(),
+        ..SubjectShellCompileInput::default()
+    })
+    .is_some();
+    let subjective_projection_present = subject_state_projection_present(
+        felt_significance.as_ref(),
+        temperament_continuity.as_ref(),
+        inner_conflict.as_ref(),
+        now_secs,
+    );
+    let humanization_spine_present = subject_shell_grounded
+        && felt_significance_present
+        && temperament_continuity_present
+        && subjective_projection_present;
 
     Ok(MemoryOperatorSurfaceSummary {
         program_memory_view: MemoryOperatorProgramMemoryView {
@@ -400,6 +471,9 @@ pub fn build_memory_operator_surface_with_capabilities(
                 .primary_action
                 .label()
                 .to_string(),
+            active_inner_conflict_count,
+            temperament_continuity_present,
+            subjective_projection_present,
         },
         inspect: MemoryOperatorInspectView {
             subject_id: subject_id.to_string(),
@@ -409,6 +483,9 @@ pub fn build_memory_operator_surface_with_capabilities(
             continuity_capsule_count,
             continuity_snapshot_supported,
             saved_snapshot_count,
+            humanization_spine_present,
+            subject_shell_grounded,
+            felt_significance_present,
             active_relationship_target: active_relationship_target.clone(),
         },
         trace: MemoryOperatorTraceView {
@@ -509,6 +586,33 @@ pub fn build_memory_operator_surface_with_capabilities(
     })
 }
 
+fn subject_state_projection_present(
+    felt_significance: Option<&FeltSignificance>,
+    temperament_continuity: Option<&TemperamentContinuity>,
+    inner_conflict: Option<&InnerConflict>,
+    now_secs: u64,
+) -> bool {
+    felt_significance
+        .filter(|state| state.is_meaningful())
+        .is_some_and(|state| {
+            !state.significance_summary.trim().is_empty()
+                || has_non_empty_item(&state.what_matters_now)
+                || has_non_empty_item(&state.pull_closer)
+                || has_non_empty_item(&state.pull_back)
+        })
+        || temperament_continuity
+            .filter(|state| state.is_meaningful())
+            .is_some_and(|state| {
+                !state.stability_summary.trim().is_empty()
+                    || !state.boundary_inertia.trim().is_empty()
+            })
+        || inner_conflict.is_some_and(|state| state.is_active_at(now_secs) || state.is_meaningful())
+}
+
+fn has_non_empty_item(values: &[String]) -> bool {
+    values.iter().any(|value| !value.trim().is_empty())
+}
+
 pub fn render_memory_operator_surface_text(surface: &MemoryOperatorSurfaceSummary) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -521,7 +625,7 @@ pub fn render_memory_operator_surface_text(surface: &MemoryOperatorSurfaceSummar
         surface.program_memory_view.saved_snapshot_count,
     ));
     out.push_str(&format!(
-        "  memory_operator_soul_governance: board_revision={} review_due={} conservative_mode={} recent_persona_at={} execution_signals={} promotable_signals={} operational_signals={} latest_reply_feedback={} latest_initiative_feedback={} latest_strategy_feedback={} latest_post_reply_runtime={} relationship_attention={} repair_needed={} primary_action={}\n",
+        "  memory_operator_soul_governance: board_revision={} review_due={} conservative_mode={} recent_persona_at={} execution_signals={} promotable_signals={} operational_signals={} latest_reply_feedback={} latest_initiative_feedback={} latest_strategy_feedback={} latest_post_reply_runtime={} relationship_attention={} repair_needed={} primary_action={} active_inner_conflicts={} temperament_continuity={} subjective_projection={}\n",
         surface.soul_governance_view.board_revision,
         surface.soul_governance_view.board_review_due,
         surface.soul_governance_view.board_conservative_mode,
@@ -536,6 +640,15 @@ pub fn render_memory_operator_surface_text(surface: &MemoryOperatorSurfaceSummar
         surface.soul_governance_view.relationship_needs_runtime_attention,
         surface.soul_governance_view.runtime_governance_repair_needed,
         surface.soul_governance_view.runtime_governance_primary_action,
+        surface.soul_governance_view.active_inner_conflict_count,
+        surface.soul_governance_view.temperament_continuity_present,
+        surface.soul_governance_view.subjective_projection_present,
+    ));
+    out.push_str(&format!(
+        "  memory_operator_humanization_spine: present={} subject_shell_grounded={} felt_significance={}\n",
+        surface.inspect.humanization_spine_present,
+        surface.inspect.subject_shell_grounded,
+        surface.inspect.felt_significance_present,
     ));
     if let Some(target) = surface.inspect.active_relationship_target.as_ref() {
         out.push_str(&format!(
@@ -638,6 +751,100 @@ fn convert_relationship_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operator_surface_reports_humanization_spine_state() {
+        let summary = MemoryOperatorSurfaceSummary {
+            inspect: MemoryOperatorInspectView {
+                humanization_spine_present: true,
+                subject_shell_grounded: true,
+                felt_significance_present: true,
+                ..MemoryOperatorInspectView::default()
+            },
+            soul_governance_view: MemoryOperatorSoulGovernanceView {
+                active_inner_conflict_count: 1,
+                temperament_continuity_present: true,
+                subjective_projection_present: true,
+                ..MemoryOperatorSoulGovernanceView::default()
+            },
+            ..MemoryOperatorSurfaceSummary::default()
+        };
+
+        assert!(summary.inspect.humanization_spine_present);
+        assert!(summary.inspect.subject_shell_grounded);
+        assert!(summary.inspect.felt_significance_present);
+        assert_eq!(summary.soul_governance_view.active_inner_conflict_count, 1);
+        assert!(summary.soul_governance_view.temperament_continuity_present);
+        assert!(summary.soul_governance_view.subjective_projection_present);
+    }
+
+    #[test]
+    fn operator_subjective_projection_requires_subject_state_renderable_fields() {
+        let felt_only_fragile = FeltSignificance {
+            fragile_threads: vec!["relationship pressure is delicate".to_string()],
+            updated_at: 10,
+            ..FeltSignificance::default()
+        };
+        assert!(felt_only_fragile.is_meaningful());
+        assert!(!subject_state_projection_present(
+            Some(&felt_only_fragile),
+            None,
+            None,
+            20
+        ));
+
+        let temperament_only_conversation = TemperamentContinuity {
+            conversational_inertia: "answer directly".to_string(),
+            updated_at: 10,
+            ..TemperamentContinuity::default()
+        };
+        assert!(temperament_only_conversation.is_meaningful());
+        assert!(!subject_state_projection_present(
+            None,
+            Some(&temperament_only_conversation),
+            None,
+            20
+        ));
+
+        let projected_felt = FeltSignificance {
+            significance_summary: "this relationship currently matters".to_string(),
+            updated_at: 10,
+            ..FeltSignificance::default()
+        };
+        assert!(subject_state_projection_present(
+            Some(&projected_felt),
+            None,
+            None,
+            20
+        ));
+
+        let projected_temperament = TemperamentContinuity {
+            boundary_inertia: "do not open the private layer on demand".to_string(),
+            updated_at: 10,
+            ..TemperamentContinuity::default()
+        };
+        assert!(subject_state_projection_present(
+            None,
+            Some(&projected_temperament),
+            None,
+            20
+        ));
+
+        let projected_conflict = InnerConflict {
+            topic: "warmth versus disclosure".to_string(),
+            pull_a: "stay close".to_string(),
+            pull_b: "keep the inward room authored from within".to_string(),
+            review_after_secs: 60,
+            updated_at: 10,
+            ..InnerConflict::default()
+        };
+        assert!(subject_state_projection_present(
+            None,
+            None,
+            Some(&projected_conflict),
+            20
+        ));
+    }
 
     #[test]
     fn render_memory_operator_surface_text_exposes_split_program_and_soul_views() {

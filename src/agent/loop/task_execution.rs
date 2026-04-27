@@ -1001,6 +1001,7 @@ mod tests {
             relationship_posture: "warm".to_string(),
             resource_posture: "normal_budget".to_string(),
             boundary_mode: "explain_without_quote".to_string(),
+            ..SubjectState::default()
         };
         let soul_feedback_projection = SoulFeedbackProjection {
             reply: crate::agent::soul_feedback::SoulReplyFeedback {

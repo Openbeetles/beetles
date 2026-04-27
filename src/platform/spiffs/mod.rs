@@ -78,6 +78,9 @@ pub(crate) fn esp_storage_rel_path(rel: &Path) -> PathBuf {
         crate::memory::REL_PATH_SESSION_SUMMARIES => PathBuf::from("m/ss.json"),
         crate::memory::REL_PATH_LONG_TERM_MEMORIES => PathBuf::from("m/ltm.json"),
         crate::memory::REL_PATH_AUTONOMY_STRATEGIES => PathBuf::from("m/as.json"),
+        crate::memory::REL_PATH_FELT_SIGNIFICANCES => PathBuf::from("m/fs.json"),
+        crate::memory::REL_PATH_TEMPERAMENT_CONTINUITIES => PathBuf::from("m/tc.json"),
+        crate::memory::REL_PATH_INNER_CONFLICTS => PathBuf::from("m/ic.json"),
         crate::memory::REL_PATH_CONTINUITY_CAPSULES => PathBuf::from("m/cc.json"),
         "memory/continuity_capsule_index.sqlite3" => PathBuf::from("m/cci.db"),
         crate::memory::REL_PATH_SELF_AUTHORED_CORES => PathBuf::from("m/sac.json"),
@@ -551,7 +554,9 @@ pub mod continuity_capsule;
 pub mod core_revision_ledger;
 pub mod detached_work;
 pub mod execution_state;
+pub mod felt_significance;
 pub mod important_message;
+pub mod inner_conflict;
 pub mod inner_life;
 pub mod long_term_extraction_state;
 pub mod long_term_memory;
@@ -578,6 +583,7 @@ pub mod skill_meta;
 pub mod skill_storage;
 pub mod task_execution;
 pub mod task_store;
+pub mod temperament_continuity;
 pub mod turn_ledger;
 pub mod world_sense;
 pub use turn_ledger::SpiffsTurnLedgerStore;
@@ -589,7 +595,9 @@ pub use continuity_capsule::SpiffsContinuityCapsuleStore;
 pub use core_revision_ledger::SpiffsCoreRevisionLedgerStore;
 pub use detached_work::SpiffsDetachedWorkStore;
 pub use execution_state::SpiffsExecutionStateStore;
+pub use felt_significance::SpiffsFeltSignificanceStore;
 pub use important_message::SpiffsImportantMessageStore;
+pub use inner_conflict::SpiffsInnerConflictStore;
 pub use inner_life::SpiffsInnerLifeStore;
 pub use long_term_extraction_state::SpiffsLongTermMemoryExtractionStateStore;
 pub use long_term_memory::SpiffsLongTermMemoryStore;
@@ -619,6 +627,7 @@ pub use task_execution::{
     SpiffsTaskRunStore,
 };
 pub use task_store::SpiffsTaskStore;
+pub use temperament_continuity::SpiffsTemperamentContinuityStore;
 pub use world_sense::SpiffsWorldSenseStore;
 
 #[cfg(test)]
@@ -630,10 +639,11 @@ mod tests {
     use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
         REL_PATH_AUTONOMY_STRATEGIES, REL_PATH_CONTINUITY_CAPSULES, REL_PATH_CORE_REVISION_LEDGERS,
-        REL_PATH_IMPORTANT_MESSAGE, REL_PATH_LONG_TERM_EXTRACTION_STATES,
-        REL_PATH_PRIVATE_DOC_WORKSPACES, REL_PATH_PRIVATE_GARDEN_DIR,
-        REL_PATH_PRIVATE_GARDEN_INDEX, REL_PATH_RELATIONSHIP_PORTFOLIOS,
-        REL_PATH_SELF_AUTHORED_CORES, REL_PATH_SESSION_SUMMARIES,
+        REL_PATH_FELT_SIGNIFICANCES, REL_PATH_IMPORTANT_MESSAGE, REL_PATH_INNER_CONFLICTS,
+        REL_PATH_LONG_TERM_EXTRACTION_STATES, REL_PATH_PRIVATE_DOC_WORKSPACES,
+        REL_PATH_PRIVATE_GARDEN_DIR, REL_PATH_PRIVATE_GARDEN_INDEX,
+        REL_PATH_RELATIONSHIP_PORTFOLIOS, REL_PATH_SELF_AUTHORED_CORES, REL_PATH_SESSION_SUMMARIES,
+        REL_PATH_TEMPERAMENT_CONTINUITIES,
     };
     use crate::runtime::REL_PATH_LINUX_RELEASE_STATE;
     use std::path::{Path, PathBuf};
@@ -764,6 +774,21 @@ mod tests {
                 "memory/tool_execution_governance.corrupt.json",
                 "m/teg_bad.json",
             ),
+        ];
+        for (rel, expected) in cases {
+            assert_eq!(
+                esp_storage_rel_path(Path::new(rel)),
+                PathBuf::from(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn spiffs_rel_path_map_includes_humanization_layers() {
+        let cases = [
+            (REL_PATH_FELT_SIGNIFICANCES, "m/fs.json"),
+            (REL_PATH_TEMPERAMENT_CONTINUITIES, "m/tc.json"),
+            (REL_PATH_INNER_CONFLICTS, "m/ic.json"),
         ];
         for (rel, expected) in cases {
             assert_eq!(

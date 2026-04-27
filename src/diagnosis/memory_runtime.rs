@@ -33,6 +33,39 @@ pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) ->
             "continuity_snapshot_supported",
             surface.inspect.continuity_snapshot_supported.to_string(),
         ),
+        DiagnosisEvidence::new(
+            "humanization_spine_present",
+            surface.inspect.humanization_spine_present.to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "subject_shell_grounded",
+            surface.inspect.subject_shell_grounded.to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "felt_significance_present",
+            surface.inspect.felt_significance_present.to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "active_inner_conflict_count",
+            surface
+                .soul_governance_view
+                .active_inner_conflict_count
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "temperament_continuity_present",
+            surface
+                .soul_governance_view
+                .temperament_continuity_present
+                .to_string(),
+        ),
+        DiagnosisEvidence::new(
+            "subjective_projection_present",
+            surface
+                .soul_governance_view
+                .subjective_projection_present
+                .to_string(),
+        ),
         DiagnosisEvidence::new("repair_needed", surface.repair.repair_needed.to_string()),
         DiagnosisEvidence::new("primary_action", surface.repair.primary_action.as_str()),
         DiagnosisEvidence::new(
@@ -128,6 +161,45 @@ pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) ->
         evidence.push(DiagnosisEvidence::new(
             "active_relationship_target",
             format!("{}:{}", target.channel, target.chat_id),
+        ));
+    }
+
+    let humanization_spine_has_any_signal = surface.inspect.subject_shell_grounded
+        || surface.inspect.felt_significance_present
+        || surface.soul_governance_view.temperament_continuity_present
+        || surface.soul_governance_view.subjective_projection_present
+        || surface.soul_governance_view.active_inner_conflict_count > 0;
+    if humanization_spine_has_any_signal && !surface.inspect.humanization_spine_present {
+        findings.push(DiagnosisFinding::correlated(
+            "humanization spine is partially present but not complete",
+        ));
+        suspected_root_causes.push(DiagnosisRootCause::new(
+            "humanization_spine_incomplete",
+            "subject shell grounding, felt significance, temperament continuity, or subjective projection is missing from the governed humanization spine",
+            DiagnosisConfidence::Medium,
+        ));
+        recommended_next_steps.push(DiagnosisAction::new(
+            "inspect_humanization_spine",
+            "inspect subject-shell grounding and P3 projection presence before treating identity collapse as an LLM wording issue",
+        ));
+    }
+
+    let subjective_inputs_present = surface.inspect.felt_significance_present
+        || surface.soul_governance_view.temperament_continuity_present
+        || surface.soul_governance_view.active_inner_conflict_count > 0;
+    if subjective_inputs_present && !surface.soul_governance_view.subjective_projection_present {
+        findings.push(DiagnosisFinding::correlated(
+            "subjective inputs exist but are not visible as a projection",
+        ));
+        recommended_next_steps.push(DiagnosisAction::new(
+            "inspect_humanization_spine",
+            "inspect why P3 subjective layers are present but not reaching the subject-state projection",
+        ));
+    }
+
+    if surface.soul_governance_view.active_inner_conflict_count > 0 {
+        findings.push(DiagnosisFinding::observed(
+            "bounded unresolved inner conflict is active and should remain visible to governance",
         ));
     }
 
@@ -295,6 +367,7 @@ pub fn build_memory_runtime_diagnosis(surface: &MemoryOperatorSurfaceSummary) ->
         "inspect_memory_forge".to_string(),
         "inspect_soul_growth_promotion_gate".to_string(),
         "inspect_soul_feedback_projection".to_string(),
+        "inspect_humanization_spine".to_string(),
     ];
     if surface.inspect.continuity_snapshot_supported {
         safe_actions_available.push("inspect_continuity_snapshot".to_string());
@@ -454,6 +527,40 @@ mod tests {
             .recommended_next_steps
             .iter()
             .any(|step| step.code == "inspect_soul_growth_promotion_gate"));
+    }
+
+    #[test]
+    fn memory_runtime_diagnosis_reports_humanization_spine_health() {
+        let diagnosis = build_memory_runtime_diagnosis(&MemoryOperatorSurfaceSummary {
+            inspect: MemoryOperatorInspectView {
+                subject_shell_grounded: true,
+                felt_significance_present: true,
+                humanization_spine_present: false,
+                ..MemoryOperatorInspectView::default()
+            },
+            soul_governance_view: MemoryOperatorSoulGovernanceView {
+                active_inner_conflict_count: 1,
+                temperament_continuity_present: false,
+                subjective_projection_present: true,
+                ..MemoryOperatorSoulGovernanceView::default()
+            },
+            ..MemoryOperatorSurfaceSummary::default()
+        });
+
+        assert!(diagnosis.evidence.iter().any(|evidence| {
+            evidence.key == "humanization_spine_present" && evidence.value == "false"
+        }));
+        assert!(diagnosis.evidence.iter().any(|evidence| {
+            evidence.key == "active_inner_conflict_count" && evidence.value == "1"
+        }));
+        assert!(diagnosis
+            .suspected_root_causes
+            .iter()
+            .any(|cause| cause.code == "humanization_spine_incomplete"));
+        assert!(diagnosis
+            .recommended_next_steps
+            .iter()
+            .any(|step| step.code == "inspect_humanization_spine"));
     }
 
     #[test]

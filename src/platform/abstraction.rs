@@ -6,12 +6,13 @@ use crate::config::{AppConfig, AudioSegment, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::{Error, Result};
 use crate::memory::{
-    AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore, ImportantMessageStore,
-    InnerLifeStore, LongTermMemoryStore, MemoryStore, MemorySystemKind, MentalPrivacyStore,
-    OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenStore,
-    RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
-    RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionStore,
-    SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+    AutonomyStrategyStore, CoreRevisionLedgerStore, ExecutionStateStore, FeltSignificanceStore,
+    ImportantMessageStore, InnerConflictStore, InnerLifeStore, LongTermMemoryStore, MemoryStore,
+    MemorySystemKind, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PrivateDocStore,
+    PrivateGardenStore, RelationshipConstitutionStore, RelationshipPortfolioStore,
+    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
+    SelfModelStore, SessionStore, SessionSummaryStore, TemperamentContinuityStore, TurnLedgerStore,
+    WorldSenseStore,
 };
 #[cfg(feature = "capability_office")]
 use crate::office::{OfficeCredentialStore, OfficeRuntimeStatusStore};
@@ -664,6 +665,9 @@ pub trait Platform: Send + Sync {
     fn outer_voice_store(&self) -> Arc<dyn OuterVoiceStore + Send + Sync>;
     fn inner_life_store(&self) -> Arc<dyn InnerLifeStore + Send + Sync>;
     fn self_continuity_store(&self) -> Arc<dyn SelfContinuityStore + Send + Sync>;
+    fn felt_significance_store(&self) -> Arc<dyn FeltSignificanceStore + Send + Sync>;
+    fn temperament_continuity_store(&self) -> Arc<dyn TemperamentContinuityStore + Send + Sync>;
+    fn inner_conflict_store(&self) -> Arc<dyn InnerConflictStore + Send + Sync>;
     fn relationship_portfolio_store(&self) -> Arc<dyn RelationshipPortfolioStore + Send + Sync>;
     fn relationship_topology_store(&self) -> Arc<dyn RelationshipTopologyStore + Send + Sync>;
     fn private_doc_store(&self) -> Arc<dyn PrivateDocStore + Send + Sync>;

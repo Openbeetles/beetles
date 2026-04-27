@@ -42,6 +42,10 @@ pub struct RuntimeServices {
     pub outer_voice_store: Arc<dyn crate::memory::OuterVoiceStore + Send + Sync>,
     pub inner_life_store: Arc<dyn crate::memory::InnerLifeStore + Send + Sync>,
     pub self_continuity_store: Arc<dyn crate::memory::SelfContinuityStore + Send + Sync>,
+    pub felt_significance_store: Arc<dyn crate::memory::FeltSignificanceStore + Send + Sync>,
+    pub temperament_continuity_store:
+        Arc<dyn crate::memory::TemperamentContinuityStore + Send + Sync>,
+    pub inner_conflict_store: Arc<dyn crate::memory::InnerConflictStore + Send + Sync>,
     pub relationship_topology_store:
         Arc<dyn crate::memory::RelationshipTopologyStore + Send + Sync>,
     pub private_doc_store: Arc<dyn crate::memory::PrivateDocStore + Send + Sync>,
@@ -91,6 +95,9 @@ impl RuntimeServices {
             outer_voice_store: platform.outer_voice_store(),
             inner_life_store: platform.inner_life_store(),
             self_continuity_store: platform.self_continuity_store(),
+            felt_significance_store: platform.felt_significance_store(),
+            temperament_continuity_store: platform.temperament_continuity_store(),
+            inner_conflict_store: platform.inner_conflict_store(),
             relationship_topology_store: platform.relationship_topology_store(),
             private_doc_store: platform.private_doc_store(),
             private_garden_store: platform.private_garden_store(),
@@ -116,10 +123,37 @@ mod tests {
         let platform: Arc<dyn Platform> = Arc::new(crate::platform::LinuxPlatform::new());
         let services = RuntimeServices::from_platform(Arc::clone(&platform));
         let clone = services.clone();
+        let platform_felt_significance_store = platform.felt_significance_store();
+        let platform_temperament_continuity_store = platform.temperament_continuity_store();
+        let platform_inner_conflict_store = platform.inner_conflict_store();
 
         assert!(Arc::ptr_eq(&services.platform, &clone.platform));
         assert!(Arc::ptr_eq(&services.memory_store, &clone.memory_store));
         assert!(Arc::ptr_eq(&services.session_store, &clone.session_store));
         assert!(Arc::ptr_eq(&services.config_store, &clone.config_store));
+        assert!(Arc::ptr_eq(
+            &services.felt_significance_store,
+            &clone.felt_significance_store
+        ));
+        assert!(Arc::ptr_eq(
+            &services.temperament_continuity_store,
+            &clone.temperament_continuity_store
+        ));
+        assert!(Arc::ptr_eq(
+            &services.inner_conflict_store,
+            &clone.inner_conflict_store
+        ));
+        assert!(Arc::ptr_eq(
+            &services.felt_significance_store,
+            &platform_felt_significance_store
+        ));
+        assert!(Arc::ptr_eq(
+            &services.temperament_continuity_store,
+            &platform_temperament_continuity_store
+        ));
+        assert!(Arc::ptr_eq(
+            &services.inner_conflict_store,
+            &platform_inner_conflict_store
+        ));
     }
 }

@@ -52,6 +52,9 @@ pub(crate) struct PromptConstitutionalStage {
     pub relationship_portfolio_text: Option<String>,
     pub self_model: Option<Box<super::SelfModel>>,
     pub self_continuity: Option<Box<super::SelfContinuity>>,
+    pub felt_significance: Option<Box<super::FeltSignificance>>,
+    pub temperament_continuity: Option<Box<super::TemperamentContinuity>>,
+    pub inner_conflict: Option<Box<super::InnerConflict>>,
     pub autonomy_strategy: Option<Box<super::AutonomyStrategy>>,
     pub outer_voice: Option<Box<super::OuterVoice>>,
     pub inner_life: Option<Box<super::InnerLife>>,
@@ -183,6 +186,14 @@ fn should_load_recent_persona_evidence_for_prompt(
     !seed.reuse_stored_relationship_constitution
         || params.participation_plan.load_l2_background_governance
         || params.participation_plan.load_l3_private_depth
+}
+
+fn should_load_p3_subjective_projection(params: &PromptMemoryContextParams<'_>) -> bool {
+    matches!(
+        params.memory_system_kind,
+        super::MemorySystemKind::LinuxFull
+    ) && (params.participation_plan.load_l2_background_governance
+        || params.participation_plan.load_l3_private_depth)
 }
 
 #[inline(never)]
@@ -380,6 +391,31 @@ pub(crate) fn load_constitutional_stage(
             .map(Box::new)
         })
         .flatten();
+    let load_subjective_projection = should_load_p3_subjective_projection(params);
+    let felt_significance = load_subjective_projection
+        .then(|| {
+            load_optional_with_health(health, "felt_significance", || {
+                params.felt_significance_store.get(seed.subject_id)
+            })
+            .map(Box::new)
+        })
+        .flatten();
+    let temperament_continuity = load_subjective_projection
+        .then(|| {
+            load_optional_with_health(health, "temperament_continuity", || {
+                params.temperament_continuity_store.get(seed.subject_id)
+            })
+            .map(Box::new)
+        })
+        .flatten();
+    let inner_conflict = load_subjective_projection
+        .then(|| {
+            load_optional_with_health(health, "inner_conflict", || {
+                params.inner_conflict_store.get(seed.subject_id)
+            })
+            .map(Box::new)
+        })
+        .flatten();
     let autonomy_strategy = params
         .participation_plan
         .load_l2_background_governance
@@ -502,6 +538,9 @@ pub(crate) fn load_constitutional_stage(
         relationship_portfolio_text,
         self_model,
         self_continuity,
+        felt_significance,
+        temperament_continuity,
+        inner_conflict,
         autonomy_strategy,
         outer_voice,
         inner_life,

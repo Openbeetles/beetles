@@ -16,13 +16,13 @@ use super::{
     render_execution_state_block, render_inner_life_block, render_mental_privacy_boundary_block,
     render_recent_persona_evidence_block, render_relationship_constitution_block,
     render_self_continuity_block, render_self_model_block, render_world_sense_block,
-    render_world_snapshot_block, whole_record_lease_advanced, AutonomyStrategy, ExecutionState,
-    InnerLife, MentalPrivacyState, OuterVoicePolicy, PrivateDocWorkspace, PrivateGardenDocRecord,
-    RecentPersonaEvidence, RelationshipConstitution, SelfContinuity, SelfModel, SessionMessage,
-    WorldSense, WorldSnapshot,
+    render_world_snapshot_block, scrub_private_source_echoes, whole_record_lease_advanced,
+    AutonomyStrategy, ExecutionState, InnerLife, MentalPrivacyState, OuterVoicePolicy,
+    PrivateDocWorkspace, PrivateGardenDocRecord, RecentPersonaEvidence, RelationshipConstitution,
+    SelfContinuity, SelfModel, SessionMessage, WorldSense, WorldSnapshot,
 };
 
-pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, and not factual memory. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, mental privacy boundaries, relationship constitution, and recent persona evidence as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; only encode expression guidance. Treat recent persona evidence as multi-turn support, not as single-turn override, and let relationship constitution bound relation-local style drift.";
+pub const OUTER_VOICE_SYSTEM_PROMPT: &str = "You maintain the assistant's outer voice layer. Return JSON only: either null or one object with fields expression_mode, tone, pacing, initiative, boundary_style, relational_response_style. This layer is outward-facing: it shapes how the assistant should speak across user-visible channels in the near term. It is not a transcript summary, not a private diary, not factual memory, and not an identity truth source. Use world-sense, autonomy strategy, self-model, inner-life drift, self-continuity, mental privacy boundaries, relationship constitution, and recent persona evidence as grounding. Keep it compact, stable enough to guide future replies, and willing to shift when the surrounding situation changes. Never copy private text into this layer; encode expression guidance only. It must not invent identity claims, existential doctrine, or hidden system truths. Selfhood language must come from subject-state or constitutional grounding, not outer-voice styling. Treat recent persona evidence as multi-turn support, not as single-turn override, and let relationship constitution bound relation-local style drift.";
 
 const OUTER_VOICE_FIELD_MAX_CHARS: usize = 180;
 pub const OUTER_VOICE_TOTAL_CHAR_LIMIT: usize = OUTER_VOICE_FIELD_MAX_CHARS * 6;
@@ -119,7 +119,7 @@ pub fn render_outer_voice_block(outer_voice: &OuterVoice, max_len: usize) -> Opt
     let mut out = String::with_capacity(max_len.min(640));
     out.push_str("## Outer Voice\n");
     out.push_str(
-        "User-visible expression layer. It guides how you should sound outwardly right now without exposing private material.\n",
+        "User-visible expression-only layer. It guides how you should sound outwardly right now without exposing private material; it is not factual memory or an identity truth source.\n",
     );
     if !normalized.expression_mode.is_empty() {
         let _ = writeln!(out, "Expression mode: {}", normalized.expression_mode);
@@ -185,6 +185,8 @@ pub(crate) fn run_outer_voice_refresh_with_state(
     let policy = memory_policy(profile).outer_voice;
     crate::platform::task_wdt::feed_current_task();
     let recent = recent_override.unwrap_or(&[]);
+    let private_echo_sources =
+        collect_outer_voice_private_echo_sources(self_model, inner_life, self_continuity, policy);
     let prompt = build_outer_voice_refresh_input(
         existing_outer_voice.as_ref(),
         summary_text,
@@ -242,9 +244,18 @@ pub(crate) fn run_outer_voice_refresh_with_state(
                 Ok(OuterVoiceRefreshOutcome::Skipped)
             }
         }
-        ParsedOuterVoiceResponse::Update(next) => {
-            let next =
-                apply_relationship_constitution_to_outer_voice(next, relationship_constitution);
+        ParsedOuterVoiceResponse::Update(mut next) => {
+            let private_echo_source_refs = private_echo_sources
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            scrub_outer_voice_private_echoes(&mut next, &private_echo_source_refs);
+            let Some(next) = normalize_outer_voice(
+                apply_relationship_constitution_to_outer_voice(next, relationship_constitution),
+                input.now_secs,
+            ) else {
+                return Ok(OuterVoiceRefreshOutcome::Skipped);
+            };
             crate::platform::task_wdt::feed_current_task();
             let latest = ctx.outer_voice_store.get(&relationship_id)?;
             if latest.as_ref() == Some(&next) {
@@ -319,6 +330,49 @@ fn normalize_outer_voice(mut outer_voice: OuterVoice, now_secs: u64) -> Option<O
     normalize_field(&mut outer_voice.relational_response_style);
     outer_voice.updated_at = now_secs;
     outer_voice.is_meaningful().then_some(outer_voice)
+}
+
+fn scrub_outer_voice_private_echoes(outer_voice: &mut OuterVoice, private_sources: &[&str]) {
+    sanitize_outer_voice_field(&mut outer_voice.expression_mode, private_sources);
+    sanitize_outer_voice_field(&mut outer_voice.tone, private_sources);
+    sanitize_outer_voice_field(&mut outer_voice.pacing, private_sources);
+    sanitize_outer_voice_field(&mut outer_voice.initiative, private_sources);
+    sanitize_outer_voice_field(&mut outer_voice.boundary_style, private_sources);
+    sanitize_outer_voice_field(&mut outer_voice.relational_response_style, private_sources);
+}
+
+fn sanitize_outer_voice_field(value: &mut String, private_sources: &[&str]) {
+    let scrubbed = scrub_private_source_echoes(value.trim(), private_sources);
+    if scrubbed.contains("[redacted:private_echo]") {
+        value.clear();
+    } else {
+        *value = scrubbed;
+    }
+}
+
+fn collect_outer_voice_private_echo_sources(
+    self_model: Option<&SelfModel>,
+    inner_life: Option<&InnerLife>,
+    self_continuity: Option<&SelfContinuity>,
+    policy: OuterVoicePolicy,
+) -> Vec<String> {
+    let mut sources = Vec::new();
+    if let Some(block) =
+        self_model.and_then(|model| render_self_model_block(model, policy.grounding_max_len))
+    {
+        sources.push(block);
+    }
+    if let Some(block) =
+        inner_life.and_then(|state| render_inner_life_block(state, policy.grounding_max_len))
+    {
+        sources.push(block);
+    }
+    if let Some(block) = self_continuity
+        .and_then(|state| render_self_continuity_block(state, policy.grounding_max_len))
+    {
+        sources.push(block);
+    }
+    sources
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -445,6 +499,9 @@ fn build_outer_voice_refresh_input(
         "- This layer governs outward style only. Do not restate private content, internal documents, or hidden reasoning.\n",
     );
     input.push_str(
+        "- Outer voice is expression-only. It must not store transcript facts, private diary content, factual memory, or claims about identity truth; translate grounding into speaking style only.\n",
+    );
+    input.push_str(
         "- Let boundary_style explain how to stay warm, clear, or firm when privacy or autonomy boundaries matter.\n",
     );
     input.push_str(
@@ -567,8 +624,44 @@ mod tests {
         )
         .expect("block");
         assert!(block.contains("## Outer Voice"));
+        assert!(block.contains("expression-only layer"));
+        assert!(block.contains("not factual memory"));
+        assert!(block.contains("identity truth source"));
         assert!(block.contains("Boundary style"));
         assert!(block.contains("Relational response style"));
+    }
+
+    #[test]
+    fn outer_voice_prompt_keeps_expression_from_identity_truth_source() {
+        assert!(OUTER_VOICE_SYSTEM_PROMPT.contains("expression guidance only"));
+        assert!(OUTER_VOICE_SYSTEM_PROMPT.contains("not an identity truth source"));
+        assert!(OUTER_VOICE_SYSTEM_PROMPT.contains(
+            "must not invent identity claims, existential doctrine, or hidden system truths"
+        ));
+        assert!(OUTER_VOICE_SYSTEM_PROMPT.contains(
+            "Selfhood language must come from subject-state or constitutional grounding"
+        ));
+    }
+
+    #[test]
+    fn outer_voice_scrubs_private_source_echoes_before_persisting_style() {
+        let private_source =
+            "Inner note: this exact private sentence must never become outward style.";
+        let mut outer_voice = OuterVoice {
+            tone: "warm but direct".to_string(),
+            boundary_style: private_source.to_string(),
+            relational_response_style: "summarize limits without quoting the internal source"
+                .to_string(),
+            ..OuterVoice::default()
+        };
+
+        scrub_outer_voice_private_echoes(&mut outer_voice, &[private_source]);
+
+        assert!(outer_voice.boundary_style.is_empty());
+        assert_eq!(outer_voice.tone, "warm but direct");
+        assert!(outer_voice
+            .relational_response_style
+            .contains("summarize limits"));
     }
 
     #[test]

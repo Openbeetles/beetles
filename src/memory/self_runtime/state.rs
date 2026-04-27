@@ -28,6 +28,36 @@ fn load_list_store<T>(
     }
 }
 
+const SELF_RUNTIME_SANDBOX_PROBE_TURN_LIMIT: usize = 4;
+
+fn load_self_runtime_sandbox_probe_text(
+    ctx: &SelfRuntimeContext<'_>,
+    relationship_scope_id: &str,
+    profile: MemoryProfile,
+) -> Option<String> {
+    if matches!(profile, MemoryProfile::Embedded) {
+        return None;
+    }
+    let budget = memory_policy(profile)
+        .self_runtime
+        .grounding_max_len
+        .min(1024);
+    match ctx
+        .turn_ledger_store
+        .list_recent(relationship_scope_id, SELF_RUNTIME_SANDBOX_PROBE_TURN_LIMIT)
+    {
+        Ok(ledgers) => build_self_runtime_sandbox_probe_text(&ledgers, budget),
+        Err(error) => {
+            log::warn!(
+                "[self_runtime] sandbox candidate evidence skipped because turn-ledger read failed relationship_scope={}: {}",
+                relationship_scope_id,
+                error
+            );
+            None
+        }
+    }
+}
+
 pub(super) fn load_self_runtime_state(
     ctx: &SelfRuntimeContext<'_>,
     chat_id: &str,
@@ -101,6 +131,16 @@ pub(super) fn load_self_runtime_state(
     let self_continuity = load_optional_store("self_continuity", &mut load_health, || {
         ctx.self_continuity_store.get(subject_id)
     });
+    let felt_significance = load_optional_store("felt_significance", &mut load_health, || {
+        ctx.felt_significance_store.get(subject_id)
+    });
+    let temperament_continuity =
+        load_optional_store("temperament_continuity", &mut load_health, || {
+            ctx.temperament_continuity_store.get(subject_id)
+        });
+    let inner_conflict = load_optional_store("inner_conflict", &mut load_health, || {
+        ctx.inner_conflict_store.get(subject_id)
+    });
     let relationship_topology =
         load_optional_store("relationship_topology", &mut load_health, || {
             ctx.relationship_topology_store.get(subject_id)
@@ -147,6 +187,8 @@ pub(super) fn load_self_runtime_state(
         load_optional_store("recent_persona_evidence", &mut load_health, || {
             load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
         });
+    let sandbox_probe_text =
+        load_self_runtime_sandbox_probe_text(ctx, &active_relationship_scope_id, profile);
     let relationship_constitution = if relationship_governance_enabled {
         load_optional_store("relationship_constitution", &mut load_health, || {
             ctx.relationship_constitution_store
@@ -226,6 +268,44 @@ pub(super) fn load_self_runtime_state(
                 ),
         )
     });
+    let world_snapshot_text = render_world_snapshot_block(
+        &world_snapshot,
+        memory_policy(profile).self_runtime.grounding_max_len,
+    );
+    let world_sense_text = world_sense.as_ref().and_then(|world_sense| {
+        render_world_sense_block(
+            world_sense,
+            memory_policy(profile).world_sense.grounding_max_len,
+        )
+    });
+    let load_issue_text = load_health
+        .issues
+        .iter()
+        .map(|issue| format!("{}@{}", issue.layer, issue.stage))
+        .collect::<Vec<_>>();
+    let subject_shell = compile_subject_shell(SubjectShellCompileInput {
+        now_secs: payload.now_secs,
+        platform: "self_runtime",
+        device_identity: "",
+        relationship_scope: &active_relationship_scope_id,
+        channel: &active_relationship_channel,
+        chat_id,
+        pressure: PressureLevel::Normal,
+        self_authored_core: self_authored_core.as_ref(),
+        self_continuity: self_continuity.as_ref(),
+        self_model: self_model.as_ref(),
+        outer_voice: outer_voice.as_ref(),
+        relationship_constitution: relationship_constitution.as_ref(),
+        summary_text: summary_text.as_deref(),
+        recent_turn_observation_text: None,
+        active_task_context_text: None,
+        governed_memory_evidence_text: None,
+        long_term_memory_text: None,
+        continuity_capsule_text: None,
+        world_snapshot_text: world_snapshot_text.as_deref(),
+        world_sense_text: world_sense_text.as_deref(),
+        memory_health_issues: load_issue_text.as_slice(),
+    });
     Box::new(LoadedSelfRuntimeState {
         load_health,
         summary_text,
@@ -238,6 +318,10 @@ pub(super) fn load_self_runtime_state(
         private_garden_docs,
         inner_life,
         self_continuity,
+        subject_shell,
+        felt_significance,
+        temperament_continuity,
+        inner_conflict,
         relationship_portfolio,
         relationship_topology,
         relationship_constitution,
@@ -246,6 +330,7 @@ pub(super) fn load_self_runtime_state(
         outer_voice,
         mental_privacy_state,
         recent_persona_evidence,
+        sandbox_probe_text,
         active_relationship_scope_id,
         active_relationship_channel,
         prior_user_channel,

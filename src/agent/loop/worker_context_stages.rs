@@ -370,6 +370,9 @@ pub(super) fn load_prepare_prompt_memory(
         outer_voice_store: config.runtime.outer_voice_store.as_ref(),
         inner_life_store: config.runtime.inner_life_store.as_ref(),
         self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+        felt_significance_store: config.runtime.felt_significance_store.as_ref(),
+        temperament_continuity_store: config.runtime.temperament_continuity_store.as_ref(),
+        inner_conflict_store: config.runtime.inner_conflict_store.as_ref(),
         private_doc_store: config.runtime.private_doc_store.as_ref(),
         private_garden_store: config.runtime.private_garden_store.as_ref(),
         mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
@@ -454,21 +457,26 @@ pub(super) fn load_prepare_prompt_memory(
                 }
             }
         });
-    let prompt_relationship_topology = match config
-        .runtime
-        .relationship_topology_store
-        .get(board_subject_scope_id())
-    {
-        Ok(value) => value,
-        Err(error) => {
-            record_prompt_memory_health_issue(
-                &mut prompt_memory_health_issues,
-                "relationship_topology",
-                &error,
-            );
-            None
-        }
-    };
+    let prompt_relationship_topology = runtime_stage
+        .active_governance_mode
+        .filter(|mode| mode.allow_sync_relationship_constitution())
+        .and_then(|_| {
+            match config
+                .runtime
+                .relationship_topology_store
+                .get(board_subject_scope_id())
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    record_prompt_memory_health_issue(
+                        &mut prompt_memory_health_issues,
+                        "relationship_topology",
+                        &error,
+                    );
+                    None
+                }
+            }
+        });
     prompt_memory.memory_health_issues = prompt_memory_health_issues;
     let allow_tool_round_recall_refill =
         crate::memory::prompt_participation_policy(config.runtime.memory_system_kind)
@@ -720,7 +728,47 @@ pub(super) fn enrich_prepare_governance(
         .as_ref()
         .and_then(|adjudication| crate::memory::render_persona_priority_block(adjudication, 420))
         .or(persistent_persona_priority_text);
+    let subject_shell =
+        crate::memory::compile_subject_shell(crate::memory::SubjectShellCompileInput {
+            now_secs: runtime_stage.runtime.now_secs,
+            platform: runtime_stage.runtime.platform,
+            device_identity: "",
+            relationship_scope: &runtime_stage.relationship_id,
+            channel: &msg.channel,
+            chat_id: &msg.chat_id,
+            pressure: runtime_stage.runtime.pressure,
+            self_authored_core: prompt_stage.prompt_memory.self_authored_core.as_ref(),
+            self_continuity: prompt_stage.prompt_memory.self_continuity.as_ref(),
+            self_model: None,
+            outer_voice: prompt_stage.prompt_memory.outer_voice.as_ref(),
+            relationship_constitution: prompt_stage
+                .prompt_memory
+                .relationship_constitution
+                .as_ref(),
+            summary_text: prompt_stage.prompt_memory.summary_text.as_deref(),
+            recent_turn_observation_text: prompt_stage
+                .prompt_memory
+                .recent_turn_observation_text
+                .as_deref(),
+            active_task_context_text: prompt_stage
+                .prompt_memory
+                .active_task_context_text
+                .as_deref(),
+            governed_memory_evidence_text: prompt_stage
+                .prompt_memory
+                .governed_memory_evidence_text
+                .as_deref(),
+            long_term_memory_text: prompt_stage.prompt_memory.long_term_memory_text.as_deref(),
+            continuity_capsule_text: prompt_stage
+                .prompt_memory
+                .continuity_capsule_text
+                .as_deref(),
+            world_snapshot_text: prompt_stage.prompt_memory.world_snapshot_text.as_deref(),
+            world_sense_text: prompt_stage.prompt_memory.world_sense_text.as_deref(),
+            memory_health_issues: &prompt_stage.prompt_memory.memory_health_issues,
+        });
     let subject_state = compile_subject_state(SubjectStateCompileInput {
+        subject_shell: subject_shell.as_ref(),
         self_authored_core: prompt_stage.prompt_memory.self_authored_core.as_ref(),
         relationship_constitution: prompt_stage
             .prompt_memory
@@ -731,6 +779,10 @@ pub(super) fn enrich_prepare_governance(
             .or(Some(&persistent_persona_priority)),
         disclosure_adjudication: primer.mental_privacy_adjudication.as_ref(),
         personality_governance_gate: Some(&personality_governance_gate),
+        felt_significance: prompt_stage.prompt_memory.felt_significance.as_ref(),
+        temperament_continuity: prompt_stage.prompt_memory.temperament_continuity.as_ref(),
+        inner_conflict: prompt_stage.prompt_memory.inner_conflict.as_ref(),
+        now_secs: runtime_stage.runtime.now_secs,
         pressure: runtime_stage.runtime.pressure,
     });
     let recent_observation = config

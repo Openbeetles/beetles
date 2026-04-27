@@ -15,7 +15,9 @@ mod continuity_capsule;
 mod continuity_snapshot;
 mod core_revision_ledger;
 mod execution_state;
+mod felt_significance;
 mod hygiene;
+mod inner_conflict;
 mod inner_life;
 mod intelligence_replay;
 mod internal_memory_topology;
@@ -38,6 +40,7 @@ mod private_garden_governance;
 mod profile;
 mod prompt_context;
 mod prompt_context_stages;
+mod prompt_sanitizer;
 #[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 mod recall_benchmark;
 mod recall_contract;
@@ -58,6 +61,8 @@ mod session_summary_refresh;
 mod shared_factual_plane;
 mod shared_memory_governance;
 mod skill_routing;
+mod subject_shell;
+mod temperament_continuity;
 mod turn_ledger;
 mod work_continuity;
 mod world_sense;
@@ -131,10 +136,27 @@ pub(crate) use execution_state::{
     run_execution_state_refresh_with_state, seed_execution_state_from_turn,
     should_refresh_execution_state, ProvisionalExecutionStateInput,
 };
+pub(crate) use felt_significance::{
+    build_felt_significance_refresh_input, run_felt_significance_refresh_with_state,
+    FeltSignificanceRefreshCandidate,
+};
+pub use felt_significance::{
+    render_felt_significance_block, FeltSignificance, FeltSignificanceRefreshOutcome,
+    FELT_SIGNIFICANCE_SYSTEM_CONTRACT, FELT_SIGNIFICANCE_TOTAL_CHAR_LIMIT,
+};
 pub(crate) use hygiene::run_memory_hygiene_jobs;
 pub use hygiene::{
     inspect_memory_hygiene, render_memory_hygiene_inspection_markdown, MemoryHygieneContext,
     MemoryHygieneInspection, MemoryHygieneOutcome,
+};
+pub(crate) use inner_conflict::{
+    build_inner_conflict_refresh_input, run_inner_conflict_refresh_with_state,
+    InnerConflictRefreshCandidate,
+};
+pub use inner_conflict::{
+    render_inner_conflict_block, InnerConflict, InnerConflictRefreshOutcome,
+    INNER_CONFLICT_MAX_REVIEW_AFTER_SECS, INNER_CONFLICT_SYSTEM_CONTRACT,
+    INNER_CONFLICT_TOTAL_CHAR_LIMIT,
 };
 pub(crate) use inner_life::estimate_inner_life_chars;
 pub(crate) use inner_life::run_inner_life_refresh_with_state;
@@ -278,6 +300,7 @@ pub use profile::{
 pub use prompt_context::{
     load_prompt_memory_context, PromptMemoryContext, PromptMemoryContextParams, PromptRuntimeCarry,
 };
+pub(crate) use prompt_sanitizer::{scrub_memory_prompt_block, scrub_private_source_echoes};
 #[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
 pub use recall_benchmark::{
     compute_recall_benchmark_metrics, run_recall_benchmark_case, run_recall_benchmark_suite,
@@ -382,6 +405,16 @@ pub use shared_memory_governance::{
     SharedMemoryWriteOutcome, SharedMemoryWriteReason, SharedMemoryWriteSource,
 };
 pub(crate) use skill_routing::{route_long_term_draft, MemoryPlane};
+pub(crate) use subject_shell::{compile_subject_shell, SubjectShell, SubjectShellCompileInput};
+pub(crate) use temperament_continuity::{
+    build_temperament_continuity_refresh_input, run_temperament_continuity_refresh_with_state,
+    TemperamentContinuityRefreshCandidate,
+};
+pub use temperament_continuity::{
+    render_temperament_continuity_block, TemperamentContinuity,
+    TemperamentContinuityRefreshOutcome, TEMPERAMENT_CONTINUITY_SYSTEM_CONTRACT,
+    TEMPERAMENT_CONTINUITY_TOTAL_CHAR_LIMIT,
+};
 pub use turn_ledger::{
     build_turn_ledger_start, build_turn_persona_disclosure_ledger,
     build_turn_persona_priority_ledger, normalize_turn_observation_text,
@@ -450,6 +483,12 @@ pub const REL_PATH_AUTONOMY_STRATEGIES: &str = "memory/autonomy_strategies.json"
 pub const REL_PATH_INNER_LIFE: &str = "memory/inner_life.json";
 /// 相对路径：Self Continuity（单文件 JSON，chat_id -> continuity + runtime anchors）。
 pub const REL_PATH_SELF_CONTINUITIES: &str = "memory/self_continuities.json";
+/// 相对路径：Felt Significance（单文件 JSON，scope/chat scoped key -> subjective weight）。
+pub const REL_PATH_FELT_SIGNIFICANCES: &str = "memory/felt_significances.json";
+/// 相对路径：Temperament Continuity（单文件 JSON，scope/chat scoped key -> durable inertia）。
+pub const REL_PATH_TEMPERAMENT_CONTINUITIES: &str = "memory/temperament_continuities.json";
+/// 相对路径：Inner Conflict（单文件 JSON，scope/chat scoped key -> bounded unresolved tension）。
+pub const REL_PATH_INNER_CONFLICTS: &str = "memory/inner_conflicts.json";
 /// 相对路径：Self-Authored Core（单文件 JSON，scope_id -> persistent board-level self core）。
 pub const REL_PATH_SELF_AUTHORED_CORES: &str = "memory/self_authored_cores.json";
 /// 相对路径：Self-Authored Core 修订账本（单文件 JSON，scope_id -> versioned revision ledger）。
@@ -529,6 +568,27 @@ pub trait SelfContinuityStore: Send + Sync {
     fn get(&self, chat_id: &str) -> Result<Option<SelfContinuity>>;
     fn set(&self, chat_id: &str, continuity: &SelfContinuity) -> Result<()>;
     fn clear(&self, chat_id: &str) -> Result<()>;
+}
+
+/// Felt Significance 存储。保存 scope/chat scoped key 的当前主观重量层。
+pub trait FeltSignificanceStore: Send + Sync {
+    fn get(&self, scope_id: &str) -> Result<Option<FeltSignificance>>;
+    fn set(&self, scope_id: &str, significance: &FeltSignificance) -> Result<()>;
+    fn clear(&self, scope_id: &str) -> Result<()>;
+}
+
+/// Temperament Continuity 存储。保存 scope/chat scoped key 的长期行为惯性层。
+pub trait TemperamentContinuityStore: Send + Sync {
+    fn get(&self, scope_id: &str) -> Result<Option<TemperamentContinuity>>;
+    fn set(&self, scope_id: &str, continuity: &TemperamentContinuity) -> Result<()>;
+    fn clear(&self, scope_id: &str) -> Result<()>;
+}
+
+/// Inner Conflict 存储。保存 scope/chat scoped key 的有界未决内在拉扯。
+pub trait InnerConflictStore: Send + Sync {
+    fn get(&self, scope_id: &str) -> Result<Option<InnerConflict>>;
+    fn set(&self, scope_id: &str, conflict: &InnerConflict) -> Result<()>;
+    fn clear(&self, scope_id: &str) -> Result<()>;
 }
 
 /// LLM 私有文档工作区。仅保存主观内部文档，不回写共享事实层。

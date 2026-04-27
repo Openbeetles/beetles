@@ -490,6 +490,54 @@ fn run_self_runtime_job(
             delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
         };
     }
+    if payload.trigger != crate::memory::SelfRuntimeTrigger::OperatorRequested
+        && matches!(
+            config.runtime.memory_system_kind.memory_profile(),
+            crate::memory::MemoryProfile::Embedded
+        )
+    {
+        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+        if !runtime_mode.action_budget.allow_idle_self_runtime {
+            let reason = runtime_mode
+                .mode_block_reason()
+                .unwrap_or("runtime_mode_blocked");
+            log::debug!(
+                "[self_runtime] defer chat_id={} trigger={:?} because runtime mode blocks self-runtime: {}",
+                msg.chat_id,
+                payload.trigger,
+                reason
+            );
+            return DetachedJobRunDisposition::RetryLater {
+                reason,
+                delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+            };
+        }
+        match crate::orchestrator::current_pressure() {
+            crate::orchestrator::PressureLevel::Normal => {}
+            crate::orchestrator::PressureLevel::Cautious => {
+                log::debug!(
+                    "[self_runtime] defer chat_id={} trigger={:?} because pressure is cautious",
+                    msg.chat_id,
+                    payload.trigger
+                );
+                return DetachedJobRunDisposition::RetryLater {
+                    reason: "self_runtime_pressure_cautious",
+                    delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                };
+            }
+            crate::orchestrator::PressureLevel::Critical => {
+                log::debug!(
+                    "[self_runtime] defer chat_id={} trigger={:?} because pressure is critical",
+                    msg.chat_id,
+                    payload.trigger
+                );
+                return DetachedJobRunDisposition::RetryLater {
+                    reason: "self_runtime_pressure_critical",
+                    delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                };
+            }
+        }
+    }
     let locale = (config.resolve_locale)();
     let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
     let outcome = run_self_runtime(
@@ -519,6 +567,9 @@ fn run_self_runtime_job(
             private_garden_store: config.runtime.private_garden_store.as_ref(),
             inner_life_store: config.runtime.inner_life_store.as_ref(),
             self_continuity_store: config.runtime.self_continuity_store.as_ref(),
+            felt_significance_store: config.runtime.felt_significance_store.as_ref(),
+            temperament_continuity_store: config.runtime.temperament_continuity_store.as_ref(),
+            inner_conflict_store: config.runtime.inner_conflict_store.as_ref(),
             mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
             remind_store: config.runtime.remind_at_store.as_ref(),
             task_store: config.runtime.task_store.as_ref(),
@@ -536,6 +587,9 @@ fn run_self_runtime_job(
         world_sense_result,
         autonomy_strategy_result,
         inner_life_result,
+        felt_significance_result,
+        temperament_continuity_result,
+        inner_conflict_result,
         private_doc_result,
         self_model_result,
         self_authored_core_result,
@@ -548,6 +602,9 @@ fn run_self_runtime_job(
     let self_runtime_failed = world_sense_result.is_err()
         || autonomy_strategy_result.is_err()
         || inner_life_result.is_err()
+        || felt_significance_result.is_err()
+        || temperament_continuity_result.is_err()
+        || inner_conflict_result.is_err()
         || private_doc_result.is_err()
         || self_model_result.is_err()
         || self_authored_core_result.is_err()
@@ -661,6 +718,36 @@ fn run_self_runtime_job(
         }
         Ok(crate::memory::InnerLifeRefreshOutcome::Skipped) => {}
         Err(error) => log::warn!("[agent_inner_life] failed: {}", error),
+    }
+    match felt_significance_result {
+        Ok(crate::memory::FeltSignificanceRefreshOutcome::Updated) => {
+            log::info!("[agent_felt_significance] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::FeltSignificanceRefreshOutcome::Cleared) => {
+            log::info!("[agent_felt_significance] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::FeltSignificanceRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_felt_significance] failed: {}", error),
+    }
+    match temperament_continuity_result {
+        Ok(crate::memory::TemperamentContinuityRefreshOutcome::Updated) => {
+            log::info!("[agent_temperament_continuity] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::TemperamentContinuityRefreshOutcome::Cleared) => {
+            log::info!("[agent_temperament_continuity] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::TemperamentContinuityRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_temperament_continuity] failed: {}", error),
+    }
+    match inner_conflict_result {
+        Ok(crate::memory::InnerConflictRefreshOutcome::Updated) => {
+            log::info!("[agent_inner_conflict] updated for {}", msg.chat_id);
+        }
+        Ok(crate::memory::InnerConflictRefreshOutcome::Cleared) => {
+            log::info!("[agent_inner_conflict] cleared for {}", msg.chat_id);
+        }
+        Ok(crate::memory::InnerConflictRefreshOutcome::Skipped) => {}
+        Err(error) => log::warn!("[agent_inner_conflict] failed: {}", error),
     }
     match private_doc_result {
         Ok(crate::memory::PrivateDocWorkspaceRefreshOutcome::Updated) => {

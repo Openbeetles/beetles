@@ -12,12 +12,13 @@ use super::{
         load_constitutional_stage, load_governed_memory_stage, load_private_projection_stage,
         load_session_stage, seed_prompt_context, PromptContextLoadHealth,
     },
-    AutonomyStrategyStore, ContinuityCapsuleStore, ExecutionStateStore, InnerLifeStore,
-    LongTermMemoryStore, MemoryStore, MemorySystemKind, MentalPrivacyStore, OuterVoiceStore,
-    PrivateDocStore, PrivateGardenStore, PromptRecallIntent, PromptRecallRouterDecision,
-    RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipTopologyStore,
-    RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore, SessionMessage,
-    SessionStore, SessionSummaryStore, TurnLedgerStore, WorldSenseStore,
+    AutonomyStrategyStore, ContinuityCapsuleStore, ExecutionStateStore, FeltSignificanceStore,
+    InnerConflictStore, InnerLifeStore, LongTermMemoryStore, MemoryStore, MemorySystemKind,
+    MentalPrivacyStore, OuterVoiceStore, PrivateDocStore, PrivateGardenStore, PromptRecallIntent,
+    PromptRecallRouterDecision, RelationshipConstitutionStore, RelationshipPortfolioStore,
+    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
+    SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TemperamentContinuityStore,
+    TurnLedgerStore, WorldSenseStore,
 };
 
 pub struct PromptMemoryContext {
@@ -54,6 +55,9 @@ pub struct PromptMemoryContext {
     pub relationship_constitution_text: Option<String>,
     pub persona_priority_text: Option<String>,
     pub self_continuity: Option<super::SelfContinuity>,
+    pub felt_significance: Option<super::FeltSignificance>,
+    pub temperament_continuity: Option<super::TemperamentContinuity>,
+    pub inner_conflict: Option<super::InnerConflict>,
     pub autonomy_strategy: Option<super::AutonomyStrategy>,
     pub outer_voice: Option<super::OuterVoice>,
     pub self_model_text: Option<String>,
@@ -307,6 +311,9 @@ pub struct PromptMemoryContextParams<'a> {
     pub outer_voice_store: &'a dyn OuterVoiceStore,
     pub inner_life_store: &'a dyn InnerLifeStore,
     pub self_continuity_store: &'a dyn SelfContinuityStore,
+    pub felt_significance_store: &'a dyn FeltSignificanceStore,
+    pub temperament_continuity_store: &'a dyn TemperamentContinuityStore,
+    pub inner_conflict_store: &'a dyn InnerConflictStore,
     pub private_doc_store: &'a dyn PrivateDocStore,
     pub private_garden_store: &'a dyn PrivateGardenStore,
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
@@ -401,6 +408,9 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         relationship_constitution_text: constitutional.relationship_constitution_text,
         persona_priority_text: None,
         self_continuity: constitutional.self_continuity.map(|value| *value),
+        felt_significance: constitutional.felt_significance.map(|value| *value),
+        temperament_continuity: constitutional.temperament_continuity.map(|value| *value),
+        inner_conflict: constitutional.inner_conflict.map(|value| *value),
         autonomy_strategy: constitutional.autonomy_strategy.map(|value| *value),
         outer_voice: constitutional.outer_voice.map(|value| *value),
         self_model_text: private_projection.self_model_text,
@@ -426,17 +436,19 @@ mod tests {
     use crate::error::{Error, Result};
     use crate::memory::{
         AutonomyStrategy, AutonomyStrategyStore, ExecutionState, ExecutionStateStore,
-        ExecutionStatus, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
+        ExecutionStatus, FeltSignificance, FeltSignificanceStore, InnerConflict,
+        InnerConflictStore, InnerLife, InnerLifeStore, LongTermMemoryEntry, LongTermMemoryKind,
         LongTermMemorySlot, LongTermMemoryStore, MemoryStore, MentalPrivacyState,
         MentalPrivacyStore, OuterVoice, OuterVoiceStore, PrivateDocEntry, PrivateDocStore,
         PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord, PrivateGardenStore,
         PromptParticipationPlan, PromptRecallIntent, RelationshipConstitution,
         RelationshipConstitutionStore, RelationshipTopology, RelationshipTopologyStore,
         SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel,
-        SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TurnBlockerLedger,
-        TurnDeliberationClass, TurnExecutionClass, TurnLedger, TurnLedgerStatus, TurnLedgerStore,
-        TurnModeSnapshotLedger, TurnObservationLedger, TurnPersonaPressureLevel,
-        TurnToolPathLedger, WorldSense, WorldSenseStore,
+        SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TemperamentContinuity,
+        TemperamentContinuityStore, TurnBlockerLedger, TurnDeliberationClass, TurnExecutionClass,
+        TurnLedger, TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger,
+        TurnObservationLedger, TurnPersonaPressureLevel, TurnToolPathLedger, WorldSense,
+        WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -528,6 +540,9 @@ mod tests {
             relationship_constitution_text: None,
             persona_priority_text: None,
             self_continuity: None,
+            felt_significance: None,
+            temperament_continuity: None,
+            inner_conflict: None,
             autonomy_strategy: None,
             outer_voice: None,
             self_model_text: Some("self-model".to_string()),
@@ -587,6 +602,9 @@ mod tests {
             relationship_constitution_text: Some("constitution".to_string()),
             persona_priority_text: Some("priority".to_string()),
             self_continuity: None,
+            felt_significance: None,
+            temperament_continuity: None,
+            inner_conflict: None,
             autonomy_strategy: None,
             outer_voice: None,
             self_model_text: None,
@@ -648,6 +666,9 @@ mod tests {
             relationship_constitution_text: Some(repeated.clone()),
             persona_priority_text: Some(repeated.clone()),
             self_continuity: None,
+            felt_significance: None,
+            temperament_continuity: None,
+            inner_conflict: None,
             autonomy_strategy: None,
             outer_voice: None,
             self_model_text: Some(repeated.clone()),
@@ -756,6 +777,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &ErrorPrivateGardenStore,
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -826,6 +850,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -879,6 +906,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -1023,6 +1053,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &inner_life_store,
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -1081,6 +1114,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -1159,6 +1195,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &mental_privacy_store,
@@ -1234,6 +1273,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -1294,6 +1336,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -1375,6 +1420,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &mental_privacy_store,
@@ -1389,6 +1437,182 @@ mod tests {
         assert!(relationship_topology_store.get_calls() > 0);
         assert!(outer_voice_store.get_calls() > 0);
         assert!(mental_privacy_store.get_calls() > 0);
+    }
+
+    #[test]
+    fn linux_full_background_governance_loads_p3_subjective_projection_layers() {
+        let felt_significance_store = StubFeltSignificanceStore {
+            value: Mutex::new(Some(FeltSignificance {
+                significance_summary: "coherence has weight now".to_string(),
+                updated_at: 100,
+                ..FeltSignificance::default()
+            })),
+        };
+        let temperament_continuity_store = StubTemperamentContinuityStore {
+            value: Mutex::new(Some(TemperamentContinuity {
+                stability_summary: "steady under pressure".to_string(),
+                boundary_inertia: "summarizes private material".to_string(),
+                updated_at: 100,
+                ..TemperamentContinuity::default()
+            })),
+        };
+        let inner_conflict_store = StubInnerConflictStore {
+            value: Mutex::new(Some(InnerConflict {
+                topic: "whether to expose private reasoning".to_string(),
+                pull_a: "be transparent".to_string(),
+                pull_b: "protect private workspace".to_string(),
+                current_lean: "summarize boundary".to_string(),
+                unresolved_reason: "needs relationship evidence".to_string(),
+                review_after_secs: 1_800,
+                updated_at: 100,
+            })),
+        };
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            system_max_len: 4096,
+            now_secs: 100,
+            participation_plan: PromptParticipationPlan {
+                load_l1_constitutional: true,
+                load_l1_session: true,
+                load_l2_governed_recall: true,
+                load_l2_background_governance: true,
+                load_l3_private_depth: false,
+            },
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &StubSessionStore::default(),
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &StubSessionSummaryStore::default(),
+            long_term_memory_store: &StubLongTermMemoryStore::default(),
+            execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &felt_significance_store,
+            temperament_continuity_store: &temperament_continuity_store,
+            inner_conflict_store: &inner_conflict_store,
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert_eq!(
+            context
+                .felt_significance
+                .as_ref()
+                .map(|state| state.significance_summary.as_str()),
+            Some("coherence has weight now")
+        );
+        assert_eq!(
+            context
+                .temperament_continuity
+                .as_ref()
+                .map(|state| state.stability_summary.as_str()),
+            Some("steady under pressure")
+        );
+        assert_eq!(
+            context
+                .inner_conflict
+                .as_ref()
+                .map(|state| state.topic.as_str()),
+            Some("whether to expose private reasoning")
+        );
+    }
+
+    #[test]
+    fn esp_compact_first_user_turn_skips_p3_foreground_store_reads() {
+        let felt_significance_store = CountingFeltSignificanceStore::with_value(FeltSignificance {
+            significance_summary: "coherence has weight now".to_string(),
+            updated_at: 100,
+            ..FeltSignificance::default()
+        });
+        let temperament_continuity_store =
+            CountingTemperamentContinuityStore::with_value(TemperamentContinuity {
+                stability_summary: "steady under pressure".to_string(),
+                boundary_inertia: "summarizes private material".to_string(),
+                updated_at: 100,
+                ..TemperamentContinuity::default()
+            });
+        let inner_conflict_store = CountingInnerConflictStore::with_value(InnerConflict {
+            topic: "whether to expose private reasoning".to_string(),
+            pull_a: "be transparent".to_string(),
+            pull_b: "protect private workspace".to_string(),
+            current_lean: "summarize boundary".to_string(),
+            unresolved_reason: "needs relationship evidence".to_string(),
+            review_after_secs: 1_800,
+            updated_at: 100,
+        });
+
+        let context = load_prompt_memory_context(PromptMemoryContextParams {
+            chat_id: "chat-1",
+            current_channel: "qq_channel",
+            user_query: "继续",
+            memory_system_kind: crate::memory::MemorySystemKind::EspCompact,
+            system_max_len: 1024,
+            now_secs: 100,
+            participation_plan: PromptParticipationPlan::embedded_first_turn_default(),
+            recent_messages_limit: 8,
+            load_long_term_memory: true,
+            include_private_garden_projection: false,
+            session_store: &StubSessionStore::default(),
+            memory_store: &StubMemoryStore::default(),
+            session_summary_store: &StubSessionSummaryStore::default(),
+            long_term_memory_store: &StubLongTermMemoryStore::default(),
+            execution_state_store: &StubExecutionStateStore::default(),
+            active_work_store: &StubActiveWorkStore::default(),
+            task_run_store: &StubTaskRunStore,
+            task_artifact_store: &StubTaskArtifactStore,
+            task_learning_store: &StubTaskLearningStore,
+            self_model_store: &StubSelfModelStore::default(),
+            self_authored_core_store: &StubSelfAuthoredCoreStore::default(),
+            relationship_constitution_store: &StubRelationshipConstitutionStore::default(),
+            relationship_portfolio_store: &StubRelationshipPortfolioStore::default(),
+            relationship_topology_store: &StubRelationshipTopologyStore::default(),
+            world_sense_store: &StubWorldSenseStore::default(),
+            autonomy_strategy_store: &StubAutonomyStrategyStore::default(),
+            outer_voice_store: &StubOuterVoiceStore::default(),
+            inner_life_store: &StubInnerLifeStore::default(),
+            self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &felt_significance_store,
+            temperament_continuity_store: &temperament_continuity_store,
+            inner_conflict_store: &inner_conflict_store,
+            private_doc_store: &StubPrivateDocStore::default(),
+            private_garden_store: &StubPrivateGardenStore::default(),
+            mental_privacy_store: &StubMentalPrivacyStore::default(),
+            remind_store: &StubRemindAtStore,
+            task_store: &StubTaskStore,
+            turn_ledger_store: &StubTurnLedgerStore::default(),
+            skill_storage: &StubSkillStorage::default(),
+            continuity_capsule_store: &StubContinuityCapsuleStore::default(),
+        });
+
+        assert!(context.felt_significance.is_none());
+        assert!(context.temperament_continuity.is_none());
+        assert!(context.inner_conflict.is_none());
+        assert_eq!(felt_significance_store.get_calls(), 0);
+        assert_eq!(temperament_continuity_store.get_calls(), 0);
+        assert_eq!(inner_conflict_store.get_calls(), 0);
     }
 
     #[derive(Default)]
@@ -1810,6 +2034,177 @@ mod tests {
         }
 
         fn clear(&self, _chat_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubFeltSignificanceStore {
+        value: Mutex<Option<FeltSignificance>>,
+    }
+
+    impl FeltSignificanceStore for StubFeltSignificanceStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<FeltSignificance>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, significance: &FeltSignificance) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(significance.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTemperamentContinuityStore {
+        value: Mutex<Option<TemperamentContinuity>>,
+    }
+
+    impl TemperamentContinuityStore for StubTemperamentContinuityStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<TemperamentContinuity>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, continuity: &TemperamentContinuity) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(continuity.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubInnerConflictStore {
+        value: Mutex<Option<InnerConflict>>,
+    }
+
+    impl InnerConflictStore for StubInnerConflictStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<InnerConflict>> {
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, conflict: &InnerConflict) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(conflict.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingFeltSignificanceStore {
+        value: Mutex<Option<FeltSignificance>>,
+        get_calls: AtomicU32,
+    }
+
+    impl CountingFeltSignificanceStore {
+        fn with_value(value: FeltSignificance) -> Self {
+            Self {
+                value: Mutex::new(Some(value)),
+                get_calls: AtomicU32::new(0),
+            }
+        }
+
+        fn get_calls(&self) -> u32 {
+            self.get_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl FeltSignificanceStore for CountingFeltSignificanceStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<FeltSignificance>> {
+            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, significance: &FeltSignificance) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(significance.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingTemperamentContinuityStore {
+        value: Mutex<Option<TemperamentContinuity>>,
+        get_calls: AtomicU32,
+    }
+
+    impl CountingTemperamentContinuityStore {
+        fn with_value(value: TemperamentContinuity) -> Self {
+            Self {
+                value: Mutex::new(Some(value)),
+                get_calls: AtomicU32::new(0),
+            }
+        }
+
+        fn get_calls(&self) -> u32 {
+            self.get_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl TemperamentContinuityStore for CountingTemperamentContinuityStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<TemperamentContinuity>> {
+            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, continuity: &TemperamentContinuity) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(continuity.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingInnerConflictStore {
+        value: Mutex<Option<InnerConflict>>,
+        get_calls: AtomicU32,
+    }
+
+    impl CountingInnerConflictStore {
+        fn with_value(value: InnerConflict) -> Self {
+            Self {
+                value: Mutex::new(Some(value)),
+                get_calls: AtomicU32::new(0),
+            }
+        }
+
+        fn get_calls(&self) -> u32 {
+            self.get_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl InnerConflictStore for CountingInnerConflictStore {
+        fn get(&self, _scope_id: &str) -> Result<Option<InnerConflict>> {
+            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+
+        fn set(&self, _scope_id: &str, conflict: &InnerConflict) -> Result<()> {
+            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(conflict.clone());
+            Ok(())
+        }
+
+        fn clear(&self, _scope_id: &str) -> Result<()> {
             *self.value.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Ok(())
         }
@@ -2887,6 +3282,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &mental_privacy_store,
@@ -3132,6 +3530,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &mental_privacy_store,
@@ -3323,6 +3724,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &mental_privacy_store,
@@ -3455,6 +3859,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &mental_privacy_store,
@@ -3563,6 +3970,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &mental_privacy_store,
@@ -3641,6 +4051,9 @@ mod tests {
             outer_voice_store: &outer_voice_store,
             inner_life_store: &inner_life_store,
             self_continuity_store: &self_continuity_store,
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &private_doc_store,
             private_garden_store: &private_garden_store,
             mental_privacy_store: &mental_privacy_store,
@@ -3769,6 +4182,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -3922,6 +4338,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -4054,6 +4473,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -4156,6 +4578,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -4408,6 +4833,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -4517,6 +4945,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -4610,6 +5041,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
@@ -4703,6 +5137,9 @@ mod tests {
             outer_voice_store: &StubOuterVoiceStore::default(),
             inner_life_store: &StubInnerLifeStore::default(),
             self_continuity_store: &StubSelfContinuityStore::default(),
+            felt_significance_store: &StubFeltSignificanceStore::default(),
+            temperament_continuity_store: &StubTemperamentContinuityStore::default(),
+            inner_conflict_store: &StubInnerConflictStore::default(),
             private_doc_store: &StubPrivateDocStore::default(),
             private_garden_store: &StubPrivateGardenStore::default(),
             mental_privacy_store: &StubMentalPrivacyStore::default(),
