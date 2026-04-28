@@ -1,5 +1,5 @@
 //! 编译时/环境变量配置，加载后校验；密钥与敏感字段永不打印、不写 SPIFFS。
-//! NVS 仅存 6 个小键；LLM/通道存 SPIFFS，由 ConfigFileStore 读写。
+//! NVS 仅存系统小键；LLM/通道存 SPIFFS，由 ConfigFileStore 读写。
 //! Build-time / env config with validation; secrets never logged or written to SPIFFS.
 
 use crate::display::{
@@ -14,6 +14,14 @@ use crate::office::{
 use crate::platform::ConfigStore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+static CHANNELS_CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_channels_config() -> std::sync::MutexGuard<'static, ()> {
+    CHANNELS_CONFIG_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
 
 /// SPIFFS 读出的单体 JSON：默认严格解析（与历史行为一致）；仅当整段非法而「第一个顶层值」仍合法时降级
 /// （典型：短写未截断导致尾部旧字节 → `trailing characters`），并打 warn，避免静默掩盖其它错误。
@@ -54,6 +62,9 @@ fn load_spiffs_json_merge<F>(
     match reader.read_config_file(rel_path) {
         Ok(Some(b)) => {
             let s = String::from_utf8_lossy(&b);
+            if s.trim().is_empty() {
+                return;
+            }
             merge(&s, load_errors);
         }
         Ok(None) => {}
@@ -76,8 +87,6 @@ pub const NVS_NAMESPACE: &str = "pc_cfg";
 const NVS_KEY_WIFI_SSID: &str = "wifi_ssid";
 const NVS_KEY_WIFI_PASS: &str = "wifi_pass";
 const NVS_KEY_PROXY_URL: &str = "proxy_url";
-/// ≤15 字符以符合 ESP-IDF NVS 键名上限。
-const NVS_KEY_TG_GROUP_ACTIVATION: &str = "tg_grp_act";
 /// 界面语言，单独 NVS 键；zh / en，默认 zh。
 pub const NVS_KEY_LOCALE: &str = "locale";
 
@@ -121,12 +130,11 @@ pub struct LlmSource {
     pub max_tokens: Option<u32>,
 }
 
-/// NVS 仅存 5 个小键；LLM/通道存 SPIFFS config/llm.json、config/channels.json，减少 4361。
+/// NVS 仅存系统小键；LLM/通道存 SPIFFS config/llm.json、config/channels.json。
 pub(crate) const NVS_ALL_KEYS: &[&str] = &[
     NVS_KEY_WIFI_SSID,
     NVS_KEY_WIFI_PASS,
     NVS_KEY_PROXY_URL,
-    NVS_KEY_TG_GROUP_ACTIVATION,
     NVS_KEY_LOCALE,
 ];
 
@@ -321,7 +329,7 @@ impl AppConfig {
         self.load_errors.as_deref().unwrap_or(&[])
     }
 
-    /// 多源加载：先 load_from_env()，再 NVS 6 键覆盖，再可选从 reader 读 SPIFFS llm/channels 合并。
+    /// 多源加载：先 load_from_env()，再 NVS 系统键覆盖，再可选从 reader 读 SPIFFS llm/channels 合并。
     pub fn load(store: &dyn ConfigStore, reader: Option<&dyn ConfigFileStore>) -> Self {
         let mut c = Self::load_from_env();
         let mut load_errors = Vec::new();
@@ -334,7 +342,7 @@ impl AppConfig {
             }
         };
         let opt = |i: usize| values.get(i).and_then(|v| v.as_ref());
-        // NVS 5 键：wifi_ssid, wifi_pass, proxy_url, tg_group_activation, locale
+        // NVS 系统键：wifi_ssid, wifi_pass, proxy_url, locale
         if let Some(s) = opt(0) {
             if !s.is_empty() {
                 c.wifi_ssid = s.clone();
@@ -351,11 +359,6 @@ impl AppConfig {
             }
         }
         if let Some(s) = opt(3) {
-            if s == "mention" || s == "always" {
-                c.tg_group_activation = s.clone();
-            }
-        }
-        if let Some(s) = opt(4) {
             if s == "zh" || s == "en" {
                 c.locale = Some(s.clone());
             }
@@ -443,6 +446,7 @@ impl AppConfig {
     pub fn merge_channels_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
         match deserialize_spiffs_json_loose_tail::<ChannelsSegment>(json) {
             Ok(seg) => {
+                self.tg_group_activation = seg.tg_group_activation;
                 self.tg_token = seg.tg_token;
                 self.tg_allowed_chat_ids = seg.tg_allowed_chat_ids;
                 self.feishu_app_id = seg.feishu_app_id;
@@ -568,21 +572,15 @@ pub fn reset_to_defaults(store: &dyn ConfigStore) -> Result<()> {
     store.erase_keys(NVS_ALL_KEYS)
 }
 
-/// 仅将 tg_group_activation 写入 store（供 Telegram /activation 命令使用）；value 仅允许 "mention" 或 "always"。
+/// 校验 Telegram 群组触发策略；value 仅允许 "mention" 或 "always"。
 pub fn validate_tg_group_activation(value: &str) -> Result<()> {
     if value != "mention" && value != "always" {
         return Err(Error::config(
-            "write_tg_group_activation",
+            "tg_group_activation",
             "value must be 'mention' or 'always'",
         ));
     }
     Ok(())
-}
-
-/// 仅将 tg_group_activation 写入 store（供 Telegram /activation 命令使用）；value 仅允许 "mention" 或 "always"。
-pub fn write_tg_group_activation(store: &dyn ConfigStore, value: &str) -> Result<()> {
-    validate_tg_group_activation(value)?;
-    store.write_string(NVS_KEY_TG_GROUP_ACTIVATION, value)
 }
 
 impl AppConfig {
@@ -878,14 +876,13 @@ impl AppConfig {
 }
 
 /// 将配置按键名逐字段写入 store；单条 value 超 NVS_MAX_VALUE_LEN 返回错误。
-/// 仅写入 NVS 保留的 5 个键；LLM/通道由 save_llm_segment / save_channels_segment 写 SPIFFS。
+/// 仅写入 NVS 保留的系统键；LLM/通道由 save_llm_segment / save_channels_segment 写 SPIFFS。
 pub fn save_to_nvs(store: &dyn ConfigStore, config: &AppConfig) -> Result<()> {
     let locale = config.locale.as_deref().unwrap_or("zh");
     store.write_strings(&[
         (NVS_KEY_WIFI_SSID, &config.wifi_ssid),
         (NVS_KEY_WIFI_PASS, &config.wifi_pass),
         (NVS_KEY_PROXY_URL, &config.proxy_url),
-        (NVS_KEY_TG_GROUP_ACTIVATION, &config.tg_group_activation),
         (NVS_KEY_LOCALE, locale),
     ])?;
     Ok(())
@@ -960,6 +957,8 @@ fn is_valid_enabled_channel(s: &str) -> bool {
 pub struct ChannelsSegment {
     #[serde(default)]
     pub enabled_channel: String,
+    #[serde(default = "default_tg_group_activation")]
+    pub tg_group_activation: String,
     #[serde(default)]
     pub tg_token: String,
     #[serde(default)]
@@ -995,6 +994,7 @@ impl ChannelsSegment {
         Self {
             enabled_channel: crate::normalize_compiled_enabled_channel(&config.enabled_channel)
                 .to_string(),
+            tg_group_activation: config.tg_group_activation.clone(),
             tg_token: config.tg_token.clone(),
             tg_allowed_chat_ids: config.tg_allowed_chat_ids.clone(),
             feishu_app_id: config.feishu_app_id.clone(),
@@ -1015,6 +1015,7 @@ impl ChannelsSegment {
 
 /// GET/POST /api/config/system 读写模型。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemSegment {
     #[serde(default)]
     pub wifi_ssid: String,
@@ -1022,8 +1023,6 @@ pub struct SystemSegment {
     pub wifi_pass: String,
     #[serde(default)]
     pub proxy_url: String,
-    #[serde(default)]
-    pub tg_group_activation: String,
     #[serde(default)]
     pub locale: Option<String>,
 }
@@ -1035,7 +1034,6 @@ impl SystemSegment {
             wifi_ssid: config.wifi_ssid.clone(),
             wifi_pass: config.wifi_pass.clone(),
             proxy_url: config.proxy_url.clone(),
-            tg_group_activation: config.tg_group_activation.clone(),
             locale: config.locale.clone(),
         }
     }
@@ -1678,6 +1676,7 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
             enabled_channel_validation_message(),
         ));
     }
+    validate_tg_group_activation(&seg.tg_group_activation)?;
     if seg.tg_token.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_id.len() > CONFIG_FIELD_MAX_LEN
@@ -1702,7 +1701,7 @@ fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
     Ok(())
 }
 
-/// 私有：校验 SystemSegment 的 wifi 长度、tg_group_activation、proxy。供 save_system_segment_to_nvs 复用。
+/// 私有：校验 SystemSegment 的 wifi 长度、proxy。供 save_system_segment_to_nvs 复用。
 fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
     if seg.wifi_ssid.len() > CONFIG_FIELD_MAX_LEN || seg.wifi_pass.len() > CONFIG_FIELD_MAX_LEN {
         return Err(Error::config(
@@ -1711,12 +1710,6 @@ fn validate_system_segment_fields(seg: &SystemSegment) -> Result<()> {
                 "wifi_ssid and wifi_pass length must be <= {}",
                 CONFIG_FIELD_MAX_LEN
             ),
-        ));
-    }
-    if seg.tg_group_activation != "mention" && seg.tg_group_activation != "always" {
-        return Err(Error::config(
-            "config",
-            "tg_group_activation must be 'mention' or 'always'",
         ));
     }
     validate_proxy_url_for_target(seg.proxy_url.trim(), proxy_supported_on_current_target())?;
@@ -2666,10 +2659,7 @@ fn validate_display_segment(cfg: &DisplayConfig, hardware_devices: &[DeviceEntry
     Ok(())
 }
 
-/// 校验 LlmSegment 并写入 SPIFFS config/llm.json；body 即全量，不做合并。
-pub fn save_llm_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
-    let seg: LlmSegment =
-        serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
+fn validate_llm_segment(seg: &LlmSegment) -> Result<()> {
     for (i, src) in seg.llm_sources.iter().enumerate() {
         if src.api_key.trim().is_empty() {
             return Err(Error::config(
@@ -2684,6 +2674,19 @@ pub fn save_llm_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> 
         seg.llm_router_source_index,
         seg.llm_worker_source_index,
     )?;
+    Ok(())
+}
+
+/// 校验 LlmSegment 并写入 SPIFFS config/llm.json；body 即全量，不做合并。
+pub fn save_llm_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
+    let seg: LlmSegment =
+        serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
+    save_llm_segment_value(writer, &seg)
+}
+
+/// 校验 LlmSegment 并写入 SPIFFS config/llm.json；直接消费已解析的配置对象。
+pub fn save_llm_segment_value(writer: &dyn ConfigFileStore, seg: &LlmSegment) -> Result<()> {
+    validate_llm_segment(seg)?;
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/llm.json", json.as_bytes())?;
@@ -2695,52 +2698,74 @@ pub fn save_channels_segment_value(
     writer: &dyn ConfigFileStore,
     seg: &ChannelsSegment,
 ) -> Result<()> {
+    let _guard = lock_channels_config();
+    save_channels_segment_value_unlocked(writer, seg)
+}
+
+fn save_channels_segment_value_unlocked(
+    writer: &dyn ConfigFileStore,
+    seg: &ChannelsSegment,
+) -> Result<()> {
     validate_channels_segment_fields(seg)?;
     let json = serde_json::to_string(seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/channels.json", json.as_bytes())?;
     Ok(())
 }
 
-/// 保存 channels.json，并在写 tg_group_activation overlay 失败时回滚文件，避免控制面裂脑。
-pub fn save_channels_segment_with_overlay(
+/// 只更新 channels.json 内的 Telegram 群组触发策略；不触碰 NVS。
+pub fn save_tg_group_activation_to_channels(
     writer: &dyn ConfigFileStore,
-    store: &dyn ConfigStore,
-    seg: &ChannelsSegment,
-    tg_group_activation: Option<&str>,
+    value: &str,
 ) -> Result<()> {
-    if let Some(value) = tg_group_activation {
-        validate_tg_group_activation(value)?;
-        let previous = writer.read_config_file("config/channels.json")?;
-        save_channels_segment_value(writer, seg)?;
-        if let Err(error) = write_tg_group_activation(store, value) {
-            if let Err(rollback) =
-                restore_config_file(writer, "config/channels.json", previous.as_deref())
-            {
-                return Err(Error::config(
-                    "save_channels_segment",
-                    format!(
-                        "tg_group_activation save failed: {}; rollback failed: {}",
-                        error, rollback
-                    ),
-                ));
-            }
-            return Err(error);
+    validate_tg_group_activation(value)?;
+    let _guard = lock_channels_config();
+    let mut segment = match writer.read_config_file("config/channels.json")? {
+        Some(bytes) if bytes.iter().all(|b| b.is_ascii_whitespace()) => {
+            ChannelsSegment::from_app_config(&AppConfig::load_from_env())
         }
-    } else {
-        save_channels_segment_value(writer, seg)?;
-    }
-    Ok(())
+        Some(bytes) => {
+            let json = std::str::from_utf8(&bytes)
+                .map_err(|e| Error::config("channels", e.to_string()))?;
+            deserialize_spiffs_json_loose_tail::<ChannelsSegment>(json)
+                .map_err(|e| Error::config("channels", e.to_string()))?
+        }
+        None => ChannelsSegment::from_app_config(&AppConfig::load_from_env()),
+    };
+    segment.tg_group_activation = value.to_string();
+    save_channels_segment_value_unlocked(writer, &segment)
 }
 
-fn restore_config_file(
-    writer: &dyn ConfigFileStore,
-    rel_path: &str,
-    previous: Option<&[u8]>,
-) -> Result<()> {
-    match previous {
-        Some(data) => writer.write_config_file(rel_path, data),
-        None => writer.remove_config_file(rel_path),
+/// 将已通过保存校验的 LlmSegment 投影回运行时缓存。
+pub(crate) fn apply_llm_segment_to_config(config: &mut AppConfig, seg: &LlmSegment) {
+    config.llm_router_source_index = seg.llm_router_source_index;
+    config.llm_worker_source_index = seg.llm_worker_source_index;
+    config.llm_sources = seg.llm_sources.clone();
+    if let Some(first) = config.llm_sources.first() {
+        config.api_key = first.api_key.clone();
+        config.model = first.model.clone();
+        config.model_provider = first.provider.clone();
+        config.api_url = first.api_url.clone();
     }
+}
+
+/// 将已通过保存校验的 ChannelsSegment 投影回运行时缓存。
+pub(crate) fn apply_channels_segment_to_config(config: &mut AppConfig, seg: &ChannelsSegment) {
+    config.tg_group_activation = seg.tg_group_activation.clone();
+    config.tg_token = seg.tg_token.clone();
+    config.tg_allowed_chat_ids = seg.tg_allowed_chat_ids.clone();
+    config.feishu_app_id = seg.feishu_app_id.clone();
+    config.feishu_app_secret = seg.feishu_app_secret.clone();
+    config.feishu_allowed_chat_ids = seg.feishu_allowed_chat_ids.clone();
+    config.dingtalk_client_id = seg.dingtalk_client_id.clone();
+    config.dingtalk_client_secret = seg.dingtalk_client_secret.clone();
+    config.wecom_bot_id = seg.wecom_bot_id.clone();
+    config.wecom_bot_secret = seg.wecom_bot_secret.clone();
+    config.wecom_ws_url = seg.wecom_ws_url.clone();
+    config.qq_channel_app_id = seg.qq_channel_app_id.clone();
+    config.qq_channel_secret = seg.qq_channel_secret.clone();
+    config.webhook_enabled = seg.webhook_enabled;
+    config.webhook_token = seg.webhook_token.clone();
+    config.enabled_channel = seg.enabled_channel.clone();
 }
 
 /// 校验 SystemSegment 并写入对应 NVS 键；body 即全量，不做合并。
@@ -2761,7 +2786,6 @@ pub(crate) fn save_system_segment_value_to_nvs(
         (NVS_KEY_WIFI_SSID, &seg.wifi_ssid),
         (NVS_KEY_WIFI_PASS, &seg.wifi_pass),
         (NVS_KEY_PROXY_URL, &seg.proxy_url),
-        (NVS_KEY_TG_GROUP_ACTIVATION, &seg.tg_group_activation),
     ];
     if let Some(locale) = normalize_optional_locale(seg.locale.as_deref())? {
         pairs.push((NVS_KEY_LOCALE, locale));
@@ -2780,7 +2804,6 @@ pub(crate) fn apply_wifi_to_config(config: &mut AppConfig, wifi_ssid: &str, wifi
 pub(crate) fn apply_system_segment_to_config(config: &mut AppConfig, seg: &SystemSegment) {
     apply_wifi_to_config(config, &seg.wifi_ssid, &seg.wifi_pass);
     config.proxy_url = seg.proxy_url.clone();
-    config.tg_group_activation = seg.tg_group_activation.clone();
     if let Some(locale) = seg.locale.as_deref().map(str::trim) {
         config.locale = Some(locale.to_string());
     }
@@ -2790,7 +2813,15 @@ pub(crate) fn apply_system_segment_to_config(config: &mut AppConfig, seg: &Syste
 pub fn save_hardware_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: HardwareSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
-    validate_hardware_segment(&seg)?;
+    save_hardware_segment_value(writer, &seg)
+}
+
+/// 校验 HardwareSegment 并写入 SPIFFS config/hardware.json；直接消费已解析的配置对象。
+pub fn save_hardware_segment_value(
+    writer: &dyn ConfigFileStore,
+    seg: &HardwareSegment,
+) -> Result<()> {
+    validate_hardware_segment(seg)?;
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/hardware.json", json.as_bytes())?;
@@ -2808,8 +2839,16 @@ pub fn get_audio_segment(reader: &dyn ConfigFileStore) -> Result<String> {
 
 /// POST /api/config/audio：校验并写入 SPIFFS config/audio.json；body 即全量，不做合并。
 pub fn save_audio_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
-    let mut seg: AudioSegment =
+    let seg: AudioSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
+    save_audio_segment_value(writer, seg).map(|_| ())
+}
+
+/// POST /api/config/audio：校验并写入 SPIFFS config/audio.json；返回规范化后的配置对象。
+pub fn save_audio_segment_value(
+    writer: &dyn ConfigFileStore,
+    mut seg: AudioSegment,
+) -> Result<AudioSegment> {
     if seg.version == 0 {
         seg.version = AUDIO_CONFIG_VERSION;
     }
@@ -2818,7 +2857,7 @@ pub fn save_audio_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/audio.json", json.as_bytes())?;
-    Ok(())
+    Ok(seg)
 }
 
 /// GET /api/config/display：返回 display.json 内容（不存在时返回 disabled 默认配置）。
@@ -2836,8 +2875,17 @@ pub fn save_display_segment(
     hardware_devices: &[DeviceEntry],
     body: &str,
 ) -> Result<()> {
-    let mut seg: DisplayConfig =
+    let seg: DisplayConfig =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
+    save_display_segment_value(writer, hardware_devices, seg).map(|_| ())
+}
+
+/// POST /api/config/display：校验并写入 SPIFFS config/display.json；返回规范化后的配置对象。
+pub fn save_display_segment_value(
+    writer: &dyn ConfigFileStore,
+    hardware_devices: &[DeviceEntry],
+    mut seg: DisplayConfig,
+) -> Result<DisplayConfig> {
     if seg.version == 0 {
         seg.version = DISPLAY_CONFIG_VERSION;
     }
@@ -2845,7 +2893,40 @@ pub fn save_display_segment(
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/display.json", json.as_bytes())?;
-    Ok(())
+    Ok(seg)
+}
+
+/// 将已通过保存校验的 HardwareSegment 投影回运行时缓存。
+pub(crate) fn apply_hardware_segment_to_config(config: &mut AppConfig, seg: &HardwareSegment) {
+    config.hardware_devices = seg.hardware_devices.clone();
+    config.i2c_bus = seg.i2c_bus.clone();
+    config.i2c_devices = seg.i2c_devices.clone();
+    config.i2c_sensors = seg.i2c_sensors.clone();
+    drop_invalid_display_after_hardware_update(config);
+}
+
+fn drop_invalid_display_after_hardware_update(config: &mut AppConfig) {
+    let invalid = config
+        .display
+        .as_ref()
+        .and_then(|display| validate_display_segment(display, &config.hardware_devices).err());
+    if let Some(error) = invalid {
+        log::warn!(
+            "[config] cached display invalid after hardware update; dropping display cache: {}",
+            error
+        );
+        config.display = None;
+    }
+}
+
+/// 将已通过保存校验的 AudioSegment 投影回运行时缓存。
+pub(crate) fn apply_audio_segment_to_config(config: &mut AppConfig, seg: AudioSegment) {
+    config.audio = Some(seg);
+}
+
+/// 将已通过保存校验的 DisplayConfig 投影回运行时缓存。
+pub(crate) fn apply_display_segment_to_config(config: &mut AppConfig, seg: DisplayConfig) {
+    config.display = Some(seg);
 }
 
 /// 读取 `config/accounts.json` authority 段；不存在时返回空账户注册表默认值。
@@ -3334,7 +3415,7 @@ mod tests {
     }
 
     #[test]
-    fn save_channels_segment_with_overlay_restores_previous_file_on_overlay_failure() {
+    fn save_tg_group_activation_to_channels_updates_only_channels_file() {
         struct MemoryFileStore(std::sync::Mutex<Option<Vec<u8>>>);
 
         impl ConfigFileStore for MemoryFileStore {
@@ -3353,49 +3434,53 @@ mod tests {
             }
         }
 
-        struct FailingOverlayStore;
+        let previous =
+            br#"{"enabled_channel":"telegram","tg_group_activation":"mention","tg_token":"token"}"#
+                .to_vec();
+        let store = MemoryFileStore(std::sync::Mutex::new(Some(previous.clone())));
 
-        impl crate::platform::ConfigStore for FailingOverlayStore {
-            fn read_string(&self, _key: &str) -> Result<Option<String>> {
-                Ok(None)
+        save_tg_group_activation_to_channels(&store, "always").expect("save activation");
+
+        let written = store
+            .read_config_file("config/channels.json")
+            .expect("read saved file")
+            .expect("saved file should exist");
+        let saved: ChannelsSegment = serde_json::from_slice(&written).expect("parse saved file");
+        assert_eq!(saved.enabled_channel, "telegram");
+        assert_eq!(saved.tg_token, "token");
+        assert_eq!(saved.tg_group_activation, "always");
+    }
+
+    #[test]
+    fn save_tg_group_activation_to_channels_recovers_empty_channels_file() {
+        struct MemoryFileStore(std::sync::Mutex<Option<Vec<u8>>>);
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
             }
 
-            fn write_string(&self, key: &str, value: &str) -> Result<()> {
-                assert_eq!(key, NVS_KEY_TG_GROUP_ACTIVATION);
-                assert_eq!(value, "always");
-                Err(Error::config(
-                    "tg_group_activation",
-                    "synthetic overlay failure",
-                ))
+            fn write_config_file(&self, _rel_path: &str, data: &[u8]) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(data.to_vec());
+                Ok(())
             }
 
-            fn erase_keys(&self, _keys: &[&str]) -> Result<()> {
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 Ok(())
             }
         }
 
-        let previous = br#"{"previous":"channels"}"#.to_vec();
-        let store = MemoryFileStore(std::sync::Mutex::new(Some(previous.clone())));
-        let config = AppConfig::load_from_env();
-        let mut seg = ChannelsSegment::from_app_config(&config);
-        seg.enabled_channel = "telegram".to_string();
+        let store = MemoryFileStore(std::sync::Mutex::new(Some(Vec::new())));
 
-        let error =
-            save_channels_segment_with_overlay(&store, &FailingOverlayStore, &seg, Some("always"))
-                .expect_err("overlay failure should bubble up");
+        save_tg_group_activation_to_channels(&store, "always").expect("save activation");
 
-        assert_eq!(
-            error.stage(),
-            "tg_group_activation",
-            "original overlay failure should be preserved when rollback succeeds"
-        );
-        assert_eq!(
-            store
-                .read_config_file("config/channels.json")
-                .expect("read restored file")
-                .expect("previous file should still exist"),
-            previous
-        );
+        let written = store
+            .read_config_file("config/channels.json")
+            .expect("read saved file")
+            .expect("saved file should exist");
+        let saved: ChannelsSegment = serde_json::from_slice(&written).expect("parse saved file");
+        assert_eq!(saved.tg_group_activation, "always");
     }
 
     #[test]
@@ -3428,7 +3513,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"",
-                "tg_group_activation":"mention",
                 "locale":"ja"
             }"#,
         )

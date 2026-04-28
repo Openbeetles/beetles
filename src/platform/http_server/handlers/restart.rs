@@ -9,7 +9,7 @@ use super::HandlerContext;
 
 static LAST_RESTART: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// 返回 (ApiResponse, should_spawn_restart)。mod 先写响应，若 should_spawn_restart 再 spawn 重启。
+/// 返回响应和延迟重启动作标记；transport 写出响应后交给 runtime 调度器执行重启。
 pub fn post(_ctx: &HandlerContext) -> Result<(ApiResponse, bool), std::io::Error> {
     let should_restart = {
         let mut g = LAST_RESTART

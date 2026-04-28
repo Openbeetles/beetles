@@ -16,16 +16,29 @@ pub struct WssSessionState {
 #[derive(Debug)]
 pub enum WssRecvAction {
     /// 需入队消息（None 表示本帧不产生消息，如非 AT_MESSAGE_CREATE）
-    Dispatch(Option<PcMsg>),
+    Dispatch(Option<Box<PcMsg>>),
     /// 入队消息并立即回送 ACK 帧（飞书长连接需确认，否则服务端重复投递）
     #[cfg(feature = "feishu")]
-    DispatchAndAck(Option<PcMsg>, Vec<u8>),
+    DispatchAndAck(Option<Box<PcMsg>>, Vec<u8>),
     /// 需按协议发送心跳，seq 为下次心跳的 d 字段（如 QQ 的 s）
     SendHeartbeat(u64),
     /// 忽略本帧
     Ignore,
     /// 服务端要求重连（如 QQ op=7 Reconnect）
     Disconnect,
+}
+
+impl WssRecvAction {
+    /// 构造普通入站派发动作；消息较大，进入 enum 前装箱，避免放大所有变体。
+    pub fn dispatch(msg: Option<PcMsg>) -> Self {
+        Self::Dispatch(msg.map(Box::new))
+    }
+
+    /// 构造带 ACK 的入站派发动作；用于需要服务端确认的 WSS 协议。
+    #[cfg(feature = "feishu")]
+    pub fn dispatch_and_ack(msg: Option<PcMsg>, ack: Vec<u8>) -> Self {
+        Self::DispatchAndAck(msg.map(Box::new), ack)
+    }
 }
 
 /// WSS 网关协议驱动：由各通道（飞书、QQ）实现。

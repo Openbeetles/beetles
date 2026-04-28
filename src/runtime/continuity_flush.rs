@@ -8,7 +8,9 @@ use crate::memory::{
 };
 use crate::Platform;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const CONTINUITY_FLUSH_BUNDLE_VERSION: u32 = 1;
 const CONTINUITY_FLUSH_ACTIVE_WINDOW_SECS: u64 = 7 * 86_400;
@@ -17,6 +19,8 @@ pub const REL_PATH_REBOOT_CONTINUITY_BUNDLE: &str =
     "memory/continuity_snapshots/runtime/latest_reboot_bundle.json";
 pub const REL_PATH_REBOOT_CONTINUITY_MARKDOWN: &str =
     "memory/continuity_snapshots/runtime/latest_reboot_bundle.md";
+static DELAYED_RESTART_SCHEDULED: AtomicBool = AtomicBool::new(false);
+static DELAYED_RESTART_SCHEDULE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContinuitySnapshotBundle {
@@ -222,6 +226,55 @@ pub fn request_restart_with_continuity_flush(
         preferred_chat_id,
     );
     platform.request_restart();
+}
+
+/// Schedule a restart through the existing runtime delayed-task coordinator.
+///
+/// The caller may be an HTTP response path with very little internal heap left;
+/// this function must not create a new thread. The runtime background timer
+/// executes the already-queued restart closure after the response has left the
+/// route worker.
+pub fn schedule_restart_with_continuity_flush(
+    platform: Arc<dyn Platform>,
+    reason: String,
+    delay: Duration,
+) -> bool {
+    let _guard = DELAYED_RESTART_SCHEDULE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if DELAYED_RESTART_SCHEDULED.load(Ordering::Acquire) {
+        log::info!(
+            "[continuity_flush] delayed restart already scheduled; coalescing reason={}",
+            reason
+        );
+        return true;
+    }
+    DELAYED_RESTART_SCHEDULED.store(true, Ordering::Release);
+    schedule_delayed_restart_task(platform, reason, delay)
+}
+
+fn schedule_delayed_restart_task(
+    platform: Arc<dyn Platform>,
+    reason: String,
+    delay: Duration,
+) -> bool {
+    let due_at = Instant::now() + delay;
+    let log_reason = reason.clone();
+    let task = Box::new(move || {
+        DELAYED_RESTART_SCHEDULED.store(false, Ordering::Release);
+        request_restart_with_continuity_flush(platform, None, reason.as_str());
+    });
+    match crate::runtime::schedule_critical_delayed_task(due_at, task) {
+        Ok(()) => true,
+        Err(_task) => {
+            DELAYED_RESTART_SCHEDULED.store(false, Ordering::Release);
+            log::error!(
+                "[continuity_flush] failed to schedule delayed restart reason={}",
+                log_reason
+            );
+            false
+        }
+    }
 }
 
 fn normalize_restart_reason(reason: &str) -> String {

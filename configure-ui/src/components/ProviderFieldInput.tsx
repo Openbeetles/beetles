@@ -100,10 +100,12 @@ export function ProviderFieldInput({
       helperText={helperText}
       multiline={multiline}
       minRows={multiline ? 3 : undefined}
-      inputProps={{
-        autoComplete: secret ? "new-password" : "off",
-        spellCheck: false,
-        inputMode: field.value_kind === "integer" ? "numeric" : undefined,
+      slotProps={{
+        htmlInput: {
+          autoComplete: secret ? "new-password" : "off",
+          spellCheck: false,
+          inputMode: field.value_kind === "integer" ? "numeric" : undefined,
+        },
       }}
     />
   );

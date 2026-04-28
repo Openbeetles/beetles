@@ -1,4 +1,7 @@
-import type { TFunction } from "i18next";
+export type ApiErrorTranslator = (
+  key: string,
+  options?: { defaultValue?: string },
+) => string;
 
 const DEVICE_OR_PAIRING_ERROR_KEYS = new Set([
   "auth.pairing_required",
@@ -17,7 +20,7 @@ export function isDeviceOrPairingErrorKey(value: string | undefined): boolean {
 }
 
 export function translateApiError(
-  t: TFunction,
+  t: ApiErrorTranslator,
   message: string | undefined | null,
   fallbackKey = "common.error",
 ): string {

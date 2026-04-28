@@ -39,7 +39,7 @@ fn map_config(message: &str, stage: &str) -> Message {
         "deserialize" => Message::InvalidJson,
         "serialize" => Message::SaveFailed,
         "locale" if message == "must be zh or en" => Message::LocaleMustBeZhOrEn,
-        "write_tg_group_activation" => Message::TgGroupActivationInvalid,
+        "tg_group_activation" => Message::TgGroupActivationInvalid,
         "wifi" => {
             if message.contains("length must be <=") {
                 Message::ConfigFieldTooLong

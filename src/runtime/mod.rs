@@ -36,7 +36,10 @@ pub use acceptance::{
     BeetleOsPlane, BeetleOsPlaneReport,
 };
 pub use agent_supervision::{register_agent_loop_guard, service_agent_loop_guard};
-pub use continuity_flush::{flush_reboot_continuity_bundle, request_restart_with_continuity_flush};
+pub use continuity_flush::{
+    flush_reboot_continuity_bundle, request_restart_with_continuity_flush,
+    schedule_restart_with_continuity_flush,
+};
 pub use delayed_task::{
     next_delayed_task_wait, schedule_critical_delayed_task, schedule_delayed_task,
     schedule_system_inbound_msg, service_delayed_tasks,

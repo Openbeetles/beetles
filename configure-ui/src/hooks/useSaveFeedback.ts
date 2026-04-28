@@ -1,13 +1,19 @@
 import { useCallback, useState } from 'react'
+import {
+  translateApiError,
+  type ApiErrorTranslator,
+} from '../i18n/apiErrors.ts'
 import type { SaveStatus } from '../types/asyncState'
 
-function mapError(error: string | undefined, t: (key: string) => string): string {
+export function mapSaveFeedbackError(
+  error: string | undefined,
+  t: ApiErrorTranslator,
+): string {
   if (!error) return ''
-  if (error.startsWith('device.') || error.startsWith('config.')) return t(error)
-  return error
+  return translateApiError(t, error, 'common.error')
 }
 
-export function useSaveFeedback(t: (key: string) => string) {
+export function useSaveFeedback(t: ApiErrorTranslator) {
   const [status, setStatus] = useState<SaveStatus>('idle')
   const [error, setError] = useState('')
 
@@ -24,7 +30,7 @@ export function useSaveFeedback(t: (key: string) => string) {
   const finishFromResult = useCallback(
     (result: { ok: boolean; error?: string }) => {
       setStatus(result.ok ? 'ok' : 'fail')
-      setError(mapError(result.error, t))
+      setError(mapSaveFeedbackError(result.error, t))
     },
     [t],
   )

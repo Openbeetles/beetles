@@ -404,7 +404,7 @@ export function AccountCreateForm({
             label={t("accounts.accountLabelOptional")}
             value={accountLabelInput}
             onChange={(e) => setAccountLabelInput(e.target.value)}
-            inputProps={{ autoComplete: "off" }}
+            slotProps={{ htmlInput: { autoComplete: "off" } }}
           />
         </FormGrid>
       </FormCard>

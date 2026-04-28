@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId } from "react";
+import type { ApiErrorTranslator } from "../i18n/apiErrors.ts";
 import { useConfigPageLoad } from "./useConfigPageLoad.ts";
 import { useSaveFeedback } from "./useSaveFeedback.ts";
 import { useUnsaved } from "./useUnsaved.ts";
@@ -8,7 +9,7 @@ import {
 } from "./configSaveLifecycle.ts";
 
 export interface UseConfigEditorControllerOptions {
-  t: (key: string) => string;
+  t: ApiErrorTranslator;
   hasData: boolean;
   loading: boolean;
   load: () => Promise<void>;

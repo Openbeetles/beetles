@@ -76,6 +76,7 @@
 当前仍会出现的基础设施 / 运行态 key 包括：
 
 - `http.route_worker_busy`：设备正在处理配置或诊断任务，请稍后重试。
+- `http.route_worker_memory_low`：设备当前内存余量不足，无法启动本次请求对应的路由 worker 任务。
 - `runtime.config_blocked_by_voice`：实时语音会话活跃时拒绝配置操作，请按返回的等待时间重试。
 
 ## 激活与安全
@@ -158,7 +159,6 @@
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `tg_group_activation`
 - `locale`
   仅接受 `zh` 或 `en`；非法值会直接返回 `400 application/json`，不会被静默忽略。
 
@@ -191,8 +191,9 @@
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `tg_group_activation`
 - `locale`
+
+系统配置段不接收通道字段；`tg_group_activation` 必须通过 `POST /api/config/channels` 保存。
 
 成功响应：`200 application/json`
 
@@ -252,6 +253,43 @@
 
 相关说明见 [LLM 服务配置](llm-providers.md)。
 
+**GET /api/config/channels**
+
+用途：读取聊天通道配置，并返回当前构建实际可用的通道目录。
+
+鉴权：`配对码`
+
+成功响应：`200 application/json`
+
+```json
+{
+  "available_channels": ["telegram", "qq_channel"],
+  "unavailable_enabled_channel": "wecom",
+  "enabled_channel": "wecom",
+  "tg_token": "",
+  "tg_allowed_chat_ids": "",
+  "tg_group_activation": "mention",
+  "feishu_app_id": "",
+  "feishu_app_secret": "",
+  "feishu_allowed_chat_ids": "",
+  "dingtalk_client_id": "",
+  "dingtalk_client_secret": "",
+  "wecom_bot_id": "",
+  "wecom_bot_secret": "",
+  "wecom_ws_url": "",
+  "qq_channel_app_id": "",
+  "qq_channel_secret": "",
+  "webhook_enabled": false,
+  "webhook_token": ""
+}
+```
+
+返回字段说明：
+
+- `available_channels`：当前固件或二进制实际编译进去的通道 ID。
+- `unavailable_enabled_channel`：仅当已保存的 `enabled_channel` 没有编译进当前构建时返回。
+- 其余字段是 `config/channels.json` 中 channels 配置段的扁平字段。
+
 **POST /api/config/channels**
 
 用途：保存聊天通道配置。
@@ -262,8 +300,8 @@
 
 字段分组：
 
-- 通用：`enabled_channel`、`tg_group_activation`
-- Telegram：`tg_token`、`tg_allowed_chat_ids`
+- 通用：`enabled_channel`
+- Telegram：`tg_token`、`tg_allowed_chat_ids`、`tg_group_activation`
 - 飞书：`feishu_app_id`、`feishu_app_secret`、`feishu_allowed_chat_ids`
 - 钉钉：`dingtalk_client_id`、`dingtalk_client_secret`
 - 企业微信：`wecom_bot_id`、`wecom_bot_secret`、`wecom_ws_url`
@@ -279,8 +317,7 @@
 
 保存语义补充：
 
-- 服务端会先校验并写入 `config/channels.json`，再把 `tg_group_activation` 镜像到 NVS overlay。
-- 如果 overlay 写入失败，服务端会把 `config/channels.json` 回滚到保存前内容，避免 SPIFFS / NVS 出现一边成功、一边失败的裂脑状态。
+- 服务端会校验并写入 `config/channels.json`；`tg_group_activation` 属于 channels 配置段，与 Telegram 通道字段一起保存。
 
 `enabled_channel` 允许值：
 

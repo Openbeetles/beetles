@@ -162,8 +162,6 @@ export function normalizeSystemConfigFromDevice(
     wifi_ssid: stringValue(record.wifi_ssid),
     wifi_pass: stringValue(record.wifi_pass),
     proxy_url: stringValue(record.proxy_url),
-    tg_group_activation:
-      record.tg_group_activation === 'always' ? 'always' : 'mention',
     locale: nullableStringValue(record.locale),
   }
 }
@@ -191,6 +189,5 @@ export interface SystemConfigSegment {
   wifi_ssid: string
   wifi_pass: string
   proxy_url: string
-  tg_group_activation: string
   locale?: string | null
 }

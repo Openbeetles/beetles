@@ -990,10 +990,12 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
                     value={
                       firmwareName || t("device.flashChooseFirmwareInline")
                     }
-                    InputProps={{ readOnly: true }}
-                    inputProps={{
-                      tabIndex: -1,
-                      sx: { cursor: running ? "default" : "pointer" },
+                    slotProps={{
+                      input: { readOnly: true },
+                      htmlInput: {
+                        tabIndex: -1,
+                        style: { cursor: running ? "default" : "pointer" },
+                      },
                     }}
                     sx={{
                       pointerEvents: "none",
@@ -1019,10 +1021,12 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
                     fullWidth
                     label={t("device.flashCatalogLabel")}
                     value={catalogName || t("device.flashChooseCatalogInline")}
-                    InputProps={{ readOnly: true }}
-                    inputProps={{
-                      tabIndex: -1,
-                      sx: { cursor: running ? "default" : "pointer" },
+                    slotProps={{
+                      input: { readOnly: true },
+                      htmlInput: {
+                        tabIndex: -1,
+                        style: { cursor: running ? "default" : "pointer" },
+                      },
                     }}
                     sx={{
                       pointerEvents: "none",

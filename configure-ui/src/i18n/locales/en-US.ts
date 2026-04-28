@@ -567,6 +567,7 @@ export const enUS = {
     },
     http: {
       route_worker_busy: 'The device is busy handling another request. Wait a moment and retry.',
+      route_worker_memory_low: 'The device does not have enough memory headroom to start this configuration task.',
     },
     runtime: {
       config_blocked_by_voice: 'Configuration is paused while a realtime voice session is active.',

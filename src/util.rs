@@ -1053,17 +1053,17 @@ pub const STACK_HTTP_SNAPSHOT_WORKER: usize = 20 * 1024;
 /// ESP HTTP config route worker：承接 NVS/SPIFFS/serde 配置写入，避免压在
 /// IDF HTTPD 回调线程上。配置面必须能在 post-startup 约 31-32KB largest block
 /// 下按需启动；不能再沿用一个 48KB 通用 worker 把产品配置入口永久 admission 掉。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub const STACK_HTTP_CONFIG_WORKER: usize = 28 * 1024;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
 pub const STACK_HTTP_CONFIG_WORKER: usize = 32 * 1024;
 
 /// ESP HTTP diagnostic route worker：Wi-Fi scan、hardware discovery、diagnose 与
 /// channel refresh。首屏 metrics/resource/system_info 已移回轻量 immediate 路径，
 /// 因此这里按可启动性重新收口，而不是保留旧通用 worker 峰值。
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub const STACK_HTTP_DIAG_WORKER: usize = 28 * 1024;
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
 pub const STACK_HTTP_DIAG_WORKER: usize = 32 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
@@ -1076,10 +1076,9 @@ pub const STACK_BG_TIMER: usize = 24 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_BG_TIMER: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// `restart_defer`：HTTP/CLI 触发的延迟重启线程。
-/// 该线程会做 continuity snapshot 导出、serde、SPIFFS 写回与最终 restart，
-/// 不能继续复用普通路由执行线程的 16KB 预算。
-pub const STACK_RESTART_DEFER: usize = 32 * 1024;
+/// `startup_recovery`：启动期 soul/runtime recovery 线程。
+/// 该线程会做恢复状态扫描与 SPIFFS 读写，不能复用普通后台线程预算。
+pub const STACK_STARTUP_RECOVERY: usize = 32 * 1024;
 
 /// 线程目标核心。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1455,10 +1454,6 @@ mod task_wdt_spawn_policy_tests {
         ));
         assert!(!esp_should_auto_manage_task_wdt(
             "http_config_exec",
-            crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
-        ));
-        assert!(!esp_should_auto_manage_task_wdt(
-            "restart_defer",
             crate::platform::task_affinity::TaskSpawnSurface::StdThreadCompat
         ));
         assert!(!esp_should_auto_manage_task_wdt(

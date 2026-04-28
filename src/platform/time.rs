@@ -1,9 +1,18 @@
 //! 单调时间抽象：ESP 用 esp_timer_get_time；host 侧区分宿主机 uptime 与 beetle 进程 uptime。
 //! Monotonic time: ESP via esp_timer_get_time; host distinguishes host uptime from beetle process uptime.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
+
 /// 低于该阈值的墙钟一律视为“不可信”，避免把 1970 之类未同步时间当作真实 UTC。
 /// Treat wall-clock values below this threshold as unsynchronized / untrustworthy.
 pub const TRUSTWORTHY_WALL_CLOCK_THRESHOLD_SECS: u64 = 1_700_000_000;
+const WALL_CLOCK_WAIT_POLL_SLICE_MS: u64 = 250;
+
+fn wall_clock_wake_generation() -> &'static AtomicU32 {
+    static GENERATION: AtomicU32 = AtomicU32::new(0);
+    &GENERATION
+}
 
 /// 系统启动后经过的秒数（单调递增）。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -85,9 +94,75 @@ pub fn trusted_wall_clock_unix_secs() -> Option<u64> {
     wall_clock_unix_secs().filter(|secs| is_trustworthy_wall_clock_secs(*secs))
 }
 
+/// 通知等待者墙钟可能已经可信；等待者仍会重新读取系统时间并应用可信阈值。
+/// Notify waiters that the wall clock may now be trustworthy; waiters still re-check the threshold.
+pub fn notify_wall_clock_trustworthy() {
+    wall_clock_wake_generation().fetch_add(1, Ordering::Release);
+}
+
+/// 等待墙钟变为可信，直到收到同步通知或超时；返回前始终重新检查可信阈值。
+/// Wait for a trusted wall clock until notified or timed out; always re-checks the threshold.
+pub fn wait_for_wall_clock_trustworthy(timeout: Duration) -> bool {
+    wait_for_wall_clock_trustworthy_with(
+        timeout,
+        Duration::from_millis(WALL_CLOCK_WAIT_POLL_SLICE_MS),
+        wall_clock_is_trustworthy,
+    )
+}
+
+fn wait_for_wall_clock_trustworthy_with<F>(
+    timeout: Duration,
+    poll_slice: Duration,
+    mut is_trustworthy: F,
+) -> bool
+where
+    F: FnMut() -> bool,
+{
+    if is_trustworthy() {
+        return true;
+    }
+    if timeout.is_zero() {
+        return false;
+    }
+
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    let mut observed_generation = wall_clock_wake_generation().load(Ordering::Acquire);
+    let poll_slice = if poll_slice.is_zero() {
+        timeout
+    } else {
+        poll_slice
+    };
+
+    loop {
+        if is_trustworthy() {
+            return true;
+        }
+
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+
+        let generation = wall_clock_wake_generation().load(Ordering::Acquire);
+        if generation != observed_generation {
+            observed_generation = generation;
+            continue;
+        }
+
+        std::thread::sleep(remaining.min(poll_slice));
+        crate::platform::task_wdt::feed_current_task();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_trustworthy_wall_clock_secs, TRUSTWORTHY_WALL_CLOCK_THRESHOLD_SECS};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+    use std::time::Duration;
 
     #[test]
     fn trustworthy_wall_clock_threshold_rejects_epoch_like_values() {
@@ -98,5 +173,26 @@ mod tests {
         assert!(is_trustworthy_wall_clock_secs(
             TRUSTWORTHY_WALL_CLOCK_THRESHOLD_SECS
         ));
+    }
+
+    #[test]
+    fn wall_clock_wait_wakes_when_trustworthy_time_is_notified() {
+        let trustworthy = Arc::new(AtomicBool::new(false));
+        let waiter_trustworthy = Arc::clone(&trustworthy);
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let woke = super::wait_for_wall_clock_trustworthy_with(
+                Duration::from_secs(5),
+                Duration::from_millis(10),
+                || waiter_trustworthy.load(Ordering::SeqCst),
+            );
+            tx.send(woke).unwrap();
+        });
+
+        assert!(rx.recv_timeout(Duration::from_millis(5)).is_err());
+        trustworthy.store(true, Ordering::SeqCst);
+        super::notify_wall_clock_trustworthy();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
     }
 }

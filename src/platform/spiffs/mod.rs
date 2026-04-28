@@ -706,6 +706,10 @@ mod tests {
     #[test]
     fn state_write_padding_uses_json_semantics_for_json_state() {
         assert_eq!(
+            state_write_tail_padding(Path::new("config/channels.json")),
+            WriteTailPadding::JsonWhitespace
+        );
+        assert_eq!(
             state_write_tail_padding(Path::new("memory/tool_execution_governance.json")),
             WriteTailPadding::JsonWhitespace
         );

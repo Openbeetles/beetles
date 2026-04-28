@@ -182,22 +182,17 @@ pub fn run_with_bound_listener(
             if restart != router::RestartAction::After300Ms {
                 return;
             }
-            let platform = Arc::clone(&restart_platform);
             let restart_reason = format!("http_restart{}", path);
-            crate::util::spawn_guarded_with_profile(
-                "restart_defer",
-                crate::util::STACK_RESTART_DEFER,
-                Some(crate::util::SpawnCore::Core0),
-                crate::util::HttpThreadRole::Background,
-                move || {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    crate::runtime::request_restart_with_continuity_flush(
-                        platform,
-                        None,
-                        restart_reason.as_str(),
-                    );
-                },
-            );
+            if !crate::runtime::schedule_restart_with_continuity_flush(
+                Arc::clone(&restart_platform),
+                restart_reason,
+                std::time::Duration::from_millis(300),
+            ) {
+                log::error!(
+                    "[http_config] delayed restart schedule failed path={}",
+                    path
+                );
+            }
         },
     )
 }

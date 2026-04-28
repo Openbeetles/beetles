@@ -27,7 +27,6 @@ function createSystemConfig(): SystemConfigSegment {
     wifi_ssid: "",
     wifi_pass: "",
     proxy_url: "",
-    tg_group_activation: "",
     locale: "zh",
   };
 }

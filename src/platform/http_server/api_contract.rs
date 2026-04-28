@@ -88,7 +88,7 @@ fn config_error_key(message: &str, stage: &str) -> &'static str {
         "deserialize" => COMMON_INVALID_JSON,
         "serialize" => COMMON_SAVE_FAILED,
         "locale" if message == "must be zh or en" => SYSTEM_LOCALE_INVALID,
-        "write_tg_group_activation" => CHANNEL_TG_GROUP_ACTIVATION_INVALID,
+        "tg_group_activation" => CHANNEL_TG_GROUP_ACTIVATION_INVALID,
         "wifi" => {
             if message.contains("length must be <=") {
                 CONFIG_FIELD_TOO_LONG

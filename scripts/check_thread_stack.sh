@@ -21,7 +21,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Threads allowed to keep small stacks (no HTTPS/TLS on their Linux path).
-ALLOWLIST="dispatch|http_server|bg_timer|heartbeat|cli_repl|restart_defer|buzzer_off|display|wifi_worker|audio_io_worker"
+ALLOWLIST="dispatch|http_server|bg_timer|heartbeat|cli_repl|buzzer_off|display|wifi_worker|audio_io_worker"
 
 VIOLATIONS=0
 

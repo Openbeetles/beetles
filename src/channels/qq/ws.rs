@@ -336,7 +336,7 @@ impl WssGatewayDriver for QqWssDriver {
                                                 TAG,
                                                 mid
                                             );
-                                            return Ok(WssRecvAction::Dispatch(None));
+                                            return Ok(WssRecvAction::dispatch(None));
                                         }
                                         self.cache_msg_id(ch, mid);
                                     }
@@ -354,9 +354,9 @@ impl WssGatewayDriver for QqWssDriver {
                                         )
                                         .unwrap_or(false)
                                         {
-                                            return Ok(WssRecvAction::Dispatch(None));
+                                            return Ok(WssRecvAction::dispatch(None));
                                         }
-                                        return Ok(WssRecvAction::Dispatch(Some(msg)));
+                                        return Ok(WssRecvAction::dispatch(Some(msg)));
                                     }
                                 }
                             }
@@ -387,7 +387,7 @@ impl WssGatewayDriver for QqWssDriver {
                                                 TAG,
                                                 mid
                                             );
-                                            return Ok(WssRecvAction::Dispatch(None));
+                                            return Ok(WssRecvAction::dispatch(None));
                                         }
                                         self.cache_msg_id(&chat_id, mid);
                                     }
@@ -405,9 +405,9 @@ impl WssGatewayDriver for QqWssDriver {
                                         )
                                         .unwrap_or(false)
                                         {
-                                            return Ok(WssRecvAction::Dispatch(None));
+                                            return Ok(WssRecvAction::dispatch(None));
                                         }
-                                        return Ok(WssRecvAction::Dispatch(Some(msg)));
+                                        return Ok(WssRecvAction::dispatch(Some(msg)));
                                     }
                                 }
                             }
@@ -439,7 +439,7 @@ impl WssGatewayDriver for QqWssDriver {
                                                 TAG,
                                                 mid
                                             );
-                                            return Ok(WssRecvAction::Dispatch(None));
+                                            return Ok(WssRecvAction::dispatch(None));
                                         }
                                         self.cache_msg_id(&chat_id, mid);
                                     }
@@ -457,9 +457,9 @@ impl WssGatewayDriver for QqWssDriver {
                                         )
                                         .unwrap_or(false)
                                         {
-                                            return Ok(WssRecvAction::Dispatch(None));
+                                            return Ok(WssRecvAction::dispatch(None));
                                         }
-                                        return Ok(WssRecvAction::Dispatch(Some(msg)));
+                                        return Ok(WssRecvAction::dispatch(Some(msg)));
                                     }
                                 }
                             }
@@ -467,7 +467,7 @@ impl WssGatewayDriver for QqWssDriver {
                     }
                     _ => {}
                 }
-                Ok(WssRecvAction::Dispatch(None))
+                Ok(WssRecvAction::dispatch(None))
             }
             QQ_OP_HEARTBEAT_ACK => Ok(WssRecvAction::SendHeartbeat(self.last_seq.unwrap_or(0))),
             QQ_OP_RECONNECT => {

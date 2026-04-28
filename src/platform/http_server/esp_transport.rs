@@ -490,6 +490,13 @@ fn status_text(status: u16) -> &'static str {
     }
 }
 
+fn route_worker_reject_error_key(stage: &'static str) -> &'static str {
+    match stage {
+        "http_route_worker_admission" => "http.route_worker_memory_low",
+        _ => "http.route_worker_busy",
+    }
+}
+
 fn route_worker_reject_response(
     _store: &dyn ConfigStore,
     contract: RouteWorkerContract,
@@ -533,7 +540,7 @@ fn route_worker_reject_response(
         body: ApiResponse::err_key_with_meta(
             contract.reject_status,
             status_text(contract.reject_status),
-            "http.route_worker_busy",
+            route_worker_reject_error_key(stage),
             Some(stage),
             None,
             None,
@@ -840,22 +847,17 @@ fn write_outgoing<C: Connection>(
         .map_err(common::to_io)?;
     resp.write_all(&out.body).map_err(common::to_io)?;
     if out.restart == RestartAction::After300Ms {
-        let platform = Arc::clone(&ctx.platform);
-        let restart_reason = restart_reason.to_string();
-        crate::util::spawn_guarded_with_profile(
-            "restart_defer",
-            crate::util::STACK_RESTART_DEFER,
-            Some(crate::util::SpawnCore::Core0),
-            crate::util::HttpThreadRole::Background,
-            move || {
-                std::thread::sleep(Duration::from_millis(300));
-                crate::runtime::request_restart_with_continuity_flush(
-                    platform,
-                    None,
-                    restart_reason.as_str(),
-                );
-            },
+        let scheduled = crate::runtime::schedule_restart_with_continuity_flush(
+            Arc::clone(&ctx.platform),
+            restart_reason.to_string(),
+            Duration::from_millis(300),
         );
+        if !scheduled {
+            log::error!(
+                "[http_server] delayed restart schedule failed reason={}",
+                restart_reason
+            );
+        }
     }
     Ok(())
 }
@@ -1072,6 +1074,18 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn route_worker_admission_reject_uses_memory_error_key() {
+        assert_eq!(
+            super::route_worker_reject_error_key("http_route_worker_admission"),
+            "http.route_worker_memory_low"
+        );
+        assert_eq!(
+            super::route_worker_reject_error_key("http_route_worker_submit"),
+            "http.route_worker_busy"
+        );
     }
 
     #[test]

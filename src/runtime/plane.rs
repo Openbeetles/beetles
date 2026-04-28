@@ -453,7 +453,7 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         residency: PlaneResidency::Steady,
         allowed_modes: MODES_ALL,
         required_leases: &[],
-        thread_names: &["bg_timer", "heartbeat", "restart_defer", "cron", "remind"],
+        thread_names: &["bg_timer", "heartbeat", "cron", "remind"],
         queue_budget: None,
         drain_timeout_secs: Some(10),
         execution_class: ThreadExecutionClass::Runtime,

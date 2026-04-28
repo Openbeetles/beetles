@@ -25,9 +25,11 @@ test("normalizeChannelsConfigFromDevice keeps legacy responses usable without ca
   const config = normalizeChannelsConfigFromDevice({
     enabled_channel: "telegram",
     tg_token: "token",
+    tg_group_activation: "unexpected",
   });
 
   assert.equal(config.tg_token, "token");
+  assert.equal(config.tg_group_activation, "mention");
   assert.ok(config.available_channels.includes("telegram"));
   assert.ok(config.available_channels.includes("wecom"));
 });
@@ -78,7 +80,6 @@ test("normalizeSystemConfigFromDevice fills missing scalar fields", () => {
     wifi_ssid: "Office",
     wifi_pass: "",
     proxy_url: "",
-    tg_group_activation: "mention",
     locale: null,
   });
 });

@@ -48,15 +48,6 @@ struct ChannelsConfigView {
     available_channels: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     unavailable_enabled_channel: Option<String>,
-    tg_group_activation: String,
-    #[serde(flatten)]
-    segment: config::ChannelsSegment,
-}
-
-#[derive(serde::Deserialize)]
-struct ChannelsConfigSavePayload {
-    #[serde(default)]
-    tg_group_activation: Option<String>,
     #[serde(flatten)]
     segment: config::ChannelsSegment,
 }
@@ -75,7 +66,6 @@ pub fn get_channels_body(ctx: &HandlerContext) -> Result<String, std::io::Error>
             .map(str::to_string)
             .collect(),
         unavailable_enabled_channel,
-        tg_group_activation: config.tg_group_activation.clone(),
         segment,
     };
     serde_json::to_string(&payload).map_err(|e| to_io(e.to_string()))
@@ -90,36 +80,39 @@ pub fn get_system_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
 /// POST /api/config/llm：仅写 LLM 段，body 为 LlmSegment JSON。
 pub fn post_llm(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    match config::save_llm_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => {
-            ctx.reload_config();
-            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
-        }
-        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
-    }
-}
-
-/// POST /api/config/channels：写通道段；tg_group_activation 作为兼容 overlay 同步写回 NVS。
-pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    let payload: ChannelsConfigSavePayload = match serde_json::from_str(body) {
-        Ok(payload) => payload,
+    let segment: config::LlmSegment = match serde_json::from_str(body) {
+        Ok(segment) => segment,
         Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
     };
-    match config::save_channels_segment_with_overlay(
-        ctx.config_file_store.as_ref(),
-        ctx.config_store.as_ref(),
-        &payload.segment,
-        payload.tg_group_activation.as_deref(),
-    ) {
+    match config::save_llm_segment_value(ctx.config_file_store.as_ref(), &segment) {
         Ok(()) => {
-            ctx.reload_config();
+            ctx.update_cached_config(|config| {
+                config::apply_llm_segment_to_config(config, &segment);
+            });
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
         Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
-/// POST /api/config/system：仅写系统段（wifi/proxy/session/tg_group/locale），body 为 SystemSegment JSON。
+/// POST /api/config/channels：写通道段；通道配置只落 config/channels.json。
+pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
+    let segment: config::ChannelsSegment = match serde_json::from_str(body) {
+        Ok(segment) => segment,
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+    };
+    match config::save_channels_segment_value(ctx.config_file_store.as_ref(), &segment) {
+        Ok(()) => {
+            ctx.update_cached_config(|config| {
+                config::apply_channels_segment_to_config(config, &segment);
+            });
+            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+        }
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
+    }
+}
+
+/// POST /api/config/system：仅写系统段（wifi/proxy/locale），body 为 SystemSegment JSON。
 pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let segment: config::SystemSegment = match serde_json::from_str(body) {
         Ok(segment) => segment,
@@ -565,9 +558,15 @@ pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error>
 
 /// POST /api/config/hardware：校验并写入 HardwareSegment 到 SPIFFS config/hardware.json。
 pub fn post_hardware(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    match config::save_hardware_segment(ctx.config_file_store.as_ref(), body) {
+    let segment: config::HardwareSegment = match serde_json::from_str(body) {
+        Ok(segment) => segment,
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+    };
+    match config::save_hardware_segment_value(ctx.config_file_store.as_ref(), &segment) {
         Ok(()) => {
-            ctx.reload_config();
+            ctx.update_cached_config(|config| {
+                config::apply_hardware_segment_to_config(config, &segment);
+            });
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
         }
         Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
@@ -583,9 +582,15 @@ pub fn get_audio_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
 /// POST /api/config/audio：校验并写入 AudioSegment 到 SPIFFS config/audio.json。
 pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
-    match config::save_audio_segment(ctx.config_file_store.as_ref(), body) {
-        Ok(()) => {
-            ctx.reload_config();
+    let segment: config::AudioSegment = match serde_json::from_str(body) {
+        Ok(segment) => segment,
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+    };
+    match config::save_audio_segment_value(ctx.config_file_store.as_ref(), segment) {
+        Ok(segment) => {
+            ctx.update_cached_config(|config| {
+                config::apply_audio_segment_to_config(config, segment);
+            });
             Ok(ApiResponse::ok_200_json(
                 r#"{"ok":true,"restart_required":true}"#,
             ))
@@ -603,30 +608,35 @@ pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> 
 
 /// POST /api/config/display：校验并写入 DisplayConfig 到 SPIFFS config/display.json。
 pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
+    let segment: crate::display::DisplayConfig = match serde_json::from_str(body) {
+        Ok(segment) => segment,
+        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+    };
     let config = ctx.config();
-    match config::save_display_segment(
+    let result = config::save_display_segment_value(
         ctx.config_file_store.as_ref(),
         &config.hardware_devices,
-        body,
-    ) {
-        Ok(()) => {
-            drop(config);
-            ctx.reload_config();
+        segment,
+    );
+    drop(config);
+    match result {
+        Ok(segment) => {
+            ctx.update_cached_config(|config| {
+                config::apply_display_segment_to_config(config, segment);
+            });
             Ok(ApiResponse::ok_200_json(
                 r#"{"ok":true,"restart_required":true}"#,
             ))
         }
-        Err(e) => {
-            drop(config);
-            Ok(ApiResponse::err_400_key(api_contract::error_key(&e)))
-        }
+        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        get_audio_body, get_display_body, get_hardware_body, get_system_body, post_system,
+        get_audio_body, get_channels_body, get_display_body, get_hardware_body, get_system_body,
+        post_audio, post_channels, post_display, post_hardware, post_llm, post_system,
     };
     use crate::config::{self, ConfigFileStore};
     use crate::error::Result;
@@ -649,6 +659,22 @@ mod tests {
         }
     }
 
+    struct WriteOnlyConfigFileStore;
+
+    impl ConfigFileStore for WriteOnlyConfigFileStore {
+        fn read_config_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("config POST should not reload config file {rel_path}");
+        }
+
+        fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn get_system_body_returns_only_system_segment() {
         let ctx = build_test_context();
@@ -659,7 +685,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"http://proxy.local:8080",
-                "tg_group_activation":"always",
                 "locale":"en"
             }"#,
         )
@@ -672,8 +697,8 @@ mod tests {
         assert_eq!(parsed["wifi_ssid"], "BeetleNet");
         assert_eq!(parsed["wifi_pass"], "secret-pass");
         assert_eq!(parsed["proxy_url"], "http://proxy.local:8080");
-        assert_eq!(parsed["tg_group_activation"], "always");
         assert_eq!(parsed["locale"], "en");
+        assert!(parsed.get("tg_group_activation").is_none());
         assert!(parsed.get("tg_token").is_none());
         assert!(parsed.get("build_package").is_none());
         assert!(
@@ -692,13 +717,28 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"",
-                "tg_group_activation":"mention",
                 "locale":"ja"
             }"#,
         )
         .expect("post_system response");
 
         assert_eq!(response.status, 400);
+    }
+
+    #[test]
+    fn get_channels_body_returns_channel_activation_policy() {
+        let ctx = build_test_context();
+        ctx.update_cached_config(|config| {
+            config.tg_group_activation = "always".to_string();
+            config.tg_token = "token".to_string();
+        });
+
+        let body = get_channels_body(&ctx).unwrap();
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["tg_group_activation"], "always");
+        assert_eq!(parsed["tg_token"], "token");
+        assert!(parsed.get("wifi_ssid").is_none());
     }
 
     #[test]
@@ -729,7 +769,6 @@ mod tests {
                 "wifi_ssid":"BeetleNet",
                 "wifi_pass":"secret-pass",
                 "proxy_url":"http://proxy.local:8080",
-                "tg_group_activation":"always",
                 "locale":"en"
             }"#,
         )
@@ -740,8 +779,178 @@ mod tests {
         assert_eq!(config.wifi_ssid, "BeetleNet");
         assert_eq!(config.wifi_pass, "secret-pass");
         assert_eq!(config.proxy_url, "http://proxy.local:8080");
-        assert_eq!(config.tg_group_activation, "always");
+        assert_eq!(config.tg_group_activation, "mention");
         assert_eq!(config.locale.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn post_llm_updates_cached_config_without_reloading_config_files() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+
+        let response = post_llm(
+            &ctx,
+            r#"{
+                "llm_sources":[{
+                    "provider":"openai",
+                    "api_key":"test-key",
+                    "model":"gpt-test",
+                    "api_url":"https://api.openai.com/v1",
+                    "max_tokens":1024
+                }],
+                "llm_router_source_index":0,
+                "llm_worker_source_index":0
+            }"#,
+        )
+        .expect("post_llm response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert_eq!(config.llm_sources.len(), 1);
+        assert_eq!(config.llm_sources[0].api_key, "test-key");
+        assert_eq!(config.api_key, "test-key");
+        assert_eq!(config.model, "gpt-test");
+        assert_eq!(config.model_provider, "openai");
+        assert_eq!(config.api_url, "https://api.openai.com/v1");
+        assert_eq!(config.llm_router_source_index, Some(0));
+        assert_eq!(config.llm_worker_source_index, Some(0));
+    }
+
+    #[test]
+    fn post_channels_updates_cached_config_without_reloading_config_files() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+
+        let response = post_channels(
+            &ctx,
+            r#"{
+                "enabled_channel":"",
+                "tg_group_activation":"always",
+                "tg_token":"token",
+                "tg_allowed_chat_ids":"1,2",
+                "webhook_enabled":true,
+                "webhook_token":"hook"
+            }"#,
+        )
+        .expect("post_channels response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert_eq!(config.enabled_channel, "");
+        assert_eq!(config.tg_group_activation, "always");
+        assert_eq!(config.tg_token, "token");
+        assert_eq!(config.tg_allowed_chat_ids, "1,2");
+        assert!(config.webhook_enabled);
+        assert_eq!(config.webhook_token, "hook");
+    }
+
+    #[test]
+    fn post_channels_rejects_invalid_activation_policy() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+
+        let response = post_channels(
+            &ctx,
+            r#"{
+                "enabled_channel":"",
+                "tg_group_activation":"legacy",
+                "tg_token":"token",
+                "tg_allowed_chat_ids":"",
+                "webhook_enabled":false,
+                "webhook_token":""
+            }"#,
+        )
+        .expect("post_channels response");
+
+        assert_eq!(response.status, 400);
+        assert_eq!(ctx.config().tg_group_activation, "mention");
+    }
+
+    #[test]
+    fn post_hardware_updates_cached_config_without_reloading_config_files() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+
+        let response = post_hardware(
+            &ctx,
+            r#"{
+                "hardware_devices":[],
+                "i2c_bus":null,
+                "i2c_devices":[],
+                "i2c_sensors":[]
+            }"#,
+        )
+        .expect("post_hardware response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert_eq!(config.hardware_devices.len(), 0);
+        assert!(config.i2c_bus.is_none());
+        assert_eq!(config.i2c_devices.len(), 0);
+        assert_eq!(config.i2c_sensors.len(), 0);
+    }
+
+    #[test]
+    fn post_hardware_drops_cached_display_when_new_hardware_conflicts() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.update_cached_config(|config| {
+            let mut display = crate::display::default_disabled_display_config();
+            display.enabled = true;
+            display.spi.dc = 40;
+            config.display = Some(display);
+        });
+
+        let response = post_hardware(
+            &ctx,
+            r#"{
+                "hardware_devices":[{
+                    "id":"display_conflict",
+                    "device_type":"gpio_out",
+                    "pins":{"pin":40},
+                    "what":"test conflict",
+                    "how":"test"
+                }],
+                "i2c_bus":null,
+                "i2c_devices":[],
+                "i2c_sensors":[]
+            }"#,
+        )
+        .expect("post_hardware response");
+
+        assert_eq!(response.status, 200);
+        assert!(ctx.config().display.is_none());
+    }
+
+    #[test]
+    fn post_audio_updates_cached_config_without_reloading_config_files() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        let body = serde_json::to_string(&config::default_disabled_audio_segment())
+            .expect("serialize audio");
+
+        let response = post_audio(&ctx, &body).expect("post_audio response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert!(config.audio.as_ref().is_some_and(|audio| !audio.enabled));
+    }
+
+    #[test]
+    fn post_display_updates_cached_config_without_reloading_config_files() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        let body = serde_json::to_string(&crate::display::default_disabled_display_config())
+            .expect("serialize display");
+
+        let response = post_display(&ctx, &body).expect("post_display response");
+
+        assert_eq!(response.status, 200);
+        let config = ctx.config();
+        assert!(config
+            .display
+            .as_ref()
+            .is_some_and(|display| !display.enabled));
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

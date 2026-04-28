@@ -212,7 +212,7 @@ impl WssGatewayDriver for FeishuWssDriver {
             if self.dedup.contains_or_insert(&event_id) {
                 log::info!("[{}] duplicate event_id, ack only", TAG);
                 let ack = encode_control_frame("reply", frame.log_id, &frame.log_id_new)?;
-                return Ok(WssRecvAction::DispatchAndAck(None, ack));
+                return Ok(WssRecvAction::dispatch_and_ack(None, ack));
             }
         }
         let msg = event_body_to_pcmsg_with_transport(
@@ -221,7 +221,7 @@ impl WssGatewayDriver for FeishuWssDriver {
             crate::bus::MessageTransport::Wss,
         );
         let ack = encode_control_frame("reply", frame.log_id, &frame.log_id_new)?;
-        Ok(WssRecvAction::DispatchAndAck(msg, ack))
+        Ok(WssRecvAction::dispatch_and_ack(msg, ack))
     }
 
     fn build_heartbeat(&self, _seq: Option<u64>) -> Result<Vec<u8>> {

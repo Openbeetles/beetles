@@ -94,6 +94,11 @@ pub(crate) struct RouteWorkerMemoryRequirements {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+const ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM: usize = 8 * 1024;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+const ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM: usize = 3 * 1024;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub(crate) const fn route_worker_memory_requirements(
     contract: RouteWorkerContract,
 ) -> RouteWorkerMemoryRequirements {
@@ -103,7 +108,10 @@ pub(crate) const fn route_worker_memory_requirements(
             crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
         )
     } else {
-        (8 * 1024, 4 * 1024)
+        (
+            ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM,
+            ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM,
+        )
     };
     RouteWorkerMemoryRequirements {
         required_internal: contract.stack_size.saturating_add(internal_headroom),
@@ -133,7 +141,7 @@ impl RouteExecutionClass {
             Self::AsyncConfigRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Config,
                 stack_size: crate::util::STACK_HTTP_CONFIG_WORKER,
-                reserves_tls_headroom: true,
+                reserves_tls_headroom: false,
                 queue_capacity: 2,
                 worker_threads: 1,
                 timeout_secs: 20,
@@ -1484,11 +1492,15 @@ mod tests {
         assert!(!contract.reserves_tls_headroom);
         assert_eq!(
             requirements.required_internal,
-            contract.stack_size.saturating_add(8 * 1024)
+            contract
+                .stack_size
+                .saturating_add(ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM)
         );
         assert_eq!(
             requirements.required_largest,
-            contract.stack_size.saturating_add(4 * 1024)
+            contract
+                .stack_size
+                .saturating_add(ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM)
         );
         assert!(
             requirements.required_largest <= 24 * 1024,
@@ -1505,12 +1517,39 @@ mod tests {
     }
 
     #[test]
-    fn route_worker_spawn_budget_preserves_tls_reserve_after_stack_allocation() {
+    fn config_worker_budget_fits_normal_esp_config_mode_largest_block() {
         let contract = RouteExecutionClass::AsyncConfigRoute
             .worker_contract()
             .expect("config worker");
         let requirements = route_worker_memory_requirements(contract);
 
+        assert!(!contract.reserves_tls_headroom);
+        assert_eq!(
+            requirements.required_internal,
+            contract
+                .stack_size
+                .saturating_add(ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM)
+        );
+        assert_eq!(
+            requirements.required_largest,
+            contract
+                .stack_size
+                .saturating_add(ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM)
+        );
+        assert!(
+            requirements.required_largest <= 31 * 1024,
+            "core config writes must remain available at the observed normal ESP largest-block floor"
+        );
+    }
+
+    #[test]
+    fn diagnostic_worker_budget_preserves_tls_reserve_after_stack_allocation() {
+        let contract = RouteExecutionClass::SlowDiagnosticRoute
+            .worker_contract()
+            .expect("diagnostic worker");
+        let requirements = route_worker_memory_requirements(contract);
+
+        assert!(contract.reserves_tls_headroom);
         assert_eq!(
             requirements.required_internal,
             contract
@@ -1522,10 +1561,6 @@ mod tests {
             contract
                 .stack_size
                 .saturating_add(crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES)
-        );
-        assert!(
-            requirements.required_internal > 47 * 1024,
-            "latest steady ESP heap must reject lazy config-worker spawn instead of entering Critical"
         );
     }
 

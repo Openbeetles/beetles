@@ -30,7 +30,6 @@ test("getSystem GETs the dedicated system segment endpoint", async () => {
       wifi_ssid: "BeetleNet",
       wifi_pass: "",
       proxy_url: "http://proxy.local:8080",
-      tg_group_activation: "mention",
       locale: "zh",
     });
   }) as typeof fetch;
@@ -42,7 +41,6 @@ test("getSystem GETs the dedicated system segment endpoint", async () => {
       wifi_ssid: "BeetleNet",
       wifi_pass: "",
       proxy_url: "http://proxy.local:8080",
-      tg_group_activation: "mention",
       locale: "zh",
     });
     assert.deepEqual(calls, [

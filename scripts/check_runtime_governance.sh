@@ -81,7 +81,7 @@ native_thread_source_files() {
     audio_io_worker)
       printf '%s\n' src/platform/audio_drivers.rs
       ;;
-    bg_timer|heartbeat|restart_defer)
+    bg_timer|heartbeat)
       printf '%s\n' src/bg_timer.rs src/heartbeat src/main.rs
       ;;
     dispatch)
@@ -188,6 +188,28 @@ fi
 
 if ! rg -n 'runtime::lease::format_baseline_log_line' src/heartbeat/mod.rs >/dev/null; then
   echo "FAIL: heartbeat no longer emits compact lease baseline" >&2
+  exit 1
+fi
+
+if rg -n '"restart_defer"|STACK_RESTART_DEFER|spawn_restart_defer_worker' src >/dev/null; then
+  echo "FAIL: restart_defer must stay retired; restart responses must use the runtime delayed-task coordinator" >&2
+  rg -n '"restart_defer"|STACK_RESTART_DEFER|spawn_restart_defer_worker' src >&2
+  exit 1
+fi
+
+if ! rg -n 'schedule_restart_with_continuity_flush' src/platform/http_server/mod.rs >/dev/null; then
+  echo "FAIL: Linux HTTP restart responses must use schedule_restart_with_continuity_flush" >&2
+  exit 1
+fi
+
+if ! rg -n 'schedule_restart_with_continuity_flush' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP HTTP restart responses must use schedule_restart_with_continuity_flush" >&2
+  exit 1
+fi
+
+if rg -n '(spawn(_guarded|_planned|_required)?|std::thread::spawn|Builder::new).*restart|restart.*(spawn(_guarded|_planned|_required)?|std::thread::spawn|Builder::new)' src/platform/http_server >/dev/null; then
+  echo "FAIL: HTTP restart response paths must not create ad-hoc restart threads" >&2
+  rg -n '(spawn(_guarded|_planned|_required)?|std::thread::spawn|Builder::new).*restart|restart.*(spawn(_guarded|_planned|_required)?|std::thread::spawn|Builder::new)' src/platform/http_server >&2
   exit 1
 fi
 

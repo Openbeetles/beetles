@@ -2478,12 +2478,14 @@ mod tests {
     #[test]
     fn mental_privacy_review_prompt_omits_private_source_text() {
         let private_line = "sealed inner sentence that must not enter the review prompt";
-        let mut workspace = PrivateDocWorkspace::default();
-        workspace.inner_journal = Some(PrivateDocEntry {
-            content: private_line.to_string(),
-            updated_at: 42,
-            revision: 1,
-        });
+        let workspace = PrivateDocWorkspace {
+            inner_journal: Some(PrivateDocEntry {
+                content: private_line.to_string(),
+                updated_at: 42,
+                revision: 1,
+            }),
+            ..Default::default()
+        };
         let records = vec![PrivateGardenDocRecord {
             path: "sealed/today.md".to_string(),
             preview: private_line.to_string(),

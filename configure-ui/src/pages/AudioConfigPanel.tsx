@@ -1108,7 +1108,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeEnterThreshold')}
                               value={String(form.wake_word.enter_threshold)}
-                              inputProps={{ step: 0.01, min: 0.01, max: 1 }}
+                              slotProps={{ htmlInput: { step: 0.01, min: 0.01, max: 1 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1125,7 +1125,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeLeaveThreshold')}
                               value={String(form.wake_word.leave_threshold)}
-                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1142,7 +1142,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeReferenceSuppressRatio')}
                               value={String(form.wake_word.reference_suppress_ratio)}
-                              inputProps={{ step: 0.01, min: 0.5, max: 4 }}
+                              slotProps={{ htmlInput: { step: 0.01, min: 0.5, max: 4 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1159,7 +1159,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeZcrMin')}
                               value={String(form.wake_word.zcr_min)}
-                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1176,7 +1176,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeZcrMax')}
                               value={String(form.wake_word.zcr_max)}
-                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1193,7 +1193,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeMinSpeechBandRatio')}
                               value={String(form.wake_word.min_speech_band_ratio)}
-                              inputProps={{ step: 0.01, min: 0, max: 1 }}
+                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1210,7 +1210,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeMinActiveMs')}
                               value={String(form.wake_word.min_active_ms)}
-                              inputProps={{ step: 1, min: 20, max: 5000 }}
+                              slotProps={{ htmlInput: { step: 1, min: 20, max: 5000 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1227,7 +1227,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeHangoverMs')}
                               value={String(form.wake_word.hangover_ms)}
-                              inputProps={{ step: 1, min: 0, max: 10000 }}
+                              slotProps={{ htmlInput: { step: 1, min: 0, max: 10000 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return
@@ -1244,7 +1244,7 @@ export function AudioConfigPanel() {
                               type="number"
                               label={t('audioConfig.wakeCooldownMs')}
                               value={String(form.wake_word.cooldown_ms)}
-                              inputProps={{ step: 1, min: 100, max: 10000 }}
+                              slotProps={{ htmlInput: { step: 1, min: 100, max: 10000 } }}
                               onChange={(e) => {
                                 const v = asNumber(e.target.value)
                                 if (v == null) return

@@ -205,8 +205,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 crate::runtime::PlaneLifecycleState::Suspended,
                 "wall_clock_untrusted",
             );
-            sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
-            continue;
+            if !crate::platform::time::wait_for_wall_clock_trustworthy(Duration::from_secs(
+                TLS_ADMISSION_RETRY_SLEEP_SECS,
+            )) {
+                continue;
+            }
         }
         if waiting_for_wall_clock {
             log::info!(
@@ -482,6 +485,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     log::debug!("[{}] recv binary len={}", tag, data.len());
                     match driver.on_recv(data.as_slice()) {
                         Ok(WssRecvAction::Dispatch(Some(msg))) => {
+                            let msg = *msg;
                             let chat_id = msg.chat_id.clone();
                             if should_save_plain_dispatch_to_pending_retry_on_pressure(
                                 crate::orchestrator::current_pressure(),
@@ -556,6 +560,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                         #[cfg(feature = "feishu")]
                         Ok(WssRecvAction::DispatchAndAck(msg, ack)) => {
                             let enqueued = if let Some(msg) = msg {
+                                let msg = *msg;
                                 let chat_id = msg.chat_id.clone();
                                 if crate::orchestrator::current_pressure()
                                     == crate::orchestrator::PressureLevel::Critical

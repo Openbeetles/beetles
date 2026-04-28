@@ -76,6 +76,7 @@ Notes:
 Currently emitted infrastructure/runtime keys include:
 
 - `http.route_worker_busy`: the device is temporarily busy processing configuration or diagnostic work; retry later.
+- `http.route_worker_memory_low`: the device does not have enough memory headroom to start the requested route worker task.
 - `runtime.config_blocked_by_voice`: configuration activity is rejected while realtime voice is active; retry after the reported delay.
 
 ## Activation and security
@@ -158,7 +159,6 @@ Fields:
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `tg_group_activation`
 - `locale`
   Only `zh` and `en` are accepted. Invalid values now return `400 application/json` instead of being silently ignored.
 
@@ -191,8 +191,9 @@ Fields:
 - `wifi_ssid`
 - `wifi_pass`
 - `proxy_url`
-- `tg_group_activation`
 - `locale`
+
+The system segment does not accept channel fields. Save `tg_group_activation` through `POST /api/config/channels`.
 
 Success response: `200 application/json`
 
@@ -252,6 +253,43 @@ Success response: `200 application/json`
 
 Related guide: [LLM providers](llm-providers.md).
 
+**GET /api/config/channels**
+
+Purpose: read chat-channel settings plus the channel catalog visible in the current build.
+
+Auth: `Pairing code`
+
+Success response: `200 application/json`
+
+```json
+{
+  "available_channels": ["telegram", "qq_channel"],
+  "unavailable_enabled_channel": "wecom",
+  "enabled_channel": "wecom",
+  "tg_token": "",
+  "tg_allowed_chat_ids": "",
+  "tg_group_activation": "mention",
+  "feishu_app_id": "",
+  "feishu_app_secret": "",
+  "feishu_allowed_chat_ids": "",
+  "dingtalk_client_id": "",
+  "dingtalk_client_secret": "",
+  "wecom_bot_id": "",
+  "wecom_bot_secret": "",
+  "wecom_ws_url": "",
+  "qq_channel_app_id": "",
+  "qq_channel_secret": "",
+  "webhook_enabled": false,
+  "webhook_token": ""
+}
+```
+
+Response notes:
+
+- `available_channels` lists the channel IDs compiled into this firmware or binary.
+- `unavailable_enabled_channel` is present only when the saved `enabled_channel` is not compiled into the current build.
+- The remaining fields are the flattened channels segment stored in `config/channels.json`.
+
 **POST /api/config/channels**
 
 Purpose: save chat-channel settings.
@@ -262,8 +300,8 @@ Request body: `application/json`
 
 Field groups:
 
-- Common: `enabled_channel`, `tg_group_activation`
-- Telegram: `tg_token`, `tg_allowed_chat_ids`
+- Common: `enabled_channel`
+- Telegram: `tg_token`, `tg_allowed_chat_ids`, `tg_group_activation`
 - Feishu: `feishu_app_id`, `feishu_app_secret`, `feishu_allowed_chat_ids`
 - DingTalk: `dingtalk_client_id`, `dingtalk_client_secret`
 - WeCom: `wecom_bot_id`, `wecom_bot_secret`, `wecom_ws_url`
@@ -276,6 +314,10 @@ Field notes:
 - `wecom_bot_id` / `wecom_bot_secret`: WeCom AI Bot long-connection credentials.
 - `wecom_ws_url`: WeCom AI Bot WebSocket URL; when empty, Beetle uses `wss://openws.work.weixin.qq.com`.
 - Legacy social-platform HTTP callback / platform custom-robot fields have been removed from the config model; same-named unknown keys in old config files are ignored. User-owned `POST /api/webhook` remains controlled by `webhook_enabled` / `webhook_token`.
+
+Save semantics:
+
+- The server validates and writes `config/channels.json`; `tg_group_activation` belongs to the channels segment and is saved together with the Telegram channel fields.
 
 Allowed `enabled_channel` values:
 

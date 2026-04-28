@@ -2,6 +2,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use crate::bus::{
     AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, InboundTx,
@@ -16,15 +17,17 @@ use crate::memory::{PendingRetryStore, SessionStore};
 use super::send::set_message_reaction;
 
 const TAG_POLL: &str = "telegram";
+
+/// Telegram 群聊激活策略写入回调，由 main 注入，避免 poll 层知道持久化后端。
+pub type TelegramGroupActivationSetter = Box<dyn Fn(&str) -> Result<()> + Send>;
+
 /// Telegram 控制命令（/activation、/session clear、/status）执行所需的上下文，由 main 传入轮询线程。
-/// NOTE: 该结构体持有多种回调与共享状态，短期保留 type_complexity 以维持调用侧显式依赖注入。
-#[allow(clippy::type_complexity)]
 pub struct TelegramCommandCtx {
     pub outbound_tx: OutboundTx,
     pub session_store: Arc<dyn SessionStore + Send + Sync>,
     pub inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     pub outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
-    pub set_group_activation: Box<dyn Fn(&str) -> Result<()> + Send>,
+    pub set_group_activation: TelegramGroupActivationSetter,
 }
 
 fn map_stage(e: Error, stage: &'static str) -> Error {
@@ -556,7 +559,8 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use crate::bus::{new_inbound_channel, MessageBodyKind};
+    use crate::bus::{new_inbound_channel, MessageBodyKind, MessageBus};
+    use crate::memory::SessionMessage;
     use crate::platform::ResponseBody;
     use std::collections::VecDeque;
 
@@ -634,6 +638,27 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct StubSessionStore;
+
+    impl SessionStore for StubSessionStore {
+        fn append(&self, _chat_id: &str, _role: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_recent(&self, _chat_id: &str, _n: usize) -> Result<Vec<SessionMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
     fn poll_single_update(body: serde_json::Value) -> PcMsg {
         let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
         let mut http = StubHttp {
@@ -663,6 +688,76 @@ mod tests {
 
         assert_eq!(next_offset, Some(2));
         inbound_rx.try_recv().expect("inbound message")
+    }
+
+    #[test]
+    fn poll_telegram_once_activation_command_uses_injected_setter() {
+        let (inbound_tx, _inbound_rx, inbound_depth) = new_inbound_channel(4);
+        let (bus, _bus_inbound_rx, outbound_rx) = MessageBus::new(4);
+        let mut http = StubHttp {
+            get_results: VecDeque::from([Ok((
+                200,
+                ResponseBody::Heap(
+                    serde_json::json!({
+                        "result": [{
+                            "update_id": 1,
+                            "message": {
+                                "message_id": 9,
+                                "chat": {"id": 1234, "type": "private"},
+                                "text": "/activation always"
+                            }
+                        }]
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ),
+            ))]),
+            ..Default::default()
+        };
+        let pending_retry = StubPendingRetryStore;
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let saved_for_setter = std::sync::Arc::clone(&saved);
+        let resolve_locale: std::sync::Arc<dyn Fn() -> UiLocale + Send + Sync> =
+            std::sync::Arc::new(|| UiLocale::Zh);
+        let cmd_ctx = TelegramCommandCtx {
+            outbound_tx: bus.outbound_tx,
+            session_store: std::sync::Arc::new(StubSessionStore),
+            inbound_depth,
+            outbound_depth: bus.outbound_depth,
+            set_group_activation: Box::new(move |value| {
+                saved_for_setter
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(value.to_string());
+                Ok(())
+            }),
+        };
+
+        let next_offset = poll_telegram_once(
+            &mut http,
+            "token",
+            None,
+            &inbound_tx,
+            &pending_retry,
+            &[String::from("1234")],
+            "mention",
+            Some("beetle_bot"),
+            Some(&cmd_ctx),
+            &resolve_locale,
+        )
+        .expect("poll ok");
+
+        assert_eq!(next_offset, Some(2));
+        assert_eq!(
+            saved
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+            vec![String::from("always")]
+        );
+        let ack = outbound_rx.try_recv().expect("activation ack");
+        assert_eq!(ack.channel.as_ref(), "telegram");
+        assert_eq!(ack.chat_id.as_ref(), "1234");
     }
 
     #[test]
@@ -769,14 +864,14 @@ mod tests {
 pub fn run_telegram_poll_loop<H, F>(
     token: String,
     allowed_chat_ids: Vec<String>,
-    group_activation: String,
+    group_activation: Arc<RwLock<String>>,
     inbound_tx: InboundTx,
     pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
     outbound_tx: OutboundTx,
     session_store: Arc<dyn SessionStore + Send + Sync>,
     inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     outbound_depth: Arc<std::sync::atomic::AtomicUsize>,
-    config_store: Arc<dyn crate::platform::ConfigStore>,
+    set_group_activation: TelegramGroupActivationSetter,
     resolve_locale: Arc<dyn Fn() -> UiLocale + Send + Sync>,
     mut create_http: F,
 ) where
@@ -790,9 +885,7 @@ pub fn run_telegram_poll_loop<H, F>(
         session_store,
         inbound_depth,
         outbound_depth,
-        set_group_activation: Box::new(move |v| {
-            crate::config::write_tg_group_activation(config_store.as_ref(), v)
-        }),
+        set_group_activation,
     };
 
     let mut http = match create_http() {
@@ -832,6 +925,10 @@ pub fn run_telegram_poll_loop<H, F>(
                 }
             }
         }
+        let current_group_activation = group_activation
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         match poll_telegram_once(
             &mut http,
             &token,
@@ -839,7 +936,7 @@ pub fn run_telegram_poll_loop<H, F>(
             &inbound_tx,
             pending_retry.as_ref(),
             &allowed_chat_ids,
-            &group_activation,
+            &current_group_activation,
             bot_username.as_deref(),
             Some(&cmd_ctx),
             &resolve_locale,

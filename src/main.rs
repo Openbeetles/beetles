@@ -74,7 +74,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(any(feature = "feishu", feature = "dingtalk", feature = "qq_channel"))]
 use std::sync::Mutex;
-#[cfg(feature = "config_api")]
+#[cfg(any(feature = "config_api", feature = "telegram"))]
 use std::sync::RwLock;
 #[cfg(any(
     test,
@@ -172,6 +172,8 @@ struct PreparedRuntimeAssembly {
     channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
     capability_package_runtime_capabilities: Arc<beetle::CapabilityPackageRuntimeCapabilities>,
     network_governor: Arc<NetworkGovernor>,
+    #[cfg(feature = "config_api")]
+    config_api_shared_config: Option<Arc<RwLock<AppConfig>>>,
 }
 
 #[cfg(feature = "telegram")]
@@ -2741,7 +2743,7 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
     let worker_platform = Arc::clone(&platform);
     match beetle::util::spawn_guarded_with_profile_handle(
         "startup_recovery",
-        beetle::util::STACK_RESTART_DEFER,
+        beetle::util::STACK_STARTUP_RECOVERY,
         Some(beetle::util::SpawnCore::Core1),
         beetle::util::HttpThreadRole::Background,
         move || {
@@ -2955,6 +2957,8 @@ fn prepare_runtime_assembly(
         channel_capability_registry,
         capability_package_runtime_capabilities,
         network_governor,
+        #[cfg(feature = "config_api")]
+        config_api_shared_config: None,
     })
 }
 
@@ -2962,6 +2966,7 @@ fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Resul
     #[cfg(feature = "config_api")]
     {
         let shared_runtime_config = Arc::new(RwLock::new((*assembly.config).clone()));
+        assembly.config_api_shared_config = Some(Arc::clone(&shared_runtime_config));
         spawn_http_config_server(HttpServerSpawnContext {
             platform: Arc::clone(&assembly.runtime.platform),
             tool_registry: Arc::clone(&assembly.registry),
@@ -3344,18 +3349,42 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
     if enabled_channel == "telegram" && !assembly.config.tg_token.trim().is_empty() {
         let tg_token = assembly.config.tg_token.clone();
         let tg_allowed = parse_allowed_chat_ids(&assembly.config.tg_allowed_chat_ids);
-        let tg_group_activation = assembly.config.tg_group_activation.clone();
+        let tg_group_activation =
+            Arc::new(RwLock::new(assembly.config.tg_group_activation.clone()));
         let tg_inbound_tx = assembly.bus.user_inbound_tx.clone();
         let tg_outbound_tx = assembly.bus.outbound_tx.clone();
         let tg_session_store = Arc::clone(&assembly.runtime.session_store);
         let tg_pending = Arc::clone(&assembly.runtime.pending_retry_store);
         let tg_inbound_depth = Arc::clone(&assembly.bus.user_inbound_depth);
         let tg_outbound_depth = Arc::clone(&assembly.bus.outbound_depth);
-        let tg_config_store = Arc::clone(&assembly.runtime.config_store);
+        let tg_config_file_store: Arc<dyn beetle::config::ConfigFileStore + Send + Sync> = Arc::new(
+            beetle::config::PlatformConfigFileStore(Arc::clone(&assembly.runtime.platform)),
+        );
+        let tg_group_activation_for_set = Arc::clone(&tg_group_activation);
+        #[cfg(feature = "config_api")]
+        let tg_config_api_shared_config =
+            assembly.config_api_shared_config.as_ref().map(Arc::clone);
         let tg_resolve_locale = Arc::clone(&assembly.resolve_locale_ui);
         let http_factory = assembly
             .network_governor
             .http_factory(HttpClientClass::Background);
+        let set_group_activation = Box::new(move |value: &str| {
+            beetle::config::save_tg_group_activation_to_channels(
+                tg_config_file_store.as_ref(),
+                value,
+            )?;
+            *tg_group_activation_for_set
+                .write()
+                .unwrap_or_else(|error| error.into_inner()) = value.to_string();
+            #[cfg(feature = "config_api")]
+            if let Some(shared_config) = &tg_config_api_shared_config {
+                shared_config
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .tg_group_activation = value.to_string();
+            }
+            Ok(())
+        });
         spawn_required_planned_thread(
             TAG,
             "tg_poll",
@@ -3373,7 +3402,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                     tg_session_store,
                     tg_inbound_depth,
                     tg_outbound_depth,
-                    tg_config_store,
+                    set_group_activation,
                     tg_resolve_locale,
                     move || http_factory(),
                 )

@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:desktop-base": "node --test scripts/sync-tauri-version.test.mjs",
+    "test:desktop-base": "node --test scripts/sync-tauri-version.test.mjs src/hooks/useSaveFeedback.test.ts",
     "tauri:sync-version": "node scripts/sync-tauri-version.mjs",
     "tauri:sync-version:check": "node scripts/sync-tauri-version.mjs --check",
     "pretauri": "npm run tauri:sync-version",

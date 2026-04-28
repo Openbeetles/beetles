@@ -26,6 +26,20 @@ use std::time::Duration;
 
 const TAG: &str = "platform::sntp";
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+unsafe extern "C" fn on_sntp_time_sync(tv: *mut sys::timeval) {
+    let synced_secs = if tv.is_null() {
+        None
+    } else {
+        u64::try_from(unsafe { (*tv).tv_sec }).ok()
+    };
+    if synced_secs.is_some_and(crate::platform::time::is_trustworthy_wall_clock_secs)
+        || crate::platform::time::wall_clock_is_trustworthy()
+    {
+        crate::platform::time::notify_wall_clock_trustworthy();
+    }
+}
+
 #[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) fn should_restart_sntp_after_sta_connect(
     memory_system_kind: crate::memory::MemorySystemKind,
@@ -54,6 +68,7 @@ pub fn init_sntp() {
         let server = b"pool.ntp.org\0";
         sys::esp_sntp_setservername(0, server.as_ptr() as *const _);
 
+        sys::sntp_set_time_sync_notification_cb(Some(on_sntp_time_sync));
         sys::esp_sntp_init();
     }
     log::info!(
@@ -102,12 +117,14 @@ pub fn init_sntp() {
             // 先判断系统时间是否已正确（RTC 或 NTP 已设置过）。
             if crate::platform::time::wall_clock_is_trustworthy() {
                 log::info!("[{}] system time already looks valid (>2023)", TAG);
+                crate::platform::time::notify_wall_clock_trustworthy();
             } else {
                 // 不再严格等待 STA：先快速尝试几次（可能有有线网络、其它连接方式）。
                 let mut synced = false;
                 for attempt in 0u32..60 {
                     if crate::platform::time::wall_clock_is_trustworthy() {
                         log::info!("[{}] system time became valid during wait", TAG);
+                        crate::platform::time::notify_wall_clock_trustworthy();
                         synced = true;
                         break;
                     }
@@ -119,6 +136,7 @@ pub fn init_sntp() {
                                 attempt + 1,
                                 epoch
                             );
+                            crate::platform::time::notify_wall_clock_trustworthy();
                             synced = true;
                             break;
                         }
@@ -146,6 +164,7 @@ pub fn init_sntp() {
                         if !ever_synced {
                             log::info!("[{}] SNTP late sync ok, unix={}", TAG, epoch);
                         }
+                        crate::platform::time::notify_wall_clock_trustworthy();
                         ever_synced = true;
                     }
                     Err(e) => {

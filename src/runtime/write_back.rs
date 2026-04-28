@@ -274,16 +274,36 @@ fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Dur
 }
 
 fn write_back_admission_delay() -> Option<Duration> {
-    if matches!(
-        crate::orchestrator::current_pressure(),
-        crate::orchestrator::PressureLevel::Critical
-    ) || matches!(
-        crate::orchestrator::current_storage_contention_risk(),
-        crate::orchestrator::StorageContentionRisk::Critical
-    ) {
+    let resource = crate::orchestrator::snapshot();
+    write_back_admission_delay_for_resource(&resource, crate::runtime::config_activity_active())
+}
+
+fn write_back_admission_delay_for_resource(
+    resource: &crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+) -> Option<Duration> {
+    if resource.pressure == crate::orchestrator::PressureLevel::Critical
+        || resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Critical
+    {
+        return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
+    }
+    if resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Cautious
+        && write_back_foreground_activity_active(resource, config_active)
+    {
         return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
     }
     None
+}
+
+fn write_back_foreground_activity_active(
+    resource: &crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+) -> bool {
+    config_active
+        || resource.active_http_count > 0
+        || resource.active_agent_tasks > 0
+        || resource.inbound_depth > 0
+        || resource.outbound_depth > 0
 }
 
 struct WriteBackLeaseGuard {
@@ -1930,6 +1950,91 @@ mod tests {
             heap_largest_block: 128 * 1024,
         });
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+    }
+
+    fn write_back_resource_for_tests(
+        pressure: crate::orchestrator::PressureLevel,
+        storage_contention_risk: crate::orchestrator::StorageContentionRisk,
+    ) -> crate::orchestrator::ResourceSnapshot {
+        let mut resource = crate::orchestrator::snapshot();
+        resource.pressure = pressure;
+        resource.storage_contention_risk = storage_contention_risk;
+        resource.active_http_count = 0;
+        resource.active_wss_count = 0;
+        resource.active_agent_tasks = 0;
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 0;
+        resource
+    }
+
+    #[test]
+    fn write_back_admission_allows_cautious_storage_when_idle() {
+        let resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Cautious,
+        );
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None
+        );
+    }
+
+    #[test]
+    fn write_back_admission_defers_cautious_storage_when_foreground_active() {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Cautious,
+        );
+
+        resource.active_http_count = 1;
+        assert!(write_back_admission_delay_for_resource(&resource, false).is_some());
+        resource.active_http_count = 0;
+        resource.active_wss_count = 1;
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None
+        );
+        resource.active_wss_count = 0;
+        resource.active_agent_tasks = 1;
+        assert!(write_back_admission_delay_for_resource(&resource, false).is_some());
+        resource.active_agent_tasks = 0;
+        resource.inbound_depth = 1;
+        assert!(write_back_admission_delay_for_resource(&resource, false).is_some());
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 1;
+        assert!(write_back_admission_delay_for_resource(&resource, false).is_some());
+    }
+
+    #[test]
+    fn write_back_admission_defers_cautious_storage_when_config_active() {
+        let resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Cautious,
+        );
+
+        assert!(write_back_admission_delay_for_resource(&resource, true).is_some());
+    }
+
+    #[test]
+    fn write_back_admission_defers_cautious_storage_when_agent_active() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 256 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+        crate::metrics::record_spiffs_lock_wait_us(7_500);
+        let _agent = crate::orchestrator::begin_agent_task();
+
+        assert!(
+            write_back_admission_delay().is_some(),
+            "Cautious storage contention must defer write-back while agent foreground work is active"
+        );
+
+        crate::metrics::record_spiffs_lock_wait_us(0);
+        crate::metrics::record_spiffs_lock_hold_us(0);
     }
 
     fn write_back_lifecycle_state() -> Option<crate::runtime::PlaneLifecycleState> {
