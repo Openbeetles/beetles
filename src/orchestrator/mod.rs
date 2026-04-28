@@ -24,18 +24,21 @@ pub use pressure::{PressureLevel, ResourceBudget, TlsFragmentationRisk};
 #[cfg(test)]
 pub use runtime_capability::reset_runtime_capabilities_for_tests;
 pub use runtime_capability::{
+    begin_runtime_capability_draining, finish_runtime_capability_unloaded,
     format_runtime_capability_baseline_line, get_runtime_capability,
+    mark_runtime_capability_disabled, mark_runtime_capability_failed,
     observe_runtime_capabilities_from_platform, observe_runtime_capability_failure,
-    observe_runtime_capability_success, runtime_capability_blocker, runtime_capability_snapshot,
-    runtime_capability_summary, update_runtime_capability, RuntimeCapabilityBlocker,
-    RuntimeCapabilityReason, RuntimeCapabilityState, RuntimeCapabilityStatus,
-    RuntimeCapabilitySummary, RuntimeCapabilityUpdate, RUNTIME_CAPABILITY_AUDIO_INPUT,
-    RUNTIME_CAPABILITY_AUDIO_OUTPUT, RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
-    RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+    observe_runtime_capability_success, runtime_capability_blocker,
+    runtime_capability_drain_denied_total, runtime_capability_snapshot, runtime_capability_summary,
+    try_begin_runtime_capability_call, update_runtime_capability, RuntimeCapabilityBlocker,
+    RuntimeCapabilityCallGuard, RuntimeCapabilityReason, RuntimeCapabilityState,
+    RuntimeCapabilityStatus, RuntimeCapabilitySummary, RuntimeCapabilityUpdate,
+    RUNTIME_CAPABILITY_AUDIO_INPUT, RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+    RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP, RUNTIME_CAPABILITY_STORAGE_STATE_FS,
 };
 pub use state::{
-    ResourceAdmissionSnapshot, ResourceDiagnosticSnapshot, ResourceGovernanceMetricsSnapshot,
-    ResourceSnapshot, StorageContentionRisk,
+    CrashMetadataSnapshot, ResourceAdmissionSnapshot, ResourceDiagnosticSnapshot,
+    ResourceGovernanceMetricsSnapshot, ResourceSnapshot, StorageContentionRisk,
 };
 
 /// 全局单例 orchestrator 状态。
@@ -53,6 +56,9 @@ static REFRESH_START: OnceLock<std::time::Instant> = OnceLock::new();
 /// assembly entry before bootstrap starts.
 static MEMORY_SNAPSHOT_PROVIDER: OnceLock<Arc<dyn Fn() -> MemorySnapshot + Send + Sync>> =
     OnceLock::new();
+static CRASH_METADATA_PROVIDER: OnceLock<Arc<dyn Fn() -> CrashMetadataSnapshot + Send + Sync>> =
+    OnceLock::new();
+static RECORDED_CRASH_METADATA: Mutex<Option<CrashMetadataSnapshot>> = Mutex::new(None);
 
 /// 注册内存快照来源（幂等：仅首次成功）。须在首次调用 [`update_heap_state`] 之前调用。
 /// Register memory snapshot source (first call wins). Must run before first [`update_heap_state`].
@@ -63,6 +69,50 @@ pub fn register_memory_snapshot_provider(f: Arc<dyn Fn() -> MemorySnapshot + Sen
             false,
             "memory snapshot provider must be registered at most once"
         );
+    }
+}
+
+/// Register the platform crash metadata source.
+///
+/// The provider must return only facts from reset reason, coredump, or captured
+/// boot evidence. Missing facts stay `None`; callers must not synthesize PCs.
+pub fn register_crash_metadata_provider(f: Arc<dyn Fn() -> CrashMetadataSnapshot + Send + Sync>) {
+    if CRASH_METADATA_PROVIDER.set(f).is_err() {
+        log::error!("[orchestrator] register_crash_metadata_provider: already registered");
+        debug_assert!(
+            false,
+            "crash metadata provider must be registered at most once"
+        );
+    }
+}
+
+/// Record crash metadata from a real evidence source.
+pub fn record_crash_metadata(snapshot: CrashMetadataSnapshot) {
+    if snapshot.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = RECORDED_CRASH_METADATA.lock() {
+        *guard = Some(snapshot);
+    }
+}
+
+pub(crate) fn crash_metadata_snapshot() -> CrashMetadataSnapshot {
+    let provided = CRASH_METADATA_PROVIDER
+        .get()
+        .map(|provider| provider())
+        .unwrap_or_default();
+    let recorded = RECORDED_CRASH_METADATA
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default();
+    provided.merge_prefer_self(recorded)
+}
+
+#[cfg(test)]
+pub fn reset_crash_metadata_for_tests() {
+    if let Ok(mut guard) = RECORDED_CRASH_METADATA.lock() {
+        *guard = None;
     }
 }
 

@@ -35,14 +35,13 @@ If you need the exact first-time flow, go back to [getting-started-esp.md](getti
 
 Use the Configure UI from the hosted page, desktop shell, or a locally served build, then set its **Device URL** to one of these addresses:
 
-- on first use, connect to the default hotspot named **Beetle** and use `http://192.168.4.1`
+- on first use, connect to the default hotspot named **Beetle** and usually use `http://192.168.4.1`
+- if this is a Linux embedded device and its STA side already uses `192.168.4.0/24`, Beetle moves the hotspot to `http://172.16.42.1`
 - if the device is already on your local network, use its current local IP
-
-The device root (`/`) currently returns API inventory JSON. Do not depend on it as an embedded setup page or redirect.
 
 ## Pairing Code
 
-The pairing code protects actions such as saving configuration, restarting Beetle OS, resetting settings, and starting online updates.
+The pairing code protects actions such as saving configuration, restarting Beetle OS, resetting settings, and other high-impact write operations.
 
 Set it once and keep it somewhere you can retrieve later.
 

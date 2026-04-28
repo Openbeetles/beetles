@@ -187,20 +187,22 @@ pub fn render_self_continuity_block(continuity: &SelfContinuity, max_len: usize)
         let _ = writeln!(out, "Task posture: {}", normalized.task_posture);
     }
     if normalized.last_user_turn_at > 0 || normalized.last_autonomy_run_at > 0 {
+        let relation_anchor = if normalized.last_user_chat_id.trim().is_empty() {
+            "none"
+        } else {
+            "active"
+        };
+        let channel_anchor = if normalized.last_user_channel.trim().is_empty() {
+            "none"
+        } else {
+            "known"
+        };
         let _ = writeln!(
             out,
-            "Runtime anchors: last_user_turn_at={} last_user_chat_id={} last_user_channel={} last_autonomy_run_at={}",
+            "Runtime anchors: last_user_turn_at={} last_user_relation={} last_user_channel_kind={} last_autonomy_run_at={}",
             normalized.last_user_turn_at,
-            if normalized.last_user_chat_id.trim().is_empty() {
-                "n/a"
-            } else {
-                normalized.last_user_chat_id.trim()
-            },
-            if normalized.last_user_channel.trim().is_empty() {
-                "n/a"
-            } else {
-                normalized.last_user_channel.trim()
-            },
+            relation_anchor,
+            channel_anchor,
             normalized.last_autonomy_run_at
         );
     }
@@ -763,7 +765,9 @@ mod tests {
         assert!(block.contains("Priority posture"));
         assert!(block.contains("Task posture"));
         assert!(block.contains("Runtime anchors"));
-        assert!(block.contains("last_user_chat_id=chat-1"));
-        assert!(block.contains("last_user_channel=qq_channel"));
+        assert!(block.contains("last_user_relation=active"));
+        assert!(block.contains("last_user_channel_kind=known"));
+        assert!(!block.contains("chat-1"));
+        assert!(!block.contains("qq_channel"));
     }
 }

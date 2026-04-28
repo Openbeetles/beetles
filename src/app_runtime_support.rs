@@ -53,17 +53,30 @@ pub(crate) fn bootstrap_pending_retry_into_inbound(
     let Ok(Some(msg)) = pending_retry.load_pending_retry() else {
         return;
     };
-    if let Err(error) = pending_retry.clear_pending_retry() {
-        log::warn!(
-            "[main] pending_retry clear failed during bootstrap: {}",
-            error
-        );
-    }
     let inbound_tx = match msg.ingress {
         IngressKind::User => user_inbound_tx,
         IngressKind::System => system_inbound_tx,
     };
-    if let Err(error) = inbound_tx.try_send(msg) {
-        log::warn!("[main] pending_retry bootstrap enqueue failed: {}", error);
+    match inbound_tx.try_send(msg) {
+        Ok(()) => {
+            beetle::metrics::record_event_ingress_enqueued();
+            if let Err(error) = pending_retry.clear_pending_retry() {
+                log::warn!(
+                    "[main] pending_retry clear failed during bootstrap: {}",
+                    error
+                );
+            }
+        }
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            beetle::metrics::record_inbound_queue_full();
+            beetle::metrics::record_inbound_defer();
+            beetle::metrics::record_event_ingress_rejected();
+            log::warn!("[main] pending_retry bootstrap skipped because inbound queue is full");
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            beetle::metrics::record_inbound_drop();
+            beetle::metrics::record_event_ingress_rejected();
+            log::warn!("[main] pending_retry bootstrap skipped because inbound queue is closed");
+        }
     }
 }

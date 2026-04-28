@@ -30,6 +30,7 @@ OWNED_ICONS = (
     "globe_3d.png",
     "history_3d.png",
     "home_3d.png",
+    "language_3d.png",
     "link_3d.png",
     "power_3d.png",
     "puzzle_3d.png",
@@ -200,6 +201,36 @@ def build_globe(scene: Scene, palette: Palette) -> None:
 
     shine = intersect_mask(_ellipse(scene, 41, 38, 6, 3), sphere)
     _paint(scene, shine, with_alpha((255, 255, 255, 255), 130))
+
+
+def build_language(scene: Scene, palette: Palette) -> None:
+    back = _rounded_rect(scene, 45, 20, 83, 61, 8)
+    back_tail = _polygon(scene, [(75, 57), (83, 64), (73, 63)])
+    _extrude(scene, palette, union_masks(back, back_tail), role="warm", depth=7, shadow_offset=(0, 7), shadow_blur=8, gloss=58)
+
+    front = _rounded_rect(scene, 17, 35, 60, 79, 10)
+    front_tail = _polygon(scene, [(27, 74), (17, 84), (36, 78)])
+    _extrude(scene, palette, union_masks(front, front_tail), role="secondary", depth=8, shadow_offset=(0, 8), shadow_blur=9, gloss=60)
+
+    wen = union_masks(
+        _line(scene, [(61, 32), (78, 32)], 2.2),
+        _line(scene, [(69, 33), (69, 43)], 2.1),
+        _line(scene, [(62, 49), (69, 43), (78, 50)], 2.1),
+    )
+    _paint(scene, wen, with_alpha(darken(tone(palette, "warm")[1], 0.24), 150))
+
+    letter_a = union_masks(
+        _line(scene, [(29, 68), (40, 46)], 4.0),
+        _line(scene, [(40, 46), (51, 68)], 4.0),
+        _line(scene, [(33, 59), (47, 59)], 3.2),
+    )
+    _paint(scene, letter_a, with_alpha((255, 255, 255, 255), 235))
+
+    swap = union_masks(
+        _line(scene, [(55, 70), (70, 70), (75, 64)], 2.5),
+        _line(scene, [(72, 64), (75, 64), (75, 68)], 2.3),
+    )
+    _paint(scene, swap, lighten(tone(palette, "accent")[0], 0.08))
 
 
 def build_history(scene: Scene, palette: Palette) -> None:
@@ -615,6 +646,7 @@ ICON_DEFINITIONS: list[IconSpec] = [
     icon("globe_3d.png", "teal", build_globe),
     icon("history_3d.png", "coral", build_history),
     icon("home_3d.png", "violet", build_home),
+    icon("language_3d.png", "sky", build_language),
     icon("link_3d.png", "sky", build_link),
     icon("power_3d.png", "crimson", build_power),
     icon("puzzle_3d.png", "mint", build_puzzle),

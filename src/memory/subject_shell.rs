@@ -213,25 +213,22 @@ fn compile_relationship_position(
 fn compile_situated_now(input: &SubjectShellCompileInput<'_>) -> String {
     let mut parts = Vec::new();
     parts.push(format!("now={}", input.now_secs));
-    if !input.platform.trim().is_empty() {
-        parts.push(format!("runtime_platform={}", input.platform.trim()));
-    }
-    if !input.device_identity.trim().is_empty() {
-        parts.push(format!("device_identity={}", input.device_identity.trim()));
-    }
-    if !input.relationship_scope.trim().is_empty() {
-        parts.push(format!(
-            "relationship_scope={}",
-            input.relationship_scope.trim()
-        ));
-    }
     if !input.channel.trim().is_empty() {
         parts.push(format!("channel={}", input.channel.trim()));
     }
-    if !input.chat_id.trim().is_empty() {
-        parts.push(format!("chat_id={}", input.chat_id.trim()));
+    if !input.relationship_scope.trim().is_empty() {
+        parts.push("relation=active".to_string());
+    }
+    if input.relationship_scope.trim().is_empty() && !input.chat_id.trim().is_empty() {
+        parts.push("relation=active".to_string());
     }
     parts.push(format!("pressure={}", pressure_label(input.pressure)));
+    if !input.platform.trim().is_empty() {
+        parts.push(format!("platform={}", input.platform.trim()));
+    }
+    if !input.device_identity.trim().is_empty() {
+        parts.push(format!("device={}", input.device_identity.trim()));
+    }
     normalize_field(&parts.join(" "))
 }
 
@@ -305,19 +302,11 @@ fn compile_summary(body: &str, memory: &str, relationship: &str) -> String {
 
 fn relationship_scope_line(relationship_scope: &str, channel: &str, chat_id: &str) -> String {
     let mut parts = Vec::new();
-    push_trimmed(&mut parts, relationship_scope);
-    if !channel.trim().is_empty() || !chat_id.trim().is_empty() {
-        let mut endpoint = String::new();
-        if !channel.trim().is_empty() {
-            endpoint.push_str(channel.trim());
-        }
-        if !chat_id.trim().is_empty() {
-            if !endpoint.is_empty() {
-                endpoint.push(':');
-            }
-            endpoint.push_str(chat_id.trim());
-        }
-        push_trimmed(&mut parts, &endpoint);
+    if !relationship_scope.trim().is_empty() || !chat_id.trim().is_empty() {
+        parts.push("active_relationship".to_string());
+    }
+    if !channel.trim().is_empty() {
+        parts.push(format!("channel_kind={}", channel.trim()));
     }
     join_limited(&parts)
 }
@@ -457,18 +446,19 @@ mod tests {
         })
         .expect("subject shell");
 
-        assert!(shell.situated_now.contains("runtime_platform=Linux"));
-        assert!(shell
-            .situated_now
-            .contains("device_identity=beetle-linux-dev"));
-        assert!(shell.situated_now.contains("telegram:chat-world"));
-        assert!(shell.relationship_position.contains("telegram"));
+        assert!(shell.situated_now.contains("platform=Linux"));
+        assert!(shell.situated_now.contains("device=beetle-linux-dev"));
+        assert!(shell.situated_now.contains("relation=active"));
+        assert!(shell.situated_now.contains("channel=telegram"));
+        assert!(!shell.situated_now.contains("chat-world"));
+        assert!(shell.relationship_position.contains("active_relationship"));
+        assert!(!shell.relationship_position.contains("chat-world"));
         assert!(shell
             .current_reasoning_basis
             .contains("world sense: operator is debugging runtime context"));
         assert!(shell
             .inhabited_shell_summary
-            .contains("telegram:chat-world"));
+            .contains("active_relationship"));
     }
 
     #[test]
@@ -529,8 +519,8 @@ mod tests {
         })
         .expect("subject shell");
 
-        assert!(shell.situated_now.contains("runtime_platform=Linux"));
-        assert!(!shell.situated_now.contains("device_identity=Linux"));
+        assert!(shell.situated_now.contains("platform=Linux"));
+        assert!(!shell.situated_now.contains("device=Linux"));
     }
 
     #[test]

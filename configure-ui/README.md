@@ -37,7 +37,7 @@ You must have both of the following:
    The config page only talks to a device running **Beetle OS** firmware. If you have not flashed the firmware yet, build and flash it first (see the **parent repo’s README or docs** for build and flash instructions). This UI does not replace the need for a flashed device.
 
 2. **The device powered on and reachable.**
-   - **First use / not yet on your WiFi:** The device will open a **WiFi hotspot** with SSID **Beetle** (no password). Your phone or PC must **connect to this hotspot**; then open **http://192.168.4.1** (usually this address, in some cases may be a different address like 172.16.42.1).
+   - **First use / not yet on your WiFi:** The device will open a **WiFi hotspot** with SSID **Beetle** (no password). Your phone or PC must **connect to this hotspot**; then open **http://192.168.4.1**. If this is a Linux embedded device and its STA side is already in `192.168.4.0/24`, Beetle moves the hotspot to **http://172.16.42.1** to avoid the subnet conflict.
    - **After WiFi is configured:** The device joins your router. Your phone or PC must be on the **same LAN** as the device; use the router-assigned device IP.
 
 **Important:** Whether you open the config page from the device URL or an online URL, your browser must be on the same network as the device (Beetle hotspot or same LAN). Otherwise the page cannot talk to the device.
@@ -47,13 +47,12 @@ You must have both of the following:
 ### Option A – Use the device address with the config page
 
 Use the device’s own address as the **Device URL** inside this Configure UI.
-The device root currently returns API inventory JSON; it is not a guaranteed embedded UI or redirect entry.
 
 **When the device is not yet on your WiFi (first use):**
 
 1. Power on the device → it opens hotspot **Beetle** (no password).
 2. On your phone or PC, **connect to the WiFi “Beetle”**.
-3. Open this Configure UI and enter **http://192.168.4.1** as the **Device URL** (usually this address, in some cases may be a different address).
+3. Open this Configure UI and enter **http://192.168.4.1** as the **Device URL**. If this is a Linux embedded device and its STA side already uses `192.168.4.0/24`, enter **http://172.16.42.1** instead.
 
 Only the device is on that hotspot.
 
@@ -84,14 +83,14 @@ You open the same setup page from the internet (for example **https://openbeetle
 
 4. **Enter the device address in the page**
    - In the config UI, find the **”Device URL”** (设备地址) field.
-   - When connected to the device’s hotspot, enter **http://192.168.4.1** (usually this address, in some cases may be a different address); when on the same LAN, enter the router-assigned IP.
+   - When connected to the device’s hotspot, normally enter **http://192.168.4.1**. If this is a Linux embedded device and its STA side already uses `192.168.4.0/24`, enter **http://172.16.42.1** instead. When on the same LAN, enter the router-assigned IP.
    - Save. The page will then talk to the device at that address.
 
 5. **Set pairing code and configure**  
    - On first use, set a **6-digit pairing code** on the config page.  
    - After that, you can configure WiFi, channels, LLM, etc. All write operations use this code (the UI sends it for you).
 
-**If the page says it cannot reach the device:** Check that (1) the device is powered on, (2) you are connected to the **Beetle** hotspot or the **same LAN** as the device, and (3) the device address you entered is correct—usually use **http://192.168.4.1** when on the hotspot (in some cases may be a different address like http://172.16.42.1 if the first doesn’t work), or the device’s LAN IP when on the same LAN.
+**If the page says it cannot reach the device:** Check that (1) the device is powered on, (2) you are connected to the **Beetle** hotspot or the **same LAN** as the device, and (3) the device address you entered is correct—try **http://192.168.4.1** first when on the hotspot; if this is a Linux embedded device and its STA side already uses `192.168.4.0/24`, try **http://172.16.42.1**; when on the same LAN, use the device’s LAN IP.
 
 **Using the online URL only to preview:** You can open the online page without a device to view the interface. To read or change config, you still need a device on the same network.
 

@@ -20,7 +20,7 @@ This page stays practical and avoids low-level configuration detail.
 | `esp32-s3-32mb` | 32MB | 16MB | ESP32-S3 |
 | `esp32-p4-nano-16mb` | 16MB | 32MB | ESP32-P4 NANO |
 
-The 16MB S3 default partition table `partitions.csv` now uses one `factory` app slot at `0x20000/0x600000` and keeps SPIFFS at `0x620000/0x9D0000`. Do not change the SPIFFS extent again without an explicit migration or format decision, because ESP-IDF may format existing user configuration when the filesystem extent changes.
+`esp32-s3-16mb` is still the most common ESP32-S3 mainline choice. If you plan to customize firmware layout or storage layout, treat that as advanced firmware work because it can wipe existing configuration.
 
 Current Beetle mainline carries a large feature set and firmware package. We cannot keep the current functionality and user experience while also providing official OTA upgrade support. If you need OTA, you can slim the feature set, redesign the partition table, or contact us for a custom solution.
 
@@ -57,7 +57,7 @@ The discovery path available today is mainly for USB-related devices such as:
 ## Common Problems
 
 - `spiffs partition could not be found`
-  Usually means the wrong board preset or partition table was used.
+  Usually means the wrong board preset or firmware layout was used.
 - Beetle OS starts but hardware features do not appear
   Check that the related config exists and that the hardware is actually attached.
 - The screen turns on but looks wrong

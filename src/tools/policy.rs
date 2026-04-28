@@ -98,6 +98,22 @@ impl ToolEffectClass {
     }
 }
 
+/// Maps effect classes with an unambiguous shared transport dependency to a runtime capability.
+///
+/// Hardware and diagnostic effects are resource-bearing, but they are not all audio or network
+/// calls. Those tools must declare precise [`crate::tools::ToolCapabilityContract`] requirements
+/// instead of being coarse-mapped here.
+pub(crate) const fn tool_effect_runtime_capability_id(
+    effect_class: ToolEffectClass,
+) -> Option<&'static str> {
+    match effect_class {
+        ToolEffectClass::NetworkSearch | ToolEffectClass::VisibleOutbound => {
+            Some(crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRiskLevel {
@@ -393,6 +409,7 @@ pub fn tool_effect_visible_in_mode(
         | crate::runtime::RuntimeMode::Pairing
         | crate::runtime::RuntimeMode::ConfigActive
         | crate::runtime::RuntimeMode::Maintenance
+        | crate::runtime::RuntimeMode::Upgrade
         | crate::runtime::RuntimeMode::RecoverySafeMode => matches!(
             effect_class,
             ToolEffectClass::LocalPure
@@ -406,7 +423,9 @@ pub fn tool_effect_visible_in_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolEffectClass, ToolMetadata, ToolPolicyContext};
+    use super::{
+        tool_effect_runtime_capability_id, ToolEffectClass, ToolMetadata, ToolPolicyContext,
+    };
 
     #[test]
     fn p0_effect_classes_have_stable_labels_and_mutation_semantics() {
@@ -477,5 +496,29 @@ mod tests {
             policy.embedded_profile,
             super::DEFAULT_EMBEDDED_TOOL_PROFILE
         );
+    }
+
+    #[test]
+    fn resource_bearing_effect_classes_map_to_runtime_capabilities() {
+        for effect_class in [
+            ToolEffectClass::NetworkSearch,
+            ToolEffectClass::VisibleOutbound,
+        ] {
+            assert_eq!(
+                tool_effect_runtime_capability_id(effect_class),
+                Some(crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP)
+            );
+        }
+        assert_eq!(
+            tool_effect_runtime_capability_id(ToolEffectClass::ReadOnly),
+            None
+        );
+        for effect_class in [
+            ToolEffectClass::Diagnostic,
+            ToolEffectClass::HardwareRead,
+            ToolEffectClass::HardwareActuation,
+        ] {
+            assert_eq!(tool_effect_runtime_capability_id(effect_class), None);
+        }
     }
 }

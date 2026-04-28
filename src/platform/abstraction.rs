@@ -16,6 +16,7 @@ use crate::memory::{
 };
 #[cfg(feature = "capability_office")]
 use crate::office::{OfficeCredentialStore, OfficeRuntimeStatusStore};
+use crate::platform::camera::PlatformCamera;
 use crate::platform::ResponseBody;
 use crate::task::TaskStore;
 use crate::task_execution::{
@@ -591,7 +592,7 @@ impl PlatformHttpClient for Box<dyn PlatformHttpClient + '_> {
 }
 
 /// 平台能力聚合。main 只依赖当前平台的 Platform 实现。Send + Sync 以便跨线程传入 run_http_server。
-pub trait Platform: Send + Sync {
+pub trait Platform: Send + Sync + PlatformCamera {
     /// 状态文件系统抽象（SPIFFS 根或 Linux 状态目录）。业务域经此访问，禁止直引 `platform::spiffs`。
     fn state_fs(&self) -> Arc<dyn StateFs + Send + Sync>;
 

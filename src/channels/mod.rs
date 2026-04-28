@@ -16,7 +16,7 @@ mod dispatch;
 #[cfg(feature = "feishu")]
 pub(crate) mod feishu;
 mod http_client;
-mod inbound_backpressure;
+pub(crate) mod inbound_backpressure;
 mod outbound_text;
 #[cfg(feature = "qq_channel")]
 mod qq;
@@ -39,7 +39,9 @@ pub(crate) mod wecom;
 mod wss_gateway;
 
 pub use connectivity::build_unavailable_snapshot;
-pub use connectivity::{build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot};
+pub use connectivity::{
+    build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot, ChannelRuntimeStatus,
+};
 #[cfg(all(
     feature = "dingtalk",
     not(any(target_arch = "xtensa", target_arch = "riscv32"))

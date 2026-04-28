@@ -258,7 +258,11 @@ pub enum DisplayChannelRuntimeStatus {
     Disabled,
     Configured,
     Waiting,
+    WaitingWallClock,
+    Suspended,
+    Connecting,
     Online,
+    CoolingDown,
     Failed,
 }
 

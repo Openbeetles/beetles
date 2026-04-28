@@ -80,11 +80,22 @@ pub(super) fn maybe_apply_mental_privacy_review(
                 .saturating_add(review_started.elapsed().as_millis());
             log::warn!("[agent_mental_privacy] review failed: {}", error);
             MentalPrivacyReviewOutcome {
-                reply_content,
-                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
-                applied: false,
+                reply_content: mental_privacy_review_failure_reply(loc).to_string(),
+                action: crate::memory::MentalPrivacyShareAction::Defer,
+                applied: true,
                 touched_targets: Vec::new(),
             }
+        }
+    }
+}
+
+fn mental_privacy_review_failure_reply(loc: UiLocale) -> &'static str {
+    match loc {
+        UiLocale::Zh => {
+            "这次触及到私域边界，但我现在没法可靠完成隐私审查，所以先不公开这些内容。"
+        }
+        UiLocale::En => {
+            "This touches a private boundary, and I cannot complete the privacy review reliably right now, so I will not disclose it."
         }
     }
 }

@@ -3760,8 +3760,6 @@ mod tests {
         }
     }
 
-    static RUNTIME_CAPABILITY_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     struct RuntimeCapabilitiesRestoreGuard {
         snapshot: Vec<crate::orchestrator::RuntimeCapabilityState>,
     }
@@ -3783,7 +3781,7 @@ mod tests {
     }
 
     fn with_runtime_capabilities_restored<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _restore = RuntimeCapabilitiesRestoreGuard {
@@ -4718,6 +4716,7 @@ mod tests {
                 config_plane_alive: false,
                 config_active: false,
                 config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
+                upgrade_active: false,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -4817,6 +4816,7 @@ mod tests {
                 config_plane_alive: false,
                 config_active: false,
                 config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
+                upgrade_active: false,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -5039,6 +5039,7 @@ mod tests {
                 config_plane_alive: false,
                 config_active: false,
                 config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
+                upgrade_active: false,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,
@@ -5836,6 +5837,7 @@ mod tests {
             config_plane_alive: false,
             config_active: false,
             config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
+            upgrade_active: false,
             channel_plane_alive: true,
             voice_plane_alive: false,
             agent_plane_alive: true,
@@ -7848,6 +7850,7 @@ mod tests {
                 config_plane_alive: false,
                 config_active: false,
                 config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
+                upgrade_active: false,
                 channel_plane_alive: true,
                 voice_plane_alive: false,
                 agent_plane_alive: true,

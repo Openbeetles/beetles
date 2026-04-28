@@ -32,6 +32,8 @@ static PAIRING_STATE_KNOWN: AtomicBool = AtomicBool::new(false);
 static PAIRING_REQUIRED: AtomicBool = AtomicBool::new(false);
 /// 当前是否处于 recovery safe mode。
 static RECOVERY_SAFE_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 当前是否处于升级/OTA 资源窗口。
+static UPGRADE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// ESP operator / deep-inspection window expiry timestamp.
 static ESP_OPERATOR_WINDOW_UNTIL_SECS: AtomicU32 = AtomicU32::new(0);
 
@@ -206,6 +208,14 @@ pub fn recovery_safe_mode_active() -> bool {
     RECOVERY_SAFE_MODE_ACTIVE.load(Ordering::Relaxed)
 }
 
+pub fn set_upgrade_active(active: bool) {
+    UPGRADE_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+pub fn upgrade_active() -> bool {
+    UPGRADE_ACTIVE.load(Ordering::Relaxed)
+}
+
 /// 打开 ESP operator window，返回过期时间。
 pub fn open_esp_operator_window(ttl_secs: u64) -> u64 {
     let expires_at = now_unix_secs().saturating_add(ttl_secs);
@@ -338,6 +348,15 @@ mod tests {
         assert!(recovery_safe_mode_active());
         set_recovery_safe_mode_active(false);
         assert!(!recovery_safe_mode_active());
+    }
+
+    #[test]
+    fn upgrade_active_flag_round_trips() {
+        let _guard = test_state_guard();
+        set_upgrade_active(true);
+        assert!(upgrade_active());
+        set_upgrade_active(false);
+        assert!(!upgrade_active());
     }
 
     #[test]

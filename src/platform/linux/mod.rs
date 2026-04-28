@@ -252,6 +252,8 @@ impl Default for LinuxPlatform {
     }
 }
 
+impl crate::platform::PlatformCamera for LinuxPlatform {}
+
 impl Platform for LinuxPlatform {
     fn state_fs(&self) -> Arc<dyn StateFs + Send + Sync> {
         Arc::clone(&self.state_fs)

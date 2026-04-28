@@ -48,6 +48,11 @@ static OUTBOUND_ENQUEUE_FAIL: AtomicU32 = AtomicU32::new(0);
 static INBOUND_QUEUE_FULL_TOTAL: AtomicU32 = AtomicU32::new(0);
 static INBOUND_DEFER_TOTAL: AtomicU32 = AtomicU32::new(0);
 static INBOUND_DROP_TOTAL: AtomicU32 = AtomicU32::new(0);
+static EVENT_INGRESS_ENQUEUED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static EVENT_INGRESS_REJECTED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static EVENT_INGRESS_PURGED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static EVENT_INGRESS_CANCELLED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static EVENT_INGRESS_STALE_DROP_TOTAL: AtomicU32 = AtomicU32::new(0);
 static RUNTIME_SPAWN_FAILURE_TOTAL: AtomicU32 = AtomicU32::new(0);
 static HTTP_ROUTE_REJECT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static LEASE_CONFLICT_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -319,6 +324,36 @@ pub fn record_inbound_defer() {
 #[inline]
 pub fn record_inbound_drop() {
     INBOUND_DROP_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Event ingress accepted into its bounded execution queue.
+#[inline]
+pub fn record_event_ingress_enqueued() {
+    EVENT_INGRESS_ENQUEUED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Event ingress rejected by bounded admission before execution.
+#[inline]
+pub fn record_event_ingress_rejected() {
+    EVENT_INGRESS_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Best-effort ingress work purged because a runtime mode transition made it stale.
+#[inline]
+pub fn record_event_ingress_purged() {
+    EVENT_INGRESS_PURGED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Ingress work cancelled or coalesced under the same owner key.
+#[inline]
+pub fn record_event_ingress_cancelled() {
+    EVENT_INGRESS_CANCELLED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Ingress work dropped after it became stale before execution.
+#[inline]
+pub fn record_event_ingress_stale_drop() {
+    EVENT_INGRESS_STALE_DROP_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 #[inline]
@@ -706,6 +741,12 @@ pub fn snapshot() -> MetricsSnapshot {
         inbound_queue_full_total: INBOUND_QUEUE_FULL_TOTAL.load(Ordering::Relaxed) as u64,
         inbound_defer_total: INBOUND_DEFER_TOTAL.load(Ordering::Relaxed) as u64,
         inbound_drop_total: INBOUND_DROP_TOTAL.load(Ordering::Relaxed) as u64,
+        event_ingress_enqueued_total: EVENT_INGRESS_ENQUEUED_TOTAL.load(Ordering::Relaxed) as u64,
+        event_ingress_rejected_total: EVENT_INGRESS_REJECTED_TOTAL.load(Ordering::Relaxed) as u64,
+        event_ingress_purged_total: EVENT_INGRESS_PURGED_TOTAL.load(Ordering::Relaxed) as u64,
+        event_ingress_cancelled_total: EVENT_INGRESS_CANCELLED_TOTAL.load(Ordering::Relaxed) as u64,
+        event_ingress_stale_drop_total: EVENT_INGRESS_STALE_DROP_TOTAL.load(Ordering::Relaxed)
+            as u64,
         runtime_spawn_failure_total: RUNTIME_SPAWN_FAILURE_TOTAL.load(Ordering::Relaxed) as u64,
         http_route_reject_total: HTTP_ROUTE_REJECT_TOTAL.load(Ordering::Relaxed) as u64,
         lease_conflict_total: LEASE_CONFLICT_TOTAL.load(Ordering::Relaxed) as u64,
@@ -846,6 +887,31 @@ mod tests {
     }
 
     #[test]
+    fn event_ingress_metrics_are_recorded_and_logged() {
+        let before = snapshot();
+
+        record_event_ingress_enqueued();
+        record_event_ingress_rejected();
+        record_event_ingress_purged();
+        record_event_ingress_cancelled();
+        record_event_ingress_stale_drop();
+
+        let after = snapshot();
+        assert!(after.event_ingress_enqueued_total > before.event_ingress_enqueued_total);
+        assert!(after.event_ingress_rejected_total > before.event_ingress_rejected_total);
+        assert!(after.event_ingress_purged_total > before.event_ingress_purged_total);
+        assert!(after.event_ingress_cancelled_total > before.event_ingress_cancelled_total);
+        assert!(after.event_ingress_stale_drop_total > before.event_ingress_stale_drop_total);
+
+        let line = after.to_baseline_log_line();
+        assert!(line.contains("event_ingress_enqueued_total="));
+        assert!(line.contains("event_ingress_rejected_total="));
+        assert!(line.contains("event_ingress_purged_total="));
+        assert!(line.contains("event_ingress_cancelled_total="));
+        assert!(line.contains("event_ingress_stale_drop_total="));
+    }
+
+    #[test]
     fn runtime_governance_metrics_are_recorded_and_logged() {
         let before = snapshot();
 
@@ -955,6 +1021,11 @@ pub struct MetricsSnapshot {
     pub inbound_queue_full_total: u64,
     pub inbound_defer_total: u64,
     pub inbound_drop_total: u64,
+    pub event_ingress_enqueued_total: u64,
+    pub event_ingress_rejected_total: u64,
+    pub event_ingress_purged_total: u64,
+    pub event_ingress_cancelled_total: u64,
+    pub event_ingress_stale_drop_total: u64,
     pub runtime_spawn_failure_total: u64,
     pub http_route_reject_total: u64,
     pub lease_conflict_total: u64,
@@ -1034,7 +1105,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} spawn_fail={} http_route_reject={} lease_conflict={} lease_expired_replace={} plane_drain_timeout={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} lease_conflict={} lease_expired_replace={} plane_drain_timeout={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.user_messages_in,
             self.messages_out,
@@ -1070,6 +1141,11 @@ impl MetricsSnapshot {
             self.inbound_queue_full_total,
             self.inbound_defer_total,
             self.inbound_drop_total,
+            self.event_ingress_enqueued_total,
+            self.event_ingress_rejected_total,
+            self.event_ingress_purged_total,
+            self.event_ingress_cancelled_total,
+            self.event_ingress_stale_drop_total,
             self.runtime_spawn_failure_total,
             self.http_route_reject_total,
             self.lease_conflict_total,

@@ -6,6 +6,8 @@ pub mod abstraction;
 pub(crate) mod audio_drivers;
 pub mod board_info;
 pub mod byte_buffer;
+pub mod camera;
+pub mod crash_evidence;
 pub mod csrf;
 pub mod display_driver;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -55,6 +57,7 @@ pub use abstraction::{
     StateFs, StorageMediaInfo, StorageMediaKind,
 };
 pub use byte_buffer::ByteBuffer;
+pub use camera::{CameraFrameBuffer, CameraFrameFormat, CameraState, CameraStatus, PlatformCamera};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use esp32::Esp32Platform;
 pub use fetch_url::fetch_url_with_client;

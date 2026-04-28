@@ -119,6 +119,14 @@ impl NetworkScanTool {
     }
 }
 
+fn network_scan_requires_network_for_args(args: &str) -> Result<bool> {
+    let obj = parse_tool_args(args, "network_scan_network_governance")?;
+    Ok(matches!(
+        obj.get("op").and_then(Value::as_str),
+        Some("connectivity_check")
+    ))
+}
+
 impl Tool for NetworkScanTool {
     fn name(&self) -> &'static str {
         "network_scan"
@@ -157,6 +165,10 @@ impl Tool for NetworkScanTool {
         true
     }
 
+    fn requires_network_for(&self, args: &str) -> Result<bool> {
+        network_scan_requires_network_for_args(args)
+    }
+
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
             .with_effect_class(ToolEffectClass::HostInspection)
@@ -187,5 +199,24 @@ impl Tool for NetworkScanTool {
             r#"{"op":"wifi_scan"}"#,
             r#"{"op":"connectivity_check","host":"example.com"}"#,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::network_scan_requires_network_for_args;
+
+    #[test]
+    fn wifi_scan_and_status_do_not_require_outbound_http() {
+        assert!(!network_scan_requires_network_for_args(r#"{"op":"wifi_status"}"#).unwrap());
+        assert!(!network_scan_requires_network_for_args(r#"{"op":"wifi_scan"}"#).unwrap());
+    }
+
+    #[test]
+    fn connectivity_check_requires_outbound_http() {
+        assert!(network_scan_requires_network_for_args(
+            r#"{"op":"connectivity_check","host":"http://captive.apple.com"}"#
+        )
+        .unwrap());
     }
 }

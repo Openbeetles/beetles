@@ -95,6 +95,7 @@ const MODES_ALL: &[RuntimeMode] = &[
     RuntimeMode::ConfigActive,
     RuntimeMode::VoiceExclusive,
     RuntimeMode::Maintenance,
+    RuntimeMode::Upgrade,
     RuntimeMode::RecoverySafeMode,
 ];
 
@@ -122,6 +123,7 @@ const MODES_RECOVERY: &[RuntimeMode] = &[
     RuntimeMode::Normal,
     RuntimeMode::ConfigActive,
     RuntimeMode::RecoverySafeMode,
+    RuntimeMode::Upgrade,
 ];
 
 const MODES_DIAGNOSTIC: &[RuntimeMode] = &[
@@ -249,7 +251,7 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         startup_phase: PlaneStartupPhase::Runtime,
         residency: PlaneResidency::Steady,
         allowed_modes: MODES_NON_VOICE_NETWORK,
-        required_leases: &[LeaseKind::TlsHandshake],
+        required_leases: &[],
         thread_names: &[
             "qq_sender",
             "tg_sender",
@@ -297,7 +299,7 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         startup_phase: PlaneStartupPhase::Runtime,
         residency: PlaneResidency::Steady,
         allowed_modes: MODES_NORMAL_AND_MAINTENANCE,
-        required_leases: &[LeaseKind::AgentHeavyTurn, LeaseKind::TlsHandshake],
+        required_leases: &[LeaseKind::AgentHeavyTurn],
         thread_names: &["agent_loop"],
         queue_budget: Some(PlaneQueueBudget {
             name: "agent_inbound",
@@ -632,6 +634,24 @@ mod tests {
                 "{thread_name} must not claim a precise TLS handshake lease until the HTTP seam acquires it"
             );
         }
+    }
+
+    #[test]
+    fn http_calling_planes_do_not_claim_precise_tls_handshake_lease_yet() {
+        for thread_name in ["os_outbound", "agent_loop"] {
+            let profile = profile_for_thread(thread_name).expect("http calling profile");
+
+            assert!(profile.tls_capable);
+            assert!(
+                !profile.required_leases.contains(&LeaseKind::TlsHandshake),
+                "{thread_name} must not claim a precise TLS handshake lease until the HTTP seam acquires it"
+            );
+        }
+    }
+
+    #[test]
+    fn official_ota_worker_plane_is_not_registered_without_an_implementation() {
+        assert!(profile_for_thread(concat!("http_", "ota_exec")).is_none());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::bus::{
     AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, InboundTx,
     MediaAssetRef, MessageTransport, OutboundTx, PcMsg, TextBody, VideoBody, MAX_CONTENT_LEN,
 };
+use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
@@ -512,6 +513,7 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
             for _ in 0..3 {
                 match inbound_tx.try_send(pc.clone()) {
                     Ok(()) => {
+                        inbound_backpressure::record_enqueued(EventIngressSource::TelegramPoll);
                         enqueued = true;
                         break;
                     }
@@ -530,15 +532,18 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                 }
             }
             if disconnected {
-                crate::channels::inbound_backpressure::record_disconnected_drop();
+                inbound_backpressure::record_disconnected_drop_for_source(
+                    EventIngressSource::TelegramPoll,
+                );
             } else if !enqueued {
                 log::warn!(
                     "[{}] inbound queue full, saved telegram msg to pending retry chat_id={}",
                     TAG_POLL,
                     chat_id
                 );
-                crate::channels::inbound_backpressure::record_queue_full(
-                    crate::channels::inbound_backpressure::InboundBackpressureOutcome::DeferredToPendingRetry,
+                inbound_backpressure::record_queue_full_for_source(
+                    EventIngressSource::TelegramPoll,
+                    InboundBackpressureOutcome::DeferredToPendingRetry,
                 );
                 let _ = pending_retry.save_pending_retry(&pc);
             }

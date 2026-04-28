@@ -63,6 +63,12 @@ export const OS_ICON_DASHBOARD = {
 
 export type OsDashboardIconKey = keyof typeof OS_ICON_DASHBOARD;
 
+/** 设备页局部操作入口（不属于主导航，也不属于工具列表）。 */
+export const OS_ICON_DEVICE_ACTION = {
+  /** 浏览器芯片固件烧录入口 */
+  firmwareFlash: "/icons/firmware_flash_3d.png",
+} as const;
+
 /** 壳层：开始菜单标题栏「重启」 */
 export const OS_ICON_SHELL = {
   power: "/icons/power_3d.png",
@@ -91,7 +97,7 @@ export const OS_ICON_DIALOG = {
  */
 export const OS_ICON_PREFERENCES = {
   /** 语言 / locale */
-  language: "/icons/globe_3d.png",
+  language: "/icons/language_3d.png",
   /** 明暗主题（区块标题；与当前模式对应的 toggle 图标见 modeLight / modeDark） */
   themeMode: "/icons/theme_3d.png",
   /** 浅色模式 toggle */

@@ -38,7 +38,7 @@ If you need the full Linux release layout, restart behavior, or rollback flow, r
 ## 3. Open the Setup Page
 
 After deployment, open the Configure UI from the hosted page, desktop shell, or a locally served build, then enter the deployed host address as the **Device URL**.
-The service root returns API inventory JSON and should not be treated as an embedded setup page.
+If this is a Linux embedded device using Beetle hotspot provisioning, the first hotspot address is usually `http://192.168.4.1`; if the device’s STA side already uses `192.168.4.0/24`, Beetle moves the hotspot to `http://172.16.42.1`.
 
 The normal next step is the browser-based setup flow, where you save:
 

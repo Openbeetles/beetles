@@ -165,6 +165,27 @@ if ! rg -n 'worker_route_lanes_map_to_runtime_lease_kinds' src/platform/http_ser
   exit 1
 fi
 
+if ! rg -n 'runtime_mode_admission\s*\(' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'route_runtime_mode_admission_blocks_unowned_diagnostics_during_config_active' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'route_runtime_admission_response\s*\(' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: config/recovery route runtime admission contract is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'tracks_config_read_burst\s*\(' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'ConfigReadBurstGuard::enter' src/platform/http_server/esp_transport.rs >/dev/null ||
+   ! rg -n 'config_read_burst_guard_marks_config_recovery_lease_and_lifecycle' src/runtime/governance.rs >/dev/null ||
+   ! rg -n 'ConfigReadBurst' dev-docs/esp-plane-budget-and-lease-register.md >/dev/null; then
+  echo "FAIL: config read burst no longer has explicit config/recovery lease and lifecycle tracking" >&2
+  exit 1
+fi
+
+if ! rg -n 'display_channel_runtime_status_from_lifecycle' src/main.rs >/dev/null ||
+   ! rg -n 'WaitingWallClock|Suspended|Connecting|CoolingDown' src/display.rs src/platform/display_driver.rs >/dev/null; then
+  echo "FAIL: channel runtime display status no longer distinguishes wall-clock, mode-suspend, connect, and cooldown states" >&2
+  exit 1
+fi
+
 if ! rg -n 'runtime::lease::format_baseline_log_line' src/heartbeat/mod.rs >/dev/null; then
   echo "FAIL: heartbeat no longer emits compact lease baseline" >&2
   exit 1
@@ -185,8 +206,41 @@ if ! rg -n 'governance_metrics:\s*orchestrator::ResourceGovernanceMetricsSnapsho
   exit 1
 fi
 
+if ! rg -n 'runtime_capabilities:\s*Vec<orchestrator::RuntimeCapabilityState>' src/platform/http_server/handlers/resource.rs >/dev/null ||
+   ! rg -n 'runtime_capabilities:\s*Vec<crate::orchestrator::RuntimeCapabilityState>' src/orchestrator/state.rs >/dev/null ||
+   ! rg -n 'runtime_capability_snapshot\s*\(' src/orchestrator/state.rs >/dev/null; then
+  echo "FAIL: /api/resource no longer exposes runtime capability diagnostic snapshot" >&2
+  exit 1
+fi
+
 if ! rg -n 'resource_diagnostic_snapshot\s*\(' src/platform/http_server/handlers/resource.rs src/orchestrator/mod.rs >/dev/null; then
   echo "FAIL: /api/resource no longer uses orchestrator diagnostic resource aggregation" >&2
+  exit 1
+fi
+if ! rg -n 'resource_route_uses_snapshot_worker_on_esp' src/platform/http_server/router/catalog.rs >/dev/null; then
+  echo "FAIL: /api/resource must use the snapshot route worker on ESP instead of the HTTPD callback" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub struct RuntimeCapabilityCallGuard' src/orchestrator/runtime_capability.rs >/dev/null; then
+  echo "FAIL: runtime capability active-call control no longer exposes RuntimeCapabilityCallGuard" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub fn try_begin_runtime_capability_call\s*\(' src/orchestrator/runtime_capability.rs >/dev/null; then
+  echo "FAIL: runtime capability active-call control no longer exposes try_begin_runtime_capability_call" >&2
+  exit 1
+fi
+
+for field in 'pub active_calls:\s*u32' 'pub draining:\s*bool' 'pub last_transition_uptime_ms:\s*u64' 'pub drain_denied_total:\s*u64'; do
+  if ! rg -n "$field" src/orchestrator/runtime_capability.rs >/dev/null; then
+    echo "FAIL: runtime capability snapshot missing active-call field: $field" >&2
+    exit 1
+  fi
+done
+
+if ! rg -n 'try_begin_runtime_capability_call_with_policy\s*\(' src/tools/registry.rs >/dev/null; then
+  echo "FAIL: tool execution no longer acquires runtime capability call guard" >&2
   exit 1
 fi
 
@@ -201,6 +255,64 @@ for metric in \
     exit 1
   fi
 done
+
+for metric in \
+  record_event_ingress_enqueued \
+  record_event_ingress_rejected \
+  record_event_ingress_purged \
+  record_event_ingress_cancelled \
+  record_event_ingress_stale_drop; do
+  if ! rg -n "$metric" src/metrics.rs >/dev/null; then
+    echo "FAIL: event ingress metric missing from metrics.rs: $metric" >&2
+    exit 1
+  fi
+done
+
+if ! rg -n 'event_ingress_enqueued_total=.*event_ingress_rejected_total=.*event_ingress_purged_total=.*event_ingress_cancelled_total=.*event_ingress_stale_drop_total=' src/metrics.rs >/dev/null; then
+  echo "FAIL: heartbeat metrics baseline no longer exposes bounded event ingress counters" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub\(crate\) fn event_ingress_contract\s*\(' src/channels/inbound_backpressure.rs >/dev/null ||
+   ! rg -n 'EventIngressFullPolicy::Coalesce' src/channels/inbound_backpressure.rs >/dev/null ||
+   ! rg -n 'EventIngressRetention::BestEffort' src/channels/inbound_backpressure.rs >/dev/null; then
+  echo "FAIL: bounded event ingress contract truth source is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_enqueued\(\s*EventIngressSource::WssGateway' src/channels/wss_gateway/loop.rs src/channels/dingtalk/inbound.rs src/channels/wecom/aibot.rs >/dev/null; then
+  echo "FAIL: WSS/stream ingress enqueue path no longer records bounded event ingress acceptance" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_enqueued\(\s*EventIngressSource::TelegramPoll' src/channels/telegram/poll.rs >/dev/null; then
+  echo "FAIL: Telegram poll ingress enqueue path no longer records bounded event ingress acceptance" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_initiative_ingress_result' src/runtime/initiative.rs >/dev/null ||
+   ! rg -n 'EventIngressSource::RuntimeInitiative' src/runtime/initiative.rs >/dev/null; then
+  echo "FAIL: runtime initiative no longer records bounded event ingress outcomes" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_cancelled\(\s*EventIngressSource::WriteBack' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'record_rejected\(\s*EventIngressSource::WriteBack' src/runtime/write_back.rs >/dev/null; then
+  echo "FAIL: write-back queue no longer records coalesced/rejected ingress outcomes" >&2
+  exit 1
+fi
+
+if rg -n 'inbound_tx\.send\(msg\)' src/heartbeat/mod.rs >/dev/null ||
+   ! rg -n 'inbound_tx\.try_send\(msg\)' src/heartbeat/mod.rs >/dev/null; then
+  echo "FAIL: heartbeat injection must use bounded try_send rather than blocking send" >&2
+  exit 1
+fi
+
+if ! rg -n 'record_event_ingress_rejected' src/app_runtime_support.rs >/dev/null ||
+   ! rg -n 'clear_pending_retry\(\)' src/app_runtime_support.rs >/dev/null; then
+  echo "FAIL: pending retry bootstrap no longer preserves retry ownership around bounded enqueue" >&2
+  exit 1
+fi
 
 if ! rg -n 'external_wss_suspend_timeout|voice_exclusive_wss_drain_timeout' src/network/mod.rs >/dev/null ||
    ! rg -n 'record_plane_drain_timeout\(\)' src/network/mod.rs >/dev/null; then
@@ -330,9 +442,65 @@ if ! rg -n 'frame_lease_admission_denies_critical_pressure_before_borrow|frame_l
   exit 1
 fi
 
+if ! rg -n 'try_acquire_frame_capture_permit' src/tools/analyze_image.rs >/dev/null ||
+   ! rg -n 'capture_frame\(max_bytes\)' src/tools/analyze_image.rs >/dev/null ||
+   ! rg -n 'vision_request_body_too_large' src/tools/analyze_image.rs >/dev/null; then
+  echo "FAIL: analyze_image local camera path no longer proves frame admission and request-body budget checks" >&2
+  exit 1
+fi
+
 if ! rg -n 'fn metadata\(&self\) -> ToolMetadata' src/tools/analyze_image.rs >/dev/null ||
    ! rg -n 'ToolEffectClass::NetworkSearch' src/tools/analyze_image.rs >/dev/null; then
   echo "FAIL: analyze_image URL vision tool no longer declares network-search metadata" >&2
+  exit 1
+fi
+
+if ! rg -n '^coredump,[[:space:]]+data,[[:space:]]+coredump,' partitions.csv >/dev/null; then
+  echo "FAIL: ESP partition table no longer declares a coredump partition for panic evidence" >&2
+  exit 1
+fi
+
+if ! rg -n 'RuntimeMode::Upgrade' src/runtime/mode.rs src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'upgrade_active' src/runtime/mode.rs src/runtime/thread_registry.rs src/state.rs >/dev/null ||
+   ! rg -n 'set_upgrade_active' src/runtime/governance.rs src/runtime/mod.rs src/state.rs >/dev/null; then
+  echo "FAIL: upgrade runtime mode is no longer connected to the global runtime source" >&2
+  exit 1
+fi
+
+if rg -n 'RouteExecutionClass::OtaRoute|ROUTE_OTA|RouteWorkerLane::Ota|OtaHttpWorker|PlaneId::Ota|http_ota_exec|/api/ota' src >/dev/null; then
+  echo "FAIL: official OTA route/worker contract must stay removed until a real implementation is restored" >&2
+  exit 1
+fi
+
+if ! rg -n 'official_ota_route_is_not_exposed_without_an_implementation' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'official_ota_worker_plane_is_not_registered_without_an_implementation' src/runtime/plane.rs >/dev/null ||
+   ! rg -n 'http_worker_profiles_do_not_claim_precise_tls_handshake_lease_yet' src/runtime/plane.rs >/dev/null; then
+  echo "FAIL: OTA removal tests no longer prove the dead route and worker stay absent" >&2
+  exit 1
+fi
+
+if [[ ! -x scripts/parse_esp_panic_log.sh ]]; then
+  echo "FAIL: panic log parser script is missing or not executable" >&2
+  exit 1
+fi
+if ! rg -n 'suggested_symbolization_command' scripts/parse_esp_panic_log.sh >/dev/null ||
+   ! rg -n -- '--artifact-dir' scripts/parse_esp_panic_log.sh scripts/esp_symbolize_panic.sh >/dev/null; then
+  echo "FAIL: panic parser/symbolizer no longer preserves artifact-directory symbolization hints" >&2
+  exit 1
+fi
+
+if ! rg -n 'pub struct CrashMetadataSnapshot' src/orchestrator/state.rs >/dev/null ||
+   ! rg -n 'record_crash_metadata|register_crash_metadata_provider|crash_metadata_snapshot' src/orchestrator/mod.rs src/orchestrator/state.rs >/dev/null ||
+   ! rg -n 'pub mod crash_evidence' src/platform/mod.rs >/dev/null ||
+   ! rg -n 'esp_reset_reason|ESP_RST_PANIC|ESP_RST_TASK_WDT|ESP_RST_CPU_LOCKUP' src/platform/crash_evidence.rs >/dev/null ||
+   ! rg -n '"crash"|last_panic_pc|last_resource_baseline_before_panic' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: crash metadata evidence source/resource diagnostics contract is incomplete" >&2
+  exit 1
+fi
+
+if ! rg -n 'FirmwareIdentitySnapshot|booted_artifact_id|last_attempted_artifact_id' src/platform/firmware_identity.rs >/dev/null ||
+   ! rg -n 'firmware_identity' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: firmware artifact identity is no longer exposed through resource diagnostics" >&2
   exit 1
 fi
 

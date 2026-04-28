@@ -803,12 +803,6 @@ mod tests {
         RuntimeCapabilityStatus, RuntimeCapabilityUpdate, RUNTIME_CAPABILITY_AUDIO_INPUT,
         RUNTIME_CAPABILITY_AUDIO_OUTPUT,
     };
-    use std::sync::{Mutex, OnceLock};
-
-    fn runtime_capability_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[derive(Default)]
     struct StubLongTermMemoryStore {
@@ -913,7 +907,7 @@ mod tests {
 
     #[test]
     fn audio_profile_fact_turns_stale_when_runtime_audio_is_offline() {
-        let _guard = runtime_capability_test_lock()
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         reset_runtime_capabilities_for_tests();

@@ -259,6 +259,9 @@ impl Default for Esp32Platform {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl crate::platform::PlatformCamera for Esp32Platform {}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 impl Platform for Esp32Platform {
     fn state_fs(&self) -> Arc<dyn StateFs + Send + Sync> {
         Arc::clone(&self.state_fs)

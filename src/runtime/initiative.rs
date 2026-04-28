@@ -2,6 +2,7 @@
 //! 边界内主动性运行时合同：统一感知、裁决、冷却与可观测口径。
 
 use crate::bus::{IngressKind, PcMsg, SystemInboundTx};
+use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::i18n::{locale_from_store, tr, Message};
 use crate::memory::{
     board_subject_scope_id, build_world_snapshot, select_relationship_portfolio_targets,
@@ -149,6 +150,39 @@ enum InitiativeEnqueueResult {
     QueueFull,
     Disconnected,
     BuildRejected,
+}
+
+fn record_initiative_ingress_result(
+    snapshot: &InitiativeSnapshot,
+    result: InitiativeEnqueueResult,
+) {
+    match result {
+        InitiativeEnqueueResult::Enqueued => {
+            inbound_backpressure::record_enqueued(EventIngressSource::RuntimeInitiative);
+        }
+        InitiativeEnqueueResult::QueueFull => {
+            inbound_backpressure::record_queue_full_for_source(
+                EventIngressSource::RuntimeInitiative,
+                InboundBackpressureOutcome::Dropped,
+            );
+        }
+        InitiativeEnqueueResult::Disconnected => {
+            inbound_backpressure::record_disconnected_drop_for_source(
+                EventIngressSource::RuntimeInitiative,
+            );
+        }
+        InitiativeEnqueueResult::BuildRejected => {
+            inbound_backpressure::record_rejected(EventIngressSource::RuntimeInitiative);
+        }
+        InitiativeEnqueueResult::NotAttempted => {
+            if matches!(
+                snapshot.suppression_reason,
+                Some(InitiativeSuppressionReason::RuntimeModeBlocked)
+            ) {
+                inbound_backpressure::record_purged(EventIngressSource::RuntimeInitiative);
+            }
+        }
+    }
 }
 
 fn initiative_runtime_state() -> &'static Mutex<HashMap<String, u64>> {
@@ -487,6 +521,7 @@ fn append_initiative_workflow_audit(
     enqueue_result: InitiativeEnqueueResult,
     now_secs: u64,
 ) {
+    record_initiative_ingress_result(snapshot, enqueue_result);
     let effect = match enqueue_result {
         InitiativeEnqueueResult::Enqueued => WorkflowEffect::EnqueueSystemJob,
         InitiativeEnqueueResult::NotAttempted
@@ -757,6 +792,7 @@ mod tests {
             config_plane_alive: false,
             config_active: false,
             config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
+            upgrade_active: false,
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,
@@ -1083,5 +1119,38 @@ mod tests {
             audit.recent_records[0].disposition,
             WorkflowDisposition::ExecuteNow
         );
+    }
+
+    #[test]
+    fn initiative_ingress_records_enqueue_reject_and_mode_purge() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut snapshot = InitiativeSnapshot {
+            action: InitiativeAction::UpcomingReminderNudge,
+            ready: true,
+            presence_state: PresenceState::Idle,
+            runtime_mode: runtime_mode(),
+            rationale: "reminder_due_soon_with_active_user_context".to_string(),
+            suppression_reason: None,
+            target: Some(target()),
+            signal: Some(signal()),
+            strategy_mode: String::new(),
+            strategy_focus: String::new(),
+            idle_enabled: true,
+            message_preview: Some("reminder".to_string()),
+            last_triggered_at: None,
+            next_allowed_at: None,
+        };
+        let before = crate::metrics::snapshot();
+
+        record_initiative_ingress_result(&snapshot, InitiativeEnqueueResult::Enqueued);
+        record_initiative_ingress_result(&snapshot, InitiativeEnqueueResult::QueueFull);
+        snapshot.ready = false;
+        snapshot.suppression_reason = Some(InitiativeSuppressionReason::RuntimeModeBlocked);
+        record_initiative_ingress_result(&snapshot, InitiativeEnqueueResult::NotAttempted);
+
+        let after = crate::metrics::snapshot();
+        assert!(after.event_ingress_enqueued_total > before.event_ingress_enqueued_total);
+        assert!(after.event_ingress_rejected_total > before.event_ingress_rejected_total);
+        assert!(after.event_ingress_purged_total > before.event_ingress_purged_total);
     }
 }

@@ -844,6 +844,64 @@ mod tests {
     }
 
     #[test]
+    fn channel_runtime_status_distinguishes_wss_runtime_modes() {
+        use beetle::runtime::plane_lifecycle::PlaneLifecycleRecord;
+        use beetle::runtime::{PlaneId, PlaneLifecycleState};
+
+        let record = |state, reason| PlaneLifecycleRecord {
+            plane: PlaneId::ChannelWss,
+            owner: "qq_ws",
+            state,
+            updated_at_ms: 0,
+            generation: 1,
+            transition_count: 1,
+            failure_count: 0,
+            last_reason: reason,
+        };
+
+        assert_eq!(
+            super::display_channel_runtime_status_from_lifecycle(
+                true,
+                true,
+                0,
+                false,
+                Some(record(
+                    PlaneLifecycleState::Suspended,
+                    "wall_clock_untrusted"
+                )),
+            ),
+            beetle::DisplayChannelRuntimeStatus::WaitingWallClock
+        );
+        assert_eq!(
+            super::display_channel_runtime_status_from_lifecycle(
+                true,
+                true,
+                0,
+                false,
+                Some(record(
+                    PlaneLifecycleState::Suspended,
+                    "voice_exclusive_suspend"
+                )),
+            ),
+            beetle::DisplayChannelRuntimeStatus::Suspended
+        );
+        assert_eq!(
+            super::display_channel_runtime_status_from_lifecycle(
+                true,
+                true,
+                0,
+                false,
+                Some(record(PlaneLifecycleState::Starting, "connect_attempt")),
+            ),
+            beetle::DisplayChannelRuntimeStatus::Connecting
+        );
+        assert_eq!(
+            super::display_channel_runtime_status_from_lifecycle(true, true, 0, true, None),
+            beetle::DisplayChannelRuntimeStatus::Online
+        );
+    }
+
+    #[test]
     fn invalidate_display_cache_after_backlight_wake_resets_all_dashboard_cache_fields() {
         use super::{invalidate_display_cache_after_backlight_wake, DisplayLoopState};
         use beetle::{DisplayPressureLevel, DisplaySystemState};
@@ -1458,22 +1516,132 @@ fn display_channel_runtime_status(
     healthy: bool,
     consecutive_failures: u32,
 ) -> DisplayChannelRuntimeStatus {
+    let wss_lifecycle = display_channel_wss_lifecycle(channel);
+    let ws_online = display_channel_ws_online(channel);
+    display_channel_runtime_status_from_lifecycle(
+        enabled,
+        healthy,
+        consecutive_failures,
+        ws_online,
+        wss_lifecycle,
+    )
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_channel_runtime_status_from_lifecycle(
+    enabled: bool,
+    healthy: bool,
+    consecutive_failures: u32,
+    ws_online: bool,
+    lifecycle: Option<beetle::runtime::plane_lifecycle::PlaneLifecycleRecord>,
+) -> DisplayChannelRuntimeStatus {
     if !enabled {
         return DisplayChannelRuntimeStatus::Disabled;
     }
-    if !healthy || consecutive_failures > 0 {
+    if consecutive_failures > 0 {
+        return DisplayChannelRuntimeStatus::CoolingDown;
+    }
+    if !healthy {
         return DisplayChannelRuntimeStatus::Failed;
     }
-    #[cfg(feature = "qq_channel")]
-    if channel == beetle::CHANNEL_QQ_CHANNEL {
-        return if beetle::channels::is_ws_online() {
-            DisplayChannelRuntimeStatus::Online
-        } else {
-            DisplayChannelRuntimeStatus::Waiting
+    if ws_online {
+        return DisplayChannelRuntimeStatus::Online;
+    }
+    if let Some(record) = lifecycle {
+        return match record.state {
+            beetle::runtime::PlaneLifecycleState::Starting => {
+                DisplayChannelRuntimeStatus::Connecting
+            }
+            beetle::runtime::PlaneLifecycleState::Active => DisplayChannelRuntimeStatus::Waiting,
+            beetle::runtime::PlaneLifecycleState::Suspended => {
+                if record.last_reason == "wall_clock_untrusted" {
+                    DisplayChannelRuntimeStatus::WaitingWallClock
+                } else {
+                    DisplayChannelRuntimeStatus::Suspended
+                }
+            }
+            beetle::runtime::PlaneLifecycleState::Draining
+            | beetle::runtime::PlaneLifecycleState::Stopping => {
+                DisplayChannelRuntimeStatus::Suspended
+            }
+            beetle::runtime::PlaneLifecycleState::Failed => DisplayChannelRuntimeStatus::Failed,
+            beetle::runtime::PlaneLifecycleState::Registered
+            | beetle::runtime::PlaneLifecycleState::Disabled
+            | beetle::runtime::PlaneLifecycleState::Unloaded => {
+                DisplayChannelRuntimeStatus::Configured
+            }
         };
     }
-    let _ = channel;
     DisplayChannelRuntimeStatus::Configured
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_channel_ws_online(channel: &str) -> bool {
+    #[cfg(feature = "qq_channel")]
+    if channel == beetle::CHANNEL_QQ_CHANNEL {
+        return beetle::channels::is_ws_online();
+    }
+    let _ = channel;
+    false
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_channel_wss_lifecycle(
+    channel: &str,
+) -> Option<beetle::runtime::plane_lifecycle::PlaneLifecycleRecord> {
+    let owner = display_channel_wss_lifecycle_owner(channel)?;
+    beetle::runtime::plane_lifecycle::snapshot()
+        .records
+        .into_iter()
+        .find(|record| {
+            record.plane == beetle::runtime::PlaneId::ChannelWss && record.owner == owner
+        })
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_channel_wss_lifecycle_owner(channel: &str) -> Option<&'static str> {
+    #[cfg(feature = "qq_channel")]
+    if channel == beetle::CHANNEL_QQ_CHANNEL {
+        return Some("qq_ws");
+    }
+    #[cfg(feature = "feishu")]
+    if channel == beetle::CHANNEL_FEISHU {
+        return Some("feishu_ws");
+    }
+    #[cfg(feature = "dingtalk")]
+    if channel == beetle::CHANNEL_DINGTALK {
+        return Some("dingtalk_stream");
+    }
+    #[cfg(feature = "wecom")]
+    if channel == beetle::CHANNEL_WECOM {
+        return Some("wecom_aibot");
+    }
+    let _ = channel;
+    None
 }
 
 #[cfg(any(
@@ -2344,6 +2512,7 @@ fn bootstrap_platform_runtime_until_guard(
     platform: Arc<dyn Platform>,
 ) -> Option<(Arc<dyn Platform>, Option<beetle::util::TaskHandle>)> {
     register_platform_memory_snapshot_provider(&platform);
+    register_platform_crash_metadata_provider();
     startup_soul_kernel_recovery(Arc::clone(&platform));
     let (config, wifi_init_ok) = beetle::bootstrap::bootstrap_config_and_wifi(&platform);
     let guard_platform = Arc::clone(&platform);
@@ -2361,6 +2530,12 @@ fn register_platform_memory_snapshot_provider(platform: &Arc<dyn Platform>) {
     register_process_memory_snapshot_provider(Arc::new({
         let platform = Arc::clone(platform);
         move || platform.memory_snapshot()
+    }));
+}
+
+fn register_platform_crash_metadata_provider() {
+    beetle::orchestrator::register_crash_metadata_provider(Arc::new(|| {
+        beetle::platform::crash_evidence::snapshot()
     }));
 }
 

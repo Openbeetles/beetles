@@ -8,6 +8,15 @@ Usage:
 
 Example:
   scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
+
+Artifact hint:
+  ESP build artifacts are written by TARGET=esp ./build.sh --no-deploy under:
+    target/esp-artifacts/<git-sha>-<elf-sha>/
+
+Panic log parser:
+  scripts/parse_esp_panic_log.sh \
+    --artifact-dir target/esp-artifacts/<artifact-id> \
+    target/esp-soak/<run>/serial.log
 EOF
 }
 
@@ -31,6 +40,8 @@ fi
 if [[ ! -f "$ELF" ]]; then
   echo "Error: neither beetle.elf nor libespidf.elf was found in artifact directory: $ARTIFACT_DIR" >&2
   echo "Use the artifact id printed by TARGET=esp ./build.sh --no-deploy." >&2
+  echo "If you only have a captured serial log, first run:" >&2
+  echo "  scripts/parse_esp_panic_log.sh --artifact-dir $ARTIFACT_DIR <serial-log>" >&2
   exit 1
 fi
 

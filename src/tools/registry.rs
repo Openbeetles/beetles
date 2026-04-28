@@ -5,6 +5,7 @@
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use crate::llm::ToolSpec as LlmToolSpec;
+use crate::tools::policy::tool_effect_runtime_capability_id;
 use crate::tools::{
     tool_effect_visible_in_mode, Tool, ToolApprovalMode, ToolCapabilityContract,
     ToolCatalogAuthority, ToolEffectClass, ToolExecutionGateDecision, ToolExecutionGovernance,
@@ -47,6 +48,12 @@ enum ToolExecutionInputCheckOrder {
 struct ToolExecutionPreparation<'a> {
     entry: &'a RegisteredTool,
     protocol: crate::tools::ToolProtocolContract,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RuntimeCapabilityCallRequirement {
+    id: &'static str,
+    allow_when_degraded: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -281,7 +288,7 @@ impl ToolRegistry {
         let entry = preparation.entry;
         let shape = entry.tool.execution_shape(args)?;
         enforce_direct_execution_governance(entry.metadata, &shape)?;
-        self.execute_tool_outcome(name, entry, args, ctx, preparation.protocol, None)
+        self.execute_tool_outcome(name, entry, &shape, args, ctx, preparation.protocol, None)
     }
 
     pub fn assess_llm_execution(
@@ -383,6 +390,7 @@ impl ToolRegistry {
         self.execute_tool_outcome(
             permit.tool_name(),
             entry,
+            &actual_shape,
             args,
             ctx,
             preparation.protocol,
@@ -395,7 +403,14 @@ impl ToolRegistry {
         permit: &ToolExecutionPermit,
         error: &Error,
     ) -> Result<()> {
-        self.observe_runtime_capability_failure(permit.tool_name(), error);
+        if let Some(entry) = self.tools.get(permit.tool_name()) {
+            let requirements = Self::runtime_capability_call_requirements_for_entry(
+                entry,
+                permit.shape(),
+                permit.requires_network(),
+            );
+            Self::observe_runtime_capability_failure_for_requirements(&requirements, error);
+        }
         if let Some(governance) = self.execution_governance.as_ref() {
             governance.record_failure(permit, error)?;
         }
@@ -649,11 +664,83 @@ impl ToolRegistry {
         }
     }
 
-    fn observe_runtime_capability_success_for_entry(entry: &RegisteredTool) {
-        if entry.capability_contract.is_empty() {
+    fn observe_runtime_capability_success_for_requirements(
+        requirements: &[RuntimeCapabilityCallRequirement],
+    ) {
+        if requirements.is_empty() {
             return;
         }
-        crate::orchestrator::observe_runtime_capability_success(entry.capability_contract.required);
+        let ids: Vec<&'static str> = requirements
+            .iter()
+            .map(|requirement| requirement.id)
+            .collect();
+        crate::orchestrator::observe_runtime_capability_success(&ids);
+    }
+
+    fn push_runtime_capability_requirement(
+        requirements: &mut Vec<RuntimeCapabilityCallRequirement>,
+        id: &'static str,
+        allow_when_degraded: bool,
+    ) {
+        if let Some(existing) = requirements
+            .iter_mut()
+            .find(|requirement| requirement.id == id)
+        {
+            existing.allow_when_degraded |= allow_when_degraded;
+        } else {
+            requirements.push(RuntimeCapabilityCallRequirement {
+                id,
+                allow_when_degraded,
+            });
+        }
+    }
+
+    fn runtime_capability_call_requirements_for_entry(
+        entry: &RegisteredTool,
+        shape: &ToolExecutionShape,
+        requires_network: bool,
+    ) -> Vec<RuntimeCapabilityCallRequirement> {
+        let mut requirements = Vec::new();
+        for capability in entry.capability_contract.required {
+            Self::push_runtime_capability_requirement(
+                &mut requirements,
+                capability,
+                entry.capability_contract.allow_when_degraded,
+            );
+        }
+        if requires_network {
+            Self::push_runtime_capability_requirement(
+                &mut requirements,
+                crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+                true,
+            );
+        }
+        if let Some(capability) = tool_effect_runtime_capability_id(shape.effect_class) {
+            Self::push_runtime_capability_requirement(
+                &mut requirements,
+                capability,
+                matches!(
+                    shape.effect_class,
+                    crate::tools::policy::ToolEffectClass::NetworkSearch
+                ),
+            );
+        }
+        requirements
+    }
+
+    fn begin_runtime_capability_call_guards(
+        requirements: &[RuntimeCapabilityCallRequirement],
+    ) -> Result<Vec<crate::orchestrator::runtime_capability::RuntimeCapabilityCallGuard>> {
+        let mut guards = Vec::new();
+        for requirement in requirements {
+            guards.push(
+                crate::orchestrator::runtime_capability::try_begin_runtime_capability_call_with_policy(
+                    requirement.id,
+                    requirement.allow_when_degraded,
+                )?,
+            );
+        }
+        Ok(guards)
     }
 
     fn record_success_audit(&self, permit: &ToolExecutionPermit, outcome: &ToolExecutionOutcome) {
@@ -672,15 +759,23 @@ impl ToolRegistry {
         &self,
         tool_name: &str,
         entry: &RegisteredTool,
+        shape: &ToolExecutionShape,
         args: &str,
         ctx: &mut dyn crate::tools::ToolContext,
         protocol: crate::tools::ToolProtocolContract,
         permit: Option<&ToolExecutionPermit>,
     ) -> Result<ToolExecutionOutcome> {
+        let requires_network = entry.tool.requires_network_for(args)?;
+        let runtime_capability_requirements =
+            Self::runtime_capability_call_requirements_for_entry(entry, shape, requires_network);
+        let _runtime_capability_call_guards =
+            Self::begin_runtime_capability_call_guards(&runtime_capability_requirements)?;
         let mut outcome = entry.tool.execute_outcome(args, ctx)?;
         normalize_and_validate_tool_outcome(tool_name, protocol, &mut outcome)?;
         if outcome.is_success() {
-            Self::observe_runtime_capability_success_for_entry(entry);
+            Self::observe_runtime_capability_success_for_requirements(
+                &runtime_capability_requirements,
+            );
             if let Some(permit) = permit {
                 self.record_success_audit(permit, &outcome);
             }
@@ -752,12 +847,25 @@ impl ToolRegistry {
         Self::runtime_capability_blocker_for_entry(entry)
     }
 
+    #[cfg(test)]
     fn observe_runtime_capability_failure(&self, tool_name: &str, error: &Error) {
         let Some(entry) = self.tools.get(tool_name) else {
             return;
         };
-        for capability in entry.capability_contract.required {
-            let reason = match (*capability, error) {
+        let requirements = Self::runtime_capability_call_requirements_for_entry(
+            entry,
+            &entry.catalog_shape,
+            entry.requires_network,
+        );
+        Self::observe_runtime_capability_failure_for_requirements(&requirements, error);
+    }
+
+    fn observe_runtime_capability_failure_for_requirements(
+        requirements: &[RuntimeCapabilityCallRequirement],
+        error: &Error,
+    ) {
+        for requirement in requirements {
+            let reason = match (requirement.id, error) {
                 (
                     crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
                     Error::Config { message, .. },
@@ -787,7 +895,7 @@ impl ToolRegistry {
                 _ => None,
             };
             if let Some(reason) = reason {
-                crate::orchestrator::observe_runtime_capability_failure(capability, reason);
+                crate::orchestrator::observe_runtime_capability_failure(requirement.id, reason);
             }
         }
     }
@@ -1014,7 +1122,10 @@ fn register_core_tools(
         feature = "tools_network_extra",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
-    registry.register(Box::new(super::AnalyzeImageTool::new(config)));
+    registry.register(Box::new(super::AnalyzeImageTool::with_platform_camera(
+        config,
+        Arc::clone(platform),
+    )));
     registry.register(Box::new(super::RemindAtTool::with_local_calendar(
         Arc::clone(&services.remind_at_store),
         Arc::clone(&services.calendar_store),
@@ -1425,10 +1536,6 @@ mod tests {
         ToolLlmVisibility, ToolMetadata, ToolOutputProtocolKind, ToolProtocolAuthority,
         ToolProtocolContract,
     };
-    use std::sync::Mutex;
-
-    static RUNTIME_CAPABILITY_TEST_GUARD: Mutex<()> = Mutex::new(());
-
     struct VisibleTool;
     struct StatefulTool;
     struct AdminTool;
@@ -1455,7 +1562,7 @@ mod tests {
     struct StubPrivateGardenStore;
 
     fn with_catalog_runtime_capabilities_online<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
@@ -1950,6 +2057,12 @@ mod tests {
 
     struct SemanticFailureTool;
     struct DynamicGovernanceTool;
+    struct EffectCountingTool {
+        name: &'static str,
+        effect_class: ToolEffectClass,
+        executions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    struct NetworkRequiresTool;
 
     impl Tool for ExplicitIntentTool {
         fn name(&self) -> &'static str {
@@ -2042,6 +2155,52 @@ mod tests {
 
         fn governance_examples(&self) -> &'static [&'static str] {
             &[r#"{"op":"inspect"}"#, r#"{"op":"write"}"#]
+        }
+    }
+
+    impl Tool for EffectCountingTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            "counts executions for an effect class"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.executions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(r#"{"ok":true}"#.to_string())
+        }
+
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::task().with_effect_class(self.effect_class)
+        }
+    }
+
+    impl Tool for NetworkRequiresTool {
+        fn name(&self) -> &'static str {
+            "network_requires"
+        }
+
+        fn description(&self) -> &str {
+            "requires outbound network but has no explicit capability contract"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object"}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok("ok".to_string())
+        }
+
+        fn requires_network(&self) -> bool {
+            true
         }
     }
 
@@ -3408,7 +3567,7 @@ mod tests {
 
     #[test]
     fn llm_tool_specs_hide_tools_when_required_runtime_capability_is_offline() {
-        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
@@ -3471,7 +3630,7 @@ mod tests {
 
     #[test]
     fn execute_permitted_rechecks_runtime_capability_before_tool_body_runs() {
-        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
@@ -3521,6 +3680,102 @@ mod tests {
     }
 
     #[test]
+    fn offline_capability_blocks_new_tool_execution_while_read_only_local_tool_runs() {
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        crate::orchestrator::update_runtime_capability(
+            crate::orchestrator::RuntimeCapabilityUpdate {
+                id: crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+                status: crate::orchestrator::RuntimeCapabilityStatus::Offline,
+                reason: crate::orchestrator::RuntimeCapabilityReason::UpstreamUnavailable,
+                observed_at_secs: 10,
+                recovery_hint: Some("wait_for_network_recovery"),
+            },
+        );
+        let network_executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let local_executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[
+                (
+                    "effect_network_search",
+                    ToolProtocolContract::structured_object_json(),
+                ),
+                (
+                    "effect_read_only",
+                    ToolProtocolContract::structured_object_json(),
+                ),
+            ]));
+        registry.register(Box::new(EffectCountingTool {
+            name: "effect_network_search",
+            effect_class: ToolEffectClass::NetworkSearch,
+            executions: Arc::clone(&network_executions),
+        }));
+        registry.register(Box::new(EffectCountingTool {
+            name: "effect_read_only",
+            effect_class: ToolEffectClass::ReadOnly,
+            executions: Arc::clone(&local_executions),
+        }));
+        let mut ctx = StubToolContext;
+
+        let blocked = registry
+            .execute("effect_network_search", "{}", &mut ctx)
+            .expect_err("offline outbound capability must block network search before body runs");
+        let local = registry
+            .execute("effect_read_only", "{}", &mut ctx)
+            .expect("ordinary read-only local tool should not require a runtime capability");
+
+        assert_eq!(
+            network_executions.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            local_executions.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(local.content, r#"{"ok":true}"#);
+        assert_eq!(blocked.stage(), "runtime_capability_call");
+        assert!(blocked.to_string().contains("network.outbound_http"));
+    }
+
+    #[test]
+    fn degraded_network_search_capability_allows_probe_tool_execution() {
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+        crate::orchestrator::update_runtime_capability(
+            crate::orchestrator::RuntimeCapabilityUpdate {
+                id: crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+                status: crate::orchestrator::RuntimeCapabilityStatus::Degraded,
+                reason: crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing,
+                observed_at_secs: 10,
+                recovery_hint: Some("wait_for_recovery_stabilization"),
+            },
+        );
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "effect_network_search",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(EffectCountingTool {
+            name: "effect_network_search",
+            effect_class: ToolEffectClass::NetworkSearch,
+            executions: Arc::clone(&executions),
+        }));
+        let mut ctx = StubToolContext;
+
+        let outcome = registry
+            .execute("effect_network_search", "{}", &mut ctx)
+            .expect("network search should be allowed as a degraded recovery probe");
+
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(outcome.content, r#"{"ok":true}"#);
+    }
+
+    #[test]
     fn execute_permitted_rejects_args_that_change_dynamic_execution_shape() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(DynamicGovernanceTool));
@@ -3549,7 +3804,7 @@ mod tests {
 
     #[test]
     fn tls_admission_failure_marks_outbound_http_as_local_recovery() {
-        let _guard = RUNTIME_CAPABILITY_TEST_GUARD
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
@@ -3562,6 +3817,43 @@ mod tests {
 
         let state =
             crate::orchestrator::get_runtime_capability("network.outbound_http").expect("state");
+        assert_eq!(
+            state.status,
+            crate::orchestrator::RuntimeCapabilityStatus::Degraded
+        );
+        assert_eq!(
+            state.reason,
+            crate::orchestrator::RuntimeCapabilityReason::RecoveryStabilizing
+        );
+    }
+
+    #[test]
+    fn inferred_network_permit_failure_marks_outbound_http_recovering() {
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::orchestrator::reset_runtime_capabilities_for_tests();
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NetworkRequiresTool));
+        let policy = ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram");
+        let permit = match registry
+            .assess_llm_execution("network_requires", "{}", &policy)
+            .expect("assess")
+        {
+            crate::tools::ToolExecutionGateDecision::Allow(permit) => permit,
+            other => panic!("expected allow, got {other:?}"),
+        };
+        let err = Error::config("tls_admission", "largest block too small");
+
+        registry
+            .record_execution_failure(&permit, &err)
+            .expect("record failure");
+
+        let state = crate::orchestrator::get_runtime_capability(
+            crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
+        )
+        .expect("state");
         assert_eq!(
             state.status,
             crate::orchestrator::RuntimeCapabilityStatus::Degraded

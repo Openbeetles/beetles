@@ -4,6 +4,7 @@ use crate::bus::{
     AssetSourcePlatform, AudioBody, CanonicalMessageBody, CardBody, CardFormat, FileBody,
     ImageBody, InboundTx, MediaAssetRef, MessageTransport, PcMsg, TextBody, VideoBody,
 };
+use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::error::Result;
 use serde_json::Value;
 
@@ -233,17 +234,23 @@ fn handle_with_transport(
     let msg = PcMsg::new_inbound_with_body("dingtalk", chat_id, body, is_group)?
         .with_inbound_provenance(source_transport, msg_id, "", inbound_dedup_key);
     match inbound_tx.try_send(msg) {
-        Ok(()) => Ok(true),
+        Ok(()) => {
+            inbound_backpressure::record_enqueued(EventIngressSource::WssGateway);
+            Ok(true)
+        }
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             log::warn!("[{}] inbound queue full, skip stream ack", TAG);
-            crate::channels::inbound_backpressure::record_queue_full(
-                crate::channels::inbound_backpressure::InboundBackpressureOutcome::RedeliveryRequested,
+            inbound_backpressure::record_queue_full_for_source(
+                EventIngressSource::WssGateway,
+                InboundBackpressureOutcome::RedeliveryRequested,
             );
             Ok(false)
         }
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             log::warn!("[{}] inbound_tx disconnected, skip stream ack", TAG);
-            crate::channels::inbound_backpressure::record_disconnected_drop();
+            inbound_backpressure::record_disconnected_drop_for_source(
+                EventIngressSource::WssGateway,
+            );
             Ok(false)
         }
     }

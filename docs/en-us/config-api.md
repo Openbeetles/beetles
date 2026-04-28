@@ -12,7 +12,7 @@ Each endpoint is described in terms of purpose, request, and response.
 
 ## Request rules
 
-- Base address: during first setup, the common entry is `http://192.168.4.1`; once the device is on your network, use its current address.
+- Base address: during first setup, the common entry is `http://192.168.4.1`; if this is a Linux embedded device and its STA side already uses `192.168.4.0/24`, Beetle moves the hotspot to `http://172.16.42.1`; once the device is on your network, use its current address.
 - CORS: `/api/*` supports cross-origin access, and `OPTIONS` can be called directly.
 - Response format: everything is JSON except `GET /api/skills?name=...` and `GET /api/metrics?format=prometheus`.
 - The legacy `/api/soul` and `/api/user` content endpoints are retired and are not part of this contract.
@@ -330,6 +330,11 @@ Auth: `Pairing code + CSRF`
 
 Request body: `application/json`
 
+Notes:
+
+- Normal users should start from Configure UI: **Device Config -> GPIO Devices**
+- This section is the raw contract for scripts, custom frontends, and advanced integrations
+
 Top-level fields:
 
 - `hardware_devices`
@@ -356,7 +361,7 @@ Success response: `200 application/json`
 }
 ```
 
-Field guide: [Hardware device config](hardware-device-config.md).
+For the user-facing setup flow, see [Hardware device config](hardware-device-config.md). The raw field contract is defined by this page and the API response itself.
 
 **GET /api/config/audio**
 
@@ -1249,6 +1254,20 @@ Top-level fields:
 - `session_count`
 - `storage_used_kb`
 - `storage_total_kb`
+- `admission`
+- `governance_metrics`
+- `runtime_capabilities`
+- `plane_registry`
+- `plane_lifecycle`
+- `leases`
+- `threads`
+- `write_back`
+- `firmware_identity`
+- `crash`
+
+The resource endpoint is an operator/debug contract. The governance fields are
+snapshots for diagnosing runtime pressure and may grow as new execution-plane
+guards are added; clients should tolerate unknown fields.
 
 **GET /api/diagnose**
 

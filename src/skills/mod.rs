@@ -316,6 +316,7 @@ pub fn prompt_skill_budget_for_runtime_mode(
         | crate::runtime::RuntimeMode::ConfigActive
         | crate::runtime::RuntimeMode::VoiceExclusive
         | crate::runtime::RuntimeMode::Maintenance
+        | crate::runtime::RuntimeMode::Upgrade
         | crate::runtime::RuntimeMode::RecoverySafeMode => 0,
     }
 }

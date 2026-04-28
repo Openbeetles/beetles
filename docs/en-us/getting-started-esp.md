@@ -39,7 +39,6 @@ On first use, the device usually exposes a hotspot named **Beetle**.
 3. enter `http://192.168.4.1` as the **Device URL**
 
 If the device is already on your local network, enter its current local IP as the **Device URL** instead.
-The device root itself returns API inventory JSON and is not a promised embedded UI or redirect.
 
 ## 3. Finish the Minimum Setup
 

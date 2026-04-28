@@ -1,9 +1,11 @@
 //! 周期打日志（版本、运行时长、可选 heap），供外部监控存活；可读 HEARTBEAT.md 待办并注入入站。
 //! Heartbeat: periodic log (version, uptime, optional heap) for liveness monitoring.
 
+use std::sync::mpsc::TrySendError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::i18n::{tr, Locale, Message as UiMessage};
 
 const TAG: &str = "heartbeat";
@@ -187,6 +189,7 @@ pub(crate) fn heartbeat_tick(
         }
     };
     if !should_inject {
+        inbound_backpressure::record_stale_drop(EventIngressSource::Heartbeat);
         return;
     }
     let loc = resolve_locale();
@@ -198,8 +201,23 @@ pub(crate) fn heartbeat_tick(
             return;
         }
     };
-    if inbound_tx.send(msg).is_err() {
-        log::warn!("[{}] inbound_tx.send failed (channel closed?)", TAG);
+    match inbound_tx.try_send(msg) {
+        Ok(()) => {
+            inbound_backpressure::record_enqueued(EventIngressSource::Heartbeat);
+        }
+        Err(TrySendError::Full(_)) => {
+            inbound_backpressure::record_queue_full_for_source(
+                EventIngressSource::Heartbeat,
+                InboundBackpressureOutcome::Dropped,
+            );
+            log::warn!("[{}] inbound_tx.try_send failed (system queue full)", TAG);
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            inbound_backpressure::record_disconnected_drop_for_source(
+                EventIngressSource::Heartbeat,
+            );
+            log::warn!("[{}] inbound_tx.try_send failed (channel closed?)", TAG);
+        }
     }
 }
 

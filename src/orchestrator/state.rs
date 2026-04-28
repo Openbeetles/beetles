@@ -293,6 +293,24 @@ pub struct ResourceGovernanceMetricsSnapshot {
     pub inbound_queue_full_total: u64,
     pub inbound_defer_total: u64,
     pub inbound_drop_total: u64,
+    pub event_ingress_enqueued_total: u64,
+    pub event_ingress_rejected_total: u64,
+    pub event_ingress_purged_total: u64,
+    pub event_ingress_cancelled_total: u64,
+    pub event_ingress_stale_drop_total: u64,
+}
+
+/// Last crash metadata exposed by resource diagnostics.
+///
+/// These fields remain `None` until a real panic/coredump evidence source has
+/// provided data; the resource API must not synthesize fake PCs or reasons.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct CrashMetadataSnapshot {
+    pub last_panic_pc: Option<String>,
+    pub last_panic_core: Option<u32>,
+    pub last_panic_reason: Option<String>,
+    pub last_symbolize_hint: Option<String>,
+    pub last_resource_baseline_before_panic: Option<String>,
 }
 
 /// Deep resource diagnostic snapshot. This is the single aggregation point for `/api/resource`.
@@ -301,12 +319,14 @@ pub struct ResourceDiagnosticSnapshot {
     pub resource: ResourceSnapshot,
     pub admission: ResourceAdmissionSnapshot,
     pub governance_metrics: ResourceGovernanceMetricsSnapshot,
+    pub runtime_capabilities: Vec<crate::orchestrator::RuntimeCapabilityState>,
     pub planes: crate::runtime::PlaneRegistrySnapshot,
     pub plane_lifecycle: crate::runtime::PlaneLifecycleSnapshot,
     pub leases: crate::runtime::LeaseSnapshot,
     pub threads: crate::runtime::thread_registry::ThreadRegistrySnapshot,
     pub display_lease_denied_total: u64,
     pub write_back: crate::runtime::write_back::WriteBackSnapshot,
+    pub crash: CrashMetadataSnapshot,
 }
 
 impl ResourceSnapshot {
@@ -376,6 +396,27 @@ impl ResourceSnapshot {
     }
 }
 
+impl CrashMetadataSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.last_panic_pc.is_none()
+            && self.last_panic_core.is_none()
+            && self.last_panic_reason.is_none()
+            && self.last_symbolize_hint.is_none()
+            && self.last_resource_baseline_before_panic.is_none()
+    }
+
+    pub fn merge_prefer_self(mut self, fallback: Self) -> Self {
+        self.last_panic_pc = self.last_panic_pc.or(fallback.last_panic_pc);
+        self.last_panic_core = self.last_panic_core.or(fallback.last_panic_core);
+        self.last_panic_reason = self.last_panic_reason.or(fallback.last_panic_reason);
+        self.last_symbolize_hint = self.last_symbolize_hint.or(fallback.last_symbolize_hint);
+        self.last_resource_baseline_before_panic = self
+            .last_resource_baseline_before_panic
+            .or(fallback.last_resource_baseline_before_panic);
+        self
+    }
+}
+
 impl ResourceDiagnosticSnapshot {
     pub fn from_state(state: &OrchestratorState) -> Self {
         let resource = ResourceSnapshot::from_state(state);
@@ -402,13 +443,20 @@ impl ResourceDiagnosticSnapshot {
                 inbound_queue_full_total: metrics.inbound_queue_full_total,
                 inbound_defer_total: metrics.inbound_defer_total,
                 inbound_drop_total: metrics.inbound_drop_total,
+                event_ingress_enqueued_total: metrics.event_ingress_enqueued_total,
+                event_ingress_rejected_total: metrics.event_ingress_rejected_total,
+                event_ingress_purged_total: metrics.event_ingress_purged_total,
+                event_ingress_cancelled_total: metrics.event_ingress_cancelled_total,
+                event_ingress_stale_drop_total: metrics.event_ingress_stale_drop_total,
             },
+            runtime_capabilities: crate::orchestrator::runtime_capability_snapshot(),
             planes: crate::runtime::plane::snapshot(),
             plane_lifecycle: crate::runtime::plane_lifecycle::snapshot(),
             leases,
             threads: crate::runtime::thread_registry::snapshot(),
             display_lease_denied_total: crate::display::display_lease_denied_total(),
             write_back: crate::runtime::write_back::snapshot(),
+            crash: crate::orchestrator::crash_metadata_snapshot(),
             resource,
         }
     }

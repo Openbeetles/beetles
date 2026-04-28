@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 
 pub const CONFIG_ACTIVITY_WINDOW_SECS: u64 = 30;
+const CONFIG_READ_BURST_LEASE_TTL_MS: u64 = 5_000;
 
 pub struct ConfigPlaneGuard;
 
@@ -144,6 +145,130 @@ pub struct ConfigActivityGuard {
     external_wss_suspend: Option<crate::network::ExternalWssSuspendGuard>,
 }
 
+#[derive(Debug)]
+struct ConfigReadBurstLeaseGuard {
+    owner: crate::runtime::lease::LeaseOwner,
+    token: u64,
+}
+
+impl Drop for ConfigReadBurstLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(
+            crate::runtime::lease::LeaseKind::ConfigReadBurst,
+            self.owner,
+            self.token,
+        );
+    }
+}
+
+pub struct ConfigReadBurstGuard {
+    finished: bool,
+    _lease: Option<ConfigReadBurstLeaseGuard>,
+}
+
+impl ConfigReadBurstGuard {
+    pub fn enter(route: &'static str) -> Self {
+        let owner = crate::runtime::lease::LeaseOwner::new("config_recovery", "http_config_read");
+        let decision = crate::runtime::lease::try_acquire(
+            crate::runtime::lease::LeaseKind::ConfigReadBurst,
+            owner,
+            crate::runtime::lease::LeaseMode::Shared,
+            Some(CONFIG_READ_BURST_LEASE_TTL_MS),
+        );
+        Self::from_decision(route, owner, decision)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enter_at(route: &'static str, now_ms: u64) -> Self {
+        let owner = crate::runtime::lease::LeaseOwner::new("config_recovery", "http_config_read");
+        let decision = crate::runtime::lease::try_acquire_at(
+            crate::runtime::lease::LeaseKind::ConfigReadBurst,
+            owner,
+            crate::runtime::lease::LeaseMode::Shared,
+            Some(CONFIG_READ_BURST_LEASE_TTL_MS),
+            now_ms,
+        );
+        Self::from_decision(route, owner, decision)
+    }
+
+    fn from_decision(
+        route: &'static str,
+        owner: crate::runtime::lease::LeaseOwner,
+        decision: crate::runtime::lease::LeaseDecision,
+    ) -> Self {
+        let lease = match decision {
+            crate::runtime::lease::LeaseDecision::Acquired(record)
+            | crate::runtime::lease::LeaseDecision::Reentered(record)
+            | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+                current: record, ..
+            } => Some(ConfigReadBurstLeaseGuard {
+                owner,
+                token: record.token,
+            }),
+            crate::runtime::lease::LeaseDecision::Denied(denial) => {
+                log::warn!(
+                    "[config_recovery] config read burst lease denied route={} reason={} held_by={:?}",
+                    route,
+                    denial.reason,
+                    denial.held_by
+                );
+                None
+            }
+        };
+        let _ = crate::runtime::plane_lifecycle::mark(
+            crate::runtime::PlaneId::ConfigRecovery,
+            "http_config_read",
+            crate::runtime::PlaneLifecycleState::Active,
+            "config_read_burst",
+        );
+        Self {
+            finished: false,
+            _lease: lease,
+        }
+    }
+
+    pub fn finish_status(&mut self, status: u16) {
+        let (state, reason) = if status >= 400 {
+            (
+                crate::runtime::PlaneLifecycleState::Failed,
+                "config_read_failed",
+            )
+        } else {
+            (
+                crate::runtime::PlaneLifecycleState::Stopping,
+                "config_read_complete",
+            )
+        };
+        let _ = crate::runtime::plane_lifecycle::mark(
+            crate::runtime::PlaneId::ConfigRecovery,
+            "http_config_read",
+            state,
+            reason,
+        );
+        self.finished = true;
+    }
+}
+
+impl Drop for ConfigReadBurstGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = crate::runtime::plane_lifecycle::mark(
+                crate::runtime::PlaneId::ConfigRecovery,
+                "http_config_read",
+                crate::runtime::PlaneLifecycleState::Failed,
+                "config_read_aborted",
+            );
+        } else {
+            let _ = crate::runtime::plane_lifecycle::mark(
+                crate::runtime::PlaneId::ConfigRecovery,
+                "http_config_read",
+                crate::runtime::PlaneLifecycleState::Unloaded,
+                "config_read_released",
+            );
+        }
+    }
+}
+
 impl ConfigActivityGuard {
     pub fn enter(phase: ConfigActivityPhase, route: &'static str) -> Self {
         Self::enter_at(phase, route, crate::util::current_unix_secs())
@@ -202,6 +327,10 @@ pub fn set_recovery_safe_mode_active(active: bool) {
     crate::state::set_recovery_safe_mode_active(active);
 }
 
+pub fn set_upgrade_active(active: bool) {
+    crate::state::set_upgrade_active(active);
+}
+
 #[cfg(test)]
 pub fn set_pairing_state_for_tests(known: bool, required: bool) {
     crate::state::set_pairing_state_known(known);
@@ -217,6 +346,7 @@ pub fn reset_runtime_governance_state_for_tests() {
     crate::state::set_pairing_state_known(false);
     crate::state::set_pairing_required(false);
     crate::state::set_recovery_safe_mode_active(false);
+    crate::state::set_upgrade_active(false);
     let mut state = config_activity_state()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -295,5 +425,54 @@ mod tests {
         assert!(snapshot.active);
         assert_eq!(snapshot.phase, ConfigActivityPhase::Fail);
         assert!(!snapshot.phase.blocks_new_non_voice_network_work());
+    }
+
+    #[test]
+    fn config_read_burst_guard_marks_config_recovery_lease_and_lifecycle() {
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
+
+        {
+            let mut guard = ConfigReadBurstGuard::enter_at("/api/config/system", 100);
+            assert_eq!(
+                crate::runtime::lease::active_count_for_kind_at(
+                    crate::runtime::lease::LeaseKind::ConfigReadBurst,
+                    101
+                ),
+                1
+            );
+            let snapshot = crate::runtime::plane_lifecycle::snapshot();
+            let record = snapshot
+                .records
+                .iter()
+                .find(|record| {
+                    record.plane == crate::runtime::PlaneId::ConfigRecovery
+                        && record.owner == "http_config_read"
+                })
+                .expect("config read lifecycle record");
+            assert_eq!(record.state, crate::runtime::PlaneLifecycleState::Active);
+            assert_eq!(record.last_reason, "config_read_burst");
+
+            guard.finish_status(200);
+        }
+
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind_at(
+                crate::runtime::lease::LeaseKind::ConfigReadBurst,
+                102
+            ),
+            0
+        );
+        let snapshot = crate::runtime::plane_lifecycle::snapshot();
+        let record = snapshot
+            .records
+            .iter()
+            .find(|record| {
+                record.plane == crate::runtime::PlaneId::ConfigRecovery
+                    && record.owner == "http_config_read"
+            })
+            .expect("config read lifecycle record after drop");
+        assert_eq!(record.state, crate::runtime::PlaneLifecycleState::Unloaded);
+        assert_eq!(record.last_reason, "config_read_released");
     }
 }

@@ -5,6 +5,7 @@ use crate::bus::{
     AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, InboundTx,
     MediaAssetRef, MessageTransport, PcMsg, TextBody, VideoBody,
 };
+use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::channels::send::{
     record_outbound_http_failure, record_outbound_http_success, QueuedOutboundMessage,
 };
@@ -330,16 +331,21 @@ pub fn handle_aibot_frame(
                     inbound_dedup_key,
                 );
             match inbound_tx.try_send(msg) {
-                Ok(()) => {}
+                Ok(()) => {
+                    inbound_backpressure::record_enqueued(EventIngressSource::WssGateway);
+                }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     log::warn!("[{}] inbound queue full, dropping callback", TAG);
-                    crate::channels::inbound_backpressure::record_queue_full(
-                        crate::channels::inbound_backpressure::InboundBackpressureOutcome::Dropped,
+                    inbound_backpressure::record_queue_full_for_source(
+                        EventIngressSource::WssGateway,
+                        InboundBackpressureOutcome::Dropped,
                     );
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     log::warn!("[{}] inbound_tx disconnected, dropping callback", TAG);
-                    crate::channels::inbound_backpressure::record_disconnected_drop();
+                    inbound_backpressure::record_disconnected_drop_for_source(
+                        EventIngressSource::WssGateway,
+                    );
                 }
             }
             Ok(())

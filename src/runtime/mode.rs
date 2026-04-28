@@ -12,6 +12,7 @@ pub enum RuntimeMode {
     ConfigActive,
     VoiceExclusive,
     Maintenance,
+    Upgrade,
     RecoverySafeMode,
 }
 
@@ -24,6 +25,7 @@ impl RuntimeMode {
             Self::ConfigActive => "config_active",
             Self::VoiceExclusive => "voice_exclusive",
             Self::Maintenance => "maintenance",
+            Self::Upgrade => "upgrade",
             Self::RecoverySafeMode => "recovery_safe_mode",
         }
     }
@@ -53,6 +55,7 @@ pub struct RuntimeModeSource {
     pub config_plane_alive: bool,
     pub config_active: bool,
     pub config_activity_phase: crate::runtime::ConfigActivityPhase,
+    pub upgrade_active: bool,
     pub channel_plane_alive: bool,
     pub voice_plane_alive: bool,
     pub agent_plane_alive: bool,
@@ -74,6 +77,7 @@ pub struct RuntimeModeSnapshot {
     pub config_plane_alive: bool,
     pub config_active: bool,
     pub config_activity_phase: crate::runtime::ConfigActivityPhase,
+    pub upgrade_active: bool,
     pub channel_plane_alive: bool,
     pub voice_plane_alive: bool,
     pub agent_plane_alive: bool,
@@ -93,6 +97,7 @@ impl RuntimeModeSnapshot {
             RuntimeMode::ConfigActive => Some("config_active"),
             RuntimeMode::VoiceExclusive => Some("voice_exclusive_active"),
             RuntimeMode::Maintenance => Some("background_maintenance_active"),
+            RuntimeMode::Upgrade => Some("upgrade_active"),
             RuntimeMode::RecoverySafeMode => Some("recovery_safe_mode"),
         }
     }
@@ -133,6 +138,7 @@ pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
         config_plane_alive: source.config_plane_alive,
         config_active: source.config_active,
         config_activity_phase: source.config_activity_phase,
+        upgrade_active: source.upgrade_active,
         channel_plane_alive: source.channel_plane_alive,
         voice_plane_alive: source.voice_plane_alive,
         agent_plane_alive: source.agent_plane_alive,
@@ -147,6 +153,8 @@ pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
 fn derive_mode(source: RuntimeModeSource) -> RuntimeMode {
     if source.recovery_safe_mode_active {
         RuntimeMode::RecoverySafeMode
+    } else if source.upgrade_active {
+        RuntimeMode::Upgrade
     } else if source.boot_phase_active {
         RuntimeMode::Booting
     } else if source.voice_exclusive_active {
@@ -223,6 +231,17 @@ fn base_action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_external_wss_connect: false,
             require_external_wss_suspended: true,
         },
+        RuntimeMode::Upgrade => RuntimeModeActionBudget {
+            allow_periodic_maintenance: false,
+            allow_due_user_timers: true,
+            allow_heartbeat_injection: false,
+            allow_best_effort_delayed_tasks: false,
+            allow_idle_self_runtime: false,
+            allow_non_voice_outbound: true,
+            allow_realtime_voice_connect: false,
+            allow_external_wss_connect: false,
+            require_external_wss_suspended: true,
+        },
         RuntimeMode::Maintenance => RuntimeModeActionBudget {
             allow_periodic_maintenance: false,
             allow_due_user_timers: true,
@@ -292,6 +311,27 @@ mod tests {
         assert!(!snapshot.action_budget.allow_periodic_maintenance);
         assert!(snapshot.action_budget.allow_due_user_timers);
         assert!(!snapshot.action_budget.allow_idle_self_runtime);
+    }
+
+    #[test]
+    fn upgrade_mode_blocks_wss_voice_and_non_deadline_background_work() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            upgrade_active: true,
+            background_maintenance_active: true,
+            external_wss_managed_present: true,
+            ..RuntimeModeSource::default()
+        });
+
+        assert_eq!(snapshot.current_mode, RuntimeMode::Upgrade);
+        assert!(snapshot.upgrade_active);
+        assert!(!snapshot.action_budget.allow_external_wss_connect);
+        assert!(snapshot.action_budget.require_external_wss_suspended);
+        assert!(!snapshot.action_budget.allow_realtime_voice_connect);
+        assert!(!snapshot.action_budget.allow_periodic_maintenance);
+        assert!(!snapshot.action_budget.allow_best_effort_delayed_tasks);
+        assert!(!snapshot.action_budget.allow_idle_self_runtime);
+        assert!(snapshot.action_budget.allow_due_user_timers);
+        assert!(snapshot.action_budget.allow_non_voice_outbound);
     }
 
     #[test]

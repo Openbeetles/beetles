@@ -744,6 +744,9 @@ mod tests {
 
     #[test]
     fn send_and_get_id_records_outbound_http_success() {
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         let before = crate::metrics::snapshot();
         let mut http = StubHttp {
@@ -763,6 +766,9 @@ mod tests {
 
     #[test]
     fn send_chat_action_tls_admission_failure_marks_outbound_http_recovering() {
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         let before = crate::metrics::snapshot();
         let mut http = StubHttp {

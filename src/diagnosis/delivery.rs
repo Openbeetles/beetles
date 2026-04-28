@@ -189,6 +189,10 @@ mod tests {
                 epoch: 1,
                 changed_at_secs: 1,
                 observed_at_secs: 1,
+                active_calls: 0,
+                draining: false,
+                last_transition_uptime_ms: 0,
+                drain_denied_total: 0,
                 recovery_hint: Some("wait_for_network_recovery"),
             }],
         });

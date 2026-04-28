@@ -1,38 +1,33 @@
-# 硬件配置
+# 硬件设备配置
 
 [English](../en-us/hardware-device-config.md) | **中文** | [文档索引](../README.md)
 
-本页说明 Beetle OS 读取的硬件配置文件结构。
-内容聚焦字段定义与约束，不涉及接线教程。
+本页讲的是用户应该怎么在 **Configure UI** 里配置硬件。
+如果你是要写脚本、自定义前端，或者要看接口细节，再去看 [config-api.md](config-api.md)。
 
-## 基本流程
+## 配置入口
 
-硬件配置通常按以下顺序完成：
+硬件配置请直接在 **Configure UI** 里完成。
 
-1. 在 `hardware_devices` 中定义运行时直接使用的设备
-2. 只有用到 I2C 时才配置 `i2c_bus`
-3. 需要时再补 `i2c_devices` 或 `i2c_sensors`
-4. 保存配置
-5. 保存后确认相关能力已在运行时出现
+常见路径：
 
-保存后的数据会落到 `config/hardware.json`。
+1. 打开 Configure UI，并连到目标设备
+2. 完成配对码解锁
+3. 进入 **设备配置**
+4. 打开 **GPIO 设备**
+5. 添加或修改设备
+6. 点击保存，并按提示重启设备
 
-## 配置结构
+首次连设备、地址怎么填，先看 [configuration.md](configuration.md)。
 
-当前结构是：
+## 这个页面能配什么
 
-- `hardware_devices`
-- `i2c_bus`
-- `i2c_devices`
-- `i2c_sensors`
+当前 Configure UI 的硬件页主要覆盖两类内容：
 
-无需一次性启用全部区块。
+- 可直接控制或读取的板载硬件设备
+- 常见 I2C 传感器
 
-## `hardware_devices`
-
-该区块用于定义运行时可以直接调用的设备，包括设备标识、用途与接线信息。
-
-当前支持的 `device_type`：
+页面里当前可直接添加的设备类型包括：
 
 - `gpio_out`
 - `gpio_in`
@@ -41,99 +36,47 @@
 - `buzzer`
 - `dht`
 
-每个设备都有这些核心字段：
+如果你只是想让 Beetle 控灯、读开关、驱动蜂鸣器、读取 DHT，正常就都在这里配。
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 设备名，必须唯一 |
-| `device_type` | 设备类型 |
-| `pins` | 接线信息 |
-| `what` | 设备用途说明 |
-| `how` | 使用方式说明 |
-| `options` | 额外选项，不同设备可不同 |
+## 推荐操作方式
 
-## `i2c_bus`、`i2c_devices`、`i2c_sensors`
+- 一个设备填一条记录，先把 `设备 ID` 起清楚
+- 引脚号务必和实际接线一致
+- `是什么`、`怎么用` 这两个说明要写成人能看懂的话，方便后续模型和工具正确使用
+- 保存后如果页面提示要重启，就直接重启设备
 
-如果你要用 I2C，还可以继续定义：
+## 当前 UI 还没完全覆盖的部分
 
-- `i2c_bus`：I2C 总线本身
-- `i2c_devices`：普通 I2C 设备
-- `i2c_sensors`：I2C 传感器
+大多数用户不需要管这个。
 
-最常用字段如下：
+如果你确实要配置下面这些进阶字段：
 
-| 区块 | 常用字段 |
-|------|----------|
-| `i2c_bus` | `sda_pin`、`scl_pin`、`freq_hz` |
-| `i2c_devices` | `id`、`addr`、`what`、`how`、`options` |
-| `i2c_sensors` | `id`、`addr`、`model`、`watch_field`、`what`、`how`、`options` |
+- `i2c_bus`
+- `i2c_devices`
+- 需要批量导入已有硬件配置
 
-`i2c_sensors` 当前支持这些 `model`：
+那就看 [config-api.md](config-api.md) 里的 `GET/POST /api/config/hardware`。
 
-- `sht3x`
-- `aht20`
-- `raw`
+也就是说：
 
-如果你用 `raw`，还要补它自己的读写选项。
-如果你用 `dht`，常见 `options.model` 是 `dht11`、`dht22` 或 `dht21`。
+- 日常用户配置，先走 Configure UI
+- 进阶集成或脚本化配置，再看 API
 
-## 示例
+## 保存后怎么确认
 
-```json
-{
-  "hardware_devices": [
-    {
-      "id": "onboard_led",
-      "device_type": "gpio_out",
-      "pins": { "pin": 2 },
-      "what": "板载指示灯",
-      "how": "传 value 1 表示开，0 表示关"
-    },
-    {
-      "id": "room_dht",
-      "device_type": "dht",
-      "pins": { "pin": 4 },
-      "what": "室内温湿度传感器",
-      "how": "读取温度和湿度",
-      "options": { "model": "dht22", "watch_field": "temperature" }
-    }
-  ],
-  "i2c_bus": {
-    "sda_pin": 8,
-    "scl_pin": 9,
-    "freq_hz": 400000
-  },
-  "i2c_sensors": [
-    {
-      "id": "desk_temp",
-      "addr": 68,
-      "model": "aht20",
-      "watch_field": "temperature",
-      "what": "桌面温湿度传感器",
-      "how": "读取温度和湿度"
-    }
-  ]
-}
-```
+- 页面保存成功
+- 如有提示，完成一次重启
+- 回到设备页或相关能力页，确认设备已经能被调用或读到数据
 
-## 生效结果
+如果保存后还是没反应，先排查三件事：
 
-- `hardware_devices` 定义可直接调用的设备
-- `i2c_devices` 定义可访问的 I2C 设备
-- `i2c_sensors` 定义可读取和监控的 I2C 传感器
-
-如果配置不合法，这些能力不会正常出现。
-
-## 限制
-
-- `hardware_devices` 最多 8 个
-- `pwm_out` 最多 4 个
-- 同一个引脚不能被多个设备重复使用
-- `adc_in` 只能用允许的 ADC 引脚
-- `i2c_sensors.id` 不能和 `hardware_devices.id` 冲突
+- 引脚或接线填错
+- 设备类型选错
+- I2C 传感器需要的总线参数还没配置
 
 ## 相关文档
 
-- 板型与硬件范围：[hardware.md](hardware.md)
-- 运行时工具能力：[tools.md](tools.md)
+- 配置总览：[configuration.md](configuration.md)
+- 平台与板型范围：[hardware.md](hardware.md)
 - 配置接口参考：[config-api.md](config-api.md)
+- 显示配置：[display.md](display.md)

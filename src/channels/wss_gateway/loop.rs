@@ -2,6 +2,7 @@
 //! WiFi 断连时先等 WiFi 恢复再尝试重连 WSS，避免无网络时反复做 TLS 握手。
 
 use crate::bus::InboundTx;
+use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::channels::wss_gateway::connection::{WssConnection, WssEvent};
 use crate::channels::wss_gateway::driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
 use crate::channels::ChannelHttpClient;
@@ -490,7 +491,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                     tag,
                                     chat_id
                                 );
-                                crate::channels::inbound_backpressure::record_deferred_without_queue_full();
+                                inbound_backpressure::record_deferred_without_queue_full_for_source(
+                                    EventIngressSource::WssGateway,
+                                );
                                 let _ = pending_retry.save_pending_retry(&msg);
                             } else {
                                 let mut enqueued = false;
@@ -523,9 +526,13 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                     }
                                 }
                                 if enqueued {
+                                    inbound_backpressure::record_enqueued(
+                                        EventIngressSource::WssGateway,
+                                    );
                                     log::info!("[{}] message enqueued, chat_id={}", tag, chat_id);
                                 } else if disconnected {
-                                    crate::channels::inbound_backpressure::record_disconnected_drop(
+                                    inbound_backpressure::record_disconnected_drop_for_source(
+                                        EventIngressSource::WssGateway,
                                     );
                                 } else {
                                     log::warn!(
@@ -533,8 +540,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                         tag,
                                         chat_id
                                     );
-                                    crate::channels::inbound_backpressure::record_queue_full(
-                                        crate::channels::inbound_backpressure::InboundBackpressureOutcome::DeferredToPendingRetry,
+                                    inbound_backpressure::record_queue_full_for_source(
+                                        EventIngressSource::WssGateway,
+                                        InboundBackpressureOutcome::DeferredToPendingRetry,
                                     );
                                     if let Some(m) = pending_msg.as_ref() {
                                         let _ = pending_retry.save_pending_retry(m);
@@ -557,11 +565,16 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                         tag,
                                         chat_id
                                     );
-                                    crate::channels::inbound_backpressure::record_deferred_without_queue_full();
+                                    inbound_backpressure::record_deferred_without_queue_full_for_source(
+                                        EventIngressSource::WssGateway,
+                                    );
                                     false
                                 } else {
                                     match inbound_tx.try_send(msg) {
                                         Ok(()) => {
+                                            inbound_backpressure::record_enqueued(
+                                                EventIngressSource::WssGateway,
+                                            );
                                             log::info!(
                                                 "[{}] message enqueued, chat_id={}",
                                                 tag,
@@ -575,14 +588,17 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                                 tag,
                                                 chat_id
                                             );
-                                            crate::channels::inbound_backpressure::record_queue_full(
-                                                crate::channels::inbound_backpressure::InboundBackpressureOutcome::RedeliveryRequested,
+                                            inbound_backpressure::record_queue_full_for_source(
+                                                EventIngressSource::WssGateway,
+                                                InboundBackpressureOutcome::RedeliveryRequested,
                                             );
                                             false
                                         }
                                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                                             log::error!("[{}] inbound_tx disconnected", tag);
-                                            crate::channels::inbound_backpressure::record_disconnected_drop();
+                                            inbound_backpressure::record_disconnected_drop_for_source(
+                                                EventIngressSource::WssGateway,
+                                            );
                                             false
                                         }
                                     }

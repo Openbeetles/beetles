@@ -39,7 +39,6 @@ pub(crate) enum RouteBodyMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteExecutionClass {
     ImmediateRoute,
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
     SnapshotRoute,
     AsyncConfigRoute,
     SlowDiagnosticRoute,
@@ -170,6 +169,21 @@ pub(crate) enum OperatorRouteAccess {
     Windowed,
 }
 
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RouteRuntimeAdmission {
+    Allowed,
+    Rejected {
+        status: u16,
+        error_key: &'static str,
+        stage: &'static str,
+        reason: &'static str,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HttpRouteSpec {
     pub(crate) path: &'static str,
@@ -232,7 +246,6 @@ impl HttpRouteSpec {
         }
     }
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
     pub(crate) const fn snapshot_operator(
         path: &'static str,
         method: RouteMethod,
@@ -288,12 +301,44 @@ impl HttpRouteSpec {
         self.config_activity_phase
     }
 
+    #[cfg(test)]
+    pub(crate) const fn rejects_during_voice_exclusive(self) -> bool {
+        self.reject_during_voice_exclusive
+    }
+
     #[cfg_attr(
         not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
         allow(dead_code)
     )]
-    pub(crate) const fn rejects_during_voice_exclusive(self) -> bool {
-        self.reject_during_voice_exclusive
+    pub(crate) fn tracks_config_read_burst(self) -> bool {
+        matches!(
+            (self.method, self.path, self.execution_class),
+            (
+                RouteMethod::Get,
+                ROUTE_CONFIG_LLM,
+                RouteExecutionClass::ImmediateRoute
+            ) | (
+                RouteMethod::Get,
+                ROUTE_CONFIG_CHANNELS,
+                RouteExecutionClass::ImmediateRoute
+            ) | (
+                RouteMethod::Get,
+                ROUTE_CONFIG_SYSTEM,
+                RouteExecutionClass::ImmediateRoute
+            ) | (
+                RouteMethod::Get,
+                ROUTE_CONFIG_HARDWARE,
+                RouteExecutionClass::ImmediateRoute
+            ) | (
+                RouteMethod::Get,
+                ROUTE_CONFIG_AUDIO,
+                RouteExecutionClass::ImmediateRoute
+            ) | (
+                RouteMethod::Get,
+                ROUTE_CONFIG_DISPLAY,
+                RouteExecutionClass::ImmediateRoute
+            )
+        )
     }
 
     pub(crate) const fn with_config_activity(
@@ -304,6 +349,106 @@ impl HttpRouteSpec {
         self.config_activity_phase = Some(phase);
         self.reject_during_voice_exclusive = reject_during_voice_exclusive;
         self
+    }
+
+    #[cfg_attr(
+        not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
+        allow(dead_code)
+    )]
+    pub(crate) fn runtime_mode_admission(
+        self,
+        mode: crate::runtime::RuntimeModeSnapshot,
+    ) -> RouteRuntimeAdmission {
+        match mode.current_mode {
+            crate::runtime::RuntimeMode::RecoverySafeMode => {
+                if self.allowed_in_recovery_safe_mode() {
+                    RouteRuntimeAdmission::Allowed
+                } else {
+                    RouteRuntimeAdmission::Rejected {
+                        status: 503,
+                        error_key: "runtime.route_blocked_by_recovery_safe_mode",
+                        stage: "runtime_route_admission",
+                        reason: "recovery_safe_mode_allowlist",
+                    }
+                }
+            }
+            crate::runtime::RuntimeMode::VoiceExclusive => {
+                if self.reject_during_voice_exclusive {
+                    RouteRuntimeAdmission::Rejected {
+                        status: 409,
+                        error_key: "runtime.config_blocked_by_voice",
+                        stage: "config_activity_admission",
+                        reason: "voice_exclusive_route_suspend",
+                    }
+                } else {
+                    RouteRuntimeAdmission::Allowed
+                }
+            }
+            crate::runtime::RuntimeMode::Upgrade => {
+                if self.allowed_in_upgrade_mode() {
+                    RouteRuntimeAdmission::Allowed
+                } else {
+                    RouteRuntimeAdmission::Rejected {
+                        status: 503,
+                        error_key: "runtime.route_blocked_by_upgrade",
+                        stage: "runtime_route_admission",
+                        reason: "upgrade_mode_allowlist",
+                    }
+                }
+            }
+            crate::runtime::RuntimeMode::ConfigActive => {
+                if self.blocks_during_config_active() {
+                    RouteRuntimeAdmission::Rejected {
+                        status: 409,
+                        error_key: "runtime.route_blocked_by_config_active",
+                        stage: "runtime_route_admission",
+                        reason: "config_active_diagnostic_not_admitted",
+                    }
+                } else {
+                    RouteRuntimeAdmission::Allowed
+                }
+            }
+            _ => RouteRuntimeAdmission::Allowed,
+        }
+    }
+
+    #[cfg_attr(
+        not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
+        allow(dead_code)
+    )]
+    fn blocks_during_config_active(self) -> bool {
+        self.execution_class == RouteExecutionClass::SlowDiagnosticRoute
+            && self.config_activity_phase != Some(crate::runtime::ConfigActivityPhase::Active)
+    }
+
+    #[cfg_attr(
+        not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
+        allow(dead_code)
+    )]
+    fn allowed_in_recovery_safe_mode(self) -> bool {
+        self.method == RouteMethod::Options
+            || matches!(
+                (self.method, self.path),
+                (RouteMethod::Get, ROUTE_ROOT)
+                    | (RouteMethod::Get, ROUTE_HEALTH)
+                    | (RouteMethod::Get, ROUTE_CSRF_TOKEN)
+                    | (RouteMethod::Post, ROUTE_CONFIG_RESET)
+            )
+    }
+
+    #[cfg_attr(
+        not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
+        allow(dead_code)
+    )]
+    fn allowed_in_upgrade_mode(self) -> bool {
+        self.method == RouteMethod::Options
+            || matches!(
+                (self.method, self.path),
+                (RouteMethod::Get, ROUTE_ROOT)
+                    | (RouteMethod::Get, ROUTE_HEALTH)
+                    | (RouteMethod::Get, ROUTE_CSRF_TOKEN)
+                    | (RouteMethod::Post, ROUTE_CONFIG_RESET)
+            )
     }
 }
 
@@ -651,19 +796,11 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::Windowed,
     ),
     HttpRouteSpec::immediate(ROUTE_METRICS, RouteMethod::Options, RouteBodyMode::None),
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    HttpRouteSpec::immediate_operator(
+    HttpRouteSpec::snapshot_operator(
         ROUTE_RESOURCE,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    HttpRouteSpec::slow_diagnostic_operator(
-        ROUTE_RESOURCE,
-        RouteMethod::Get,
-        RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
     ),
     HttpRouteSpec::immediate(ROUTE_RESOURCE, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::slow_diagnostic_operator(
@@ -894,7 +1031,7 @@ mod tests {
 
     #[test]
     fn route_lookup_marks_windowed_diagnostic_routes() {
-        let spec = route_spec_for("GET", ROUTE_RESOURCE).expect("route spec");
+        let spec = route_spec_for("GET", ROUTE_MEMORY_STATUS).expect("route spec");
         assert_eq!(
             spec.execution_class,
             RouteExecutionClass::SlowDiagnosticRoute
@@ -1007,11 +1144,21 @@ mod tests {
                 "cached {} GET must not require an ESP config worker",
                 path
             );
+            assert!(
+                get.tracks_config_read_burst(),
+                "{} GET must be marked as a config read burst",
+                path
+            );
             let post = route_spec_for_method(RouteMethod::Post, path).expect("config post");
             assert_eq!(
                 post.execution_class,
                 RouteExecutionClass::AsyncConfigRoute,
                 "{} POST must use config worker",
+                path
+            );
+            assert!(
+                !post.tracks_config_read_burst(),
+                "{} POST must use the config worker lease instead of read-burst tracking",
                 path
             );
         }
@@ -1081,6 +1228,88 @@ mod tests {
         );
         let health = route_spec_for("GET", ROUTE_HEALTH).expect("health");
         assert!(!health.rejects_during_voice_exclusive());
+    }
+
+    #[test]
+    fn route_runtime_mode_admission_blocks_unowned_diagnostics_during_config_active() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                config_active: true,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Active,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        let diagnose = route_spec_for("GET", ROUTE_DIAGNOSE).expect("diagnose");
+        assert_eq!(
+            diagnose.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Rejected {
+                status: 409,
+                error_key: "runtime.route_blocked_by_config_active",
+                stage: "runtime_route_admission",
+                reason: "config_active_diagnostic_not_admitted",
+            }
+        );
+
+        let wifi_scan = route_spec_for("GET", ROUTE_WIFI_SCAN).expect("wifi scan");
+        assert_eq!(
+            wifi_scan.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Allowed
+        );
+
+        let config_write = route_spec_for("POST", ROUTE_CONFIG_SYSTEM).expect("config write");
+        assert_eq!(
+            config_write.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Allowed
+        );
+    }
+
+    #[test]
+    fn route_runtime_mode_admission_recovery_safe_mode_has_minimal_allowlist() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                recovery_safe_mode_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        let health = route_spec_for("GET", ROUTE_HEALTH).expect("health");
+        assert_eq!(
+            health.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Allowed
+        );
+
+        let csrf = route_spec_for("GET", ROUTE_CSRF_TOKEN).expect("csrf");
+        assert_eq!(
+            csrf.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Allowed
+        );
+
+        let reset = route_spec_for("POST", ROUTE_CONFIG_RESET).expect("config reset");
+        assert_eq!(
+            reset.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Allowed
+        );
+
+        let config_write = route_spec_for("POST", ROUTE_CONFIG_SYSTEM).expect("config write");
+        assert_eq!(
+            config_write.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Rejected {
+                status: 503,
+                error_key: "runtime.route_blocked_by_recovery_safe_mode",
+                stage: "runtime_route_admission",
+                reason: "recovery_safe_mode_allowlist",
+            }
+        );
+
+        let diagnose = route_spec_for("GET", ROUTE_DIAGNOSE).expect("diagnose");
+        assert_eq!(
+            diagnose.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Rejected {
+                status: 503,
+                error_key: "runtime.route_blocked_by_recovery_safe_mode",
+                stage: "runtime_route_admission",
+                reason: "recovery_safe_mode_allowlist",
+            }
+        );
     }
 
     #[test]
@@ -1201,6 +1430,51 @@ mod tests {
     }
 
     #[test]
+    fn official_ota_route_is_not_exposed_without_an_implementation() {
+        let removed_ota_route = concat!("/api/", "ota");
+        assert!(route_spec_for("POST", removed_ota_route).is_none());
+        assert!(route_spec_for("OPTIONS", removed_ota_route).is_none());
+        assert!(!operator_route_endpoints(None, false)
+            .iter()
+            .any(|endpoint| endpoint.contains(removed_ota_route)));
+    }
+
+    #[test]
+    fn route_runtime_mode_admission_upgrade_allows_health_and_recovery_but_blocks_heavy_routes() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                upgrade_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        for (method, path) in [
+            ("GET", ROUTE_HEALTH),
+            ("GET", ROUTE_CSRF_TOKEN),
+            ("POST", ROUTE_CONFIG_RESET),
+        ] {
+            let spec = route_spec_for(method, path).expect("minimal recovery spec");
+            assert_eq!(
+                spec.runtime_mode_admission(mode),
+                RouteRuntimeAdmission::Allowed,
+                "{} {} should remain available during upgrade",
+                method,
+                path
+            );
+        }
+
+        let diagnose = route_spec_for("GET", ROUTE_DIAGNOSE).expect("diagnose");
+        assert_eq!(
+            diagnose.runtime_mode_admission(mode),
+            RouteRuntimeAdmission::Rejected {
+                status: 503,
+                error_key: "runtime.route_blocked_by_upgrade",
+                stage: "runtime_route_admission",
+                reason: "upgrade_mode_allowlist",
+            }
+        );
+    }
+
+    #[test]
     fn snapshot_worker_budget_does_not_reserve_tls_headroom() {
         let contract = RouteExecutionClass::SnapshotRoute
             .worker_contract()
@@ -1220,6 +1494,14 @@ mod tests {
             requirements.required_largest <= 24 * 1024,
             "snapshot worker must fit the latest steady ESP largest-block floor"
         );
+    }
+
+    #[test]
+    fn resource_route_uses_snapshot_worker_on_esp() {
+        let spec = route_spec_for("GET", ROUTE_RESOURCE).expect("resource route");
+
+        assert_eq!(spec.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
     }
 
     #[test]

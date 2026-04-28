@@ -33,6 +33,7 @@ OWNED_ICONS = (
     "tool_device_ctrl_3d.png",
     "tool_i2c_dev_3d.png",
     "tool_sensor_3d.png",
+    "firmware_flash_3d.png",
 )
 
 
@@ -403,6 +404,43 @@ def build_tool_sensor(scene: Scene, palette: Palette) -> None:
     flat(scene, stand, palette, "neutral")
 
 
+def build_firmware_flash(scene: Scene, palette: Palette) -> None:
+    chip = rounded_mask(scene, 26, 27, 74, 75, 9)
+    extrude(scene, chip, palette, "slate", depth=11, shadow_blur=13)
+
+    pins = []
+    for x in (36, 48, 60):
+        pins.append(rounded_mask(scene, x - 3, 18, x + 3, 29, 2))
+        pins.append(rounded_mask(scene, x - 3, 73, x + 3, 84, 2))
+    for y in (38, 50, 62):
+        pins.append(rounded_mask(scene, 16, y - 3, 28, y + 3, 2))
+        pins.append(rounded_mask(scene, 72, y - 3, 84, y + 3, 2))
+    flat(scene, union_masks(*pins), palette, "warm")
+
+    core = rounded_mask(scene, 35, 36, 65, 66, 7)
+    extrude(scene, core, palette, "primary", depth=7, shadow_blur=8)
+
+    flash_bolt = scene.polygon(
+        (
+            (53, 31),
+            (39, 54),
+            (49, 54),
+            (43, 71),
+            (62, 47),
+            (52, 47),
+        )
+    )
+    scene.render_glow(flash_bolt, with_alpha(tone(palette, "accent")[0], 160), blur=13, alpha=80)
+    extrude(scene, flash_bolt, palette, "accent", depth=6, shadow_blur=7)
+
+    cable = scene.line(((27, 86), (39, 76), (48, 76)), 5.4)
+    plug = rounded_mask(scene, 18, 82, 30, 92, 3)
+    flat(scene, union_masks(cable, plug), palette, "secondary")
+
+    write_dot = circle_mask(scene, 61, 39, 3.2)
+    flat(scene, write_dot, palette, "danger")
+
+
 ICON_DEFINITIONS: list[IconSpec] = [
     icon("alarm_3d.png", "coral", build_alarm, depth_bias=1),
     icon("calendar_3d.png", "sky", build_calendar),
@@ -419,4 +457,5 @@ ICON_DEFINITIONS: list[IconSpec] = [
     icon("tool_device_ctrl_3d.png", "violet", build_tool_device_ctrl, depth_bias=1),
     icon("tool_i2c_dev_3d.png", "amber", build_tool_i2c_dev),
     icon("tool_sensor_3d.png", "mint", build_tool_sensor),
+    icon("firmware_flash_3d.png", "sky", build_firmware_flash, depth_bias=1),
 ]

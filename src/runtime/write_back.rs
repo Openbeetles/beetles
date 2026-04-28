@@ -2,6 +2,7 @@
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
 //! 并由独立 write-back 执行面承接 SPIFFS/serde/session flush 重活。
 
+use crate::channels::inbound_backpressure::{self, EventIngressSource};
 use crate::error::{Error, Result};
 use crate::memory::{
     derive_recent_persona_evidence, AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger,
@@ -166,11 +167,13 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
                     existing.due_at = due_at;
                 }
                 WRITE_BACK_COALESCED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                inbound_backpressure::record_cancelled(EventIngressSource::WriteBack);
                 return true;
             }
         }
         if state.jobs.len() >= WRITE_BACK_QUEUE_MAX {
             WRITE_BACK_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            inbound_backpressure::record_rejected(EventIngressSource::WriteBack);
             log::warn!(
                 "[write_back:{}] write-back queue full, keeping pending writes queued",
                 label
@@ -182,6 +185,7 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
             due_at,
             task: Some(task),
         });
+        inbound_backpressure::record_enqueued(EventIngressSource::WriteBack);
     }
     if should_auto_service_write_back_tasks() {
         if write_back_admission_delay().is_some() {
@@ -1578,13 +1582,20 @@ mod tests {
             crate::runtime::delayed_task::delayed_task_test_scope();
         let due_at = Instant::now() + Duration::from_secs(60);
         let before = snapshot();
+        let metrics_before = crate::metrics::snapshot();
         let mut accepted = 0usize;
         while schedule_write_back_task("test", due_at, Box::new(|| {})) {
             accepted += 1;
             assert!(accepted < 256, "write-back queue cap should be finite");
         }
         assert!(accepted > 0);
-        assert_eq!(snapshot().dropped_total, before.dropped_total + 1);
+        let after_full = snapshot();
+        let metrics_after_full = crate::metrics::snapshot();
+        assert_eq!(after_full.dropped_total, before.dropped_total + 1);
+        assert!(
+            metrics_after_full.event_ingress_rejected_total
+                > metrics_before.event_ingress_rejected_total
+        );
 
         let inner = Arc::new(CountingTurnLedgerStore::default());
         let counter = Arc::clone(&inner);
@@ -1608,6 +1619,7 @@ mod tests {
         reset_write_back_queue_for_tests();
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
         let before = snapshot();
+        let metrics_before = crate::metrics::snapshot();
         let due_at = Instant::now() + Duration::from_secs(60);
 
         assert!(schedule_write_back_task(
@@ -1622,8 +1634,13 @@ mod tests {
         ));
 
         let after = snapshot();
+        let metrics_after = crate::metrics::snapshot();
         assert_eq!(after.queued, 1);
         assert_eq!(after.coalesced_total, before.coalesced_total + 1);
+        assert!(
+            metrics_after.event_ingress_cancelled_total
+                > metrics_before.event_ingress_cancelled_total
+        );
         reset_write_back_queue_for_tests();
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
     }

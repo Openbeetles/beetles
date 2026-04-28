@@ -12,9 +12,9 @@ use crate::platform::http_server::router::{
     self,
     catalog::{
         route_worker_memory_requirements, HttpRouteSpec, RouteBodyMode, RouteExecutionClass,
-        RouteMethod, RouteWorkerContract, RouteWorkerLane, ACTION_ROUTE_SPECS,
-        MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS,
-        ROOT_ROUTE_SPECS,
+        RouteMethod, RouteRuntimeAdmission, RouteWorkerContract, RouteWorkerLane,
+        ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS,
+        PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
     },
     IncomingBody, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
@@ -787,26 +787,45 @@ fn write_api_resp<C: Connection>(req: Request<C>, r: ApiResponse) -> HandlerResu
     Ok(())
 }
 
-fn config_voice_conflict_response(path: &str) -> ApiResponse {
+fn route_runtime_admission_response(
+    path: &str,
+    admission: RouteRuntimeAdmission,
+) -> Option<ApiResponse> {
+    let RouteRuntimeAdmission::Rejected {
+        status,
+        error_key,
+        stage,
+        reason,
+    } = admission
+    else {
+        return None;
+    };
+    crate::metrics::record_http_route_reject();
     let mut extra = serde_json::Map::new();
     extra.insert(
         "path".to_string(),
         serde_json::Value::String(path.to_string()),
     );
     extra.insert(
-        "retry_after_secs".to_string(),
-        serde_json::Value::from(crate::runtime::CONFIG_ACTIVITY_WINDOW_SECS),
+        "reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
     );
-    ApiResponse::err_key_with_meta(
-        409,
-        "Conflict",
-        "runtime.config_blocked_by_voice",
-        Some("config_activity_admission"),
+    if error_key == "runtime.config_blocked_by_voice" {
+        extra.insert(
+            "retry_after_secs".to_string(),
+            serde_json::Value::from(crate::runtime::CONFIG_ACTIVITY_WINDOW_SECS),
+        );
+    }
+    Some(ApiResponse::err_key_with_meta(
+        status,
+        status_text(status),
+        error_key,
+        Some(stage),
         None,
         None,
         None,
         extra,
-    )
+    ))
 }
 
 #[inline(never)]
@@ -863,9 +882,14 @@ fn esp_dispatch_route<C: Connection>(
         let out = dispatch_incoming(ctx, env, store.as_ref(), incoming);
         return write_outgoing(ctx, req, out, restart_reason.as_str());
     }
-    if spec.rejects_during_voice_exclusive() && crate::state::voice_exclusive_active() {
-        return write_api_resp(req, config_voice_conflict_response(spec.path));
+    let runtime_admission =
+        spec.runtime_mode_admission(crate::runtime::thread_registry::runtime_mode_snapshot());
+    if let Some(response) = route_runtime_admission_response(spec.path, runtime_admission) {
+        return write_api_resp(req, response);
     }
+    let mut config_read_burst_guard = spec
+        .tracks_config_read_burst()
+        .then(|| crate::runtime::ConfigReadBurstGuard::enter(spec.path));
     if !matches!(
         spec.execution_class,
         RouteExecutionClass::ImmediateRoute | RouteExecutionClass::RejectedRoute
@@ -887,6 +911,9 @@ fn esp_dispatch_route<C: Connection>(
         Ok(b) => b,
         Err(r) => {
             if let Some(guard) = config_activity_guard.as_mut() {
+                guard.finish_status(r.status);
+            }
+            if let Some(guard) = config_read_burst_guard.as_mut() {
                 guard.finish_status(r.status);
             }
             return write_api_resp(req, r);
@@ -917,6 +944,9 @@ fn esp_dispatch_route<C: Connection>(
             ),
     };
     if let Some(guard) = config_activity_guard.as_mut() {
+        guard.finish_status(out.status);
+    }
+    if let Some(guard) = config_read_burst_guard.as_mut() {
         guard.finish_status(out.status);
     }
     write_outgoing(ctx, req, out, restart_reason.as_str())

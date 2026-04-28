@@ -4,11 +4,81 @@
 use crate::build_info;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use esp_idf_svc::sys;
+use std::sync::OnceLock;
 
 const TAG: &str = "firmware_identity";
 
+static FIRMWARE_IDENTITY_SNAPSHOT: OnceLock<FirmwareIdentitySnapshot> = OnceLock::new();
+
+/// Structured firmware identity exposed by resource diagnostics.
+///
+/// The values are facts captured from the current process or ESP app
+/// descriptor. Fields that do not have a real source stay `None`; callers must
+/// not fill them with synthetic artifact ids.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct FirmwareIdentitySnapshot {
+    pub build_git_sha: String,
+    pub build_git_dirty: String,
+    pub build_time_utc: String,
+    pub partition_csv_sha256: String,
+    pub esp_app_project: Option<String>,
+    pub esp_app_version: Option<String>,
+    pub esp_app_compile_time: Option<String>,
+    pub esp_idf_version: Option<String>,
+    pub esp_elf_sha256: Option<String>,
+    pub partition_table_sha256: Option<String>,
+    pub booted_artifact_id: Option<String>,
+    pub last_attempted_artifact_id: Option<String>,
+}
+
+impl FirmwareIdentitySnapshot {
+    fn from_build_info() -> Self {
+        Self {
+            build_git_sha: build_info::build_git_sha().to_string(),
+            build_git_dirty: build_info::build_git_dirty().to_string(),
+            build_time_utc: build_info::build_time_utc().to_string(),
+            partition_csv_sha256: build_info::partition_csv_sha256().to_string(),
+            esp_app_project: None,
+            esp_app_version: None,
+            esp_app_compile_time: None,
+            esp_idf_version: None,
+            esp_elf_sha256: None,
+            partition_table_sha256: None,
+            booted_artifact_id: None,
+            last_attempted_artifact_id: None,
+        }
+    }
+
+    fn derive_booted_artifact_id(&self) -> Option<String> {
+        let elf_sha = self.esp_elf_sha256.as_deref()?;
+        if self.build_git_sha.is_empty()
+            || self.build_git_sha == "unknown"
+            || elf_sha.is_empty()
+            || elf_sha == "unavailable"
+        {
+            return None;
+        }
+        Some(format!("{}-{}", self.build_git_sha, elf_sha))
+    }
+}
+
+/// Structured firmware identity for `/api/resource` and diagnostics.
+pub fn snapshot() -> FirmwareIdentitySnapshot {
+    FIRMWARE_IDENTITY_SNAPSHOT
+        .get_or_init(build_snapshot)
+        .clone()
+}
+
+fn build_snapshot() -> FirmwareIdentitySnapshot {
+    let mut identity = FirmwareIdentitySnapshot::from_build_info();
+    fill_target_identity(&mut identity);
+    identity.booted_artifact_id = identity.derive_booted_artifact_id();
+    identity
+}
+
 /// Build and firmware identity lines suitable for early startup logs.
 pub fn startup_identity_lines() -> Vec<String> {
+    let _ = snapshot();
     let mut lines = vec![format!(
         "[{}] build git_sha={} dirty={} build_time_utc={} partition_csv_sha256={}",
         TAG,
@@ -22,8 +92,17 @@ pub fn startup_identity_lines() -> Vec<String> {
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn fill_target_identity(_identity: &mut FirmwareIdentitySnapshot) {}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn target_identity_lines() -> Vec<String> {
     Vec::new()
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn fill_target_identity(identity: &mut FirmwareIdentitySnapshot) {
+    fill_esp_app_identity(identity);
+    identity.partition_table_sha256 = esp_partition_table_sha256().ok().flatten();
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -35,6 +114,26 @@ fn target_identity_lines() -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn fill_esp_app_identity(identity: &mut FirmwareIdentitySnapshot) {
+    let desc = unsafe { sys::esp_app_get_description() };
+    if desc.is_null() {
+        return;
+    }
+
+    let desc = unsafe { &*desc };
+    let compile_time = format!(
+        "{} {}",
+        c_char_buf_to_string(&desc.date),
+        c_char_buf_to_string(&desc.time)
+    );
+    identity.esp_app_project = Some(c_char_buf_to_string(&desc.project_name));
+    identity.esp_app_version = Some(c_char_buf_to_string(&desc.version));
+    identity.esp_app_compile_time = Some(compile_time);
+    identity.esp_idf_version = Some(c_char_buf_to_string(&desc.idf_ver));
+    identity.esp_elf_sha256 = Some(hex_bytes(&desc.app_elf_sha256));
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -62,6 +161,27 @@ fn esp_partition_table_identity_line() -> String {
     const PARTITION_TABLE_OFFSET: u32 = 0x8000;
     const PARTITION_TABLE_IMAGE_LEN: usize = 0x0c00;
 
+    match esp_partition_table_sha256() {
+        Ok(Some(sha)) => format!(
+            "[{}] partition_table offset=0x{:x} len={} sha256={}",
+            TAG, PARTITION_TABLE_OFFSET, PARTITION_TABLE_IMAGE_LEN, sha
+        ),
+        Ok(None) => format!(
+            "[{}] partition_table offset=0x{:x} len={} sha256=unavailable",
+            TAG, PARTITION_TABLE_OFFSET, PARTITION_TABLE_IMAGE_LEN
+        ),
+        Err(status) => format!(
+            "[{}] partition_table offset=0x{:x} len={} sha256=unavailable esp_err={}",
+            TAG, PARTITION_TABLE_OFFSET, PARTITION_TABLE_IMAGE_LEN, status
+        ),
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_partition_table_sha256() -> Result<Option<String>, i32> {
+    const PARTITION_TABLE_OFFSET: u32 = 0x8000;
+    const PARTITION_TABLE_IMAGE_LEN: usize = 0x0c00;
+
     let mut image = [0_u8; PARTITION_TABLE_IMAGE_LEN];
     let status = unsafe {
         sys::esp_flash_read(
@@ -72,22 +192,9 @@ fn esp_partition_table_identity_line() -> String {
         )
     };
     if status != sys::ESP_OK {
-        return format!(
-            "[{}] partition_table offset=0x{:x} len={} sha256=unavailable esp_err={}",
-            TAG, PARTITION_TABLE_OFFSET, PARTITION_TABLE_IMAGE_LEN, status
-        );
+        return Err(status);
     }
-
-    match sha256_hex(&image) {
-        Some(sha) => format!(
-            "[{}] partition_table offset=0x{:x} len={} sha256={}",
-            TAG, PARTITION_TABLE_OFFSET, PARTITION_TABLE_IMAGE_LEN, sha
-        ),
-        None => format!(
-            "[{}] partition_table offset=0x{:x} len={} sha256=unavailable",
-            TAG, PARTITION_TABLE_OFFSET, PARTITION_TABLE_IMAGE_LEN
-        ),
-    }
+    Ok(sha256_hex(&image))
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -175,4 +282,34 @@ fn hex_bytes(bytes: &[u8]) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{snapshot, FirmwareIdentitySnapshot};
+
+    #[test]
+    fn host_snapshot_does_not_synthesize_esp_artifact_identity() {
+        let identity = snapshot();
+
+        assert!(!identity.build_git_sha.is_empty());
+        assert!(identity.esp_elf_sha256.is_none());
+        assert!(identity.partition_table_sha256.is_none());
+        assert!(identity.booted_artifact_id.is_none());
+        assert!(identity.last_attempted_artifact_id.is_none());
+    }
+
+    #[test]
+    fn booted_artifact_id_requires_real_build_and_elf_sha() {
+        let mut identity = FirmwareIdentitySnapshot::from_build_info();
+        identity.build_git_sha = "abc123".to_string();
+        identity.esp_elf_sha256 = Some("def456".to_string());
+        assert_eq!(
+            identity.derive_booted_artifact_id(),
+            Some("abc123-def456".to_string())
+        );
+
+        identity.build_git_sha = "unknown".to_string();
+        assert_eq!(identity.derive_booted_artifact_id(), None);
+    }
 }

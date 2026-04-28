@@ -417,11 +417,11 @@ mod tests {
     use crate::error::Error;
     use std::sync::Mutex;
 
-    static TEST_GUARD: Mutex<()> = Mutex::new(());
-
     #[test]
     fn outbound_http_failure_records_tls_admission_as_local_recovery() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         let before = crate::metrics::snapshot();
         let err = Error::config("tls_admission", "permit timeout");
@@ -447,7 +447,9 @@ mod tests {
 
     #[test]
     fn outbound_http_success_restores_capability_online() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         crate::orchestrator::observe_runtime_capability_failure(
             crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
@@ -475,7 +477,9 @@ mod tests {
 
     #[test]
     fn wrapped_tls_admission_failure_records_root_stage() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::orchestrator::reset_runtime_capabilities_for_tests();
         let before = crate::metrics::snapshot();
         let err = Error::Other {
@@ -492,7 +496,9 @@ mod tests {
 
     #[test]
     fn buffered_sender_loop_retries_failed_drained_message_instead_of_losing_it() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
         tx.send(QueuedOutboundMessage {
             transport_send_id: next_queued_outbound_id(),
@@ -547,7 +553,9 @@ mod tests {
 
     #[test]
     fn buffered_sender_loop_does_not_retry_config_error() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         tx.send(QueuedOutboundMessage {
             transport_send_id: next_queued_outbound_id(),
@@ -578,7 +586,9 @@ mod tests {
 
     #[test]
     fn buffered_sender_loop_defers_primary_tls_admission_failure() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         tx.send(QueuedOutboundMessage {
             transport_send_id: next_queued_outbound_id(),
@@ -610,7 +620,9 @@ mod tests {
 
     #[test]
     fn buffered_sender_loop_keeps_retryable_primary_bounded_in_sync_channel() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         tx.send(QueuedOutboundMessage {
             transport_send_id: next_queued_outbound_id(),
@@ -685,7 +697,9 @@ mod tests {
 
     #[test]
     fn buffered_sender_loop_does_not_retry_supplemental_message() {
-        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         tx.send(QueuedOutboundMessage {
             transport_send_id: next_queued_outbound_id(),

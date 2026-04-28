@@ -491,8 +491,8 @@ mod tests {
         );
 
         assert!(input.contains("continue the current engineering stage"));
-        assert!(input.contains("[redacted:chat_id]"));
-        assert!(input.contains("[redacted:channel]"));
+        assert!(input.contains("last_user_relation=active"));
+        assert!(input.contains("last_user_channel_kind=known"));
         assert!(!input.contains("raw-chat-42"));
         assert!(!input.contains("last_user_channel=qq_channel"));
     }

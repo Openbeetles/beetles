@@ -6,7 +6,7 @@
 
 - **输出格式**：`512x512` RGBA PNG，透明底
 - **生成质量**：内部以 `1024x1024` supersample 场景渲染后下采样导出，优先保证小尺寸边缘干净、放大时不易发糊或出现明显锯齿
-- **当前规模**：`77` 个 `*_3d.png`
+- **当前规模**：`79` 个 `*_3d.png`
 - **目标风格**：对象本体优先、克制高光、稳定伪 3D 深度；任务栏、开始菜单、仪表盘与工具列表共用同一资产，但 PNG 内部不再自带二级 UI 容器
 
 ## 生成单源
@@ -32,7 +32,7 @@ python3 configure-ui/scripts/generate_industrial_os3d_icons.py
 常用命令：
 
 ```bash
-# 校验 77 个图标定义是否闭合、输出是否为 512x512
+# 校验 79 个图标定义是否闭合、输出是否为 512x512
 python3 configure-ui/scripts/generate_industrial_os3d_icons.py --check
 
 # 重渲染全部 shipped 图标

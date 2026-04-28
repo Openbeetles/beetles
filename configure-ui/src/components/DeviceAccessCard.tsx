@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import UsbRounded from "@mui/icons-material/UsbRounded";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -9,6 +8,7 @@ import Typography from "@mui/material/Typography";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { BeetleIcon } from "./BeetleIcon";
 import { FirmwareFlashDialog } from "./FirmwareFlashDialog";
+import { Os3dIcon } from "./Os3dIcon";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
 import { useRevealedPassword } from "../hooks/useRevealedPassword";
@@ -35,8 +35,117 @@ import {
   PAGE_SCROLL_CANVAS_SX,
 } from "../theme/panelStyles";
 import { useUnsaved } from "../hooks/useUnsaved";
+import { OS_ICON_DEVICE_ACTION } from "../config/osIcons";
 
 const DEVICE_ACCESS_DIRTY_OWNER = "device-access-card";
+
+function FirmwareFlashLogoTrigger({
+  label,
+  hint,
+  onClick,
+}: {
+  label: string;
+  hint: string;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip title={hint} arrow>
+      <Box
+        component="button"
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        sx={{
+          position: "absolute",
+          top: -12,
+          right: -14,
+          width: 42,
+          height: 42,
+          p: 0,
+          border:
+            "1px solid color-mix(in srgb, var(--primary) 18%, transparent)",
+          borderRadius: "16px",
+          backgroundColor: "color-mix(in srgb, var(--card) 78%, #fff 22%)",
+          backgroundImage:
+            "linear-gradient(145deg, color-mix(in srgb, #fff 80%, transparent) 0%, color-mix(in srgb, var(--primary) 8%, transparent) 100%)",
+          color: "var(--primary)",
+          cursor: "pointer",
+          zIndex: 3,
+          overflow: "visible",
+          isolation: "isolate",
+          appearance: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: [
+            "inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent)",
+            "0 14px 24px color-mix(in srgb, var(--primary) 16%, transparent)",
+            "0 5px 10px color-mix(in srgb, var(--foreground) 10%, transparent)",
+          ].join(", "),
+          transform: "rotate(7deg)",
+          transition:
+            "transform var(--transition-duration-emphasized) var(--ease-emphasized), box-shadow var(--transition-duration) ease, filter var(--transition-duration) ease",
+          "&:focus-visible": {
+            outline: "2px solid color-mix(in srgb, var(--primary) 72%, transparent)",
+            outlineOffset: 3,
+          },
+          "&::before": {
+            content: '""',
+            position: "absolute",
+            inset: -8,
+            borderRadius: "20px",
+            background:
+              "radial-gradient(circle, color-mix(in srgb, var(--primary) 18%, transparent) 0%, transparent 68%)",
+            opacity: 0.7,
+            zIndex: -1,
+            pointerEvents: "none",
+          },
+          "&:hover": {
+            transform: "rotate(4deg) translateY(-2px) scale(1.04)",
+            boxShadow: [
+              "inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent)",
+              "0 18px 30px color-mix(in srgb, var(--primary) 22%, transparent)",
+              "0 8px 16px color-mix(in srgb, var(--foreground) 12%, transparent)",
+            ].join(", "),
+          },
+          "@media (prefers-reduced-motion: reduce)": {
+            transition: "none",
+            "&:hover": { transform: "rotate(7deg)" },
+          },
+        }}
+      >
+        <Box
+          aria-hidden
+          sx={{
+            position: "absolute",
+            inset: 5,
+            borderRadius: "13px",
+            background:
+              "linear-gradient(145deg, color-mix(in srgb, var(--primary) 10%, transparent), transparent 62%)",
+            pointerEvents: "none",
+          }}
+        />
+        <Box
+          sx={{
+            width: 30,
+            height: 30,
+            transform: "rotate(-7deg)",
+            filter:
+              "drop-shadow(0 8px 12px color-mix(in srgb, var(--primary) 18%, transparent))",
+            pointerEvents: "none",
+          }}
+        >
+          <Os3dIcon
+            src={OS_ICON_DEVICE_ACTION.firmwareFlash}
+            variant="inline"
+            decorative={false}
+            alt={label}
+          />
+        </Box>
+      </Box>
+    </Tooltip>
+  );
+}
 
 function SetupConnectionEditor({
   urlValue,
@@ -446,78 +555,10 @@ export function DeviceAccessCard() {
             gap: 4,
           }}
         >
-          <Tooltip title={t("device.flashTriggerHint")} arrow>
-            <Button
-              onClick={() => setFlashDialogOpen(true)}
-              size="small"
-              variant="text"
-              aria-label={t("device.flashTriggerLabel")}
-              sx={{
-                position: "absolute",
-                right: -4,
-                top: -4,
-                width: 62,
-                height: 62,
-                minWidth: 62,
-                borderRadius: 0,
-                px: 0,
-                py: 0,
-                border: "none",
-                color: "var(--foreground)",
-                zIndex: 2,
-                overflow: "visible",
-                display: "flex",
-                alignItems: "flex-start",
-                justifyContent: "flex-end",
-                "&:hover": {
-                  backgroundColor: "transparent",
-                  boxShadow: "none",
-                },
-                "&:before, &:after": {
-                  content: '""',
-                  position: "absolute",
-                  right: 0,
-                  top: 0,
-                  width: 62,
-                  height: 62,
-                  pointerEvents: "none",
-                },
-                "&:before": {
-                  backgroundColor: "color-mix(in srgb, var(--surface) 84%, var(--card) 16%)",
-                  clipPath: "polygon(100% 0, 0 0, 100% 100%)",
-                  boxShadow:
-                    "inset 0 1px 0 color-mix(in srgb, var(--border) 42%, transparent)",
-                },
-                "&:after": {
-                  right: 8,
-                  top: 8,
-                  width: 48,
-                  height: 48,
-                  backgroundColor: "color-mix(in srgb, var(--card) 88%, var(--primary) 12%)",
-                  clipPath: "polygon(100% 0, 0 0, 100% 100%)",
-                  filter: "brightness(1.06)",
-                },
-              }}
-            >
-              <UsbRounded
-                sx={{
-                  position: "absolute",
-                  right: 10,
-                  top: 10,
-                  width: 24,
-                  height: 24,
-                  transform: "rotate(18deg)",
-                  filter:
-                    "drop-shadow(0 4px 8px color-mix(in srgb, var(--foreground) 16%, transparent))",
-                  pointerEvents: "none",
-                }}
-              />
-            </Button>
-          </Tooltip>
-
           <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
             <Box
               sx={{
+                position: "relative",
                 width: "88px",
                 height: "88px",
                 mx: "auto",
@@ -543,6 +584,11 @@ export function DeviceAccessCard() {
                   flexShrink: 0,
                   display: "block",
                 }}
+              />
+              <FirmwareFlashLogoTrigger
+                label={t("device.flashTriggerLabel")}
+                hint={t("device.flashTriggerHint")}
+                onClick={() => setFlashDialogOpen(true)}
               />
             </Box>
             <Typography

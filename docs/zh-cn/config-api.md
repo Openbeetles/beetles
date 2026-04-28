@@ -12,7 +12,7 @@
 
 ## 调用约定
 
-- 基础地址：首次配置常用 `http://192.168.4.1`；设备入网后用设备当前地址。
+- 基础地址：首次配置通常用 `http://192.168.4.1`；如果这是 Linux 嵌入式设备，且其 STA 侧已经落在 `192.168.4.0/24`，热点会避让到 `http://172.16.42.1`；设备入网后用设备当前地址。
 - CORS：`/api/*` 支持跨域，`OPTIONS` 可直接调用。
 - 返回格式：除 `GET /api/skills?name=...`、`GET /api/metrics?format=prometheus` 外，默认返回 JSON。
 - 历史 `/api/soul`、`/api/user` 文本接口已退役，不属于当前合同。
@@ -335,6 +335,11 @@
 
 请求体：`application/json`
 
+说明：
+
+- 普通用户优先走 Configure UI 的 **设备配置 -> GPIO 设备**
+- 这里是给脚本、自定义前端和进阶集成看的原始接口合同
+
 顶层字段：
 
 - `hardware_devices`
@@ -361,7 +366,7 @@
 }
 ```
 
-字段说明见 [硬件设备配置](hardware-device-config.md)。
+用户操作路径见 [硬件设备配置](hardware-device-config.md)；原始字段合同以本页和接口返回为准。
 
 **GET /api/config/audio**
 
@@ -1254,6 +1259,19 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `session_count`
 - `storage_used_kb`
 - `storage_total_kb`
+- `admission`
+- `governance_metrics`
+- `runtime_capabilities`
+- `plane_registry`
+- `plane_lifecycle`
+- `leases`
+- `threads`
+- `write_back`
+- `firmware_identity`
+- `crash`
+
+资源端点属于运维/调试契约。治理字段用于诊断运行态压力，会随着新的执行面
+guard 继续扩展；客户端应允许未知字段存在。
 
 **GET /api/diagnose**
 

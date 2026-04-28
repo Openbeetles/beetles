@@ -220,9 +220,10 @@ pub(crate) use mental_privacy::{
     run_mental_privacy_review,
 };
 pub use mental_privacy::{
-    run_mental_privacy_disclosure_adjudication, BoundaryDisclosureStyle, BoundaryPersonaPosture,
-    BoundaryPersonaRefreshContext, BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome,
-    BoundaryPersonaState, MentalPrivacyConsentLog, MentalPrivacyDisclosureAdjudication,
+    mental_privacy_adjudication_failure_fallback, run_mental_privacy_disclosure_adjudication,
+    BoundaryDisclosureStyle, BoundaryPersonaPosture, BoundaryPersonaRefreshContext,
+    BoundaryPersonaRefreshInput, BoundaryPersonaRefreshOutcome, BoundaryPersonaState,
+    MentalPrivacyConsentLog, MentalPrivacyDisclosureAdjudication,
     MentalPrivacyDisclosureAdjudicationContext, MentalPrivacyDisclosureAdjudicationInput,
     MentalPrivacyEnvelope, MentalPrivacyLayer, MentalPrivacyLogStage, MentalPrivacyOwnerAccessMode,
     MentalPrivacyQuotePolicy, MentalPrivacyRequester, MentalPrivacyReviewContext,

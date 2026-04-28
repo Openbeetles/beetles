@@ -21,6 +21,23 @@ pub struct ChannelConnectivityItem {
     pub configured: bool,
     pub ok: bool,
     pub message_key: Option<&'static str>,
+    pub runtime_status: ChannelRuntimeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelRuntimeStatus {
+    Disabled,
+    Configured,
+    WorkerStarted,
+    WaitingWallClock,
+    SuspendedByMode,
+    Connecting,
+    Connected,
+    CoolingDown,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,12 +55,112 @@ pub(crate) fn item(
     ok: bool,
     message_key: Option<&'static str>,
 ) -> ChannelConnectivityItem {
+    let (runtime_status, runtime_reason) =
+        runtime_status_for_channel_item(id, configured, ok, message_key);
     ChannelConnectivityItem {
         id: id.to_string(),
         configured,
         ok,
         message_key,
+        runtime_status,
+        runtime_reason,
     }
+}
+
+fn runtime_status_for_channel_item(
+    id: &'static str,
+    configured: bool,
+    ok: bool,
+    message_key: Option<&'static str>,
+) -> (ChannelRuntimeStatus, Option<&'static str>) {
+    if !configured {
+        return (ChannelRuntimeStatus::Disabled, message_key);
+    }
+    if let Some(status) = wss_runtime_status(id) {
+        return status;
+    }
+    if let Some(health) = crate::orchestrator::snapshot().channels.get(id) {
+        if health.consecutive_failures > 0 {
+            return (
+                ChannelRuntimeStatus::CoolingDown,
+                Some("channel_health_cooling_down"),
+            );
+        }
+        if !health.healthy {
+            return (ChannelRuntimeStatus::Failed, Some("channel_health_failed"));
+        }
+    }
+    if ok {
+        (ChannelRuntimeStatus::Connected, None)
+    } else if message_key_is_failure(message_key) {
+        (ChannelRuntimeStatus::Failed, message_key)
+    } else {
+        (ChannelRuntimeStatus::Configured, message_key)
+    }
+}
+
+fn message_key_is_failure(message_key: Option<&'static str>) -> bool {
+    if message_key == Some(CONNECTIVITY_CHECK_FAILED_KEY) {
+        return true;
+    }
+    #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
+    if message_key == Some(CONNECTIVITY_TOKEN_INVALID_KEY) {
+        return true;
+    }
+    false
+}
+
+fn wss_runtime_status(id: &'static str) -> Option<(ChannelRuntimeStatus, Option<&'static str>)> {
+    #[cfg(feature = "qq_channel")]
+    if id == crate::CHANNEL_QQ_CHANNEL && crate::channels::is_ws_online() {
+        return Some((ChannelRuntimeStatus::Connected, None));
+    }
+    let owner = wss_lifecycle_owner(id)?;
+    let record = crate::runtime::plane_lifecycle::snapshot()
+        .records
+        .into_iter()
+        .find(|record| {
+            record.plane == crate::runtime::PlaneId::ChannelWss && record.owner == owner
+        })?;
+    let status = match record.state {
+        crate::runtime::PlaneLifecycleState::Registered => ChannelRuntimeStatus::Configured,
+        crate::runtime::PlaneLifecycleState::Starting => ChannelRuntimeStatus::Connecting,
+        crate::runtime::PlaneLifecycleState::Active => ChannelRuntimeStatus::WorkerStarted,
+        crate::runtime::PlaneLifecycleState::Suspended => {
+            if record.last_reason == "wall_clock_untrusted" {
+                ChannelRuntimeStatus::WaitingWallClock
+            } else {
+                ChannelRuntimeStatus::SuspendedByMode
+            }
+        }
+        crate::runtime::PlaneLifecycleState::Draining
+        | crate::runtime::PlaneLifecycleState::Stopping => ChannelRuntimeStatus::SuspendedByMode,
+        crate::runtime::PlaneLifecycleState::Disabled
+        | crate::runtime::PlaneLifecycleState::Unloaded => ChannelRuntimeStatus::Configured,
+        crate::runtime::PlaneLifecycleState::Failed => ChannelRuntimeStatus::Failed,
+    };
+    Some((status, Some(record.last_reason)))
+}
+
+fn wss_lifecycle_owner(id: &'static str) -> Option<&'static str> {
+    #[cfg(feature = "qq_channel")]
+    if id == crate::CHANNEL_QQ_CHANNEL {
+        return Some("qq_ws");
+    }
+    #[cfg(feature = "feishu")]
+    if id == crate::CHANNEL_FEISHU {
+        return Some("feishu_ws");
+    }
+    #[cfg(feature = "dingtalk")]
+    if id == crate::CHANNEL_DINGTALK {
+        return Some("dingtalk_stream");
+    }
+    #[cfg(feature = "wecom")]
+    if id == crate::CHANNEL_WECOM {
+        return Some("wecom_aibot");
+    }
+    let _ = id;
+    None
 }
 
 /// Canonical probe outcome for channel connectivity checks.
@@ -226,6 +343,57 @@ mod tests {
         config.tg_token = "tg-token".to_string();
         config.enabled_channel = "telegram".to_string();
         config
+    }
+
+    #[test]
+    fn channel_runtime_status_reports_configured_and_failure_states() {
+        let configured = item(
+            "webhook",
+            true,
+            false,
+            Some(CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY),
+        );
+        assert_eq!(configured.runtime_status, ChannelRuntimeStatus::Configured);
+        assert_eq!(
+            configured.runtime_reason,
+            Some(CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY)
+        );
+
+        let failed = item("webhook", true, false, Some(CONNECTIVITY_CHECK_FAILED_KEY));
+        assert_eq!(failed.runtime_status, ChannelRuntimeStatus::Failed);
+
+        let connected = item("webhook", true, true, None);
+        assert_eq!(connected.runtime_status, ChannelRuntimeStatus::Connected);
+
+        let disabled = item(
+            "webhook",
+            false,
+            false,
+            Some(CONNECTIVITY_NOT_CONFIGURED_KEY),
+        );
+        assert_eq!(disabled.runtime_status, ChannelRuntimeStatus::Disabled);
+    }
+
+    #[cfg(feature = "qq_channel")]
+    #[test]
+    fn channel_runtime_status_consumes_wss_lifecycle_for_api_snapshot() {
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
+        crate::runtime::plane_lifecycle::mark(
+            crate::runtime::PlaneId::ChannelWss,
+            "qq_ws",
+            crate::runtime::PlaneLifecycleState::Suspended,
+            "wall_clock_untrusted",
+        );
+
+        let item = item(
+            crate::CHANNEL_QQ_CHANNEL,
+            true,
+            false,
+            Some(CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY),
+        );
+
+        assert_eq!(item.runtime_status, ChannelRuntimeStatus::WaitingWallClock);
+        assert_eq!(item.runtime_reason, Some("wall_clock_untrusted"));
     }
 
     #[cfg(feature = "telegram")]

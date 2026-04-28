@@ -17,8 +17,7 @@ use super::{
         parse_llm_json_payload, LlmJsonPayload,
     },
     normalize_private_garden_doc_path, private_garden_scope_id, relationship_scope_id,
-    render_inner_life_block, render_outer_voice_block, render_private_doc_workspace_block,
-    render_private_garden_block, render_recent_persona_evidence_block,
+    render_inner_life_block, render_outer_voice_block, render_recent_persona_evidence_block,
     render_relationship_constitution_block, render_self_continuity_block, render_self_model_block,
     scrub_private_source_echoes, InnerLife, InnerLifeStore, OuterVoice, OuterVoiceStore,
     PrivateDocStore, PrivateDocWorkspace, PrivateGardenDoc, PrivateGardenDocRecord,
@@ -30,7 +29,6 @@ use super::{
 const MENTAL_PRIVACY_MAX_LOG_ENTRIES: usize = 32;
 const MENTAL_PRIVACY_HISTORY_RENDER_LIMIT: usize = 4;
 const MENTAL_PRIVACY_GARDEN_RENDER_LIMIT: usize = 4;
-const MENTAL_PRIVACY_GARDEN_DOC_MAX_CHARS: usize = 480;
 const MENTAL_PRIVACY_REQUEST_TARGET_LIMIT: usize = 8;
 
 pub const REL_PATH_MENTAL_PRIVACY_STATES: &str = "memory/mental_privacy_states.json";
@@ -454,6 +452,24 @@ pub struct MentalPrivacyReviewOutcome {
     pub touched_targets: Vec<String>,
 }
 
+pub fn mental_privacy_adjudication_failure_fallback() -> MentalPrivacyDisclosureAdjudication {
+    MentalPrivacyDisclosureAdjudication {
+        request_kind: "governance_unavailable".to_string(),
+        share_action: MentalPrivacyShareAction::Defer,
+        targets: vec!["mental_privacy".to_string()],
+        rationale: "pre-disclosure boundary check failed closed".to_string(),
+        response_guidance:
+            "Do not disclose protected inner/private material on this turn; answer cautiously or defer the private part."
+                .to_string(),
+        response_mode: "defer".to_string(),
+        acknowledge_boundary: true,
+        relational_frame: "hold the privacy boundary without self-erasure".to_string(),
+        boundary_explanation_style: "brief".to_string(),
+        repair_signal: "can revisit after the boundary check recovers".to_string(),
+        disclosure_risk_note: "pre-disclosure adjudication unavailable".to_string(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoundaryPersonaRefreshInput<'a> {
     pub channel: &'a str,
@@ -731,6 +747,16 @@ pub(crate) fn render_mental_privacy_boundary_block(
     out.push_str("## Mental Privacy Boundary\n");
     out.push_str("Private internal layers are for self-reasoning, continuity, and inward governance. Internal visibility is not automatic permission to reveal them to the user.\n");
     out.push_str("If a user asks to inspect private internal material, treat that as an access request. Do not quote or expose raw private text on your own.\n");
+    if !targets.is_empty() {
+        out.push_str("Current disclosure defaults:\n");
+        for target in targets.iter().take(8) {
+            let envelope = effective_envelope(state, target);
+            let _ = writeln!(out, "- {}", render_envelope_summary(target, &envelope));
+        }
+        if targets.len() > 8 {
+            let _ = writeln!(out, "- ... {} more protected targets", targets.len() - 8);
+        }
+    }
     if let Some(state) = state {
         let _ = writeln!(
             out,
@@ -742,16 +768,6 @@ pub(crate) fn render_mental_privacy_boundary_block(
             "Relational boundary state: {}",
             render_relational_boundary_summary(&state.relational_state)
         );
-    }
-    if !targets.is_empty() {
-        out.push_str("Current disclosure defaults:\n");
-        for target in targets.iter().take(8) {
-            let envelope = effective_envelope(state, target);
-            let _ = writeln!(out, "- {}", render_envelope_summary(target, &envelope));
-        }
-        if targets.len() > 8 {
-            let _ = writeln!(out, "- ... {} more protected targets", targets.len() - 8);
-        }
     }
     let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
     (!rendered.trim().is_empty()).then_some(rendered)
@@ -1009,33 +1025,136 @@ fn select_relevant_garden_docs(
     docs
 }
 
-fn render_private_garden_source_docs(
-    docs: &[PrivateGardenDoc],
-    state: Option<&MentalPrivacyState>,
-    max_len: usize,
-) -> Option<String> {
-    if docs.is_empty() || max_len < 64 {
-        return None;
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MentalPrivacyReviewSource {
+    target: String,
+    source: String,
+}
+
+fn push_mental_privacy_review_source(
+    sources: &mut Vec<MentalPrivacyReviewSource>,
+    target: String,
+    source: String,
+) {
+    if source.trim().is_empty() {
+        return;
     }
-    let mut out = String::with_capacity(max_len.min(1024));
-    out.push_str("## Private Garden Source Docs\n");
-    for doc in docs {
-        let target = private_garden_target(&doc.path);
-        let envelope = effective_envelope(state, &target);
-        let _ = writeln!(
-            out,
-            "- {} [{} / {} / {} / {}]",
-            doc.path,
-            envelope.layer.as_str(),
-            envelope.owner_access_mode.as_str(),
-            envelope.visibility.as_str(),
-            envelope.quote_policy.as_str()
+    sources.push(MentalPrivacyReviewSource { target, source });
+}
+
+fn collect_mental_privacy_review_sources(
+    self_model: Option<&SelfModel>,
+    self_continuity: Option<&SelfContinuity>,
+    inner_life: Option<&InnerLife>,
+    private_workspace: Option<&PrivateDocWorkspace>,
+    private_garden_records: &[PrivateGardenDocRecord],
+    private_garden_docs: &[PrivateGardenDoc],
+) -> Vec<MentalPrivacyReviewSource> {
+    let mut sources = Vec::new();
+    if let Some(block) = self_model.and_then(|model| render_self_model_block(model, 480)) {
+        push_mental_privacy_review_source(
+            &mut sources,
+            MENTAL_PRIVACY_TARGET_SELF_MODEL.to_string(),
+            block,
         );
-        let preview = truncate_content_to_max(&doc.content, MENTAL_PRIVACY_GARDEN_DOC_MAX_CHARS);
-        let _ = writeln!(out, "{}", scrub_credentials(preview.as_ref()));
     }
-    let rendered = truncate_content_to_max(out.trim_end(), max_len).into_owned();
-    (!rendered.trim().is_empty()).then_some(rendered)
+    if let Some(block) =
+        self_continuity.and_then(|continuity| render_self_continuity_block(continuity, 420))
+    {
+        push_mental_privacy_review_source(
+            &mut sources,
+            MENTAL_PRIVACY_TARGET_SELF_CONTINUITY.to_string(),
+            block,
+        );
+    }
+    if let Some(block) = inner_life.and_then(|inner_life| render_inner_life_block(inner_life, 480))
+    {
+        push_mental_privacy_review_source(
+            &mut sources,
+            MENTAL_PRIVACY_TARGET_INNER_LIFE.to_string(),
+            block,
+        );
+    }
+    if let Some(workspace) = private_workspace {
+        if let Some(entry) = workspace.inner_journal.as_ref() {
+            push_mental_privacy_review_source(
+                &mut sources,
+                private_doc_target("inner_journal"),
+                entry.content.clone(),
+            );
+        }
+        if let Some(entry) = workspace.relationship_notes.as_ref() {
+            push_mental_privacy_review_source(
+                &mut sources,
+                private_doc_target("relationship_notes"),
+                entry.content.clone(),
+            );
+        }
+        if let Some(entry) = workspace.self_reflection.as_ref() {
+            push_mental_privacy_review_source(
+                &mut sources,
+                private_doc_target("self_reflection"),
+                entry.content.clone(),
+            );
+        }
+        if let Some(entry) = workspace.private_plan.as_ref() {
+            push_mental_privacy_review_source(
+                &mut sources,
+                private_doc_target("private_plan"),
+                entry.content.clone(),
+            );
+        }
+    }
+    for record in private_garden_records {
+        push_mental_privacy_review_source(
+            &mut sources,
+            private_garden_target(&record.path),
+            record.preview.clone(),
+        );
+    }
+    for doc in private_garden_docs {
+        push_mental_privacy_review_source(
+            &mut sources,
+            private_garden_target(&doc.path),
+            doc.content.clone(),
+        );
+    }
+    sources
+}
+
+fn action_allows_raw_review_source(
+    action: MentalPrivacyShareAction,
+    state: &MentalPrivacyState,
+    target: &str,
+) -> bool {
+    matches!(action, MentalPrivacyShareAction::AllowRaw)
+        && matches!(
+            effective_envelope(Some(state), target).quote_policy,
+            MentalPrivacyQuotePolicy::Raw
+        )
+}
+
+fn sanitize_mental_privacy_review_reply(
+    reply_content: &str,
+    action: MentalPrivacyShareAction,
+    state: &MentalPrivacyState,
+    sources: &[MentalPrivacyReviewSource],
+) -> (String, Vec<String>) {
+    let mut output = scrub_private_source_echoes(reply_content.trim(), &[]);
+    let mut redacted_targets = Vec::new();
+    for source in sources {
+        if action_allows_raw_review_source(action, state, &source.target) {
+            continue;
+        }
+        let scrubbed = scrub_private_source_echoes(&output, &[source.source.as_str()]);
+        if scrubbed != output {
+            output = scrubbed;
+            if !redacted_targets.contains(&source.target) {
+                redacted_targets.push(source.target.clone());
+            }
+        }
+    }
+    (output, redacted_targets)
 }
 
 fn build_mental_privacy_review_input(
@@ -1048,10 +1167,11 @@ fn build_mental_privacy_review_input(
     inner_life: Option<&InnerLife>,
     private_workspace: Option<&PrivateDocWorkspace>,
     private_garden_records: &[PrivateGardenDocRecord],
-    private_garden_docs: &[PrivateGardenDoc],
+    _private_garden_docs: &[PrivateGardenDoc],
 ) -> String {
     let mut out = String::with_capacity(4096);
     out.push_str("Review whether the drafted reply may disclose protected private material.\n");
+    out.push_str("Protected source text is intentionally not included here. Judge the draft against the target/envelope policy; do not invent or quote private material.\n");
     out.push_str("Return JSON only.\n\n");
     out.push_str("## User Request\n");
     out.push_str(&scrub_credentials(user_content.trim()));
@@ -1083,46 +1203,11 @@ fn build_mental_privacy_review_input(
         out.push_str(block.trim());
         out.push('\n');
     }
-    if let Some(block) = self_model.and_then(|model| render_self_model_block(model, 480)) {
-        out.push('\n');
-        out.push_str(block.trim());
-        out.push('\n');
-    }
-    if let Some(block) =
-        self_continuity.and_then(|continuity| render_self_continuity_block(continuity, 420))
-    {
-        out.push('\n');
-        out.push_str(block.trim());
-        out.push('\n');
-    }
-    if let Some(block) = inner_life.and_then(|inner_life| render_inner_life_block(inner_life, 480))
-    {
-        out.push('\n');
-        out.push_str(block.trim());
-        out.push('\n');
-    }
-    if let Some(block) =
-        private_workspace.and_then(|workspace| render_private_doc_workspace_block(workspace, 480))
-    {
-        out.push('\n');
-        out.push_str(block.trim());
-        out.push('\n');
-    }
-    if let Some(block) = render_private_garden_block(private_garden_records, 4, 420) {
-        out.push('\n');
-        out.push_str(block.trim());
-        out.push('\n');
-    }
-    if let Some(block) = render_private_garden_source_docs(private_garden_docs, Some(state), 1400) {
-        out.push('\n');
-        out.push_str(block.trim());
-        out.push('\n');
-    }
     out.push_str("\n## Output Contract\n");
     out.push_str("- applies: boolean. True when this is a privacy access request or when the draft reply needs privacy correction.\n");
     out.push_str("- request_kind: short string such as none, raw, summary, relation, share_any.\n");
     out.push_str("- share_action: allow_original, allow_raw, allow_summary, allow_redacted_excerpt, explain_without_quote, refuse, or defer.\n");
-    out.push_str("- response: the exact user-facing reply after privacy adjudication.\n");
+    out.push_str("- response: a suggested user-facing reply only when applies=true. Leave empty when no correction is needed.\n");
     out.push_str("- rationale: one short sentence explaining the boundary decision for logs.\n");
     out.push_str("- touched_targets: zero or more target ids such as self_model, inner_life, private_docs.relationship_notes, private_garden:journal/today.md.\n");
     out
@@ -1500,8 +1585,8 @@ pub fn run_mental_privacy_review(
         ToolChoicePolicy::Auto,
     )?;
     let parsed = parse_mental_privacy_review(response.content.trim(), input.draft_reply);
-    let touched_targets = normalize_touched_targets(parsed.touched_targets, &known_targets);
-    let action = enforce_relationship_constitution_share_action(
+    let mut touched_targets = normalize_touched_targets(parsed.touched_targets, &known_targets);
+    let mut action = enforce_relationship_constitution_share_action(
         enforce_quote_policy(
             parsed
                 .share_action
@@ -1516,11 +1601,50 @@ pub fn run_mental_privacy_review(
         relationship_constitution.as_ref(),
         input.now_secs,
     );
-    let mut reply_content = parsed.response.trim().to_string();
-    if reply_content.is_empty() {
-        reply_content = input.draft_reply.to_string();
+    let mut review_applies = parsed.applies || !touched_targets.is_empty();
+    let mut reply_content = if review_applies {
+        match action {
+            MentalPrivacyShareAction::AllowOriginal => input.draft_reply.to_string(),
+            _ => {
+                let suggested = parsed.response.trim();
+                if suggested.is_empty() {
+                    input.draft_reply.to_string()
+                } else {
+                    suggested.to_string()
+                }
+            }
+        }
+    } else {
+        input.draft_reply.to_string()
+    };
+    let review_sources = collect_mental_privacy_review_sources(
+        self_model.as_ref(),
+        self_continuity.as_ref(),
+        inner_life.as_ref(),
+        private_workspace.as_ref(),
+        &private_garden_records,
+        &private_garden_docs,
+    );
+    let (sanitized_reply, redacted_targets) =
+        sanitize_mental_privacy_review_reply(&reply_content, action, &state, &review_sources);
+    if !redacted_targets.is_empty() {
+        reply_content = sanitized_reply;
+        for target in redacted_targets {
+            if known_targets.iter().any(|known| known == &target)
+                && !touched_targets.contains(&target)
+            {
+                touched_targets.push(target);
+            }
+        }
+        if matches!(
+            action,
+            MentalPrivacyShareAction::AllowOriginal | MentalPrivacyShareAction::AllowRaw
+        ) {
+            action = MentalPrivacyShareAction::ExplainWithoutQuote;
+        }
     }
-    if parsed.applies {
+    review_applies |= !touched_targets.is_empty();
+    if review_applies {
         append_privacy_log(
             &mut state,
             MentalPrivacyLogStage::Review,
@@ -1544,7 +1668,7 @@ pub fn run_mental_privacy_review(
     Ok(MentalPrivacyReviewOutcome {
         reply_content,
         action,
-        applied: parsed.applies,
+        applied: review_applies,
         touched_targets,
     })
 }
@@ -1556,9 +1680,6 @@ pub fn run_mental_privacy_disclosure_adjudication(
     input: MentalPrivacyDisclosureAdjudicationInput<'_>,
 ) -> Result<Option<MentalPrivacyDisclosureAdjudication>> {
     if input.user_content.trim().is_empty() {
-        return Ok(None);
-    }
-    if input.public_disclosure_surface {
         return Ok(None);
     }
     let subject_id = board_subject_scope_id();
@@ -2135,6 +2256,7 @@ fn parse_share_action(value: &serde_json::Value) -> Option<MentalPrivacyShareAct
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::PrivateDocEntry;
     use serde_json::json;
 
     #[test]
@@ -2284,6 +2406,114 @@ mod tests {
 
         assert!(!sanitized.contains(raw_private));
         assert!(sanitized.contains("[redacted:private_echo]"));
+    }
+
+    #[test]
+    fn mental_privacy_review_reply_scrubs_private_source_echoes() {
+        let raw_private = "This exact inward sentence should never be copied into the user reply.";
+        let sources = vec![MentalPrivacyReviewSource {
+            target: private_doc_target("inner_journal"),
+            source: raw_private.to_string(),
+        }];
+        let (sanitized, redacted_targets) = sanitize_mental_privacy_review_reply(
+            &format!("Here is the private line: {raw_private}"),
+            MentalPrivacyShareAction::AllowSummary,
+            &MentalPrivacyState::default(),
+            &sources,
+        );
+
+        assert!(!sanitized.contains(raw_private));
+        assert!(sanitized.contains("[redacted:private_echo]"));
+        assert_eq!(redacted_targets, vec![private_doc_target("inner_journal")]);
+    }
+
+    #[test]
+    fn mental_privacy_review_reply_allows_raw_only_for_raw_quote_policy() {
+        let raw_private = "This raw policy sentence may be quoted only by explicit policy.";
+        let target = private_doc_target("inner_journal");
+        let sources = vec![MentalPrivacyReviewSource {
+            target: target.clone(),
+            source: raw_private.to_string(),
+        }];
+        let mut state = MentalPrivacyState::default();
+        state.envelopes.insert(
+            target,
+            MentalPrivacyEnvelope {
+                quote_policy: MentalPrivacyQuotePolicy::Raw,
+                ..MentalPrivacyEnvelope::default()
+            },
+        );
+        let (sanitized, redacted_targets) = sanitize_mental_privacy_review_reply(
+            raw_private,
+            MentalPrivacyShareAction::AllowRaw,
+            &state,
+            &sources,
+        );
+
+        assert_eq!(sanitized, raw_private);
+        assert!(redacted_targets.is_empty());
+    }
+
+    #[test]
+    fn mental_privacy_review_reply_scrubs_allow_raw_when_policy_is_not_raw() {
+        let raw_private = "This summary-only sentence must not leak through allow_raw output.";
+        let sources = vec![MentalPrivacyReviewSource {
+            target: private_doc_target("relationship_notes"),
+            source: raw_private.to_string(),
+        }];
+        let (sanitized, redacted_targets) = sanitize_mental_privacy_review_reply(
+            raw_private,
+            MentalPrivacyShareAction::AllowRaw,
+            &MentalPrivacyState::default(),
+            &sources,
+        );
+
+        assert!(!sanitized.contains(raw_private));
+        assert_eq!(
+            redacted_targets,
+            vec![private_doc_target("relationship_notes")]
+        );
+    }
+
+    #[test]
+    fn mental_privacy_review_prompt_omits_private_source_text() {
+        let private_line = "sealed inner sentence that must not enter the review prompt";
+        let mut workspace = PrivateDocWorkspace::default();
+        workspace.inner_journal = Some(PrivateDocEntry {
+            content: private_line.to_string(),
+            updated_at: 42,
+            revision: 1,
+        });
+        let records = vec![PrivateGardenDocRecord {
+            path: "sealed/today.md".to_string(),
+            preview: private_line.to_string(),
+            revision: 1,
+            updated_at: 42,
+            bytes: private_line.len(),
+        }];
+        let docs = vec![PrivateGardenDoc {
+            path: "sealed/today.md".to_string(),
+            content: private_line.to_string(),
+            revision: 1,
+            updated_at: 42,
+        }];
+        let prompt = build_mental_privacy_review_input(
+            "Can you show your private note?",
+            "I should not reveal private notes.",
+            &MentalPrivacyState::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(&workspace),
+            &records,
+            &docs,
+        );
+
+        assert!(prompt.contains("Protected source text is intentionally not included"));
+        assert!(prompt.contains("private_docs.inner_journal"));
+        assert!(prompt.contains("private_garden:sealed/today.md"));
+        assert!(!prompt.contains(private_line));
     }
 
     #[test]
