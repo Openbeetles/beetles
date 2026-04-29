@@ -41,6 +41,7 @@ pub(crate) enum RouteExecutionClass {
     ImmediateRoute,
     SnapshotRoute,
     AsyncConfigRoute,
+    LocalDiagnosticRoute,
     SlowDiagnosticRoute,
     RejectedRoute,
 }
@@ -151,6 +152,20 @@ impl RouteExecutionClass {
                 counter_name: "http_config_worker",
                 begin_stage: "http_config_begin",
                 complete_stage: "http_config_complete",
+            }),
+            Self::LocalDiagnosticRoute => Some(RouteWorkerContract {
+                lane: RouteWorkerLane::Diagnostic,
+                stack_size: crate::util::STACK_HTTP_DIAG_WORKER,
+                reserves_tls_headroom: false,
+                queue_capacity: 2,
+                worker_threads: 1,
+                timeout_secs: 15,
+                idle_timeout_secs: 8,
+                reject_status: 503,
+                socket_reserve: 0,
+                counter_name: "http_local_diagnostic_worker",
+                begin_stage: "http_local_diagnostic_begin",
+                complete_stage: "http_local_diagnostic_complete",
             }),
             Self::SlowDiagnosticRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Diagnostic,
@@ -282,6 +297,23 @@ impl HttpRouteSpec {
             method,
             body_mode,
             execution_class: RouteExecutionClass::SlowDiagnosticRoute,
+            operator_access,
+            config_activity_phase: None,
+            reject_during_voice_exclusive: false,
+        }
+    }
+
+    pub(crate) const fn local_diagnostic_operator(
+        path: &'static str,
+        method: RouteMethod,
+        body_mode: RouteBodyMode,
+        operator_access: OperatorRouteAccess,
+    ) -> Self {
+        Self {
+            path,
+            method,
+            body_mode,
+            execution_class: RouteExecutionClass::LocalDiagnosticRoute,
             operator_access,
             config_activity_phase: None,
             reject_during_voice_exclusive: false,
@@ -702,7 +734,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::AlwaysOn,
     )
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
-    HttpRouteSpec::slow_diagnostic_operator(
+    HttpRouteSpec::local_diagnostic_operator(
         ROUTE_WIFI_SCAN,
         RouteMethod::Get,
         RouteBodyMode::None,
@@ -1322,11 +1354,17 @@ mod tests {
 
     #[test]
     fn diagnostics_snapshots_and_rejected_routes_are_explicit() {
+        let wifi_scan = route_spec_for("GET", ROUTE_WIFI_SCAN).expect("wifi scan");
         assert_eq!(
-            route_spec_for("GET", ROUTE_WIFI_SCAN)
-                .expect("wifi scan")
-                .execution_class,
-            RouteExecutionClass::SlowDiagnosticRoute
+            wifi_scan.execution_class,
+            RouteExecutionClass::LocalDiagnosticRoute
+        );
+        assert!(
+            !wifi_scan
+                .execution_class
+                .worker_contract()
+                .expect("wifi scan worker")
+                .reserves_tls_headroom
         );
         assert_eq!(
             route_spec_for("GET", ROUTE_HARDWARE_DISCOVERY)
@@ -1359,6 +1397,7 @@ mod tests {
         for class in [
             RouteExecutionClass::SnapshotRoute,
             RouteExecutionClass::AsyncConfigRoute,
+            RouteExecutionClass::LocalDiagnosticRoute,
             RouteExecutionClass::SlowDiagnosticRoute,
         ] {
             let contract = class.worker_contract().expect("worker contract");
@@ -1404,6 +1443,13 @@ mod tests {
                 .stack_size,
             crate::util::STACK_HTTP_DIAG_WORKER
         );
+        assert_eq!(
+            RouteExecutionClass::LocalDiagnosticRoute
+                .worker_contract()
+                .expect("local diagnostic worker")
+                .stack_size,
+            crate::util::STACK_HTTP_DIAG_WORKER
+        );
     }
 
     #[test]
@@ -1418,6 +1464,11 @@ mod tests {
                 RouteExecutionClass::AsyncConfigRoute,
                 RouteWorkerLane::Config,
                 crate::runtime::lease::LeaseKind::ConfigHttpWorker,
+            ),
+            (
+                RouteExecutionClass::LocalDiagnosticRoute,
+                RouteWorkerLane::Diagnostic,
+                crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
             ),
             (
                 RouteExecutionClass::SlowDiagnosticRoute,

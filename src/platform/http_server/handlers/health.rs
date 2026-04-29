@@ -82,6 +82,7 @@ mod tests {
     #[test]
     fn body_reports_default_health_state() {
         let _guard = crate::state::test_state_guard();
+        crate::state::clear_error_state_for_tests();
         crate::state::set_network_sta_expected(false, false);
         crate::state::clear_wifi_sta_state();
         let ctx = build_test_context();

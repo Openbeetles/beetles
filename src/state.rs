@@ -163,6 +163,17 @@ pub fn get_current_error() -> Option<String> {
     get_current_error_at(now_unix_secs())
 }
 
+#[cfg(test)]
+pub(crate) fn clear_error_state_for_tests() {
+    if let Ok(mut g) = LAST_ERROR.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = CURRENT_ERROR.lock() {
+        *g = None;
+    }
+    LAST_ERRORS_COUNT.store(0, Ordering::Relaxed);
+}
+
 /// 更新当前 WiFi STA 状态；业务域只读此状态，不直接依赖 platform helper。
 pub fn set_wifi_sta_state(connected: bool, ip: Option<String>) {
     let was_connected = WIFI_STA_CONNECTED.swap(connected, Ordering::Relaxed);
@@ -215,6 +226,13 @@ pub fn set_network_wifi_stage(stage: NetworkWifiStage, reason_code: Option<u16>)
         reason_code.map(u32::from).unwrap_or(u32::MAX),
         Ordering::Relaxed,
     );
+}
+
+/// 标记已提交一次 STA connect 请求；若已有明确失败原因，保留该原因供诊断面展示。
+pub fn mark_network_wifi_connecting_attempt() {
+    if !network_last_wifi_stage_has_reasoned_failure() {
+        set_network_wifi_stage(NetworkWifiStage::StaConnecting, None);
+    }
 }
 
 /// 当前最近 WiFi 阶段。
@@ -504,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoned_wifi_failure_is_visible_until_next_connect_attempt() {
+    fn reasoned_wifi_failure_is_visible_across_reconnect_attempts() {
         let _guard = test_state_guard();
         set_network_sta_expected(true, true);
         set_network_wifi_stage(NetworkWifiStage::StaApNotFound, Some(201));
@@ -515,8 +533,13 @@ mod tests {
         assert_eq!(failed.last_wifi_stage, NetworkWifiStage::StaApNotFound);
         assert_eq!(failed.last_wifi_reason_code, Some(201));
 
-        set_network_wifi_stage(NetworkWifiStage::StaConnecting, None);
-        assert!(!network_last_wifi_stage_has_reasoned_failure());
+        mark_network_wifi_connecting_attempt();
+        let reconnecting = network_runtime_snapshot(false, 0);
+        assert_eq!(
+            reconnecting.last_wifi_stage,
+            NetworkWifiStage::StaApNotFound
+        );
+        assert_eq!(reconnecting.last_wifi_reason_code, Some(201));
     }
 
     #[test]

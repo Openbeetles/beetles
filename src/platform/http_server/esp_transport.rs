@@ -342,6 +342,7 @@ fn route_worker_memory_reject_detail(contract: RouteWorkerContract) -> Option<St
 struct EspRouteExecutors {
     snapshot: EspRouteExecutor,
     config: EspRouteExecutor,
+    local_diagnostic: EspRouteExecutor,
     diagnostic: EspRouteExecutor,
 }
 
@@ -350,6 +351,11 @@ impl EspRouteExecutors {
         Self {
             snapshot: EspRouteExecutor::new(RouteExecutionClass::SnapshotRoute, ctx, config_store),
             config: EspRouteExecutor::new(RouteExecutionClass::AsyncConfigRoute, ctx, config_store),
+            local_diagnostic: EspRouteExecutor::new(
+                RouteExecutionClass::LocalDiagnosticRoute,
+                ctx,
+                config_store,
+            ),
             diagnostic: EspRouteExecutor::new(
                 RouteExecutionClass::SlowDiagnosticRoute,
                 ctx,
@@ -363,6 +369,7 @@ impl EspRouteExecutors {
             RouteExecutionClass::ImmediateRoute | RouteExecutionClass::RejectedRoute => None,
             RouteExecutionClass::SnapshotRoute => Some(&self.snapshot),
             RouteExecutionClass::AsyncConfigRoute => Some(&self.config),
+            RouteExecutionClass::LocalDiagnosticRoute => Some(&self.local_diagnostic),
             RouteExecutionClass::SlowDiagnosticRoute => Some(&self.diagnostic),
         }
     }
@@ -1233,7 +1240,7 @@ mod tests {
     fn slow_or_external_routes_stay_on_worker_lane() {
         assert_eq!(
             execution_class_for("/api/wifi/scan", Method::Get),
-            Some(RouteExecutionClass::SlowDiagnosticRoute)
+            Some(RouteExecutionClass::LocalDiagnosticRoute)
         );
         assert_eq!(
             execution_class_for("/api/hardware/discovery", Method::Get),

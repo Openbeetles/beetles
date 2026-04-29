@@ -11,7 +11,6 @@ use embedded_svc::wifi::{
 };
 use esp_idf_svc::eventloop::{EspSubscription, EspSystemEventLoop, System};
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::netif::IpEvent;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi, WifiEvent};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,7 +57,6 @@ struct StaSoftApConfig {
 
 struct WifiStageEventSubscriptions {
     _wifi: Option<EspSubscription<'static, System>>,
-    _ip: Option<EspSubscription<'static, System>>,
 }
 
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
@@ -437,10 +435,7 @@ fn poll_sta_link(
     crate::metrics::record_wifi_reconnect();
     match issue_sta_connect(wifi) {
         Ok(()) => {
-            crate::state::set_network_wifi_stage(
-                crate::state::NetworkWifiStage::StaConnecting,
-                None,
-            );
+            crate::state::mark_network_wifi_connecting_attempt();
             *sta_link_miss_count = 0;
             log::info!(
                 "[{}] STA connect() issued after {} misses, cooldown {}ms",
@@ -513,29 +508,8 @@ fn subscribe_wifi_stage_events(sys_loop: &EspSystemEventLoop) -> WifiStageEventS
         }
     };
 
-    let ip_subscription = sys_loop.subscribe::<IpEvent, _>(|event| {
-        if matches!(event, IpEvent::DhcpIpAssigned(_)) {
-            if let Some(handle) = sta_netif_handle() {
-                if event.is_for_handle(handle) {
-                    crate::state::set_network_wifi_stage(
-                        crate::state::NetworkWifiStage::StaIpReady,
-                        None,
-                    );
-                }
-            }
-        }
-    });
-    let ip_subscription = match ip_subscription {
-        Ok(subscription) => Some(subscription),
-        Err(error) => {
-            log::warn!("[{}] IP event subscription unavailable: {}", TAG, error);
-            None
-        }
-    };
-
     WifiStageEventSubscriptions {
         _wifi: wifi_subscription,
-        _ip: ip_subscription,
     }
 }
 
@@ -774,7 +748,7 @@ fn do_connect(
         TAG,
         SOFTAP_SSID
     );
-    crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaConnecting, None);
+    crate::state::mark_network_wifi_connecting_attempt();
     if let Err(e) = issue_sta_connect(&mut wifi) {
         log::warn!(
             "[{}] STA connect failed (SoftAP remains active for provisioning): {}",
