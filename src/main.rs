@@ -497,8 +497,9 @@ fn compute_voice_runtime_capabilities(
 mod tests {
     use super::{
         compute_voice_runtime_capabilities, finalize_required_thread_start,
-        register_process_memory_snapshot_provider, startup_banner_lines, voice_sink_sender,
-        DisplayChannelRuntimeStatus, DisplayLoopState, StartedVoiceSession, VERSION,
+        format_soul_kernel_recovery_report_for_log, register_process_memory_snapshot_provider,
+        startup_banner_lines, voice_sink_sender, DisplayChannelRuntimeStatus, DisplayLoopState,
+        StartedVoiceSession, VERSION,
     };
     use beetle::{
         config::default_disabled_audio_segment, DisplaySystemState, LinuxPlatform, Platform,
@@ -506,6 +507,61 @@ mod tests {
     };
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    #[test]
+    fn soul_kernel_startup_log_includes_degradation_reasons() {
+        let status = beetle::runtime::SoulKernelStatus {
+            minimum_viable: false,
+            safe_mode_minimum_readable: false,
+            degraded: true,
+            session_chat_count: 1,
+            key_memory_count: 0,
+            degradation_reasons: vec![
+                "missing_identity_anchor".to_string(),
+                "missing_continuity_anchor".to_string(),
+            ],
+            ..Default::default()
+        };
+        let report = beetle::runtime::SoulKernelRecoveryReport {
+            status_after: status,
+            ..Default::default()
+        };
+
+        let line = format_soul_kernel_recovery_report_for_log(&report);
+
+        assert!(line.contains("degraded=true"));
+        assert!(line.contains("session_chats=1"));
+        assert!(line.contains("key_memory=0"));
+        assert!(line.contains("reasons=missing_identity_anchor|missing_continuity_anchor"));
+    }
+
+    #[test]
+    fn soul_kernel_recovery_log_redacts_runtime_bundle_errors() {
+        let status = beetle::runtime::SoulKernelStatus {
+            degraded: true,
+            degradation_reasons: vec![
+                "runtime_bundle_unreadable:c2c:947B12A11A2E0348FAA2C60499D29345:token=abcdefghi123"
+                    .to_string(),
+            ],
+            ..Default::default()
+        };
+        let report = beetle::runtime::SoulKernelRecoveryReport {
+            restore_attempted: true,
+            status_after: status,
+            errors: vec![
+                "runtime_bundle_import_failed:c2c:947B12A11A2E0348FAA2C60499D29345:token=abcdefghi123"
+                    .to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let line = format_soul_kernel_recovery_report_for_log(&report);
+
+        assert!(line.contains("errors=runtime_bundle_import_failed"));
+        assert!(line.contains("reasons=runtime_bundle_unreadable"));
+        assert!(!line.contains("947B12A11A2E0348FAA2C60499D29345"));
+        assert!(!line.contains("abcdefghi123"));
+    }
 
     struct TestMemoryStore {
         has_memory: bool,
@@ -1520,13 +1576,23 @@ fn display_channel_runtime_status(
 ) -> DisplayChannelRuntimeStatus {
     let wss_lifecycle = display_channel_wss_lifecycle(channel);
     let ws_online = display_channel_ws_online(channel);
-    display_channel_runtime_status_from_lifecycle(
+    let status = display_channel_runtime_status_from_lifecycle(
         enabled,
         healthy,
         consecutive_failures,
         ws_online,
         wss_lifecycle,
-    )
+    );
+    if status == DisplayChannelRuntimeStatus::Configured
+        && enabled
+        && healthy
+        && consecutive_failures == 0
+        && display_channel_wss_lifecycle_owner(channel).is_some()
+    {
+        DisplayChannelRuntimeStatus::Waiting
+    } else {
+        status
+    }
 }
 
 #[cfg(any(
@@ -2706,25 +2772,109 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-fn log_soul_kernel_recovery_report(report: &beetle::runtime::SoulKernelRecoveryReport) {
+fn join_log_values(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join("|")
+    }
+}
+
+fn sanitize_soul_kernel_error_for_log(value: &str) -> String {
+    let value = value.trim();
+    if value.starts_with("runtime_bundle_import_failed:") {
+        return "runtime_bundle_import_failed".to_string();
+    }
+    let scrubbed = beetle::util::scrub_credentials(value);
+    let sanitized: String = scrubbed
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(96)
+        .collect();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn join_soul_kernel_error_log_values(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values
+            .iter()
+            .map(|value| sanitize_soul_kernel_error_for_log(value))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+}
+
+fn sanitize_soul_kernel_status_reason_for_log(value: &str) -> String {
+    if value.trim().starts_with("runtime_bundle_unreadable:") {
+        "runtime_bundle_unreadable".to_string()
+    } else {
+        sanitize_soul_kernel_error_for_log(value)
+    }
+}
+
+fn join_soul_kernel_status_reason_log_values(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values
+            .iter()
+            .map(|value| sanitize_soul_kernel_status_reason_for_log(value))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+}
+
+fn format_soul_kernel_status_for_log(status: &beetle::runtime::SoulKernelStatus) -> String {
+    format!(
+        "ready={} safe_mode_readable={} degraded={} session_chats={} active_chats={} key_memory={} runtime_bundle_present={} runtime_bundle_loadable={} runtime_bundle_snapshots={} reasons={}",
+        status.minimum_viable,
+        status.safe_mode_minimum_readable,
+        status.degraded,
+        status.session_chat_count,
+        status.active_chat_ids.len(),
+        status.key_memory_count,
+        status.runtime_bundle.present,
+        status.runtime_bundle.loadable,
+        status.runtime_bundle.snapshot_count,
+        join_soul_kernel_status_reason_log_values(&status.degradation_reasons),
+    )
+}
+
+fn format_soul_kernel_recovery_report_for_log(
+    report: &beetle::runtime::SoulKernelRecoveryReport,
+) -> String {
     if report.restore_attempted {
-        log::info!(
-            "[{}] soul_kernel recovery action={:?} restored_snapshots={} restored_layers={} degraded_after={}",
-            TAG,
+        format!(
+            "recovery action={:?} restored_snapshots={} restored_layers={} errors={} {}",
             report.action,
             report.restored_snapshots,
-            report.restored_layers.len(),
-            report.status_after.degraded,
-        );
+            join_log_values(&report.restored_layers),
+            join_soul_kernel_error_log_values(&report.errors),
+            format_soul_kernel_status_for_log(&report.status_after),
+        )
     } else {
-        log::info!(
-            "[{}] soul_kernel ready={} safe_mode_readable={} degraded={}",
-            TAG,
-            report.status_after.minimum_viable,
-            report.status_after.safe_mode_minimum_readable,
-            report.status_after.degraded,
-        );
+        format_soul_kernel_status_for_log(&report.status_after)
     }
+}
+
+fn log_soul_kernel_recovery_report(report: &beetle::runtime::SoulKernelRecoveryReport) {
+    log::info!(
+        "[{}] soul_kernel {}",
+        TAG,
+        format_soul_kernel_recovery_report_for_log(report),
+    );
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

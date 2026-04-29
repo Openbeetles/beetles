@@ -208,6 +208,8 @@ pub struct DisplaySpiConfig {
     #[serde(default)]
     pub rst: Option<i32>,
     #[serde(default)]
+    pub rst_active_high: bool,
+    #[serde(default)]
     pub bl: Option<i32>,
     #[serde(default = "default_spi_freq_hz")]
     pub freq_hz: u32,
@@ -461,7 +463,7 @@ fn default_color_order() -> DisplayColorOrder {
 }
 
 fn default_spi_host() -> u8 {
-    1
+    2
 }
 
 fn default_spi_freq_hz() -> u32 {
@@ -493,6 +495,7 @@ pub fn default_disabled_display_config() -> DisplayConfig {
             cs: 21,
             dc: 40,
             rst: None,
+            rst_active_high: false,
             bl: None,
             freq_hz: default_spi_freq_hz(),
         },
@@ -509,6 +512,19 @@ pub fn is_framebuffer_config(cfg: &DisplayConfig) -> bool {
         (&cfg.driver, &cfg.bus),
         (DisplayDriver::Framebuffer, DisplayBus::Framebuffer)
     )
+}
+
+/// Map display config SPI host labels to Linux `/dev/spidevX.Y` bus indexes.
+/// 将显示配置中的 SPI host 标签映射为 Linux `/dev/spidevX.Y` bus 序号。
+pub fn display_spidev_bus_for_config_host(host: u8) -> Result<u8> {
+    match host {
+        2 => Ok(0),
+        3 => Ok(1),
+        _ => Err(Error::config(
+            "display_spi_path",
+            "DISPLAY_CONFIG_INVALID_SPI_HOST: host must be 2 (SPI2) or 3 (SPI3)",
+        )),
+    }
 }
 
 pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
@@ -574,10 +590,10 @@ pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
             "DISPLAY_CONFIG_INVALID_OFFSET: offset must be -480..=480",
         ));
     }
-    if cfg.spi.host != 1 && cfg.spi.host != 2 {
+    if cfg.spi.host != 2 && cfg.spi.host != 3 {
         return Err(Error::config(
             "display",
-            "DISPLAY_CONFIG_INVALID_SPI_HOST: host must be 1 or 2",
+            "DISPLAY_CONFIG_INVALID_SPI_HOST: host must be 2 (SPI2) or 3 (SPI3)",
         ));
     }
     if !(DISPLAY_SPI_FREQ_MIN..=DISPLAY_SPI_FREQ_MAX).contains(&cfg.spi.freq_hz) {
@@ -662,6 +678,34 @@ mod tests {
     fn default_display_config_keeps_linux_spi_swap_disabled() {
         let cfg = default_disabled_display_config();
         assert!(!cfg.linux_spi_swap_bytes);
+    }
+
+    #[test]
+    fn default_display_config_uses_esp_idf_spi2_host() {
+        let cfg = default_disabled_display_config();
+        assert_eq!(cfg.spi.host, 2);
+    }
+
+    #[test]
+    fn display_config_accepts_external_spi_hosts_only() {
+        let mut cfg = default_disabled_display_config();
+        cfg.enabled = true;
+
+        cfg.spi.host = 2;
+        assert!(validate_display_config_core(&cfg).is_ok());
+
+        cfg.spi.host = 3;
+        assert!(validate_display_config_core(&cfg).is_ok());
+
+        cfg.spi.host = 1;
+        assert!(validate_display_config_core(&cfg).is_err());
+    }
+
+    #[test]
+    fn display_spidev_bus_mapping_matches_config_hosts() {
+        assert_eq!(display_spidev_bus_for_config_host(2).unwrap(), 0);
+        assert_eq!(display_spidev_bus_for_config_host(3).unwrap(), 1);
+        assert!(display_spidev_bus_for_config_host(1).is_err());
     }
 
     #[test]

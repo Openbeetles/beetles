@@ -29,6 +29,7 @@ Saved data ends up in `config/display.json`.
 
 If you use a small SPI panel, the first three drivers are the usual choices.
 If your system already exposes a display device, `framebuffer` is the usual path.
+In SPI mode, `spi.host` uses board-level bus labels: `2` means the external display uses `SPI2`, and `3` means it uses `SPI3`. The ESP backend maps this value to the matching ESP-IDF enum. `1` is the SPI1/Flash-related bus and is not a valid external display setting.
 
 ## A Common SPI Example
 
@@ -79,7 +80,7 @@ If your system already exposes a display device, `framebuffer` is the usual path
   "offset_y": 0,
   "sleep_timeout_secs": 30,
   "spi": {
-    "host": 1,
+    "host": 2,
     "sclk": 0,
     "mosi": 0,
     "cs": 0,
@@ -107,6 +108,7 @@ If your system already exposes a display device, `framebuffer` is the usual path
 | `linux_spi_swap_bytes` | last Linux SPI fallback for wrong colors |
 | `offset_x` / `offset_y` | image position adjustment |
 | `sleep_timeout_secs` | auto backlight-off timeout; `0` disables it |
+| `spi.host` | SPI mode accepts only `2` or `3`, matching external display buses `SPI2` / `SPI3` |
 | `fb_device` | framebuffer device path |
 | `backlight_sysfs` | Linux backlight path |
 

@@ -19,7 +19,10 @@ use std::sync::Mutex;
 use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 
-use super::{list_dir, read_file, with_fs_lock, MAX_WRITE_SIZE};
+use super::{
+    finish_file_after_write, list_dir, read_file, with_fs_lock_stage, WriteDurability,
+    MAX_WRITE_SIZE,
+};
 
 const TAG: &str = "platform::spiffs::session";
 
@@ -497,6 +500,7 @@ fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
         path,
         data,
         super::WriteTailPadding::Newlines,
+        WriteDurability::Durable,
         "session_write",
     )
 }
@@ -580,7 +584,7 @@ fn write_session_messages_unlocked<'a>(
             remaining -= n;
         }
     }
-    file.sync_all().map_err(|e| Error::io("session_write", e))?;
+    finish_file_after_write(&mut file, "session_write", WriteDurability::Durable)?;
     Ok(SessionAppendState::from_written_messages(
         message_count,
         written > 0,
@@ -643,8 +647,7 @@ fn append_session_lines_unlocked(
             .and_then(|_| file.write_all(b"\n"))
             .map_err(|e| Error::io("session_append", e))?;
     }
-    file.sync_all()
-        .map_err(|e| Error::io("session_append", e))?;
+    finish_file_after_write(&mut file, "session_append", WriteDurability::Durable)?;
     Ok(())
 }
 
@@ -884,7 +887,7 @@ impl SessionStore for SpiffsSessionStore {
         }
 
         let (path, write_header) = session_path(chat_id)?;
-        with_fs_lock(|| {
+        with_fs_lock_stage("session_append", || {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             let (msg_count, existing_has_data, existing_ends_with_newline, existing_messages) =
@@ -1050,7 +1053,7 @@ impl SessionStore for SpiffsSessionStore {
                 .map(|message| message.to_session_message())
                 .collect());
         }
-        let recent = with_fs_lock(|| {
+        let recent = with_fs_lock_stage("session_read_recent", || {
             let _ = write_header;
             let snapshot = load_session_tail_snapshot_unlocked(&path, chat_id, cap)?;
             let start = snapshot.messages.len().saturating_sub(cap);
@@ -1076,7 +1079,7 @@ impl SessionStore for SpiffsSessionStore {
         if cap == 0 {
             return Ok(Vec::new());
         }
-        let (recent, needs_repair) = with_fs_lock(|| {
+        let (recent, needs_repair) = with_fs_lock_stage("session_read_recent", || {
             let _ = write_header;
             let snapshot = load_session_tail_snapshot_unlocked(&path, chat_id, cap)?;
             let start = snapshot.messages.len().saturating_sub(cap);
@@ -1128,7 +1131,7 @@ impl SessionStore for SpiffsSessionStore {
         {
             return Ok(count.message_count);
         }
-        with_fs_lock(|| {
+        with_fs_lock_stage("session_count", || {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
             let state = if self.should_defer_compact_on_append() {
                 let _ = write_header;

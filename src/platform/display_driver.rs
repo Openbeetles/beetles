@@ -80,6 +80,17 @@ mod esp_backend {
     }
 
     impl SpiDisplayBackend {
+        fn esp_spi_host_device(config_host: u8) -> Result<u32> {
+            match config_host {
+                2 => Ok(spi_host_device_t_SPI2_HOST as u32),
+                3 => Ok(spi_host_device_t_SPI3_HOST as u32),
+                _ => Err(crate::error::Error::config(
+                    "display_spi_host",
+                    "DISPLAY_CONFIG_INVALID_SPI_HOST: host must be 2 (SPI2) or 3 (SPI3)",
+                )),
+            }
+        }
+
         pub fn new(config: &DisplayConfig) -> Result<Self> {
             if matches!(config.driver, DisplayDriver::Framebuffer) {
                 return Err(crate::error::Error::config(
@@ -123,7 +134,7 @@ mod esp_backend {
                 }
             }
 
-            // --- Optional RST pin: pulse low → high ---
+            // --- Optional RST pin: pulse low -> high ---
             if let Some(rst) = spi.rst {
                 unsafe {
                     let rst_conf = gpio_config_t {
@@ -224,7 +235,7 @@ mod esp_backend {
                 isr_cpu_id: esp_intr_cpu_affinity_t_ESP_INTR_CPU_AFFINITY_AUTO,
                 intr_flags: 0,
             };
-            let spi_host = spi.host as u32;
+            let spi_host = Self::esp_spi_host_device(spi.host)?;
             unsafe {
                 let ret = spi_bus_initialize(spi_host, &bus_cfg, spi_common_dma_t_SPI_DMA_CH_AUTO);
                 if ret != ESP_OK {

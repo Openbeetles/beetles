@@ -39,6 +39,12 @@ pub(crate) enum WriteTailPadding {
     Newlines,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteDurability {
+    RuntimeBuffered,
+    Durable,
+}
+
 #[cfg_attr(
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
     allow(dead_code)
@@ -159,7 +165,10 @@ fn lock_host_spiffs() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-pub(crate) fn with_fs_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
+pub(crate) fn with_fs_lock_stage<R>(
+    stage: &'static str,
+    f: impl FnOnce() -> Result<R>,
+) -> Result<R> {
     let wait_start = Instant::now();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let _guard = lock_spiffs();
@@ -168,12 +177,12 @@ pub(crate) fn with_fs_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
     crate::metrics::record_spiffs_lock_wait_us(wait_start.elapsed().as_micros());
     let hold_start = Instant::now();
     let result = f();
-    crate::metrics::record_spiffs_lock_hold_us(hold_start.elapsed().as_micros());
+    crate::metrics::record_spiffs_lock_hold_us_for_stage(stage, hold_start.elapsed().as_micros());
     result
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn with_fs_lock_value<R>(f: impl FnOnce() -> R) -> R {
+fn with_fs_lock_value_stage<R>(stage: &'static str, f: impl FnOnce() -> R) -> R {
     let wait_start = Instant::now();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let _guard = lock_spiffs();
@@ -182,7 +191,7 @@ fn with_fs_lock_value<R>(f: impl FnOnce() -> R) -> R {
     crate::metrics::record_spiffs_lock_wait_us(wait_start.elapsed().as_micros());
     let hold_start = Instant::now();
     let result = f();
-    crate::metrics::record_spiffs_lock_hold_us(hold_start.elapsed().as_micros());
+    crate::metrics::record_spiffs_lock_hold_us_for_stage(stage, hold_start.elapsed().as_micros());
     result
 }
 
@@ -239,7 +248,7 @@ pub fn init_spiffs() -> Result<()> {
 pub fn spiffs_usage() -> Option<(u64, u64)> {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        with_fs_lock_value(|| {
+        with_fs_lock_value_stage("spiffs_usage", || {
             let mut total: usize = 0;
             let mut used: usize = 0;
             let ret = unsafe {
@@ -309,7 +318,7 @@ fn read_open_file(
 /// 有 metadata 时预分配 capacity，减少 read_to_end 的多次 realloc。
 /// 大文件（>= 8KB）优先使用 PSRAM 分配。
 pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
-    with_fs_lock(|| {
+    with_fs_lock_stage("spiffs_read", || {
         let (file, capacity) = open_file_for_read(path.as_ref())?;
         let mut buf = if capacity >= PSRAM_FILE_THRESHOLD {
             psram_vec_with_capacity(capacity)
@@ -329,7 +338,7 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<PsramVec<u8>> {
 /// 读整个文件到普通 `Vec<u8>`。用于最终 API 本身就要求 `Vec<u8>` 的路径，
 /// 避免先落 PSRAM 再 `into_vec()` 复制一遍。
 pub fn read_file_to_vec(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    with_fs_lock(|| {
+    with_fs_lock_stage("spiffs_read", || {
         let (file, capacity) = open_file_for_read(path.as_ref())?;
         let mut buf = if capacity > 0 {
             Vec::with_capacity(capacity)
@@ -353,6 +362,7 @@ fn esp_write_file_no_unlink(
     path_str: &str,
     data: &[u8],
     tail_padding: WriteTailPadding,
+    durability: WriteDurability,
     stage: &'static str,
 ) -> Result<()> {
     let old_len = if tail_padding != WriteTailPadding::None {
@@ -402,14 +412,34 @@ fn esp_write_file_no_unlink(
             remaining -= n;
         }
     }
-    file.sync_all().map_err(|e| Error::io(stage, e))?;
+    finish_file_after_write(&mut file, stage, durability)?;
     Ok(())
+}
+
+pub(crate) fn finish_file_after_write(
+    file: &mut std::fs::File,
+    stage: &'static str,
+    durability: WriteDurability,
+) -> Result<()> {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        match durability {
+            WriteDurability::RuntimeBuffered => file.flush().map_err(|e| Error::io(stage, e)),
+            WriteDurability::Durable => file.sync_all().map_err(|e| Error::io(stage, e)),
+        }
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let _ = durability;
+        file.sync_all().map_err(|e| Error::io(stage, e))
+    }
 }
 
 pub(crate) fn write_file_unlocked(
     path: &Path,
     data: &[u8],
     tail_padding: WriteTailPadding,
+    durability: WriteDurability,
     stage: &'static str,
 ) -> Result<()> {
     if data.len() > MAX_WRITE_SIZE {
@@ -423,11 +453,12 @@ pub(crate) fn write_file_unlocked(
         let path_str = path
             .to_str()
             .ok_or_else(|| Error::config(stage, "invalid path"))?;
-        esp_write_file_no_unlink(path_str, data, tail_padding, stage)
+        esp_write_file_no_unlink(path_str, data, tail_padding, durability, stage)
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
         let _ = tail_padding;
+        let _ = durability;
         crate::platform::fs_atomic::atomic_write(path, data)
     }
 }
@@ -436,19 +467,43 @@ pub(crate) fn write_file_unlocked(
 /// ESP：SPIFFS 运行态禁止 unlink+rewrite，普通字节路径直接覆盖；host：同目录 tmp + fsync + rename（原子替换）。
 pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     let p = path.as_ref();
-    with_fs_lock(|| write_file_unlocked(p, data, WriteTailPadding::None, "spiffs_write"))
+    with_fs_lock_stage("spiffs_write", || {
+        write_file_unlocked(
+            p,
+            data,
+            WriteTailPadding::None,
+            WriteDurability::Durable,
+            "spiffs_write",
+        )
+    })
 }
 
 /// 写 JSON 状态文件。ESP 上短写用 JSON 合法空白覆盖旧尾部，避免 `SPIFFS_remove`。
 /// Write JSON state. On ESP, shorter writes pad the previous tail with JSON whitespace instead of unlinking.
 pub fn write_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     let p = path.as_ref();
-    with_fs_lock(|| {
+    with_fs_lock_stage("spiffs_write_json", || {
         write_file_unlocked(
             p,
             data,
             WriteTailPadding::JsonWhitespace,
+            WriteDurability::Durable,
             "spiffs_write_json",
+        )
+    })
+}
+
+/// 写运行态缓存 JSON。ESP 上只 flush Rust/VFS buffer，避免高频 write-back 抢占 SPIFFS。
+/// Write runtime cache JSON. ESP uses buffered flush to reduce high-frequency write-back stalls.
+pub(crate) fn write_runtime_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
+    let p = path.as_ref();
+    with_fs_lock_stage("spiffs_runtime_write_json", || {
+        write_file_unlocked(
+            p,
+            data,
+            WriteTailPadding::JsonWhitespace,
+            WriteDurability::RuntimeBuffered,
+            "spiffs_runtime_write_json",
         )
     })
 }
@@ -457,7 +512,15 @@ pub fn write_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
 /// Write newline-delimited text state. On ESP, shorter writes blank old tails with newlines.
 pub fn write_line_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     let p = path.as_ref();
-    with_fs_lock(|| write_file_unlocked(p, data, WriteTailPadding::Newlines, "spiffs_write_line"))
+    with_fs_lock_stage("spiffs_write_line", || {
+        write_file_unlocked(
+            p,
+            data,
+            WriteTailPadding::Newlines,
+            WriteDurability::Durable,
+            "spiffs_write_line",
+        )
+    })
 }
 
 /// 追加一条换行分隔记录。若既有文件末尾缺少换行，先补一个换行再写入。
@@ -474,7 +537,7 @@ pub fn append_line_file(path: impl AsRef<Path>, line: &[u8]) -> Result<()> {
         ));
     }
     let p = path.as_ref();
-    with_fs_lock(|| {
+    with_fs_lock_stage("spiffs_append_line", || {
         let path_str = p
             .to_str()
             .ok_or_else(|| Error::config("spiffs_append_line", "invalid path"))?;
@@ -508,8 +571,7 @@ pub fn append_line_file(path: impl AsRef<Path>, line: &[u8]) -> Result<()> {
             .map_err(|e| Error::io("spiffs_append_line", e))?;
         file.write_all(b"\n")
             .map_err(|e| Error::io("spiffs_append_line", e))?;
-        file.sync_all()
-            .map_err(|e| Error::io("spiffs_append_line", e))?;
+        finish_file_after_write(&mut file, "spiffs_append_line", WriteDurability::Durable)?;
         Ok(())
     })
 }
@@ -517,7 +579,7 @@ pub fn append_line_file(path: impl AsRef<Path>, line: &[u8]) -> Result<()> {
 /// 删除文件。仅删除文件，不删目录。用于技能删除等。
 pub fn remove_file(path: impl AsRef<Path>) -> Result<()> {
     let p = path.as_ref().to_path_buf();
-    with_fs_lock(|| {
+    with_fs_lock_stage("spiffs_remove", || {
         let path_str = p
             .to_str()
             .ok_or_else(|| Error::config("spiffs_remove", "invalid path"))?;
@@ -529,7 +591,7 @@ pub fn remove_file(path: impl AsRef<Path>) -> Result<()> {
 /// 列目录条目（仅一层）。路径如 /spiffs/config。
 pub fn list_dir(path: impl AsRef<Path>) -> Result<Vec<String>> {
     let p = path.as_ref().to_path_buf();
-    with_fs_lock(|| {
+    with_fs_lock_stage("spiffs_list", || {
         let path_str = p
             .to_str()
             .ok_or_else(|| Error::config("spiffs_list", "invalid path"))?;

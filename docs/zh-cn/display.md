@@ -28,6 +28,7 @@
 - `framebuffer`
 
 SPI 小屏通常使用前三种驱动；系统已提供显示设备时通常使用 `framebuffer`。
+SPI 模式下 `spi.host` 使用板级总线标签：`2` 表示外接屏走 `SPI2`，`3` 表示外接屏走 `SPI3`；ESP 后端会映射到 ESP-IDF 对应枚举。`1` 是 SPI1/Flash 相关总线，不作为外接屏配置值。
 
 ## SPI 配置示例
 
@@ -78,7 +79,7 @@ SPI 小屏通常使用前三种驱动；系统已提供显示设备时通常使�
   "offset_y": 0,
   "sleep_timeout_secs": 30,
   "spi": {
-    "host": 1,
+    "host": 2,
     "sclk": 0,
     "mosi": 0,
     "cs": 0,
@@ -106,6 +107,7 @@ SPI 小屏通常使用前三种驱动；系统已提供显示设备时通常使�
 | `linux_spi_swap_bytes` | Linux SPI 下颜色仍不对时再试 |
 | `offset_x` / `offset_y` | 画面偏移修正 |
 | `sleep_timeout_secs` | 背光自动熄灭时间，`0` 表示关闭 |
+| `spi.host` | SPI 模式下仅支持 `2` 或 `3`，分别对应外接屏总线 `SPI2` / `SPI3` |
 | `fb_device` | framebuffer 设备路径 |
 | `backlight_sysfs` | Linux 背光路径 |
 

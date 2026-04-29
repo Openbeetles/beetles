@@ -2,6 +2,7 @@
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
 //! 并由独立 write-back 执行面承接 SPIFFS/serde/session flush 重活。
 
+use crate::agent::{ActiveWorkRecord, ActiveWorkStore};
 use crate::channels::inbound_backpressure::{self, EventIngressSource};
 use crate::error::{Error, Result};
 use crate::memory::{
@@ -95,6 +96,7 @@ const BUFFERED_RUNTIME_WRITE_BACK_LABELS: &[&str] = &[
     "relationship_portfolio_write_back",
     "relationship_topology_write_back",
     "long_term_extraction_state_write_back",
+    "active_work_write_back",
     "turn_ledger_write_back",
     "session_summary_write_back",
     "important_message_write_back",
@@ -105,6 +107,7 @@ static WRITE_BACK_DEFERRED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WRITE_BACK_DROPPED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WRITE_BACK_COALESCED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WRITE_BACK_WORKER_STARTS_TOTAL: AtomicU32 = AtomicU32::new(0);
+static WRITE_BACK_RETRY_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 static WRITE_BACK_TEST_AUTO_SERVICE: AtomicBool = AtomicBool::new(false);
@@ -148,6 +151,30 @@ fn record_write_back_deferred(count: usize) {
     WRITE_BACK_DEFERRED_TOTAL.fetch_add(count.min(u32::MAX as usize) as u32, Ordering::Relaxed);
 }
 
+fn pending_write_back_jobs() -> bool {
+    !write_back_scheduler()
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .jobs
+        .is_empty()
+}
+
+fn schedule_write_back_retry(delay: Duration) {
+    if WRITE_BACK_RETRY_SCHEDULED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let due_at = Instant::now() + delay;
+    let task = Box::new(|| {
+        WRITE_BACK_RETRY_SCHEDULED.store(false, Ordering::Release);
+        service_write_back_tasks();
+    });
+    if crate::runtime::schedule_critical_delayed_task(due_at, task).is_err() {
+        WRITE_BACK_RETRY_SCHEDULED.store(false, Ordering::Release);
+        log::warn!("[write_back] failed to schedule admission retry");
+    }
+}
+
 fn mark_write_back_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
     crate::runtime::plane_lifecycle::mark(
         crate::runtime::PlaneId::StorageWriteBack,
@@ -188,8 +215,9 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
         inbound_backpressure::record_enqueued(EventIngressSource::WriteBack);
     }
     if should_auto_service_write_back_tasks() {
-        if write_back_admission_delay().is_some() {
+        if let Some(delay) = write_back_admission_delay() {
             record_write_back_deferred(1);
+            schedule_write_back_retry(delay);
             return true;
         }
         if ensure_write_back_worker_started_for_pending_jobs() {
@@ -271,6 +299,10 @@ fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Dur
     }
     state.jobs.extend(jobs);
     state.worker_started = false;
+    drop(state);
+    if should_auto_service_write_back_tasks() {
+        schedule_write_back_retry(delay);
+    }
 }
 
 fn write_back_admission_delay() -> Option<Duration> {
@@ -299,6 +331,7 @@ fn write_back_foreground_activity_active(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> bool {
+    // Established WSS sessions are steady-state channel capacity, not short foreground work.
     config_active
         || resource.active_http_count > 0
         || resource.active_agent_tasks > 0
@@ -445,6 +478,15 @@ fn next_write_back_worker_step(idle_started: &mut Instant) -> WriteBackWorkerSte
 /// This function is intentionally light enough for `agent_loop`: heavy
 /// SPIFFS/serde/session flush closures run only on the write-back worker stack.
 pub fn service_write_back_tasks() {
+    if let Some(delay) = write_back_admission_delay() {
+        if pending_write_back_jobs() {
+            record_write_back_deferred(1);
+            if should_auto_service_write_back_tasks() {
+                schedule_write_back_retry(delay);
+            }
+        }
+        return;
+    }
     let _ = ensure_write_back_worker_started_for_pending_jobs();
 }
 
@@ -476,6 +518,7 @@ pub fn format_baseline_log_line() -> String {
 
 #[cfg(test)]
 fn reset_write_back_queue_for_tests() {
+    WRITE_BACK_RETRY_SCHEDULED.store(false, Ordering::Release);
     let scheduler = write_back_scheduler();
     {
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -811,6 +854,12 @@ define_buffered_chat_store!(
     LongTermMemoryExtractionStateStore,
     LongTermMemoryExtractionState,
     "long_term_extraction_state_write_back"
+);
+define_buffered_chat_store!(
+    BufferedActiveWorkStore,
+    ActiveWorkStore,
+    ActiveWorkRecord,
+    "active_work_write_back"
 );
 
 pub struct BufferedTurnLedgerStore {
@@ -1389,6 +1438,11 @@ mod tests {
         values: Mutex<HashMap<String, ExecutionState>>,
     }
 
+    #[derive(Default)]
+    struct StubActiveWorkStore {
+        values: Mutex<HashMap<String, ActiveWorkRecord>>,
+    }
+
     impl ExecutionStateStore for StubExecutionStateStore {
         fn get(&self, chat_id: &str) -> Result<Option<ExecutionState>> {
             Ok(self
@@ -1404,6 +1458,33 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(chat_id.to_string(), state.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+    }
+
+    impl ActiveWorkStore for StubActiveWorkStore {
+        fn get(&self, chat_id: &str) -> Result<Option<ActiveWorkRecord>> {
+            Ok(self
+                .values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned())
+        }
+
+        fn set(&self, chat_id: &str, record: &ActiveWorkRecord) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), record.clone());
             Ok(())
         }
 
@@ -1552,6 +1633,35 @@ mod tests {
         store.set("chat", &state).unwrap();
         let got = store.get("chat").unwrap().unwrap();
         assert_eq!(got.goal, "goal");
+    }
+
+    #[test]
+    fn buffered_active_work_reads_pending_before_flush() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner: Arc<dyn ActiveWorkStore + Send + Sync> =
+            Arc::new(StubActiveWorkStore::default());
+        let store = BufferedActiveWorkStore::wrap(inner);
+        let record = ActiveWorkRecord {
+            kind: crate::agent::ActiveWorkKind::InteractiveAction,
+            title: "blocked user turn".to_string(),
+            status: crate::agent::ForegroundWorkStatus::AwaitingUser,
+            continuity_open: true,
+            blocks_background_llm: true,
+            progress_summary: "waiting".to_string(),
+            blocker: String::new(),
+            next_action: String::new(),
+            recent_outcome: String::new(),
+            active_artifact_refs: Vec::new(),
+            updated_at: 1,
+        };
+
+        store.set("chat", &record).unwrap();
+        let got = store.get("chat").unwrap().unwrap();
+        assert_eq!(got.title, "blocked user turn");
+        assert!(queued_write_back_labels_for_tests().contains(&"active_work_write_back"));
     }
 
     #[test]
@@ -1993,7 +2103,8 @@ mod tests {
         resource.active_wss_count = 1;
         assert_eq!(
             write_back_admission_delay_for_resource(&resource, false),
-            None
+            None,
+            "long-lived WSS alone must not starve deferred write-back work"
         );
         resource.active_wss_count = 0;
         resource.active_agent_tasks = 1;
@@ -2026,6 +2137,7 @@ mod tests {
             heap_largest_block: 128 * 1024,
         });
         crate::metrics::record_spiffs_lock_wait_us(7_500);
+        crate::metrics::record_spiffs_lock_hold_us(0);
         let _agent = crate::orchestrator::begin_agent_task();
 
         assert!(
@@ -2033,6 +2145,46 @@ mod tests {
             "Cautious storage contention must defer write-back while agent foreground work is active"
         );
 
+        crate::metrics::record_spiffs_lock_wait_us(0);
+        crate::metrics::record_spiffs_lock_hold_us(0);
+    }
+
+    #[test]
+    fn write_back_defer_schedules_own_retry() {
+        let _write_back_guard = write_back_test_guard();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 256 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+        crate::metrics::record_spiffs_lock_wait_us(7_500);
+        crate::metrics::record_spiffs_lock_hold_us(0);
+        let agent = crate::orchestrator::begin_agent_task();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        schedule_write_back_task(
+            "retry_wake_test",
+            Instant::now(),
+            Box::new(move || {
+                tx.send(()).unwrap();
+            }),
+        );
+
+        assert!(
+            rx.try_recv().is_err(),
+            "foreground storage contention should defer the initial write-back run"
+        );
+        drop(agent);
+        std::thread::sleep(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS + 25));
+        crate::runtime::service_delayed_tasks();
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("write-back retry should wake and run after foreground pressure clears");
+
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
         crate::metrics::record_spiffs_lock_wait_us(0);
         crate::metrics::record_spiffs_lock_hold_us(0);
     }

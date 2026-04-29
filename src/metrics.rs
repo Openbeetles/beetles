@@ -4,6 +4,7 @@
 // 32 位目标（xtensa/riscv32）无 AtomicU64，统一用 AtomicU32；快照仍以 u64 暴露。
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 /// 已知 stage 的错误计数（与 Error::stage() 对齐）；其他 stage 归入 other。
 const STAGE_AGENT_CHAT: &str = "agent_chat";
@@ -108,6 +109,8 @@ static SPIFFS_LOCK_WAIT_LAST_US: AtomicU32 = AtomicU32::new(0);
 static SPIFFS_LOCK_WAIT_TOTAL_US: AtomicU32 = AtomicU32::new(0);
 static SPIFFS_LOCK_HOLD_LAST_US: AtomicU32 = AtomicU32::new(0);
 static SPIFFS_LOCK_HOLD_TOTAL_US: AtomicU32 = AtomicU32::new(0);
+static SPIFFS_LOCK_HOLD_LAST_STAGE: OnceLock<Mutex<String>> = OnceLock::new();
+static SPIFFS_LOCK_LAST_OBSERVED_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 /// Stream HTTP 连接槽位统计：由 `network` 治理面写入，metrics 快照统一暴露。
 /// stream_http connection slot stats, written by the unified `network` governor.
@@ -614,16 +617,29 @@ pub fn record_spiffs_lock_wait_us(us: u128) {
     SPIFFS_LOCK_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
     SPIFFS_LOCK_WAIT_LAST_US.store(clamped, Ordering::Relaxed);
     SPIFFS_LOCK_WAIT_TOTAL_US.fetch_add(clamped, Ordering::Relaxed);
-    if clamped > 0 {
+    if clamped >= 1_000 {
         SPIFFS_LOCK_CONTENTION_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 #[inline]
 pub fn record_spiffs_lock_hold_us(us: u128) {
+    record_spiffs_lock_hold_us_for_stage("spiffs", us);
+}
+
+pub fn record_spiffs_lock_hold_us_for_stage(stage: &'static str, us: u128) {
     let clamped = us.min(u32::MAX as u128) as u32;
     SPIFFS_LOCK_HOLD_LAST_US.store(clamped, Ordering::Relaxed);
     SPIFFS_LOCK_HOLD_TOTAL_US.fetch_add(clamped, Ordering::Relaxed);
+    let stage_store = SPIFFS_LOCK_HOLD_LAST_STAGE.get_or_init(|| Mutex::new(String::new()));
+    if let Ok(mut guard) = stage_store.lock() {
+        guard.clear();
+        guard.push_str(stage);
+    }
+    let observed_at = SPIFFS_LOCK_LAST_OBSERVED_AT.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = observed_at.lock() {
+        *guard = Some(Instant::now());
+    }
 }
 
 #[inline]
@@ -807,6 +823,17 @@ pub fn snapshot() -> MetricsSnapshot {
         spiffs_lock_wait_total_us: SPIFFS_LOCK_WAIT_TOTAL_US.load(Ordering::Relaxed) as u64,
         spiffs_lock_hold_last_us: SPIFFS_LOCK_HOLD_LAST_US.load(Ordering::Relaxed) as u64,
         spiffs_lock_hold_total_us: SPIFFS_LOCK_HOLD_TOTAL_US.load(Ordering::Relaxed) as u64,
+        spiffs_lock_hold_last_stage: SPIFFS_LOCK_HOLD_LAST_STAGE
+            .get()
+            .and_then(|m| m.lock().ok())
+            .map(|g| g.clone())
+            .unwrap_or_default(),
+        spiffs_lock_last_age_ms: SPIFFS_LOCK_LAST_OBSERVED_AT
+            .get()
+            .and_then(|m| m.lock().ok())
+            .and_then(|g| g.as_ref().copied())
+            .map(|instant| instant.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(u64::MAX),
         errors_agent_chat: ERRORS_AGENT_CHAT.load(Ordering::Relaxed) as u64,
         errors_agent_context: ERRORS_AGENT_CONTEXT.load(Ordering::Relaxed) as u64,
         errors_tool_execute: ERRORS_TOOL_EXECUTE.load(Ordering::Relaxed) as u64,
@@ -1077,6 +1104,8 @@ pub struct MetricsSnapshot {
     pub spiffs_lock_wait_total_us: u64,
     pub spiffs_lock_hold_last_us: u64,
     pub spiffs_lock_hold_total_us: u64,
+    pub spiffs_lock_hold_last_stage: String,
+    pub spiffs_lock_last_age_ms: u64,
     pub errors_agent_chat: u64,
     pub errors_agent_context: u64,
     pub errors_tool_execute: u64,
@@ -1105,7 +1134,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} lease_conflict={} lease_expired_replace={} plane_drain_timeout={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} lease_conflict={} lease_expired_replace={} plane_drain_timeout={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_stale_drop={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_loop_last_us={} audio_mic_read_last_us={} audio_spk_write_last_us={} audio_ref_frames={} audio_ref_zero={} audio_ref_depth_last={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} spiffs_ops={} spiffs_contention={} spiffs_wait_last_us={} spiffs_wait_total_us={} spiffs_hold_last_us={} spiffs_hold_total_us={} spiffs_hold_last_stage={} spiffs_last_age_ms={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.user_messages_in,
             self.messages_out,
@@ -1197,6 +1226,8 @@ impl MetricsSnapshot {
             self.spiffs_lock_wait_total_us,
             self.spiffs_lock_hold_last_us,
             self.spiffs_lock_hold_total_us,
+            self.spiffs_lock_hold_last_stage,
+            self.spiffs_lock_last_age_ms,
             self.errors_agent_chat,
             self.errors_agent_context,
             self.errors_tool_execute,

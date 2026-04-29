@@ -37,10 +37,10 @@ use crate::platform::{
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::runtime::write_back::{
-    BufferedAutonomyStrategyStore, BufferedCoreRevisionLedgerStore, BufferedExecutionStateStore,
-    BufferedFeltSignificanceStore, BufferedImportantMessageStore, BufferedInnerConflictStore,
-    BufferedInnerLifeStore, BufferedLongTermExtractionStateStore, BufferedMentalPrivacyStore,
-    BufferedOuterVoiceStore, BufferedRelationshipConstitutionStore,
+    BufferedActiveWorkStore, BufferedAutonomyStrategyStore, BufferedCoreRevisionLedgerStore,
+    BufferedExecutionStateStore, BufferedFeltSignificanceStore, BufferedImportantMessageStore,
+    BufferedInnerConflictStore, BufferedInnerLifeStore, BufferedLongTermExtractionStateStore,
+    BufferedMentalPrivacyStore, BufferedOuterVoiceStore, BufferedRelationshipConstitutionStore,
     BufferedRelationshipPortfolioStore, BufferedRelationshipTopologyStore,
     BufferedSelfAuthoredCoreStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
     BufferedSessionStore, BufferedSessionSummaryStore, BufferedTemperamentContinuityStore,
@@ -93,7 +93,7 @@ pub struct Esp32Platform {
     task_artifact_store: Arc<SpiffsTaskArtifactStore>,
     task_execution_ledger_store: Arc<SpiffsTaskExecutionLedgerStore>,
     task_learning_store: Arc<SpiffsTaskLearningStore>,
-    active_work_store: Arc<SpiffsActiveWorkStore>,
+    active_work_store: Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>,
     detached_work_store: Arc<SpiffsDetachedWorkStore>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
@@ -197,6 +197,9 @@ impl Esp32Platform {
         let turn_ledger_store = BufferedTurnLedgerStore::wrap(
             Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>,
         );
+        let active_work_store =
+            BufferedActiveWorkStore::wrap(Arc::new(SpiffsActiveWorkStore::new())
+                as Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>);
         Self {
             state_fs,
             config_store: Arc::new(NvsConfigStore),
@@ -218,7 +221,7 @@ impl Esp32Platform {
             task_artifact_store: Arc::new(SpiffsTaskArtifactStore::new()),
             task_execution_ledger_store: Arc::new(SpiffsTaskExecutionLedgerStore::new()),
             task_learning_store: Arc::new(SpiffsTaskLearningStore::new()),
-            active_work_store: Arc::new(SpiffsActiveWorkStore::new()),
+            active_work_store,
             detached_work_store: Arc::new(SpiffsDetachedWorkStore::new()),
             execution_state_store,
             self_model_store,
@@ -402,7 +405,7 @@ impl Platform for Esp32Platform {
     }
 
     fn active_work_store(&self) -> Arc<dyn crate::agent::ActiveWorkStore + Send + Sync> {
-        Arc::clone(&self.active_work_store) as Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>
+        Arc::clone(&self.active_work_store)
     }
     fn detached_work_store(&self) -> Arc<dyn crate::agent::DetachedWorkStore + Send + Sync> {
         Arc::clone(&self.detached_work_store)

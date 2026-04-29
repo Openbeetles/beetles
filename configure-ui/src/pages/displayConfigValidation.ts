@@ -9,6 +9,7 @@ const OFFSET_MIN = -480;
 const OFFSET_MAX = 480;
 const FREQ_MIN = 1_000_000;
 const FREQ_MAX = 80_000_000;
+const SPI_HOSTS = [2, 3] as const;
 
 function pathNoControlChars(value: string): boolean {
   for (let i = 0; i < value.length; i += 1) {
@@ -40,6 +41,9 @@ function validateEspDisplayConfig(
   if (!offsetOk) return t("displayConfig.validation.offset");
   if (form.spi.freq_hz < FREQ_MIN || form.spi.freq_hz > FREQ_MAX) {
     return t("displayConfig.validation.freq");
+  }
+  if (!SPI_HOSTS.includes(form.spi.host)) {
+    return t("displayConfig.validation.spiHost");
   }
   const pins = [form.spi.sclk, form.spi.mosi, form.spi.cs, form.spi.dc];
   if (pins.some((pin) => pin < PIN_MIN || pin > PIN_MAX)) {
@@ -102,6 +106,9 @@ function validateLinuxSpiConfig(
   if (!offsetOk) return t("displayConfig.validation.offset");
   if (form.spi.freq_hz < FREQ_MIN || form.spi.freq_hz > FREQ_MAX) {
     return t("displayConfig.validation.freq");
+  }
+  if (!SPI_HOSTS.includes(form.spi.host)) {
+    return t("displayConfig.validation.spiHost");
   }
   const gpioPins = [form.spi.dc, form.spi.rst, form.spi.bl].filter(
     (pin): pin is number => pin != null,

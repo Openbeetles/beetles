@@ -423,7 +423,7 @@ export function DisplayConfigPanel() {
                   value={form.spi.host}
                   label={t("displayConfig.spiHost")}
                   onChange={(e) => {
-                    const host = Number(e.target.value) as 1 | 2;
+                    const host = Number(e.target.value) as 2 | 3;
                     setDraft((prev) => ({
                       ...(prev ?? form),
                       spi: { ...(prev ?? form).spi, host },
@@ -431,8 +431,8 @@ export function DisplayConfigPanel() {
                     editor.markDirty();
                   }}
                 >
-                  <MenuItem value={1}>{t("displayConfig.spiHostSpi2")}</MenuItem>
-                  <MenuItem value={2}>{t("displayConfig.spiHostSpi3")}</MenuItem>
+                  <MenuItem value={2}>{t("displayConfig.spiHostSpi2")}</MenuItem>
+                  <MenuItem value={3}>{t("displayConfig.spiHostSpi3")}</MenuItem>
                 </TextField>
                 {(["sclk", "mosi", "cs", "dc", "rst", "bl"] as const).map(
                   (k) => (

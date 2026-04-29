@@ -3,7 +3,7 @@ export type DisplayBus = 'spi' | 'framebuffer'
 export type DisplayColorOrder = 'rgb' | 'bgr'
 
 export interface DisplaySpiConfig {
-  host: 1 | 2
+  host: 2 | 3
   sclk: number
   mosi: number
   cs: number
@@ -49,7 +49,7 @@ export function defaultDisplayConfig(): DisplayConfig {
     offset_x: 0,
     offset_y: 0,
     spi: {
-      host: 1,
+      host: 2,
       sclk: 42,
       mosi: 41,
       cs: 21,
@@ -111,7 +111,7 @@ export function normalizeDisplayConfig(
     spi: {
       ...d.spi,
       ...spiIn,
-      host: spiIn.host === 2 ? 2 : 1,
+      host: spiIn.host === 3 ? 3 : 2,
       rst: spiIn.rst === undefined ? d.spi.rst : spiIn.rst,
       bl: spiIn.bl === undefined ? d.spi.bl : spiIn.bl,
     },

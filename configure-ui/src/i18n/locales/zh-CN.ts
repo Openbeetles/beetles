@@ -783,6 +783,7 @@ export const zhCN = {
         rotation: '旋转角度仅支持 0/90/180/270',
         offset: '偏移需在 -480~480 范围内',
         freq: 'SPI 频率需在 1,000,000~80,000,000 范围内',
+        spiHost: 'SPI 主机仅支持 SPI2 或 SPI3',
         pin: '引脚需在 1~48 范围内',
         fbDeviceRequired: '请填写 framebuffer 设备路径',
         pathInvalid: '路径不能为空字节且不能含控制字符',

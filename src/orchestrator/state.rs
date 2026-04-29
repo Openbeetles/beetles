@@ -212,9 +212,17 @@ pub enum StorageContentionRisk {
     Critical,
 }
 
+const STORAGE_CONTENTION_SAMPLE_TTL_MS: u64 = 10_000;
+
 fn storage_contention_risk_from_metrics(
     metrics: &crate::metrics::MetricsSnapshot,
 ) -> StorageContentionRisk {
+    if metrics.spiffs_lock_ops_total == 0
+        || metrics.spiffs_lock_hold_last_stage.is_empty()
+        || metrics.spiffs_lock_last_age_ms > STORAGE_CONTENTION_SAMPLE_TTL_MS
+    {
+        return StorageContentionRisk::Healthy;
+    }
     if metrics.spiffs_lock_hold_last_us >= 1_000_000 || metrics.spiffs_lock_wait_last_us >= 50_000 {
         StorageContentionRisk::Critical
     } else if metrics.spiffs_lock_hold_last_us >= 200_000
@@ -584,14 +592,24 @@ mod tests {
     #[test]
     fn storage_contention_risk_thresholds_round_trip() {
         let mut metrics = crate::metrics::snapshot();
+        metrics.spiffs_lock_ops_total = 1;
+        metrics.spiffs_lock_last_age_ms = 0;
         metrics.spiffs_lock_wait_last_us = 0;
         metrics.spiffs_lock_hold_last_us = 0;
+        metrics.spiffs_lock_hold_last_stage.clear();
         assert_eq!(
             storage_contention_risk_from_metrics(&metrics),
             StorageContentionRisk::Healthy
         );
 
         metrics.spiffs_lock_wait_last_us = 7_500;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Healthy,
+            "wait-only samples without a completed hold stage must not look fresh"
+        );
+
+        metrics.spiffs_lock_hold_last_stage = "spiffs_write_json".to_string();
         assert_eq!(
             storage_contention_risk_from_metrics(&metrics),
             StorageContentionRisk::Cautious
@@ -601,6 +619,12 @@ mod tests {
         assert_eq!(
             storage_contention_risk_from_metrics(&metrics),
             StorageContentionRisk::Critical
+        );
+
+        metrics.spiffs_lock_last_age_ms = STORAGE_CONTENTION_SAMPLE_TTL_MS + 1;
+        assert_eq!(
+            storage_contention_risk_from_metrics(&metrics),
+            StorageContentionRisk::Healthy
         );
     }
 }

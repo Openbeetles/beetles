@@ -1,7 +1,9 @@
 //! Linux SPI display backend.
 //! 使用 `/dev/spidevX.Y` + GPIO 字符设备（sysfs 兜底）实现用户态面板驱动，复用既有 dashboard 渲染链路。
 
-use crate::display::{DisplayColorOrder, DisplayConfig, DisplayDriver};
+use crate::display::{
+    display_spidev_bus_for_config_host, DisplayColorOrder, DisplayConfig, DisplayDriver,
+};
 use crate::error::{Error, Result};
 use embedded_graphics_core::{
     draw_target::DrawTarget,
@@ -455,7 +457,7 @@ fn linux_spi_device_path(config: &DisplayConfig) -> Result<String> {
             "Linux SPI backend requires spi.cs >= 0 for /dev/spidevX.Y fallback",
         ));
     }
-    let bus = config.spi.host.saturating_sub(1);
+    let bus = display_spidev_bus_for_config_host(config.spi.host)?;
     Ok(format!("/dev/spidev{bus}.{}", config.spi.cs))
 }
 

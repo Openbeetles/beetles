@@ -787,6 +787,7 @@ export const enUS = {
         rotation: 'Rotation must be one of 0/90/180/270',
         offset: 'Offset must be in range -480..480',
         freq: 'SPI frequency must be in range 1,000,000..80,000,000',
+        spiHost: 'SPI host must be SPI2 or SPI3',
         pin: 'Pins must be in range 1..48',
         fbDeviceRequired: 'Framebuffer device path is required',
         pathInvalid: 'Path must not contain NUL or control characters',
