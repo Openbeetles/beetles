@@ -13,6 +13,8 @@ const GATEWAY_OPEN_URL: &str = "https://api.dingtalk.com/v1.0/gateway/connection
 const BOT_MESSAGE_TOPIC: &str = "/v1.0/im/bot/messages/get";
 const BACKOFF_MAX_SECS: u64 = 120;
 const RECV_TIMEOUT_SECS: u64 = 25;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const WIFI_OUTBOUND_SETTLE_SECS: u64 = 3;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct DingtalkStreamFrameOutcome {
@@ -70,6 +72,24 @@ fn build_reply(message_id: &str, data: &str) -> String {
         "data": data,
     })
     .to_string()
+}
+
+fn mark_wss_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
+    let _ = crate::runtime::plane_lifecycle::mark(
+        crate::runtime::PlaneId::ChannelWss,
+        TAG,
+        state,
+        reason,
+    );
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_network_suspend_reason() -> Option<&'static str> {
+    let snapshot = crate::state::network_runtime_snapshot(
+        crate::platform::time::wall_clock_is_trustworthy(),
+        WIFI_OUTBOUND_SETTLE_SECS,
+    );
+    crate::network::external_wss_network_suspend_reason(&snapshot)
 }
 
 pub fn handle_stream_frame(
@@ -159,18 +179,42 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
     CreateHttp: FnMut() -> Result<H>,
     Connect: FnMut(&str) -> Result<C>,
 {
+    crate::network::set_external_wss_managed_present(true);
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     loop {
         if !crate::runtime::thread_registry::runtime_mode_snapshot()
             .action_budget
             .allow_external_wss_connect
         {
+            mark_wss_lifecycle(
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "runtime_mode_gate",
+            );
             std::thread::sleep(Duration::from_secs(backoff_secs));
             continue;
         }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        if let Some(reason) = esp_network_suspend_reason() {
+            mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Suspended, reason);
+            if reason == "wall_clock_untrusted" {
+                let _ = crate::platform::time::wait_for_wall_clock_trustworthy(
+                    Duration::from_secs(backoff_secs),
+                );
+            } else {
+                crate::platform::wifi::wait_for_network_ready();
+                std::thread::sleep(Duration::from_secs(backoff_secs));
+            }
+            continue;
+        }
+        crate::network::wait_for_external_wss_resume(TAG);
+        mark_wss_lifecycle(
+            crate::runtime::PlaneLifecycleState::Starting,
+            "connect_attempt",
+        );
         let mut http = match create_http() {
             Ok(http) => http,
             Err(error) => {
+                mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "http_create");
                 log::warn!("[{}] create_http failed: {}", TAG, error);
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -180,6 +224,10 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
         let url = match register_connection(&mut http, &client_id, &client_secret) {
             Ok(url) => url,
             Err(error) => {
+                mark_wss_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Failed,
+                    "register_connection",
+                );
                 log::warn!("[{}] register connection failed: {}", TAG, error);
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -189,6 +237,7 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
         let mut conn = match connect(&url) {
             Ok(conn) => conn,
             Err(error) => {
+                mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "connect");
                 log::warn!("[{}] connect failed: {}", TAG, error);
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -196,6 +245,10 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
             }
         };
         backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
+        mark_wss_lifecycle(
+            crate::runtime::PlaneLifecycleState::Active,
+            "session_active",
+        );
         loop {
             crate::platform::task_wdt::feed_current_task();
             if !crate::runtime::thread_registry::runtime_mode_snapshot()
@@ -205,6 +258,10 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
                 log::info!(
                     "[{}] disconnecting external WSS under runtime mode gate",
                     TAG
+                );
+                mark_wss_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Suspended,
+                    "runtime_mode_gate",
                 );
                 break;
             }

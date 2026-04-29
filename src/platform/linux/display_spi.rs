@@ -156,6 +156,7 @@ pub struct LinuxSpiDisplayBackend {
     spi: Spidev,
     dc: LinuxOutputGpio,
     rst: Option<LinuxOutputGpio>,
+    rst_active_high: bool,
     bl: Option<LinuxOutputGpio>,
     width: u16,
     height: u16,
@@ -188,7 +189,10 @@ impl LinuxSpiDisplayBackend {
 
         let dc = LinuxOutputGpio::new_output(config.spi.dc, false)?;
         let rst = match config.spi.rst {
-            Some(pin) => Some(LinuxOutputGpio::new_output(pin, true)?),
+            Some(pin) => Some(LinuxOutputGpio::new_output(
+                pin,
+                !config.spi.rst_active_high,
+            )?),
             None => None,
         };
         let bl = match config.spi.bl {
@@ -200,6 +204,7 @@ impl LinuxSpiDisplayBackend {
             spi,
             dc,
             rst,
+            rst_active_high: config.spi.rst_active_high,
             bl,
             width,
             height,
@@ -271,9 +276,9 @@ impl LinuxSpiDisplayBackend {
         let Some(rst) = self.rst.as_ref() else {
             return Ok(());
         };
-        rst.write(false)?;
+        rst.write(self.rst_active_high)?;
         std::thread::sleep(std::time::Duration::from_millis(20));
-        rst.write(true)?;
+        rst.write(!self.rst_active_high)?;
         std::thread::sleep(std::time::Duration::from_millis(120));
         Ok(())
     }
@@ -311,40 +316,6 @@ impl LinuxSpiDisplayBackend {
                     "driver=framebuffer is not valid for Linux SPI backend",
                 ));
             }
-            DisplayDriver::St7735 => {
-                self.send_cmd(0xB1)?;
-                self.send_data(&[0x01, 0x2C, 0x2D])?;
-                self.send_cmd(0xB2)?;
-                self.send_data(&[0x01, 0x2C, 0x2D])?;
-                self.send_cmd(0xB3)?;
-                self.send_data(&[0x01, 0x2C, 0x2D, 0x01, 0x2C, 0x2D])?;
-                self.send_cmd(0xB4)?;
-                self.send_data(&[0x07])?;
-                self.send_cmd(0xC0)?;
-                self.send_data(&[0xA2, 0x02, 0x84])?;
-                self.send_cmd(0xC1)?;
-                self.send_data(&[0xC5])?;
-                self.send_cmd(0xC2)?;
-                self.send_data(&[0x0A, 0x00])?;
-                self.send_cmd(0xC3)?;
-                self.send_data(&[0x8A, 0x2A])?;
-                self.send_cmd(0xC4)?;
-                self.send_data(&[0x8A, 0xEE])?;
-                self.send_cmd(0xC5)?;
-                self.send_data(&[0x0E])?;
-                self.send_cmd(0x3A)?;
-                self.send_data(&[0x05])?;
-                self.send_cmd(0xE0)?;
-                self.send_data(&[
-                    0x02, 0x1c, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2d, 0x29, 0x25, 0x2B, 0x39, 0x00,
-                    0x01, 0x03, 0x10,
-                ])?;
-                self.send_cmd(0xE1)?;
-                self.send_data(&[
-                    0x03, 0x1d, 0x07, 0x06, 0x2E, 0x2C, 0x29, 0x2D, 0x2E, 0x2E, 0x37, 0x3F, 0x00,
-                    0x00, 0x02, 0x10,
-                ])?;
-            }
             DisplayDriver::St7789 | DisplayDriver::Ili9341 => {
                 self.send_cmd(0x3A)?;
                 self.send_data(&[0x55])?;
@@ -358,7 +329,7 @@ impl LinuxSpiDisplayBackend {
         let needs_invon = match config.driver {
             DisplayDriver::Framebuffer => false,
             DisplayDriver::St7789 => !config.invert_colors,
-            DisplayDriver::Ili9341 | DisplayDriver::St7735 => config.invert_colors,
+            DisplayDriver::Ili9341 => config.invert_colors,
         };
         if needs_invon {
             self.send_cmd(0x21)?;

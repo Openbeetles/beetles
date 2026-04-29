@@ -223,9 +223,6 @@ export function DisplayConfigPanel() {
                 >
                   <MenuItem value="st7789">ST7789</MenuItem>
                   <MenuItem value="ili9341">ILI9341</MenuItem>
-                  <MenuItem value="st7735">
-                    ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)
-                  </MenuItem>
                   <MenuItem value="framebuffer">
                     {t("displayConfig.driverFramebuffer")}
                   </MenuItem>
@@ -246,9 +243,6 @@ export function DisplayConfigPanel() {
                 >
                   <MenuItem value="st7789">ST7789</MenuItem>
                   <MenuItem value="ili9341">ILI9341</MenuItem>
-                  <MenuItem value="st7735">
-                    ST7735 (1.8&quot; / 1.44&quot; / 0.96&quot;)
-                  </MenuItem>
                 </TextField>
               )}
               {showLinuxFramebuffer ? (
@@ -463,6 +457,26 @@ export function DisplayConfigPanel() {
                     />
                   ),
                 )}
+                <FormSwitchRow
+                  title={t("displayConfig.spiRstActiveHigh")}
+                  divider={false}
+                  control={
+                    <Switch
+                      checked={form.spi.rst_active_high}
+                      onChange={(_, checked) => {
+                        setDraft((prev) => ({
+                          ...(prev ?? form),
+                          spi: {
+                            ...(prev ?? form).spi,
+                            rst_active_high: checked,
+                          },
+                        }));
+                        editor.markDirty();
+                      }}
+                      disabled={!form.enabled || form.spi.rst == null}
+                    />
+                  }
+                />
                 <TextField
                   type="number"
                   label={t("displayConfig.spiFreqHz")}

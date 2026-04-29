@@ -3,6 +3,7 @@
 # 将构建产物固定在本仓库 `target/`，避免 IDE/沙箱注入的 CARGO_TARGET_DIR 导致 esp-idf-sys 与 esp-idf-svc 使用不同 bindings。
 [env]
 CARGO_TARGET_DIR = { value = "target", relative = true, force = true }
+CARGO_WORKSPACE_DIR = { value = ".", relative = true, force = true }
 
 [target.xtensa-esp32s2-espidf]
 linker = "ldproxy"

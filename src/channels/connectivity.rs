@@ -32,6 +32,7 @@ pub enum ChannelRuntimeStatus {
     Disabled,
     Configured,
     WorkerStarted,
+    WaitingNetwork,
     WaitingWallClock,
     SuspendedByMode,
     Connecting,
@@ -127,11 +128,7 @@ fn wss_runtime_status(id: &'static str) -> Option<(ChannelRuntimeStatus, Option<
         crate::runtime::PlaneLifecycleState::Starting => ChannelRuntimeStatus::Connecting,
         crate::runtime::PlaneLifecycleState::Active => ChannelRuntimeStatus::WorkerStarted,
         crate::runtime::PlaneLifecycleState::Suspended => {
-            if record.last_reason == "wall_clock_untrusted" {
-                ChannelRuntimeStatus::WaitingWallClock
-            } else {
-                ChannelRuntimeStatus::SuspendedByMode
-            }
+            suspended_wss_status_for_reason(record.last_reason)
         }
         crate::runtime::PlaneLifecycleState::Draining
         | crate::runtime::PlaneLifecycleState::Stopping => ChannelRuntimeStatus::SuspendedByMode,
@@ -140,6 +137,16 @@ fn wss_runtime_status(id: &'static str) -> Option<(ChannelRuntimeStatus, Option<
         crate::runtime::PlaneLifecycleState::Failed => ChannelRuntimeStatus::Failed,
     };
     Some((status, Some(record.last_reason)))
+}
+
+fn suspended_wss_status_for_reason(reason: &str) -> ChannelRuntimeStatus {
+    if reason == "wall_clock_untrusted" {
+        ChannelRuntimeStatus::WaitingWallClock
+    } else if matches!(reason, "wifi_not_ready" | "wifi_not_configured") {
+        ChannelRuntimeStatus::WaitingNetwork
+    } else {
+        ChannelRuntimeStatus::SuspendedByMode
+    }
 }
 
 fn wss_lifecycle_owner(id: &'static str) -> Option<&'static str> {
@@ -372,6 +379,22 @@ mod tests {
             Some(CONNECTIVITY_NOT_CONFIGURED_KEY),
         );
         assert_eq!(disabled.runtime_status, ChannelRuntimeStatus::Disabled);
+    }
+
+    #[test]
+    fn suspended_wss_reasons_distinguish_network_from_wall_clock() {
+        assert_eq!(
+            suspended_wss_status_for_reason("wifi_not_ready"),
+            ChannelRuntimeStatus::WaitingNetwork
+        );
+        assert_eq!(
+            suspended_wss_status_for_reason("wifi_not_configured"),
+            ChannelRuntimeStatus::WaitingNetwork
+        );
+        assert_eq!(
+            suspended_wss_status_for_reason("wall_clock_untrusted"),
+            ChannelRuntimeStatus::WaitingWallClock
+        );
     }
 
     #[cfg(feature = "qq_channel")]

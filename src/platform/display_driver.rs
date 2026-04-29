@@ -43,7 +43,7 @@ pub(crate) trait FlushRgb565 {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 mod esp_backend {
     use super::*;
-    use crate::display::{DisplayColorOrder, DisplayDriver};
+    use crate::display::{display_lcd_row_window, DisplayColorOrder, DisplayDriver};
     use crate::platform::heap;
     use embedded_graphics_core::{
         draw_target::DrawTarget,
@@ -53,17 +53,16 @@ mod esp_backend {
     };
     use esp_idf_svc::sys::*;
 
-    /// SPI-connected display backend (ST7789 / ILI9341 / ST7735 family).
+    /// SPI-connected display backend (ST7789 / ILI9341 family via ESP-IDF `esp_lcd`).
     /// Framebuffer lives in PSRAM; rendering via `embedded-graphics` `DrawTarget`.
     pub(super) struct SpiDisplayBackend {
         spi_host: u32,
-        spi_handle: spi_device_handle_t,
-        dc_pin: i32,
+        io_handle: esp_lcd_panel_io_handle_t,
+        panel_handle: esp_lcd_panel_handle_t,
         width: u16,
         height: u16,
         framebuf: *mut u8,
         framebuf_len: usize,
-        max_transfer_sz: usize,
     }
 
     // SAFETY: SpiDisplayBackend is only accessed from the display thread (behind Mutex).
@@ -72,7 +71,18 @@ mod esp_backend {
     impl Drop for SpiDisplayBackend {
         fn drop(&mut self) {
             unsafe {
-                spi_bus_remove_device(self.spi_handle);
+                if !self.panel_handle.is_null() {
+                    let ret = esp_lcd_panel_del(self.panel_handle);
+                    if ret != ESP_OK {
+                        log::warn!("[display] esp_lcd_panel_del failed: {}", ret);
+                    }
+                }
+                if !self.io_handle.is_null() {
+                    let ret = esp_lcd_panel_io_del(self.io_handle);
+                    if ret != ESP_OK {
+                        log::warn!("[display] esp_lcd_panel_io_del failed: {}", ret);
+                    }
+                }
                 spi_bus_free(self.spi_host);
                 heap::free_spiram_buffer(self.framebuf);
             }
@@ -95,7 +105,7 @@ mod esp_backend {
             if matches!(config.driver, DisplayDriver::Framebuffer) {
                 return Err(crate::error::Error::config(
                     "display_spi_init",
-                    "driver=framebuffer is for Linux fbdev only; on ESP use St7789/ILI9341/ST7735",
+                    "driver=framebuffer is for Linux fbdev only; on ESP use St7789/ILI9341",
                 ));
             }
             let spi = &config.spi;
@@ -113,52 +123,6 @@ mod esp_backend {
             })?;
             // Zero the framebuffer
             unsafe { core::ptr::write_bytes(framebuf, 0, framebuf_len) };
-
-            // --- Configure DC pin as GPIO output ---
-            unsafe {
-                let dc_conf = gpio_config_t {
-                    pin_bit_mask: 1u64 << spi.dc,
-                    mode: gpio_mode_t_GPIO_MODE_OUTPUT,
-                    pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
-                    pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
-                    intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
-                    ..core::mem::zeroed()
-                };
-                let ret = gpio_config(&dc_conf);
-                if ret != ESP_OK {
-                    heap::free_spiram_buffer(framebuf);
-                    return Err(crate::error::Error::Esp {
-                        code: ret,
-                        stage: "display_dc_gpio",
-                    });
-                }
-            }
-
-            // --- Optional RST pin: pulse low -> high ---
-            if let Some(rst) = spi.rst {
-                unsafe {
-                    let rst_conf = gpio_config_t {
-                        pin_bit_mask: 1u64 << rst,
-                        mode: gpio_mode_t_GPIO_MODE_OUTPUT,
-                        pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
-                        pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
-                        intr_type: gpio_int_type_t_GPIO_INTR_DISABLE,
-                        ..core::mem::zeroed()
-                    };
-                    let ret = gpio_config(&rst_conf);
-                    if ret != ESP_OK {
-                        heap::free_spiram_buffer(framebuf);
-                        return Err(crate::error::Error::Esp {
-                            code: ret,
-                            stage: "display_rst_gpio",
-                        });
-                    }
-                    gpio_set_level(rst, 0);
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    gpio_set_level(rst, 1);
-                    std::thread::sleep(std::time::Duration::from_millis(120));
-                }
-            }
 
             // --- Optional BL pin: set high (will be reconfigured to PWM if LEDC succeeds) ---
             if let Some(bl) = spi.bl {
@@ -247,39 +211,73 @@ mod esp_backend {
                 }
             }
 
-            // --- Add SPI device ---
-            let dev_cfg = spi_device_interface_config_t {
-                clock_speed_hz: spi.freq_hz as i32,
-                mode: 0,
-                spics_io_num: spi.cs,
-                queue_size: 1,
-                ..Default::default()
-            };
-            let mut spi_handle: spi_device_handle_t = core::ptr::null_mut();
+            let mut io_config: esp_lcd_panel_io_spi_config_t = unsafe { core::mem::zeroed() };
+            io_config.dc_gpio_num = spi.dc;
+            io_config.cs_gpio_num = spi.cs;
+            io_config.pclk_hz = spi.freq_hz;
+            io_config.lcd_cmd_bits = 8;
+            io_config.lcd_param_bits = 8;
+            io_config.spi_mode = 0;
+            io_config.trans_queue_depth = 1;
+
+            let mut io_handle: esp_lcd_panel_io_handle_t = core::ptr::null_mut();
             unsafe {
-                let ret = spi_bus_add_device(spi_host, &dev_cfg, &mut spi_handle);
+                let ret = esp_lcd_new_panel_io_spi(
+                    spi_host as esp_lcd_spi_bus_handle_t,
+                    &io_config,
+                    &mut io_handle,
+                );
                 if ret != ESP_OK {
                     spi_bus_free(spi_host);
                     heap::free_spiram_buffer(framebuf);
                     return Err(crate::error::Error::Esp {
                         code: ret,
-                        stage: "display_spi_add_device",
+                        stage: "display_lcd_panel_io_spi",
                     });
                 }
             }
 
-            let mut backend = Self {
+            let mut panel_config: esp_lcd_panel_dev_config_t = unsafe { core::mem::zeroed() };
+            panel_config.reset_gpio_num = spi.rst.unwrap_or(-1);
+            panel_config.rgb_ele_order = Self::rgb_element_order(&config.color_order);
+            panel_config.data_endian = lcd_rgb_data_endian_t_LCD_RGB_DATA_ENDIAN_BIG;
+            panel_config.bits_per_pixel = 16;
+            panel_config
+                .flags
+                .set_reset_active_high(u32::from(spi.rst_active_high));
+
+            let mut panel_handle: esp_lcd_panel_handle_t = core::ptr::null_mut();
+            unsafe {
+                let ret = match config.driver {
+                    DisplayDriver::St7789 => {
+                        esp_lcd_new_panel_st7789(io_handle, &panel_config, &mut panel_handle)
+                    }
+                    DisplayDriver::Ili9341 => {
+                        esp_lcd_new_panel_ili9341(io_handle, &panel_config, &mut panel_handle)
+                    }
+                    DisplayDriver::Framebuffer => ESP_ERR_INVALID_ARG,
+                };
+                if ret != ESP_OK {
+                    let _ = esp_lcd_panel_io_del(io_handle);
+                    spi_bus_free(spi_host);
+                    heap::free_spiram_buffer(framebuf);
+                    return Err(crate::error::Error::Esp {
+                        code: ret,
+                        stage: "display_lcd_panel_new",
+                    });
+                }
+            }
+
+            let backend = Self {
                 spi_host,
-                spi_handle,
-                dc_pin: spi.dc,
+                io_handle,
+                panel_handle,
                 width,
                 height,
                 framebuf,
                 framebuf_len,
-                max_transfer_sz,
             };
 
-            // --- Send display init commands ---
             backend.init_display_controller(config)?;
 
             log::info!(
@@ -291,141 +289,58 @@ mod esp_backend {
             Ok(backend)
         }
 
-        /// Send a command byte (DC=0).
-        fn send_cmd(&self, cmd: u8) -> Result<()> {
-            unsafe { gpio_set_level(self.dc_pin, 0) };
-            self.spi_write(&[cmd])
+        fn rgb_element_order(color_order: &DisplayColorOrder) -> lcd_rgb_element_order_t {
+            match color_order {
+                DisplayColorOrder::Rgb => lcd_rgb_element_order_t_LCD_RGB_ELEMENT_ORDER_RGB,
+                DisplayColorOrder::Bgr => lcd_rgb_element_order_t_LCD_RGB_ELEMENT_ORDER_BGR,
+            }
         }
 
-        /// Send data bytes (DC=1).
-        fn send_data(&self, data: &[u8]) -> Result<()> {
-            unsafe { gpio_set_level(self.dc_pin, 1) };
-            self.spi_write(data)
-        }
-
-        fn spi_write(&self, data: &[u8]) -> Result<()> {
-            if data.is_empty() {
-                return Ok(());
+        fn init_display_controller(&self, config: &DisplayConfig) -> Result<()> {
+            unsafe {
+                Self::check_esp(esp_lcd_panel_reset(self.panel_handle), "display_lcd_reset")?;
+                Self::check_esp(esp_lcd_panel_init(self.panel_handle), "display_lcd_init")?;
+                let needs_invon = match config.driver {
+                    DisplayDriver::St7789 => !config.invert_colors,
+                    DisplayDriver::Ili9341 => config.invert_colors,
+                    DisplayDriver::Framebuffer => false,
+                };
+                Self::check_esp(
+                    esp_lcd_panel_invert_color(self.panel_handle, needs_invon),
+                    "display_lcd_invert",
+                )?;
+                let (swap_xy, mirror_x, mirror_y) = Self::orientation_for_rotation(config.rotation);
+                Self::check_esp(
+                    esp_lcd_panel_swap_xy(self.panel_handle, swap_xy),
+                    "display_lcd_swap_xy",
+                )?;
+                Self::check_esp(
+                    esp_lcd_panel_mirror(self.panel_handle, mirror_x, mirror_y),
+                    "display_lcd_mirror",
+                )?;
+                Self::check_esp(
+                    esp_lcd_panel_disp_on_off(self.panel_handle, true),
+                    "display_lcd_disp_on",
+                )?;
             }
-            let mut trans: spi_transaction_t = unsafe { core::mem::zeroed() };
-            trans.length = data.len() * 8;
-            trans.__bindgen_anon_1.tx_buffer = data.as_ptr() as *const _;
-            let ret = unsafe { spi_device_transmit(self.spi_handle, &mut trans) };
-            if ret != ESP_OK {
-                return Err(crate::error::Error::Esp {
-                    code: ret,
-                    stage: "display_spi_write",
-                });
-            }
-            Ok(())
-        }
-
-        fn init_display_controller(&mut self, config: &DisplayConfig) -> Result<()> {
-            // SWRESET
-            self.send_cmd(0x01)?;
-            std::thread::sleep(std::time::Duration::from_millis(150));
-
-            // SLPOUT
-            self.send_cmd(0x11)?;
-            std::thread::sleep(std::time::Duration::from_millis(120));
-
-            match config.driver {
-                DisplayDriver::Framebuffer => {
-                    return Err(crate::error::Error::config(
-                        "display_spi_init",
-                        "driver=framebuffer is for Linux fbdev only; on ESP use St7789/ILI9341/ST7735",
-                    ));
-                }
-                DisplayDriver::St7735 => {
-                    // ST7735 / ST7735R / ST7735S: frame rate, power, gamma (not used on ST7789/ILI9341).
-                    self.send_cmd(0xB1)?;
-                    self.send_data(&[0x01, 0x2C, 0x2D])?; // FRMCTR1
-                    self.send_cmd(0xB2)?;
-                    self.send_data(&[0x01, 0x2C, 0x2D])?; // FRMCTR2
-                    self.send_cmd(0xB3)?;
-                    self.send_data(&[0x01, 0x2C, 0x2D, 0x01, 0x2C, 0x2D])?; // FRMCTR3
-                    self.send_cmd(0xB4)?;
-                    self.send_data(&[0x07])?; // INVCTR: no line inversion
-                    self.send_cmd(0xC0)?;
-                    self.send_data(&[0xA2, 0x02, 0x84])?; // PWCTR1
-                    self.send_cmd(0xC1)?;
-                    self.send_data(&[0xC5])?; // PWCTR2
-                    self.send_cmd(0xC2)?;
-                    self.send_data(&[0x0A, 0x00])?; // PWCTR3
-                    self.send_cmd(0xC3)?;
-                    self.send_data(&[0x8A, 0x2A])?; // PWCTR4
-                    self.send_cmd(0xC4)?;
-                    self.send_data(&[0x8A, 0xEE])?; // PWCTR5
-                    self.send_cmd(0xC5)?;
-                    self.send_data(&[0x0E])?; // VMCTR1
-                                              // COLMOD: 16-bit RGB565 (ST7735 uses 0x05; ST7789 uses 0x55)
-                    self.send_cmd(0x3A)?;
-                    self.send_data(&[0x05])?;
-                    self.send_cmd(0xE0)?;
-                    self.send_data(&[
-                        0x02, 0x1c, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2d, 0x29, 0x25, 0x2B, 0x39,
-                        0x00, 0x01, 0x03, 0x10,
-                    ])?; // GMCTRP1
-                    self.send_cmd(0xE1)?;
-                    self.send_data(&[
-                        0x03, 0x1d, 0x07, 0x06, 0x2E, 0x2C, 0x29, 0x2D, 0x2E, 0x2E, 0x37, 0x3F,
-                        0x00, 0x00, 0x02, 0x10,
-                    ])?; // GMCTRN1
-                }
-                DisplayDriver::St7789 | DisplayDriver::Ili9341 => {
-                    // COLMOD: 16-bit RGB565 (ST7789/ILI9341)
-                    self.send_cmd(0x3A)?;
-                    self.send_data(&[0x55])?;
-                }
-            }
-
-            // MADCTL: rotation + color order
-            let madctl = Self::compute_madctl(config.rotation, &config.color_order);
-            self.send_cmd(0x36)?;
-            self.send_data(&[madctl])?;
-
-            // INVON / INVOFF
-            // ST7789: panel often inverted by default → INVON unless invert_colors.
-            // ILI9341 / ST7735: typically non-inverted → INVOFF unless invert_colors.
-            let needs_invon = match config.driver {
-                DisplayDriver::Framebuffer => {
-                    return Err(crate::error::Error::config(
-                        "display_spi_init",
-                        "driver=framebuffer is for Linux fbdev only",
-                    ));
-                }
-                DisplayDriver::St7789 => !config.invert_colors,
-                DisplayDriver::Ili9341 | DisplayDriver::St7735 => config.invert_colors,
-            };
-            if needs_invon {
-                self.send_cmd(0x21)?; // INVON
-            } else {
-                self.send_cmd(0x20)?; // INVOFF
-            }
-
-            // NORON
-            self.send_cmd(0x13)?;
-            std::thread::sleep(std::time::Duration::from_millis(10));
-
-            // DISPON
-            self.send_cmd(0x29)?;
-            std::thread::sleep(std::time::Duration::from_millis(20));
 
             Ok(())
         }
 
-        fn compute_madctl(rotation: u16, color_order: &DisplayColorOrder) -> u8 {
-            let color_bit = match color_order {
-                DisplayColorOrder::Rgb => 0x00,
-                DisplayColorOrder::Bgr => 0x08,
-            };
-            let rot_bits = match rotation {
-                90 => 0x60,  // MX + MV
-                180 => 0xC0, // MX + MY
-                270 => 0xA0, // MY + MV
-                _ => 0x00,   // 0 degrees
-            };
-            rot_bits | color_bit
+        fn orientation_for_rotation(rotation: u16) -> (bool, bool, bool) {
+            match rotation {
+                90 => (true, true, false),
+                180 => (false, true, true),
+                270 => (true, false, true),
+                _ => (false, false, false),
+            }
+        }
+
+        fn check_esp(code: esp_err_t, stage: &'static str) -> Result<()> {
+            if code != ESP_OK {
+                return Err(crate::error::Error::Esp { code, stage });
+            }
+            Ok(())
         }
 
         /// Set column/row address window then push full framebuf via SPI.
@@ -435,41 +350,25 @@ mod esp_backend {
 
         /// Push only the rows `[ry..ry+rh)` from the framebuffer, reducing SPI transfer.
         pub fn flush_rows(&mut self, offset_x: i16, offset_y: i16, ry: u16, rh: u16) -> Result<()> {
-            if rh == 0 || self.width == 0 {
+            let Some(window) =
+                display_lcd_row_window(self.width, self.height, offset_x, offset_y, ry, rh)
+            else {
                 return Ok(());
-            }
-            // Clamp to framebuffer bounds
-            let ry = ry.min(self.height);
-            let rh = rh.min(self.height.saturating_sub(ry));
-            if rh == 0 {
-                return Ok(());
-            }
-
-            // ST7789 / ILI9341 / ST7735: full-width rows for RAMWR; send only the dirty row band.
-            let x0 = offset_x.max(0) as u16;
-            let y0 = offset_y.max(0) as u16 + ry;
-            let x1 = x0 + self.width - 1;
-            let y1 = y0 + rh - 1;
-
-            // CASET
-            self.send_cmd(0x2A)?;
-            self.send_data(&[(x0 >> 8) as u8, x0 as u8, (x1 >> 8) as u8, x1 as u8])?;
-
-            // RASET
-            self.send_cmd(0x2B)?;
-            self.send_data(&[(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8])?;
-
-            // RAMWR
-            self.send_cmd(0x2C)?;
-
-            // Send only the dirty rows from framebuf
-            let row_bytes = self.width as usize * 2;
-            let start = ry as usize * row_bytes;
-            let end = start + rh as usize * row_bytes;
+            };
             let buf = unsafe { core::slice::from_raw_parts(self.framebuf, self.framebuf_len) };
-            // 使用 max_transfer_sz 分块传输，避免超过 SPI DMA 缓冲区限制
-            for chunk in buf[start..end].chunks(self.max_transfer_sz) {
-                self.send_data(chunk)?;
+            let color_data = buf[window.row_start_byte..window.row_end_byte].as_ptr();
+            unsafe {
+                Self::check_esp(
+                    esp_lcd_panel_draw_bitmap(
+                        self.panel_handle,
+                        window.x_start,
+                        window.y_start,
+                        window.x_end,
+                        window.y_end,
+                        color_data as *const _,
+                    ),
+                    "display_lcd_draw_bitmap",
+                )?;
             }
             Ok(())
         }

@@ -9,10 +9,11 @@ use crate::error::{Error, Result};
 use embedded_svc::wifi::{
     AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration,
 };
-use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::eventloop::{EspSubscription, EspSystemEventLoop, System};
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::netif::IpEvent;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_svc::wifi::{BlockingWifi, EspWifi, WifiEvent};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -55,6 +56,11 @@ struct StaSoftApConfig {
     ap: AccessPointConfiguration,
 }
 
+struct WifiStageEventSubscriptions {
+    _wifi: Option<EspSubscription<'static, System>>,
+    _ip: Option<EspSubscription<'static, System>>,
+}
+
 /// 其他线程查询 WiFi STA 是否就绪（已连接且有 IP）。
 pub fn is_wifi_sta_connected() -> bool {
     crate::state::wifi_sta_connected()
@@ -84,10 +90,16 @@ pub fn wait_for_network_ready() {
     while !crate::state::wifi_sta_settled_for_outbound(STA_OUTBOUND_READY_GRACE_SECS) {
         crate::platform::task_wdt::feed_current_task();
         if Instant::now() >= deadline {
+            let snapshot = crate::state::network_runtime_snapshot(
+                crate::platform::time::wall_clock_is_trustworthy(),
+                STA_OUTBOUND_READY_GRACE_SECS,
+            );
             log::warn!(
-                "[{}] wait_for_network_ready timed out after {}s; continuing startup without STA",
+                "[{}] wait_for_network_ready timed out after {}s; stage={:?} reason_code={:?}; continuing startup without STA",
                 TAG,
-                WIFI_ESP_CONNECT_MAIN_WAIT_SECS
+                WIFI_ESP_CONNECT_MAIN_WAIT_SECS,
+                snapshot.last_wifi_stage,
+                snapshot.last_wifi_reason_code
             );
             break;
         }
@@ -161,6 +173,7 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let pass = config.wifi_pass.clone();
     let has_sta = !ssid.trim().is_empty();
     WIFI_STA_EXPECTED.store(has_sta, Ordering::Relaxed);
+    crate::state::set_network_sta_expected(has_sta, has_sta);
     WIFI_SOFTAP_READY.store(false, Ordering::Relaxed);
     if !has_sta {
         clear_sta_ip_cache();
@@ -378,6 +391,7 @@ fn poll_sta_link(
         *sta_link_miss_count = 0;
     } else if sta_l2 {
         // L2 仍在线时保留既有 STA 状态，避免 netif/IP 读的瞬时空窗把上层误判为断网。
+        crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaWaitingDhcp, None);
         *sta_ip_stable_since = None;
         *sta_link_miss_count = 0;
     } else {
@@ -386,6 +400,12 @@ fn poll_sta_link(
         if was_connected && *sta_link_miss_count == 1 {
             log::warn!("[{}] STA disconnected, will reconnect", TAG);
             crate::metrics::record_wifi_failure_stage("wifi_sta_link_down");
+        }
+        if !crate::state::network_last_wifi_stage_has_reasoned_failure() {
+            crate::state::set_network_wifi_stage(
+                crate::state::NetworkWifiStage::StaRecovering,
+                None,
+            );
         }
         crate::state::clear_wifi_sta_state();
     }
@@ -417,6 +437,10 @@ fn poll_sta_link(
     crate::metrics::record_wifi_reconnect();
     match issue_sta_connect(wifi) {
         Ok(()) => {
+            crate::state::set_network_wifi_stage(
+                crate::state::NetworkWifiStage::StaConnecting,
+                None,
+            );
             *sta_link_miss_count = 0;
             log::info!(
                 "[{}] STA connect() issued after {} misses, cooldown {}ms",
@@ -426,6 +450,10 @@ fn poll_sta_link(
             );
         }
         Err(e) => {
+            crate::state::set_network_wifi_stage(
+                crate::state::NetworkWifiStage::StaRecovering,
+                None,
+            );
             crate::metrics::record_wifi_failure_stage("wifi_connect");
             log::warn!("[{}] STA connect() failed: {}", TAG, e);
         }
@@ -438,6 +466,77 @@ fn issue_sta_connect(wifi: &mut BlockingWifi<EspWifi>) -> Result<()> {
         source: Box::new(e),
         stage: "wifi_connect",
     })
+}
+
+fn wifi_stage_for_disconnect_reason(reason: u16) -> crate::state::NetworkWifiStage {
+    // ESP-IDF 802.11/vendor reason codes. Keep the mapping numeric to avoid
+    // depending on generated binding names that vary across IDF versions.
+    match reason {
+        201 => crate::state::NetworkWifiStage::StaApNotFound,
+        15 | 23 | 202 | 204 => crate::state::NetworkWifiStage::StaAuthFailed,
+        _ => crate::state::NetworkWifiStage::StaRecovering,
+    }
+}
+
+fn subscribe_wifi_stage_events(sys_loop: &EspSystemEventLoop) -> WifiStageEventSubscriptions {
+    let wifi_subscription = sys_loop.subscribe::<WifiEvent, _>(|event| match event {
+        WifiEvent::StaStarted => crate::state::set_network_wifi_stage(
+            crate::state::NetworkWifiStage::StaConnecting,
+            None,
+        ),
+        WifiEvent::StaConnected(_) => crate::state::set_network_wifi_stage(
+            crate::state::NetworkWifiStage::StaL2Connected,
+            None,
+        ),
+        WifiEvent::StaDisconnected(event) => {
+            let reason = event.reason();
+            crate::state::set_network_wifi_stage(
+                wifi_stage_for_disconnect_reason(reason),
+                Some(reason),
+            );
+            crate::state::clear_wifi_sta_state();
+        }
+        WifiEvent::StaStopped => {
+            crate::state::set_network_wifi_stage(
+                crate::state::NetworkWifiStage::StaFallbackAp,
+                None,
+            );
+            crate::state::clear_wifi_sta_state();
+        }
+        _ => {}
+    });
+    let wifi_subscription = match wifi_subscription {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            log::warn!("[{}] WiFi event subscription unavailable: {}", TAG, error);
+            None
+        }
+    };
+
+    let ip_subscription = sys_loop.subscribe::<IpEvent, _>(|event| {
+        if matches!(event, IpEvent::DhcpIpAssigned(_)) {
+            if let Some(handle) = sta_netif_handle() {
+                if event.is_for_handle(handle) {
+                    crate::state::set_network_wifi_stage(
+                        crate::state::NetworkWifiStage::StaIpReady,
+                        None,
+                    );
+                }
+            }
+        }
+    });
+    let ip_subscription = match ip_subscription {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            log::warn!("[{}] IP event subscription unavailable: {}", TAG, error);
+            None
+        }
+    };
+
+    WifiStageEventSubscriptions {
+        _wifi: wifi_subscription,
+        _ip: ip_subscription,
+    }
 }
 
 fn set_softap_enabled(
@@ -549,6 +648,7 @@ fn do_connect(
         Ok(w) => w,
         Err(e) => return send_err(e),
     };
+    let _stage_event_subscriptions = subscribe_wifi_stage_events(&sys_loop);
     let mut wifi = match BlockingWifi::wrap(esp_wifi, sys_loop).map_err(|e| Error::Other {
         source: Box::new(e),
         stage: "wifi_wrap",
@@ -674,12 +774,14 @@ fn do_connect(
         TAG,
         SOFTAP_SSID
     );
+    crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaConnecting, None);
     if let Err(e) = issue_sta_connect(&mut wifi) {
         log::warn!(
             "[{}] STA connect failed (SoftAP remains active for provisioning): {}",
             TAG,
             e
         );
+        crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaRecovering, None);
         clear_sta_ip_cache();
         let _ = result_tx.send(Ok(()));
         run_scan_loop(
@@ -712,13 +814,7 @@ fn clear_sta_ip_cache() {
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn read_sta_ipv4_string() -> Option<String> {
-    const WIFI_STA_DEF: &[u8] = b"WIFI_STA_DEF\0";
-    let netif = unsafe {
-        esp_idf_svc::sys::esp_netif_get_handle_from_ifkey(WIFI_STA_DEF.as_ptr() as *const _)
-    };
-    if netif.is_null() {
-        return None;
-    }
+    let netif = sta_netif_handle()?;
     let mut ip_info: esp_idf_svc::sys::esp_netif_ip_info_t = unsafe { std::mem::zeroed() };
     let ret = unsafe { esp_idf_svc::sys::esp_netif_get_ip_info(netif, &mut ip_info) };
     if ret != esp_idf_svc::sys::ESP_OK {
@@ -729,4 +825,16 @@ fn read_sta_ipv4_string() -> Option<String> {
         "{}.{}.{}.{}",
         octets[0], octets[1], octets[2], octets[3]
     ))
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn sta_netif_handle() -> Option<*mut esp_idf_svc::sys::esp_netif_t> {
+    const WIFI_STA_DEF: &[u8] = b"WIFI_STA_DEF\0";
+    let netif = unsafe {
+        esp_idf_svc::sys::esp_netif_get_handle_from_ifkey(WIFI_STA_DEF.as_ptr() as *const _)
+    };
+    if netif.is_null() {
+        return None;
+    }
+    Some(netif)
 }

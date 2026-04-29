@@ -1,4 +1,4 @@
-export type DisplayDriver = 'st7789' | 'ili9341' | 'st7735' | 'framebuffer'
+export type DisplayDriver = 'st7789' | 'ili9341' | 'framebuffer'
 export type DisplayBus = 'spi' | 'framebuffer'
 export type DisplayColorOrder = 'rgb' | 'bgr'
 
@@ -9,6 +9,7 @@ export interface DisplaySpiConfig {
   cs: number
   dc: number
   rst: number | null
+  rst_active_high: boolean
   bl: number | null
   freq_hz: number
 }
@@ -55,6 +56,7 @@ export function defaultDisplayConfig(): DisplayConfig {
       cs: 21,
       dc: 40,
       rst: null,
+      rst_active_high: false,
       bl: null,
       freq_hz: 40_000_000,
     },
@@ -80,7 +82,7 @@ export function normalizeDisplayConfig(
   }
 
   let driver = input.driver ?? d.driver
-  if (driver !== 'st7789' && driver !== 'ili9341' && driver !== 'st7735' && driver !== 'framebuffer') {
+  if (driver !== 'st7789' && driver !== 'ili9341' && driver !== 'framebuffer') {
     driver = d.driver
   }
   let bus = input.bus ?? d.bus
@@ -113,6 +115,7 @@ export function normalizeDisplayConfig(
       ...spiIn,
       host: spiIn.host === 3 ? 3 : 2,
       rst: spiIn.rst === undefined ? d.spi.rst : spiIn.rst,
+      rst_active_high: Boolean(spiIn.rst_active_high),
       bl: spiIn.bl === undefined ? d.spi.bl : spiIn.bl,
     },
     fb_device:

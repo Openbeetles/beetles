@@ -777,6 +777,7 @@ export const enUS = {
       spiCs: 'CS pin',
       spiDc: 'DC pin',
       spiRst: 'RST pin (optional)',
+      spiRstActiveHigh: 'RST active high',
       spiBl: 'BL pin (optional)',
       spiFreqHz: 'SPI frequency (Hz)',
       restartRequired: 'Saved. Restart required to take effect.',

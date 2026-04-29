@@ -14,10 +14,15 @@ repository = "https://github.com/Openbeetles/beetles"
 esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
 # esp-idf-sys 默认 v5.2.3；升级到 6.0 以匹配当前 ESP 平台栈与本地组件集成。
 esp_idf_version = "v6.0"
+esp_idf_sys_root_crate = "beetle"
 
 [[package.metadata.esp-idf-sys.extra_components]]
 # Keep local C components such as `beetle_wss`.
 component_dirs = ["components"]
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_lcd_ili9341", version = "2.0.2" }
+bindings_header = "components/beetle_lcd_deps/bindings.h"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
@@ -43,6 +48,7 @@ regex = { version = "1.11", default-features = false, features = ["std"] }
 
 [target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
 embedded-svc = "0.29"
+esp-idf-sys = { version = "0.37.1", default-features = false }
 esp-idf-hal = "0.46.2"
 esp-idf-svc = "0.52.1"
 

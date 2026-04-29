@@ -577,6 +577,20 @@ pub fn external_wss_runtime_snapshot() -> ExternalWssRuntimeSnapshot {
     }
 }
 
+pub fn external_wss_network_suspend_reason(
+    snapshot: &crate::state::NetworkRuntimeSnapshot,
+) -> Option<&'static str> {
+    if !snapshot.sta_expected || !snapshot.sta_configured {
+        Some("wifi_not_configured")
+    } else if !snapshot.outbound_settled {
+        Some("wifi_not_ready")
+    } else if !snapshot.wall_clock_trustworthy {
+        Some("wall_clock_untrusted")
+    } else {
+        None
+    }
+}
+
 pub fn set_external_wss_managed_present(active: bool) {
     EXTERNAL_WSS_MANAGED_PRESENT.store(active, Ordering::Relaxed);
     if !active {

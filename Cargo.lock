@@ -269,6 +269,7 @@ dependencies = [
  "env_logger",
  "esp-idf-hal",
  "esp-idf-svc",
+ "esp-idf-sys",
  "futures",
  "getrandom 0.2.17",
  "gpio-cdev",

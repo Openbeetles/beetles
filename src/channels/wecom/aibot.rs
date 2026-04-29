@@ -15,7 +15,7 @@ use crate::config::AppConfig;
 use crate::error::{Error, Result};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,8 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const BACKOFF_MAX_SECS: u64 = 120;
 const ROUTE_STORE_MAX_ENTRIES: usize = 256;
 const ROUTE_TTL_SECS: u64 = 24 * 60 * 60;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const WIFI_OUTBOUND_SETTLE_SECS: u64 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WecomAibotRoute {
@@ -139,7 +141,7 @@ struct WecomEvent {
     eventtype: String,
 }
 
-static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
+static REQ_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 fn next_req_id(prefix: &str) -> String {
     let seq = REQ_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -430,6 +432,24 @@ fn external_wss_connect_allowed() -> bool {
         .allow_external_wss_connect
 }
 
+fn mark_wss_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
+    let _ = crate::runtime::plane_lifecycle::mark(
+        crate::runtime::PlaneId::ChannelWss,
+        TAG,
+        state,
+        reason,
+    );
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_network_suspend_reason() -> Option<&'static str> {
+    let snapshot = crate::state::network_runtime_snapshot(
+        crate::platform::time::wall_clock_is_trustworthy(),
+        WIFI_OUTBOUND_SETTLE_SECS,
+    );
+    crate::network::external_wss_network_suspend_reason(&snapshot)
+}
+
 pub fn run_wecom_aibot_loop<C, Connect>(
     bot_id: String,
     bot_secret: String,
@@ -442,6 +462,7 @@ pub fn run_wecom_aibot_loop<C, Connect>(
     C: WssConnection,
     Connect: FnMut(&str) -> Result<C>,
 {
+    crate::network::set_external_wss_managed_present(true);
     let url = if websocket_url.trim().is_empty() {
         WECOM_AIBOT_WS_URL.to_string()
     } else {
@@ -451,12 +472,35 @@ pub fn run_wecom_aibot_loop<C, Connect>(
     let mut pending_outbound: Option<QueuedOutboundMessage> = None;
     loop {
         if !external_wss_connect_allowed() {
+            mark_wss_lifecycle(
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "runtime_mode_gate",
+            );
             std::thread::sleep(Duration::from_secs(backoff_secs));
             continue;
         }
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        if let Some(reason) = esp_network_suspend_reason() {
+            mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Suspended, reason);
+            if reason == "wall_clock_untrusted" {
+                let _ = crate::platform::time::wait_for_wall_clock_trustworthy(
+                    Duration::from_secs(backoff_secs),
+                );
+            } else {
+                crate::platform::wifi::wait_for_network_ready();
+                std::thread::sleep(Duration::from_secs(backoff_secs));
+            }
+            continue;
+        }
+        crate::network::wait_for_external_wss_resume(TAG);
+        mark_wss_lifecycle(
+            crate::runtime::PlaneLifecycleState::Starting,
+            "connect_attempt",
+        );
         let mut conn = match connect(&url) {
             Ok(conn) => conn,
             Err(error) => {
+                mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "connect");
                 log::warn!("[{}] connect failed: {}", TAG, error);
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
@@ -465,16 +509,25 @@ pub fn run_wecom_aibot_loop<C, Connect>(
         };
         backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
         if let Err(error) = send_json_command(&mut conn, &subscribe_command(&bot_id, &bot_secret)) {
+            mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "subscribe");
             log::warn!("[{}] subscribe failed: {}", TAG, error);
             std::thread::sleep(Duration::from_secs(backoff_secs));
             continue;
         }
+        mark_wss_lifecycle(
+            crate::runtime::PlaneLifecycleState::Active,
+            "session_active",
+        );
         let mut last_ping = Instant::now();
         'session: loop {
             if !external_wss_connect_allowed() {
                 log::info!(
                     "[{}] disconnecting external WSS under runtime mode gate",
                     TAG
+                );
+                mark_wss_lifecycle(
+                    crate::runtime::PlaneLifecycleState::Suspended,
+                    "runtime_mode_gate",
                 );
                 break 'session;
             }

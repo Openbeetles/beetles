@@ -19,7 +19,6 @@
 
 - `st7789`
 - `ili9341`
-- `st7735`
 - `framebuffer`
 
 ## 支持的 `bus`
@@ -27,8 +26,8 @@
 - `spi`
 - `framebuffer`
 
-SPI 小屏通常使用前三种驱动；系统已提供显示设备时通常使用 `framebuffer`。
-SPI 模式下 `spi.host` 使用板级总线标签：`2` 表示外接屏走 `SPI2`，`3` 表示外接屏走 `SPI3`；ESP 后端会映射到 ESP-IDF 对应枚举。`1` 是 SPI1/Flash 相关总线，不作为外接屏配置值。
+SPI LCD 通常使用 `st7789` 或 `ili9341`；系统已提供显示设备时通常使用 `framebuffer`。
+SPI 模式下 `spi.host` 仅填写 `2` 或 `3`，请按实际接线选择。
 
 ## SPI 配置示例
 
@@ -54,6 +53,7 @@ SPI 模式下 `spi.host` 使用板级总线标签：`2` 表示外接屏走 `SPI2
     "cs": 21,
     "dc": 40,
     "rst": 39,
+    "rst_active_high": false,
     "bl": 38,
     "freq_hz": 40000000
   },
@@ -85,6 +85,7 @@ SPI 模式下 `spi.host` 使用板级总线标签：`2` 表示外接屏走 `SPI2
     "cs": 0,
     "dc": 0,
     "rst": null,
+    "rst_active_high": false,
     "bl": null,
     "freq_hz": 40000000
   },
@@ -107,7 +108,8 @@ SPI 模式下 `spi.host` 使用板级总线标签：`2` 表示外接屏走 `SPI2
 | `linux_spi_swap_bytes` | Linux SPI 下颜色仍不对时再试 |
 | `offset_x` / `offset_y` | 画面偏移修正 |
 | `sleep_timeout_secs` | 背光自动熄灭时间，`0` 表示关闭 |
-| `spi.host` | SPI 模式下仅支持 `2` 或 `3`，分别对应外接屏总线 `SPI2` / `SPI3` |
+| `spi.host` | SPI 模式下仅支持 `2` 或 `3`，按实际接线选择 |
+| `spi.rst_active_high` | RST 高电平有效 |
 | `fb_device` | framebuffer 设备路径 |
 | `backlight_sysfs` | Linux 背光路径 |
 

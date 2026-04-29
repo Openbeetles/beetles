@@ -713,6 +713,9 @@
 #endif
 #include "esp_lcd_panel_ssd1306.h"
 #include "esp_lcd_panel_st7789.h"
+#if defined(ESP_IDF_COMP_ESP_LCD_ILI9341_ENABLED) || defined(ESP_IDF_COMP_ESPRESSIF__ESP_LCD_ILI9341_ENABLED) || __has_include("esp_lcd_ili9341.h")
+#include "esp_lcd_ili9341.h"
+#endif
 #ifdef SOC_MIPI_DSI_SUPPORTED
 #include "esp_lcd_mipi_dsi.h"
 #endif

@@ -773,6 +773,7 @@ export const zhCN = {
       spiCs: 'CS 引脚',
       spiDc: 'DC 引脚',
       spiRst: 'RST 引脚（可选）',
+      spiRstActiveHigh: 'RST 高电平有效',
       spiBl: 'BL 引脚（可选）',
       spiFreqHz: 'SPI 频率（Hz）',
       restartRequired: '保存成功，重启后生效',

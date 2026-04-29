@@ -22,6 +22,7 @@ struct ResourceBody {
     admission: orchestrator::ResourceAdmissionSnapshot,
     governance_metrics: orchestrator::ResourceGovernanceMetricsSnapshot,
     runtime_capabilities: Vec<orchestrator::RuntimeCapabilityState>,
+    network: crate::state::NetworkRuntimeSnapshot,
     planes: runtime::PlaneRegistrySnapshot,
     plane_lifecycle: runtime::PlaneLifecycleSnapshot,
     leases: runtime::LeaseSnapshot,
@@ -76,6 +77,10 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
         admission: diag.admission,
         governance_metrics: diag.governance_metrics,
         runtime_capabilities: diag.runtime_capabilities,
+        network: crate::state::network_runtime_snapshot(
+            crate::platform::time::wall_clock_is_trustworthy(),
+            3,
+        ),
         planes: diag.planes,
         plane_lifecycle: diag.plane_lifecycle,
         leases: diag.leases,
@@ -105,6 +110,9 @@ mod tests {
     #[test]
     fn body_serializes_documented_resource_contract_fields() {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
+        let _state_guard = crate::state::test_state_guard();
+        crate::state::set_network_sta_expected(false, false);
+        crate::state::clear_wifi_sta_state();
         crate::orchestrator::reset_crash_metadata_for_tests();
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
 
@@ -127,6 +135,7 @@ mod tests {
             "admission",
             "governance_metrics",
             "runtime_capabilities",
+            "network",
             "planes",
             "plane_lifecycle",
             "leases",
@@ -143,6 +152,7 @@ mod tests {
         }
 
         assert!(parsed["budget"]["level"].is_string());
+        assert!(parsed["network"]["last_wifi_stage"].is_string());
         assert!(parsed["budget"]["system_prompt_max"].is_number());
         assert!(parsed["budget"]["messages_max"].is_number());
         assert!(parsed["budget"]["response_body_max"].is_number());

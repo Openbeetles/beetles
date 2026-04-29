@@ -58,8 +58,41 @@ fn should_save_plain_dispatch_to_pending_retry_on_pressure(
     pressure == crate::orchestrator::PressureLevel::Critical
 }
 
+#[cfg(any(not(any(target_arch = "xtensa", target_arch = "riscv32")), test))]
 fn should_defer_external_wss_for_wall_clock(wall_clock_valid: bool) -> bool {
     !wall_clock_valid
+}
+
+#[cfg(test)]
+mod network_gate_tests {
+    #[test]
+    fn external_wss_reports_wifi_before_wall_clock() {
+        let _guard = crate::state::test_state_guard();
+        crate::state::set_network_sta_expected(true, true);
+        crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaConnecting, None);
+        crate::state::clear_wifi_sta_state();
+
+        let snapshot = crate::state::network_runtime_snapshot(false, 3);
+
+        assert_eq!(
+            crate::network::external_wss_network_suspend_reason(&snapshot),
+            Some("wifi_not_ready")
+        );
+    }
+
+    #[test]
+    fn external_wss_reports_wall_clock_only_after_network_ready() {
+        let _guard = crate::state::test_state_guard();
+        crate::state::set_network_sta_expected(true, true);
+        crate::state::set_wifi_sta_state(true, Some("192.168.1.2".to_string()));
+
+        let snapshot = crate::state::network_runtime_snapshot(false, 0);
+
+        assert_eq!(
+            crate::network::external_wss_network_suspend_reason(&snapshot),
+            Some("wall_clock_untrusted")
+        );
+    }
 }
 
 fn wss_lifecycle_owner(tag: &str) -> &'static str {
@@ -192,6 +225,49 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             continue;
         }
         let wall_clock_valid = crate::platform::time::wall_clock_is_trustworthy();
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            let network_snapshot =
+                crate::state::network_runtime_snapshot(wall_clock_valid, WIFI_OUTBOUND_SETTLE_SECS);
+            if let Some(reason) =
+                crate::network::external_wss_network_suspend_reason(&network_snapshot)
+            {
+                mark_wss_lifecycle(
+                    lifecycle_owner,
+                    crate::runtime::PlaneLifecycleState::Suspended,
+                    reason,
+                );
+                if reason == "wall_clock_untrusted" {
+                    if !waiting_for_wall_clock {
+                        log::info!(
+                            "[{}] defer external WSS connect until wall clock is trustworthy",
+                            tag
+                        );
+                        waiting_for_wall_clock = true;
+                    }
+                    if !crate::platform::time::wait_for_wall_clock_trustworthy(Duration::from_secs(
+                        TLS_ADMISSION_RETRY_SLEEP_SECS,
+                    )) {
+                        continue;
+                    }
+                } else {
+                    waiting_for_wall_clock = false;
+                    if reason == "wifi_not_ready" {
+                        wait_for_wifi(tag);
+                    } else {
+                        log::info!(
+                            "[{}] defer external WSS connect: {} stage={:?}",
+                            tag,
+                            reason,
+                            network_snapshot.last_wifi_stage
+                        );
+                        sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+                    }
+                    continue;
+                }
+            }
+        }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
         if should_defer_external_wss_for_wall_clock(wall_clock_valid) {
             if !waiting_for_wall_clock {
                 log::info!(
@@ -227,14 +303,6 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             );
         }
         crate::network::wait_for_external_wss_resume(tag);
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        if !crate::state::wifi_sta_settled_for_outbound(WIFI_OUTBOUND_SETTLE_SECS) {
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                "wifi_not_ready",
-            );
-        }
         wait_for_wifi(tag);
 
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();

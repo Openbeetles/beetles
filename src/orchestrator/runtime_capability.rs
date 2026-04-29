@@ -798,13 +798,17 @@ pub fn observe_runtime_capabilities_from_platform(
         observed_at_secs: now_secs,
         recovery_hint: None,
     });
-    let outbound_transport_ready = match platform.memory_system_kind() {
-        MemorySystemKind::LinuxFull => outbound_http_client_ready,
-        MemorySystemKind::EspCompact => {
-            outbound_http_client_ready && crate::state::wifi_sta_connected()
-        }
+    let outbound_network_snapshot = match platform.memory_system_kind() {
+        MemorySystemKind::LinuxFull => None,
+        MemorySystemKind::EspCompact => Some(crate::state::network_runtime_snapshot(
+            crate::platform::time::wall_clock_is_trustworthy(),
+            3,
+        )),
     };
-    let mut outbound_update = resolve_outbound_http_capability_update(outbound_transport_ready);
+    let mut outbound_update = resolve_outbound_http_capability_update_from_network(
+        outbound_http_client_ready,
+        outbound_network_snapshot,
+    );
     outbound_update.observed_at_secs = now_secs;
     update_runtime_capability(outbound_update);
     if let Some(storage_ready) = storage_state_fs_ready {
@@ -826,15 +830,25 @@ pub fn observe_runtime_capabilities_from_platform(
     }
 }
 
+#[cfg(test)]
 fn resolve_outbound_http_capability_update(
     outbound_transport_ready: bool,
 ) -> RuntimeCapabilityUpdate {
+    resolve_outbound_http_capability_update_from_network(outbound_transport_ready, None)
+}
+
+fn resolve_outbound_http_capability_update_from_network(
+    outbound_http_client_ready: bool,
+    network: Option<crate::state::NetworkRuntimeSnapshot>,
+) -> RuntimeCapabilityUpdate {
     let prior = get_runtime_capability(RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP);
-    let (status, reason) = if !outbound_transport_ready {
+    let (status, reason) = if !outbound_http_client_ready {
         (
             RuntimeCapabilityStatus::Offline,
             RuntimeCapabilityReason::RuntimeNotInitialized,
         )
+    } else if let Some(snapshot) = network {
+        outbound_http_status_for_network_snapshot(snapshot)
     } else if prior.is_some_and(|state| {
         state.status == RuntimeCapabilityStatus::Offline
             && state.reason == RuntimeCapabilityReason::UpstreamUnavailable
@@ -856,6 +870,50 @@ fn resolve_outbound_http_capability_update(
         observed_at_secs: 0,
         recovery_hint: None,
     }
+}
+
+fn outbound_http_status_for_network_snapshot(
+    snapshot: crate::state::NetworkRuntimeSnapshot,
+) -> (RuntimeCapabilityStatus, RuntimeCapabilityReason) {
+    if !snapshot.sta_expected || !snapshot.sta_configured {
+        return (
+            RuntimeCapabilityStatus::Offline,
+            RuntimeCapabilityReason::NotConfigured,
+        );
+    }
+    if !snapshot.sta_ip_present {
+        let reason = match snapshot.last_wifi_stage {
+            crate::state::NetworkWifiStage::StaConnecting
+            | crate::state::NetworkWifiStage::StaL2Connected
+            | crate::state::NetworkWifiStage::StaWaitingDhcp
+            | crate::state::NetworkWifiStage::StaIpReady
+            | crate::state::NetworkWifiStage::StaRecovering => {
+                RuntimeCapabilityReason::RecoveryStabilizing
+            }
+            crate::state::NetworkWifiStage::StaAuthFailed
+            | crate::state::NetworkWifiStage::StaApNotFound
+            | crate::state::NetworkWifiStage::StaFallbackAp => {
+                RuntimeCapabilityReason::UpstreamUnavailable
+            }
+            crate::state::NetworkWifiStage::ApOnly => RuntimeCapabilityReason::UpstreamUnavailable,
+        };
+        let status = if reason == RuntimeCapabilityReason::RecoveryStabilizing {
+            RuntimeCapabilityStatus::Degraded
+        } else {
+            RuntimeCapabilityStatus::Offline
+        };
+        return (status, reason);
+    }
+    if !snapshot.outbound_settled {
+        return (
+            RuntimeCapabilityStatus::Degraded,
+            RuntimeCapabilityReason::RecoveryStabilizing,
+        );
+    }
+    (
+        RuntimeCapabilityStatus::Online,
+        RuntimeCapabilityReason::Nominal,
+    )
 }
 
 pub fn observe_runtime_capability_success(required: &[&'static str]) {
@@ -992,6 +1050,50 @@ mod tests {
         let next = resolve_outbound_http_capability_update(true);
         assert_eq!(next.status, RuntimeCapabilityStatus::Online);
         assert_eq!(next.reason, RuntimeCapabilityReason::Nominal);
+    }
+
+    #[test]
+    fn outbound_http_uses_network_snapshot_to_explain_esp_blockers() {
+        let _guard = RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _state_guard = crate::state::test_state_guard();
+        reset_runtime_capabilities_for_tests();
+        crate::state::set_network_sta_expected(false, false);
+        crate::state::clear_wifi_sta_state();
+
+        let ap_only = resolve_outbound_http_capability_update_from_network(
+            true,
+            Some(crate::state::network_runtime_snapshot(false, 3)),
+        );
+        assert_eq!(ap_only.status, RuntimeCapabilityStatus::Offline);
+        assert_eq!(ap_only.reason, RuntimeCapabilityReason::NotConfigured);
+
+        crate::state::set_network_sta_expected(true, true);
+        crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaRecovering, None);
+        let recovering = resolve_outbound_http_capability_update_from_network(
+            true,
+            Some(crate::state::network_runtime_snapshot(false, 3)),
+        );
+        assert_eq!(recovering.status, RuntimeCapabilityStatus::Degraded);
+        assert_eq!(
+            recovering.reason,
+            RuntimeCapabilityReason::RecoveryStabilizing
+        );
+
+        crate::state::set_network_wifi_stage(
+            crate::state::NetworkWifiStage::StaApNotFound,
+            Some(201),
+        );
+        let unavailable = resolve_outbound_http_capability_update_from_network(
+            true,
+            Some(crate::state::network_runtime_snapshot(false, 3)),
+        );
+        assert_eq!(unavailable.status, RuntimeCapabilityStatus::Offline);
+        assert_eq!(
+            unavailable.reason,
+            RuntimeCapabilityReason::UpstreamUnavailable
+        );
     }
 
     #[test]

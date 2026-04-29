@@ -19,7 +19,6 @@ Saved data ends up in `config/display.json`.
 
 - `st7789`
 - `ili9341`
-- `st7735`
 - `framebuffer`
 
 ## Supported `bus` Values
@@ -27,9 +26,9 @@ Saved data ends up in `config/display.json`.
 - `spi`
 - `framebuffer`
 
-If you use a small SPI panel, the first three drivers are the usual choices.
+SPI LCD panels usually use `st7789` or `ili9341`.
 If your system already exposes a display device, `framebuffer` is the usual path.
-In SPI mode, `spi.host` uses board-level bus labels: `2` means the external display uses `SPI2`, and `3` means it uses `SPI3`. The ESP backend maps this value to the matching ESP-IDF enum. `1` is the SPI1/Flash-related bus and is not a valid external display setting.
+In SPI mode, set `spi.host` to `2` or `3` according to your wiring.
 
 ## A Common SPI Example
 
@@ -55,6 +54,7 @@ In SPI mode, `spi.host` uses board-level bus labels: `2` means the external disp
     "cs": 21,
     "dc": 40,
     "rst": 39,
+    "rst_active_high": false,
     "bl": 38,
     "freq_hz": 40000000
   },
@@ -86,6 +86,7 @@ In SPI mode, `spi.host` uses board-level bus labels: `2` means the external disp
     "cs": 0,
     "dc": 0,
     "rst": null,
+    "rst_active_high": false,
     "bl": null,
     "freq_hz": 40000000
   },
@@ -108,7 +109,8 @@ In SPI mode, `spi.host` uses board-level bus labels: `2` means the external disp
 | `linux_spi_swap_bytes` | last Linux SPI fallback for wrong colors |
 | `offset_x` / `offset_y` | image position adjustment |
 | `sleep_timeout_secs` | auto backlight-off timeout; `0` disables it |
-| `spi.host` | SPI mode accepts only `2` or `3`, matching external display buses `SPI2` / `SPI3` |
+| `spi.host` | SPI mode accepts only `2` or `3`; choose the value that matches your wiring |
+| `spi.rst_active_high` | RST is active high |
 | `fb_device` | framebuffer device path |
 | `backlight_sysfs` | Linux backlight path |
 

@@ -167,8 +167,6 @@ pub(crate) fn reset_display_lease_denied_total_for_tests() {
 pub enum DisplayDriver {
     St7789,
     Ili9341,
-    /// ST7735 / ST7735R / ST7735S 家族（寄存器兼容）。
-    St7735,
     /// Linux framebuffer 驱动（通过 /dev/fb0 等 fbdev 接口）。
     /// Linux framebuffer driver via /dev/fbX fbdev interface.
     Framebuffer,
@@ -527,6 +525,53 @@ pub fn display_spidev_bus_for_config_host(host: u8) -> Result<u8> {
     }
 }
 
+#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DisplayLcdRowWindow {
+    pub x_start: i32,
+    pub y_start: i32,
+    pub x_end: i32,
+    pub y_end: i32,
+    pub row_start_byte: usize,
+    pub row_end_byte: usize,
+}
+
+/// Compute the row band passed to `esp_lcd_panel_draw_bitmap`.
+/// `x_end` / `y_end` are exclusive, matching ESP-IDF `esp_lcd`.
+#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn display_lcd_row_window(
+    width: u16,
+    height: u16,
+    offset_x: i16,
+    offset_y: i16,
+    ry: u16,
+    rh: u16,
+) -> Option<DisplayLcdRowWindow> {
+    if width == 0 || rh == 0 {
+        return None;
+    }
+    let ry = ry.min(height);
+    let rh = rh.min(height.saturating_sub(ry));
+    if rh == 0 {
+        return None;
+    }
+
+    let row_bytes = width as usize * 2;
+    let row_start_byte = ry as usize * row_bytes;
+    let row_end_byte = row_start_byte + rh as usize * row_bytes;
+    let x_start = offset_x.max(0) as i32;
+    let y_start = offset_y.max(0) as i32 + ry as i32;
+
+    Some(DisplayLcdRowWindow {
+        x_start,
+        y_start,
+        x_end: x_start + width as i32,
+        y_end: y_start + rh as i32,
+        row_start_byte,
+        row_end_byte,
+    })
+}
+
 pub fn validate_display_config_core(cfg: &DisplayConfig) -> Result<()> {
     if cfg.version != DISPLAY_CONFIG_VERSION {
         return Err(Error::config(
@@ -706,6 +751,30 @@ mod tests {
         assert_eq!(display_spidev_bus_for_config_host(2).unwrap(), 0);
         assert_eq!(display_spidev_bus_for_config_host(3).unwrap(), 1);
         assert!(display_spidev_bus_for_config_host(1).is_err());
+    }
+
+    #[test]
+    fn display_lcd_row_window_uses_exclusive_esp_lcd_bounds() {
+        let window = display_lcd_row_window(320, 240, 0, 0, 10, 4).unwrap();
+        assert_eq!(window.x_start, 0);
+        assert_eq!(window.x_end, 320);
+        assert_eq!(window.y_start, 10);
+        assert_eq!(window.y_end, 14);
+        assert_eq!(window.row_start_byte, 320 * 2 * 10);
+        assert_eq!(window.row_end_byte, 320 * 2 * 14);
+    }
+
+    #[test]
+    fn display_lcd_row_window_clamps_dirty_rows() {
+        let window = display_lcd_row_window(240, 240, -5, 3, 238, 8).unwrap();
+        assert_eq!(window.x_start, 0);
+        assert_eq!(window.x_end, 240);
+        assert_eq!(window.y_start, 241);
+        assert_eq!(window.y_end, 243);
+        assert_eq!(window.row_start_byte, 240 * 2 * 238);
+        assert_eq!(window.row_end_byte, 240 * 2 * 240);
+        assert!(display_lcd_row_window(240, 240, 0, 0, 240, 1).is_none());
+        assert!(display_lcd_row_window(240, 240, 0, 0, 0, 0).is_none());
     }
 
     #[test]

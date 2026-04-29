@@ -24,6 +24,7 @@ struct AudioHealthCapabilities {
 #[derive(serde::Serialize)]
 struct HealthBody {
     wifi: &'static str,
+    network: crate::state::NetworkRuntimeSnapshot,
     last_error: String,
     display: DisplayHealth,
     audio: AudioHealth,
@@ -46,6 +47,10 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     };
     let payload = HealthBody {
         wifi,
+        network: crate::state::network_runtime_snapshot(
+            crate::platform::time::wall_clock_is_trustworthy(),
+            3,
+        ),
         last_error: last_err,
         display: DisplayHealth {
             available: ctx.platform.display_available(),
@@ -69,6 +74,9 @@ mod tests {
 
     #[test]
     fn body_reports_default_health_state() {
+        let _guard = crate::state::test_state_guard();
+        crate::state::set_network_sta_expected(false, false);
+        crate::state::clear_wifi_sta_state();
         let ctx = build_test_context();
 
         let payload = body(&ctx).unwrap();
@@ -81,7 +89,14 @@ mod tests {
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
         assert!(parsed.get("workflow").is_some());
+        assert!(parsed.get("network").is_some());
         assert!(parsed.get("last_error").is_some());
+        assert_eq!(
+            parsed["network"]
+                .get("last_wifi_stage")
+                .and_then(Value::as_str),
+            Some("ap_only")
+        );
         assert!(parsed["display"]["available"].is_boolean());
         assert!(parsed["audio"]["duplex_profile"].is_string());
         assert!(parsed["audio"]["duplex_capabilities"]
