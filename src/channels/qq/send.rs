@@ -4,7 +4,9 @@ use crate::bus::{CanonicalMessageBody, CardFormat, MediaLocatorKind, MessageBody
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error as BeetleError, Result as BeetleResult};
+use crate::platform::ByteBuffer;
 use std::collections::HashMap;
+use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -266,21 +268,57 @@ fn is_v2_chat(chat_id: &str) -> bool {
     chat_id.starts_with("group:") || chat_id.starts_with("c2c:")
 }
 
-fn build_qq_send_body(content: &str, msg_id: Option<&str>, msg_seq: Option<u64>) -> Vec<u8> {
-    let mut body = String::with_capacity(content.len() + msg_id.map_or(32, |id| id.len() + 32));
-    body.push('{');
-    body.push_str("\"content\":");
-    crate::util::push_json_string_escaped(&mut body, content);
+fn push_json_string_escaped_bytes(body: &mut ByteBuffer, value: &str) -> crate::error::Result<()> {
+    body.write_all(b"\"")
+        .map_err(|e| crate::error::Error::io("qq_send", e))?;
+    for ch in value.chars() {
+        match ch {
+            '"' => body.write_all(b"\\\""),
+            '\\' => body.write_all(b"\\\\"),
+            '\n' => body.write_all(b"\\n"),
+            '\r' => body.write_all(b"\\r"),
+            '\t' => body.write_all(b"\\t"),
+            '\u{08}' => body.write_all(b"\\b"),
+            '\u{0c}' => body.write_all(b"\\f"),
+            c if c <= '\u{1f}' => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let code = c as u32 as u8;
+                body.write_all(b"\\u00").and_then(|_| {
+                    body.write_all(&[HEX[(code >> 4) as usize], HEX[(code & 0x0f) as usize]])
+                })
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                body.write_all(c.encode_utf8(&mut buf).as_bytes())
+            }
+        }
+        .map_err(|e| crate::error::Error::io("qq_send", e))?;
+    }
+    body.write_all(b"\"")
+        .map_err(|e| crate::error::Error::io("qq_send", e))
+}
+
+fn build_qq_send_body(
+    content: &str,
+    msg_id: Option<&str>,
+    msg_seq: Option<u64>,
+) -> crate::error::Result<ByteBuffer> {
+    let mut body = ByteBuffer::with_capacity(content.len() + msg_id.map_or(32, |id| id.len() + 32));
+    body.write_all(b"{\"content\":")
+        .map_err(|e| crate::error::Error::io("qq_send", e))?;
+    push_json_string_escaped_bytes(&mut body, content)?;
     if let Some(seq) = msg_seq {
-        body.push_str(",\"msg_type\":0,\"msg_seq\":");
-        body.push_str(&seq.to_string());
+        write!(&mut body, ",\"msg_type\":0,\"msg_seq\":{seq}")
+            .map_err(|e| crate::error::Error::io("qq_send", e))?;
     }
     if let Some(id) = msg_id {
-        body.push_str(",\"msg_id\":");
-        crate::util::push_json_string_escaped(&mut body, id);
+        body.write_all(b",\"msg_id\":")
+            .map_err(|e| crate::error::Error::io("qq_send", e))?;
+        push_json_string_escaped_bytes(&mut body, id)?;
     }
-    body.push('}');
-    body.into_bytes()
+    body.write_all(b"}")
+        .map_err(|e| crate::error::Error::io("qq_send", e))?;
+    Ok(body)
 }
 
 fn push_reply_metadata(
@@ -490,14 +528,14 @@ fn render_qq_send_payloads<H: ChannelHttpClient>(
     message: &QueuedOutboundMessage,
     msg_id: Option<&str>,
     msg_seq: Option<QqMsgSeqReservation>,
-) -> crate::error::Result<Vec<Vec<u8>>> {
+) -> crate::error::Result<Vec<ByteBuffer>> {
     match &message.body {
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
-            Ok(vec![build_qq_markdown_body(
+            Ok(vec![ByteBuffer::from_vec(build_qq_markdown_body(
                 &body.text,
                 msg_id,
                 msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-            )?])
+            )?)])
         }
         CanonicalMessageBody::Text(_) => {
             let is_v2 = is_v2_chat(&message.chat_id);
@@ -515,47 +553,47 @@ fn render_qq_send_payloads<H: ChannelHttpClient>(
                     } else {
                         None
                     },
-                ));
+                )?);
             }
             Ok(payloads)
         }
         CanonicalMessageBody::Card(body) => match body.format {
-            CardFormat::Ark => Ok(vec![build_qq_card_body(
+            CardFormat::Ark => Ok(vec![ByteBuffer::from_vec(build_qq_card_body(
                 3,
                 "ark",
                 &body.payload_json,
                 msg_id,
                 msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-            )?]),
-            CardFormat::Embed => Ok(vec![build_qq_card_body(
+            )?)]),
+            CardFormat::Embed => Ok(vec![ByteBuffer::from_vec(build_qq_card_body(
                 4,
                 "embed",
                 &body.payload_json,
                 msg_id,
                 msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-            )?]),
+            )?)]),
             _ => Ok(vec![build_qq_send_body(
                 &qq_message_text_fallback(message),
                 msg_id,
                 msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-            )]),
+            )?]),
         },
         CanonicalMessageBody::Image(_)
         | CanonicalMessageBody::Audio(_)
         | CanonicalMessageBody::Video(_)
         | CanonicalMessageBody::File(_) => {
             let file_info = resolve_qq_media_file_info(http, token, &message.chat_id, message)?;
-            Ok(vec![build_qq_media_body(
+            Ok(vec![ByteBuffer::from_vec(build_qq_media_body(
                 &file_info,
                 msg_id,
                 msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-            )?])
+            )?)])
         }
         CanonicalMessageBody::PlatformNative(_) => Ok(vec![build_qq_send_body(
             &qq_message_text_fallback(message),
             msg_id,
             msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-        )]),
+        )?]),
     }
 }
 
@@ -587,6 +625,11 @@ fn send_one_qq<H: ChannelHttpClient>(
     let send_start = std::time::Instant::now();
     let url = build_qq_message_url(&message.chat_id);
     let payloads = render_qq_send_payloads(http, token, message, msg_id, msg_seq)?;
+    let max_payload_len = payloads
+        .iter()
+        .map(|payload| payload.len())
+        .max()
+        .unwrap_or(0);
     for (i, body_bytes) in payloads.iter().enumerate() {
         let auth_header = format!("QQBot {}", token);
         let mut cl_buf = [0u8; 20];
@@ -597,7 +640,13 @@ fn send_one_qq<H: ChannelHttpClient>(
             ("content-length", content_length),
         ];
         let http_start = std::time::Instant::now();
-        match crate::channels::send::send_post_with_headers(TAG, http, &url, &headers, body_bytes) {
+        match crate::channels::send::send_post_with_headers(
+            TAG,
+            http,
+            &url,
+            &headers,
+            body_bytes.as_ref(),
+        ) {
             Ok((status, ref body)) if status >= 400 => {
                 let preview =
                     String::from_utf8_lossy(&body.as_ref()[..body.as_ref().len().min(256)]);
@@ -631,9 +680,10 @@ fn send_one_qq<H: ChannelHttpClient>(
         }
     }
     log::debug!(
-        "[latency][qq_http] chat_id={} chunks={} total_ms={}",
+        "[latency][qq_http] chat_id={} chunks={} max_payload_b={} total_ms={}",
         message.chat_id,
         payloads.len(),
+        max_payload_len,
         send_start.elapsed().as_millis()
     );
     Ok(())
@@ -985,6 +1035,19 @@ mod tests {
             req_id: req_id.map(str::to_string),
             outbound_kind,
         }
+    }
+
+    #[test]
+    fn large_plain_text_body_uses_external_preferred_buffer() {
+        let content = "甲".repeat(ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD);
+
+        let body = build_qq_send_body(&content, Some("msg-1"), Some(1)).expect("qq body");
+
+        assert!(body.is_external_preferred());
+        let parsed: serde_json::Value = serde_json::from_slice(body.as_ref()).expect("json body");
+        assert_eq!(parsed["content"], content);
+        assert_eq!(parsed["msg_id"], "msg-1");
+        assert_eq!(parsed["msg_seq"], 1);
     }
 
     #[test]

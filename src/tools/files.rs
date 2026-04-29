@@ -133,12 +133,12 @@ impl Tool for FilesTool {
             return invalid_mode_outcome();
         }
 
-        match self.state_fs.read(&rel)? {
+        match self.state_fs.read_bytes(&rel)? {
             Some(raw) => {
                 if raw.len() > MAX_READ_RAW_BYTES {
                     return Err(Error::config("tool_files", "file too large"));
                 }
-                let sanitized = sanitize_state_file_read(&rel, &raw, "tool_files")?;
+                let sanitized = sanitize_state_file_read(&rel, raw.as_ref(), "tool_files")?;
                 let content = std::str::from_utf8(sanitized.as_ref())
                     .map_err(|_| Error::config("tool_files", "file is not valid UTF-8"))?
                     .to_string();
@@ -237,7 +237,7 @@ impl Tool for FilesTool {
 }
 
 fn state_path_exists(state_fs: &(dyn crate::StateFs + Send + Sync), rel: &str) -> Result<bool> {
-    if state_fs.read(rel)?.is_some() {
+    if state_fs.exists(rel)? {
         return Ok(true);
     }
     match state_fs.list_dir(rel) {

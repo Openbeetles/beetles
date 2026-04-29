@@ -47,6 +47,18 @@ impl ByteBuffer {
         }
     }
 
+    pub fn zeroed(len: usize) -> Self {
+        if len >= Self::EXTERNAL_PREFERRED_THRESHOLD {
+            Self {
+                inner: ByteBufferInner::ExternalPreferred(PsramVec::new(len)),
+            }
+        } else {
+            Self {
+                inner: ByteBufferInner::Heap(vec![0; len]),
+            }
+        }
+    }
+
     pub fn from_vec(bytes: Vec<u8>) -> Self {
         Self {
             inner: ByteBufferInner::Heap(bytes),
@@ -188,6 +200,15 @@ mod tests {
 
         assert!(buffer.is_external_preferred());
         assert_eq!(buffer.as_ref(), b"abc");
+    }
+
+    #[test]
+    fn zeroed_large_buffer_uses_external_preferred_variant() {
+        let buffer = ByteBuffer::zeroed(ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD);
+
+        assert!(buffer.is_external_preferred());
+        assert_eq!(buffer.len(), ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD);
+        assert!(buffer.as_ref().iter().all(|byte| *byte == 0));
     }
 
     #[test]

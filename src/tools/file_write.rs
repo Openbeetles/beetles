@@ -3,6 +3,7 @@
 
 use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
+use crate::platform::ByteBuffer;
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolContext,
@@ -10,6 +11,7 @@ use crate::tools::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::io::Write;
 use std::sync::Arc;
 
 pub struct FileWriteTool {
@@ -81,8 +83,8 @@ impl Tool for FileWriteTool {
         ensure_state_path_mutable(&rel, "tool_file_write")?;
 
         let final_bytes = if append {
-            let mut existing = self.state_fs.read(&rel)?.unwrap_or_default();
-            if std::str::from_utf8(&existing).is_err() {
+            let mut existing = self.state_fs.read_bytes(&rel)?.unwrap_or_default();
+            if std::str::from_utf8(existing.as_ref()).is_err() {
                 return Err(Error::config(
                     "tool_file_write",
                     "existing file is not valid UTF-8",
@@ -98,14 +100,15 @@ impl Tool for FileWriteTool {
                     format!("final content exceeds {} bytes", FILE_WRITE_MAX_CONTENT_LEN),
                 ));
             }
-            existing.reserve(content.len());
-            existing.extend_from_slice(content.as_bytes());
+            existing
+                .write_all(content.as_bytes())
+                .map_err(|error| Error::io("tool_file_write", error))?;
             existing
         } else {
-            content.as_bytes().to_vec()
+            ByteBuffer::from_vec(content.as_bytes().to_vec())
         };
 
-        self.state_fs.write(&rel, &final_bytes)?;
+        self.state_fs.write(&rel, final_bytes.as_ref())?;
 
         Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "tool_file_write",

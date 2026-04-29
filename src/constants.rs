@@ -159,6 +159,9 @@ pub const QQ_SEND_RETRY_DELAY_MS_STEP2: u64 = 550;
 /// post-reply 后台维护进入主 lane 前要求的最小静默窗口（秒）。
 /// Prevents post-reply governance work from immediately stealing the next conversational turn.
 pub const POST_REPLY_BACKGROUND_QUIET_WINDOW_SECS: u64 = 15;
+/// post-reply 后台治理在连续入站/低 largest-block 下的最大延后窗口（毫秒）。
+/// After this window, embedded profile may only run lightweight/segmented maintenance.
+pub const POST_REPLY_BACKGROUND_MAX_DEFER_MS: u64 = 30_000;
 
 // ---------- 显示自适应刷新频率 ----------
 /// 显示刷新间隔：Busy 状态（秒）。

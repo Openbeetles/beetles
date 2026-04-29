@@ -348,16 +348,18 @@ fn schedule_self_runtime_system_queue_job(
 ) -> bool {
     let audit_channel = payload.source_channel.clone();
     let trigger = payload.trigger;
-    let Some((_key, job)) = build_detached_self_runtime_job(chat_id, &payload) else {
+    let Some((key, job)) = build_detached_self_runtime_job(chat_id, &payload) else {
         return false;
     };
     let due_at = std::time::Instant::now() + std::time::Duration::from_millis(delay_ms);
-    let scheduled = crate::runtime::schedule_system_inbound_msg(
+    let scheduled = crate::runtime::schedule_bounded_keyed_system_inbound_msg(
         due_at,
         system_inbound_tx.clone(),
         job,
         std::time::Duration::from_millis(1_000),
         "self_runtime_post_reply",
+        key.storage_key(),
+        std::time::Duration::from_millis(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
     );
     if scheduled {
         append_self_runtime_workflow_audit(

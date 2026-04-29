@@ -74,7 +74,12 @@ export interface ResourceSnapshotData {
   tls_fragmentation_risk?: string
   storage_contention_risk?: string
   heap_free_internal?: number
+  heap_min_free_internal?: number
   heap_free_spiram?: number
+  heap_total_spiram?: number
+  heap_min_free_spiram?: number
+  heap_largest_block_spiram?: number
+  heap_used_spiram_est?: number
   heap_largest_block_internal?: number
   active_http_count?: number
   active_wss_count?: number

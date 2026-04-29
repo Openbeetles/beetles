@@ -7,6 +7,7 @@ use crate::platform::abstraction::MemorySnapshot;
 /// - `heap_free_internal` = `MemAvailable`（与 ESP `internal` 语义对齐：可分配量）。
 /// - `heap_largest_block` = **0**（无等价于 ESP「最大连续空闲块」的内核指标；0 表示 N/A，非「零字节块」）。
 /// - `heap_free_spiram` = 0（Linux 无 PSRAM）。
+/// - `*_min_*` / `*_total_spiram` / `*_largest_block_spiram` = 0（Linux 无等价 ESP heap_caps 口径）。
 pub fn linux_memory_snapshot() -> MemorySnapshot {
     let s = match std::fs::read_to_string("/proc/meminfo") {
         Ok(x) => x,
@@ -14,7 +15,11 @@ pub fn linux_memory_snapshot() -> MemorySnapshot {
             log::warn!("[memory_linux] read /proc/meminfo: {}", e);
             return MemorySnapshot {
                 heap_free_internal: 0,
+                heap_min_free_internal: 0,
                 heap_free_spiram: 0,
+                heap_total_spiram: 0,
+                heap_min_free_spiram: 0,
+                heap_largest_block_spiram: 0,
                 heap_largest_block: 0,
             };
         }
@@ -28,7 +33,11 @@ pub fn linux_memory_snapshot() -> MemorySnapshot {
         .unwrap_or(0);
     MemorySnapshot {
         heap_free_internal: internal,
+        heap_min_free_internal: 0,
         heap_free_spiram: 0,
+        heap_total_spiram: 0,
+        heap_min_free_spiram: 0,
+        heap_largest_block_spiram: 0,
         heap_largest_block: 0,
     }
 }

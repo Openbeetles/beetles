@@ -7,7 +7,8 @@ Usage:
   scripts/esp_profile_matrix.sh [options]
 
 Options:
-  --profile ROW        Matrix row: baseline, wifi_low_buffer, tls_external_alloc, xip_psram_candidate.
+  --profile ROW        Matrix row: baseline, alwaysinternal_0, alwaysinternal_1024,
+                       alwaysinternal_2048, xip_psram_candidate.
   --artifact PATH      Artifact directory or id to record.
   --log PATH           Captured serial log to record and analyze.
   --operator NAME      Operator name or handle. Default: current user.
@@ -105,7 +106,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$profile" in
-  ""|baseline|wifi_low_buffer|tls_external_alloc|xip_psram_candidate)
+  ""|baseline|alwaysinternal_0|alwaysinternal_1024|alwaysinternal_2048|xip_psram_candidate)
     ;;
   *)
     echo "Error: unsupported profile row: $profile" >&2
@@ -145,26 +146,61 @@ bash scripts/esp_soak_collect.sh --port /dev/tty.usbserial-XXXX --duration 180 -
 bash scripts/esp_profile_matrix.sh --profile baseline --artifact target/esp-artifacts/<artifact-id> --log target/esp-soak/<run>/serial.log
 ```
 
-## wifi_low_buffer
+## alwaysinternal_0
 
-Apply the candidate Wi-Fi/LWIP buffer overlay manually in a throwaway worktree or
-local experiment branch, then run:
+Apply Candidate A in a throwaway worktree or local experiment branch:
+
+```ini
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+```
+
+Do not enable external task stacks for this candidate, then run:
 
 ```bash
 TARGET=esp ./build.sh --no-deploy
-bash scripts/esp_soak_collect.sh --port /dev/tty.usbserial-XXXX --duration 180 --scenario wifi_low_buffer --analyze
-bash scripts/esp_profile_matrix.sh --profile wifi_low_buffer --artifact target/esp-artifacts/<artifact-id> --log target/esp-soak/<run>/serial.log
+bash scripts/esp_soak_collect.sh --port /dev/tty.usbserial-XXXX --duration 180 --scenario alwaysinternal_0 --analyze
+bash scripts/esp_profile_matrix.sh --profile alwaysinternal_0 --artifact target/esp-artifacts/<artifact-id> --log target/esp-soak/<run>/serial.log
 ```
-
-## tls_external_alloc
-
-Apply the TLS external-allocation candidate manually, then run the same build,
-soak collection, and profile-matrix record commands with `--profile tls_external_alloc`.
 
 ## xip_psram_candidate
 
-Apply the PSRAM XIP candidate manually, then run the same build, soak collection,
-and profile-matrix record commands with `--profile xip_psram_candidate`.
+Apply Candidate B only on boards that support PSRAM XIP and have stable boot logs:
+
+```ini
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+```
+
+Then run the same build, soak collection, and profile-matrix record commands with
+`--profile xip_psram_candidate`.
+
+## alwaysinternal_1024
+
+Apply Candidate C (esp-box style small-object threshold, keeping Beetle reserve):
+
+```ini
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+```
+
+Do not change task stacks, DMA descriptors, Wi-Fi/NVS core structures, or TLS
+stack family. Then run the same build, soak collection, and profile-matrix
+record commands with `--profile alwaysinternal_1024`.
+
+## alwaysinternal_2048
+
+Apply Candidate D (xiaozhi style small-object threshold, keeping Beetle reserve):
+
+```ini
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+```
+
+Then run the same build, soak collection, and profile-matrix record commands with
+`--profile alwaysinternal_2048`.
 EOF
 
 cat > "$readme_md" <<EOF
@@ -176,8 +212,9 @@ defaults. Candidate profile rows must be applied manually outside this script.
 Rows:
 
 - baseline
-- wifi_low_buffer
-- tls_external_alloc
+- alwaysinternal_0
+- alwaysinternal_1024
+- alwaysinternal_2048
 - xip_psram_candidate
 
 Decision rule: a candidate can only move toward a default change after the

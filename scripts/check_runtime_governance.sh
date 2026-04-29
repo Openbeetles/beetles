@@ -15,6 +15,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+RESPONSE_BODY_INTO_VEC_HOT_PATH='ResponseBody::into_vec|\b(body|resp_body|response_body)\.into_vec\s*\('
+if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
+  --glob '!src/platform/response_body.rs' >/dev/null; then
+  echo "FAIL: ResponseBody::into_vec escaped the owned-conversion implementation; consume ResponseBody with as_slice()/as_ref() on hot paths" >&2
+  rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
+    --glob '!src/platform/response_body.rs' >&2
+  exit 1
+fi
+
+if rg -n '\bstate_fs\.read\s*\(' src/tools >/dev/null; then
+  echo "FAIL: tool state-file reads must use StateFs::read_bytes()/ByteBuffer instead of heap Vec reads" >&2
+  rg -n '\bstate_fs\.read\s*\(' src/tools >&2
+  exit 1
+fi
+
 RAW_RUNTIME_SETTERS='set_(voice_exclusive_active|background_maintenance_active|config_plane_active|pairing_state_known|pairing_required|recovery_safe_mode_active)\s*\('
 if rg -n "$RAW_RUNTIME_SETTERS" src \
   --glob '!src/state.rs' \
@@ -419,6 +434,32 @@ fi
 
 if ! rg -n 'llm_req_body_last_b=.*llm_req_body_max_b=' src/metrics.rs >/dev/null; then
   echo "FAIL: heartbeat metrics baseline no longer exposes LLM request body byte budget" >&2
+  exit 1
+fi
+
+if ! rg -n 'fn build_qq_send_body' src/channels/qq/send.rs >/dev/null ||
+   ! rg -n 'crate::error::Result<ByteBuffer>' src/channels/qq/send.rs >/dev/null ||
+   ! rg -n 'crate::error::Result<Vec<ByteBuffer>>' src/channels/qq/send.rs >/dev/null ||
+   ! rg -n 'max_payload_b=' src/channels/qq/send.rs >/dev/null; then
+  echo "FAIL: QQ outbound payloads no longer use ByteBuffer with payload-size observability" >&2
+  exit 1
+fi
+
+if ! rg -n 'POST_REPLY_BACKGROUND_MAX_DEFER_MS' src/constants.rs src/agent/loop/background_jobs.rs src/runtime/delayed_task.rs src/memory/self_runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'schedule_bounded_keyed_system_inbound_msg' src/runtime/delayed_task.rs src/agent/loop/background_jobs.rs src/memory/self_runtime/scheduler.rs >/dev/null; then
+  echo "FAIL: embedded post-reply/self-runtime bounded deferral and keyed system coalescing contract is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'deferred_buffer_coalesces_same_req_primary_retry' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'coalesced duplicate deferred primary' src/channels/dispatch.rs >/dev/null; then
+  echo "FAIL: outbound deferred primary replay no longer coalesces duplicate req_id/channel retries" >&2
+  exit 1
+fi
+
+if rg -n 'dropping newest primary|deferred primary.*dropp' src/channels/dispatch.rs >/dev/null; then
+  echo "FAIL: outbound deferred primary replies must be preserved or backpressured, never dropped" >&2
+  rg -n 'dropping newest primary|deferred primary.*dropp' src/channels/dispatch.rs >&2
   exit 1
 fi
 

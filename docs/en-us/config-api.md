@@ -1298,7 +1298,12 @@ Top-level fields:
 - `tls_fragmentation_risk`
 - `storage_contention_risk`
 - `heap_free_internal`
+- `heap_min_free_internal`
 - `heap_free_spiram`
+- `heap_total_spiram`
+- `heap_min_free_spiram`
+- `heap_largest_block_spiram`
+- `heap_used_spiram_est`
 - `heap_largest_block_internal`
 - `active_http_count`
 - `active_wss_count`
@@ -1320,7 +1325,7 @@ Top-level fields:
 - `storage_used_kb`
 - `storage_total_kb`
 
-The resource endpoint is a resource-diagnostics contract. `display_lease_denied_total` is a resource-governance counter for denied display-plane leases, not the `/api/health.display` health field. Governance fields diagnose runtime pressure and may grow as new execution-plane guards are added; clients should tolerate unknown fields, but should not expect health overview, firmware identity, or crash evidence here.
+The resource endpoint is a resource-diagnostics contract. `heap_free_spiram` is free PSRAM, not used PSRAM; `heap_used_spiram_est = heap_total_spiram - heap_free_spiram` and is only an interpretation aid. `display_lease_denied_total` is a resource-governance counter for denied display-plane leases, not the `/api/health.display` health field. Governance fields diagnose runtime pressure and may grow as new execution-plane guards are added; clients should tolerate unknown fields, but should not expect health overview, firmware identity, or crash evidence here.
 
 **GET /api/diagnose**
 

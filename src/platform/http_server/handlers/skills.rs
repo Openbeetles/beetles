@@ -156,7 +156,7 @@ pub fn import(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::
             return Ok(status);
         }
     };
-    let content = match String::from_utf8(body_bytes) {
+    let content = match std::str::from_utf8(body_bytes.as_slice()) {
         Ok(s) => s,
         Err(_) => {
             return Ok(ApiResponse::err_400_key(
@@ -164,7 +164,7 @@ pub fn import(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::
             ))
         }
     };
-    match skills::write_skill(ctx.skill_storage.as_ref(), &name, &content) {
+    match skills::write_skill(ctx.skill_storage.as_ref(), &name, content) {
         Ok(()) => {
             refresh_skill_prompt_cache(ctx);
             Ok(ApiResponse::ok_200_json("{\"ok\":true}"))

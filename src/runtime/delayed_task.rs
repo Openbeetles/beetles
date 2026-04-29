@@ -30,7 +30,9 @@ enum DelayedTaskServiceScope {
 
 struct DelayedTaskJob {
     due_at: Instant,
+    first_scheduled_at: Instant,
     priority: DelayedTaskPriority,
+    coalesce_key: Option<String>,
     task: Option<DelayedTask>,
 }
 
@@ -102,11 +104,51 @@ fn schedule_delayed_task_with_priority(
     priority: DelayedTaskPriority,
     task: DelayedTask,
 ) -> std::result::Result<(), DelayedTask> {
+    schedule_delayed_task_with_priority_and_key(due_at, priority, None, task)
+}
+
+fn schedule_delayed_task_with_priority_and_key(
+    due_at: Instant,
+    priority: DelayedTaskPriority,
+    coalesce_key: Option<String>,
+    task: DelayedTask,
+) -> std::result::Result<(), DelayedTask> {
+    schedule_delayed_task_with_priority_key_and_bound(due_at, priority, coalesce_key, None, task)
+}
+
+fn schedule_delayed_task_with_priority_key_and_bound(
+    due_at: Instant,
+    priority: DelayedTaskPriority,
+    coalesce_key: Option<String>,
+    max_defer_from_first: Option<Duration>,
+    task: DelayedTask,
+) -> std::result::Result<(), DelayedTask> {
     let mut dropped_best_effort = false;
     let mut notify_deadline_changed = false;
     let mut task = Some(task);
     {
         let mut pending = state().pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(key) = coalesce_key.as_deref() {
+            if let Some(existing) = pending
+                .iter_mut()
+                .find(|job| job.coalesce_key.as_deref() == Some(key))
+            {
+                let bounded_due_at = max_defer_from_first
+                    .and_then(|max| existing.first_scheduled_at.checked_add(max))
+                    .map(|deadline| due_at.min(deadline))
+                    .unwrap_or(due_at);
+                if bounded_due_at < existing.due_at {
+                    notify_deadline_changed = true;
+                }
+                existing.due_at = bounded_due_at;
+                existing.priority = priority;
+                existing.task = task.take();
+                if notify_deadline_changed {
+                    crate::bg_timer::notify_deadline_changed();
+                }
+                return Ok(());
+            }
+        }
         match priority {
             DelayedTaskPriority::BestEffort => {
                 let best_effort_count = pending
@@ -118,7 +160,9 @@ fn schedule_delayed_task_with_priority(
                 {
                     pending.push(DelayedTaskJob {
                         due_at,
+                        first_scheduled_at: Instant::now(),
                         priority,
+                        coalesce_key,
                         task: task.take(),
                     });
                     notify_deadline_changed = true;
@@ -134,7 +178,9 @@ fn schedule_delayed_task_with_priority(
                 if pending.len() < DELAYED_TASK_TOTAL_MAX {
                     pending.push(DelayedTaskJob {
                         due_at,
+                        first_scheduled_at: Instant::now(),
                         priority,
+                        coalesce_key,
                         task: task.take(),
                     });
                     notify_deadline_changed = true;
@@ -193,6 +239,89 @@ pub fn schedule_system_inbound_msg(
         }
     });
     schedule_delayed_task(due_at, task)
+}
+
+pub fn schedule_keyed_system_inbound_msg(
+    due_at: Instant,
+    tx: crate::bus::SystemInboundTx,
+    msg: crate::bus::PcMsg,
+    retry_delay: Duration,
+    label: &'static str,
+    coalesce_key: impl Into<String>,
+) -> bool {
+    let coalesce_key = coalesce_key.into();
+    let retry_key = coalesce_key.clone();
+    let task = Box::new(move || match tx.try_send(msg) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(msg)) => {
+            log::warn!(
+                "[delayed_task:{}] system queue full, retrying after {}ms",
+                label,
+                retry_delay.as_millis()
+            );
+            let _ = schedule_keyed_system_inbound_msg(
+                Instant::now() + retry_delay,
+                tx,
+                msg,
+                retry_delay,
+                label,
+                retry_key,
+            );
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::warn!("[delayed_task:{}] system queue disconnected", label);
+        }
+    });
+    schedule_delayed_task_with_priority_and_key(
+        due_at,
+        DelayedTaskPriority::BestEffort,
+        Some(coalesce_key),
+        task,
+    )
+    .is_ok()
+}
+
+pub fn schedule_bounded_keyed_system_inbound_msg(
+    due_at: Instant,
+    tx: crate::bus::SystemInboundTx,
+    msg: crate::bus::PcMsg,
+    retry_delay: Duration,
+    label: &'static str,
+    coalesce_key: impl Into<String>,
+    max_defer_from_first: Duration,
+) -> bool {
+    let coalesce_key = coalesce_key.into();
+    let retry_key = coalesce_key.clone();
+    let task = Box::new(move || match tx.try_send(msg) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(msg)) => {
+            log::warn!(
+                "[delayed_task:{}] system queue full, retrying after {}ms",
+                label,
+                retry_delay.as_millis()
+            );
+            let _ = schedule_bounded_keyed_system_inbound_msg(
+                Instant::now() + retry_delay,
+                tx,
+                msg,
+                retry_delay,
+                label,
+                retry_key,
+                max_defer_from_first,
+            );
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::warn!("[delayed_task:{}] system queue disconnected", label);
+        }
+    });
+    schedule_delayed_task_with_priority_key_and_bound(
+        due_at,
+        DelayedTaskPriority::BestEffort,
+        Some(coalesce_key),
+        Some(max_defer_from_first),
+        task,
+    )
+    .is_ok()
 }
 
 pub fn service_delayed_tasks() {
@@ -423,5 +552,39 @@ mod tests {
         service_delayed_tasks_with_policy(DelayedTaskServiceScope::AllEligible, true);
         let got = executed.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec![2, 1]);
+    }
+
+    #[test]
+    fn keyed_system_inbound_message_keeps_single_latest_job() {
+        let (_state_guard, _delayed_guard) = delayed_task_test_scope();
+        let (tx, rx, _depth) = crate::bus::new_inbound_channel(4);
+        let first = crate::bus::PcMsg::new_system("_post_reply_maintenance", "chat-1", "old")
+            .expect("first");
+        let second = crate::bus::PcMsg::new_system("_post_reply_maintenance", "chat-1", "new")
+            .expect("second");
+        let now = Instant::now();
+
+        assert!(schedule_keyed_system_inbound_msg(
+            now,
+            tx.clone(),
+            first,
+            Duration::from_millis(100),
+            "post_reply_maintenance",
+            "qq_channel|chat-1|post_reply_maintenance",
+        ));
+        assert!(schedule_keyed_system_inbound_msg(
+            now,
+            tx,
+            second,
+            Duration::from_millis(100),
+            "post_reply_maintenance",
+            "qq_channel|chat-1|post_reply_maintenance",
+        ));
+
+        service_delayed_tasks_with_policy(DelayedTaskServiceScope::AllEligible, true);
+
+        let got = rx.try_recv().expect("single coalesced message");
+        assert_eq!(got.content, "new");
+        assert!(rx.try_recv().is_err());
     }
 }

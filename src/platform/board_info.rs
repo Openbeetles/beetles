@@ -33,7 +33,12 @@ fn esp_payload(input: EspPayloadInput<'_>) -> serde_json::Value {
         "heap_free_internal": heap_internal,
         "heap_free_total": heap_total,
         "psram_free": psram_free,
+        "psram_total": input.snap.heap_total_spiram,
+        "psram_used_est": input.snap.heap_used_spiram_est,
+        "psram_min_free": input.snap.heap_min_free_spiram,
+        "psram_largest_block": input.snap.heap_largest_block_spiram,
         "heap_min_free": input.heap_min_free,
+        "heap_min_free_internal": input.snap.heap_min_free_internal,
         "heap_largest_block_internal": input.snap.heap_largest_block_internal,
         "tls_fragmentation_risk": input.snap.tls_fragmentation_risk,
         "uptime_secs": input.uptime_secs,
@@ -228,6 +233,11 @@ mod tests {
         assert_eq!(payload["heap_free_internal"].as_u64(), Some(90_700));
         assert_eq!(payload["heap_free_total"].as_u64(), Some(7_780_700));
         assert_eq!(payload["psram_free"].as_u64(), Some(7_690_000));
+        assert_eq!(payload["psram_total"].as_u64(), Some(8_388_608));
+        assert_eq!(payload["psram_used_est"].as_u64(), Some(698_608));
+        assert_eq!(payload["psram_min_free"].as_u64(), Some(7_100_000));
+        assert_eq!(payload["psram_largest_block"].as_u64(), Some(6_900_000));
+        assert_eq!(payload["heap_min_free_internal"].as_u64(), Some(69_800));
         assert_eq!(
             payload["heap_largest_block_internal"].as_u64(),
             Some(18_432)
@@ -241,7 +251,12 @@ mod tests {
             tls_fragmentation_risk: TlsFragmentationRisk::Critical,
             storage_contention_risk: crate::orchestrator::StorageContentionRisk::Healthy,
             heap_free_internal: 90_700,
+            heap_min_free_internal: 69_800,
             heap_free_spiram: 7_690_000,
+            heap_total_spiram: 8_388_608,
+            heap_min_free_spiram: 7_100_000,
+            heap_largest_block_spiram: 6_900_000,
+            heap_used_spiram_est: 698_608,
             heap_largest_block_internal: 18_432,
             active_http_count: 0,
             active_wss_count: 0,

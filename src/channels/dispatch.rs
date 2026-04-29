@@ -50,7 +50,7 @@ use std::collections::VecDeque;
 ))]
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。
 pub trait MessageSink: Send + Sync {
@@ -207,6 +207,13 @@ const SEND_RETRY: u32 = 3;
 
 const SEND_RETRY_DELAY_MS: u64 = 500;
 
+fn current_replay_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 fn is_channel_in_cooldown(channel: &str) -> bool {
     !crate::orchestrator::is_channel_healthy_pub(channel)
 }
@@ -237,6 +244,29 @@ fn try_push_buffered_msg(
     cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
     msg: crate::bus::PcMsg,
 ) -> BufferPushResult {
+    if !msg.outbound_kind.is_supplemental() {
+        if let Some(req_id) = msg
+            .req_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if let Some(existing) = cooldown_buffer.iter_mut().find(|buffered| {
+                !buffered.outbound_kind.is_supplemental()
+                    && buffered.req_id.as_deref() == Some(req_id)
+                    && buffered.channel == msg.channel
+                    && buffered.chat_id == msg.chat_id
+            }) {
+                log::debug!(
+                    "[{}] req_id={} channel={} coalesced duplicate deferred primary",
+                    tag,
+                    req_id,
+                    msg.channel
+                );
+                *existing = msg;
+                return BufferPushResult::Buffered;
+            }
+        }
+    }
     if cooldown_buffer.len() < COOLDOWN_BUFFER_MAX {
         cooldown_buffer.push_back(msg);
         return BufferPushResult::Buffered;
@@ -259,6 +289,37 @@ fn try_push_buffered_msg(
         log::warn!(
             "[{}] deferred buffer full, evicted supplemental message to preserve primary reply",
             tag
+        );
+        return BufferPushResult::Buffered;
+    }
+    if let Some(pos) = cooldown_buffer.iter().position(|buffered| {
+        !buffered.outbound_kind.is_supplemental()
+            && buffered.channel == msg.channel
+            && buffered.chat_id == msg.chat_id
+    }) {
+        let replaced = cooldown_buffer.remove(pos);
+        cooldown_buffer.push_back(msg);
+        log::warn!(
+            "[{}] req_id={} channel={} coalesced deferred primary for chat/channel at buffer cap",
+            tag,
+            replaced
+                .as_ref()
+                .and_then(|msg| msg.req_id.as_deref())
+                .unwrap_or("-"),
+            replaced
+                .as_ref()
+                .map(|msg| msg.channel.as_ref())
+                .unwrap_or("-")
+        );
+        return BufferPushResult::Buffered;
+    }
+    if let Some(replaced) = cooldown_buffer.pop_front() {
+        cooldown_buffer.push_back(msg);
+        log::warn!(
+            "[{}] req_id={} channel={} coalesced oldest deferred primary at buffer cap",
+            tag,
+            replaced.req_id.as_deref().unwrap_or("-"),
+            replaced.channel
         );
         return BufferPushResult::Buffered;
     }
@@ -290,7 +351,26 @@ fn buffer_deferred_msg_with_replay<F>(
         BufferPushResult::Full(msg) => {
             metrics::record_error_by_stage("channel_deferred_buffer_full");
             log::error!(
-                "[{}] req_id={} channel={} deferred primary buffer full after bounded replay; dropping newest primary to keep outbound worker live",
+                "[{}] req_id={} channel={} deferred primary buffer full after bounded replay despite hard-cap coalescing",
+                tag,
+                msg.req_id.as_deref().unwrap_or("-"),
+                msg.channel
+            );
+        }
+    }
+}
+
+fn buffer_deferred_msg_without_replay(
+    tag: &str,
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    msg: crate::bus::PcMsg,
+) {
+    match try_push_buffered_msg(tag, cooldown_buffer, msg) {
+        BufferPushResult::Buffered | BufferPushResult::Dropped => {}
+        BufferPushResult::Full(msg) => {
+            metrics::record_error_by_stage("channel_deferred_buffer_full");
+            log::error!(
+                "[{}] req_id={} channel={} deferred primary buffer full under local pressure despite hard-cap coalescing",
                 tag,
                 msg.req_id.as_deref().unwrap_or("-"),
                 msg.channel
@@ -336,6 +416,39 @@ fn replay_ready_messages_for_tick<FH, FS>(
     FS: FnMut(&crate::bus::PcMsg) -> bool,
 {
     replay_cooldown_buffer_with(cooldown_buffer, is_in_cooldown, send);
+}
+
+#[derive(Default)]
+struct DeferredReplayGate {
+    next_replay_at_ms: Option<u64>,
+}
+
+impl DeferredReplayGate {
+    fn ready(&self, now_ms: u64) -> bool {
+        self.next_replay_at_ms
+            .is_none_or(|next_replay_at_ms| now_ms >= next_replay_at_ms)
+    }
+
+    fn defer(&mut self, now_ms: u64, delay_ms: u64) {
+        self.next_replay_at_ms = Some(now_ms.saturating_add(delay_ms));
+    }
+
+    fn clear(&mut self) {
+        self.next_replay_at_ms = None;
+    }
+}
+
+fn deferred_buffer_replay_delay_ms() -> u64 {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        crate::orchestrator::pressure::budget_for_level(crate::orchestrator::refresh_heap_if_stale())
+            .reconnect_backoff_secs
+            .saturating_mul(1000)
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        crate::constants::OUTBOUND_DEFER_DELAY_MS
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -772,33 +885,46 @@ pub fn run_os_outbound_worker(
     let active_channel: Arc<str> = Arc::from(active.channel.as_str());
     let mut active_driver = (active.driver_builder)();
     let mut cooldown_buffer: VecDeque<crate::bus::PcMsg> = VecDeque::new();
+    let mut replay_gate = DeferredReplayGate::default();
 
     loop {
         crate::platform::task_wdt::feed_current_task();
-        replay_ready_messages_for_tick(&mut cooldown_buffer, is_channel_in_cooldown, |buffered| {
-            if buffered.channel != active_channel {
-                if outbound_reject_reason(buffered).is_some() {
-                    return false;
-                }
-                return dispatch_via_sink(
-                    TAG,
-                    local_sinks.as_ref(),
-                    capability_registry.as_ref(),
-                    buffered,
-                )
-                .sent();
+        let now_ms = current_replay_time_ms();
+        if replay_gate.ready(now_ms) {
+            replay_ready_messages_for_tick(
+                &mut cooldown_buffer,
+                is_channel_in_cooldown,
+                |buffered| {
+                    if buffered.channel != active_channel {
+                        if outbound_reject_reason(buffered).is_some() {
+                            return false;
+                        }
+                        return dispatch_via_sink(
+                            TAG,
+                            local_sinks.as_ref(),
+                            capability_registry.as_ref(),
+                            buffered,
+                        )
+                        .sent();
+                    }
+                    if outbound_reject_reason(buffered).is_some() {
+                        return false;
+                    }
+                    dispatch_via_active_driver(
+                        TAG,
+                        capability_registry.as_ref(),
+                        active_driver.as_mut(),
+                        buffered,
+                    )
+                    .sent()
+                },
+            );
+            if cooldown_buffer.is_empty() {
+                replay_gate.clear();
+            } else {
+                replay_gate.defer(now_ms, deferred_buffer_replay_delay_ms());
             }
-            if outbound_reject_reason(buffered).is_some() {
-                return false;
-            }
-            dispatch_via_active_driver(
-                TAG,
-                capability_registry.as_ref(),
-                active_driver.as_mut(),
-                buffered,
-            )
-            .sent()
-        });
+        }
 
         let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
             Ok(m) => m,
@@ -846,32 +972,8 @@ pub fn run_os_outbound_worker(
                     msg.channel,
                     reason
                 );
-                buffer_deferred_msg_with_replay(TAG, &mut cooldown_buffer, msg, |buffer| {
-                    replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
-                        if buffered.channel != active_channel {
-                            if outbound_reject_reason(buffered).is_some() {
-                                return false;
-                            }
-                            return dispatch_via_sink(
-                                TAG,
-                                local_sinks.as_ref(),
-                                capability_registry.as_ref(),
-                                buffered,
-                            )
-                            .sent();
-                        }
-                        if outbound_reject_reason(buffered).is_some() {
-                            return false;
-                        }
-                        dispatch_via_active_driver(
-                            TAG,
-                            capability_registry.as_ref(),
-                            active_driver.as_mut(),
-                            buffered,
-                        )
-                        .sent()
-                    });
-                });
+                buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
+                replay_gate.defer(current_replay_time_ms(), deferred_buffer_replay_delay_ms());
             }
             continue;
         }
@@ -885,32 +987,8 @@ pub fn run_os_outbound_worker(
                     msg.channel
                 );
             } else {
-                buffer_deferred_msg_with_replay(TAG, &mut cooldown_buffer, msg, |buffer| {
-                    replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
-                        if buffered.channel != active_channel {
-                            if outbound_reject_reason(buffered).is_some() {
-                                return false;
-                            }
-                            return dispatch_via_sink(
-                                TAG,
-                                local_sinks.as_ref(),
-                                capability_registry.as_ref(),
-                                buffered,
-                            )
-                            .sent();
-                        }
-                        if outbound_reject_reason(buffered).is_some() {
-                            return false;
-                        }
-                        dispatch_via_active_driver(
-                            TAG,
-                            capability_registry.as_ref(),
-                            active_driver.as_mut(),
-                            buffered,
-                        )
-                        .sent()
-                    });
-                });
+                buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
+                replay_gate.defer(current_replay_time_ms(), deferred_buffer_replay_delay_ms());
             }
             continue;
         }
@@ -923,36 +1001,8 @@ pub fn run_os_outbound_worker(
         ) {
             DispatchOutcome::Sent | DispatchOutcome::Failed => {}
             DispatchOutcome::Deferred => {
-                buffer_deferred_msg_with_replay(TAG, &mut cooldown_buffer, msg, |buffer| {
-                    replay_cooldown_buffer_with(buffer, is_channel_in_cooldown, |buffered| {
-                        if buffered.channel != active_channel {
-                            if outbound_reject_reason(buffered).is_some() {
-                                return false;
-                            }
-                            return dispatch_via_sink(
-                                TAG,
-                                local_sinks.as_ref(),
-                                capability_registry.as_ref(),
-                                buffered,
-                            )
-                            .sent();
-                        }
-                        if outbound_reject_reason(buffered).is_some() {
-                            return false;
-                        }
-                        dispatch_via_active_driver(
-                            TAG,
-                            capability_registry.as_ref(),
-                            active_driver.as_mut(),
-                            buffered,
-                        )
-                        .sent()
-                    });
-                });
-                std::thread::sleep(Duration::from_millis(
-                    crate::constants::OUTBOUND_DEFER_DELAY_MS,
-                ));
-                crate::platform::task_wdt::feed_current_task();
+                buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
+                replay_gate.defer(current_replay_time_ms(), deferred_buffer_replay_delay_ms());
             }
         }
     }
@@ -1547,7 +1597,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_buffer_preserves_existing_primary_replies_when_full() {
+    fn deferred_buffer_coalesces_chat_channel_primary_when_full() {
         let mut buffer = VecDeque::new();
         for index in 0..super::COOLDOWN_BUFFER_MAX {
             buffer.push_back(build_msg(
@@ -1556,20 +1606,44 @@ mod tests {
                 format!("primary-{index}").as_str(),
             ));
         }
-        let original: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
         let new_primary = build_msg("ready", "chat-1", "new-primary");
 
-        match super::try_push_buffered_msg("test", &mut buffer, new_primary) {
-            super::BufferPushResult::Full(msg) => assert_eq!(msg.content, "new-primary"),
-            _ => panic!("full primary buffer should hold the new primary instead of evicting one"),
-        }
+        assert!(matches!(
+            super::try_push_buffered_msg("test", &mut buffer, new_primary),
+            super::BufferPushResult::Buffered
+        ));
 
-        let after: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
-        assert_eq!(after, original);
+        assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
+        assert!(!buffer.iter().any(|msg| msg.content == "primary-0"));
+        assert_eq!(
+            buffer.back().map(|msg| msg.content.as_str()),
+            Some("new-primary")
+        );
     }
 
     #[test]
-    fn deferred_buffer_full_uses_bounded_replay_without_blocking_outbound_worker() {
+    fn deferred_buffer_coalesces_same_req_primary_retry() {
+        let mut buffer = VecDeque::new();
+        let mut first = build_msg("qq_channel", "chat-1", "old-primary");
+        first.req_id = Some("req-1".to_string());
+        first.outbound_kind = OutboundKind::Primary;
+        buffer.push_back(first);
+        let mut second = build_msg("qq_channel", "chat-1", "new-primary");
+        second.req_id = Some("req-1".to_string());
+        second.outbound_kind = OutboundKind::Primary;
+
+        assert!(matches!(
+            super::try_push_buffered_msg("test", &mut buffer, second),
+            super::BufferPushResult::Buffered
+        ));
+
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer[0].content, "new-primary");
+        assert_eq!(buffer[0].req_id.as_deref(), Some("req-1"));
+    }
+
+    #[test]
+    fn deferred_buffer_full_coalesces_primary_without_expanding_buffer() {
         let mut buffer = VecDeque::new();
         for index in 0..super::COOLDOWN_BUFFER_MAX {
             buffer.push_back(build_msg(
@@ -1578,7 +1652,6 @@ mod tests {
                 format!("primary-{index}").as_str(),
             ));
         }
-        let original: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
         let mut replay_attempts = 0usize;
 
         super::buffer_deferred_msg_with_replay(
@@ -1590,9 +1663,16 @@ mod tests {
             },
         );
 
-        assert_eq!(replay_attempts, 1);
-        let after: Vec<String> = buffer.iter().map(|msg| msg.content.clone()).collect();
-        assert_eq!(after, original);
+        assert_eq!(
+            replay_attempts, 0,
+            "hard-cap coalescing buffers the new primary before replay is needed"
+        );
+        assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
+        assert!(!buffer.iter().any(|msg| msg.content == "primary-0"));
+        assert_eq!(
+            buffer.back().map(|msg| msg.content.as_str()),
+            Some("new-primary")
+        );
     }
 
     #[test]
@@ -1611,6 +1691,19 @@ mod tests {
 
         assert_eq!(replayed, vec!["deferred"]);
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn deferred_replay_gate_holds_until_delay_expires() {
+        let mut gate = super::DeferredReplayGate::default();
+
+        assert!(gate.ready(1_000));
+        gate.defer(1_000, 5_000);
+
+        assert!(!gate.ready(5_999));
+        assert!(gate.ready(6_000));
+        gate.clear();
+        assert!(gate.ready(6_001));
     }
 
     #[cfg(any(

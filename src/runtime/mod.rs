@@ -24,6 +24,7 @@ pub mod operator_maintenance;
 pub mod plane;
 pub mod plane_lifecycle;
 pub mod presence;
+pub mod psram_pool;
 pub mod soul_kernel;
 pub mod system_work;
 pub mod thread_registry;
@@ -41,7 +42,8 @@ pub use continuity_flush::{
     schedule_restart_with_continuity_flush,
 };
 pub use delayed_task::{
-    next_delayed_task_wait, schedule_critical_delayed_task, schedule_delayed_task,
+    next_delayed_task_wait, schedule_bounded_keyed_system_inbound_msg,
+    schedule_critical_delayed_task, schedule_delayed_task, schedule_keyed_system_inbound_msg,
     schedule_system_inbound_msg, service_delayed_tasks,
 };
 pub use frame_lease::{
@@ -80,6 +82,9 @@ pub use plane_lifecycle::{PlaneLifecycleSnapshot, PlaneLifecycleState};
 pub use presence::{
     inspect_platform_display_projection, inspect_platform_display_projection_with_resource,
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
+};
+pub use psram_pool::{
+    display_asset_cache_budget_bytes, ModePsramPool, PsramPoolAdmission, PsramPoolRole,
 };
 pub use soul_kernel::{
     ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelPromptProjection,

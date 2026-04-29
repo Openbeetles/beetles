@@ -10,7 +10,12 @@ struct ResourceBody {
     tls_fragmentation_risk: orchestrator::pressure::TlsFragmentationRisk,
     storage_contention_risk: orchestrator::StorageContentionRisk,
     heap_free_internal: u32,
+    heap_min_free_internal: u32,
     heap_free_spiram: u32,
+    heap_total_spiram: u32,
+    heap_min_free_spiram: u32,
+    heap_largest_block_spiram: u32,
+    heap_used_spiram_est: u32,
     heap_largest_block_internal: u32,
     active_http_count: u32,
     active_wss_count: u32,
@@ -69,7 +74,12 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
         tls_fragmentation_risk: snap.tls_fragmentation_risk,
         storage_contention_risk: snap.storage_contention_risk,
         heap_free_internal: snap.heap_free_internal,
+        heap_min_free_internal: snap.heap_min_free_internal,
         heap_free_spiram: snap.heap_free_spiram,
+        heap_total_spiram: snap.heap_total_spiram,
+        heap_min_free_spiram: snap.heap_min_free_spiram,
+        heap_largest_block_spiram: snap.heap_largest_block_spiram,
+        heap_used_spiram_est: snap.heap_used_spiram_est,
         heap_largest_block_internal: snap.heap_largest_block_internal,
         active_http_count: snap.active_http_count,
         active_wss_count: snap.active_wss_count,
@@ -132,7 +142,12 @@ mod tests {
             "tls_fragmentation_risk",
             "storage_contention_risk",
             "heap_free_internal",
+            "heap_min_free_internal",
             "heap_free_spiram",
+            "heap_total_spiram",
+            "heap_min_free_spiram",
+            "heap_largest_block_spiram",
+            "heap_used_spiram_est",
             "heap_largest_block_internal",
             "active_http_count",
             "active_wss_count",
@@ -176,6 +191,11 @@ mod tests {
         assert!(parsed["network_gate_summary"]["stage"].is_string());
         assert!(parsed["network_gate_summary"]["outbound_settled"].is_boolean());
         assert!(parsed["network_gate_summary"]["wall_clock_trusted"].is_boolean());
+        assert!(parsed["heap_min_free_internal"].is_number());
+        assert!(parsed["heap_total_spiram"].is_number());
+        assert!(parsed["heap_min_free_spiram"].is_number());
+        assert!(parsed["heap_largest_block_spiram"].is_number());
+        assert!(parsed["heap_used_spiram_est"].is_number());
         assert!(parsed["budget"]["system_prompt_max"].is_number());
         assert!(parsed["budget"]["messages_max"].is_number());
         assert!(parsed["budget"]["response_body_max"].is_number());

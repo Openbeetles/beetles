@@ -97,7 +97,7 @@ impl Tool for FileEditTool {
         let rel = normalize_state_tool_path(path_arg, "tool_file_edit")?;
         ensure_state_path_mutable(&rel, "tool_file_edit")?;
 
-        let Some(raw) = self.state_fs.read(&rel)? else {
+        let Some(raw) = self.state_fs.read_bytes(&rel)? else {
             return missing_field_outcome(
                 "path",
                 "The target file does not exist; a valid file path is still required.",
@@ -106,7 +106,7 @@ impl Tool for FileEditTool {
         if raw.len() > MAX_EDIT_FILE_BYTES {
             return Err(Error::config("tool_file_edit", "file too large"));
         }
-        let current = std::str::from_utf8(&raw)
+        let current = std::str::from_utf8(raw.as_ref())
             .map_err(|_| Error::config("tool_file_edit", "file is not valid UTF-8"))?;
 
         let edit = match mode {

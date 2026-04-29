@@ -144,7 +144,28 @@ fn should_auto_service_write_back_tasks() -> bool {
 }
 
 fn is_coalescible_write_back_label(label: &str) -> bool {
-    label.ends_with("_write_back") || label == "session_store"
+    matches!(
+        label,
+        "execution_state_write_back"
+            | "self_model_write_back"
+            | "self_authored_core_write_back"
+            | "relationship_constitution_write_back"
+            | "world_sense_write_back"
+            | "outer_voice_write_back"
+            | "autonomy_strategy_write_back"
+            | "inner_life_write_back"
+            | "self_continuity_write_back"
+            | "felt_significance_write_back"
+            | "temperament_continuity_write_back"
+            | "inner_conflict_write_back"
+            | "mental_privacy_write_back"
+            | "relationship_portfolio_write_back"
+            | "relationship_topology_write_back"
+            | "long_term_extraction_state_write_back"
+            | "active_work_write_back"
+            | "session_summary_write_back"
+            | "session_store"
+    )
 }
 
 fn record_write_back_deferred(count: usize) {
@@ -314,9 +335,17 @@ fn write_back_admission_delay_for_resource(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> Option<Duration> {
+    let largest_block_low = resource.heap_largest_block_internal > 0
+        && resource.heap_largest_block_internal
+            < crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
     if resource.pressure == crate::orchestrator::PressureLevel::Critical
+        || largest_block_low
         || resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Critical
     {
+        return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
+    }
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if write_back_foreground_activity_active(resource, config_active) {
         return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
     }
     if resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Cautious
@@ -1242,7 +1271,22 @@ impl PendingSessionBuffer {
     fn restore_missing(&self, drained: HashMap<String, PendingSessionWrite>) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         for (chat_id, write) in drained {
-            pending.entry(chat_id).or_insert(write);
+            match pending.entry(chat_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(write);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    if current.clear {
+                        // A clear staged after the failed write supersedes older appends.
+                        continue;
+                    }
+                    let mut appended = write.appended;
+                    appended.extend(current.appended.drain(..));
+                    current.clear = write.clear;
+                    current.appended = appended;
+                }
+            }
         }
     }
 
@@ -1683,6 +1727,63 @@ mod tests {
     }
 
     #[test]
+    fn session_restore_prepends_failed_append_before_concurrent_append() {
+        let pending = PendingSessionBuffer::new();
+        pending.stage_append(
+            "chat",
+            &[SessionMessage {
+                role: "assistant".to_string(),
+                content: "new".to_string(),
+            }],
+        );
+        let mut drained = HashMap::new();
+        drained.insert(
+            "chat".to_string(),
+            PendingSessionWrite {
+                clear: false,
+                appended: vec![SessionMessage {
+                    role: "user".to_string(),
+                    content: "old".to_string(),
+                }],
+            },
+        );
+
+        pending.restore_missing(drained);
+
+        let restored = pending.peek("chat").expect("pending write");
+        assert!(!restored.clear);
+        let contents = restored
+            .appended
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(contents, vec!["old", "new"]);
+    }
+
+    #[test]
+    fn session_restore_preserves_newer_clear_over_failed_append() {
+        let pending = PendingSessionBuffer::new();
+        pending.stage_clear("chat");
+        let mut drained = HashMap::new();
+        drained.insert(
+            "chat".to_string(),
+            PendingSessionWrite {
+                clear: false,
+                appended: vec![SessionMessage {
+                    role: "user".to_string(),
+                    content: "old".to_string(),
+                }],
+            },
+        );
+
+        pending.restore_missing(drained);
+
+        let restored = pending.peek("chat").expect("pending write");
+        assert!(restored.clear);
+        assert!(restored.appended.is_empty());
+    }
+
+    #[test]
     fn buffered_turn_ledger_uses_pending_terminal_for_recent_persona_evidence() {
         let _write_back_guard = write_back_test_guard();
         reset_write_back_queue_for_tests();
@@ -1770,6 +1871,33 @@ mod tests {
         assert!(
             metrics_after.event_ingress_cancelled_total
                 > metrics_before.event_ingress_cancelled_total
+        );
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn write_back_scheduler_keeps_order_sensitive_labels_uncoalesced() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        let due_at = Instant::now() + Duration::from_secs(60);
+
+        assert!(schedule_write_back_task(
+            "turn_ledger_write_back",
+            due_at,
+            Box::new(|| {})
+        ));
+        assert!(schedule_write_back_task(
+            "turn_ledger_write_back",
+            due_at + Duration::from_millis(1),
+            Box::new(|| {})
+        ));
+
+        assert_eq!(
+            snapshot().queued,
+            2,
+            "turn ledger writes are order-sensitive and must not be label-coalesced"
         );
         reset_write_back_queue_for_tests();
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
@@ -1899,7 +2027,11 @@ mod tests {
         let _ = crate::runtime::lease::release_owner(WRITE_BACK_LEASE_OWNER);
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 256 * 1024,
+            heap_min_free_internal: 240 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2002,7 +2134,11 @@ mod tests {
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 256 * 1024,
+            heap_min_free_internal: 240 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
 
@@ -2023,7 +2159,11 @@ mod tests {
         let before_defer = snapshot();
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 48 * 1024,
+            heap_min_free_internal: 40 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 16 * 1024,
         });
         write_back_worker_loop();
@@ -2056,7 +2196,11 @@ mod tests {
 
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 256 * 1024,
+            heap_min_free_internal: 240 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
@@ -2127,13 +2271,57 @@ mod tests {
         assert!(write_back_admission_delay_for_resource(&resource, true).is_some());
     }
 
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[test]
+    fn write_back_admission_defers_when_foreground_or_largest_block_busy_even_without_storage_risk()
+    {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+
+        resource.active_http_count = 1;
+        assert!(
+            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            "foreground HTTP/TLS work must keep write-back pending instead of starting its worker"
+        );
+        resource.active_http_count = 0;
+
+        resource.heap_largest_block_internal =
+            (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1);
+        assert!(
+            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            "low internal largest-block must defer the 24KB write-back worker"
+        );
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    #[test]
+    fn host_write_back_admission_does_not_defer_healthy_storage_for_foreground_http() {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.active_http_count = 1;
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None,
+            "host/Linux should not inherit ESP SRAM foreground deferral when storage is healthy"
+        );
+    }
+
     #[test]
     fn write_back_admission_defers_cautious_storage_when_agent_active() {
         let _write_back_guard = write_back_test_guard();
         reset_write_back_queue_for_tests();
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 256 * 1024,
+            heap_min_free_internal: 240 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
         crate::metrics::record_spiffs_lock_wait_us(7_500);
@@ -2158,7 +2346,11 @@ mod tests {
         WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: 256 * 1024,
+            heap_min_free_internal: 240 * 1024,
             heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
         crate::metrics::record_spiffs_lock_wait_us(7_500);

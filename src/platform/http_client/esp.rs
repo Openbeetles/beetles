@@ -167,6 +167,7 @@ impl EspHttpClient {
             self.priority,
             std::time::Duration::from_secs(admission_timeout_secs.max(1)),
         )?;
+        let _tls_handshake_lease = crate::network::acquire_http_client_tls_handshake_lease(role)?;
         let mut conn = Self::open_connection()?;
         action(&mut conn)
     }

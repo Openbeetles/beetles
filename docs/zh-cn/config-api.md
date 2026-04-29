@@ -1298,7 +1298,12 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `tls_fragmentation_risk`
 - `storage_contention_risk`
 - `heap_free_internal`
+- `heap_min_free_internal`
 - `heap_free_spiram`
+- `heap_total_spiram`
+- `heap_min_free_spiram`
+- `heap_largest_block_spiram`
+- `heap_used_spiram_est`
 - `heap_largest_block_internal`
 - `active_http_count`
 - `active_wss_count`
@@ -1320,7 +1325,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `storage_used_kb`
 - `storage_total_kb`
 
-资源端点属于资源诊断契约。`display_lease_denied_total` 是显示执行面 lease 被拒绝的资源治理计数，不是 `/api/health.display` 健康字段。治理字段用于诊断运行态压力，会随着新的执行面 guard 继续扩展；客户端应允许未知字段存在，但不要期待这里返回健康总览、固件身份或 crash 证据。
+资源端点属于资源诊断契约。`heap_free_spiram` 表示 PSRAM 空闲量，不是已用量；`heap_used_spiram_est = heap_total_spiram - heap_free_spiram`，仅用于帮助判读 PSRAM 是否被实际消耗。`display_lease_denied_total` 是显示执行面 lease 被拒绝的资源治理计数，不是 `/api/health.display` 健康字段。治理字段用于诊断运行态压力，会随着新的执行面 guard 继续扩展；客户端应允许未知字段存在，但不要期待这里返回健康总览、固件身份或 crash 证据。
 
 **GET /api/diagnose**
 

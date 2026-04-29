@@ -23,7 +23,11 @@ pub fn channel_to_index(channel: &str) -> Option<usize> {
 pub struct OrchestratorState {
     // 堆状态（heartbeat 定期更新）
     pub heap_free_internal: AtomicU32,
+    pub heap_min_free_internal: AtomicU32,
     pub heap_free_spiram: AtomicU32,
+    pub heap_total_spiram: AtomicU32,
+    pub heap_min_free_spiram: AtomicU32,
+    pub heap_largest_block_spiram: AtomicU32,
     pub heap_largest_block: AtomicU32,
     /// internal 堆基线（首次 update_heap 时设置，用于相对使用率计算）。
     /// Internal heap baseline (set on first update_heap, used for relative usage calculation).
@@ -79,7 +83,11 @@ impl OrchestratorState {
     pub const fn new() -> Self {
         Self {
             heap_free_internal: AtomicU32::new(u32::MAX),
+            heap_min_free_internal: AtomicU32::new(0),
             heap_free_spiram: AtomicU32::new(0),
+            heap_total_spiram: AtomicU32::new(0),
+            heap_min_free_spiram: AtomicU32::new(0),
+            heap_largest_block_spiram: AtomicU32::new(0),
             heap_largest_block: AtomicU32::new(u32::MAX),
             heap_baseline_internal: AtomicU32::new(0),
             active_http_count: AtomicU32::new(0),
@@ -117,6 +125,23 @@ impl OrchestratorState {
         self.heap_free_spiram.store(spiram, Ordering::Relaxed);
         self.heap_largest_block
             .store(largest_block, Ordering::Relaxed);
+    }
+
+    /// 写入完整平台内存快照，保留 `update_heap` 的压力基线语义。
+    pub fn update_memory_snapshot(&self, snap: crate::platform::MemorySnapshot) {
+        self.update_heap(
+            snap.heap_free_internal,
+            snap.heap_free_spiram,
+            snap.heap_largest_block,
+        );
+        self.heap_min_free_internal
+            .store(snap.heap_min_free_internal, Ordering::Relaxed);
+        self.heap_total_spiram
+            .store(snap.heap_total_spiram, Ordering::Relaxed);
+        self.heap_min_free_spiram
+            .store(snap.heap_min_free_spiram, Ordering::Relaxed);
+        self.heap_largest_block_spiram
+            .store(snap.heap_largest_block_spiram, Ordering::Relaxed);
     }
 }
 
@@ -242,7 +267,13 @@ pub struct ResourceSnapshot {
     pub tls_fragmentation_risk: super::pressure::TlsFragmentationRisk,
     pub storage_contention_risk: StorageContentionRisk,
     pub heap_free_internal: u32,
+    pub heap_min_free_internal: u32,
     pub heap_free_spiram: u32,
+    pub heap_total_spiram: u32,
+    pub heap_min_free_spiram: u32,
+    pub heap_largest_block_spiram: u32,
+    /// 估算 PSRAM 已用字节数：`heap_total_spiram - heap_free_spiram`，仅用于观测判读。
+    pub heap_used_spiram_est: u32,
     /// internal 堆最大连续空闲块（字节）；ESP 上用于 TLS 碎片门禁。Linux 上为 **0（N/A）**，与 `MemAvailable` 映射的 `heap_free_internal` 分开表述。
     pub heap_largest_block_internal: u32,
     pub active_http_count: u32,
@@ -371,7 +402,15 @@ impl ResourceSnapshot {
             ),
             storage_contention_risk: storage_contention_risk_from_metrics(&metrics),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
+            heap_min_free_internal: state.heap_min_free_internal.load(Ordering::Relaxed),
             heap_free_spiram: state.heap_free_spiram.load(Ordering::Relaxed),
+            heap_total_spiram: state.heap_total_spiram.load(Ordering::Relaxed),
+            heap_min_free_spiram: state.heap_min_free_spiram.load(Ordering::Relaxed),
+            heap_largest_block_spiram: state.heap_largest_block_spiram.load(Ordering::Relaxed),
+            heap_used_spiram_est: state
+                .heap_total_spiram
+                .load(Ordering::Relaxed)
+                .saturating_sub(state.heap_free_spiram.load(Ordering::Relaxed)),
             heap_largest_block_internal: state.heap_largest_block.load(Ordering::Relaxed),
             active_http_count: crate::network::active_http_count(),
             active_wss_count: crate::network::active_wss_count(),

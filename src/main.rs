@@ -697,14 +697,23 @@ mod tests {
     fn process_memory_provider_registration_updates_orchestrator_snapshot() {
         register_process_memory_snapshot_provider(Arc::new(|| beetle::platform::MemorySnapshot {
             heap_free_internal: 123,
+            heap_min_free_internal: 100,
             heap_free_spiram: 456,
+            heap_total_spiram: 1_000,
+            heap_min_free_spiram: 400,
+            heap_largest_block_spiram: 300,
             heap_largest_block: 78,
         }));
         beetle::orchestrator::update_heap_state();
         let snapshot = beetle::orchestrator::snapshot();
 
         assert_eq!(snapshot.heap_free_internal, 123);
+        assert_eq!(snapshot.heap_min_free_internal, 100);
         assert_eq!(snapshot.heap_free_spiram, 456);
+        assert_eq!(snapshot.heap_total_spiram, 1_000);
+        assert_eq!(snapshot.heap_min_free_spiram, 400);
+        assert_eq!(snapshot.heap_largest_block_spiram, 300);
+        assert_eq!(snapshot.heap_used_spiram_est, 544);
         assert_eq!(snapshot.heap_largest_block_internal, 78);
     }
 
@@ -1855,6 +1864,21 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         .unwrap_or(0);
     let sleep_enabled = sleep_timeout > 0 && platform.display_backlight_available();
     let sleep_duration = Duration::from_secs(sleep_timeout as u64);
+    let display_asset_cache_enabled = platform.memory_system_kind()
+        == beetle::memory::MemorySystemKind::EspCompact
+        && config
+            .display
+            .as_ref()
+            .is_some_and(|display| display.enabled);
+    let display_asset_cache_budget = config
+        .display
+        .as_ref()
+        .map(|display| {
+            beetle::runtime::display_asset_cache_budget_bytes(display.width, display.height)
+        })
+        .unwrap_or(0);
+    let mut display_asset_pool =
+        beetle::runtime::ModePsramPool::new(beetle::runtime::PsramPoolRole::DisplayAssetCache);
     let mut loop_state = DisplayLoopState::default();
 
     loop {
@@ -1862,6 +1886,12 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         beetle::platform::task_wdt::feed_current_task();
         let snapshot = beetle::orchestrator::snapshot();
+        display_asset_pool.reconcile(beetle::runtime::PsramPoolAdmission::new(
+            beetle::runtime::PsramPoolRole::DisplayAssetCache,
+            display_asset_cache_enabled,
+            snapshot.pressure,
+            display_asset_cache_budget,
+        ));
         if should_suppress_display_refresh(
             platform.memory_system_kind(),
             snapshot.pressure,

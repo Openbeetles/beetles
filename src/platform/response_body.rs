@@ -29,6 +29,26 @@ impl ResponseBody {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn truncate(&mut self, max_len: usize) {
+        match self {
+            ResponseBody::Heap(v) => v.truncate(max_len),
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            ResponseBody::PSRAM { len, .. } => {
+                if *len > max_len {
+                    *len = max_len;
+                }
+            }
+        }
+    }
+
     /// 调用方确需拥有 Vec 时再分配（如部分 channel/工具需保留字节）。
     pub fn into_vec(&mut self) -> Vec<u8> {
         match self {

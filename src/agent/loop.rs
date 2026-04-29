@@ -452,6 +452,8 @@ struct PostReplyMaintenanceJobPayload {
     reuse_outcome: crate::skills::RuntimeSkillReuseOutcome,
     #[serde(default)]
     reuse_outcome_note: String,
+    #[serde(default)]
+    first_deferred_at_ms: u64,
     now_secs: u64,
 }
 
@@ -487,6 +489,7 @@ impl PostReplyMaintenanceJobPayload {
             task_learning_selected_ids: task_learning_selected_ids.to_vec(),
             reuse_outcome,
             reuse_outcome_note: truncate_content_to_max(reuse_outcome_note, 120).into_owned(),
+            first_deferred_at_ms: now_unix_ms(),
             now_secs: crate::util::current_unix_secs(),
         }
     }

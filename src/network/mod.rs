@@ -210,7 +210,8 @@ impl Drop for ExternalWssLeaseGuard {
     }
 }
 
-struct TlsHandshakeLeaseGuard {
+#[must_use = "dropping the guard releases the TLS handshake lease"]
+pub(crate) struct TlsHandshakeLeaseGuard {
     owner: crate::runtime::lease::LeaseOwner,
     token: u64,
 }
@@ -290,6 +291,18 @@ fn channel_wss_lease_owner(owner: &'static str) -> crate::runtime::lease::LeaseO
     crate::runtime::lease::LeaseOwner::new("channel_wss", owner)
 }
 
+#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
+fn http_tls_lease_owner(
+    role: crate::orchestrator::HttpThreadRole,
+) -> crate::runtime::lease::LeaseOwner {
+    let name = match role {
+        crate::orchestrator::HttpThreadRole::Interactive => "http_interactive",
+        crate::orchestrator::HttpThreadRole::Io => "http_io",
+        crate::orchestrator::HttpThreadRole::Background => "http_background",
+    };
+    crate::runtime::lease::LeaseOwner::new("http_tls", name)
+}
+
 pub fn acquire_external_wss_lease(owner: &'static str) -> Result<ExternalWssLeaseGuard> {
     acquire_external_wss_lease_inner(owner, None)
 }
@@ -343,6 +356,12 @@ fn acquire_external_wss_lease_inner(
 
 fn acquire_tls_handshake_lease(owner: &'static str) -> Result<TlsHandshakeLeaseGuard> {
     let owner = channel_wss_lease_owner(owner);
+    acquire_tls_handshake_lease_for_owner(owner)
+}
+
+fn acquire_tls_handshake_lease_for_owner(
+    owner: crate::runtime::lease::LeaseOwner,
+) -> Result<TlsHandshakeLeaseGuard> {
     match crate::runtime::lease::try_acquire(
         crate::runtime::lease::LeaseKind::TlsHandshake,
         owner,
@@ -365,6 +384,14 @@ fn acquire_tls_handshake_lease(owner: &'static str) -> Result<TlsHandshakeLeaseG
             ),
         )),
     }
+}
+
+/// Acquire a precise TLS handshake lease for HTTP client transports.
+#[cfg(any(test, target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn acquire_http_client_tls_handshake_lease(
+    role: crate::orchestrator::HttpThreadRole,
+) -> Result<TlsHandshakeLeaseGuard> {
+    acquire_tls_handshake_lease_for_owner(http_tls_lease_owner(role))
 }
 
 pub fn request_http_permit(
@@ -963,7 +990,13 @@ pub fn connect_realtime_wss_with_retry(
     for attempt in 0..REALTIME_TLS_ADMISSION_RETRY_MAX {
         crate::platform::task_wdt::feed_current_task();
         wait_for_realtime_admission_window(platform);
-        match connect_realtime_wss(url, headers) {
+        let result = {
+            let _tls_handshake_lease = acquire_tls_handshake_lease_for_owner(
+                crate::runtime::lease::LeaseOwner::new("voice", "voice_realtime_connect"),
+            )?;
+            connect_realtime_wss(url, headers)
+        };
+        match result {
             Ok(conn) => return Ok(conn),
             Err(err)
                 if err.is_tls_admission() && attempt + 1 < REALTIME_TLS_ADMISSION_RETRY_MAX =>
@@ -1146,6 +1179,31 @@ mod tests {
             0
         );
         set_external_wss_managed_present(false);
+    }
+
+    #[test]
+    fn http_client_tls_handshake_lease_releases_on_drop() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+
+        let lease = acquire_http_client_tls_handshake_lease(
+            crate::orchestrator::HttpThreadRole::Interactive,
+        )
+        .expect("http tls lease");
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind(
+                crate::runtime::lease::LeaseKind::TlsHandshake
+            ),
+            1
+        );
+
+        drop(lease);
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind(
+                crate::runtime::lease::LeaseKind::TlsHandshake
+            ),
+            0
+        );
     }
 
     #[test]

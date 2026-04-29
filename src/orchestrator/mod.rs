@@ -113,7 +113,11 @@ pub(crate) fn memory_snapshot_live() -> MemorySnapshot {
             );
             MemorySnapshot {
                 heap_free_internal: 0,
+                heap_min_free_internal: 0,
                 heap_free_spiram: 0,
+                heap_total_spiram: 0,
+                heap_min_free_spiram: 0,
+                heap_largest_block_spiram: 0,
                 heap_largest_block: 0,
             }
         }
@@ -123,11 +127,7 @@ pub(crate) fn memory_snapshot_live() -> MemorySnapshot {
 /// 将快照写入 orchestrator 并重算压力等级。
 pub(crate) fn apply_memory_snapshot(snap: MemorySnapshot) {
     use std::sync::atomic::Ordering;
-    STATE.update_heap(
-        snap.heap_free_internal,
-        snap.heap_free_spiram,
-        snap.heap_largest_block,
-    );
+    STATE.update_memory_snapshot(snap);
     let level = pressure::compute_pressure(&STATE);
     STATE.pressure_level.store(level as u8, Ordering::Relaxed);
 }
@@ -212,12 +212,15 @@ pub fn format_resource_baseline_line() -> String {
             s.heap_largest_block_internal.to_string()
         };
         return format!(
-            "resource pressure={:?} tls_fragmentation={:?} storage_contention={:?} mem_available={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
+            "resource pressure={:?} tls_fragmentation={:?} storage_contention={:?} mem_available={} heap_spiram_free={} heap_spiram_used_est={} heap_spiram_total={} heap_spiram_largest={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
             s.pressure,
             s.tls_fragmentation_risk,
             s.storage_contention_risk,
             s.heap_free_internal,
             s.heap_free_spiram,
+            s.heap_used_spiram_est,
+            s.heap_total_spiram,
+            s.heap_largest_block_spiram,
             largest,
             s.active_http_count,
             s.active_wss_count,
@@ -228,12 +231,17 @@ pub fn format_resource_baseline_line() -> String {
     }
     #[cfg(not(target_os = "linux"))]
     format!(
-        "resource pressure={:?} tls_fragmentation={:?} storage_contention={:?} heap_internal={} heap_spiram={} heap_largest={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
+        "resource pressure={:?} tls_fragmentation={:?} storage_contention={:?} heap_internal_free={} heap_internal_min={} heap_spiram_free={} heap_spiram_used_est={} heap_spiram_total={} heap_spiram_min={} heap_spiram_largest={} heap_largest_internal={} active_http={} active_wss={} agent_tasks={} inbound={} outbound={}",
         s.pressure,
         s.tls_fragmentation_risk,
         s.storage_contention_risk,
         s.heap_free_internal,
+        s.heap_min_free_internal,
         s.heap_free_spiram,
+        s.heap_used_spiram_est,
+        s.heap_total_spiram,
+        s.heap_min_free_spiram,
+        s.heap_largest_block_spiram,
         s.heap_largest_block_internal,
         s.active_http_count,
         s.active_wss_count,
@@ -463,20 +471,22 @@ pub fn format_startup_memory_checkpoint_line(
     snap: crate::platform::MemorySnapshot,
 ) -> String {
     let probe_state = state::OrchestratorState::new();
-    probe_state.update_heap(
-        snap.heap_free_internal,
-        snap.heap_free_spiram,
-        snap.heap_largest_block,
-    );
+    probe_state.update_memory_snapshot(snap);
     let pressure = pressure::compute_pressure(&probe_state);
     let tls_fragmentation =
         pressure::tls_fragmentation_risk(snap.heap_largest_block, snap.heap_free_spiram);
+    let spiram_used_est = snap.heap_total_spiram.saturating_sub(snap.heap_free_spiram);
     format!(
-        "[orchestrator] startup memory checkpoint stage={} internal_free={} largest_block={} spiram_free={} pressure={:?} tls_fragmentation={:?}",
+        "[orchestrator] startup memory checkpoint stage={} internal_free={} internal_min={} largest_block={} spiram_free={} spiram_used_est={} spiram_total={} spiram_min={} spiram_largest={} pressure={:?} tls_fragmentation={:?}",
         stage,
         snap.heap_free_internal,
+        snap.heap_min_free_internal,
         snap.heap_largest_block,
         snap.heap_free_spiram,
+        spiram_used_est,
+        snap.heap_total_spiram,
+        snap.heap_min_free_spiram,
+        snap.heap_largest_block_spiram,
         pressure,
         tls_fragmentation
     )
@@ -505,15 +515,24 @@ mod tests {
             "after_voice_session_spawn",
             MemorySnapshot {
                 heap_free_internal: 49_051,
+                heap_min_free_internal: 44_000,
                 heap_free_spiram: 7_258_468,
+                heap_total_spiram: 8_388_608,
+                heap_min_free_spiram: 7_000_000,
+                heap_largest_block_spiram: 6_500_000,
                 heap_largest_block: 20_480,
             },
         );
 
         assert!(line.contains("stage=after_voice_session_spawn"));
         assert!(line.contains("internal_free=49051"));
+        assert!(line.contains("internal_min=44000"));
         assert!(line.contains("largest_block=20480"));
         assert!(line.contains("spiram_free=7258468"));
+        assert!(line.contains("spiram_used_est=1130140"));
+        assert!(line.contains("spiram_total=8388608"));
+        assert!(line.contains("spiram_min=7000000"));
+        assert!(line.contains("spiram_largest=6500000"));
         assert!(line.contains("pressure=Critical"));
         assert!(line.contains("tls_fragmentation=Critical"));
     }

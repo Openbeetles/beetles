@@ -30,6 +30,35 @@ test("buildMemoryMetrics hides Linux-only non-applicable PSRAM and largest-block
   );
 });
 
+test("buildMemoryMetrics shows ESP PSRAM free used total min and largest block from resource", () => {
+  const resource: ResourceSnapshotData = {
+    heap_free_internal: 128 * 1024,
+    heap_min_free_internal: 96 * 1024,
+    heap_free_spiram: 7 * 1024 * 1024,
+    heap_used_spiram_est: 512 * 1024,
+    heap_total_spiram: 8 * 1024 * 1024,
+    heap_min_free_spiram: 6 * 1024 * 1024,
+    heap_largest_block_spiram: 5 * 1024 * 1024,
+    heap_largest_block_internal: 64 * 1024,
+  };
+
+  const metrics = buildMemoryMetrics("esp", resource);
+
+  assert.deepEqual(
+    metrics.map((item) => item.id),
+    [
+      "heap_internal",
+      "heap_internal_min",
+      "heap_spiram_free",
+      "heap_spiram_used_est",
+      "heap_spiram_total",
+      "heap_spiram_min",
+      "heap_spiram_largest",
+      "heap_largest",
+    ],
+  );
+});
+
 test("buildDeviceSummaryFields includes the full homepage device summary fields", () => {
   const systemInfo: SystemInfoData = {
     product_name: "beetle",

@@ -21,6 +21,14 @@ pub fn heap_free_spiram() -> usize {
     }
 }
 
+/// 返回当前 PSRAM 总字节数。仅 ESP 目标有效；无 PSRAM 时返回 0。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn heap_total_spiram() -> usize {
+    unsafe {
+        esp_idf_svc::sys::heap_caps_get_total_size(esp_idf_svc::sys::MALLOC_CAP_SPIRAM) as usize
+    }
+}
+
 /// 返回 internal 堆当前最大连续空闲块（字节）。仅 ESP 有效；非 ESP 返回 usize::MAX。供 TLS 准入碎片化判定。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub fn heap_largest_free_block_internal() -> usize {
@@ -44,6 +52,12 @@ pub fn heap_free_spiram() -> usize {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 #[allow(dead_code)]
+pub fn heap_total_spiram() -> usize {
+    0
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[allow(dead_code)]
 pub fn heap_largest_free_block_internal() -> usize {
     usize::MAX
 }
@@ -61,6 +75,36 @@ pub fn heap_min_free_internal() -> usize {
 #[allow(dead_code)]
 pub fn heap_min_free_internal() -> usize {
     usize::MAX
+}
+
+/// 返回 PSRAM 历史最小空闲字节数。仅 ESP 目标有效；无 PSRAM 时返回 0。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn heap_min_free_spiram() -> usize {
+    unsafe {
+        esp_idf_svc::sys::heap_caps_get_minimum_free_size(esp_idf_svc::sys::MALLOC_CAP_SPIRAM)
+            as usize
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[allow(dead_code)]
+pub fn heap_min_free_spiram() -> usize {
+    0
+}
+
+/// 返回 PSRAM 当前最大连续空闲块（字节）。仅 ESP 目标有效；无 PSRAM 时返回 0。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn heap_largest_free_block_spiram() -> usize {
+    unsafe {
+        esp_idf_svc::sys::heap_caps_get_largest_free_block(esp_idf_svc::sys::MALLOC_CAP_SPIRAM)
+            as usize
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[allow(dead_code)]
+pub fn heap_largest_free_block_spiram() -> usize {
+    0
 }
 
 /// S3 上从 PSRAM 分配大块缓冲区；无 PSRAM 或失败返回 None。调用方负责 heap_caps_free。

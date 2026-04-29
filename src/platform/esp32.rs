@@ -273,10 +273,16 @@ impl Platform for Esp32Platform {
     fn memory_snapshot(&self) -> MemorySnapshot {
         use crate::platform::heap::{
             heap_free_internal, heap_free_spiram, heap_largest_free_block_internal,
+            heap_largest_free_block_spiram, heap_min_free_internal, heap_min_free_spiram,
+            heap_total_spiram,
         };
         MemorySnapshot {
             heap_free_internal: heap_free_internal() as u32,
+            heap_min_free_internal: heap_min_free_internal() as u32,
             heap_free_spiram: heap_free_spiram() as u32,
+            heap_total_spiram: heap_total_spiram() as u32,
+            heap_min_free_spiram: heap_min_free_spiram() as u32,
+            heap_largest_block_spiram: heap_largest_free_block_spiram() as u32,
             heap_largest_block: heap_largest_free_block_internal() as u32,
         }
     }

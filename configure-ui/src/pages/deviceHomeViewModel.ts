@@ -116,12 +116,47 @@ export function buildMemoryMetrics(
       value: resource.heap_free_internal,
     });
   }
+  if (runtimeKind === "esp" && resource?.heap_min_free_internal != null) {
+    items.push({
+      id: "heap_internal_min",
+      labelKey: "device.systemStatusHeapInternalMin",
+      value: resource.heap_min_free_internal,
+    });
+  }
   const heapFreeSpiram = resource?.heap_free_spiram;
   if (runtimeKind === "esp" && (heapFreeSpiram ?? 0) > 0) {
     items.push({
-      id: "heap_spiram",
+      id: "heap_spiram_free",
       labelKey: "device.systemStatusHeapSpiram",
       value: heapFreeSpiram ?? 0,
+    });
+  }
+  if (runtimeKind === "esp" && resource?.heap_used_spiram_est != null) {
+    items.push({
+      id: "heap_spiram_used_est",
+      labelKey: "device.systemStatusHeapSpiramUsedEst",
+      value: resource.heap_used_spiram_est,
+    });
+  }
+  if (runtimeKind === "esp" && resource?.heap_total_spiram != null) {
+    items.push({
+      id: "heap_spiram_total",
+      labelKey: "device.systemStatusHeapSpiramTotal",
+      value: resource.heap_total_spiram,
+    });
+  }
+  if (runtimeKind === "esp" && resource?.heap_min_free_spiram != null) {
+    items.push({
+      id: "heap_spiram_min",
+      labelKey: "device.systemStatusHeapSpiramMin",
+      value: resource.heap_min_free_spiram,
+    });
+  }
+  if (runtimeKind === "esp" && resource?.heap_largest_block_spiram != null) {
+    items.push({
+      id: "heap_spiram_largest",
+      labelKey: "device.systemStatusHeapSpiramLargest",
+      value: resource.heap_largest_block_spiram,
     });
   }
   if (

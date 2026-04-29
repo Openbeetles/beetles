@@ -436,10 +436,15 @@ fn cmd_baseline(_ctx: &CliContext, _args: Vec<&str>) -> String {
     let metrics = crate::metrics::snapshot();
     let thread_line = crate::runtime::thread_registry::format_baseline_log_line();
     format!(
-        "baseline:\n  pressure: {:?}\n  heap_internal: {}\n  heap_spiram: {}\n  active_http: {}\n  active_wss: {}\n  active_agent_tasks: {}\n  metrics: {}\n  threads: {}\n",
+        "baseline:\n  pressure: {:?}\n  heap_internal_free: {}\n  heap_internal_min: {}\n  heap_spiram_free: {}\n  heap_spiram_used_est: {}\n  heap_spiram_total: {}\n  heap_spiram_min: {}\n  heap_spiram_largest: {}\n  active_http: {}\n  active_wss: {}\n  active_agent_tasks: {}\n  metrics: {}\n  threads: {}\n",
         resource.pressure,
         resource.heap_free_internal,
+        resource.heap_min_free_internal,
         resource.heap_free_spiram,
+        resource.heap_used_spiram_est,
+        resource.heap_total_spiram,
+        resource.heap_min_free_spiram,
+        resource.heap_largest_block_spiram,
         resource.active_http_count,
         resource.active_wss_count,
         resource.active_agent_tasks,

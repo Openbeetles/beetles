@@ -56,8 +56,16 @@ pub trait StateFs: Send + Sync {
 pub struct MemorySnapshot {
     /// 内部堆空闲字节（ESP: internal heap；Linux: 主内存可用量，通常为 `MemAvailable`）。
     pub heap_free_internal: u32,
+    /// 内部堆历史最小空闲字节（ESP low-water mark；Linux/host 固定 0 表示 N/A）。
+    pub heap_min_free_internal: u32,
     /// 外部堆空闲字节（ESP: SPIRAM；Linux: 0 或 swap 等扩展字段保留为 0）。
     pub heap_free_spiram: u32,
+    /// 外部堆总字节数（ESP: SPIRAM total；Linux/host 固定 0）。
+    pub heap_total_spiram: u32,
+    /// 外部堆历史最小空闲字节（ESP: SPIRAM low-water mark；Linux/host 固定 0）。
+    pub heap_min_free_spiram: u32,
+    /// 外部堆当前最大连续空闲块（ESP: SPIRAM largest free block；Linux/host 固定 0）。
+    pub heap_largest_block_spiram: u32,
     /// 最大连续可分配块字节（ESP: largest free block for TLS fragmentation checks）。
     /// Linux / host: **always 0** — means *not applicable*, not “zero-byte largest block”.
     /// 最大连续空闲块（字节）。ESP 为 TLS 碎片门禁所用；Linux 固定 **0** 表示本维度不可用，勿当作真实块大小。

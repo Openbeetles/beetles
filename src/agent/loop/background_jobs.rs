@@ -88,12 +88,20 @@ pub(super) fn enqueue_post_reply_maintenance_job(
     if matches!(memory_profile, crate::memory::MemoryProfile::Embedded) {
         let due_at = std::time::Instant::now()
             + std::time::Duration::from_millis(POST_REPLY_MAINTENANCE_DELAY_MS);
-        let scheduled = crate::runtime::schedule_system_inbound_msg(
+        let coalesce_key = crate::agent::DetachedWorkKey::new(
+            msg.channel.as_ref(),
+            msg.chat_id.as_ref(),
+            crate::agent::DetachedJobKind::PostReplyMaintenance,
+        )
+        .storage_key();
+        let scheduled = crate::runtime::schedule_bounded_keyed_system_inbound_msg(
             due_at,
             system_inbound_tx.clone(),
             job,
             std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
             "post_reply_maintenance",
+            coalesce_key,
+            std::time::Duration::from_millis(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
         );
         if scheduled {
             append_post_reply_workflow_audit(
@@ -329,6 +337,32 @@ fn run_post_reply_maintenance_job(
             };
         }
     };
+    match embedded_post_reply_admission(
+        config.runtime.memory_system_kind.memory_profile(),
+        crate::agent::DetachedJobKind::PostReplyMaintenance,
+        &crate::orchestrator::snapshot(),
+        Some(payload.first_deferred_at_ms),
+        super::now_unix_ms(),
+    ) {
+        EmbeddedPostReplyAdmission::Full => {}
+        EmbeddedPostReplyAdmission::RunLightweight => {
+            log::info!(
+                "[agent_memory] lightweight post-reply maintenance advanced chat_id={} after bounded deferral",
+                msg.chat_id
+            );
+            append_post_reply_workflow_audit(
+                crate::runtime::WorkflowDisposition::ExecuteNow,
+                "post_reply_lightweight_bounded",
+                crate::runtime::WorkflowEffect::Noop,
+                payload.source_channel.as_str(),
+                msg.chat_id.as_ref(),
+            );
+            return DetachedJobRunDisposition::Completed;
+        }
+        EmbeddedPostReplyAdmission::Defer { reason, delay_ms } => {
+            return DetachedJobRunDisposition::RetryLater { reason, delay_ms };
+        }
+    }
     let locale = (config.resolve_locale)();
     let mut llm_ctx = build_system_llm_ctx(http, config, &msg.chat_id, locale);
     let maintenance_outcome = run_post_reply_memory_maintenance(
@@ -515,6 +549,16 @@ fn run_self_runtime_job(
         match crate::orchestrator::current_pressure() {
             crate::orchestrator::PressureLevel::Normal => {}
             crate::orchestrator::PressureLevel::Cautious => {
+                if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply
+                    && super::now_unix_ms().saturating_sub(payload.now_secs.saturating_mul(1000))
+                        >= crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS
+                {
+                    log::info!(
+                        "[self_runtime] lightweight post-reply runtime advanced chat_id={} after bounded deferral",
+                        msg.chat_id
+                    );
+                    return DetachedJobRunDisposition::Completed;
+                }
                 log::debug!(
                     "[self_runtime] defer chat_id={} trigger={:?} because pressure is cautious",
                     msg.chat_id,
@@ -526,6 +570,16 @@ fn run_self_runtime_job(
                 };
             }
             crate::orchestrator::PressureLevel::Critical => {
+                if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply
+                    && super::now_unix_ms().saturating_sub(payload.now_secs.saturating_mul(1000))
+                        >= crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS
+                {
+                    log::info!(
+                        "[self_runtime] lightweight post-reply runtime advanced chat_id={} after bounded deferral",
+                        msg.chat_id
+                    );
+                    return DetachedJobRunDisposition::Completed;
+                }
                 log::debug!(
                     "[self_runtime] defer chat_id={} trigger={:?} because pressure is critical",
                     msg.chat_id,
@@ -1253,6 +1307,59 @@ fn embedded_post_reply_pressure_defer_reason(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmbeddedPostReplyAdmission {
+    Full,
+    RunLightweight,
+    Defer { reason: &'static str, delay_ms: u64 },
+}
+
+fn embedded_post_reply_admission(
+    memory_profile: crate::memory::MemoryProfile,
+    kind: crate::agent::DetachedJobKind,
+    resource: &crate::orchestrator::ResourceSnapshot,
+    first_deferred_at_ms: Option<u64>,
+    now_ms: u64,
+) -> EmbeddedPostReplyAdmission {
+    if !matches!(memory_profile, crate::memory::MemoryProfile::Embedded)
+        || !matches!(
+            kind,
+            crate::agent::DetachedJobKind::PostReplyMaintenance
+                | crate::agent::DetachedJobKind::SelfRuntimePostReply
+        )
+    {
+        return EmbeddedPostReplyAdmission::Full;
+    }
+    if first_deferred_at_ms
+        .filter(|first| {
+            now_ms.saturating_sub(*first) >= crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS
+        })
+        .is_some()
+    {
+        return EmbeddedPostReplyAdmission::RunLightweight;
+    }
+    let largest_low = resource.heap_largest_block_internal > 0
+        && resource.heap_largest_block_internal
+            < crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
+    let foreground_busy = resource.active_http_count > 0
+        || resource.active_wss_count > 0
+        || resource.active_agent_tasks > 0
+        || resource.inbound_depth > 0
+        || resource.outbound_depth > 0;
+    if !matches!(
+        resource.pressure,
+        crate::orchestrator::PressureLevel::Normal
+    ) || largest_low
+        || foreground_busy
+    {
+        return EmbeddedPostReplyAdmission::Defer {
+            reason: "post_reply_resource_window_busy",
+            delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+        };
+    }
+    EmbeddedPostReplyAdmission::Full
+}
+
 fn detached_work_defer_reason(
     config: &AgentLoopConfig,
     key: &crate::agent::DetachedWorkKey,
@@ -1490,13 +1597,26 @@ fn schedule_volatile_background_retry(
     label: &'static str,
 ) {
     let due_at = std::time::Instant::now() + std::time::Duration::from_millis(delay_ms);
-    if !crate::runtime::schedule_system_inbound_msg(
-        due_at,
-        system_inbound_tx.clone(),
-        msg,
-        std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
-        label,
-    ) {
+    let scheduled = if let Some(key) = super::detached_work_key_for_msg(&msg) {
+        crate::runtime::schedule_bounded_keyed_system_inbound_msg(
+            due_at,
+            system_inbound_tx.clone(),
+            msg,
+            std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
+            label,
+            key.storage_key(),
+            std::time::Duration::from_millis(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
+        )
+    } else {
+        crate::runtime::schedule_system_inbound_msg(
+            due_at,
+            system_inbound_tx.clone(),
+            msg,
+            std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
+            label,
+        )
+    };
+    if !scheduled {
         log::warn!(
             "[agent] volatile background retry dropped because delayed queue is full label={}",
             label
@@ -2135,6 +2255,42 @@ mod tests {
                 crate::orchestrator::PressureLevel::Cautious,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn embedded_post_reply_bounded_deferral_eventually_allows_lightweight_run() {
+        let state = crate::orchestrator::state::OrchestratorState::new();
+        state.update_heap(
+            64 * 1024,
+            8 * 1024 * 1024,
+            (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1024),
+        );
+        let resource = crate::orchestrator::ResourceSnapshot::from_state(&state);
+
+        assert!(matches!(
+            embedded_post_reply_admission(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::PostReplyMaintenance,
+                &resource,
+                Some(1_000),
+                5_000,
+            ),
+            EmbeddedPostReplyAdmission::Defer {
+                reason: "post_reply_resource_window_busy",
+                ..
+            }
+        ));
+
+        assert_eq!(
+            embedded_post_reply_admission(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::PostReplyMaintenance,
+                &resource,
+                Some(1_000),
+                1_000u64.saturating_add(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
+            ),
+            EmbeddedPostReplyAdmission::RunLightweight
         );
     }
 }
