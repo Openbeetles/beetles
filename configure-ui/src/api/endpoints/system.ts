@@ -39,9 +39,40 @@ export interface ResourceBudgetData {
   reconnect_backoff_secs?: number
 }
 
-/** 与固件 `orchestrator::ResourceSnapshot` 一致。 */
+export interface ResourceAdmissionData {
+  http_permit_wait_last_ms?: number
+  http_route_queue_wait_last_ms?: number
+  http_route_handler_last_ms?: number
+  http_route_timeout_total?: number
+}
+
+export interface ResourceNetworkGateSummaryData {
+  stage?: string
+  outbound_settled?: boolean
+  wall_clock_trusted?: boolean
+}
+
+export interface ResourceGovernanceMetricsData {
+  runtime_spawn_failure_total?: number
+  http_route_reject_total?: number
+  lease_conflict_total?: number
+  lease_expired_replacement_total?: number
+  plane_drain_timeout_total?: number
+  inbound_queue_full_total?: number
+  inbound_defer_total?: number
+  inbound_drop_total?: number
+  event_ingress_enqueued_total?: number
+  event_ingress_rejected_total?: number
+  event_ingress_purged_total?: number
+  event_ingress_cancelled_total?: number
+  event_ingress_stale_drop_total?: number
+}
+
+/** 与固件 `handlers/resource.rs` 的收口后资源诊断契约一致。 */
 export interface ResourceSnapshotData {
   pressure?: string
+  tls_fragmentation_risk?: string
+  storage_contention_risk?: string
   heap_free_internal?: number
   heap_free_spiram?: number
   heap_largest_block_internal?: number
@@ -51,6 +82,16 @@ export interface ResourceSnapshotData {
   inbound_depth?: number
   outbound_depth?: number
   budget?: ResourceBudgetData
+  admission?: ResourceAdmissionData
+  governance_metrics?: ResourceGovernanceMetricsData
+  runtime_capabilities?: unknown[]
+  network_gate_summary?: ResourceNetworkGateSummaryData
+  planes?: unknown
+  plane_lifecycle?: unknown
+  leases?: unknown
+  threads?: unknown
+  display_lease_denied_total?: number
+  write_back?: unknown
   session_count?: number
   storage_used_kb?: number
   storage_total_kb?: number
@@ -74,22 +115,19 @@ export interface HealthAudioData {
   duplex_capabilities?: HealthAudioCapabilitiesData
 }
 
-export interface WorkflowAuditSummaryData {
-  total_retained?: number
-  executed?: number
-  deferred?: number
-  suppressed?: number
-  canceled?: number
-  no_trigger?: number
-  failed?: number
+export interface HealthNetworkStatusData {
+  stage?: string
+  sta_connected?: boolean
+  wall_clock_trusted?: boolean
 }
 
+/** 与固件 `handlers/health.rs` 的轻量生命体征契约一致。 */
 export interface HealthData {
-  wifi?: string
+  status?: "ok" | "degraded"
+  network_status?: HealthNetworkStatusData
   last_error?: string
   display?: HealthDisplayData
   audio?: HealthAudioData
-  workflow?: WorkflowAuditSummaryData
 }
 
 export interface DiagnoseItem {

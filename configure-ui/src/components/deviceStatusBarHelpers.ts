@@ -1,9 +1,9 @@
 import type { TFunction } from "i18next";
 
-export function wifiStaLabel(wifi: string | undefined, t: TFunction): string {
-  if (wifi === "connected") return t("device.wifiStaConnected");
-  if (wifi === "disconnected") return t("device.wifiStaDisconnected");
-  return wifi?.length ? wifi : t("common.na");
+export function wifiStaLabel(staConnected: boolean | undefined, t: TFunction): string {
+  if (staConnected === true) return t("device.wifiStaConnected");
+  if (staConnected === false) return t("device.wifiStaDisconnected");
+  return t("common.na");
 }
 
 export function yesNo(value: boolean | undefined, t: TFunction): string {

@@ -9,7 +9,7 @@ import type {
 } from "../api/endpoints/system.ts";
 import {
   loadDeviceChannelConnectivity,
-  loadDeviceHealthBundle,
+  loadDeviceStatusBundle,
 } from "./devicePageLoaders.ts";
 
 function deferred<T>() {
@@ -27,12 +27,12 @@ async function flushLoaderContinuation() {
   await Promise.resolve();
 }
 
-test("loadDeviceHealthBundle returns the full bundle when all three endpoints succeed", async () => {
-  const health: HealthData = { wifi: "connected" };
+test("loadDeviceStatusBundle returns the full bundle when all three endpoints succeed", async () => {
+  const health: HealthData = { status: "ok", network_status: { sta_connected: true } };
   const resource: ResourceSnapshotData = { pressure: "Cautious" };
   const metrics: MetricsSnapshotData = { llm_calls: 12 };
 
-  const result = await loadDeviceHealthBundle({
+  const result = await loadDeviceStatusBundle({
     health: async () => ({ ok: true, data: health }),
     resource: async () => ({ ok: true, data: resource }),
     metrics: async () => ({ ok: true, data: metrics }),
@@ -48,8 +48,8 @@ test("loadDeviceHealthBundle returns the full bundle when all three endpoints su
   });
 });
 
-test("loadDeviceHealthBundle starts resource and metrics only after earlier endpoints settle", async () => {
-  const health: HealthData = { wifi: "connected" };
+test("loadDeviceStatusBundle starts resource and metrics only after earlier endpoints settle", async () => {
+  const health: HealthData = { status: "ok", network_status: { sta_connected: true } };
   const resource: ResourceSnapshotData = { pressure: "Normal" };
   const metrics: MetricsSnapshotData = { llm_calls: 1 };
   const healthDeferred = deferred<ApiResult<HealthData>>();
@@ -57,7 +57,7 @@ test("loadDeviceHealthBundle starts resource and metrics only after earlier endp
   const metricsDeferred = deferred<ApiResult<MetricsSnapshotData>>();
   const calls: string[] = [];
 
-  const pending = loadDeviceHealthBundle({
+  const pending = loadDeviceStatusBundle({
     health: async () => {
       calls.push("health");
       return healthDeferred.promise;
@@ -90,10 +90,10 @@ test("loadDeviceHealthBundle starts resource and metrics only after earlier endp
   });
 });
 
-test("loadDeviceHealthBundle stops after the first failed endpoint", async () => {
+test("loadDeviceStatusBundle stops after the first failed endpoint", async () => {
   const calls: string[] = [];
 
-  const result = await loadDeviceHealthBundle({
+  const result = await loadDeviceStatusBundle({
     health: async () => {
       calls.push("health");
       return { ok: false, error: "health unavailable" };
@@ -115,8 +115,8 @@ test("loadDeviceHealthBundle stops after the first failed endpoint", async () =>
   });
 });
 
-test("loadDeviceHealthBundle keeps the first endpoint error as the shared failure reason", async () => {
-  const result = await loadDeviceHealthBundle({
+test("loadDeviceStatusBundle keeps the first endpoint error as the shared failure reason", async () => {
+  const result = await loadDeviceStatusBundle({
     health: async () => ({ ok: false, error: "health unavailable" }),
     resource: async () =>
       ({ ok: false, error: "resource unavailable" }) as ApiResult<ResourceSnapshotData>,
@@ -130,8 +130,8 @@ test("loadDeviceHealthBundle keeps the first endpoint error as the shared failur
   });
 });
 
-test("loadDeviceHealthBundle normalizes thrown transport errors to config.errorNetwork", async () => {
-  const result = await loadDeviceHealthBundle({
+test("loadDeviceStatusBundle normalizes thrown transport errors to config.errorNetwork", async () => {
+  const result = await loadDeviceStatusBundle({
     health: async () => {
       throw new Error("socket hang up");
     },

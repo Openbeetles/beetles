@@ -61,7 +61,7 @@ test('request serializes concurrent calls to the same device', async () => {
 
     assert.deepEqual(calls, ['http://device/api/health'])
 
-    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    first.resolve(jsonResponse({ body: { status: 'ok', network_status: { sta_connected: true } } }))
     assert.equal((await health).ok, true)
     assert.equal((await resource).ok, true)
     assert.deepEqual(calls, [
@@ -69,7 +69,7 @@ test('request serializes concurrent calls to the same device', async () => {
       'http://device/api/resource',
     ])
   } finally {
-    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    first.resolve(jsonResponse({ body: { status: 'ok', network_status: { sta_connected: true } } }))
     await Promise.allSettled([health, resource].filter(Boolean) as Promise<unknown>[])
     globalThis.fetch = originalFetch
     clearCsrfToken()
@@ -101,7 +101,7 @@ test('request queues csrf token fetches behind an in-flight device request', asy
 
     assert.deepEqual(calls, ['http://device/api/health'])
 
-    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    first.resolve(jsonResponse({ body: { status: 'ok', network_status: { sta_connected: true } } }))
     assert.equal((await health).ok, true)
     assert.equal(await csrf, 'csrf-queued')
     assert.deepEqual(calls, [
@@ -109,7 +109,7 @@ test('request queues csrf token fetches behind an in-flight device request', asy
       'http://device/api/csrf_token',
     ])
   } finally {
-    first.resolve(jsonResponse({ body: { wifi: 'connected' } }))
+    first.resolve(jsonResponse({ body: { status: 'ok', network_status: { sta_connected: true } } }))
     await Promise.allSettled([health, csrf].filter(Boolean) as Promise<unknown>[])
     globalThis.fetch = originalFetch
     clearCsrfToken()

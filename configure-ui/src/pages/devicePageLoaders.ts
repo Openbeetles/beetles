@@ -7,29 +7,29 @@ import type {
   ResourceSnapshotData,
 } from "../api/endpoints/system.ts";
 
-export interface DeviceHealthBundleData {
+export interface DeviceStatusBundleData {
   health: HealthData;
   resource: ResourceSnapshotData;
   metrics: MetricsSnapshotData;
 }
 
-export type DeviceHealthBundleResult =
-  | { ok: true; data: DeviceHealthBundleData }
+export type DeviceStatusBundleResult =
+  | { ok: true; data: DeviceStatusBundleData }
   | { ok: false; error: string };
 
 export type DeviceChannelConnectivityResult =
   | { ok: true; data: ChannelConnectivityItem[] }
   | { ok: false; error: string };
 
-export interface DeviceHealthLoaders {
+export interface DeviceStatusLoaders {
   health: () => Promise<ApiResult<HealthData>>;
   resource: () => Promise<ApiResult<ResourceSnapshotData>>;
   metrics: () => Promise<ApiResult<MetricsSnapshotData>>;
 }
 
-export async function loadDeviceHealthBundle(
-  loaders: DeviceHealthLoaders,
-): Promise<DeviceHealthBundleResult> {
+export async function loadDeviceStatusBundle(
+  loaders: DeviceStatusLoaders,
+): Promise<DeviceStatusBundleResult> {
   try {
     const healthRes = await loaders.health();
     if (!healthRes.ok || !healthRes.data) {

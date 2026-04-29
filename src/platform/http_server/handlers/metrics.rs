@@ -118,4 +118,31 @@ mod tests {
             "metrics body should not expose speaker underrun total"
         );
     }
+
+    #[test]
+    fn body_does_not_expose_health_or_resource_objects() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let payload = body(&ctx).expect("metrics body");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("valid metrics json");
+
+        for key in [
+            "status",
+            "network_status",
+            "display",
+            "audio",
+            "pressure",
+            "budget",
+            "admission",
+            "governance_metrics",
+            "network_gate_summary",
+            "planes",
+            "leases",
+            "threads",
+        ] {
+            assert!(
+                parsed.get(key).is_none(),
+                "metrics must not expose health/resource object: {key}"
+            );
+        }
+    }
 }

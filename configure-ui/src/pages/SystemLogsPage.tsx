@@ -190,7 +190,12 @@ export function SystemLogsPage() {
                   </Typography>
                   <KvList
                     items={kvEntries({
-                      [t("systemLogs.healthWifi")]: logsState.data.health.wifi,
+                      [t("systemLogs.healthWifi")]:
+                        logsState.data.health.network_status?.sta_connected === true
+                          ? t("device.wifiStaConnected")
+                          : logsState.data.health.network_status?.sta_connected === false
+                            ? t("device.wifiStaDisconnected")
+                            : t("common.na"),
                       [t("systemLogs.healthLastError")]:
                         logsState.data.health.last_error ?? t("common.na"),
                     })}

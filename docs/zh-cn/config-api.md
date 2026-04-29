@@ -1200,9 +1200,19 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 ## 状态与运维接口
 
+### 观测接口分层
+
+- `/api/health` 是轻量生命体征，适合首屏和状态灯；route class 为 `ImmediateRoute`。不要把资源诊断、workflow、完整网络快照放进这里。
+- `/api/resource` 是资源与准入诊断真源，适合状态面板和运维排查；route class 为 `SnapshotRoute`。它不是设备总状态，也不返回健康总览字段。
+- `/api/metrics` 是计数器和最近耗时；ESP 上为 immediate，Linux/宿主侧可走 diagnostic。不要在这里放 heap/resource/network 对象。
+- `/api/operator/status` 是面向人和 UI 的解释面，可聚合多个真源说明“为什么是这个状态”；不作为机器准入真源。
+- `/api/diagnose` 是主动诊断结果和建议；route class 为 `SlowDiagnosticRoute`，输出诊断项，不是原始快照仓库。
+
+旧字段 `health.wifi`、`health.network`、`health.workflow`、`resource.network`、`resource.firmware_identity`、`resource.crash` 已删除，不提供兼容。自定义前端不要依赖 `/api/health` 的诊断字段，也不要把 `/api/resource` 当作设备总状态接口。
+
 **GET /api/health**
 
-用途：读取轻量状态摘要。
+用途：读取轻量生命体征。
 
 鉴权：`已激活`
 
@@ -1210,15 +1220,18 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 返回体顶层字段：
 
-- `wifi`
+- `status`
+- `network_status`
+  - `stage`
+  - `sta_connected`
+  - `wall_clock_trusted`
 - `last_error`
 - `display`
 - `audio`
-- `workflow`
 
 **GET /api/operator/status**
 
-用途：读取完整运维状态。
+用途：读取面向人和 UI 的运维解释状态。
 
 鉴权：`已激活`
 
@@ -1244,7 +1257,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 **GET /api/metrics**
 
-用途：读取指标快照。
+用途：读取累计计数器和最近耗时。
 
 鉴权：`已激活`
 
@@ -1273,7 +1286,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 **GET /api/resource**
 
-用途：读取资源快照。
+用途：读取资源、准入和执行面诊断快照。
 
 鉴权：`已激活`
 
@@ -1293,26 +1306,25 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `inbound_depth`
 - `outbound_depth`
 - `budget`
-- `session_count`
-- `storage_used_kb`
-- `storage_total_kb`
 - `admission`
 - `governance_metrics`
 - `runtime_capabilities`
-- `plane_registry`
+- `network_gate_summary`
+- `planes`
 - `plane_lifecycle`
 - `leases`
 - `threads`
+- `display_lease_denied_total`
 - `write_back`
-- `firmware_identity`
-- `crash`
+- `session_count`
+- `storage_used_kb`
+- `storage_total_kb`
 
-资源端点属于运维/调试契约。治理字段用于诊断运行态压力，会随着新的执行面
-guard 继续扩展；客户端应允许未知字段存在。
+资源端点属于资源诊断契约。`display_lease_denied_total` 是显示执行面 lease 被拒绝的资源治理计数，不是 `/api/health.display` 健康字段。治理字段用于诊断运行态压力，会随着新的执行面 guard 继续扩展；客户端应允许未知字段存在，但不要期待这里返回健康总览、固件身份或 crash 证据。
 
 **GET /api/diagnose**
 
-用途：读取诊断结果。
+用途：读取主动诊断结果和建议。
 
 鉴权：`已激活`
 

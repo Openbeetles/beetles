@@ -96,19 +96,6 @@ pub fn record_crash_metadata(snapshot: CrashMetadataSnapshot) {
     }
 }
 
-pub(crate) fn crash_metadata_snapshot() -> CrashMetadataSnapshot {
-    let provided = CRASH_METADATA_PROVIDER
-        .get()
-        .map(|provider| provider())
-        .unwrap_or_default();
-    let recorded = RECORDED_CRASH_METADATA
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .unwrap_or_default();
-    provided.merge_prefer_self(recorded)
-}
-
 #[cfg(test)]
 pub fn reset_crash_metadata_for_tests() {
     if let Ok(mut guard) = RECORDED_CRASH_METADATA.lock() {

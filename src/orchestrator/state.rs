@@ -279,11 +279,6 @@ pub struct ResourceSnapshot {
 /// Admission counters and last-latency facts folded into the resource diagnostic snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ResourceAdmissionSnapshot {
-    pub active_http_count: u32,
-    pub active_wss_count: u32,
-    pub active_agent_tasks: u32,
-    pub inbound_depth: u32,
-    pub outbound_depth: u32,
     pub http_permit_wait_last_ms: u64,
     pub http_route_queue_wait_last_ms: u64,
     pub http_route_handler_last_ms: u64,
@@ -308,10 +303,10 @@ pub struct ResourceGovernanceMetricsSnapshot {
     pub event_ingress_stale_drop_total: u64,
 }
 
-/// Last crash metadata exposed by resource diagnostics.
+/// Last crash metadata for operator and diagnostic explanation surfaces.
 ///
-/// These fields remain `None` until a real panic/coredump evidence source has
-/// provided data; the resource API must not synthesize fake PCs or reasons.
+/// These fields remain `None` until a real panic/coredump evidence source has provided data;
+/// callers must not synthesize fake PCs or reasons.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CrashMetadataSnapshot {
     pub last_panic_pc: Option<String>,
@@ -334,7 +329,6 @@ pub struct ResourceDiagnosticSnapshot {
     pub threads: crate::runtime::thread_registry::ThreadRegistrySnapshot,
     pub display_lease_denied_total: u64,
     pub write_back: crate::runtime::write_back::WriteBackSnapshot,
-    pub crash: CrashMetadataSnapshot,
 }
 
 impl ResourceSnapshot {
@@ -432,11 +426,6 @@ impl ResourceDiagnosticSnapshot {
         let leases = resource.leases.clone();
         Self {
             admission: ResourceAdmissionSnapshot {
-                active_http_count: resource.active_http_count,
-                active_wss_count: resource.active_wss_count,
-                active_agent_tasks: resource.active_agent_tasks,
-                inbound_depth: resource.inbound_depth,
-                outbound_depth: resource.outbound_depth,
                 http_permit_wait_last_ms: metrics.http_permit_wait_last_ms,
                 http_route_queue_wait_last_ms: metrics.http_route_queue_wait_last_ms,
                 http_route_handler_last_ms: metrics.http_route_handler_last_ms,
@@ -464,7 +453,6 @@ impl ResourceDiagnosticSnapshot {
             threads: crate::runtime::thread_registry::snapshot(),
             display_lease_denied_total: crate::display::display_lease_denied_total(),
             write_back: crate::runtime::write_back::snapshot(),
-            crash: crate::orchestrator::crash_metadata_snapshot(),
             resource,
         }
     }

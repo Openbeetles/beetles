@@ -1200,9 +1200,19 @@ Success response: `200 application/json`
 
 ## Status and operations
 
+### Observability API Layers
+
+- `/api/health` is lightweight liveness for first-screen status and LEDs; its route class is `ImmediateRoute`. Do not put resource diagnostics, workflow data, or full network snapshots here.
+- `/api/resource` is the source of truth for resource and admission diagnostics; its route class is `SnapshotRoute`. It is not the device-wide status endpoint and does not return health overview fields.
+- `/api/metrics` carries counters and recent latency values; it is immediate on ESP and may be diagnostic on Linux/host builds. Do not put heap/resource/network objects here.
+- `/api/operator/status` is the explanation surface for humans and UI. It may aggregate several sources to explain why the device is in its current state, but it is not a machine-admission source.
+- `/api/diagnose` returns active diagnosis results and suggestions; its route class is `SlowDiagnosticRoute`. It returns diagnosis items, not a raw snapshot warehouse.
+
+The old fields `health.wifi`, `health.network`, `health.workflow`, `resource.network`, `resource.firmware_identity`, and `resource.crash` have been removed with no compatibility layer. Custom frontends must not depend on diagnostic fields from `/api/health`, and must not treat `/api/resource` as the device-wide status endpoint.
+
 **GET /api/health**
 
-Purpose: read the lightweight status summary.
+Purpose: read lightweight liveness.
 
 Auth: `Activated`
 
@@ -1210,15 +1220,18 @@ Success response: `200 application/json`
 
 Top-level fields:
 
-- `wifi`
+- `status`
+- `network_status`
+  - `stage`
+  - `sta_connected`
+  - `wall_clock_trusted`
 - `last_error`
 - `display`
 - `audio`
-- `workflow`
 
 **GET /api/operator/status**
 
-Purpose: read the full operator-facing status.
+Purpose: read the human/UI operator explanation status.
 
 Auth: `Activated`
 
@@ -1244,7 +1257,7 @@ Top-level fields:
 
 **GET /api/metrics**
 
-Purpose: read the metrics snapshot.
+Purpose: read counters and recent latency values.
 
 Auth: `Activated`
 
@@ -1273,7 +1286,7 @@ Success response: `200 text/plain`
 
 **GET /api/resource**
 
-Purpose: read the resource snapshot.
+Purpose: read the resource, admission, and execution-plane diagnostic snapshot.
 
 Auth: `Activated`
 
@@ -1293,27 +1306,25 @@ Top-level fields:
 - `inbound_depth`
 - `outbound_depth`
 - `budget`
-- `session_count`
-- `storage_used_kb`
-- `storage_total_kb`
 - `admission`
 - `governance_metrics`
 - `runtime_capabilities`
-- `plane_registry`
+- `network_gate_summary`
+- `planes`
 - `plane_lifecycle`
 - `leases`
 - `threads`
+- `display_lease_denied_total`
 - `write_back`
-- `firmware_identity`
-- `crash`
+- `session_count`
+- `storage_used_kb`
+- `storage_total_kb`
 
-The resource endpoint is an operator/debug contract. The governance fields are
-snapshots for diagnosing runtime pressure and may grow as new execution-plane
-guards are added; clients should tolerate unknown fields.
+The resource endpoint is a resource-diagnostics contract. `display_lease_denied_total` is a resource-governance counter for denied display-plane leases, not the `/api/health.display` health field. Governance fields diagnose runtime pressure and may grow as new execution-plane guards are added; clients should tolerate unknown fields, but should not expect health overview, firmware identity, or crash evidence here.
 
 **GET /api/diagnose**
 
-Purpose: read diagnostic results.
+Purpose: read active diagnosis results and suggestions.
 
 Auth: `Activated`
 

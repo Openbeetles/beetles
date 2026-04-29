@@ -1517,6 +1517,44 @@ mod tests {
     }
 
     #[test]
+    fn observability_route_classes_preserve_contract_boundaries() {
+        let health = route_spec_for("GET", ROUTE_HEALTH).expect("health route");
+        assert_eq!(health.execution_class, RouteExecutionClass::ImmediateRoute);
+        assert_eq!(health.operator_access, OperatorRouteAccess::AlwaysOn);
+
+        let resource = route_spec_for("GET", ROUTE_RESOURCE).expect("resource route");
+        assert_eq!(resource.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(resource.operator_access, OperatorRouteAccess::AlwaysOn);
+
+        let operator_status =
+            route_spec_for("GET", ROUTE_OPERATOR_STATUS).expect("operator status route");
+        assert_eq!(
+            operator_status.execution_class,
+            RouteExecutionClass::SlowDiagnosticRoute
+        );
+        assert_eq!(
+            operator_status.operator_access,
+            OperatorRouteAccess::AlwaysOn
+        );
+
+        let diagnose = route_spec_for("GET", ROUTE_DIAGNOSE).expect("diagnose route");
+        assert_eq!(
+            diagnose.execution_class,
+            RouteExecutionClass::SlowDiagnosticRoute
+        );
+        assert_eq!(diagnose.operator_access, OperatorRouteAccess::AlwaysOn);
+
+        let metrics = route_spec_for("GET", ROUTE_METRICS).expect("metrics route");
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        assert_eq!(metrics.execution_class, RouteExecutionClass::ImmediateRoute);
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        assert_eq!(
+            metrics.execution_class,
+            RouteExecutionClass::SlowDiagnosticRoute
+        );
+    }
+
+    #[test]
     fn config_worker_budget_fits_normal_esp_config_mode_largest_block() {
         let contract = RouteExecutionClass::AsyncConfigRoute
             .worker_contract()

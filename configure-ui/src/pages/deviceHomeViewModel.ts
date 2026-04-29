@@ -104,20 +104,6 @@ const RECOVERY_METRIC_DEFS = [
   { id: "wifi_ap_restart_total", labelKey: "device.systemStatusWifiApRestart" },
 ] as const;
 
-const WORKFLOW_SUMMARY_DEFS = [
-  {
-    id: "workflow_total_retained",
-    source: "total_retained",
-    labelKey: "device.systemStatusWorkflowRecent",
-  },
-  { id: "workflow_executed", source: "executed", labelKey: "device.systemStatusWorkflowExecuted" },
-  { id: "workflow_deferred", source: "deferred", labelKey: "device.systemStatusWorkflowDeferred" },
-  { id: "workflow_suppressed", source: "suppressed", labelKey: "device.systemStatusWorkflowSuppressed" },
-  { id: "workflow_canceled", source: "canceled", labelKey: "device.systemStatusWorkflowCanceled" },
-  { id: "workflow_no_trigger", source: "no_trigger", labelKey: "device.systemStatusWorkflowNoTrigger" },
-  { id: "workflow_failed", source: "failed", labelKey: "device.systemStatusWorkflowFailed" },
-] as const;
-
 export function buildMemoryMetrics(
   runtimeKind: DeviceRuntimeKind,
   resource: ResourceSnapshotData | null,
@@ -295,24 +281,14 @@ export function buildFaultAndRecoveryMetrics(
   return { faults, recovery };
 }
 
-export function buildWorkflowSummaryFields(health: HealthData | null): HomeMetricField[] {
-  const workflow = health?.workflow;
-  if (!workflow) return [];
-  return WORKFLOW_SUMMARY_DEFS.filter(({ source }) => workflow[source] != null).map(
-    ({ id, source, labelKey }) => ({
-      id,
-      labelKey,
-      value: Number(workflow[source] ?? 0),
-    }),
-  );
-}
-
 export function buildDeviceOperationalStatusKey(
   health: HealthData | null,
   resource: ResourceSnapshotData | null,
 ): string | null {
   if (!health && !resource) return null;
-  if (health?.wifi === "disconnected") return "device.runtimeSummaryWifiDisconnected";
+  if (health?.network_status?.sta_connected === false) {
+    return "device.runtimeSummaryWifiDisconnected";
+  }
   if (health?.last_error && health.last_error !== "none") {
     return "device.runtimeSummaryError";
   }

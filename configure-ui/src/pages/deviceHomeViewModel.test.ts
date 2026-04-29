@@ -13,7 +13,6 @@ import {
   buildMemoryMetrics,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
-  buildWorkflowSummaryFields,
 } from "./deviceHomeViewModel.ts";
 
 test("buildMemoryMetrics hides Linux-only non-applicable PSRAM and largest-block placeholders", () => {
@@ -121,38 +120,6 @@ test("buildFaultAndRecoveryMetrics keeps WiFi recovery events out of fault count
   );
 });
 
-test("buildWorkflowSummaryFields maps optional health workflow audit fields", () => {
-  assert.deepEqual(buildWorkflowSummaryFields({}), []);
-
-  const health: HealthData = {
-    workflow: {
-      total_retained: 8,
-      executed: 3,
-      deferred: 1,
-      suppressed: 2,
-      canceled: 1,
-      no_trigger: 1,
-      failed: 0,
-    },
-  };
-
-  const fields = buildWorkflowSummaryFields(health);
-
-  assert.deepEqual(
-    fields.map((item) => item.id),
-    [
-      "workflow_total_retained",
-      "workflow_executed",
-      "workflow_deferred",
-      "workflow_suppressed",
-      "workflow_canceled",
-      "workflow_no_trigger",
-      "workflow_failed",
-    ],
-  );
-  assert.equal(fields.find((item) => item.id === "workflow_executed")?.value, 3);
-});
-
 test("buildRuntimeStrategyView explains cautious pressure with behavior hints and budget stats", () => {
   const resource: ResourceSnapshotData = {
     pressure: "Cautious",
@@ -188,7 +155,7 @@ test("buildRuntimeStrategyView explains cautious pressure with behavior hints an
 
 test("buildDeviceOperationalStatusKey derives homepage runtime state from health and resource", () => {
   const health: HealthData = {
-    wifi: "connected",
+    network_status: { sta_connected: true },
     last_error: "none",
   };
   const resource: ResourceSnapshotData = {
@@ -198,6 +165,17 @@ test("buildDeviceOperationalStatusKey derives homepage runtime state from health
   const key = buildDeviceOperationalStatusKey(health, resource);
 
   assert.equal(key, "device.runtimeSummaryCritical");
+});
+
+test("buildDeviceOperationalStatusKey derives disconnected state from health network_status", () => {
+  const health: HealthData = {
+    network_status: { sta_connected: false },
+    last_error: "none",
+  };
+
+  const key = buildDeviceOperationalStatusKey(health, { pressure: "Normal" });
+
+  assert.equal(key, "device.runtimeSummaryWifiDisconnected");
 });
 
 test("buildRuntimeTelemetryFields hides Linux-only runtime metrics on ESP", () => {

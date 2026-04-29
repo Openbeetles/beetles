@@ -2,7 +2,6 @@
 
 use super::HandlerContext;
 use crate::orchestrator;
-use crate::platform::firmware_identity;
 use crate::runtime;
 
 #[derive(serde::Serialize)]
@@ -22,15 +21,13 @@ struct ResourceBody {
     admission: orchestrator::ResourceAdmissionSnapshot,
     governance_metrics: orchestrator::ResourceGovernanceMetricsSnapshot,
     runtime_capabilities: Vec<orchestrator::RuntimeCapabilityState>,
-    network: crate::state::NetworkRuntimeSnapshot,
+    network_gate_summary: NetworkGateSummaryBody,
     planes: runtime::PlaneRegistrySnapshot,
     plane_lifecycle: runtime::PlaneLifecycleSnapshot,
     leases: runtime::LeaseSnapshot,
     threads: runtime::thread_registry::ThreadRegistrySnapshot,
     display_lease_denied_total: u64,
     write_back: runtime::write_back::WriteBackSnapshot,
-    firmware_identity: firmware_identity::FirmwareIdentitySnapshot,
-    crash: orchestrator::CrashMetadataSnapshot,
     session_count: u32,
     storage_used_kb: u32,
     storage_total_kb: u32,
@@ -51,10 +48,22 @@ struct ResourceBudgetBody {
     reconnect_backoff_secs: u64,
 }
 
+#[derive(serde::Serialize)]
+struct NetworkGateSummaryBody {
+    stage: crate::state::NetworkWifiStage,
+    outbound_settled: bool,
+    #[serde(rename = "wall_clock_trusted")]
+    wall_clock_trustworthy: bool,
+}
+
 /// 生成 resource JSON body。
 pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let diag = orchestrator::resource_diagnostic_snapshot();
     let snap = diag.resource;
+    let network = crate::state::network_runtime_snapshot(
+        crate::platform::time::wall_clock_is_trustworthy(),
+        3,
+    );
     let payload = ResourceBody {
         pressure: snap.pressure,
         tls_fragmentation_risk: snap.tls_fragmentation_risk,
@@ -77,18 +86,17 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
         admission: diag.admission,
         governance_metrics: diag.governance_metrics,
         runtime_capabilities: diag.runtime_capabilities,
-        network: crate::state::network_runtime_snapshot(
-            crate::platform::time::wall_clock_is_trustworthy(),
-            3,
-        ),
+        network_gate_summary: NetworkGateSummaryBody {
+            stage: network.last_wifi_stage,
+            outbound_settled: network.outbound_settled,
+            wall_clock_trustworthy: network.wall_clock_trustworthy,
+        },
         planes: diag.planes,
         plane_lifecycle: diag.plane_lifecycle,
         leases: diag.leases,
         threads: diag.threads,
         display_lease_denied_total: diag.display_lease_denied_total,
         write_back: diag.write_back,
-        firmware_identity: firmware_identity::snapshot(),
-        crash: diag.crash,
         session_count: snap.session_count,
         storage_used_kb: snap.storage_used_kb,
         storage_total_kb: snap.storage_total_kb,
@@ -135,15 +143,13 @@ mod tests {
             "admission",
             "governance_metrics",
             "runtime_capabilities",
-            "network",
+            "network_gate_summary",
             "planes",
             "plane_lifecycle",
             "leases",
             "threads",
             "display_lease_denied_total",
             "write_back",
-            "firmware_identity",
-            "crash",
             "session_count",
             "storage_used_kb",
             "storage_total_kb",
@@ -151,13 +157,34 @@ mod tests {
             assert!(parsed.get(key).is_some(), "missing resource field: {key}");
         }
 
+        for key in [
+            "network",
+            "workflow",
+            "last_error",
+            "display",
+            "audio",
+            "firmware_identity",
+            "crash",
+        ] {
+            assert!(
+                parsed.get(key).is_none(),
+                "resource must not expose cross-contract field: {key}"
+            );
+        }
+
         assert!(parsed["budget"]["level"].is_string());
-        assert!(parsed["network"]["last_wifi_stage"].is_string());
+        assert!(parsed["network_gate_summary"]["stage"].is_string());
+        assert!(parsed["network_gate_summary"]["outbound_settled"].is_boolean());
+        assert!(parsed["network_gate_summary"]["wall_clock_trusted"].is_boolean());
         assert!(parsed["budget"]["system_prompt_max"].is_number());
         assert!(parsed["budget"]["messages_max"].is_number());
         assert!(parsed["budget"]["response_body_max"].is_number());
         assert!(parsed["budget"]["reconnect_backoff_secs"].is_number());
-        assert!(parsed["admission"]["active_http_count"].is_number());
+        assert!(parsed["admission"].get("active_http_count").is_none());
+        assert!(parsed["admission"].get("active_wss_count").is_none());
+        assert!(parsed["admission"].get("active_agent_tasks").is_none());
+        assert!(parsed["admission"].get("inbound_depth").is_none());
+        assert!(parsed["admission"].get("outbound_depth").is_none());
         assert!(parsed["admission"]["http_permit_wait_last_ms"].is_number());
         assert!(parsed["admission"]["http_route_queue_wait_last_ms"].is_number());
         assert!(parsed["admission"]["http_route_handler_last_ms"].is_number());
@@ -185,21 +212,10 @@ mod tests {
         assert!(parsed["display_lease_denied_total"].is_number());
         assert!(parsed["write_back"]["queued"].is_number());
         assert!(parsed["write_back"]["deferred_total"].is_number());
-        assert!(parsed["firmware_identity"]["build_git_sha"].is_string());
-        assert!(parsed["firmware_identity"]["build_git_dirty"].is_string());
-        assert!(parsed["firmware_identity"]["build_time_utc"].is_string());
-        assert!(parsed["firmware_identity"]["partition_csv_sha256"].is_string());
-        assert!(parsed["firmware_identity"]["booted_artifact_id"].is_null());
-        assert!(parsed["firmware_identity"]["last_attempted_artifact_id"].is_null());
-        assert!(parsed["crash"]["last_panic_pc"].is_null());
-        assert!(parsed["crash"]["last_panic_core"].is_null());
-        assert!(parsed["crash"]["last_panic_reason"].is_null());
-        assert!(parsed["crash"]["last_symbolize_hint"].is_null());
-        assert!(parsed["crash"]["last_resource_baseline_before_panic"].is_null());
     }
 
     #[test]
-    fn body_serializes_recorded_crash_metadata_from_real_source_entrypoint() {
+    fn body_omits_recorded_crash_metadata_from_resource_contract() {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         crate::orchestrator::reset_crash_metadata_for_tests();
         crate::orchestrator::record_crash_metadata(crate::orchestrator::CrashMetadataSnapshot {
@@ -219,17 +235,7 @@ mod tests {
         let payload = body(&ctx).expect("resource body");
         let parsed: Value = serde_json::from_str(&payload).expect("valid resource json");
 
-        assert_eq!(parsed["crash"]["last_panic_pc"], "0x40380a45");
-        assert_eq!(parsed["crash"]["last_panic_core"], 1);
-        assert_eq!(parsed["crash"]["last_panic_reason"], "LoadProhibited");
-        assert!(parsed["crash"]["last_symbolize_hint"]
-            .as_str()
-            .unwrap()
-            .contains("scripts/esp_symbolize_panic.sh"));
-        assert!(parsed["crash"]["last_resource_baseline_before_panic"]
-            .as_str()
-            .unwrap()
-            .contains("pressure=Critical"));
+        assert!(parsed.get("crash").is_none());
         crate::orchestrator::reset_crash_metadata_for_tests();
     }
 }

@@ -514,17 +514,17 @@ fi
 if ! rg -n 'pub struct CrashMetadataSnapshot' src/orchestrator/state.rs >/dev/null ||
    ! rg -n 'record_crash_metadata|register_crash_metadata_provider|crash_metadata_snapshot' src/orchestrator/mod.rs src/orchestrator/state.rs >/dev/null ||
    ! rg -n 'pub mod crash_evidence' src/platform/mod.rs >/dev/null ||
-   ! rg -n 'esp_reset_reason|ESP_RST_PANIC|ESP_RST_TASK_WDT|ESP_RST_CPU_LOCKUP' src/platform/crash_evidence.rs >/dev/null ||
-   ! rg -n '"crash"|last_panic_pc|last_resource_baseline_before_panic' src/platform/http_server/handlers/resource.rs >/dev/null; then
-  echo "FAIL: crash metadata evidence source/resource diagnostics contract is incomplete" >&2
+   ! rg -n 'esp_reset_reason|ESP_RST_PANIC|ESP_RST_TASK_WDT|ESP_RST_CPU_LOCKUP' src/platform/crash_evidence.rs >/dev/null; then
+  echo "FAIL: crash metadata evidence source contract is incomplete" >&2
   exit 1
 fi
 
-if ! rg -n 'FirmwareIdentitySnapshot|booted_artifact_id|last_attempted_artifact_id' src/platform/firmware_identity.rs >/dev/null ||
-   ! rg -n 'firmware_identity' src/platform/http_server/handlers/resource.rs >/dev/null; then
-  echo "FAIL: firmware artifact identity is no longer exposed through resource diagnostics" >&2
+if ! rg -n 'FirmwareIdentitySnapshot|booted_artifact_id|last_attempted_artifact_id' src/platform/firmware_identity.rs >/dev/null; then
+  echo "FAIL: firmware artifact identity snapshot source is incomplete" >&2
   exit 1
 fi
+
+"$SCRIPT_DIR/check_api_observability_contracts.sh"
 
 # P0.3 timed-wait allowlist:
 # - platform/audio_drivers.rs keeps std-compatible audio ring waits; this worker

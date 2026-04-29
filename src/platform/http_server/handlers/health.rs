@@ -23,34 +23,42 @@ struct AudioHealthCapabilities {
 
 #[derive(serde::Serialize)]
 struct HealthBody {
-    wifi: &'static str,
-    network: crate::state::NetworkRuntimeSnapshot,
+    status: &'static str,
+    network_status: NetworkHealthStatus,
     last_error: String,
     display: DisplayHealth,
     audio: AudioHealth,
-    workflow: crate::runtime::WorkflowAuditSummary,
+}
+
+#[derive(serde::Serialize)]
+struct NetworkHealthStatus {
+    stage: crate::state::NetworkWifiStage,
+    sta_connected: bool,
+    #[serde(rename = "wall_clock_trusted")]
+    wall_clock_trustworthy: bool,
 }
 
 /// 生成 health JSON body（轻量状态摘要，无敏感信息）。
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     crate::platform::refresh_runtime_state();
-    let wifi = if crate::state::wifi_sta_connected() {
-        "connected"
-    } else {
-        "disconnected"
-    };
     let last_err = state::get_current_error().unwrap_or_else(|| "none".to_string());
+    let status = if last_err == "none" { "ok" } else { "degraded" };
+    let network = crate::state::network_runtime_snapshot(
+        crate::platform::time::wall_clock_is_trustworthy(),
+        3,
+    );
     let audio_caps = if crate::compiled_voice_capability() {
         ctx.platform.audio_duplex_capabilities()
     } else {
         crate::platform::AudioDuplexCapabilities::unavailable()
     };
     let payload = HealthBody {
-        wifi,
-        network: crate::state::network_runtime_snapshot(
-            crate::platform::time::wall_clock_is_trustworthy(),
-            3,
-        ),
+        status,
+        network_status: NetworkHealthStatus {
+            stage: network.last_wifi_stage,
+            sta_connected: network.sta_ip_present,
+            wall_clock_trustworthy: network.wall_clock_trustworthy,
+        },
         last_error: last_err,
         display: DisplayHealth {
             available: ctx.platform.display_available(),
@@ -62,7 +70,6 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
                 speaker_output: audio_caps.speaker_output,
             },
         },
-        workflow: crate::runtime::workflow_audit_snapshot(8).summary,
     };
     serde_json::to_string(&payload).map_err(std::io::Error::other)
 }
@@ -82,21 +89,36 @@ mod tests {
         let payload = body(&ctx).unwrap();
         let parsed: Value = serde_json::from_str(&payload).unwrap();
 
-        assert_eq!(
-            parsed.get("wifi").and_then(Value::as_str),
-            Some("disconnected")
+        assert_eq!(parsed.get("status").and_then(Value::as_str), Some("ok"));
+        assert!(
+            parsed.get("wifi").is_none(),
+            "health must not expose legacy wifi"
+        );
+        assert!(
+            parsed.get("network").is_none(),
+            "health must not expose full network snapshot"
+        );
+        assert!(
+            parsed.get("workflow").is_none(),
+            "health must not expose workflow diagnostics"
         );
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
-        assert!(parsed.get("workflow").is_some());
-        assert!(parsed.get("network").is_some());
+        assert!(parsed.get("network_status").is_some());
         assert!(parsed.get("last_error").is_some());
         assert_eq!(
-            parsed["network"]
-                .get("last_wifi_stage")
+            parsed["network_status"]
+                .get("stage")
                 .and_then(Value::as_str),
             Some("ap_only")
         );
+        assert_eq!(
+            parsed["network_status"]
+                .get("sta_connected")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(parsed["network_status"].get("wall_clock_trusted").is_some());
         assert!(parsed["display"]["available"].is_boolean());
         assert!(parsed["audio"]["duplex_profile"].is_string());
         assert!(parsed["audio"]["duplex_capabilities"]
@@ -105,7 +127,6 @@ mod tests {
         assert!(parsed["audio"]["duplex_capabilities"]
             .get("speaker_output")
             .is_some());
-        assert!(parsed["workflow"]["executed"].is_number());
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

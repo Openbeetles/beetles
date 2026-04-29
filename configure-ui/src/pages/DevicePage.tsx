@@ -46,7 +46,7 @@ import {
 } from "./deviceHomeViewModel";
 import {
   loadDeviceChannelConnectivity,
-  loadDeviceHealthBundle,
+  loadDeviceStatusBundle,
 } from "./devicePageLoaders";
 import {
   CONFIG_PANEL_LOADING_SX,
@@ -500,7 +500,7 @@ export function DevicePage() {
       if (clearError) setHealthError("");
       setHealthLoading(true);
       let active = true;
-      void loadDeviceHealthBundle({
+      void loadDeviceStatusBundle({
         health: api.system.health,
         resource: api.system.resource,
         metrics: api.system.metrics,
@@ -813,9 +813,9 @@ export function DevicePage() {
           {[
             {
               label: t("device.systemStatusWifiSta"),
-              value: wifiStaLabel(healthData.wifi, t),
+              value: wifiStaLabel(healthData.network_status?.sta_connected, t),
               color:
-                healthData.wifi === "connected"
+                healthData.network_status?.sta_connected
                   ? "var(--semantic-success)"
                   : "var(--semantic-warning)",
               active: true,
