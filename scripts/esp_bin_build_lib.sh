@@ -37,8 +37,10 @@ beetle_supported_esp_boards() {
       is_esp = 0
       next
     }
-    current != "" && /^target[[:space:]]*=/ && /-espidf/ {
-      is_esp = 1
+    current != "" && /^target[[:space:]]*=/ {
+      if ($0 ~ /"xtensa-esp32s3-espidf"/ || $0 ~ /"riscv32imafc-esp-espidf"/) {
+        is_esp = 1
+      }
     }
     END {
       if (current != "" && is_esp) {
@@ -143,11 +145,7 @@ beetle_git_dirty() {
 beetle_target_mcu_from_triple() {
   local target="${1:-}"
   case "$target" in
-    xtensa-esp32-espidf) printf '%s\n' 'esp32' ;;
-    xtensa-esp32s2-espidf) printf '%s\n' 'esp32s2' ;;
     xtensa-esp32s3-espidf) printf '%s\n' 'esp32s3' ;;
-    riscv32imc-esp-espidf) printf '%s\n' 'esp32c3' ;;
-    riscv32imac-esp-espidf) printf '%s\n' 'esp32c6' ;;
     riscv32imafc-esp-espidf) printf '%s\n' 'esp32p4' ;;
     *) return 1 ;;
   esac
@@ -156,11 +154,7 @@ beetle_target_mcu_from_triple() {
 beetle_manifest_chip_family_from_target() {
   local target="${1:-}"
   case "$target" in
-    xtensa-esp32-espidf) printf '%s\n' 'ESP32' ;;
-    xtensa-esp32s2-espidf) printf '%s\n' 'ESP32-S2' ;;
     xtensa-esp32s3-espidf) printf '%s\n' 'ESP32-S3' ;;
-    riscv32imc-esp-espidf) printf '%s\n' 'ESP32-C3' ;;
-    riscv32imac-esp-espidf) printf '%s\n' 'ESP32-C6' ;;
     riscv32imafc-esp-espidf) printf '%s\n' 'ESP32-P4' ;;
     *) return 1 ;;
   esac
@@ -209,4 +203,36 @@ beetle_flasher_args_value() {
   local key="${2:-}"
   [[ -f "$flasher_args_json" && -n "$key" ]] || return 1
   sed -n "s/.*\"${key}\":[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$flasher_args_json" | head -n 1
+}
+
+beetle_flasher_args_image_offset() {
+  local flasher_args_json="${1:-}"
+  local image_name="${2:-}"
+
+  if [[ -z "$flasher_args_json" || -z "$image_name" || ! -f "$flasher_args_json" ]]; then
+    return 1
+  fi
+
+  python3 - "$flasher_args_json" "$image_name" <<'PY'
+import json
+import re
+import sys
+
+path, image_name = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+entry = data.get(image_name)
+if not isinstance(entry, dict):
+    sys.exit(1)
+
+offset = entry.get("offset")
+if not isinstance(offset, str):
+    sys.exit(1)
+
+if not re.fullmatch(r"(0[xX][0-9a-fA-F]+|[0-9]+)", offset):
+    sys.exit(1)
+
+print(offset)
+PY
 }

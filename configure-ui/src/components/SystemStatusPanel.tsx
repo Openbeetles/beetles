@@ -64,6 +64,7 @@ function CircularGauge({
   max,
   label,
   subLabel,
+  centerLabel,
   color = "var(--primary)",
   size = 140,
   strokeWidth = 12,
@@ -72,6 +73,7 @@ function CircularGauge({
   max: number;
   label: string;
   subLabel?: string;
+  centerLabel?: string;
   color?: string;
   size?: number;
   strokeWidth?: number;
@@ -122,7 +124,11 @@ function CircularGauge({
           }}
         >
           <Typography variant="h4" sx={{ fontFamily: "var(--font-mono)", fontWeight: 700, lineHeight: 1, color: "var(--foreground)" }}>
-            {Math.round(percent * 100)}<span style={{ fontSize: "0.5em", color: "var(--text-tertiary)" }}>%</span>
+            {centerLabel ?? (
+              <>
+                {Math.round(percent * 100)}<span style={{ fontSize: "0.5em", color: "var(--text-tertiary)" }}>%</span>
+              </>
+            )}
           </Typography>
         </Box>
       </Box>
@@ -590,8 +596,19 @@ export function SystemStatusPanel({
   const strategy = buildRuntimeStrategyView(res);
   const runtimeTelemetry = buildRuntimeTelemetryFields(runtimeKind, res, met);
 
-  const storageUsed = res?.storage_used_kb || 0;
-  const storageTotal = res?.storage_total_kb || 0;
+  const storageUsed = res?.storage_used_kb;
+  const storageTotal = res?.storage_total_kb;
+  const hasStorageUsage =
+    typeof storageUsed === "number" &&
+    typeof storageTotal === "number" &&
+    Number.isFinite(storageUsed) &&
+    Number.isFinite(storageTotal) &&
+    storageTotal > 0;
+  const storageGaugeValue = hasStorageUsage ? Math.max(storageUsed, 0) : 0;
+  const storageGaugeMax = hasStorageUsage ? storageTotal : 1;
+  const storageSubLabel = hasStorageUsage
+    ? `${Math.max(storageUsed, 0)} / ${storageTotal} KB`
+    : t("common.na");
 
   const hasErrors = 
     groupedFaults.faults.some((item) => item.value > 0) ||
@@ -603,12 +620,13 @@ export function SystemStatusPanel({
       {/* Storage Gauge (Span 4 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusStorage")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.storage} variant="tile" />}>
-          <CircularGauge 
-            value={storageUsed} 
-            max={storageTotal} 
-            label={t("device.systemStatusStorage")} 
-            subLabel={`${storageUsed} / ${storageTotal} KB`} 
-            color="var(--primary)" 
+          <CircularGauge
+            value={storageGaugeValue}
+            max={storageGaugeMax}
+            label={t("device.systemStatusStorage")}
+            subLabel={storageSubLabel}
+            centerLabel={hasStorageUsage ? undefined : t("common.na")}
+            color="var(--primary)"
           />
         </DashboardCard>
       </Box>

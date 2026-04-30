@@ -190,11 +190,7 @@ default_package_profile_for_target() {
 target_mcu_from_triple() {
   local target="$1"
   case "$target" in
-    xtensa-esp32-espidf) printf '%s\n' 'esp32' ;;
-    xtensa-esp32s2-espidf) printf '%s\n' 'esp32s2' ;;
     xtensa-esp32s3-espidf) printf '%s\n' 'esp32s3' ;;
-    riscv32imc-esp-espidf) printf '%s\n' 'esp32c3' ;;
-    riscv32imac-esp-espidf) printf '%s\n' 'esp32c6' ;;
     riscv32imafc-esp-espidf) printf '%s\n' 'esp32p4' ;;
     *) return 1 ;;
   esac

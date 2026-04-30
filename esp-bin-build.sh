@@ -352,6 +352,18 @@ for board in "${boards[@]}"; do
   flash_mode="${flash_mode:-dio}"
   flash_freq="${flash_freq:-80m}"
   flash_size="${flash_size_from_args:-$flash_size}"
+  bootloader_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" bootloader)" || {
+    echo "Error: bootloader offset missing or invalid in $flasher_args_json" >&2
+    exit 1
+  }
+  partition_table_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" partition-table)" || {
+    echo "Error: partition-table offset missing or invalid in $flasher_args_json" >&2
+    exit 1
+  }
+  app_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" app)" || {
+    echo "Error: app offset missing or invalid in $flasher_args_json" >&2
+    exit 1
+  }
 
   output_file="$stage_dir/${board}.bin"
   python3 -m esptool --chip "$flash_chip" merge-bin \
@@ -359,9 +371,9 @@ for board in "${boards[@]}"; do
     --flash-mode "$flash_mode" \
     --flash-size "$flash_size" \
     --flash-freq "$flash_freq" \
-    0x0 "$bootloader_bin" \
-    0x8000 "$partition_table_bin" \
-    0x20000 "$app_bin"
+    "$bootloader_offset" "$bootloader_bin" \
+    "$partition_table_offset" "$partition_table_bin" \
+    "$app_offset" "$app_bin"
 
   manifest_file="$stage_dir/${board}.manifest.json"
   write_board_manifest "$manifest_file" "$display_name" "$version" "$chip_family" "$board"

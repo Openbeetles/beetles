@@ -156,19 +156,27 @@ assert_eq \
   "$(beetle_manifest_chip_family_from_target "riscv32imafc-esp-espidf")" \
   "ESP32-P4" \
   "esp-bin-build manifests should use the ESP Web Tools chip family for P4 boards"
+if beetle_target_mcu_from_triple "riscv32imc-esp-espidf" >/dev/null 2>&1; then
+  echo "FAIL: ESP32-C3 target must not be accepted as an official Beetle ESP target" >&2
+  exit 1
+fi
+if beetle_manifest_chip_family_from_target "xtensa-esp32s2-espidf" >/dev/null 2>&1; then
+  echo "FAIL: ESP32-S2 target must not be published in official Beetle ESP manifests" >&2
+  exit 1
+fi
 
 assert_file_contains \
   "$BUILD_SCRIPT_PATH" \
-  '0x0 "$BOOTLOADER_BIN"' \
-  "build.sh should flash the bootloader at offset 0x0"
+  'BOOTLOADER_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" bootloader)"' \
+  "build.sh should derive the bootloader offset from ESP-IDF flasher_args.json"
 assert_file_contains \
   "$BUILD_SCRIPT_PATH" \
-  '0x8000 "$PARTITION_TABLE_BIN"' \
-  "build.sh should flash the partition table at offset 0x8000"
+  'PARTITION_TABLE_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" partition-table)"' \
+  "build.sh should derive the partition table offset from ESP-IDF flasher_args.json"
 assert_file_contains \
   "$BUILD_SCRIPT_PATH" \
-  '0x20000 "$APP_BIN"' \
-  "build.sh should flash the application at the fixed factory offset"
+  'APP_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" app)"' \
+  "build.sh should derive the application offset from ESP-IDF flasher_args.json"
 assert_file_not_contains \
   "$BUILD_SCRIPT_PATH" \
   'OTADATA_BIN=' \
@@ -197,6 +205,18 @@ assert_file_contains \
   "$ENTRYPOINT_PATH" \
   'python3 -m esptool --chip "$flash_chip" merge-bin' \
   "esp-bin-build should produce single-bin outputs through esptool merge-bin"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'bootloader_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" bootloader)"' \
+  "esp-bin-build should derive the bootloader merge offset from ESP-IDF flasher_args.json"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'partition_table_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" partition-table)"' \
+  "esp-bin-build should derive the partition table merge offset from ESP-IDF flasher_args.json"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'app_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" app)"' \
+  "esp-bin-build should derive the app merge offset from ESP-IDF flasher_args.json"
 assert_file_not_contains \
   "$LIB_PATH" \
   'beetle_partition_offset()' \
@@ -211,8 +231,8 @@ assert_file_not_contains \
   "esp-bin-build should stop depending on ota_data_initial.bin when generating merged images"
 assert_file_contains \
   "$ENTRYPOINT_PATH" \
-  '0x20000 "$app_bin"' \
-  "esp-bin-build should place the merged application image at the fixed factory offset"
+  '"$app_offset" "$app_bin"' \
+  "esp-bin-build should place the merged application image at the ESP-IDF emitted app offset"
 assert_file_contains \
   "$ENTRYPOINT_PATH" \
   'output_file="$stage_dir/${board}.bin"' \
@@ -280,7 +300,14 @@ printf 'boot' > "$release_dir/bootloader.bin"
 printf 'part' > "$release_dir/partition-table.bin"
 printf 'app' > "$release_dir/beetle.bin"
 cat >"$idf_dir/flasher_args.json" <<'JSON'
-{"flash_mode":"dio","flash_size":"8MB","flash_freq":"80m"}
+{
+  "flash_mode": "dio",
+  "flash_size": "8MB",
+  "flash_freq": "80m",
+  "bootloader": { "offset": "0x1000", "file": "bootloader/bootloader.bin" },
+  "partition-table": { "offset": "0x9000", "file": "partition_table/partition-table.bin" },
+  "app": { "offset": "0x30000", "file": "beetle.bin" }
+}
 JSON
 EOF
 chmod +x "$tmp_dir/build.sh"
@@ -354,16 +381,16 @@ assert_eq \
   "esp-bin-build should not expand an empty build_args array into a Bash 3 nounset failure"
 assert_file_contains \
   "$tmp_dir/esptool_args.txt" \
-  '0x0 target/xtensa-esp32s3-espidf/release-size/bootloader.bin' \
-  "merged images should include the bootloader at offset 0x0"
+  '0x1000 target/xtensa-esp32s3-espidf/release-size/bootloader.bin' \
+  "merged images should use the bootloader offset emitted by ESP-IDF"
 assert_file_contains \
   "$tmp_dir/esptool_args.txt" \
-  '0x8000 target/xtensa-esp32s3-espidf/release-size/partition-table.bin' \
-  "merged images should include the partition table at offset 0x8000"
+  '0x9000 target/xtensa-esp32s3-espidf/release-size/partition-table.bin' \
+  "merged images should use the partition table offset emitted by ESP-IDF"
 assert_file_contains \
   "$tmp_dir/esptool_args.txt" \
-  '0x20000 target/xtensa-esp32s3-espidf/release-size/beetle.bin' \
-  "merged images should include the application at the fixed factory offset"
+  '0x30000 target/xtensa-esp32s3-espidf/release-size/beetle.bin' \
+  "merged images should use the app offset emitted by ESP-IDF"
 assert_file_not_contains \
   "$tmp_dir/esptool_args.txt" \
   '0x19000' \

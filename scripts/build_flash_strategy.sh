@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+_BEETLE_FLASH_STRATEGY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/esp_bin_build_lib.sh
+source "$_BEETLE_FLASH_STRATEGY_DIR/esp_bin_build_lib.sh"
+
 beetle_flash_port_rank_for_chip() {
   local chip="${1:-}"
   local port="${2:-}"
@@ -53,38 +57,6 @@ beetle_full_erase_transport_for_chip() {
     esp32p4) printf '%s\n' 'esptool' ;;
     *) printf '%s\n' 'espflash' ;;
   esac
-}
-
-beetle_flasher_args_image_offset() {
-  local flasher_args_json="${1:-}"
-  local image_name="${2:-}"
-
-  if [[ -z "$flasher_args_json" || -z "$image_name" || ! -f "$flasher_args_json" ]]; then
-    return 1
-  fi
-
-  python3 - "$flasher_args_json" "$image_name" <<'PY'
-import json
-import re
-import sys
-
-path, image_name = sys.argv[1], sys.argv[2]
-with open(path, "r", encoding="utf-8") as handle:
-    data = json.load(handle)
-
-entry = data.get(image_name)
-if not isinstance(entry, dict):
-    sys.exit(1)
-
-offset = entry.get("offset")
-if not isinstance(offset, str):
-    sys.exit(1)
-
-if not re.fullmatch(r"(0[xX][0-9a-fA-F]+|[0-9]+)", offset):
-    sys.exit(1)
-
-print(offset)
-PY
 }
 
 beetle_espflash_connection_profiles() {
