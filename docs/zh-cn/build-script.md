@@ -74,6 +74,7 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 - `--flash` 会在构建完成后直接进入烧录流程
 - `--flash` 默认保留 NVS；如果你需要全擦，脚本会给你选项
 - `--flash-update` 不进擦除选择，直接按保留数据前提下的串口重刷方式烧录；会原地刷新 bootloader、分区表和 app，但不会整片擦除。NVS 会保留；只有 SPIFFS 分区 offset 和 size 都不变时，SPIFFS 配置才可认为安全保留。
+- 串口烧录会按当前板型的构建产物地址写入，不再假设所有 ESP 芯片使用同一组固定烧录地址；ESP32-P4 不需要手动改 offset。
 - `--no-monitor` 表示烧录完成后不打开串口监视
 - 若串口可唯一识别，脚本自动选择该串口；否则进入选择流程
 

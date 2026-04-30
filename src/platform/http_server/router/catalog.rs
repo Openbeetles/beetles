@@ -1535,6 +1535,8 @@ mod tests {
 
     #[test]
     fn snapshot_worker_budget_does_not_reserve_tls_headroom() {
+        const S3_MIN_SNAPSHOT_ROUTE_LARGEST_BLOCK_FLOOR_BYTES: usize = 32 * 1024;
+
         let contract = RouteExecutionClass::SnapshotRoute
             .worker_contract()
             .expect("snapshot worker");
@@ -1554,8 +1556,8 @@ mod tests {
                 .saturating_add(ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM)
         );
         assert!(
-            requirements.required_largest <= 24 * 1024,
-            "snapshot worker must fit the latest steady ESP largest-block floor"
+            requirements.required_largest <= S3_MIN_SNAPSHOT_ROUTE_LARGEST_BLOCK_FLOOR_BYTES,
+            "snapshot worker must fit the S3 lowest-admission largest-block floor"
         );
     }
 

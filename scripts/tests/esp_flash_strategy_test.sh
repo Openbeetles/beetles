@@ -89,14 +89,16 @@ assert_eq \
   "S3 full erase should stay on espflash"
 
 p4_write_profiles="$(beetle_espflash_connection_profiles esp32p4 write-bin)"
-assert_contains_line \
+assert_eq \
   "$p4_write_profiles" \
-  "--before default-reset --after no-reset --no-stub" \
-  "P4 flashing should first try default-reset without the RAM stub"
-assert_contains_line \
-  "$p4_write_profiles" \
-  "--before no-reset --after no-reset --no-stub" \
-  "P4 flashing should retry without toggling reset when already in bootloader mode"
+  $'--before default-reset --after no-reset\n--before default-reset --after no-reset --no-stub\n--before no-reset --after no-reset --no-stub' \
+  "P4 intermediate write-bin should keep the device in bootloader mode between images"
+
+p4_app_write_profiles="$(beetle_espflash_connection_profiles esp32p4 write-bin-app)"
+assert_eq \
+  "$p4_app_write_profiles" \
+  $'--before default-reset --after hard-reset\n--before default-reset --after hard-reset --no-stub\n--before no-reset --after hard-reset --no-stub' \
+  "P4 app write-bin should hard-reset after the final image and keep no-stub fallbacks"
 
 p4_erase_profiles="$(beetle_espflash_connection_profiles esp32p4 erase-flash)"
 assert_contains_line \
@@ -136,6 +138,14 @@ assert_file_contains \
   "build.sh should drive espflash through chip-specific connection profiles"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
+  'run_espflash_with_profile_key write-bin-app write-bin' \
+  "build.sh should use the final-app write-bin flash profile"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'reset_before_final_app_flash_if_needed' \
+  "build.sh should reset P4 out of the intermediate flash state before app write"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
   'espflash reset --port "$CHOSEN_PORT" --chip "$FLASH_CHIP"' \
   "build.sh should reset the device back into normal boot before opening the monitor"
 assert_file_contains \
@@ -158,17 +168,39 @@ assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
   'PARTITION_FOR_FLASH="$PARTITION_CSV"' \
   "build.sh update mode must not fall back to writing the source CSV as a partition image"
+
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/beetle-flash-strategy.XXXXXX")"
+trap 'rm -rf "$tmp_dir"' EXIT
+cat >"$tmp_dir/p4_flasher_args.json" <<'JSON'
+{
+  "bootloader": { "offset": "0x2000", "file": "bootloader/bootloader.bin" },
+  "partition-table": { "offset": "0x8000", "file": "partition_table/partition-table.bin" },
+  "app": { "offset": "0x20000", "file": "libespidf.bin" }
+}
+JSON
+assert_eq \
+  "$(beetle_flasher_args_image_offset "$tmp_dir/p4_flasher_args.json" bootloader)" \
+  "0x2000" \
+  "P4 flash should consume the bootloader offset emitted by ESP-IDF"
+assert_eq \
+  "$(beetle_flasher_args_image_offset "$tmp_dir/p4_flasher_args.json" partition-table)" \
+  "0x8000" \
+  "flash should consume the partition table offset emitted by ESP-IDF"
+assert_eq \
+  "$(beetle_flasher_args_image_offset "$tmp_dir/p4_flasher_args.json" app)" \
+  "0x20000" \
+  "flash should consume the app offset emitted by ESP-IDF"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"' \
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$PARTITION_TABLE_FLASH_OFFSET" "$PARTITION_TABLE_BIN"' \
   "build.sh should refresh the partition table during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"' \
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$BOOTLOADER_FLASH_OFFSET" "$BOOTLOADER_BIN"' \
   "build.sh should refresh the bootloader during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"' \
+  'write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$APP_FLASH_OFFSET" "$APP_BIN"' \
   "build.sh should refresh the app image during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \

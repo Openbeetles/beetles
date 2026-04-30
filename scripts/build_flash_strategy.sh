@@ -55,17 +55,55 @@ beetle_full_erase_transport_for_chip() {
   esac
 }
 
+beetle_flasher_args_image_offset() {
+  local flasher_args_json="${1:-}"
+  local image_name="${2:-}"
+
+  if [[ -z "$flasher_args_json" || -z "$image_name" || ! -f "$flasher_args_json" ]]; then
+    return 1
+  fi
+
+  python3 - "$flasher_args_json" "$image_name" <<'PY'
+import json
+import re
+import sys
+
+path, image_name = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+entry = data.get(image_name)
+if not isinstance(entry, dict):
+    sys.exit(1)
+
+offset = entry.get("offset")
+if not isinstance(offset, str):
+    sys.exit(1)
+
+if not re.fullmatch(r"(0[xX][0-9a-fA-F]+|[0-9]+)", offset):
+    sys.exit(1)
+
+print(offset)
+PY
+}
+
 beetle_espflash_connection_profiles() {
   local chip="${1:-}"
   local subcommand="${2:-}"
   case "$chip" in
     esp32p4)
       case "$subcommand" in
+        write-bin-app)
+          printf '%s\n' '--before default-reset --after hard-reset'
+          printf '%s\n' '--before default-reset --after hard-reset --no-stub'
+          printf '%s\n' '--before no-reset --after hard-reset --no-stub'
+          ;;
         erase-flash|erase-parts|erase-region)
           printf '%s\n' '--before default-reset --after no-reset'
           printf '%s\n' '--before no-reset --after no-reset'
           ;;
         *)
+          printf '%s\n' '--before default-reset --after no-reset'
           printf '%s\n' '--before default-reset --after no-reset --no-stub'
           printf '%s\n' '--before no-reset --after no-reset --no-stub'
           ;;

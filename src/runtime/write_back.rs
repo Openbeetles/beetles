@@ -1477,10 +1477,12 @@ mod tests {
 
     #[test]
     fn write_back_worker_stack_budget_covers_storage_flush_path() {
-        assert!(
-            WRITE_BACK_WORKER_STACK >= 24 * 1024,
-            "write_back runs serde/session flushes and must not use a pure-scheduler stack"
-        );
+        const {
+            assert!(
+                WRITE_BACK_WORKER_STACK >= 24 * 1024,
+                "write_back runs serde/session flushes and must not use a pure-scheduler stack"
+            );
+        }
     }
 
     #[derive(Default)]

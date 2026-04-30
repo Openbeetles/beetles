@@ -76,18 +76,18 @@ pub(crate) fn heartbeat_tick(
 
     let mut storage_state_fs_ready = None;
 
-    // Session/storage metrics: collect every SESSION_METRICS_INTERVAL_ROUNDS rounds.
+    // Session/storage metrics: seed once, then refresh every SESSION_METRICS_INTERVAL_ROUNDS rounds.
     if runtime_mode.action_budget.allow_periodic_maintenance
-        && state
-            .round
-            .is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
+        && should_collect_session_storage(state.round)
     {
         let sess_count = session_store
             .list_chat_ids()
             .map(|v| v.len() as u32)
             .unwrap_or(0);
-        let (s_used, s_total, state_fs_ready) = storage_usage_kb(platform);
-        crate::orchestrator::update_session_storage(sess_count, s_used, s_total);
+        let state_fs_ready = crate::orchestrator::update_session_storage_from_bytes(
+            sess_count,
+            platform.spiffs_usage(),
+        );
         storage_state_fs_ready =
             storage_state_fs_ready_for_runtime_capability_refresh(state.round, state_fs_ready);
     }
@@ -230,34 +230,24 @@ pub(crate) fn heartbeat_tick(
     }
 }
 
-/// 存储用量（KB）。经 [`crate::Platform::spiffs_usage`]；无数据时为 (0, 0)。
-fn storage_usage_kb(platform: &dyn crate::Platform) -> (u32, u32, bool) {
-    match platform.spiffs_usage() {
-        Some((total, used)) => {
-            let used_kb = (used / 1024).min(u32::MAX as u64) as u32;
-            let total_kb = (total / 1024).min(u32::MAX as u64) as u32;
-            (used_kb, total_kb, true)
-        }
-        None => (0, 0, false),
-    }
+fn should_collect_session_storage(round: u32) -> bool {
+    round == 1 || round.is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
 }
 
 fn storage_state_fs_ready_for_runtime_capability_refresh(
     round: u32,
     state_fs_ready: bool,
 ) -> Option<bool> {
-    round
-        .is_multiple_of(crate::constants::SESSION_METRICS_INTERVAL_ROUNDS)
-        .then_some(state_fs_ready)
+    should_collect_session_storage(round).then_some(state_fs_ready)
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn runtime_capability_refreshes_every_round_but_storage_probe_stays_throttled() {
+    fn storage_probe_seeds_first_round_then_stays_throttled() {
         assert_eq!(
             super::storage_state_fs_ready_for_runtime_capability_refresh(1, true),
-            None
+            Some(true)
         );
         assert_eq!(
             super::storage_state_fs_ready_for_runtime_capability_refresh(
@@ -265,6 +255,10 @@ mod tests {
                 false
             ),
             Some(false)
+        );
+        assert_eq!(
+            super::storage_state_fs_ready_for_runtime_capability_refresh(2, true),
+            None
         );
     }
 }

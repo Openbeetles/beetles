@@ -936,7 +936,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
 // | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
-// | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 20 KB | 20 KB | ← local read-only SPIFFS/config snapshots without TLS reserve
+// | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 24 KB | 24 KB | ← local read-only snapshots; P4 smoke exposed >20 KB use, S3 soak remains the ESP baseline gate
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
@@ -1046,9 +1046,12 @@ pub const STACK_VOICE_REALTIME: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// HTTP snapshot route worker：承接本地只读 SPIFFS/config 快照，避免压在
+/// HTTP snapshot route worker：承接本地只读 SPIFFS/config/resource 快照，避免压在
 /// IDF HTTPD 回调线程上，同时不为这类非 TLS 路由预留诊断/TLS worker 余量。
-pub const STACK_HTTP_SNAPSHOT_WORKER: usize = 20 * 1024;
+///
+/// P4 `/api/resource` 实机高水位暴露了 20KB 预算不足；common ESP 预算仍需以
+/// S3 release-size soak 作为最低准入基线，优先拆路由深度而不是继续上调通用栈。
+pub const STACK_HTTP_SNAPSHOT_WORKER: usize = 24 * 1024;
 
 /// ESP HTTP config route worker：承接 NVS/SPIFFS/serde 配置写入，避免压在
 /// IDF HTTPD 回调线程上。配置面必须能在 post-startup 约 31-32KB largest block
@@ -1426,6 +1429,21 @@ mod thread_stack_budget_tests {
                     "ESP os_outbound should stay a sender-class worker, not drift into route/agent budgets"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn http_snapshot_worker_stack_covers_resource_snapshot_high_water() {
+        const OBSERVED_RESOURCE_SNAPSHOT_STACK_USED_BYTES_FROM_P4_SMOKE: usize = 20_300;
+        const MIN_SNAPSHOT_STACK_HEADROOM_BYTES: usize = 4 * 1024;
+
+        const {
+            assert!(
+                STACK_HTTP_SNAPSHOT_WORKER
+                    >= OBSERVED_RESOURCE_SNAPSHOT_STACK_USED_BYTES_FROM_P4_SMOKE
+                        + MIN_SNAPSHOT_STACK_HEADROOM_BYTES,
+                "http_snapshot_exec must keep headroom over the P4 /api/resource risk sample"
+            );
         }
     }
 }

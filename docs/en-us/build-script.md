@@ -74,6 +74,7 @@ What matters most:
 - `--flash` goes straight into the flash flow after build
 - `--flash` keeps NVS by default; if you need a full erase, the script offers that choice
 - `--flash-update` skips the erase choice and uses an in-place serial reflash path that preserves data only when the layout stays compatible; it refreshes bootloader, partition table, and app without a full-chip erase. NVS is kept, but SPIFFS config is safe only when the SPIFFS partition offset and size are unchanged.
+- Serial flashing now writes images at the addresses emitted for the selected board instead of assuming one fixed ESP address layout; ESP32-P4 does not require manual offset edits.
 - `--no-monitor` means do not open the serial monitor after flashing
 - if the serial port is obvious, the script usually picks it; otherwise it asks
 

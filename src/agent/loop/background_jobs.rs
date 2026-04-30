@@ -1355,8 +1355,8 @@ fn embedded_post_reply_admission(
     let other_active_agent_tasks = resource
         .active_agent_tasks
         .saturating_sub(current_background_agent_task_slots);
+    // Established WSS sessions are steady-state channel capacity, not short foreground work.
     let foreground_busy = resource.active_http_count > 0
-        || resource.active_wss_count > 0
         || other_active_agent_tasks > 0
         || resource.inbound_depth > 0
         || resource.outbound_depth > 0;
@@ -2328,6 +2328,29 @@ mod tests {
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
                 1,
+                None,
+                5_000,
+            ),
+            EmbeddedPostReplyAdmission::Full
+        );
+    }
+
+    #[test]
+    fn embedded_post_reply_admission_treats_established_wss_as_steady_state() {
+        let state = crate::orchestrator::state::OrchestratorState::new();
+        let mut resource = crate::orchestrator::ResourceSnapshot::from_state(&state);
+        resource.active_http_count = 0;
+        resource.active_wss_count = 1;
+        resource.active_agent_tasks = 0;
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 0;
+
+        assert_eq!(
+            embedded_post_reply_admission(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::PostReplyMaintenance,
+                &resource,
+                0,
                 None,
                 5_000,
             ),

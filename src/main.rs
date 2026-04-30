@@ -3091,7 +3091,15 @@ fn prepare_runtime_assembly(
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
     let spiffs_usage = platform.spiffs_usage();
-    let state_fs_ready = spiffs_usage.is_some();
+    let startup_session_count = runtime
+        .session_store
+        .list_chat_ids()
+        .map(|v| v.len() as u32)
+        .unwrap_or(0);
+    let state_fs_ready = beetle::orchestrator::update_session_storage_from_bytes(
+        startup_session_count,
+        spiffs_usage,
+    );
     let wall_clock_valid = beetle::platform::time::wall_clock_is_trustworthy();
     let spiffs_info = spiffs_usage
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))

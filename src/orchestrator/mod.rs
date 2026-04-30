@@ -338,6 +338,33 @@ pub fn update_session_storage(session_count: u32, storage_used_kb: u32, storage_
         .store(storage_total_kb, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Convert platform storage byte usage into the KB fields exposed by resource snapshots.
+pub fn storage_usage_kb_from_bytes(usage_bytes: Option<(u64, u64)>) -> (u32, u32, bool) {
+    match usage_bytes {
+        Some((total, used)) => (
+            bytes_to_kb_saturating(used),
+            bytes_to_kb_saturating(total),
+            true,
+        ),
+        None => (0, 0, false),
+    }
+}
+
+/// Update session/storage metrics from platform byte usage and return state-fs readiness.
+pub fn update_session_storage_from_bytes(
+    session_count: u32,
+    usage_bytes: Option<(u64, u64)>,
+) -> bool {
+    let (storage_used_kb, storage_total_kb, state_fs_ready) =
+        storage_usage_kb_from_bytes(usage_bytes);
+    update_session_storage(session_count, storage_used_kb, storage_total_kb);
+    state_fs_ready
+}
+
+fn bytes_to_kb_saturating(value: u64) -> u32 {
+    (value / 1024).min(u32::MAX as u64) as u32
+}
+
 /// LLM 调用门控。
 pub fn can_call_llm_pub() -> LlmDecision {
     admission::can_call_llm(&STATE)
@@ -522,6 +549,25 @@ pub fn log_startup_memory_checkpoint(_stage: &'static str) {}
 mod tests {
     use super::format_startup_memory_checkpoint_line;
     use crate::platform::MemorySnapshot;
+
+    #[test]
+    fn storage_usage_from_spiffs_usage_reports_kb_and_ready_state() {
+        let (used_kb, total_kb, ready) =
+            super::storage_usage_kb_from_bytes(Some((8 * 1024 * 1024, 944_889)));
+
+        assert_eq!(used_kb, 922);
+        assert_eq!(total_kb, 8192);
+        assert!(ready);
+    }
+
+    #[test]
+    fn storage_usage_from_missing_spiffs_usage_reports_unavailable() {
+        let (used_kb, total_kb, ready) = super::storage_usage_kb_from_bytes(None);
+
+        assert_eq!(used_kb, 0);
+        assert_eq!(total_kb, 0);
+        assert!(!ready);
+    }
 
     #[test]
     fn startup_memory_checkpoint_line_reports_fragmentation_pressure() {

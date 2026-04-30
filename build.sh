@@ -2788,6 +2788,9 @@ FLASHER_ARGS_JSON=""
 APP_FLASH_MODE=""
 APP_FLASH_SIZE=""
 APP_FLASH_FREQ=""
+BOOTLOADER_FLASH_OFFSET=""
+PARTITION_TABLE_FLASH_OFFSET=""
+APP_FLASH_OFFSET=""
 if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
   FLASHER_ARGS_JSON="$ESP_IDF_BUILD_DIR/flasher_args.json"
   if [[ -f "$FLASHER_ARGS_JSON" ]]; then
@@ -2796,6 +2799,31 @@ if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
     APP_FLASH_FREQ="$(sed -n 's/.*"flash_freq":[[:space:]]*"\([^"]*\)".*/\1/p' "$FLASHER_ARGS_JSON" | head -n1)"
   fi
 fi
+
+resolve_esp_flash_offsets() {
+  [[ "$BUILD_TARGET" =~ -unknown-linux ]] && return 0
+
+  refresh_esp_idf_build_outputs
+  if [[ ! -f "$FLASHER_ARGS_JSON" ]]; then
+    echo "Error: ESP flasher args not found; cannot safely derive image offsets." >&2
+    echo "  expected: ${FLASHER_ARGS_JSON:-<not found>}" >&2
+    return 1
+  fi
+
+  BOOTLOADER_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" bootloader)" || {
+    echo "Error: bootloader offset missing or invalid in $FLASHER_ARGS_JSON" >&2
+    return 1
+  }
+  PARTITION_TABLE_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" partition-table)" || {
+    echo "Error: partition-table offset missing or invalid in $FLASHER_ARGS_JSON" >&2
+    return 1
+  }
+  APP_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" app)" || {
+    echo "Error: app offset missing or invalid in $FLASHER_ARGS_JSON" >&2
+    return 1
+  }
+}
+
 if [[ -n "$DO_FLASH" ]] && [[ ! "$BUILD_TARGET" =~ -unknown-linux ]] && [[ -z "$FLASH_CHIP" ]]; then
   echo "Error: Cannot derive chip from target for flash: $BUILD_TARGET" >&2
   exit 1
@@ -3182,8 +3210,10 @@ get_flash_port() {
   done
 }
 
-run_espflash_with_connection_profiles() {
-  local subcommand="$1"
+run_espflash_with_profile_key() {
+  local profile_key="$1"
+  local subcommand="$2"
+  shift
   shift
 
   local profile last_status=1 status=1
@@ -3202,8 +3232,23 @@ run_espflash_with_connection_profiles() {
       status=$?
     fi
     last_status=$status
-  done < <(beetle_espflash_connection_profiles "$FLASH_CHIP" "$subcommand")
+  done < <(beetle_espflash_connection_profiles "$FLASH_CHIP" "$profile_key")
   return "$last_status"
+}
+
+run_espflash_with_connection_profiles() {
+  local subcommand="$1"
+  shift
+  run_espflash_with_profile_key "$subcommand" "$subcommand" "$@"
+}
+
+reset_before_final_app_flash_if_needed() {
+  [[ "$FLASH_CHIP" == "esp32p4" ]] || return 0
+  echo "  Resetting ESP32-P4 before final app write..."
+  if ! espflash reset --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" --before default-reset --after hard-reset; then
+    return 1
+  fi
+  sleep 1
 }
 
 open_monitor_if_requested() {
@@ -3244,6 +3289,7 @@ run_esp_flash_workflow() {
     return 1
   fi
   PARTITION_FOR_FLASH="$PARTITION_TABLE_BIN"
+  resolve_esp_flash_offsets || return 1
 
   ensure_espflash
   if ! CHOSEN_PORT="$(get_flash_port)"; then
@@ -3264,9 +3310,9 @@ run_esp_flash_workflow() {
   echo "  Features:          ${BUILD_FEATURES:-(none)}"
   echo -e "  ${BLUE}Serial port:${NC}       $CHOSEN_PORT"
   echo "  Partition table:   $PARTITION_FOR_FLASH"
-  echo "  Bootloader:        $BOOTLOADER_BIN"
+  echo "  Bootloader:        $BOOTLOADER_BIN @ $BOOTLOADER_FLASH_OFFSET"
   echo "  Firmware ELF:      $BIN"
-  echo "  Firmware app bin:  ${APP_BIN:-"(not found)"}"
+  echo "  Firmware app bin:  ${APP_BIN:-"(not found)"} @ $APP_FLASH_OFFSET"
   echo ""
 
   echo "========== Checking connection =========="
@@ -3324,7 +3370,9 @@ run_esp_flash_workflow() {
   fi
   echo "  ELF: $BIN"
   echo "  App bin: $APP_BIN"
-  echo "  Partition table: $PARTITION_FOR_FLASH"
+  echo "  Bootloader: $BOOTLOADER_BIN @ $BOOTLOADER_FLASH_OFFSET"
+  echo "  Partition table: $PARTITION_FOR_FLASH @ $PARTITION_TABLE_FLASH_OFFSET"
+  echo "  App offset: $APP_FLASH_OFFSET"
 
   if [[ "$ERASE_BEFORE_FLASH" -eq 1 ]]; then
     if [[ ! -f "$BOOTLOADER_BIN" || ! -f "$PARTITION_TABLE_BIN" ]]; then
@@ -3333,15 +3381,19 @@ run_esp_flash_workflow() {
       echo "  partition : $PARTITION_TABLE_BIN" >&2
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$BOOTLOADER_FLASH_OFFSET" "$BOOTLOADER_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$PARTITION_TABLE_FLASH_OFFSET" "$PARTITION_TABLE_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"; then
+    if ! reset_before_final_app_flash_if_needed; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! run_espflash_with_profile_key write-bin-app write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$APP_FLASH_OFFSET" "$APP_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
@@ -3352,15 +3404,19 @@ run_esp_flash_workflow() {
       echo "  partition : $PARTITION_TABLE_BIN" >&2
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x0 "$BOOTLOADER_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$BOOTLOADER_FLASH_OFFSET" "$BOOTLOADER_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x8000 "$PARTITION_TABLE_BIN"; then
+    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$PARTITION_TABLE_FLASH_OFFSET" "$PARTITION_TABLE_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
-    if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" 0x20000 "$APP_BIN"; then
+    if ! reset_before_final_app_flash_if_needed; then
+      print_flash_open_port_hints
+      return 1
+    fi
+    if ! run_espflash_with_profile_key write-bin-app write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$APP_FLASH_OFFSET" "$APP_BIN"; then
       print_flash_open_port_hints
       return 1
     fi
