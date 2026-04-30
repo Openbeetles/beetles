@@ -66,7 +66,15 @@ fn maybe_promote_primary_plain_text(
         return None;
     }
     let source_text = normalize_text_source(text, content);
-    if source_text.is_empty() || !looks_like_markdownish(source_text) {
+    let source_looks_markdownish = looks_like_markdownish(source_text);
+    let qq_markdown_within_text_limit = capability.id != CHANNEL_QQ_CHANNEL
+        || source_text.len() <= capability.contract.max_text_bytes;
+    let promotable_markdownish = source_looks_markdownish && qq_markdown_within_text_limit;
+    let qq_multiline_markdown = capability.id == CHANNEL_QQ_CHANNEL
+        && supports_text_format(capability, TextFormat::Markdown)
+        && qq_markdown_within_text_limit
+        && (source_text.contains('\n') || source_text.contains('\r'));
+    if source_text.is_empty() || (!promotable_markdownish && !qq_multiline_markdown) {
         return None;
     }
     if capability.id == CHANNEL_TELEGRAM && supports_text_format(capability, TextFormat::Html) {
@@ -76,13 +84,6 @@ fn maybe_promote_primary_plain_text(
                 format: TextFormat::Html,
             }),
             content: None,
-        });
-    }
-    if capability.id == CHANNEL_QQ_CHANNEL {
-        let plain = render_markdownish_to_plain_text(source_text);
-        return Some(PromotedTextBody {
-            body: CanonicalMessageBody::Text(TextBody::plain(plain.clone())),
-            content: Some(plain),
         });
     }
     if supports_text_format(capability, TextFormat::Markdown) {
@@ -870,8 +871,55 @@ mod tests {
     }
 
     #[test]
-    fn primary_markdownish_reply_on_qq_downgrades_to_plain_projection() {
+    fn primary_markdownish_reply_on_qq_preserves_markdown_body() {
         let mut msg = outbound_text_msg("# Title\n- item");
+        msg.channel = Arc::from("qq_channel");
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Markdown,
+                ref text,
+            }) if text == "# Title\n- item"
+        ));
+        assert_eq!(prepared.content, "# Title\n- item");
+    }
+
+    #[test]
+    fn primary_multiline_plain_reply_on_qq_promotes_to_markdown_body() {
+        let mut msg = outbound_text_msg("第一段。\n\n第二段。");
+        msg.channel = Arc::from("qq_channel");
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Markdown,
+                ref text,
+            }) if text == "第一段。\n\n第二段。"
+        ));
+        assert_eq!(prepared.content, "第一段。\n\n第二段。");
+    }
+
+    #[test]
+    fn oversized_primary_multiline_plain_reply_on_qq_stays_plain_for_sender_chunking() {
+        let oversized = format!("{}\n第二段。", "甲".repeat(4096));
+        let mut msg = outbound_text_msg(&oversized);
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
@@ -887,9 +935,33 @@ mod tests {
             CanonicalMessageBody::Text(TextBody {
                 format: TextFormat::Plain,
                 ref text,
-            }) if text == "Title\n• item"
+            }) if text == &oversized
         ));
-        assert_eq!(prepared.content, "Title\n• item");
+        assert_eq!(prepared.content, oversized);
+    }
+
+    #[test]
+    fn oversized_primary_markdownish_reply_on_qq_stays_plain_for_sender_chunking() {
+        let oversized = format!("# 标题\n{}", "甲".repeat(4096));
+        let mut msg = outbound_text_msg(&oversized);
+        msg.channel = Arc::from("qq_channel");
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Plain,
+                ref text,
+            }) if text == &oversized
+        ));
+        assert_eq!(prepared.content, oversized);
     }
 
     #[test]
