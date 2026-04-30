@@ -30,6 +30,7 @@ OWNED_ICONS = (
     "globe_3d.png",
     "history_3d.png",
     "home_3d.png",
+    "i2c_sensor_config_3d.png",
     "language_3d.png",
     "link_3d.png",
     "power_3d.png",
@@ -637,6 +638,39 @@ def build_unsaved_changes(scene: Scene, palette: Palette) -> None:
     _paint(scene, _ellipse(scene, 65, 35, 1.4, 1.4), lighten(tone(palette, "neutral")[0], 0.2))
 
 
+def build_i2c_sensor_config(scene: Scene, palette: Palette) -> None:
+    board = _rounded_rect(scene, 18, 30, 82, 70, 9)
+    _extrude(scene, palette, board, role="primary", depth=8, shadow_offset=(0, 9), shadow_blur=10, gloss=58)
+
+    for x in (27, 38, 49, 60, 71):
+        pin = _rounded_rect(scene, x - 2.4, 67, x + 2.4, 81, 2.0)
+        _extrude(scene, palette, pin, role="warm", depth=4, shadow_offset=(0, 4), shadow_blur=5, gloss=45)
+
+    chip = _rounded_rect(scene, 34, 39, 66, 60, 5)
+    _paint(scene, shift_mask(chip, scene.scalar(2), scene.scalar(3)), with_alpha(palette.shadow, 70))
+    _paint(scene, chip, darken(tone(palette, "neutral")[2], 0.04))
+    _paint(scene, _rounded_rect(scene, 38, 43, 62, 47, 2), with_alpha((255, 255, 255, 255), 48))
+
+    for y in (43, 49, 55):
+        trace_l = _line(scene, [(22, y), (34, y)], 1.8)
+        trace_r = _line(scene, [(66, y), (78, y)], 1.8)
+        _paint(scene, union_masks(trace_l, trace_r), with_alpha(lighten(tone(palette, "accent")[0], 0.08), 170))
+
+    droplet = _polygon(scene, [(74, 30), (84, 46), (75, 57), (66, 46)])
+    droplet_round = _ellipse(scene, 75, 47, 8, 9)
+    _extrude(scene, palette, union_masks(droplet, droplet_round), role="secondary", depth=5, shadow_offset=(0, 6), shadow_blur=7, gloss=62)
+    _paint(scene, _ellipse(scene, 72, 43, 2.5, 3.0), with_alpha((255, 255, 255, 255), 120))
+
+    bulb = _ellipse(scene, 25, 57, 5.5, 5.5)
+    stem = _rounded_rect(scene, 23, 35, 27, 58, 2)
+    _extrude(scene, palette, union_masks(bulb, stem), role="warm", depth=5, shadow_offset=(0, 6), shadow_blur=7, gloss=52)
+    _paint(scene, _line(scene, [(31, 41), (37, 41)], 1.4), with_alpha((255, 255, 255, 255), 140))
+    _paint(scene, _line(scene, [(31, 49), (36, 49)], 1.4), with_alpha((255, 255, 255, 255), 110))
+
+    for cx, cy in ((24, 35), (76, 35), (24, 65), (76, 65)):
+        _paint(scene, _ellipse(scene, cx, cy, 2.4, 2.4), lighten(tone(palette, "neutral")[0], 0.16))
+
+
 ICON_DEFINITIONS: list[IconSpec] = [
     icon("accounts_3d.png", "sky", build_accounts),
     icon("bookmark_3d.png", "amber", build_bookmark),
@@ -646,6 +680,7 @@ ICON_DEFINITIONS: list[IconSpec] = [
     icon("globe_3d.png", "teal", build_globe),
     icon("history_3d.png", "coral", build_history),
     icon("home_3d.png", "violet", build_home),
+    icon("i2c_sensor_config_3d.png", "mint", build_i2c_sensor_config),
     icon("language_3d.png", "sky", build_language),
     icon("link_3d.png", "sky", build_link),
     icon("power_3d.png", "crimson", build_power),

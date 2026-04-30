@@ -323,6 +323,7 @@ fn run_post_reply_maintenance_job(
     config: &AgentLoopConfig,
     _system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
+    current_background_agent_task_slots: u32,
 ) -> DetachedJobRunDisposition {
     let payload: PostReplyMaintenanceJobPayload = match serde_json::from_str(&msg.content) {
         Ok(payload) => payload,
@@ -341,6 +342,7 @@ fn run_post_reply_maintenance_job(
         config.runtime.memory_system_kind.memory_profile(),
         crate::agent::DetachedJobKind::PostReplyMaintenance,
         &crate::orchestrator::snapshot(),
+        current_background_agent_task_slots,
         Some(payload.first_deferred_at_ms),
         super::now_unix_ms(),
     ) {
@@ -1201,12 +1203,20 @@ pub(super) fn try_run_lane_background_job(
     config: &AgentLoopConfig,
     system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
+    current_background_agent_task_slots: u32,
 ) -> DetachedJobRunDisposition {
     if super::is_long_term_memory_refresh_job(msg) {
         return run_long_term_memory_refresh_job(http, worker_llm, config, msg);
     }
     if super::is_post_reply_maintenance_job(msg) {
-        return run_post_reply_maintenance_job(http, worker_llm, config, system_inbound_tx, msg);
+        return run_post_reply_maintenance_job(
+            http,
+            worker_llm,
+            config,
+            system_inbound_tx,
+            msg,
+            current_background_agent_task_slots,
+        );
     }
     if super::is_idle_memory_forge_job(msg) {
         return run_idle_memory_forge_job(config, msg);
@@ -1318,6 +1328,7 @@ fn embedded_post_reply_admission(
     memory_profile: crate::memory::MemoryProfile,
     kind: crate::agent::DetachedJobKind,
     resource: &crate::orchestrator::ResourceSnapshot,
+    current_background_agent_task_slots: u32,
     first_deferred_at_ms: Option<u64>,
     now_ms: u64,
 ) -> EmbeddedPostReplyAdmission {
@@ -1341,9 +1352,12 @@ fn embedded_post_reply_admission(
     let largest_low = resource.heap_largest_block_internal > 0
         && resource.heap_largest_block_internal
             < crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
+    let other_active_agent_tasks = resource
+        .active_agent_tasks
+        .saturating_sub(current_background_agent_task_slots);
     let foreground_busy = resource.active_http_count > 0
         || resource.active_wss_count > 0
-        || resource.active_agent_tasks > 0
+        || other_active_agent_tasks > 0
         || resource.inbound_depth > 0
         || resource.outbound_depth > 0;
     if !matches!(
@@ -1585,7 +1599,7 @@ fn run_detached_background_work_wake(
         config.runtime.detached_work_store.as_ref(),
         &wake.key,
         wake.revision,
-        try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &record.job),
+        try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &record.job, 1),
     );
     metrics::record_system_message_done(false);
 }
@@ -1709,7 +1723,7 @@ fn run_volatile_background_job(
     }
     let _agent_task_guard = crate::orchestrator::begin_agent_task();
     let _maintenance_scope = crate::runtime::BackgroundMaintenanceGuard::enter();
-    match try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &msg) {
+    match try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &msg, 1) {
         DetachedJobRunDisposition::Completed => {}
         DetachedJobRunDisposition::RetryLater { reason, delay_ms } => {
             append_detached_work_defer_audit(&key, reason);
@@ -2273,6 +2287,7 @@ mod tests {
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
+                0,
                 Some(1_000),
                 5_000,
             ),
@@ -2287,10 +2302,64 @@ mod tests {
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
+                0,
                 Some(1_000),
                 1_000u64.saturating_add(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
             ),
             EmbeddedPostReplyAdmission::RunLightweight
         );
+    }
+
+    #[test]
+    fn embedded_post_reply_admission_ignores_current_background_agent_task_slot() {
+        let state = crate::orchestrator::state::OrchestratorState::new();
+        state
+            .active_agent_tasks
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let mut resource = crate::orchestrator::ResourceSnapshot::from_state(&state);
+        resource.active_http_count = 0;
+        resource.active_wss_count = 0;
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 0;
+
+        assert_eq!(
+            embedded_post_reply_admission(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::PostReplyMaintenance,
+                &resource,
+                1,
+                None,
+                5_000,
+            ),
+            EmbeddedPostReplyAdmission::Full
+        );
+    }
+
+    #[test]
+    fn embedded_post_reply_admission_defers_when_another_agent_task_is_active() {
+        let state = crate::orchestrator::state::OrchestratorState::new();
+        state
+            .active_agent_tasks
+            .store(2, std::sync::atomic::Ordering::Relaxed);
+        let mut resource = crate::orchestrator::ResourceSnapshot::from_state(&state);
+        resource.active_http_count = 0;
+        resource.active_wss_count = 0;
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 0;
+
+        assert!(matches!(
+            embedded_post_reply_admission(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::PostReplyMaintenance,
+                &resource,
+                1,
+                None,
+                5_000,
+            ),
+            EmbeddedPostReplyAdmission::Defer {
+                reason: "post_reply_resource_window_busy",
+                ..
+            }
+        ));
     }
 }

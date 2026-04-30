@@ -374,7 +374,8 @@
 
 说明：
 
-- 普通用户优先走 Configure UI 的 **设备配置 -> GPIO 设备**
+- 普通用户优先走 Configure UI 的 **设备配置 -> GPIO 设备** 或 **设备配置 -> I2C 传感器**
+- 这两个页面底层仍读写同一个 `/api/config/hardware` 与 `HardwareSegment`
 - 这里是给脚本、自定义前端和进阶集成看的原始接口合同
 
 顶层字段：
@@ -392,6 +393,31 @@
   "i2c_bus": null,
   "i2c_devices": [],
   "i2c_sensors": []
+}
+```
+
+通用 AHT20 示例：
+
+```json
+{
+  "hardware_devices": [],
+  "i2c_bus": {
+    "sda_pin": 21,
+    "scl_pin": 22,
+    "freq_hz": 100000
+  },
+  "i2c_devices": [],
+  "i2c_sensors": [
+    {
+      "id": "aht20_env",
+      "addr": 56,
+      "model": "aht20",
+      "watch_field": "temperature",
+      "what": "AHT20 温湿度传感器",
+      "how": "通过 I2C 读取环境温度与湿度；地址 0x38。",
+      "options": {}
+    }
+  ]
 }
 ```
 
@@ -1208,7 +1234,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `/api/operator/status` 是面向人和 UI 的解释面，可聚合多个真源说明“为什么是这个状态”；不作为机器准入真源。
 - `/api/diagnose` 是主动诊断结果和建议；route class 为 `SlowDiagnosticRoute`，输出诊断项，不是原始快照仓库。
 
-旧字段 `health.wifi`、`health.network`、`health.workflow`、`resource.network`、`resource.firmware_identity`、`resource.crash` 已删除，不提供兼容。自定义前端不要依赖 `/api/health` 的诊断字段，也不要把 `/api/resource` 当作设备总状态接口。
+旧字段 `health.wifi`、`health.network`、`health.workflow`、`resource.network`、`resource.firmware_identity` 已删除，不提供兼容。自定义前端不要依赖 `/api/health` 的诊断字段，也不要把 `/api/resource` 当作设备总状态接口。Crash 证据仍通过 `resource.crash` 提供给运维诊断使用。
 
 **GET /api/health**
 
@@ -1314,6 +1340,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `admission`
 - `governance_metrics`
 - `runtime_capabilities`
+- `crash`
 - `network_gate_summary`
 - `planes`
 - `plane_lifecycle`
@@ -1324,8 +1351,11 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `session_count`
 - `storage_used_kb`
 - `storage_total_kb`
+- `cpu_usage_percent`（仅 Linux / 宿主侧）
+- `load_average`（仅 Linux / 宿主侧）
+- `process_memory_kb`（仅 Linux / 宿主侧）
 
-资源端点属于资源诊断契约。`heap_free_spiram` 表示 PSRAM 空闲量，不是已用量；`heap_used_spiram_est = heap_total_spiram - heap_free_spiram`，仅用于帮助判读 PSRAM 是否被实际消耗。`display_lease_denied_total` 是显示执行面 lease 被拒绝的资源治理计数，不是 `/api/health.display` 健康字段。治理字段用于诊断运行态压力，会随着新的执行面 guard 继续扩展；客户端应允许未知字段存在，但不要期待这里返回健康总览、固件身份或 crash 证据。
+资源端点属于资源诊断契约。`heap_free_spiram` 表示 PSRAM 空闲量，不是已用量；`heap_used_spiram_est = heap_total_spiram - heap_free_spiram`，仅用于帮助判读 PSRAM 是否被实际消耗。`display_lease_denied_total` 是显示执行面 lease 被拒绝的资源治理计数，不是 `/api/health.display` 健康字段。`crash` 携带真实 panic / reset 证据；缺失事实保持为 null，不合成。治理字段用于诊断运行态压力，会随着新的执行面 guard 继续扩展；客户端应允许未知字段存在，但不要期待这里返回健康总览或固件身份。
 
 **GET /api/diagnose**
 

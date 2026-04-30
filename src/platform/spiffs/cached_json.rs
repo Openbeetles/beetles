@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::{read_file, write_runtime_json_file};
+use super::{read_file, write_json_file};
 
 pub(crate) struct StoreOp<R> {
     pub(crate) result: R,
@@ -90,7 +90,7 @@ where
     fn persist(&self, value: &T) -> Result<()> {
         let json = serde_json::to_vec(value)
             .map_err(|e| Error::config(self.stage_persist, e.to_string()))?;
-        write_runtime_json_file((self.path_fn)(), &json)
+        write_json_file((self.path_fn)(), &json)
     }
 }
 
@@ -195,6 +195,20 @@ mod tests {
         .clone()
     }
 
+    fn persist_test_store_path() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("beetle-cached-json-persist-{unique}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root.join("cached.json")
+        })
+        .clone()
+    }
+
     fn reset_test_store(path: &Path) {
         let _ = std::fs::remove_file(path);
         if let Some(parent) = path.parent() {
@@ -228,5 +242,26 @@ mod tests {
 
         let bytes = std::fs::read(&path).expect("read original bytes");
         assert_eq!(bytes, br#"{"chat-1": }"#);
+    }
+
+    #[test]
+    fn generic_cached_json_persists_mutation_to_disk() {
+        let path = persist_test_store_path();
+        reset_test_store(&path);
+
+        let store = ChatScopedCachedJsonMapStore::<u32>::new(
+            persist_test_store_path,
+            "cached_json_test_lock",
+            "cached_json_test_cache",
+            "cached_json_test_persist",
+            8,
+        );
+
+        store.set_owned("chat-1", 42).expect("persist mutation");
+
+        let bytes = std::fs::read(&path).expect("read persisted json");
+        let persisted: HashMap<String, u32> =
+            serde_json::from_slice(&bytes).expect("valid persisted json");
+        assert_eq!(persisted.get("chat-1"), Some(&42));
     }
 }

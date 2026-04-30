@@ -115,6 +115,27 @@ test("loadDeviceStatusBundle stops after the first failed endpoint", async () =>
   });
 });
 
+test("loadDeviceStatusBundle keeps health when resource and metrics fail", async () => {
+  const health: HealthData = { status: "ok", network_status: { sta_connected: true } };
+
+  const result = await loadDeviceStatusBundle({
+    health: async () => ({ ok: true, data: health }),
+    resource: async () => ({ ok: false, error: "resource unavailable" }),
+    metrics: async () => {
+      throw new Error("metrics timeout");
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    data: {
+      health,
+      resource: {},
+      metrics: {},
+    },
+  });
+});
+
 test("loadDeviceStatusBundle keeps the first endpoint error as the shared failure reason", async () => {
   const result = await loadDeviceStatusBundle({
     health: async () => ({ ok: false, error: "health unavailable" }),

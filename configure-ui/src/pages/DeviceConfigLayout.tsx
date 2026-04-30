@@ -10,7 +10,8 @@ import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
 
 /**
  * 设备配置壳层：左侧分区导航 + 右侧子路由（`/device-config/:tab`）。
- * /device-config/display — 显示；/device-config/audio — 音频；/device-config/hardware — GPIO 等硬件设备
+ * /device-config/display — 显示；/device-config/audio — 音频；
+ * /device-config/hardware — GPIO 等硬件设备；/device-config/i2c-sensors — I2C 传感器
  */
 export function DeviceConfigLayout() {
   const { t } = useTranslation();
@@ -49,6 +50,11 @@ export function DeviceConfigLayout() {
       segment: "hardware",
       label: t("deviceConfig.tabGpioDevices"),
       iconSrc: OS_ICON_DEVICE_CONFIG.hardware,
+    },
+    {
+      segment: "i2c-sensors",
+      label: t("deviceConfig.tabI2cSensors"),
+      iconSrc: OS_ICON_DEVICE_CONFIG.i2cSensors,
     },
   ];
 

@@ -68,6 +68,14 @@ export interface ResourceGovernanceMetricsData {
   event_ingress_stale_drop_total?: number
 }
 
+export interface ResourceCrashMetadataData {
+  last_panic_pc?: string | null
+  last_panic_core?: number | null
+  last_panic_reason?: string | null
+  last_symbolize_hint?: string | null
+  last_resource_baseline_before_panic?: string | null
+}
+
 /** 与固件 `handlers/resource.rs` 的收口后资源诊断契约一致。 */
 export interface ResourceSnapshotData {
   pressure?: string
@@ -89,6 +97,7 @@ export interface ResourceSnapshotData {
   budget?: ResourceBudgetData
   admission?: ResourceAdmissionData
   governance_metrics?: ResourceGovernanceMetricsData
+  crash?: ResourceCrashMetadataData
   runtime_capabilities?: unknown[]
   network_gate_summary?: ResourceNetworkGateSummaryData
   planes?: unknown

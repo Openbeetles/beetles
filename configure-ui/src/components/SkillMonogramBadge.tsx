@@ -89,7 +89,7 @@ export function SkillMonogramBadge({ name }: { name: string }) {
             fontSize: "1.12rem",
             fontWeight: 800,
             lineHeight: 1,
-            letterSpacing: "-0.045em",
+            letterSpacing: 0,
             color: tone.text,
             textShadow:
               "0 1px 0 color-mix(in srgb, #fff 44%, transparent), 0 4px 8px color-mix(in srgb, var(--foreground) 10%, transparent)",

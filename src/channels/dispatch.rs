@@ -50,7 +50,7 @@ use std::collections::VecDeque;
 ))]
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。
 pub trait MessageSink: Send + Sync {
@@ -207,13 +207,6 @@ const SEND_RETRY: u32 = 3;
 
 const SEND_RETRY_DELAY_MS: u64 = 500;
 
-fn current_replay_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or(0)
-}
-
 fn is_channel_in_cooldown(channel: &str) -> bool {
     !crate::orchestrator::is_channel_healthy_pub(channel)
 }
@@ -292,37 +285,6 @@ fn try_push_buffered_msg(
         );
         return BufferPushResult::Buffered;
     }
-    if let Some(pos) = cooldown_buffer.iter().position(|buffered| {
-        !buffered.outbound_kind.is_supplemental()
-            && buffered.channel == msg.channel
-            && buffered.chat_id == msg.chat_id
-    }) {
-        let replaced = cooldown_buffer.remove(pos);
-        cooldown_buffer.push_back(msg);
-        log::warn!(
-            "[{}] req_id={} channel={} coalesced deferred primary for chat/channel at buffer cap",
-            tag,
-            replaced
-                .as_ref()
-                .and_then(|msg| msg.req_id.as_deref())
-                .unwrap_or("-"),
-            replaced
-                .as_ref()
-                .map(|msg| msg.channel.as_ref())
-                .unwrap_or("-")
-        );
-        return BufferPushResult::Buffered;
-    }
-    if let Some(replaced) = cooldown_buffer.pop_front() {
-        cooldown_buffer.push_back(msg);
-        log::warn!(
-            "[{}] req_id={} channel={} coalesced oldest deferred primary at buffer cap",
-            tag,
-            replaced.req_id.as_deref().unwrap_or("-"),
-            replaced.channel
-        );
-        return BufferPushResult::Buffered;
-    }
     log::warn!(
         "[{}] req_id={} channel={} primary deferred buffer full, holding until replay frees space",
         tag,
@@ -351,7 +313,7 @@ fn buffer_deferred_msg_with_replay<F>(
         BufferPushResult::Full(msg) => {
             metrics::record_error_by_stage("channel_deferred_buffer_full");
             log::error!(
-                "[{}] req_id={} channel={} deferred primary buffer full after bounded replay despite hard-cap coalescing",
+                "[{}] req_id={} channel={} deferred primary buffer full after bounded replay",
                 tag,
                 msg.req_id.as_deref().unwrap_or("-"),
                 msg.channel
@@ -370,7 +332,7 @@ fn buffer_deferred_msg_without_replay(
         BufferPushResult::Full(msg) => {
             metrics::record_error_by_stage("channel_deferred_buffer_full");
             log::error!(
-                "[{}] req_id={} channel={} deferred primary buffer full under local pressure despite hard-cap coalescing",
+                "[{}] req_id={} channel={} deferred primary buffer full under local pressure",
                 tag,
                 msg.req_id.as_deref().unwrap_or("-"),
                 msg.channel
@@ -420,21 +382,29 @@ fn replay_ready_messages_for_tick<FH, FS>(
 
 #[derive(Default)]
 struct DeferredReplayGate {
-    next_replay_at_ms: Option<u64>,
+    next_replay_at: Option<Instant>,
 }
 
 impl DeferredReplayGate {
-    fn ready(&self, now_ms: u64) -> bool {
-        self.next_replay_at_ms
-            .is_none_or(|next_replay_at_ms| now_ms >= next_replay_at_ms)
+    fn ready(&self) -> bool {
+        self.ready_at(Instant::now())
     }
 
-    fn defer(&mut self, now_ms: u64, delay_ms: u64) {
-        self.next_replay_at_ms = Some(now_ms.saturating_add(delay_ms));
+    fn ready_at(&self, now: Instant) -> bool {
+        self.next_replay_at
+            .is_none_or(|next_replay_at| now >= next_replay_at)
+    }
+
+    fn defer(&mut self, delay: Duration) {
+        self.defer_until_after(Instant::now(), delay);
+    }
+
+    fn defer_until_after(&mut self, now: Instant, delay: Duration) {
+        self.next_replay_at = Some(now.checked_add(delay).unwrap_or(now));
     }
 
     fn clear(&mut self) {
-        self.next_replay_at_ms = None;
+        self.next_replay_at = None;
     }
 }
 
@@ -889,8 +859,7 @@ pub fn run_os_outbound_worker(
 
     loop {
         crate::platform::task_wdt::feed_current_task();
-        let now_ms = current_replay_time_ms();
-        if replay_gate.ready(now_ms) {
+        if replay_gate.ready() {
             replay_ready_messages_for_tick(
                 &mut cooldown_buffer,
                 is_channel_in_cooldown,
@@ -922,7 +891,7 @@ pub fn run_os_outbound_worker(
             if cooldown_buffer.is_empty() {
                 replay_gate.clear();
             } else {
-                replay_gate.defer(now_ms, deferred_buffer_replay_delay_ms());
+                replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
         }
 
@@ -973,7 +942,7 @@ pub fn run_os_outbound_worker(
                     reason
                 );
                 buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
-                replay_gate.defer(current_replay_time_ms(), deferred_buffer_replay_delay_ms());
+                replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
             continue;
         }
@@ -988,7 +957,7 @@ pub fn run_os_outbound_worker(
                 );
             } else {
                 buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
-                replay_gate.defer(current_replay_time_ms(), deferred_buffer_replay_delay_ms());
+                replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
             continue;
         }
@@ -1002,7 +971,7 @@ pub fn run_os_outbound_worker(
             DispatchOutcome::Sent | DispatchOutcome::Failed => {}
             DispatchOutcome::Deferred => {
                 buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
-                replay_gate.defer(current_replay_time_ms(), deferred_buffer_replay_delay_ms());
+                replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
         }
     }
@@ -1597,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_buffer_coalesces_chat_channel_primary_when_full() {
+    fn deferred_buffer_rejects_unrelated_primary_when_full() {
         let mut buffer = VecDeque::new();
         for index in 0..super::COOLDOWN_BUFFER_MAX {
             buffer.push_back(build_msg(
@@ -1608,17 +1577,39 @@ mod tests {
         }
         let new_primary = build_msg("ready", "chat-1", "new-primary");
 
+        let result = super::try_push_buffered_msg("test", &mut buffer, new_primary);
+
+        match result {
+            super::BufferPushResult::Full(msg) => {
+                assert_eq!(msg.content, "new-primary");
+            }
+            _ => panic!("full primary-only buffer must reject unrelated primary"),
+        }
+
+        assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
+        assert!(buffer.iter().any(|msg| msg.content == "primary-0"));
+        assert!(!buffer.iter().any(|msg| msg.content == "new-primary"));
+    }
+
+    #[test]
+    fn deferred_buffer_does_not_coalesce_different_req_primary_when_full() {
+        let mut buffer = VecDeque::new();
+        for index in 0..super::COOLDOWN_BUFFER_MAX {
+            let mut msg = build_msg("ready", "chat-1", format!("primary-{index}").as_str());
+            msg.req_id = Some(format!("req-{index}"));
+            buffer.push_back(msg);
+        }
+        let mut new_primary = build_msg("ready", "chat-1", "new-primary");
+        new_primary.req_id = Some("req-new".to_string());
+
         assert!(matches!(
             super::try_push_buffered_msg("test", &mut buffer, new_primary),
-            super::BufferPushResult::Buffered
+            super::BufferPushResult::Full(_)
         ));
 
         assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
-        assert!(!buffer.iter().any(|msg| msg.content == "primary-0"));
-        assert_eq!(
-            buffer.back().map(|msg| msg.content.as_str()),
-            Some("new-primary")
-        );
+        assert!(buffer.iter().any(|msg| msg.content == "primary-0"));
+        assert!(!buffer.iter().any(|msg| msg.content == "new-primary"));
     }
 
     #[test]
@@ -1643,7 +1634,31 @@ mod tests {
     }
 
     #[test]
-    fn deferred_buffer_full_coalesces_primary_without_expanding_buffer() {
+    fn deferred_buffer_coalesces_same_req_primary_retry_when_full() {
+        let mut buffer = VecDeque::new();
+        for index in 0..super::COOLDOWN_BUFFER_MAX {
+            let mut msg = build_msg("qq_channel", "chat-1", format!("primary-{index}").as_str());
+            msg.req_id = Some(format!("req-{index}"));
+            msg.outbound_kind = OutboundKind::Primary;
+            buffer.push_back(msg);
+        }
+        let mut retry = build_msg("qq_channel", "chat-1", "new-primary");
+        retry.req_id = Some("req-0".to_string());
+        retry.outbound_kind = OutboundKind::Primary;
+
+        assert!(matches!(
+            super::try_push_buffered_msg("test", &mut buffer, retry),
+            super::BufferPushResult::Buffered
+        ));
+
+        assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
+        assert_eq!(buffer[0].content, "new-primary");
+        assert_eq!(buffer[0].req_id.as_deref(), Some("req-0"));
+        assert!(!buffer.iter().any(|msg| msg.content == "primary-0"));
+    }
+
+    #[test]
+    fn deferred_buffer_full_primary_uses_replay_before_recording_backpressure() {
         let mut buffer = VecDeque::new();
         for index in 0..super::COOLDOWN_BUFFER_MAX {
             buffer.push_back(build_msg(
@@ -1664,15 +1679,12 @@ mod tests {
         );
 
         assert_eq!(
-            replay_attempts, 0,
-            "hard-cap coalescing buffers the new primary before replay is needed"
+            replay_attempts, 1,
+            "full primary-only buffer should try bounded replay before reporting backpressure"
         );
         assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
-        assert!(!buffer.iter().any(|msg| msg.content == "primary-0"));
-        assert_eq!(
-            buffer.back().map(|msg| msg.content.as_str()),
-            Some("new-primary")
-        );
+        assert!(buffer.iter().any(|msg| msg.content == "primary-0"));
+        assert!(!buffer.iter().any(|msg| msg.content == "new-primary"));
     }
 
     #[test]
@@ -1695,15 +1707,18 @@ mod tests {
 
     #[test]
     fn deferred_replay_gate_holds_until_delay_expires() {
+        use std::time::{Duration, Instant};
+
         let mut gate = super::DeferredReplayGate::default();
+        let start = Instant::now();
 
-        assert!(gate.ready(1_000));
-        gate.defer(1_000, 5_000);
+        assert!(gate.ready_at(start));
+        gate.defer_until_after(start, Duration::from_secs(5));
 
-        assert!(!gate.ready(5_999));
-        assert!(gate.ready(6_000));
+        assert!(!gate.ready_at(start + Duration::from_millis(4_999)));
+        assert!(gate.ready_at(start + Duration::from_secs(5)));
         gate.clear();
-        assert!(gate.ready(6_001));
+        assert!(gate.ready_at(start + Duration::from_secs(6)));
     }
 
     #[cfg(any(

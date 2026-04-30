@@ -272,6 +272,7 @@ export const enUS = {
       tabDisplay: 'Display',
       tabAudio: 'Audio',
       tabGpioDevices: 'GPIO devices',
+      tabI2cSensors: 'I2C sensors',
       disclaimerTitle: 'Hardware configuration warning',
       disclaimerDesc:
         'This page controls hardware-level settings (display drivers, buses, GPIO, and similar). Before changing anything, obtain accurate documentation from the device manufacturer or official technical materials. Incorrect values may cause malfunction, permanent damage, or serious harm.\n\nIf you do not understand these options, leave this page. Choosing Continue means you understand the risks and accept responsibility.',
@@ -446,7 +447,7 @@ export const enUS = {
     hardwareConfig: {
       sectionMain: 'GPIO & programmable hardware',
       sectionMainDesc:
-        'Configure board devices. Wrong pins can damage hardware; restart after save.',
+        'Configure GPIO, PWM, ADC, buzzer, and DHT devices. Wrong pins can damage hardware; restart after save.',
       sectionI2cSensors: 'I2C environmental sensors',
       sectionI2cSensorsDesc:
         'Requires initialized i2c_bus; raw is not used for thresholds.',
@@ -493,6 +494,11 @@ export const enUS = {
         dhtModel: 'dht model must be dht11, dht22, or dht21',
         dhtWatchField: 'dht watch_field must be temperature or humidity',
         dhtPull: 'dht pull must be up, down, or none',
+        i2cBusRequired: 'i2c_bus is required when I2C sensors are configured',
+        i2cBusSdaPin: 'I2C SDA pin must be in range 1–48 and not reserved',
+        i2cBusSclPin: 'I2C SCL pin must be in range 1–48 and not reserved',
+        i2cBusPinsDistinct: 'I2C SDA and SCL must use different pins',
+        i2cBusFreq: 'I2C frequency must be 10000–1000000 Hz',
         i2cSensorMax: 'At most 8 I2C sensors',
         i2cSensorIdLen: 'Each I2C sensor needs an ID (1–64 characters)',
         i2cSensorIdDup: 'Duplicate I2C sensor ID',
@@ -507,6 +513,17 @@ export const enUS = {
         i2cSensorRawReadLen: 'raw read_len must be 1–32',
         i2cSensorRawWait: 'raw conversion_wait_ms must be ≤ 2000',
       },
+    },
+    i2cSensorsConfig: {
+      sectionMain: 'I2C sensors',
+      sectionMainDesc: 'Configure the I2C bus and sensors.',
+      busTitle: 'Bus configuration',
+      clearBus: 'Clear bus',
+      sdaPin: 'SDA pin',
+      sclPin: 'SCL pin',
+      freqHz: 'Frequency (Hz)',
+      freqHelp: 'Default 100000; common values are 100000 or 400000.',
+      busPinHelp: 'Use the SDA / SCL pins from your wiring.',
     },
     common: {
       pageComingSoon: 'Coming soon',

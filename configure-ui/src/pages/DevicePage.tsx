@@ -672,7 +672,7 @@ export function DevicePage() {
                 fontFamily: "var(--font-brand)",
                 fontWeight: 800,
                 color: "var(--text-primary)",
-                letterSpacing: "-0.02em",
+                letterSpacing: 0,
                 lineHeight: 1.1,
                 mb: 1.5,
                 whiteSpace: "nowrap",

@@ -1524,6 +1524,8 @@ const HARDWARE_FORBIDDEN_PINS: [i32; 3] = [0, 3, 46];
 const HARDWARE_ADC1_PINS: std::ops::RangeInclusive<i32> = 1..=10;
 const HARDWARE_PWM_FREQ_MIN: u32 = 1;
 const HARDWARE_PWM_FREQ_MAX: u32 = 40_000;
+const I2C_BUS_FREQ_MIN: u32 = 10_000;
+const I2C_BUS_FREQ_MAX: u32 = 1_000_000;
 const KNOWN_DEVICE_TYPES: [&str; 6] = ["gpio_out", "gpio_in", "pwm_out", "adc_in", "buzzer", "dht"];
 
 /// 引脚配置：键为引脚角色（如 "pin"），值为 GPIO 编号。
@@ -2410,6 +2412,32 @@ fn validate_hardware_segment(seg: &HardwareSegment) -> Result<()> {
         ));
     }
 
+    if !seg.i2c_sensors.is_empty() && seg.i2c_bus.is_none() {
+        return Err(Error::config(
+            "hardware",
+            "i2c_bus is required when i2c_sensors are configured",
+        ));
+    }
+    if let Some(bus) = &seg.i2c_bus {
+        validate_i2c_bus_pin("i2c_bus.sda_pin", bus.sda_pin)?;
+        validate_i2c_bus_pin("i2c_bus.scl_pin", bus.scl_pin)?;
+        if bus.sda_pin == bus.scl_pin {
+            return Err(Error::config(
+                "hardware",
+                "i2c_bus.sda_pin and i2c_bus.scl_pin must be different",
+            ));
+        }
+        if !(I2C_BUS_FREQ_MIN..=I2C_BUS_FREQ_MAX).contains(&bus.freq_hz) {
+            return Err(Error::config(
+                "hardware",
+                format!(
+                    "i2c_bus.freq_hz {} must be {}..={}",
+                    bus.freq_hz, I2C_BUS_FREQ_MIN, I2C_BUS_FREQ_MAX
+                ),
+            ));
+        }
+    }
+
     // i2c_sensors
     use crate::constants::{
         I2C_MAX_READ_LEN, I2C_SENSOR_ID_MAX_LEN, I2C_SENSOR_MAX_CMD_LEN, I2C_SENSOR_MAX_ENTRIES,
@@ -2563,6 +2591,25 @@ fn validate_hardware_segment(seg: &HardwareSegment) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_i2c_bus_pin(field: &'static str, pin: i32) -> Result<()> {
+    if !(HARDWARE_PIN_MIN..=HARDWARE_PIN_MAX).contains(&pin) {
+        return Err(Error::config(
+            "hardware",
+            format!(
+                "{} = {} out of range {}..={}",
+                field, pin, HARDWARE_PIN_MIN, HARDWARE_PIN_MAX
+            ),
+        ));
+    }
+    if HARDWARE_FORBIDDEN_PINS.contains(&pin) {
+        return Err(Error::config(
+            "hardware",
+            format!("{} = {} is a forbidden strapping pin", field, pin),
+        ));
     }
     Ok(())
 }
@@ -3026,6 +3073,87 @@ pub fn parse_allowed_chat_ids(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn aht20_sensor_for_tests() -> I2cSensorEntry {
+        I2cSensorEntry {
+            id: "box_aht20".into(),
+            addr: 0x38,
+            model: "aht20".into(),
+            watch_field: "temperature".into(),
+            what: "AHT20 temperature and humidity sensor".into(),
+            how: "AHT20 on I2C expansion bus".into(),
+            options: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn hardware_validation_requires_i2c_bus_for_i2c_sensors() {
+        let segment = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: None,
+            i2c_devices: vec![],
+            i2c_sensors: vec![aht20_sensor_for_tests()],
+        };
+
+        assert!(validate_hardware_segment(&segment)
+            .unwrap_err()
+            .to_string()
+            .contains("i2c_bus is required"));
+    }
+
+    #[test]
+    fn hardware_validation_rejects_invalid_i2c_bus_pins() {
+        let segment = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: Some(I2cBusConfig {
+                sda_pin: 49,
+                scl_pin: 40,
+                freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+            }),
+            i2c_devices: vec![],
+            i2c_sensors: vec![],
+        };
+
+        assert!(validate_hardware_segment(&segment)
+            .unwrap_err()
+            .to_string()
+            .contains("i2c_bus.sda_pin"));
+    }
+
+    #[test]
+    fn hardware_validation_rejects_same_i2c_bus_pins() {
+        let segment = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: Some(I2cBusConfig {
+                sda_pin: 41,
+                scl_pin: 41,
+                freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+            }),
+            i2c_devices: vec![],
+            i2c_sensors: vec![],
+        };
+
+        assert!(validate_hardware_segment(&segment)
+            .unwrap_err()
+            .to_string()
+            .contains("must be different"));
+    }
+
+    #[test]
+    fn hardware_validation_accepts_aht20_i2c_segment() {
+        let segment = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: Some(I2cBusConfig {
+                sda_pin: 21,
+                scl_pin: 22,
+                freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+            }),
+            i2c_devices: vec![],
+            i2c_sensors: vec![aht20_sensor_for_tests()],
+        };
+
+        validate_hardware_segment(&segment).unwrap();
+    }
 
     #[test]
     fn llm_segment_from_app_config_prefers_runtime_llm_sources() {

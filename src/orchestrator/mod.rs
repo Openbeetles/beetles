@@ -103,6 +103,20 @@ pub fn reset_crash_metadata_for_tests() {
     }
 }
 
+/// Return the merged crash metadata snapshot for operator diagnostics.
+pub fn crash_metadata_snapshot() -> CrashMetadataSnapshot {
+    let provider_snapshot = CRASH_METADATA_PROVIDER
+        .get()
+        .map(|provider| provider())
+        .unwrap_or_default();
+    let recorded_snapshot = RECORDED_CRASH_METADATA
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default();
+    recorded_snapshot.merge_prefer_self(provider_snapshot)
+}
+
 /// 实时取当前平台内存快照（TLS 准入、堆刷新共用）。未注册时返回零值（装配错误）。
 pub(crate) fn memory_snapshot_live() -> MemorySnapshot {
     match MEMORY_SNAPSHOT_PROVIDER.get() {

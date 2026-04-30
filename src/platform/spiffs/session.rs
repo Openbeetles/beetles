@@ -647,11 +647,7 @@ fn append_session_lines_unlocked(
             .and_then(|_| file.write_all(b"\n"))
             .map_err(|e| Error::io("session_append", e))?;
     }
-    finish_file_after_write(
-        &mut file,
-        "session_append",
-        WriteDurability::RuntimeBuffered,
-    )?;
+    finish_file_after_write(&mut file, "session_append", WriteDurability::Durable)?;
     Ok(())
 }
 

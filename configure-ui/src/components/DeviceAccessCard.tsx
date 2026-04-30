@@ -596,7 +596,7 @@ export function DeviceAccessCard() {
               sx={{
                 fontFamily: "var(--font-brand)",
                 fontWeight: 800,
-                letterSpacing: "-0.02em",
+                letterSpacing: 0,
                 mb: 1.5,
               }}
             >

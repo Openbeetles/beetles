@@ -7,6 +7,8 @@ import {
   HARDWARE_PIN_MIN,
   HARDWARE_PWM_FREQ_MAX,
   HARDWARE_PWM_FREQ_MIN,
+  I2C_BUS_FREQ_MAX,
+  I2C_BUS_FREQ_MIN,
   I2C_MAX_READ_LEN_UI,
   I2C_SENSOR_ADDR_MAX,
   I2C_SENSOR_ADDR_MIN,
@@ -108,9 +110,52 @@ export function validateHardwareSegment(
     return t("hardwareConfig.validation.maxPwm");
   }
 
+  const i2cBus = segment.i2c_bus ?? null;
+  if (i2cBus != null) {
+    if (
+      !Number.isFinite(i2cBus.sda_pin) ||
+      i2cBus.sda_pin < HARDWARE_PIN_MIN ||
+      i2cBus.sda_pin > HARDWARE_PIN_MAX
+    ) {
+      return t("hardwareConfig.validation.i2cBusSdaPin");
+    }
+    if (
+      !Number.isFinite(i2cBus.scl_pin) ||
+      i2cBus.scl_pin < HARDWARE_PIN_MIN ||
+      i2cBus.scl_pin > HARDWARE_PIN_MAX
+    ) {
+      return t("hardwareConfig.validation.i2cBusSclPin");
+    }
+    if (i2cBus.sda_pin === i2cBus.scl_pin) {
+      return t("hardwareConfig.validation.i2cBusPinsDistinct");
+    }
+    if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(i2cBus.sda_pin)) {
+      return t("hardwareConfig.validation.i2cBusSdaPin");
+    }
+    if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(i2cBus.scl_pin)) {
+      return t("hardwareConfig.validation.i2cBusSclPin");
+    }
+    if (i2cBus.freq_hz != null) {
+      const freq =
+        typeof i2cBus.freq_hz === "number"
+          ? i2cBus.freq_hz
+          : Number(i2cBus.freq_hz);
+      if (
+        !Number.isFinite(freq) ||
+        freq < I2C_BUS_FREQ_MIN ||
+        freq > I2C_BUS_FREQ_MAX
+      ) {
+        return t("hardwareConfig.validation.i2cBusFreq");
+      }
+    }
+  }
+
   const i2cSensors = segment.i2c_sensors ?? [];
   if (i2cSensors.length > MAX_I2C_SENSORS) {
     return t("hardwareConfig.validation.i2cSensorMax");
+  }
+  if (i2cSensors.length > 0 && i2cBus == null) {
+    return t("hardwareConfig.validation.i2cBusRequired");
   }
 
   const seenI2cIds = new Set<string>();

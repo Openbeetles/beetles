@@ -160,7 +160,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               variant="h6"
               sx={{
                 fontWeight: 700,
-                letterSpacing: "-0.01em",
+                letterSpacing: 0,
                 lineHeight: "var(--line-height-snug)",
               }}
             >
@@ -352,7 +352,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 color: "var(--text-tertiary)",
                 fontWeight: 700,
                 fontSize: "var(--font-size-label)",
-                letterSpacing: "-0.02em",
+                letterSpacing: 0,
                 lineHeight: "var(--line-height-tight)",
               }}
             >

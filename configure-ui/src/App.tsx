@@ -76,6 +76,11 @@ const HardwareGpioPanel = lazy(async () => {
   return { default: mod.HardwareGpioPanel }
 })
 
+const I2cSensorsPanel = lazy(async () => {
+  const mod = await import('./pages/I2cSensorsPanel')
+  return { default: mod.I2cSensorsPanel }
+})
+
 const PlaceholderPage = lazy(async () => {
   const mod = await import('./pages/PlaceholderPage')
   return { default: mod.PlaceholderPage }
@@ -142,6 +147,7 @@ function App() {
                       <Route path="display" element={<DisplayConfigPanel />} />
                       <Route path="audio" element={<AudioConfigPanel />} />
                       <Route path="hardware" element={<HardwareGpioPanel />} />
+                      <Route path="i2c-sensors" element={<I2cSensorsPanel />} />
                     </Route>
                     <Route
                       path="/display-config"

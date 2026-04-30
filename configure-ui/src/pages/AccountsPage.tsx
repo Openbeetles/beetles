@@ -492,7 +492,7 @@ export function AccountsPage() {
                         fontSize: "1.1875rem",
                         fontWeight: 600,
                         lineHeight: 1.35,
-                        letterSpacing: "-0.015em",
+                        letterSpacing: 0,
                         color: "var(--foreground)",
                         display: "-webkit-box",
                         WebkitBoxOrient: "vertical",

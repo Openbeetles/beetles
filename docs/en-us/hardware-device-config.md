@@ -14,20 +14,21 @@ Typical flow:
 1. Open Configure UI and connect to the target device
 2. Unlock with the pairing code
 3. Go to **Device Config**
-4. Open **GPIO Devices**
-5. Add or edit the hardware entries you need
-6. Save, then restart the device if the page asks for it
+4. Open **GPIO Devices** for GPIO / DHT / PWM and similar devices
+5. Open **I2C Sensors** for AHT20 / SHT3x / raw I2C sensors
+6. Add or edit the device / sensor entries you need
+7. Save, then restart the device if the page asks for it
 
 If you are still on first-time access, start with [configuration.md](configuration.md).
 
 ## What This Page Covers
 
-The current hardware page in Configure UI mainly covers:
+Hardware setup in Configure UI now covers:
 
-- onboard or attached programmable hardware devices
-- common I2C sensors
+- **GPIO Devices**: onboard or attached programmable hardware devices
+- **I2C Sensors**: `i2c_bus` plus common I2C sensors
 
-The device types you can add there today are:
+The device types you can add on **GPIO Devices** today are:
 
 - `gpio_out`
 - `gpio_in`
@@ -37,6 +38,14 @@ The device types you can add there today are:
 - `dht`
 
 If your goal is to drive LEDs, relays, switches, buzzers, or read DHT sensors, this is the page you should use first.
+
+The **I2C Sensors** page currently supports:
+
+- `aht20`
+- `sht3x`
+- `raw`
+
+AHT20 commonly uses address `56` (`0x38`). Fill SDA / SCL from your actual wiring; frequency `100000` is a common default.
 
 ## Recommended Usage
 
@@ -51,7 +60,6 @@ Most users do not need this.
 
 If you need to configure advanced hardware fields such as:
 
-- `i2c_bus`
 - `i2c_devices`
 - importing an existing hardware config in bulk
 

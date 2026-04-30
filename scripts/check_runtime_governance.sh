@@ -243,6 +243,29 @@ if ! rg -n 'governance_metrics:\s*orchestrator::ResourceGovernanceMetricsSnapsho
   exit 1
 fi
 
+if ! rg -n 'CRASH_METADATA_PROVIDER:\s*OnceLock' src/orchestrator/mod.rs >/dev/null; then
+  echo "FAIL: crash metadata provider registration is no longer owned by orchestrator" >&2
+  exit 1
+fi
+
+if ! rg -n 'RECORDED_CRASH_METADATA:\s*Mutex' src/orchestrator/mod.rs >/dev/null ||
+   ! rg -n 'pub fn record_crash_metadata\s*\(' src/orchestrator/mod.rs >/dev/null; then
+  echo "FAIL: recorded crash metadata store/record API is missing from orchestrator" >&2
+  exit 1
+fi
+
+if ! rg -n 'crash:\s*CrashMetadataSnapshot' src/orchestrator/state.rs >/dev/null ||
+   ! rg -n 'crash_metadata_snapshot\s*\(' src/orchestrator/mod.rs src/orchestrator/state.rs >/dev/null; then
+  echo "FAIL: ResourceDiagnosticSnapshot no longer aggregates crash metadata" >&2
+  exit 1
+fi
+
+if ! rg -n 'crash:\s*orchestrator::CrashMetadataSnapshot' src/platform/http_server/handlers/resource.rs >/dev/null ||
+   ! rg -n 'crash:\s*diag\.crash' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: /api/resource no longer exposes aggregated crash diagnostics" >&2
+  exit 1
+fi
+
 if ! rg -n 'runtime_capabilities:\s*Vec<orchestrator::RuntimeCapabilityState>' src/platform/http_server/handlers/resource.rs >/dev/null ||
    ! rg -n 'runtime_capabilities:\s*Vec<crate::orchestrator::RuntimeCapabilityState>' src/orchestrator/state.rs >/dev/null ||
    ! rg -n 'runtime_capability_snapshot\s*\(' src/orchestrator/state.rs >/dev/null; then

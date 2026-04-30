@@ -958,6 +958,29 @@ mod tests {
                 true,
                 0,
                 false,
+                Some(record(PlaneLifecycleState::Suspended, "wifi_not_ready")),
+            ),
+            beetle::DisplayChannelRuntimeStatus::Waiting
+        );
+        assert_eq!(
+            super::display_channel_runtime_status_from_lifecycle(
+                true,
+                true,
+                0,
+                false,
+                Some(record(
+                    PlaneLifecycleState::Suspended,
+                    "wifi_not_configured"
+                )),
+            ),
+            beetle::DisplayChannelRuntimeStatus::Waiting
+        );
+        assert_eq!(
+            super::display_channel_runtime_status_from_lifecycle(
+                true,
+                true,
+                0,
+                false,
                 Some(record(PlaneLifecycleState::Starting, "connect_attempt")),
             ),
             beetle::DisplayChannelRuntimeStatus::Connecting
@@ -1639,6 +1662,10 @@ fn display_channel_runtime_status_from_lifecycle(
             beetle::runtime::PlaneLifecycleState::Suspended => {
                 if record.last_reason == "wall_clock_untrusted" {
                     DisplayChannelRuntimeStatus::WaitingWallClock
+                } else if record.last_reason == "wifi_not_ready"
+                    || record.last_reason == "wifi_not_configured"
+                {
+                    DisplayChannelRuntimeStatus::Waiting
                 } else {
                     DisplayChannelRuntimeStatus::Suspended
                 }
@@ -1864,21 +1891,6 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         .unwrap_or(0);
     let sleep_enabled = sleep_timeout > 0 && platform.display_backlight_available();
     let sleep_duration = Duration::from_secs(sleep_timeout as u64);
-    let display_asset_cache_enabled = platform.memory_system_kind()
-        == beetle::memory::MemorySystemKind::EspCompact
-        && config
-            .display
-            .as_ref()
-            .is_some_and(|display| display.enabled);
-    let display_asset_cache_budget = config
-        .display
-        .as_ref()
-        .map(|display| {
-            beetle::runtime::display_asset_cache_budget_bytes(display.width, display.height)
-        })
-        .unwrap_or(0);
-    let mut display_asset_pool =
-        beetle::runtime::ModePsramPool::new(beetle::runtime::PsramPoolRole::DisplayAssetCache);
     let mut loop_state = DisplayLoopState::default();
 
     loop {
@@ -1886,12 +1898,6 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         beetle::platform::task_wdt::feed_current_task();
         let snapshot = beetle::orchestrator::snapshot();
-        display_asset_pool.reconcile(beetle::runtime::PsramPoolAdmission::new(
-            beetle::runtime::PsramPoolRole::DisplayAssetCache,
-            display_asset_cache_enabled,
-            snapshot.pressure,
-            display_asset_cache_budget,
-        ));
         if should_suppress_display_refresh(
             platform.memory_system_kind(),
             snapshot.pressure,

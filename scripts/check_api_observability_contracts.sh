@@ -45,7 +45,7 @@ check_prod_present() {
 check_prod_absent \
   src/platform/http_server/handlers/health.rs \
   'resource_diagnostic_snapshot|orchestrator::snapshot|workflow_audit_snapshot|NetworkRuntimeSnapshot' \
-  "health handler must not read deep resource/workflow/network snapshots"
+  "health handler must not read resource/workflow diagnostics or serialize a full NetworkRuntimeSnapshot"
 
 check_prod_absent \
   src/platform/http_server/handlers/health.rs \
@@ -57,6 +57,11 @@ check_prod_present \
   'network_status:\s*NetworkHealthStatus' \
   "health handler must expose only the lightweight network_status summary"
 
+check_prod_present \
+  src/platform/http_server/handlers/health.rs \
+  'network_runtime_snapshot\s*\(' \
+  "health handler must derive network_status from the lightweight network runtime accessor"
+
 check_prod_absent \
   src/platform/http_server/handlers/resource.rs \
   'HealthBody|get_current_error|display_available|audio_duplex_capabilities' \
@@ -64,7 +69,7 @@ check_prod_absent \
 
 check_prod_absent \
   src/platform/http_server/handlers/resource.rs \
-  '^\s*(network|firmware_identity|crash|workflow|last_error|display|audio)\s*:' \
+  '^\s*(network|firmware_identity|workflow|last_error|display|audio)\s*:' \
   "resource handler must not serialize removed cross-contract top-level fields"
 
 check_prod_present \
@@ -100,13 +105,18 @@ if ! rg -n 'observability_route_classes_preserve_contract_boundaries' \
   exit 1
 fi
 
-doc_paths=(docs/zh-cn/config-api.md docs/en-us/config-api.md)
-if [[ -f dev-docs/api-observability-contracts.md ]]; then
-  doc_paths+=(dev-docs/api-observability-contracts.md)
-fi
+for doc in docs/zh-cn/config-api.md docs/en-us/config-api.md; do
+  for key in health.wifi health.network health.workflow resource.network resource.firmware_identity; do
+    if ! rg -n "$key" "$doc" >/dev/null; then
+      echo "FAIL: $doc must explicitly document removed duplicate field $key" >&2
+      exit 1
+    fi
+  done
 
-if ! rg -n '/api/health.*?/api/resource|/api/resource.*?/api/health|health\.wifi|health\.network|health\.workflow|resource\.network|resource\.firmware_identity|resource\.crash' \
-  "${doc_paths[@]}" >/dev/null; then
-  echo "FAIL: observability contract docs must explicitly document removed duplicate fields" >&2
-  exit 1
-fi
+  for key in crash cpu_usage_percent load_average process_memory_kb; do
+    if ! rg -n -- "- \`$key\`" "$doc" >/dev/null; then
+      echo "FAIL: $doc must list /api/resource field $key" >&2
+      exit 1
+    fi
+  done
+done

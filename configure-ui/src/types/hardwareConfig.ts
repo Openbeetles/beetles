@@ -72,6 +72,11 @@ export const I2C_SENSOR_ADDR_MIN = 0x08
 export const I2C_SENSOR_ADDR_MAX = 0x77
 export const I2C_SENSOR_MAX_CMD_LEN = 4
 export const I2C_MAX_READ_LEN_UI = 32
+export const I2C_BUS_FREQ_MIN = 10_000
+export const I2C_BUS_FREQ_MAX = 1_000_000
+export const I2C_BUS_DEFAULT_FREQ_HZ = 100_000
+export const I2C_BUS_DEFAULT_SDA_PIN = 21
+export const I2C_BUS_DEFAULT_SCL_PIN = 22
 
 export const I2C_SENSOR_MODELS = ['sht3x', 'aht20', 'raw'] as const
 export type I2cSensorModel = (typeof I2C_SENSOR_MODELS)[number]

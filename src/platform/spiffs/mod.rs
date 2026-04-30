@@ -41,7 +41,6 @@ pub(crate) enum WriteTailPadding {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WriteDurability {
-    RuntimeBuffered,
     Durable,
 }
 
@@ -421,17 +420,8 @@ pub(crate) fn finish_file_after_write(
     stage: &'static str,
     durability: WriteDurability,
 ) -> Result<()> {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        match durability {
-            WriteDurability::RuntimeBuffered => file.flush().map_err(|e| Error::io(stage, e)),
-            WriteDurability::Durable => file.sync_all().map_err(|e| Error::io(stage, e)),
-        }
-    }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    {
-        let _ = durability;
-        file.sync_all().map_err(|e| Error::io(stage, e))
+    match durability {
+        WriteDurability::Durable => file.sync_all().map_err(|e| Error::io(stage, e)),
     }
 }
 
@@ -489,21 +479,6 @@ pub fn write_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
             WriteTailPadding::JsonWhitespace,
             WriteDurability::Durable,
             "spiffs_write_json",
-        )
-    })
-}
-
-/// 写运行态缓存 JSON。ESP 上只 flush Rust/VFS buffer，避免高频 write-back 抢占 SPIFFS。
-/// Write runtime cache JSON. ESP uses buffered flush to reduce high-frequency write-back stalls.
-pub(crate) fn write_runtime_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
-    let p = path.as_ref();
-    with_fs_lock_stage("spiffs_runtime_write_json", || {
-        write_file_unlocked(
-            p,
-            data,
-            WriteTailPadding::JsonWhitespace,
-            WriteDurability::RuntimeBuffered,
-            "spiffs_runtime_write_json",
         )
     })
 }

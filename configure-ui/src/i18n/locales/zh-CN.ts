@@ -272,6 +272,7 @@ export const zhCN = {
       tabDisplay: '显示',
       tabAudio: '音频',
       tabGpioDevices: 'GPIO 设备',
+      tabI2cSensors: 'I2C 传感器',
       disclaimerTitle: '硬件配置风险提示',
       disclaimerDesc:
         '本页用于配置与硬件密切相关的参数（如显示驱动、总线、GPIO 等）。修改前请务必向设备制造商或官方技术资料核实每一项含义与推荐取值；错误设置可能导致设备工作异常、器件损坏或更严重的安全事故。\n\n若您不理解这些选项，请离开本页。点击「继续」表示您已知悉上述风险并自愿承担后果。',
@@ -446,7 +447,7 @@ export const zhCN = {
     hardwareConfig: {
       sectionMain: 'GPIO 与可编程硬件设备',
       sectionMainDesc:
-        '配置板载设备。改错引脚可能损坏硬件；保存后重启。',
+        '配置 GPIO、PWM、ADC、蜂鸣器与 DHT 设备。改错引脚可能损坏硬件；保存后重启。',
       sectionI2cSensors: 'I2C 传感器（温湿度）',
       sectionI2cSensorsDesc:
         '需要已初始化的 i2c_bus；raw 不参与阈值监控。',
@@ -493,6 +494,11 @@ export const zhCN = {
         dhtModel: 'dht 的型号须为 dht11、dht22 或 dht21',
         dhtWatchField: 'dht 的监控字段须为 temperature 或 humidity',
         dhtPull: 'dht 的 pull 须为 up、down 或 none',
+        i2cBusRequired: '存在 I2C 传感器时必须配置 i2c_bus',
+        i2cBusSdaPin: 'I2C SDA 引脚须在 1～48 范围内，且不能使用保留引脚',
+        i2cBusSclPin: 'I2C SCL 引脚须在 1～48 范围内，且不能使用保留引脚',
+        i2cBusPinsDistinct: 'I2C SDA 与 SCL 不能使用同一个引脚',
+        i2cBusFreq: 'I2C 频率须在 10000～1000000 Hz 范围内',
         i2cSensorMax: 'I2C 传感器不能超过 8 个',
         i2cSensorIdLen: '每项 I2C 传感器 ID 须非空且长度不超过 64',
         i2cSensorIdDup: 'I2C 传感器 ID 不能重复',
@@ -507,6 +513,17 @@ export const zhCN = {
         i2cSensorRawReadLen: 'raw 的 read_len 须为 1～32',
         i2cSensorRawWait: 'raw 的 conversion_wait_ms 不能超过 2000',
       },
+    },
+    i2cSensorsConfig: {
+      sectionMain: 'I2C 传感器',
+      sectionMainDesc: '配置 I2C 总线与传感器。',
+      busTitle: '总线配置',
+      clearBus: '清空总线',
+      sdaPin: 'SDA 引脚',
+      sclPin: 'SCL 引脚',
+      freqHz: '频率（Hz）',
+      freqHelp: '默认 100000；常用 100000 或 400000。',
+      busPinHelp: '按实际接线填写 SDA / SCL 引脚。',
     },
     common: {
       pageComingSoon: '页面开发中',

@@ -941,7 +941,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; write-back flushes moved to `write_back`
-// | write_back                            | runtime local          | 24 KB | 8 KB  | ← SPIFFS/serde flush worker, lazy-started, idle-stopped, separate from agent_loop
+// | write_back                            | runtime local          | 24 KB | 24 KB | ← SPIFFS/serde flush worker, lazy-started, idle-stopped, separate from agent_loop
 // | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS

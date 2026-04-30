@@ -259,7 +259,7 @@ export const UI_LABEL_SECONDARY_SX = {
 export const TEXT_SECTION_TITLE_SX = {
   fontSize: "var(--font-size-h4)",
   fontWeight: 700,
-  letterSpacing: "-0.02em",
+  letterSpacing: 0,
   lineHeight: "var(--line-height-snug)",
   color: "var(--text-primary)",
 } as const

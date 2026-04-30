@@ -59,7 +59,9 @@ pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR +
 // 24KB matches the old bg_timer write-back budget without adding an oversized SRAM reserve.
 const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-const WRITE_BACK_WORKER_STACK: usize = 8 * 1024;
+// Host tests and Linux embedded targets still execute the same serde/session flush
+// path; 8KB can overflow before the worker reaches its idle-stop release point.
+const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 
 const WRITE_BACK_ADMISSION_DEFER_MS: u64 = 500;
 #[cfg(test)]
@@ -342,10 +344,6 @@ fn write_back_admission_delay_for_resource(
         || largest_block_low
         || resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Critical
     {
-        return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
-    }
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if write_back_foreground_activity_active(resource, config_active) {
         return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
     }
     if resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Cautious
@@ -1282,7 +1280,7 @@ impl PendingSessionBuffer {
                         continue;
                     }
                     let mut appended = write.appended;
-                    appended.extend(current.appended.drain(..));
+                    appended.append(&mut current.appended);
                     current.clear = write.clear;
                     current.appended = appended;
                 }
@@ -1476,6 +1474,14 @@ mod tests {
     use super::*;
     use crate::memory::{ExecutionStatus, SessionStore, TurnLedgerStatus};
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn write_back_worker_stack_budget_covers_storage_flush_path() {
+        assert!(
+            WRITE_BACK_WORKER_STACK >= 24 * 1024,
+            "write_back runs serde/session flushes and must not use a pure-scheduler stack"
+        );
+    }
 
     #[derive(Default)]
     struct StubExecutionStateStore {
@@ -2271,43 +2277,41 @@ mod tests {
         assert!(write_back_admission_delay_for_resource(&resource, true).is_some());
     }
 
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     #[test]
-    fn write_back_admission_defers_when_foreground_or_largest_block_busy_even_without_storage_risk()
-    {
+    fn write_back_admission_allows_healthy_storage_when_foreground_active() {
         let mut resource = write_back_resource_for_tests(
             crate::orchestrator::PressureLevel::Normal,
             crate::orchestrator::StorageContentionRisk::Healthy,
         );
 
         resource.active_http_count = 1;
-        assert!(
-            write_back_admission_delay_for_resource(&resource, false).is_some(),
-            "foreground HTTP/TLS work must keep write-back pending instead of starting its worker"
-        );
-        resource.active_http_count = 0;
-
-        resource.heap_largest_block_internal =
-            (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1);
-        assert!(
-            write_back_admission_delay_for_resource(&resource, false).is_some(),
-            "low internal largest-block must defer the 24KB write-back worker"
-        );
-    }
-
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-    #[test]
-    fn host_write_back_admission_does_not_defer_healthy_storage_for_foreground_http() {
-        let mut resource = write_back_resource_for_tests(
-            crate::orchestrator::PressureLevel::Normal,
-            crate::orchestrator::StorageContentionRisk::Healthy,
-        );
-        resource.active_http_count = 1;
-
         assert_eq!(
             write_back_admission_delay_for_resource(&resource, false),
             None,
-            "host/Linux should not inherit ESP SRAM foreground deferral when storage is healthy"
+            "Healthy storage should not defer write-back merely because HTTP/TLS work exists"
+        );
+        resource.active_http_count = 0;
+
+        resource.active_agent_tasks = 1;
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None,
+            "Healthy storage should not defer write-back merely because agent work exists"
+        );
+    }
+
+    #[test]
+    fn write_back_admission_defers_healthy_storage_when_largest_block_low() {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.heap_largest_block_internal =
+            (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1);
+
+        assert!(
+            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            "low internal largest-block must defer the 24KB write-back worker"
         );
     }
 

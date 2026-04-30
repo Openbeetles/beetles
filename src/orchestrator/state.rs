@@ -354,6 +354,7 @@ pub struct ResourceDiagnosticSnapshot {
     pub admission: ResourceAdmissionSnapshot,
     pub governance_metrics: ResourceGovernanceMetricsSnapshot,
     pub runtime_capabilities: Vec<crate::orchestrator::RuntimeCapabilityState>,
+    pub crash: CrashMetadataSnapshot,
     pub planes: crate::runtime::PlaneRegistrySnapshot,
     pub plane_lifecycle: crate::runtime::PlaneLifecycleSnapshot,
     pub leases: crate::runtime::LeaseSnapshot,
@@ -486,6 +487,7 @@ impl ResourceDiagnosticSnapshot {
                 event_ingress_stale_drop_total: metrics.event_ingress_stale_drop_total,
             },
             runtime_capabilities: crate::orchestrator::runtime_capability_snapshot(),
+            crash: crate::orchestrator::crash_metadata_snapshot(),
             planes: crate::runtime::plane::snapshot(),
             plane_lifecycle: crate::runtime::plane_lifecycle::snapshot(),
             leases,
@@ -653,5 +655,32 @@ mod tests {
             storage_contention_risk_from_metrics(&metrics),
             StorageContentionRisk::Healthy
         );
+    }
+
+    #[test]
+    fn resource_diagnostic_snapshot_includes_recorded_crash_metadata() {
+        crate::orchestrator::reset_crash_metadata_for_tests();
+        crate::orchestrator::record_crash_metadata(CrashMetadataSnapshot {
+            last_panic_pc: Some("0x40380a45".to_string()),
+            last_panic_core: Some(1),
+            last_panic_reason: Some("LoadProhibited".to_string()),
+            last_symbolize_hint: Some("scripts/esp_symbolize_panic.sh app 0x40380a45".to_string()),
+            last_resource_baseline_before_panic: Some(
+                "resource pressure=Critical heap_largest=24576".to_string(),
+            ),
+        });
+
+        let state = OrchestratorState::new();
+        let snapshot = ResourceDiagnosticSnapshot::from_state(&state);
+
+        assert_eq!(snapshot.crash.last_panic_pc.as_deref(), Some("0x40380a45"));
+        assert_eq!(snapshot.crash.last_panic_core, Some(1));
+        assert_eq!(
+            snapshot.crash.last_panic_reason.as_deref(),
+            Some("LoadProhibited")
+        );
+        assert!(snapshot.crash.last_symbolize_hint.is_some());
+        assert!(snapshot.crash.last_resource_baseline_before_panic.is_some());
+        crate::orchestrator::reset_crash_metadata_for_tests();
     }
 }

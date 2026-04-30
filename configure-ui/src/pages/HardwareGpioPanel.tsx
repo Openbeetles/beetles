@@ -28,25 +28,17 @@ import { useConfig } from "../hooks/useConfig";
 import { useConfigEditorController } from "../hooks/useConfigEditorController";
 import type {
   DeviceEntry,
-  HardwareSegment,
-  I2cSensorEntry,
 } from "../types/hardwareConfig";
 import {
-  defaultHardwareSegment,
   HARDWARE_DEVICE_TYPES,
   HARDWARE_PIN_MAX,
   HARDWARE_PIN_MIN,
   HARDWARE_PWM_FREQ_MAX,
   HARDWARE_PWM_FREQ_MIN,
-  I2C_MAX_READ_LEN_UI,
-  I2C_SENSOR_ADDR_MAX,
-  I2C_SENSOR_ADDR_MIN,
-  I2C_SENSOR_MAX_CMD_LEN,
-  I2C_SENSOR_MODELS,
   MAX_HARDWARE_DEVICES,
-  MAX_I2C_SENSORS,
 } from "../types/hardwareConfig";
 import { generateDeviceId } from "../util/hardwareDeviceId";
+import { mergeGpioHardwareDevices } from "./hardwareSegmentDraft";
 import { validateHardwareSegment } from "./hardwareConfigValidation";
 
 function asNumber(v: string): number | null {
@@ -67,34 +59,6 @@ function createNewDevice(taken: Set<string>): DeviceEntry {
   };
 }
 
-function createNewI2cSensor(taken: Set<string>): I2cSensorEntry {
-  const id = generateDeviceId(taken);
-  taken.add(id);
-  return {
-    id,
-    addr: 0x44,
-    model: "sht3x",
-    watch_field: "temperature",
-    what: "",
-    how: "",
-    options: {},
-  };
-}
-
-/** 合并编辑中的 hardware_devices / i2c_sensors，保留 i2c_bus 等与 GET 一致 */
-function mergeSegment(
-  base: HardwareSegment | null,
-  devices: DeviceEntry[],
-  i2cSensors: I2cSensorEntry[],
-): HardwareSegment {
-  const b = base ?? defaultHardwareSegment();
-  return {
-    ...b,
-    hardware_devices: devices,
-    i2c_sensors: i2cSensors,
-  };
-}
-
 export function HardwareGpioPanel() {
   const { t } = useTranslation();
   const {
@@ -112,15 +76,7 @@ export function HardwareGpioPanel() {
   });
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const [draftDevices, setDraftDevices] = useState<DeviceEntry[] | null>(null);
-  const [draftI2cSensors, setDraftI2cSensors] = useState<
-    I2cSensorEntry[] | null
-  >(null);
-  /** raw 模型 init_cmd 文本编辑草稿（按列表下标） */
-  const [i2cRawInitDraft, setI2cRawInitDraft] = useState<Record<number, string>>(
-    {},
-  );
-  const hasSegmentSource =
-    hardwareSegment !== null || draftDevices !== null || draftI2cSensors !== null;
+  const hasSegmentSource = hardwareSegment !== null || draftDevices !== null;
   const loadErrorState = splitPageErrorState({
     hasData: hasSegmentSource,
     loading: hardwareLoading,
@@ -131,14 +87,10 @@ export function HardwareGpioPanel() {
     () => draftDevices ?? hardwareSegment?.hardware_devices ?? [],
     [draftDevices, hardwareSegment],
   );
-  const i2cSensors = useMemo(
-    () => draftI2cSensors ?? hardwareSegment?.i2c_sensors ?? [],
-    [draftI2cSensors, hardwareSegment],
-  );
 
   const segmentToSave = useMemo(
-    () => mergeSegment(hardwareSegment, devices, i2cSensors),
-    [hardwareSegment, devices, i2cSensors],
+    () => mergeGpioHardwareDevices(hardwareSegment, devices),
+    [hardwareSegment, devices],
   );
 
   const saveDisabled = editor.saveDisabled;
@@ -171,40 +123,6 @@ export function HardwareGpioPanel() {
     });
   };
 
-  const updateI2cSensor = (index: number, next: I2cSensorEntry) => {
-    editor.markDirty();
-    setDraftI2cSensors((prev) => {
-      const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
-      const copy = [...base];
-      copy[index] = next;
-      return copy;
-    });
-  };
-
-  const removeI2cSensor = (index: number) => {
-    editor.markDirty();
-    setDraftI2cSensors((prev) => {
-      const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
-      return base.filter((_, i) => i !== index);
-    });
-  };
-
-  const addI2cSensor = () => {
-    if (i2cSensors.length >= MAX_I2C_SENSORS) return;
-    editor.markDirty();
-    setDraftI2cSensors((prev) => {
-      const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
-      const taken = new Set<string>();
-      for (const d of devices) {
-        if (d.id) taken.add(d.id);
-      }
-      for (const x of base) {
-        if (x.id) taken.add(x.id);
-      }
-      return [...base, createNewI2cSensor(taken)];
-    });
-  };
-
   const save = async () => {
     await editor.runSave({
       validate: () => validateHardwareSegment(segmentToSave, t),
@@ -213,7 +131,6 @@ export function HardwareGpioPanel() {
       onSuccess: (result) => {
         setSaveRestartRequired(Boolean(result.restartRequired));
         setDraftDevices(null);
-        setDraftI2cSensors(null);
       },
     });
   };
@@ -221,8 +138,7 @@ export function HardwareGpioPanel() {
   if (
     hardwareLoading &&
     !hardwareSegment &&
-    draftDevices == null &&
-    draftI2cSensors == null
+    draftDevices == null
   ) {
     return (
       <Box sx={PAGE_COLUMN_FILL_SX}>
@@ -548,274 +464,6 @@ export function HardwareGpioPanel() {
             >
               {t("hardwareConfig.addDevice")}
             </Button>
-          </Box>
-
-          <Box sx={{ mt: 3 }}>
-            <Box
-              component="h3"
-              sx={{ typography: "subtitle1", mb: 1, fontWeight: 600 }}
-            >
-              {t("hardwareConfig.sectionI2cSensors")}
-            </Box>
-            <Box
-              sx={{
-                typography: "body2",
-                color: "var(--text-tertiary)",
-                mb: 2,
-              }}
-            >
-              {t("hardwareConfig.sectionI2cSensorsDesc")}
-            </Box>
-            {i2cSensors.map((sens, i) => (
-              <FormSectionSubCollapsible
-                key={`${sens.id}-${i}`}
-                title={t("hardwareConfig.i2cSensorCollapseTitle", {
-                  index: i + 1,
-                  id: sens.id || "—",
-                })}
-                defaultOpen={false}
-                action={
-                  <IconButton
-                    size="small"
-                    aria-label={t("hardwareConfig.removeI2cSensor")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeI2cSensor(i);
-                    }}
-                    sx={{ color: "var(--semantic-danger)" }}
-                  >
-                    <DeleteOutlineRounded fontSize="small" />
-                  </IconButton>
-                }
-              >
-                <FormGrid>
-                  <TextField
-                    fullWidth
-                    required
-                    disabled
-                    label={t("hardwareConfig.id")}
-                    value={sens.id}
-                    slotProps={{ htmlInput: { readOnly: true } }}
-                  />
-                  <TextField
-                    type="number"
-                    required
-                    label={t("hardwareConfig.i2cSensorAddr")}
-                    helperText={t("hardwareConfig.i2cSensorAddrHelp")}
-                    value={sens.addr ?? ""}
-                    onChange={(e) => {
-                      const n = asNumber(e.target.value);
-                      updateI2cSensor(i, {
-                        ...sens,
-                        addr: n ?? I2C_SENSOR_ADDR_MIN,
-                      });
-                    }}
-                    slotProps={{
-                      htmlInput: {
-                        min: I2C_SENSOR_ADDR_MIN,
-                        max: I2C_SENSOR_ADDR_MAX,
-                      },
-                    }}
-                  />
-                  <TextField
-                    select
-                    fullWidth
-                    label={t("hardwareConfig.i2cSensorModel")}
-                    helperText={t("hardwareConfig.i2cSensorModelHelp")}
-                    value={sens.model}
-                    onChange={(e) => {
-                      const nextModel = e.target.value;
-                      let opts: Record<string, unknown> = {
-                        ...(sens.options ?? {}),
-                      };
-                      if (nextModel === "raw" && sens.model !== "raw") {
-                        opts = {
-                          init_cmd: [0xac, 0x33, 0],
-                          read_len: 6,
-                          conversion_wait_ms: 80,
-                        };
-                        setI2cRawInitDraft((d) => {
-                          const next = { ...d };
-                          delete next[i];
-                          return next;
-                        });
-                      }
-                      if (sens.model === "raw" && nextModel !== "raw") {
-                        const o = { ...opts };
-                        delete o.init_cmd;
-                        delete o.read_len;
-                        delete o.conversion_wait_ms;
-                        opts = o;
-                        setI2cRawInitDraft((d) => {
-                          const next = { ...d };
-                          delete next[i];
-                          return next;
-                        });
-                      }
-                      updateI2cSensor(i, {
-                        ...sens,
-                        model: nextModel,
-                        options: opts,
-                      });
-                    }}
-                    slotProps={{ inputLabel: { shrink: true } }}
-                  >
-                    {I2C_SENSOR_MODELS.map((m) => (
-                      <MenuItem key={m} value={m}>
-                        {m}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                  <TextField
-                    select
-                    fullWidth
-                    label={t("hardwareConfig.i2cSensorWatchField")}
-                    value={sens.watch_field}
-                    onChange={(e) =>
-                      updateI2cSensor(i, {
-                        ...sens,
-                        watch_field: e.target.value,
-                      })
-                    }
-                    slotProps={{ inputLabel: { shrink: true } }}
-                  >
-                    <MenuItem value="temperature">temperature</MenuItem>
-                    <MenuItem value="humidity">humidity</MenuItem>
-                  </TextField>
-                  {sens.model === "raw" && (
-                    <>
-                      <TextField
-                        fullWidth
-                        label={t("hardwareConfig.i2cSensorRawInit")}
-                        helperText={t("hardwareConfig.i2cSensorRawInitHelp")}
-                        value={
-                          i2cRawInitDraft[i] ??
-                          (Array.isArray(sens.options?.init_cmd)
-                            ? (sens.options.init_cmd as number[]).join(",")
-                            : "")
-                        }
-                        onChange={(e) => {
-                          setI2cRawInitDraft((d) => ({
-                            ...d,
-                            [i]: e.target.value,
-                          }));
-                        }}
-                        onBlur={() => {
-                          const raw =
-                            i2cRawInitDraft[i] ??
-                            (Array.isArray(sens.options?.init_cmd)
-                              ? (sens.options.init_cmd as number[]).join(",")
-                              : "");
-                          const parts = raw
-                            .split(",")
-                            .map((x) => x.trim())
-                            .filter(Boolean);
-                          const arr: number[] = [];
-                          for (const p of parts.slice(0, I2C_SENSOR_MAX_CMD_LEN)) {
-                            const n = Number(p);
-                            if (!Number.isFinite(n) || n < 0 || n > 255) break;
-                            arr.push(Math.round(n));
-                          }
-                          const o: Record<string, unknown> = {
-                            ...(sens.options ?? {}),
-                          };
-                          if (arr.length > 0) o.init_cmd = arr;
-                          else delete o.init_cmd;
-                          setI2cRawInitDraft((d) => {
-                            const next = { ...d };
-                            delete next[i];
-                            return next;
-                          });
-                          updateI2cSensor(i, { ...sens, options: o });
-                        }}
-                        sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
-                      />
-                      <TextField
-                        type="number"
-                        label={t("hardwareConfig.i2cSensorRawReadLen")}
-                        helperText={t("hardwareConfig.i2cSensorRawReadLenHelp")}
-                        value={
-                          sens.options?.read_len != null
-                            ? String(sens.options.read_len)
-                            : ""
-                        }
-                        onChange={(e) => {
-                          const n = asNumber(e.target.value);
-                          const o: Record<string, unknown> = {
-                            ...(sens.options ?? {}),
-                          };
-                          if (n != null) o.read_len = Math.round(n);
-                          else delete o.read_len;
-                          updateI2cSensor(i, { ...sens, options: o });
-                        }}
-                        slotProps={{
-                          htmlInput: { min: 1, max: I2C_MAX_READ_LEN_UI },
-                        }}
-                      />
-                      <TextField
-                        type="number"
-                        label={t("hardwareConfig.i2cSensorRawWait")}
-                        helperText={t("hardwareConfig.i2cSensorRawWaitHelp")}
-                        value={
-                          sens.options?.conversion_wait_ms != null
-                            ? String(sens.options.conversion_wait_ms)
-                            : ""
-                        }
-                        onChange={(e) => {
-                          const raw = e.target.value.trim();
-                          const o: Record<string, unknown> = {
-                            ...(sens.options ?? {}),
-                          };
-                          if (raw === "") {
-                            delete o.conversion_wait_ms;
-                          } else {
-                            const n = asNumber(raw);
-                            if (n != null) o.conversion_wait_ms = Math.round(n);
-                          }
-                          updateI2cSensor(i, { ...sens, options: o });
-                        }}
-                        slotProps={{
-                          htmlInput: { min: 0, max: 2000 },
-                        }}
-                      />
-                    </>
-                  )}
-                  <TextField
-                    fullWidth
-                    label={t("hardwareConfig.what")}
-                    value={sens.what}
-                    onChange={(e) =>
-                      updateI2cSensor(i, { ...sens, what: e.target.value })
-                    }
-                    slotProps={{ htmlInput: { maxLength: 128 } }}
-                    sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
-                  />
-                  <TextField
-                    fullWidth
-                    multiline
-                    minRows={2}
-                    label={t("hardwareConfig.how")}
-                    value={sens.how}
-                    onChange={(e) =>
-                      updateI2cSensor(i, { ...sens, how: e.target.value })
-                    }
-                    slotProps={{ htmlInput: { maxLength: 256 } }}
-                    sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}
-                  />
-                </FormGrid>
-              </FormSectionSubCollapsible>
-            ))}
-            <Box sx={{ mt: 1 }}>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<AddRounded />}
-                onClick={addI2cSensor}
-                disabled={i2cSensors.length >= MAX_I2C_SENSORS}
-              >
-                {t("hardwareConfig.addI2cSensor")}
-              </Button>
-            </Box>
           </Box>
         </FormFieldStack>
       </SettingsSection>

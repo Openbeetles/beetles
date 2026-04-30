@@ -374,7 +374,8 @@ Request body: `application/json`
 
 Notes:
 
-- Normal users should start from Configure UI: **Device Config -> GPIO Devices**
+- Normal users should start from Configure UI: **Device Config -> GPIO Devices** or **Device Config -> I2C Sensors**
+- Both pages still read and write the same `/api/config/hardware` route and `HardwareSegment`
 - This section is the raw contract for scripts, custom frontends, and advanced integrations
 
 Top-level fields:
@@ -392,6 +393,31 @@ Minimal example:
   "i2c_bus": null,
   "i2c_devices": [],
   "i2c_sensors": []
+}
+```
+
+Generic AHT20 example:
+
+```json
+{
+  "hardware_devices": [],
+  "i2c_bus": {
+    "sda_pin": 21,
+    "scl_pin": 22,
+    "freq_hz": 100000
+  },
+  "i2c_devices": [],
+  "i2c_sensors": [
+    {
+      "id": "aht20_env",
+      "addr": 56,
+      "model": "aht20",
+      "watch_field": "temperature",
+      "what": "AHT20 temperature and humidity sensor",
+      "how": "Read ambient temperature and humidity over I2C at address 0x38.",
+      "options": {}
+    }
+  ]
 }
 ```
 
@@ -1208,7 +1234,7 @@ Success response: `200 application/json`
 - `/api/operator/status` is the explanation surface for humans and UI. It may aggregate several sources to explain why the device is in its current state, but it is not a machine-admission source.
 - `/api/diagnose` returns active diagnosis results and suggestions; its route class is `SlowDiagnosticRoute`. It returns diagnosis items, not a raw snapshot warehouse.
 
-The old fields `health.wifi`, `health.network`, `health.workflow`, `resource.network`, `resource.firmware_identity`, and `resource.crash` have been removed with no compatibility layer. Custom frontends must not depend on diagnostic fields from `/api/health`, and must not treat `/api/resource` as the device-wide status endpoint.
+The old fields `health.wifi`, `health.network`, `health.workflow`, `resource.network`, and `resource.firmware_identity` have been removed with no compatibility layer. Custom frontends must not depend on diagnostic fields from `/api/health`, and must not treat `/api/resource` as the device-wide status endpoint. Crash evidence remains available as `resource.crash` for operator diagnostics.
 
 **GET /api/health**
 
@@ -1314,6 +1340,7 @@ Top-level fields:
 - `admission`
 - `governance_metrics`
 - `runtime_capabilities`
+- `crash`
 - `network_gate_summary`
 - `planes`
 - `plane_lifecycle`
@@ -1324,8 +1351,11 @@ Top-level fields:
 - `session_count`
 - `storage_used_kb`
 - `storage_total_kb`
+- `cpu_usage_percent` (Linux/host-only)
+- `load_average` (Linux/host-only)
+- `process_memory_kb` (Linux/host-only)
 
-The resource endpoint is a resource-diagnostics contract. `heap_free_spiram` is free PSRAM, not used PSRAM; `heap_used_spiram_est = heap_total_spiram - heap_free_spiram` and is only an interpretation aid. `display_lease_denied_total` is a resource-governance counter for denied display-plane leases, not the `/api/health.display` health field. Governance fields diagnose runtime pressure and may grow as new execution-plane guards are added; clients should tolerate unknown fields, but should not expect health overview, firmware identity, or crash evidence here.
+The resource endpoint is a resource-diagnostics contract. `heap_free_spiram` is free PSRAM, not used PSRAM; `heap_used_spiram_est = heap_total_spiram - heap_free_spiram` and is only an interpretation aid. `display_lease_denied_total` is a resource-governance counter for denied display-plane leases, not the `/api/health.display` health field. `crash` carries real panic/reset evidence when available and keeps missing facts as null. Governance fields diagnose runtime pressure and may grow as new execution-plane guards are added; clients should tolerate unknown fields, but should not expect health overview or firmware identity here.
 
 **GET /api/diagnose**
 

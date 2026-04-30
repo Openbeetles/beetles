@@ -36,22 +36,16 @@ export async function loadDeviceStatusBundle(
       return { ok: false, error: healthRes.error ?? "" };
     }
 
-    const resourceRes = await loaders.resource();
-    if (!resourceRes.ok || !resourceRes.data) {
-      return { ok: false, error: resourceRes.error ?? "" };
-    }
-
-    const metricsRes = await loaders.metrics();
-    if (!metricsRes.ok || !metricsRes.data) {
-      return { ok: false, error: metricsRes.error ?? "" };
-    }
+    const resourceRes = await loaders.resource().catch(() => null);
+    const metricsRes = await loaders.metrics().catch(() => null);
 
     return {
       ok: true,
       data: {
         health: healthRes.data,
-        resource: resourceRes.data,
-        metrics: metricsRes.data,
+        resource:
+          resourceRes && resourceRes.ok && resourceRes.data ? resourceRes.data : {},
+        metrics: metricsRes && metricsRes.ok && metricsRes.data ? metricsRes.data : {},
       },
     };
   } catch {

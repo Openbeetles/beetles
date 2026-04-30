@@ -32,6 +32,8 @@ export const OS_ICON_DEVICE_CONFIG = {
   audio: "/icons/speaker_3d.png",
   /** GPIO / 外设与设备控制 */
   hardware: "/icons/tool_device_ctrl_3d.png",
+  /** I2C 传感器 / 总线环境感知 */
+  i2cSensors: "/icons/i2c_sensor_config_3d.png",
 } as const;
 
 /** 设备首页仪表盘卡片（Industrial OS3D 仪表盘语义） */

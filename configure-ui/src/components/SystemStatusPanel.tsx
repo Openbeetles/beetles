@@ -21,6 +21,7 @@ import {
   buildMemoryMetrics,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
+  type HomeMetricField,
   type RuntimeStrategyBudgetField,
   type RuntimeStrategyViewModel,
 } from "../pages/deviceHomeViewModel";
@@ -474,6 +475,81 @@ function DigitalCounter({
   );
 }
 
+function memoryMetricColor(id: string): string {
+  if (id === "heap_internal") return "var(--semantic-warning)";
+  if (id === "heap_spiram_free") return "var(--semantic-success)";
+  return "var(--foreground)";
+}
+
+function MemoryMetricGrid({
+  metrics,
+  t,
+}: {
+  metrics: HomeMetricField[];
+  t: TFunction;
+}) {
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+        gap: { xs: 0.85, sm: 1 },
+        height: "100%",
+        alignContent: "start",
+      }}
+    >
+      {metrics.map((item) => (
+        <Box
+          key={item.id}
+          title={t(item.labelKey)}
+          sx={{
+            minWidth: 0,
+            p: { xs: 1.05, sm: 1.1 },
+            borderRadius: "var(--radius-chip)",
+            bgcolor: DASHBOARD_INSET_WELL_BG,
+            border:
+              "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+            boxShadow: "var(--os3d-chip-lift-stack)",
+          }}
+        >
+          <Typography
+            variant="caption"
+            component="div"
+            sx={{
+              color: "var(--foreground-soft)",
+              fontWeight: 600,
+              fontSize: "0.65rem",
+              lineHeight: 1.15,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              mb: 0.45,
+            }}
+          >
+            {t(item.labelKey)}
+          </Typography>
+          <Typography
+            component="div"
+            sx={{
+              color: memoryMetricColor(item.id),
+              fontFamily: "var(--font-mono)",
+              fontWeight: 750,
+              fontSize: { xs: "1rem", sm: "1.08rem" },
+              lineHeight: 1.1,
+              letterSpacing: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {formatBytes(item.value)}
+          </Typography>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
 function formatStrategyBudgetValue(
   value: number,
   kind: "bytes" | "seconds",
@@ -540,16 +616,7 @@ export function SystemStatusPanel({
       {/* RAM & Memory (Span 4 cols, 2 rows) */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard title={t("device.systemStatusGroupMemory")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.memory} variant="tile" />}>
-          <Box sx={{ display: "grid", gridTemplateColumns: "1fr", gap: DASHBOARD_BLOCK_GAP, height: "100%", alignContent: "start" }}>
-            {memoryMetrics.map((item) => (
-              <DigitalCounter
-                key={item.id}
-                label={t(item.labelKey)}
-                value={formatBytes(item.value)}
-                color={item.id === "heap_internal" ? "var(--semantic-warning)" : item.id === "heap_spiram" ? "var(--semantic-success)" : "var(--foreground)"}
-              />
-            ))}
-          </Box>
+          <MemoryMetricGrid metrics={memoryMetrics} t={t} />
         </DashboardCard>
       </Box>
 

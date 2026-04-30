@@ -26,6 +26,7 @@ struct ResourceBody {
     admission: orchestrator::ResourceAdmissionSnapshot,
     governance_metrics: orchestrator::ResourceGovernanceMetricsSnapshot,
     runtime_capabilities: Vec<orchestrator::RuntimeCapabilityState>,
+    crash: orchestrator::CrashMetadataSnapshot,
     network_gate_summary: NetworkGateSummaryBody,
     planes: runtime::PlaneRegistrySnapshot,
     plane_lifecycle: runtime::PlaneLifecycleSnapshot,
@@ -96,6 +97,7 @@ pub fn body(_ctx: &HandlerContext) -> Result<String, std::io::Error> {
         admission: diag.admission,
         governance_metrics: diag.governance_metrics,
         runtime_capabilities: diag.runtime_capabilities,
+        crash: diag.crash,
         network_gate_summary: NetworkGateSummaryBody {
             stage: network.last_wifi_stage,
             outbound_settled: network.outbound_settled,
@@ -165,6 +167,7 @@ mod tests {
             "threads",
             "display_lease_denied_total",
             "write_back",
+            "crash",
             "session_count",
             "storage_used_kb",
             "storage_total_kb",
@@ -179,7 +182,6 @@ mod tests {
             "display",
             "audio",
             "firmware_identity",
-            "crash",
         ] {
             assert!(
                 parsed.get(key).is_none(),
@@ -235,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn body_omits_recorded_crash_metadata_from_resource_contract() {
+    fn body_serializes_recorded_crash_metadata_from_resource_contract() {
         let _guard = crate::platform::http_server::handlers::default_test_handler_context_guard();
         crate::orchestrator::reset_crash_metadata_for_tests();
         crate::orchestrator::record_crash_metadata(crate::orchestrator::CrashMetadataSnapshot {
@@ -255,7 +257,30 @@ mod tests {
         let payload = body(&ctx).expect("resource body");
         let parsed: Value = serde_json::from_str(&payload).expect("valid resource json");
 
-        assert!(parsed.get("crash").is_none());
+        assert_eq!(
+            parsed["crash"].get("last_panic_pc").and_then(Value::as_str),
+            Some("0x40380a45")
+        );
+        assert_eq!(
+            parsed["crash"]
+                .get("last_panic_core")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            parsed["crash"]
+                .get("last_panic_reason")
+                .and_then(Value::as_str),
+            Some("LoadProhibited")
+        );
+        assert!(parsed["crash"]
+            .get("last_symbolize_hint")
+            .and_then(Value::as_str)
+            .is_some());
+        assert!(parsed["crash"]
+            .get("last_resource_baseline_before_panic")
+            .and_then(Value::as_str)
+            .is_some());
         crate::orchestrator::reset_crash_metadata_for_tests();
     }
 }
