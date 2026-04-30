@@ -49,6 +49,7 @@ fn unavailable_tool_execution_result(tool_name: &str) -> ToolCallExecutionResult
             "tool `{tool_name}`; reason `not_available_in_current_runtime`"
         ))),
         call_succeeded: false,
+        protocol_violation: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
         current_chat_primary_artifact: None,
@@ -191,6 +192,7 @@ fn capability_blocked_tool_execution_result(
             }
         }),
         call_succeeded: false,
+        protocol_violation: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
         current_chat_primary_artifact: None,
@@ -219,6 +221,7 @@ fn denied_tool_execution_result(tool_name: &str, reason: &str) -> ToolCallExecut
         failure_kind: Some(assessment.kind),
         blocker: Some(blocker),
         call_succeeded: false,
+        protocol_violation: false,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
         current_chat_primary_artifact: None,
@@ -252,6 +255,7 @@ fn outbound_error_tool_execution_result(
         failure_kind: Some(assessment.kind),
         blocker: None,
         call_succeeded: false,
+        protocol_violation: false,
         had_mutating_effects,
         had_visible_outbound_side_effects: false,
         current_chat_primary_artifact: None,
@@ -287,6 +291,7 @@ fn execute_error_tool_execution_result(
         failure_kind: Some(assessment.kind),
         blocker: None,
         call_succeeded: false,
+        protocol_violation: false,
         had_mutating_effects,
         had_visible_outbound_side_effects: false,
         current_chat_primary_artifact: None,
@@ -321,6 +326,7 @@ fn protocol_contract_tool_execution_result(
         failure_kind: Some(crate::agent::tool_outcome::ToolFailureKind::Retryable),
         blocker: None,
         call_succeeded: false,
+        protocol_violation: true,
         had_mutating_effects: false,
         had_visible_outbound_side_effects: false,
         current_chat_primary_artifact: None,
@@ -449,6 +455,7 @@ fn execute_tool_call(
                                 &blocker,
                             )),
                             call_succeeded: false,
+                            protocol_violation: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
                             current_chat_primary_artifact: artifact_bundle,
@@ -460,6 +467,7 @@ fn execute_tool_call(
                             failure_kind: Some(tool_failure_kind_from_outcome(failure_kind)),
                             blocker: None,
                             call_succeeded: false,
+                            protocol_violation: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
                             current_chat_primary_artifact: artifact_bundle,
@@ -471,6 +479,7 @@ fn execute_tool_call(
                             failure_kind: None,
                             blocker: None,
                             call_succeeded: true,
+                            protocol_violation: false,
                             had_mutating_effects,
                             had_visible_outbound_side_effects,
                             current_chat_primary_artifact: artifact_bundle,
@@ -522,6 +531,7 @@ pub(super) fn execute_tool_use_round(
     let mut used_external_content = false;
     let mut had_mutating_effects = false;
     let mut had_visible_outbound_side_effects = false;
+    let mut protocol_repair_exhausted = false;
     let mut artifact_bundle = None;
     let mut successful_tool_names = Vec::with_capacity(tool_calls.len());
     let mut blocker = None;
@@ -548,6 +558,7 @@ pub(super) fn execute_tool_use_round(
                     used_external_content,
                     had_mutating_effects,
                     had_visible_outbound_side_effects,
+                    protocol_repair_exhausted,
                     artifact_bundle,
                     omitted_evidence_count,
                     successful_tool_names,
@@ -576,6 +587,12 @@ pub(super) fn execute_tool_use_round(
         if execution.call_succeeded {
             round_tool_success = true;
             successful_tool_names.push(tc.name.clone());
+        }
+        if execution.protocol_violation {
+            let protocol_key = hash_tool_call(&tc.name, "tool_protocol_violation");
+            let protocol_count = tool_call_repeat.entry(protocol_key).or_insert(0);
+            *protocol_count = (*protocol_count).saturating_add(1);
+            protocol_repair_exhausted = *protocol_count > super::MAX_TOOL_PROTOCOL_REPAIR_ATTEMPTS;
         }
 
         let call_key = hash_tool_call(&tc.name, &tc.input);
@@ -611,6 +628,9 @@ pub(super) fn execute_tool_use_round(
         if execution.blocker.is_some() {
             break;
         }
+        if protocol_repair_exhausted {
+            break;
+        }
     }
 
     ToolUseRoundExecutionOutput {
@@ -619,6 +639,7 @@ pub(super) fn execute_tool_use_round(
         used_external_content,
         had_mutating_effects,
         had_visible_outbound_side_effects,
+        protocol_repair_exhausted,
         artifact_bundle,
         omitted_evidence_count,
         successful_tool_names,

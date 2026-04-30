@@ -290,6 +290,7 @@ fn scan_session_file(buf: &[u8]) -> SessionFileSnapshot {
 fn scan_session_tail(buf: &[u8], limit: usize, tail_truncated: bool) -> SessionFileSnapshot {
     let cap = limit.clamp(1, MAX_SESSION_ENTRIES);
     let mut messages = VecDeque::with_capacity(cap);
+    let mut message_count = 0usize;
     let mut malformed_lines = 0usize;
     let mut first = !tail_truncated;
     let mut first_tail_line = tail_truncated;
@@ -338,16 +339,17 @@ fn scan_session_tail(buf: &[u8], limit: usize, tail_truncated: bool) -> SessionF
         let Some(message) = message else {
             continue;
         };
+        message_count = message_count.saturating_add(1).min(MAX_SESSION_ENTRIES);
         if messages.len() == cap {
             messages.pop_front();
         }
         messages.push_back(message);
     }
 
-    let message_count = if tail_truncated && !messages.is_empty() {
+    let message_count = if tail_truncated && message_count > 0 {
         MAX_SESSION_ENTRIES
     } else {
-        messages.len()
+        message_count
     };
     SessionFileSnapshot {
         messages,
@@ -1053,16 +1055,26 @@ impl SessionStore for SpiffsSessionStore {
                 .map(|message| message.to_session_message())
                 .collect());
         }
-        let recent = with_fs_lock_stage("session_read_recent", || {
+        let (recent, append_state) = with_fs_lock_stage("session_read_recent", || {
             let _ = write_header;
             let snapshot = load_session_tail_snapshot_unlocked(&path, chat_id, cap)?;
             let start = snapshot.messages.len().saturating_sub(cap);
-            Ok(snapshot
-                .messages
-                .into_iter()
-                .skip(start)
-                .collect::<VecDeque<_>>())
+            let append_state = SessionAppendState::from_observed_snapshot(&snapshot);
+            Ok((
+                snapshot
+                    .messages
+                    .into_iter()
+                    .skip(start)
+                    .collect::<VecDeque<_>>(),
+                append_state,
+            ))
         })?;
+        if self.should_defer_compact_on_append() {
+            self.counts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), append_state);
+        }
         if cap == MAX_SESSION_ENTRIES || self.should_defer_compact_on_append() {
             let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
@@ -1377,6 +1389,103 @@ mod tests {
         )
         .expect("snapshot");
         assert!(snapshot.needs_repair);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_recent_deferred_compact_caches_append_state_for_followup_append() {
+        let store = SpiffsSessionStore::new_with_deferred_compact_for_test();
+        let chat_id = format!("load-cache-append-state-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let malformed =
+            b"{\"role\":\"user\",\"content\":\"ok\"}\nnot-json\n{\"role\":\"assistant\",\"content\":\"still-ok\"}\n";
+        write_session_body_unlocked(&path, malformed).expect("seed malformed file");
+
+        let recent = store.load_recent(&chat_id, 8).expect("load recent");
+        assert_eq!(recent.len(), 2);
+
+        let cached = store
+            .counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&chat_id)
+            .copied();
+        assert_eq!(
+            cached,
+            Some(SessionAppendState {
+                message_count: 2,
+                has_data: true,
+                ends_with_newline: true,
+            }),
+            "deferred compact mode must reuse the prompt-session tail observation for append"
+        );
+
+        let appended = SessionMessage {
+            role: "user".to_string(),
+            content: "new turn".to_string(),
+        };
+        store
+            .append_batch(&chat_id, std::slice::from_ref(&appended))
+            .expect("append");
+        let raw = std::fs::read(&path).expect("read after append");
+        let raw_text = String::from_utf8_lossy(&raw);
+        assert!(raw_text.contains("\nnot-json\n"));
+        assert_eq!(
+            raw_text
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count(),
+            4,
+            "follow-up append must remain append-only instead of repairing on the hot path"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_recent_deferred_compact_preserves_full_append_count_for_bounded_window() {
+        let store = SpiffsSessionStore::new_with_deferred_compact_for_test();
+        let chat_id = format!("load-cache-bounded-count-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let mut seeded = String::new();
+        for index in 0..6 {
+            let message = StoredSessionMessage {
+                message_id: format!("msg_seed_{index:03}"),
+                role: "user".to_string(),
+                content: format!("seed {index}"),
+            };
+            seeded.push_str(&serde_json::to_string(&message).expect("seed line"));
+            seeded.push('\n');
+        }
+        write_session_body_unlocked(&path, seeded.as_bytes()).expect("seed session");
+
+        let recent = store.load_recent(&chat_id, 2).expect("load recent");
+        assert_eq!(recent.len(), 2);
+        assert_eq!(
+            store.message_count(&chat_id).expect("message count"),
+            6,
+            "bounded prompt reads must not poison the append count cache"
+        );
+
+        store
+            .append_batch(
+                &chat_id,
+                &[SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "reply".to_string(),
+                }],
+            )
+            .expect("append");
+        assert_eq!(store.message_count(&chat_id).expect("count"), 7);
 
         let _ = std::fs::remove_file(&path);
     }

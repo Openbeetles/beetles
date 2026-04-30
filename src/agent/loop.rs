@@ -121,6 +121,7 @@ type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> +
 
 /// 最大 ReAct 轮数（含首轮 chat），防止无限 tool 循环。
 const MAX_REACT_ROUNDS: usize = 10;
+const MAX_TOOL_PROTOCOL_REPAIR_ATTEMPTS: u8 = 1;
 
 /// 工具结果 user 消息前缀；与 `compact_early_tool_rounds` / 摘要逻辑一致。
 const TOOL_RESULTS_PREFIX: &str = "Tool results:\n";
@@ -626,6 +627,7 @@ struct ToolCallExecutionResult {
     failure_kind: Option<super::tool_outcome::ToolFailureKind>,
     blocker: Option<crate::agent::WorkflowBlocker>,
     call_succeeded: bool,
+    protocol_violation: bool,
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
     current_chat_primary_artifact: Option<crate::agent::final_reply::ReplyArtifactBundle>,
@@ -637,6 +639,7 @@ struct ToolUseRoundExecutionOutput {
     used_external_content: bool,
     had_mutating_effects: bool,
     had_visible_outbound_side_effects: bool,
+    protocol_repair_exhausted: bool,
     artifact_bundle: Option<crate::agent::final_reply::ReplyArtifactBundle>,
     omitted_evidence_count: usize,
     successful_tool_names: Vec<String>,
@@ -3763,6 +3766,26 @@ mod tests {
         }
     }
 
+    struct StubMemorySearchTool;
+
+    impl crate::tools::Tool for StubMemorySearchTool {
+        fn name(&self) -> &'static str {
+            "memory_search"
+        }
+
+        fn description(&self) -> &str {
+            "search stub memory"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#
+        }
+
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(r#"{"matches":[]}"#.to_string())
+        }
+    }
+
     struct RuntimeCapabilitiesRestoreGuard {
         snapshot: Vec<crate::orchestrator::RuntimeCapabilityState>,
     }
@@ -6371,6 +6394,127 @@ mod tests {
                 "这一步当前被运行时条件阻塞：tool `network_probe`; sub_capability `network.outbound_http`; status `offline`; reason `upstream_unavailable`; recovery_hint `wait_for_network_recovery`。"
             );
         });
+    }
+
+    #[test]
+    fn execute_turn_repeated_tool_protocol_violation_stops_without_extra_llm_round() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let invalid_call = || LlmResponse {
+            content: "[tool_use]".to_string(),
+            stop_reason: StopReason::ToolUse,
+            tool_calls: Some(vec![crate::llm::ToolCall {
+                id: "call_memory".to_string(),
+                name: "memory_search".to_string(),
+                input: "{query: conversation history, limit: 3}".to_string(),
+            }]),
+        };
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                invalid_call(),
+                invalid_call(),
+                LlmResponse {
+                    content: "should not need a third LLM round".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = test_registry(&[("memory_search", ToolLlmVisibility::user_only())]);
+        registry.register(Box::new(StubMemorySearchTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::Embedded;
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-protocol-loop", "继续", false).expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-repeated-protocol-violation",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            observed.len(),
+            2,
+            "second protocol violation must terminate locally instead of asking the LLM again"
+        );
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(delivered, tr(UiMessage::OperationFailed, UiLocale::Zh));
+        assert_eq!(executed.telemetry.latency.react_rounds, 2);
+        assert_eq!(executed.telemetry.latency.tool_calls, 2);
+    }
+
+    #[test]
+    fn execute_turn_tool_protocol_violation_allows_one_successful_repair() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_memory_bad".to_string(),
+                        name: "memory_search".to_string(),
+                        input: "{query: conversation history, limit: 3}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_memory_good".to_string(),
+                        name: "memory_search".to_string(),
+                        input: r#"{"query":"conversation history","limit":3}"#.to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "已完成。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = test_registry(&[("memory_search", ToolLlmVisibility::user_only())]);
+        registry.register(Box::new(StubMemorySearchTool));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::Embedded;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-protocol-repair", "继续", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-protocol-repair",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 3);
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(delivered, "已完成。");
+        assert_eq!(executed.telemetry.latency.react_rounds, 3);
+        assert_eq!(executed.telemetry.latency.tool_calls, 2);
     }
 
     #[test]

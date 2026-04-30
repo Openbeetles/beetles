@@ -64,6 +64,7 @@ const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 
 const WRITE_BACK_ADMISSION_DEFER_MS: u64 = 500;
+const WRITE_BACK_FOREGROUND_ADMISSION_DEFER_MS: u64 = 2_000;
 #[cfg(test)]
 const WRITE_BACK_IDLE_STOP_MS: u64 = 30;
 #[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), not(test)))]
@@ -198,6 +199,10 @@ fn schedule_write_back_retry(delay: Duration) {
     }
 }
 
+fn write_back_retry_scheduled() -> bool {
+    WRITE_BACK_RETRY_SCHEDULED.load(Ordering::Acquire)
+}
+
 fn mark_write_back_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
     crate::runtime::plane_lifecycle::mark(
         crate::runtime::PlaneId::StorageWriteBack,
@@ -238,6 +243,9 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
         inbound_backpressure::record_enqueued(EventIngressSource::WriteBack);
     }
     if should_auto_service_write_back_tasks() {
+        if write_back_retry_scheduled() {
+            return true;
+        }
         if let Some(delay) = write_back_admission_delay() {
             record_write_back_deferred(1);
             schedule_write_back_retry(delay);
@@ -347,14 +355,19 @@ fn write_back_admission_delay_for_resource(
         return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
     }
     if resource.storage_contention_risk == crate::orchestrator::StorageContentionRisk::Cautious
-        && write_back_foreground_activity_active(resource, config_active)
+        && write_back_storage_risk_foreground_activity_active(resource, config_active)
     {
         return Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS));
+    }
+    if write_back_interactive_foreground_activity_active(resource) {
+        return Some(Duration::from_millis(
+            WRITE_BACK_FOREGROUND_ADMISSION_DEFER_MS,
+        ));
     }
     None
 }
 
-fn write_back_foreground_activity_active(
+fn write_back_storage_risk_foreground_activity_active(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> bool {
@@ -364,6 +377,12 @@ fn write_back_foreground_activity_active(
         || resource.active_agent_tasks > 0
         || resource.inbound_depth > 0
         || resource.outbound_depth > 0
+}
+
+fn write_back_interactive_foreground_activity_active(
+    resource: &crate::orchestrator::ResourceSnapshot,
+) -> bool {
+    resource.active_http_count > 0 || resource.active_agent_tasks > 0
 }
 
 struct WriteBackLeaseGuard {
@@ -505,6 +524,9 @@ fn next_write_back_worker_step(idle_started: &mut Instant) -> WriteBackWorkerSte
 /// This function is intentionally light enough for `agent_loop`: heavy
 /// SPIFFS/serde/session flush closures run only on the write-back worker stack.
 pub fn service_write_back_tasks() {
+    if write_back_retry_scheduled() {
+        return;
+    }
     if let Some(delay) = write_back_admission_delay() {
         if pending_write_back_jobs() {
             record_write_back_deferred(1);
@@ -2280,26 +2302,123 @@ mod tests {
     }
 
     #[test]
-    fn write_back_admission_allows_healthy_storage_when_foreground_active() {
+    fn write_back_admission_defers_healthy_storage_when_foreground_active() {
         let mut resource = write_back_resource_for_tests(
             crate::orchestrator::PressureLevel::Normal,
             crate::orchestrator::StorageContentionRisk::Healthy,
         );
 
         resource.active_http_count = 1;
-        assert_eq!(
-            write_back_admission_delay_for_resource(&resource, false),
-            None,
-            "Healthy storage should not defer write-back merely because HTTP/TLS work exists"
+        assert!(
+            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            "S3-class ESP baseline must not start background write-back while HTTP work is active"
         );
         resource.active_http_count = 0;
 
         resource.active_agent_tasks = 1;
+        assert!(
+            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            "S3-class ESP baseline must not start background write-back while agent work is active"
+        );
+    }
+
+    #[test]
+    fn write_back_admission_uses_wider_retry_window_for_foreground_activity() {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.active_agent_tasks = 1;
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            Some(Duration::from_millis(2_000)),
+            "foreground write-back retries should not churn every 500ms on the S3 baseline"
+        );
+    }
+
+    #[test]
+    fn write_back_admission_uses_short_retry_window_for_storage_risk() {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Cautious,
+        );
+        resource.active_http_count = 1;
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            Some(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS)),
+            "storage contention should keep the short retry window even during foreground work"
+        );
+    }
+
+    #[test]
+    fn write_back_admission_allows_healthy_storage_with_queue_or_config_activity_only() {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, true),
+            None,
+            "config activity alone must not starve healthy write-back"
+        );
+
+        resource.inbound_depth = 1;
         assert_eq!(
             write_back_admission_delay_for_resource(&resource, false),
             None,
-            "Healthy storage should not defer write-back merely because agent work exists"
+            "queued inbound work alone must not starve healthy write-back"
         );
+        resource.inbound_depth = 0;
+
+        resource.outbound_depth = 1;
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None,
+            "queued outbound work alone must not starve healthy write-back"
+        );
+    }
+
+    #[test]
+    fn scheduled_retry_token_prevents_write_back_worker_churn() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
+        WRITE_BACK_RETRY_SCHEDULED.store(true, Ordering::Release);
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: 256 * 1024,
+            heap_min_free_internal: 240 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+        let starts_before = snapshot().worker_starts_total;
+
+        assert!(schedule_write_back_task(
+            "retry_churn_guard_test",
+            Instant::now() + Duration::from_millis(250),
+            Box::new(|| {})
+        ));
+
+        let state = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(state.jobs.len(), 1);
+        assert!(
+            !state.worker_started,
+            "pending retry must remain a lightweight scheduler token, not a 24KB worker probe"
+        );
+        drop(state);
+        assert_eq!(snapshot().worker_starts_total, starts_before);
+
+        WRITE_BACK_RETRY_SCHEDULED.store(false, Ordering::Release);
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        reset_write_back_queue_for_tests();
     }
 
     #[test]
@@ -2377,7 +2496,9 @@ mod tests {
             "foreground storage contention should defer the initial write-back run"
         );
         drop(agent);
-        std::thread::sleep(Duration::from_millis(WRITE_BACK_ADMISSION_DEFER_MS + 25));
+        std::thread::sleep(Duration::from_millis(
+            WRITE_BACK_FOREGROUND_ADMISSION_DEFER_MS + 25,
+        ));
         crate::runtime::service_delayed_tasks();
         rx.recv_timeout(Duration::from_secs(1))
             .expect("write-back retry should wake and run after foreground pressure clears");

@@ -708,6 +708,12 @@ pub(super) fn execute_turn_boxed(
             }
             successful_tool_names.extend(tool_round_output.successful_tool_names);
             external_content_used |= tool_round_output.used_external_content;
+            if tool_round_output.protocol_repair_exhausted {
+                let reply = tr(UiMessage::OperationFailed, loc);
+                mark_ttft_if_visible(&mut latency, worker_start, &reply);
+                final_content = reply;
+                break;
+            }
             if let Some(blocker) = tool_round_output.blocker {
                 let reply = render_programmatic_clarification_question(&blocker, loc);
                 mark_ttft_if_visible(&mut latency, worker_start, &reply);
