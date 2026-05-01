@@ -3786,6 +3786,32 @@ mod tests {
         }
     }
 
+    struct StubArgumentCaptureTool {
+        observed_args: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl crate::tools::Tool for StubArgumentCaptureTool {
+        fn name(&self) -> &'static str {
+            "argument_capture"
+        }
+
+        fn description(&self) -> &str {
+            "capture tool arguments"
+        }
+
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"},"kind":{"type":"string"},"topic":{"type":"string"}},"required":["op"]}"#
+        }
+
+        fn execute(&self, args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            self.observed_args
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(args.to_string());
+            Ok(r#"{"ok":true}"#.to_string())
+        }
+    }
+
     struct RuntimeCapabilitiesRestoreGuard {
         snapshot: Vec<crate::orchestrator::RuntimeCapabilityState>,
     }
@@ -6515,6 +6541,68 @@ mod tests {
         assert_eq!(delivered, "已完成。");
         assert_eq!(executed.telemetry.latency.react_rounds, 3);
         assert_eq!(executed.telemetry.latency.tool_calls, 2);
+    }
+
+    #[test]
+    fn execute_turn_normalizes_flat_json_like_tool_args_before_protocol_repair() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured_args = Arc::new(Mutex::new(Vec::new()));
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                LlmResponse {
+                    content: "[tool_use]".to_string(),
+                    stop_reason: StopReason::ToolUse,
+                    tool_calls: Some(vec![crate::llm::ToolCall {
+                        id: "call_capture".to_string(),
+                        name: "argument_capture".to_string(),
+                        input: "{op: query, kind: fact, topic: 随手记}".to_string(),
+                    }]),
+                },
+                LlmResponse {
+                    content: "已处理。".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = test_registry(&[("argument_capture", ToolLlmVisibility::user_only())]);
+        registry.register(Box::new(StubArgumentCaptureTool {
+            observed_args: Arc::clone(&captured_args),
+        }));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::Embedded;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-json-like-tool-args", "随手记", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-json-like-tool-args",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(delivered, "已处理。");
+        assert_eq!(executed.telemetry.latency.react_rounds, 2);
+        assert_eq!(executed.telemetry.latency.tool_calls, 1);
+        let captured_args = captured_args.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(captured_args.len(), 1, "{captured_args:#?}");
+        let normalized: serde_json::Value =
+            serde_json::from_str(&captured_args[0]).expect("tool args are strict JSON");
+        assert_eq!(
+            normalized,
+            serde_json::json!({"op":"query","kind":"fact","topic":"随手记"})
+        );
     }
 
     #[test]

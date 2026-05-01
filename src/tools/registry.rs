@@ -17,6 +17,7 @@ use crate::tools::{
 use crate::util::truncate_to_byte_len;
 use indexmap::IndexMap;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 pub const DEFAULT_LLM_TOOL_SPECS_MAX_TOTAL_LEN: usize = 32 * 1024;
@@ -341,6 +342,29 @@ impl ToolRegistry {
             shape,
             requires_network,
         })
+    }
+
+    /// Normalize narrow JSON-like drift from LLM tool-call arguments into strict JSON.
+    pub fn normalize_llm_tool_args<'a>(&self, name: &str, args: &'a str) -> Cow<'a, str> {
+        if args.len() > MAX_TOOL_ARGS_LEN {
+            return Cow::Borrowed(args);
+        }
+        if !matches!(
+            self.tool_protocol_contract(name).input_kind,
+            ToolInputProtocolKind::StructuredObject | ToolInputProtocolKind::OperationEnvelope
+        ) {
+            return Cow::Borrowed(args);
+        }
+        if serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .is_some_and(|value| value.is_object())
+        {
+            return Cow::Borrowed(args);
+        }
+        match normalize_flat_json_like_object(args) {
+            Some(normalized) => Cow::Owned(normalized),
+            None => Cow::Borrowed(args),
+        }
     }
 
     pub fn record_resource_denial(&self, permit: &ToolExecutionPermit, reason: &str) -> Result<()> {
@@ -940,6 +964,141 @@ fn validate_tool_input_protocol(
         ));
     }
     Ok(())
+}
+
+fn normalize_flat_json_like_object(args: &str) -> Option<String> {
+    let trimmed = args.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed.strip_prefix('{')?.strip_suffix('}')?.trim();
+    if inner.is_empty() {
+        return Some("{}".to_string());
+    }
+
+    let mut object = serde_json::Map::new();
+    for pair in split_relaxed_object_pairs(inner)? {
+        let colon = find_relaxed_pair_colon(pair)?;
+        let key = parse_relaxed_object_key(pair[..colon].trim())?;
+        let value = parse_relaxed_object_value(pair[colon + 1..].trim())?;
+        object.insert(key, value);
+    }
+    Some(serde_json::Value::Object(object).to_string())
+}
+
+fn split_relaxed_object_pairs(inner: &str) -> Option<Vec<&str>> {
+    let mut pairs = Vec::new();
+    let mut start = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in inner.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '}' | '[' | ']' => return None,
+            ',' => {
+                let pair = inner[start..index].trim();
+                if pair.is_empty() {
+                    return None;
+                }
+                pairs.push(pair);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if in_string {
+        return None;
+    }
+    let pair = inner[start..].trim();
+    if pair.is_empty() {
+        return None;
+    }
+    pairs.push(pair);
+    Some(pairs)
+}
+
+fn find_relaxed_pair_colon(pair: &str) -> Option<usize> {
+    let mut colon = None;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in pair.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '}' | '[' | ']' => return None,
+            ':' if colon.replace(index).is_some() => return None,
+            _ => {}
+        }
+    }
+    if in_string {
+        return None;
+    }
+    colon
+}
+
+fn parse_relaxed_object_key(raw: &str) -> Option<String> {
+    if raw.starts_with('"') {
+        return serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .filter(|key| !key.trim().is_empty());
+    }
+    is_relaxed_identifier(raw).then(|| raw.to_string())
+}
+
+fn is_relaxed_identifier(raw: &str) -> bool {
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn parse_relaxed_object_value(raw: &str) -> Option<serde_json::Value> {
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.starts_with('"') {
+        let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+        return value.is_string().then_some(value);
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+        if matches!(
+            value,
+            serde_json::Value::Bool(_) | serde_json::Value::Null | serde_json::Value::Number(_)
+        ) {
+            return Some(value);
+        }
+    }
+    is_relaxed_bare_scalar(raw).then(|| serde_json::Value::String(raw.to_string()))
+}
+
+fn is_relaxed_bare_scalar(raw: &str) -> bool {
+    raw.chars().all(|ch| {
+        !ch.is_control()
+            && !ch.is_whitespace()
+            && !matches!(ch, '{' | '}' | '[' | ']' | ':' | ',' | '"' | '\'')
+    })
 }
 
 fn normalize_and_validate_tool_outcome(
@@ -2872,6 +3031,48 @@ mod tests {
                 .contains("operation_envelope requires non-empty string field `op`"),
             "unexpected protocol error: {error}"
         );
+    }
+
+    #[test]
+    fn registry_normalizes_flat_json_like_llm_tool_args() {
+        let registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "memory_lookup",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+
+        let normalized = registry
+            .normalize_llm_tool_args("memory_lookup", "{op: query, kind: fact, topic: 随手记}");
+        let value: serde_json::Value =
+            serde_json::from_str(normalized.as_ref()).expect("normalized args are strict JSON");
+
+        assert_eq!(
+            value,
+            serde_json::json!({"op":"query","kind":"fact","topic":"随手记"})
+        );
+    }
+
+    #[test]
+    fn registry_keeps_freeform_json_like_tool_args_strictly_invalid() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "visible",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(VisibleTool));
+
+        let normalized =
+            registry.normalize_llm_tool_args("visible", "{query: conversation history}");
+        assert_eq!(normalized.as_ref(), "{query: conversation history}");
+        let error = registry
+            .assess_llm_execution(
+                "visible",
+                normalized.as_ref(),
+                &ToolPolicyContext::new(crate::bus::IngressKind::User, "telegram"),
+            )
+            .expect_err("freeform bare values must remain protocol violations");
+
+        assert_eq!(error.stage(), "tool_protocol_contract");
     }
 
     #[test]

@@ -349,7 +349,9 @@ fn execute_tool_call(
         return unavailable_tool_execution_result(&tc.name);
     }
 
-    let permit = match registry.assess_llm_execution(&tc.name, &tc.input, request_plan.policy()) {
+    let normalized_input = registry.normalize_llm_tool_args(&tc.name, &tc.input);
+    let tool_input = normalized_input.as_ref();
+    let permit = match registry.assess_llm_execution(&tc.name, tool_input, request_plan.policy()) {
         Ok(crate::tools::ToolExecutionGateDecision::Allow(permit)) => permit,
         Ok(crate::tools::ToolExecutionGateDecision::Deny { reason }) => {
             log::info!("[agent_tool] {} denied by governance: {}", tc.name, reason);
@@ -385,7 +387,7 @@ fn execute_tool_call(
             }
             let tool_exec_start = Instant::now();
             let had_mutating_effects = permit.shape().effect_class.is_mutating();
-            match registry.execute_permitted(&permit, &tc.input, tool_ctx) {
+            match registry.execute_permitted(&permit, tool_input, tool_ctx) {
                 Ok(outcome) => {
                     latency.tool_exec_ms = latency
                         .tool_exec_ms
@@ -502,7 +504,7 @@ fn execute_tool_call(
                     }
                     execute_error_tool_execution_result(
                         &tc.name,
-                        &tc.input,
+                        tool_input,
                         had_mutating_effects,
                         &error,
                     )
