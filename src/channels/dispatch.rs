@@ -137,6 +137,7 @@ impl MessageSink for QueuedSink {
                 content: content.into_owned(),
                 body: msg.body.clone(),
                 platform_thread_id: msg.platform_thread_id.clone(),
+                platform_message_id: msg.platform_message_id.clone(),
                 req_id: msg.req_id.clone(),
                 outbound_kind: msg.outbound_kind,
             })
@@ -162,6 +163,7 @@ impl MessageSink for QueuedSink {
                 content: projection.clone(),
                 body: CanonicalMessageBody::text(projection),
                 platform_thread_id: String::new(),
+                platform_message_id: String::new(),
                 req_id: req_id.map(str::to_string),
                 outbound_kind,
             })
@@ -655,6 +657,7 @@ fn queued_from_prepared(
         content: content.into_owned(),
         body: prepared.msg.body,
         platform_thread_id: prepared.msg.platform_thread_id,
+        platform_message_id: prepared.msg.platform_message_id,
         req_id: prepared.msg.req_id,
         outbound_kind: prepared.msg.outbound_kind,
     }
@@ -1432,6 +1435,21 @@ mod tests {
 
     fn build_msg(channel: &str, chat_id: &str, content: &str) -> PcMsg {
         PcMsg::new(channel, chat_id, content).expect("pcmsg")
+    }
+
+    #[test]
+    fn queued_from_prepared_preserves_platform_message_id() {
+        let mut msg =
+            PcMsg::new_inbound("qq_channel", "c2c:chat-1", "hello", false).expect("pcmsg");
+        msg.platform_message_id = "msg-1".to_string();
+        let prepared = crate::channels::outbound_text::PreparedOutboundMessage {
+            msg,
+            content: "reply".to_string(),
+        };
+
+        let queued = super::queued_from_prepared(prepared);
+
+        assert_eq!(queued.platform_message_id, "msg-1");
     }
 
     struct FailingSink {

@@ -761,6 +761,68 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_pending_retry_drops_stale_qq_v2_passive_retry() {
+        let mut stale = beetle::PcMsg::new_inbound(
+            beetle::CHANNEL_QQ_CHANNEL,
+            "c2c:chat-1",
+            "retry later",
+            false,
+        )
+        .expect("qq msg");
+        stale.enqueue_ts_ms = 1;
+        let pending = TestPendingRetryStore {
+            loaded: Mutex::new(Some(stale)),
+            cleared: Mutex::new(false),
+        };
+        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+
+        super::app_runtime_support::bootstrap_pending_retry_into_inbound(
+            &pending,
+            &user_inbound_tx,
+            &system_inbound_tx,
+        );
+
+        assert!(user_inbound_rx.try_recv().is_err());
+        assert!(system_inbound_rx.try_recv().is_err());
+        assert!(*pending.cleared.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    #[test]
+    fn bootstrap_pending_retry_keeps_c2c_retry_inside_passive_window() {
+        let mut recent = beetle::PcMsg::new_inbound(
+            beetle::CHANNEL_QQ_CHANNEL,
+            "c2c:chat-1",
+            "retry soon",
+            false,
+        )
+        .expect("qq msg");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        recent.enqueue_ts_ms = now_ms.saturating_sub(10 * 60 * 1000);
+        let pending = TestPendingRetryStore {
+            loaded: Mutex::new(Some(recent)),
+            cleared: Mutex::new(false),
+        };
+        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+
+        super::app_runtime_support::bootstrap_pending_retry_into_inbound(
+            &pending,
+            &user_inbound_tx,
+            &system_inbound_tx,
+        );
+
+        let user_msg = user_inbound_rx.try_recv().expect("user retry");
+        assert_eq!(user_msg.content, "retry soon");
+        assert!(system_inbound_rx.try_recv().is_err());
+        assert!(*pending.cleared.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    #[test]
     fn update_display_loop_cache_syncs_owned_dashboard_fields() {
         use super::{update_display_loop_cache, DisplayLoopCacheUpdate, DisplayLoopState};
         use beetle::{DisplayChannelStatus, DisplayPressureLevel};

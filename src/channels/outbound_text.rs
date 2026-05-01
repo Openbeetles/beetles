@@ -65,7 +65,15 @@ fn maybe_promote_primary_plain_text(
     if msg.outbound_kind != OutboundKind::Primary || text.format != TextFormat::Plain {
         return None;
     }
-    let source_text = normalize_text_source(text, content);
+    let raw_source_text = normalize_text_source(text, content);
+    let qq_inline_label_projection = if capability.id == CHANNEL_QQ_CHANNEL {
+        project_inline_label_chain_to_multiline_markdown(raw_source_text)
+    } else {
+        None
+    };
+    let source_text = qq_inline_label_projection
+        .as_deref()
+        .unwrap_or(raw_source_text);
     let source_looks_markdownish = looks_like_markdownish(source_text);
     let qq_markdown_within_text_limit = capability.id != CHANNEL_QQ_CHANNEL
         || source_text.len() <= capability.contract.max_text_bytes;
@@ -354,6 +362,159 @@ fn normalize_text_source<'a>(text: &'a TextBody, content: &'a str) -> &'a str {
     } else {
         trimmed
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineLabelBoundary {
+    marker_start: usize,
+    label_start: usize,
+}
+
+fn project_inline_label_chain_to_multiline_markdown(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
+        return None;
+    }
+    let boundaries = collect_inline_label_boundaries(trimmed);
+    if boundaries.len() < 3 {
+        return None;
+    }
+
+    let mut lines = Vec::with_capacity(boundaries.len() + 1);
+    let prefix = trimmed[..boundaries[0].marker_start]
+        .trim_end_matches(['-', ' '])
+        .trim();
+    if !prefix.is_empty() {
+        lines.push(prefix.to_string());
+    }
+    for (index, boundary) in boundaries.iter().enumerate() {
+        let end = boundaries
+            .get(index + 1)
+            .map(|next| next.marker_start)
+            .unwrap_or(trimmed.len());
+        let item = trimmed[boundary.label_start..end].trim();
+        if item.is_empty() {
+            return None;
+        }
+        lines.push(format!("- {item}"));
+    }
+
+    let projected = lines.join("\n");
+    (projected != trimmed).then_some(projected)
+}
+
+fn collect_inline_label_boundaries(text: &str) -> Vec<InlineLabelBoundary> {
+    let mut boundaries = Vec::new();
+    let mut idx = 0usize;
+    while let Some(rel) = text[idx..].find('-') {
+        let marker_start = idx + rel;
+        if text[..marker_start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        {
+            idx = marker_start + 1;
+            continue;
+        }
+
+        let mut label_start = marker_start;
+        while text
+            .as_bytes()
+            .get(label_start)
+            .is_some_and(|byte| *byte == b'-')
+        {
+            label_start += 1;
+        }
+        while text
+            .as_bytes()
+            .get(label_start)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            label_start += 1;
+        }
+
+        if is_inline_label_at(text, label_start) {
+            boundaries.push(InlineLabelBoundary {
+                marker_start,
+                label_start,
+            });
+            idx = label_start;
+        } else {
+            idx = marker_start + 1;
+        }
+    }
+    boundaries
+}
+
+fn is_inline_label_at(text: &str, label_start: usize) -> bool {
+    if label_start >= text.len() {
+        return false;
+    }
+    let mut chars_seen = 0usize;
+    for (offset, ch) in text[label_start..].char_indices() {
+        if ch == ':' || ch == '：' {
+            let label = text[label_start..label_start + offset].trim();
+            return is_plausible_inline_label(label);
+        }
+        chars_seen += 1;
+        if chars_seen > 18 || is_inline_label_disallowed_char(ch) {
+            return false;
+        }
+    }
+    false
+}
+
+fn is_plausible_inline_label(label: &str) -> bool {
+    let mut chars = label.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first.is_ascii_digit() {
+        return false;
+    }
+    let mut count = 1usize;
+    if is_inline_label_disallowed_char(first) {
+        return false;
+    }
+    for ch in chars {
+        count += 1;
+        if count > 18 || is_inline_label_disallowed_char(ch) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_inline_label_disallowed_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '-' | '—'
+            | '。'
+            | '，'
+            | '、'
+            | ','
+            | '.'
+            | '!'
+            | '！'
+            | '?'
+            | '？'
+            | ';'
+            | '；'
+            | '('
+            | ')'
+            | '（'
+            | '）'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '"'
+            | '\''
+            | '`'
+            | '/'
+            | '\\'
+            | '|'
+    )
 }
 
 fn looks_like_markdownish(text: &str) -> bool {
@@ -914,6 +1075,56 @@ mod tests {
             }) if text == "第一段。\n\n第二段。"
         ));
         assert_eq!(prepared.content, "第一段。\n\n第二段。");
+    }
+
+    #[test]
+    fn primary_inline_label_chain_on_qq_projects_to_multiline_markdown() {
+        let mut msg =
+            outbound_text_msg("状态--芯片: ESP32-S3 - 运行时间: 5 分钟- WiFi: 已连接 - 内存: 正常");
+        msg.channel = Arc::from("qq_channel");
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Markdown,
+                ref text,
+            }) if text == "状态\n- 芯片: ESP32-S3\n- 运行时间: 5 分钟\n- WiFi: 已连接\n- 内存: 正常"
+        ));
+        assert_eq!(
+            prepared.content,
+            "状态\n- 芯片: ESP32-S3\n- 运行时间: 5 分钟\n- WiFi: 已连接\n- 内存: 正常"
+        );
+    }
+
+    #[test]
+    fn qq_inline_label_projection_ignores_short_natural_dash_pairs() {
+        let mut msg = outbound_text_msg("我看 A - B: C 只是一个例子，不需要重排。");
+        msg.channel = Arc::from("qq_channel");
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Plain,
+                ref text,
+            }) if text == "我看 A - B: C 只是一个例子，不需要重排。"
+        ));
+        assert_eq!(prepared.content, "我看 A - B: C 只是一个例子，不需要重排。");
     }
 
     #[test]

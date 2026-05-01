@@ -108,7 +108,8 @@ impl QqTurnReservationTracker {
             .by_turn
             .entry(turn_key_for_message(message))
             .or_insert_with(|| QqTurnReservationState {
-                msg_id: pop_msg_id(cache, &message.chat_id),
+                msg_id: pop_msg_id(cache, &message.chat_id)
+                    .or_else(|| message_platform_message_id(message)),
                 next_seq: 1,
                 last_used_at_secs: now_secs,
             });
@@ -153,6 +154,15 @@ fn turn_key_for_message(message: &QueuedOutboundMessage) -> QqTurnKey {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("-")
             .to_string(),
+    }
+}
+
+fn message_platform_message_id(message: &QueuedOutboundMessage) -> Option<String> {
+    let trimmed = message.platform_message_id.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -1032,6 +1042,7 @@ mod tests {
             content: content.to_string(),
             body,
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: req_id.map(str::to_string),
             outbound_kind,
         }
@@ -1108,6 +1119,27 @@ mod tests {
         assert_eq!(first.msg_id.as_deref(), Some("msg-1"));
         assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
         assert_eq!(first.msg_seq, second.msg_seq);
+        assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
+    }
+
+    #[test]
+    fn retryable_reservation_uses_message_platform_message_id_when_cache_is_empty() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        let mut message = queued_message(
+            42,
+            "c2c:chat-1",
+            "hello",
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+        message.platform_message_id = "msg-1".to_string();
+        let mut active = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+
+        let reservation =
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &message);
+
+        assert_eq!(reservation.msg_id.as_deref(), Some("msg-1"));
         assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
     }
 

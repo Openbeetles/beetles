@@ -368,6 +368,7 @@ mod tests {
             content: content.to_string(),
             body,
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: Some("req-1".to_string()),
             outbound_kind: crate::bus::OutboundKind::Primary,
         }

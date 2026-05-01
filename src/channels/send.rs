@@ -45,6 +45,7 @@ pub struct QueuedOutboundMessage {
     pub content: String,
     pub body: CanonicalMessageBody,
     pub platform_thread_id: String,
+    pub platform_message_id: String,
     pub req_id: Option<String>,
     pub outbound_kind: OutboundKind,
 }
@@ -292,8 +293,10 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
         let max_retries = max_retries_for_message(&message);
         let mut sent = false;
         let mut last_err = None;
+        let mut attempts = 0u8;
         for retry in 0..max_retries {
             let attempt = retry + 1;
+            attempts = attempt;
             if retry > 0 {
                 sleep_sender_retry_delay();
             }
@@ -336,7 +339,7 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
                     tag,
                     message.req_id.as_deref(),
                     Some(message.chat_id.as_str()),
-                    max_retries,
+                    attempts,
                 );
             }
         }
@@ -392,20 +395,20 @@ pub(crate) fn log_sender_drop(
     tag: &str,
     req_id: Option<&str>,
     chat_id: Option<&str>,
-    max_retries: u8,
+    attempts: u8,
 ) {
     if let Some(chat_id) = chat_id {
         log::error!(
-            "[{}] message dropped after {} retries, chat_id={}",
+            "[{}] message dropped after {} send attempts, chat_id={}",
             tag,
-            max_retries,
+            attempts,
             chat_id
         );
     } else {
-        log::error!("[{}] message dropped after {} retries", tag, max_retries);
+        log::error!("[{}] message dropped after {} send attempts", tag, attempts);
     }
     log::error!(
-        "[{}] req_id={} message dropped after retries",
+        "[{}] req_id={} message dropped after send attempts",
         tag,
         req_id.unwrap_or("-")
     );
@@ -506,6 +509,7 @@ mod tests {
             content: "first".to_string(),
             body: CanonicalMessageBody::text("first"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -516,6 +520,7 @@ mod tests {
             content: "second".to_string(),
             body: CanonicalMessageBody::text("second"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -526,6 +531,7 @@ mod tests {
             content: "third".to_string(),
             body: CanonicalMessageBody::text("third"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -563,6 +569,7 @@ mod tests {
             content: "broken".to_string(),
             body: CanonicalMessageBody::text("broken"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: None,
             outbound_kind: OutboundKind::Primary,
         })
@@ -596,6 +603,7 @@ mod tests {
             content: "reply".to_string(),
             body: CanonicalMessageBody::text("reply"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: Some("req-1".to_string()),
             outbound_kind: OutboundKind::Primary,
         })
@@ -630,6 +638,7 @@ mod tests {
             content: "first".to_string(),
             body: CanonicalMessageBody::text("first"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: Some("req-1".to_string()),
             outbound_kind: OutboundKind::Primary,
         })
@@ -665,6 +674,7 @@ mod tests {
             content: "second".to_string(),
             body: CanonicalMessageBody::text("second"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: Some("req-2".to_string()),
             outbound_kind: OutboundKind::Primary,
         })
@@ -677,6 +687,7 @@ mod tests {
             content: "third".to_string(),
             body: CanonicalMessageBody::text("third"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: Some("req-3".to_string()),
             outbound_kind: OutboundKind::Primary,
         };
@@ -707,6 +718,7 @@ mod tests {
             content: "supplemental".to_string(),
             body: CanonicalMessageBody::text("supplemental"),
             platform_thread_id: String::new(),
+            platform_message_id: String::new(),
             req_id: Some("req-1".to_string()),
             outbound_kind: OutboundKind::Supplemental,
         })

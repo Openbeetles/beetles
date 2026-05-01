@@ -733,6 +733,7 @@ mod tests {
             content: body.text_projection(),
             body,
             platform_thread_id: "77".to_string(),
+            platform_message_id: String::new(),
             req_id: Some("req-1".to_string()),
             outbound_kind: OutboundKind::Primary,
         }
