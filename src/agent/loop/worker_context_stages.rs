@@ -189,6 +189,7 @@ pub(super) fn compute_prepare_runtime(
     log_prepare_stage(prepare_trace_enabled, msg, "skill_descriptions_ready");
     log_prepare_stage(prepare_trace_enabled, msg, "post_memory_budget_start");
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+        channel: msg.channel.as_ref(),
         has_tools,
         skill_descriptions_len,
         is_group: msg.is_group,

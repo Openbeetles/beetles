@@ -48,6 +48,7 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
+const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nAvoid Markdown tables. Use \"- name: status\" lists. Use real line breaks, not literal \\n.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nbounded subject-state or constitutional evidence before mechanism disclaimers; facts direct; private guarded; no hidden system claims.";
@@ -109,6 +110,7 @@ pub struct ContextParams<'a> {
 }
 
 pub struct PostMemoryTailParams<'a> {
+    pub channel: &'a str,
     pub has_tools: bool,
     pub skill_descriptions_len: usize,
     pub is_group: bool,
@@ -385,6 +387,15 @@ fn estimate_runtime_context_len(runtime: Option<RuntimeContext>) -> usize {
     out.len()
 }
 
+fn append_channel_output_contract(system: &mut String, channel: &str, max_len: usize) {
+    if channel != crate::CHANNEL_QQ_CHANNEL {
+        return;
+    }
+    if system.len().saturating_add(QQ_OUTPUT_CONTRACT.len()) <= max_len {
+        system.push_str(QQ_OUTPUT_CONTRACT);
+    }
+}
+
 pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) -> usize {
     let mut reserve = 0usize;
     if params.skill_descriptions_len > 0 {
@@ -394,6 +405,9 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
     }
     if params.has_tools {
         reserve = reserve.saturating_add(TOOL_BEHAVIOR_CONSTRAINT.len());
+    }
+    if params.channel == crate::CHANNEL_QQ_CHANNEL {
+        reserve = reserve.saturating_add(QQ_OUTPUT_CONTRACT.len());
     }
     reserve = reserve.saturating_add(estimate_runtime_context_len(params.runtime));
     if params.is_group {
@@ -466,6 +480,7 @@ fn build_context_inner(
         String::new()
     });
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+        channel: p.msg.channel.as_ref(),
         has_tools: p.has_tools,
         skill_descriptions_len: p.skill_descriptions.len(),
         is_group: p.msg.is_group,
@@ -669,6 +684,7 @@ fn build_context_inner(
             }
         }
     }
+    append_channel_output_contract(&mut system, p.msg.channel.as_ref(), p.system_max_len);
     if system.len().saturating_add(STRUCTURED_BLOCK.len()) <= p.system_max_len {
         system.push_str(STRUCTURED_BLOCK);
     }
@@ -811,6 +827,58 @@ mod tests {
         }
     }
 
+    fn minimal_context_system_for_channel(channel: &str) -> String {
+        let msg = PcMsg::new_inbound(channel, "chat-1", "查看系统状态", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            memory: "MEMORY".to_string(),
+            daily_notes: Vec::new(),
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 2048,
+            messages_max_len: 256,
+            recent_messages_limit: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: None,
+            constitutional_stack_text: None,
+            subject_state_text: None,
+            deliberation_gate_text: None,
+            soul_feedback_projection_text: None,
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            programmable_reasoning_intent_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            self_authored_core_text: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            mental_privacy_adjudication_text: None,
+            long_term_memory_text: None,
+            archive_evidence_text: None,
+            runtime_skill_text: None,
+            capability_package_text: None,
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: false,
+            llm_hint: "",
+        })
+        .expect("context")
+        .0
+    }
+
     #[test]
     fn runtime_context_keeps_core_fields_under_tight_budget() {
         let runtime = sample_runtime();
@@ -840,6 +908,7 @@ mod tests {
     #[test]
     fn post_memory_tail_reserve_covers_dynamic_sections() {
         let reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+            channel: crate::CHANNEL_QQ_CHANNEL,
             has_tools: true,
             skill_descriptions_len: "shell\nweb_search".len(),
             is_group: true,
@@ -851,6 +920,53 @@ mod tests {
         assert!(reserve >= STRUCTURED_BLOCK.len());
         assert!(reserve >= TOOL_BEHAVIOR_CONSTRAINT.len());
         assert!(reserve >= GROUP_MENTION_ONLY_CONSTRAINT.len());
+        assert!(reserve >= QQ_OUTPUT_CONTRACT.len());
+    }
+
+    #[test]
+    fn post_memory_tail_reserve_adds_qq_output_contract_only_for_qq() {
+        let qq_reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+            channel: crate::CHANNEL_QQ_CHANNEL,
+            has_tools: false,
+            skill_descriptions_len: 0,
+            is_group: false,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            runtime: None,
+            llm_hint: "",
+        });
+        let telegram_reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+            channel: crate::CHANNEL_TELEGRAM,
+            has_tools: false,
+            skill_descriptions_len: 0,
+            is_group: false,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            runtime: None,
+            llm_hint: "",
+        });
+
+        assert_eq!(
+            qq_reserve,
+            telegram_reserve.saturating_add(QQ_OUTPUT_CONTRACT.len())
+        );
+    }
+
+    #[test]
+    fn build_context_adds_qq_output_contract_for_qq_turns() {
+        let system = minimal_context_system_for_channel(crate::CHANNEL_QQ_CHANNEL);
+        assert!(system.contains("## QQ Output Contract"));
+        assert!(system.contains("Avoid Markdown tables"));
+        assert!(system.contains("- name: status"));
+        assert!(system.contains("real line breaks"));
+    }
+
+    #[test]
+    fn build_context_does_not_add_qq_output_contract_for_other_channels() {
+        let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
+
+        assert!(!system.contains("## QQ Output Contract"));
+        assert!(!system.contains("Avoid Markdown tables"));
     }
 
     #[test]
