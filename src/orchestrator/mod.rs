@@ -19,7 +19,10 @@ use std::time::Duration;
 
 pub use admission::{AdmissionDecision, LlmDecision, ToolDecision};
 pub use channel_health::is_channel_healthy;
-pub use permit::{AgentTaskGuard, HttpPermitGuard, HttpThreadRole, Priority, WssSessionGuard};
+pub use permit::{
+    AgentTaskGuard, ForegroundTurnGuard, HttpPermitGuard, HttpPriorityOverrideGuard,
+    HttpThreadRole, Priority, WssSessionGuard,
+};
 pub use pressure::{PressureLevel, ResourceBudget, TlsFragmentationRisk};
 #[cfg(test)]
 pub use runtime_capability::reset_runtime_capabilities_for_tests;
@@ -323,6 +326,16 @@ pub fn current_http_thread_role() -> HttpThreadRole {
 /// 应在准入通过后、开始处理消息前立即调用，确保整个任务生命周期内 `active_agent_tasks > 0`。
 pub fn begin_agent_task() -> AgentTaskGuard {
     AgentTaskGuard::new(&STATE)
+}
+
+/// 开始一个前台用户 turn：持有 AgentHeavyTurn lease，并维护 agent task 指标。
+pub fn begin_foreground_turn() -> Result<ForegroundTurnGuard> {
+    ForegroundTurnGuard::new(&STATE)
+}
+
+/// 当前线程进入 ReplyCritical HTTP lane；Drop 后恢复原 lane。
+pub fn begin_reply_critical_http_scope() -> HttpPriorityOverrideGuard {
+    HttpPriorityOverrideGuard::new(Priority::Critical)
 }
 
 /// 标记一个已建立的 WSS 会话开始存活；返回 RAII guard，Drop 时自动递减。

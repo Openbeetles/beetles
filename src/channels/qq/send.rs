@@ -35,6 +35,13 @@ const QQ_TURN_RESERVATION_CACHE_MAX: usize = 64;
 const QQ_MESSAGES_BASE: &str = "https://api.sgroup.qq.com/channels";
 const QQ_V2_BASE: &str = "https://api.sgroup.qq.com/v2";
 
+#[cfg(test)]
+fn reply_http_priority_for_message_kind(
+    kind: crate::bus::OutboundKind,
+) -> crate::orchestrator::Priority {
+    crate::channels::send::reply_http_priority_for_message_kind(kind)
+}
+
 struct QqSendRuntime<'a, H, F> {
     app_id: &'a str,
     secret: &'a str,
@@ -713,6 +720,8 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
     let mut token: Option<String> = None;
     let mut turn_tracker = QqTurnReservationTracker::default();
     while let Ok(message) = rx.try_recv() {
+        let _reply_priority =
+            crate::channels::send::begin_reply_http_priority_scope(message.outbound_kind);
         if token.is_none() {
             if message.outbound_kind.is_supplemental() {
                 log::warn!(
@@ -769,6 +778,8 @@ where
     let msg_start = std::time::Instant::now();
     let mut token_wait_ms: u128 = 0;
     let is_supplemental = message.outbound_kind.is_supplemental();
+    let _reply_priority =
+        crate::channels::send::begin_reply_http_priority_scope(message.outbound_kind);
 
     if !ensure_sender_http(runtime.http, runtime.create_http, TAG, attempt) {
         return Err(crate::error::Error::config(TAG, "create http failed"));
@@ -1318,6 +1329,18 @@ mod tests {
             serde_json::from_slice(&sent_bodies[1]).expect("second payload json");
         assert_eq!(first.get("msg_id"), second.get("msg_id"));
         assert_eq!(first.get("msg_seq"), second.get("msg_seq"));
+    }
+
+    #[test]
+    fn primary_reply_token_uses_reply_critical_priority() {
+        assert_eq!(
+            super::reply_http_priority_for_message_kind(OutboundKind::Primary),
+            crate::orchestrator::Priority::Critical
+        );
+        assert_eq!(
+            super::reply_http_priority_for_message_kind(OutboundKind::Supplemental),
+            crate::orchestrator::Priority::Normal
+        );
     }
 
     #[test]

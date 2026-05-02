@@ -589,7 +589,7 @@ fn do_request_streaming(
                 Ok(())
             },
         )
-        .map_err(|e| crate::llm::map_transport_error(e, "llm_request"))?;
+        .map_err(|e| crate::llm::map_streaming_transport_error(e, "llm_request"))?;
 
     if status == 429 {
         log::warn!("[{}] rate limited (429)", TAG);
@@ -612,7 +612,70 @@ fn do_request_streaming(
 mod tests {
     use super::{build_request_body, OpenAiCompatibleClient};
     use crate::config::LlmSource;
-    use crate::llm::{Message, ToolCallSupport, ToolChoicePolicy, ToolSpec};
+    use crate::llm::{
+        LlmClient, LlmHttpClient, Message, ToolCallSupport, ToolChoicePolicy, ToolSpec,
+    };
+
+    struct TruncatedStreamingHttp;
+
+    impl LlmHttpClient for TruncatedStreamingHttp {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+            unreachable!("streaming test should not call non-streaming POST")
+        }
+
+        fn do_post_streaming(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+            max_response_bytes: Option<usize>,
+            on_chunk: &mut dyn FnMut(&[u8]) -> crate::Result<()>,
+        ) -> crate::Result<u16> {
+            assert!(max_response_bytes.is_some());
+            on_chunk(br#"data: {"choices":[{"delta":{"content":"partial"}}]}"#)?;
+            Err(crate::Error::Other {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "streaming response truncated",
+                )),
+                stage: crate::llm::HTTP_RESPONSE_TRUNCATED_STAGE,
+            })
+        }
+    }
+
+    #[test]
+    fn streaming_truncation_returns_llm_response_truncated() {
+        let client = OpenAiCompatibleClient::from_source(
+            &LlmSource {
+                provider: "openai".to_string(),
+                api_key: "k".to_string(),
+                model: "m".to_string(),
+                api_url: "https://example.test/v1".to_string(),
+                max_tokens: Some(128),
+            },
+            true,
+        );
+        let mut http = TruncatedStreamingHttp;
+        let err = LlmClient::chat(
+            &client,
+            &mut http,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content: "hi".to_string(),
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        )
+        .expect_err("stream truncation must be a first-class LLM error");
+
+        assert_eq!(err.stage(), "llm_response_truncated");
+    }
 
     #[test]
     fn request_contains_required_tool_choice_when_forced() {

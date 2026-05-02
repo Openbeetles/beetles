@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MAIN_RS="$ROOT_DIR/src/main.rs"
 
-platform_init_line=$(rg -n 'let platform: Arc<dyn Platform> = Arc::new\(LinuxPlatform::new\(\)\);' "$MAIN_RS" | head -n1 | cut -d: -f1 || true)
+platform_init_line=$(rg -n '^    let platform: Arc<dyn Platform> = Arc::new\(LinuxPlatform::new\(\)\);' "$MAIN_RS" | head -n1 | cut -d: -f1 || true)
 fastpath_line=$(rg -n 'match &cli\.command' "$MAIN_RS" | head -n1 | cut -d: -f1 || true)
 
 if [[ -z "$platform_init_line" || -z "$fastpath_line" ]]; then

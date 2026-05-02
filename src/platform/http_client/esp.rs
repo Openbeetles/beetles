@@ -336,16 +336,27 @@ impl EspHttpClient {
                 if n == 0 {
                     break;
                 }
-                total += n;
-                if enforce_limit && total > max_len {
+                let next_total = total + n;
+                if enforce_limit && next_total > max_len {
+                    let remaining = max_len.saturating_sub(total);
+                    if remaining > 0 {
+                        on_chunk(&buf[..remaining])?;
+                    }
                     log::warn!(
                         "[{}] streaming response truncated at {} bytes",
                         TAG,
                         max_len
                     );
                     drain_response(&mut response);
-                    break;
+                    return Err(Error::Other {
+                        source: Box::new(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "streaming response truncated",
+                        )),
+                        stage: "http_response_truncated",
+                    });
                 }
+                total = next_total;
                 on_chunk(&buf[..n])?;
             }
 

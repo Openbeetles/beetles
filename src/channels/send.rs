@@ -99,6 +99,40 @@ pub(crate) fn max_retries_for_message(message: &QueuedOutboundMessage) -> u8 {
     feature = "qq_channel",
     test
 ))]
+pub(crate) fn reply_http_priority_for_message_kind(
+    kind: OutboundKind,
+) -> crate::orchestrator::Priority {
+    if kind == OutboundKind::Primary {
+        crate::orchestrator::Priority::Critical
+    } else {
+        crate::orchestrator::Priority::Normal
+    }
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
+pub(crate) fn begin_reply_http_priority_scope(
+    kind: OutboundKind,
+) -> Option<crate::orchestrator::HttpPriorityOverrideGuard> {
+    if reply_http_priority_for_message_kind(kind) == crate::orchestrator::Priority::Critical {
+        Some(crate::orchestrator::begin_reply_critical_http_scope())
+    } else {
+        None
+    }
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "qq_channel",
+    test
+))]
 fn should_defer_primary_send_error(error: &Error) -> bool {
     should_defer_primary_send_error_immediately(error) || error.is_retryable_upstream()
 }
@@ -300,6 +334,7 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
             if retry > 0 {
                 sleep_sender_retry_delay();
             }
+            let _reply_priority = begin_reply_http_priority_scope(message.outbound_kind);
             match send_one(&message, attempt) {
                 Ok(()) => {
                     sent = true;

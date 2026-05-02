@@ -734,6 +734,7 @@ fn dispatch_via_active_driver(
         if retry > 0 {
             super::send::sleep_sender_retry_delay();
         }
+        let _reply_priority = super::send::begin_reply_http_priority_scope(queued.outbound_kind);
         match driver.send_attempt(&queued, attempt) {
             Ok(()) => {
                 log::debug!(

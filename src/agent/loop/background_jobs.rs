@@ -1796,7 +1796,7 @@ pub(super) fn handle_admission_defer(
     entry.1 = Instant::now();
     let defer_count = entry.0;
 
-    if defer_count >= MAX_DEFER_RETRIES {
+    if defer_count >= MAX_DEFER_RETRIES && msg.ingress != IngressKind::User {
         log::warn!(
             "[agent] defer limit reached ({}) for chat_id={}, dropping message",
             MAX_DEFER_RETRIES,
@@ -1822,7 +1822,7 @@ pub(super) fn handle_admission_defer(
         return;
     }
 
-    if msg.ingress == IngressKind::User {
+    if msg.ingress == IngressKind::User && defer_count < MAX_DEFER_RETRIES {
         match PcMsg::new_outbound_reply_to(&msg, tr(UiMessage::LowMemoryUserDefer, ctx.loc)) {
             Ok(defer_out) => {
                 let _ = super::try_send_outbound(ctx.outbound_tx, defer_out, "defer");
@@ -1837,6 +1837,12 @@ pub(super) fn handle_admission_defer(
                 );
             }
         }
+    } else if msg.ingress == IngressKind::User {
+        log::warn!(
+            "[agent] defer limit reached ({}) for chat_id={}, keeping primary turn replayable",
+            MAX_DEFER_RETRIES,
+            msg.chat_id
+        );
     }
     let chat_id = msg.chat_id.clone();
     msg.enqueue_ts_ms = super::now_unix_ms();
@@ -2172,6 +2178,64 @@ mod tests {
             DetachedJobKind::PostReplyMaintenance,
         );
         assert!(store.get(&key).expect("load").is_some());
+    }
+
+    #[test]
+    fn primary_user_turn_is_not_dropped_after_defer_limit() {
+        let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _system_depth) =
+            crate::bus::new_inbound_channel(8);
+        let (outbound_tx, _outbound_rx, _outbound_depth) = crate::bus::new_inbound_channel(8);
+        let platform: Arc<dyn crate::Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        let config = AgentLoopConfig {
+            runtime: crate::RuntimeServices::from_platform(platform),
+            get_skill_descriptions: Arc::new(String::new),
+            get_capability_package_text: Arc::new(|_, _| None),
+            tg_group_activation: Arc::from(""),
+            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
+                &crate::AppConfig::load_from_env(),
+                false,
+            )),
+            strategy: AgentRunStrategy::Embedded,
+            stream_editor: None,
+            stream_editor_channel: None,
+            resolve_locale: Arc::new(|| UiLocale::Zh),
+        };
+        let mut defer_tracker = HashMap::new();
+        let mut low_mem_defer_log = None;
+
+        for _ in 0..MAX_DEFER_RETRIES {
+            let msg =
+                PcMsg::new_inbound("qq_channel", "chat-1", "primary", false).expect("message");
+            let mut hasher = DefaultHasher::new();
+            msg.channel.hash(&mut hasher);
+            msg.chat_id.hash(&mut hasher);
+            msg.content.hash(&mut hasher);
+            let msg_key = hasher.finish();
+            handle_admission_defer(
+                0,
+                msg,
+                msg_key,
+                AdmissionDeferContext {
+                    loc: UiLocale::Zh,
+                    user_inbound_tx: &user_inbound_tx,
+                    system_inbound_tx: &system_inbound_tx,
+                    outbound_tx: &outbound_tx,
+                    config: &config,
+                    defer_tracker: &mut defer_tracker,
+                    low_mem_defer_log: &mut low_mem_defer_log,
+                },
+            );
+        }
+
+        assert!(
+            !defer_tracker.is_empty(),
+            "primary user turn must remain replayable after the defer limit"
+        );
+        assert!(
+            user_inbound_rx.try_recv().is_ok(),
+            "primary user turn should be replayed or parked, not dropped"
+        );
     }
 
     #[test]

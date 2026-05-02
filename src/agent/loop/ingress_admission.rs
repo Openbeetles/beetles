@@ -6,7 +6,13 @@ pub(super) struct AdmittedTurn {
     pub(super) msg_key: u64,
     pub(super) queue_wait_ms: u128,
     pub(super) admission_ms: u128,
-    pub(super) _agent_task_guard: crate::orchestrator::AgentTaskGuard,
+    pub(super) _agent_task_guard: AdmittedTurnGuard,
+}
+
+#[allow(dead_code)]
+pub(super) enum AdmittedTurnGuard {
+    Foreground(crate::orchestrator::ForegroundTurnGuard),
+    Background(crate::orchestrator::AgentTaskGuard),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -75,11 +81,43 @@ pub(super) fn admit_turn(
         GateResult::Skipped => return None,
     };
 
+    let turn_guard = if msg.ingress == IngressKind::User {
+        match crate::orchestrator::begin_foreground_turn() {
+            Ok(guard) => AdmittedTurnGuard::Foreground(guard),
+            Err(error) => {
+                metrics::record_error_by_stage(error.metrics_stage());
+                log::warn!(
+                    "[agent] foreground turn lease denied channel={} chat_id={}: {}",
+                    msg.channel,
+                    msg.chat_id,
+                    error
+                );
+                super::background_jobs::handle_admission_defer(
+                    crate::constants::LOW_MEM_DEFER_SLEEP_MS,
+                    msg,
+                    msg_key,
+                    AdmissionDeferContext {
+                        loc,
+                        user_inbound_tx,
+                        system_inbound_tx,
+                        outbound_tx,
+                        config,
+                        defer_tracker,
+                        low_mem_defer_log,
+                    },
+                );
+                return None;
+            }
+        }
+    } else {
+        AdmittedTurnGuard::Background(crate::orchestrator::begin_agent_task())
+    };
+
     Some(AdmittedTurn {
         msg,
         msg_key,
         queue_wait_ms,
         admission_ms,
-        _agent_task_guard: crate::orchestrator::begin_agent_task(),
+        _agent_task_guard: turn_guard,
     })
 }

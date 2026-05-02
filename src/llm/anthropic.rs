@@ -456,7 +456,7 @@ fn do_request_streaming(
                 Ok(())
             },
         )
-        .map_err(|e| crate::llm::map_transport_error(e, "llm_request"))?;
+        .map_err(|e| crate::llm::map_streaming_transport_error(e, "llm_request"))?;
 
     if status == 429 {
         log::warn!("[{}] rate limited (429)", TAG);
@@ -477,8 +477,70 @@ fn do_request_streaming(
 
 #[cfg(test)]
 mod tests {
-    use super::build_request_body;
-    use crate::llm::{Message, ToolChoicePolicy, ToolSpec};
+    use super::{build_request_body, AnthropicClient};
+    use crate::config::LlmSource;
+    use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy, ToolSpec};
+
+    struct TruncatedStreamingHttp;
+
+    impl LlmHttpClient for TruncatedStreamingHttp {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+            unreachable!("streaming test should not call non-streaming POST")
+        }
+
+        fn do_post_streaming(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+            max_response_bytes: Option<usize>,
+            _on_chunk: &mut dyn FnMut(&[u8]) -> crate::Result<()>,
+        ) -> crate::Result<u16> {
+            assert!(max_response_bytes.is_some());
+            Err(crate::Error::Other {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "streaming response truncated",
+                )),
+                stage: crate::llm::HTTP_RESPONSE_TRUNCATED_STAGE,
+            })
+        }
+    }
+
+    #[test]
+    fn producer_empty_does_not_mask_transport_truncation() {
+        let client = AnthropicClient::from_source(
+            &LlmSource {
+                provider: "anthropic".to_string(),
+                api_key: "k".to_string(),
+                model: "claude".to_string(),
+                api_url: "https://example.test/v1/messages".to_string(),
+                max_tokens: Some(128),
+            },
+            true,
+        );
+        let mut http = TruncatedStreamingHttp;
+        let err = LlmClient::chat(
+            &client,
+            &mut http,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content: "hi".to_string(),
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        )
+        .expect_err("transport truncation must not become producer_empty");
+
+        assert_eq!(err.stage(), "llm_response_truncated");
+        assert_ne!(err.stage(), "producer_empty");
+    }
 
     #[test]
     fn request_contains_any_tool_choice_when_forced() {

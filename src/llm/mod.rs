@@ -52,6 +52,30 @@ pub(crate) fn map_transport_error(e: Error, stage: &'static str) -> Error {
     }
 }
 
+pub(crate) const HTTP_RESPONSE_TRUNCATED_STAGE: &str = "http_response_truncated";
+pub(crate) const LLM_RESPONSE_TRUNCATED_STAGE: &str = "llm_response_truncated";
+
+pub(crate) fn llm_response_truncated_error() -> Error {
+    Error::Other {
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "streaming response truncated",
+        )),
+        stage: LLM_RESPONSE_TRUNCATED_STAGE,
+    }
+}
+
+pub(crate) fn map_streaming_transport_error(e: Error, stage: &'static str) -> Error {
+    if matches!(
+        e.stage(),
+        HTTP_RESPONSE_TRUNCATED_STAGE | LLM_RESPONSE_TRUNCATED_STAGE
+    ) {
+        llm_response_truncated_error()
+    } else {
+        map_transport_error(e, stage)
+    }
+}
+
 /// 从配置构建单一 worker LLM 客户端。
 /// worker 内部使用 Fallback 链。空列表返回 NoopLlmClient。
 pub fn build_llm_clients(
@@ -98,11 +122,22 @@ pub trait LlmHttpClient {
         url: &str,
         headers: &[(&str, &str)],
         body: &[u8],
-        _max_response_bytes: Option<usize>,
+        max_response_bytes: Option<usize>,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<u16> {
         let (status, resp_body) = self.do_post(url, headers, body)?;
-        on_chunk(resp_body.as_ref())?;
+        let bytes = resp_body.as_ref();
+        if let Some(max_len) = max_response_bytes.filter(|max_len| bytes.len() > *max_len) {
+            on_chunk(&bytes[..max_len])?;
+            return Err(Error::Other {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "streaming response truncated",
+                )),
+                stage: HTTP_RESPONSE_TRUNCATED_STAGE,
+            });
+        }
+        on_chunk(bytes)?;
         Ok(status)
     }
 
